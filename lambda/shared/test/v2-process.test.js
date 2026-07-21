@@ -63,6 +63,7 @@ describe('v2-process-keys', () => {
     expect(meta.GSI1PK).toBe('PROJECT#p1');
     expect(meta.GSI1SK).toBe('STATUS#RUNNING#STARTED#2026-01-01T00:00:00.000Z#EXEC#e1');
     expect(meta.GSI2SK).toBe('TYPE#EXECUTION#STATE#RUNNING#META');
+    expect(meta).toMatchObject({ GSI3PK: 'ACTIVE_EXECUTIONS', GSI3SK: 'EXEC#e1' });
   });
 
   it('stamps a stage row with startedAt only when RUNNING', () => {
@@ -156,6 +157,19 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':status']).toBe('RUNNING');
     expect(input.ExpressionAttributeValues[':g1pk']).toBe('PROJECT#p1');
     expect(input.ExpressionAttributeValues[':cs']).toBe('req');
+    expect(input.ExpressionAttributeValues[':g3pk']).toBe('ACTIVE_EXECUTIONS');
+  });
+
+  it('removes the sparse active projection on a terminal execution state', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { status: 'FAILED' } });
+    await store.updateExecution({
+      executionId: 'e1',
+      projectId: 'p1',
+      status: 'FAILED',
+      startedAt: 'T',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('REMOVE GSI3PK, GSI3SK');
   });
 
   it('updateExecution back-fills GSI1 from META when a runtime caller omits projectId/startedAt', async () => {
@@ -1120,6 +1134,71 @@ describe('unit store methods', () => {
     expect(rows).toHaveLength(1);
     const input = ddb.commandCalls(QueryCommand)[0].args[0].input;
     expect(input.ExpressionAttributeValues[':p']).toBe('UNIT#');
+  });
+
+  it('binds a PR wait onto the sparse index and claims it with callback ownership', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { state: 'PR_READY' } });
+    await store.bindUnitPrWait({
+      executionId: 'e1',
+      sectionIndex: 2,
+      slug: 'auth',
+      callbackId: 'callback-1',
+      runId: 'run-1',
+      snapshot: [{ repository: 'owner/api', state: 'open', headSha: 'h1' }],
+    });
+    const bind = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(bind.ConditionExpression).toContain('#state = :ready');
+    expect(bind.ExpressionAttributeValues).toMatchObject({
+      ':callbackId': 'callback-1',
+      ':runId': 'run-1',
+      ':g3pk': 'PR_WAITS',
+      ':g3sk': 'EXEC#e1#UNIT#S2#auth',
+    });
+
+    await store.claimUnitPrWait({
+      executionId: 'e1',
+      sectionIndex: 2,
+      slug: 'auth',
+      callbackId: 'callback-1',
+      runId: 'run-1',
+      claimId: 'claim-1',
+      claimExpiresAt: 'T2',
+    });
+    const claim = ddb.commandCalls(UpdateCommand)[1].args[0].input;
+    expect(claim.ConditionExpression).toContain('prWaitCallbackId = :callbackId');
+    expect(claim.ConditionExpression).toContain('prWaitRunId = :runId');
+  });
+
+  it('completes a claimed PR wait by removing its callback and sparse projection', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.completeUnitPrWait({
+      executionId: 'e1',
+      sectionIndex: 2,
+      slug: 'auth',
+      callbackId: 'callback-1',
+      runId: 'run-1',
+      claimId: 'claim-1',
+      reason: 'merged',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('REMOVE prWaitCallbackId');
+    expect(input.UpdateExpression).toContain('GSI3PK, GSI3SK');
+    expect(input.ConditionExpression).toContain('prWaitWakeClaimId = :claimId');
+  });
+
+  it('queries active executions and PR waits through separate GSI3 partitions', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.listActiveExecutions();
+    await store.listUnitPrWaits();
+    const [active, waits] = ddb.commandCalls(QueryCommand).map((call) => call.args[0].input);
+    expect(active).toMatchObject({
+      IndexName: 'GSI3',
+      ExpressionAttributeValues: { ':pk': 'ACTIVE_EXECUTIONS' },
+    });
+    expect(waits).toMatchObject({
+      IndexName: 'GSI3',
+      ExpressionAttributeValues: { ':pk': 'PR_WAITS' },
+    });
   });
 
   it('syncUnitRows creates missing lanes, refreshes PENDING/READY, preserves active, reports orphans', async () => {

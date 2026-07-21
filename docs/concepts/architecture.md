@@ -117,6 +117,7 @@ flowchart TB
   SPA["Browser SPA"]
 
   INT -->|async Invoke on start| ORCH
+  INT -->|scheduled unit-PR reconciliation| GITP
   ORCH -->|dispatch stage<br/>as background job| AC
   AC -.->|durable callback:<br/>stage verdict| ORCH
   INT -.->|durable callback:<br/>gate answered| ORCH
@@ -141,7 +142,7 @@ flowchart TB
 
 **Human gates.** When an agent calls the `ask_question` MCP tool — or the orchestrator opens an engine gate (walking-skeleton review, batch review, halt-and-ask) — the run parks on a durable callback. The question renders in the UI; the user's answer flows through the `intents` Lambda, which completes the callback and resumes the run exactly where it parked. No polling, no queue.
 
-**Pull requests.** When an execution succeeds, the orchestrator opens pull requests in-process through the shared git-provider layer (GitHub / GitLab), from the intent branch onto the base branch.
+**Pull requests.** For PR-per-unit delivery, the orchestrator persists one durable callback when a unit is ready for review. A scheduled `intents` maintenance pass checks GitHub or GitLab while the durable execution remains suspended, waking it only when the PR merges or closes, a reviewed branch moves, or authenticated feedback is queued. The sparse process-table maintenance index also lets the same pass detect terminal durable executions before their local expiry. After every unit and shared stage succeeds, the orchestrator opens the final intent-to-base pull request through the same provider layer.
 
 **Auth.** At container startup the runtime reads the agent CLI credentials from SSM Parameter Store — a Bedrock bearer token for Claude Code / OpenCode, or a Kiro API key — as configured in **Admin → Agents**. The runtime's IAM role deliberately has no Bedrock model-invocation permissions; token auth is the only path. Git pushes use the starting user's provider token, injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. None of these auth lookups appear in the diagram.
 

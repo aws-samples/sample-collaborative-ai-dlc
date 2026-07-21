@@ -177,6 +177,7 @@ module "agentcore_docker_build" {
 # ---------------------------------------------------------------------------
 # v2 process/state table (EXEC#/STAGE#/EVENT#/HUMAN#/METRIC#/OUTPUT#)
 #   GSI1 = project-status browse, GSI2 = per-execution type/state
+#   GSI3 = sparse maintenance index for active executions and parked PR waits
 # ---------------------------------------------------------------------------
 
 resource "aws_dynamodb_table" "v2_executions" {
@@ -211,6 +212,14 @@ resource "aws_dynamodb_table" "v2_executions" {
     name = "GSI2SK"
     type = "S"
   }
+  attribute {
+    name = "GSI3PK"
+    type = "S"
+  }
+  attribute {
+    name = "GSI3SK"
+    type = "S"
+  }
 
   global_secondary_index {
     name            = "GSI1"
@@ -238,6 +247,21 @@ resource "aws_dynamodb_table" "v2_executions" {
     }
     key_schema {
       attribute_name = "GSI2SK"
+      key_type       = "RANGE"
+    }
+  }
+
+  global_secondary_index {
+    name            = "GSI3"
+    projection_type = "ALL"
+    read_capacity   = local.read_capacity
+    write_capacity  = local.write_capacity
+    key_schema {
+      attribute_name = "GSI3PK"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "GSI3SK"
       key_type       = "RANGE"
     }
   }

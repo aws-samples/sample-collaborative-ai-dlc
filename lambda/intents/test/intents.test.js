@@ -62,6 +62,7 @@ let sourceControlReviewComments = [];
 let sourceControlValidationResponse = { ready: true, repositories: [] };
 const s3Mock = mockClient(S3Client);
 let attachmentUpdateConflict = null;
+let sourceControlOperationHandler = null;
 
 // In-memory single-table fake for the v2 process table + blocks table.
 const procStore = new Map();
@@ -116,6 +117,9 @@ const installDdbFakes = () => {
     if (input.IndexName === 'GSI1') {
       items = items.filter((i) => i.GSI1PK === values[':pk']);
       if (values[':sk']) items = items.filter((i) => (i.GSI1SK || '').startsWith(values[':sk']));
+    } else if (input.IndexName === 'GSI3') {
+      items = items.filter((i) => i.GSI3PK === values[':pk']);
+      items.sort((a, b) => (a.GSI3SK || '').localeCompare(b.GSI3SK || ''));
     } else {
       items = items.filter((i) => i.pk === values[':pk']);
       // SK conditions the store actually issues: begins_with prefix reads and
@@ -172,6 +176,34 @@ const installDdbFakes = () => {
       casFail();
     }
     if (cond.includes('attribute_exists(pk)') && !existing) casFail();
+    if (cond.includes('#state = :ready') && (!existing || existing.state !== values[':ready'])) {
+      casFail();
+    }
+    if (
+      cond.includes('prWaitCallbackId = :callbackId') &&
+      (!existing || existing.prWaitCallbackId !== values[':callbackId'])
+    ) {
+      casFail();
+    }
+    if (
+      cond.includes('prWaitRunId = :runId') &&
+      (!existing || existing.prWaitRunId !== values[':runId'])
+    ) {
+      casFail();
+    }
+    if (
+      cond.includes('prWaitWakeClaimId = :claimId') &&
+      (!existing || existing.prWaitWakeClaimId !== values[':claimId'])
+    ) {
+      casFail();
+    }
+    if (
+      cond.includes('attribute_not_exists(prWaitWakeClaimId)') &&
+      existing?.prWaitWakeClaimId &&
+      !(existing.prWaitWakeClaimExpiresAt < values[':ts'])
+    ) {
+      casFail();
+    }
     // Lifecycle CAS used by updateUnitState / updateQuorumEdit: `#state IN (:from0, …)`.
     const inMatch = /#state IN \(([^)]+)\)/.exec(cond);
     if (inMatch) {
@@ -203,13 +235,20 @@ const installDdbFakes = () => {
     }
     const next = { ...(existing || { pk: input.Key.pk, sk: input.Key.sk }) };
     // Generic SET applier: "SET a = :x, b = :y, #n = :z" (names resolved).
-    const setMatch = /SET (.+)$/.exec(input.UpdateExpression || '');
+    const setMatch = /SET (.*?)(?: REMOVE |$)/.exec(input.UpdateExpression || '');
     if (setMatch) {
       for (const clause of setMatch[1].split(',')) {
         const [lhs, rhs] = clause.split('=').map((s) => s.trim());
         if (!lhs || !rhs) continue;
         const field = names[lhs] ?? lhs;
         if (rhs in values) next[field] = values[rhs];
+      }
+    }
+    const removeMatch = / REMOVE (.+)$/.exec(input.UpdateExpression || '');
+    if (removeMatch) {
+      for (const raw of removeMatch[1].split(',')) {
+        const field = names[raw.trim()] ?? raw.trim();
+        delete next[field];
       }
     }
     procStore.set(k, next);
@@ -239,7 +278,7 @@ const installDdbFakes = () => {
           ? sourceControlValidationResponse
           : request.operation === 'list-review-comments'
             ? { ok: true, result: sourceControlReviewComments }
-            : { ok: true, result: null };
+            : { ok: true, result: sourceControlOperationHandler?.(request) ?? null };
       return { StatusCode: 200, Payload: Buffer.from(JSON.stringify(response)) };
     }
     return { StatusCode: 202 };
@@ -318,6 +357,7 @@ beforeEach(() => {
   installDdbFakes();
   sourceControlReviewComments = [];
   sourceControlValidationResponse = { ready: true, repositories: [] };
+  sourceControlOperationHandler = null;
   ssmMock.reset();
   agentcoreMock.reset();
   attachmentUpdateConflict = null;
@@ -1056,6 +1096,21 @@ describe('unit PR review feedback', () => {
     });
     expect(get.statusCode).toBe(200);
     expect(JSON.parse(get.body).comments).toHaveLength(1);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      orchestratorRunId: 'run-feedback',
+    });
+    const unitKey = keyOf(`EXEC#${intent.id}`, 'UNIT#S1#auth');
+    procStore.set(unitKey, {
+      ...procStore.get(unitKey),
+      state: 'PR_READY',
+      prWaitCallbackId: 'callback-feedback',
+      prWaitRunId: 'run-feedback',
+      prWaitSnapshot: [],
+      GSI3PK: 'PR_WAITS',
+      GSI3SK: `EXEC#${intent.id}#UNIT#S1#auth`,
+    });
 
     const post = await handler({
       httpMethod: 'POST',
@@ -1079,6 +1134,13 @@ describe('unit PR review feedback', () => {
       repository: 'owner/repo',
       version: '2026-01-01T00:01:00Z',
     });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+    const wake = JSON.parse(
+      Buffer.from(
+        lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)[0].args[0].input.Result,
+      ).toString(),
+    );
+    expect(wake.answer.reason).toBe('queued_feedback');
   });
 
   it('atomically rejects concurrent feedback batches that overlap on a comment version', async () => {
@@ -3014,12 +3076,258 @@ describe('durable execution watchdog', () => {
     expect(procStore.get(keyOf(`EXEC#${stale.id}`, 'META'))).toMatchObject({
       status: 'FAILED',
       pendingHumanTaskId: null,
-      failureReason: 'durable_callback_expired',
+      failureReason: 'durable_execution_timed_out',
     });
     expect(procStore.get(keyOf(`EXEC#${live.id}`, 'META'))).toMatchObject({
       status: 'WAITING',
       pendingHumanTaskId: 'h-live',
     });
+  });
+
+  it('detects a failed durable execution before its configured expiry', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'RUNNING',
+      orchestratorRunId: 'run-failed-early',
+      orchestratorExpiresAt: '2099-01-01T00:00:00.000Z',
+      durableExecutionArn: 'arn:aws:lambda:durable:failed-early',
+    });
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'FAILED' });
+
+    const out = await handler({
+      action: 'repair-durable-executions',
+      candidates: [procStore.get(metaKey)],
+    });
+
+    expect(out).toMatchObject({ checked: 1, repaired: 1, skipped: 0 });
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'FAILED',
+      failureReason: 'durable_execution_failed',
+    });
+  });
+
+  it('does not overwrite a locally completed execution from a stale active-index read', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const candidate = {
+      ...procStore.get(metaKey),
+      status: 'RUNNING',
+      orchestratorRunId: 'run-finishing',
+      durableExecutionArn: 'arn:aws:lambda:durable:finishing',
+    };
+    procStore.set(metaKey, { ...candidate });
+    lambdaMock.on(GetDurableExecutionCommand).callsFake(() => {
+      procStore.set(metaKey, {
+        ...procStore.get(metaKey),
+        status: 'SUCCEEDED',
+        completedAt: '2026-07-21T10:00:00.000Z',
+      });
+      return { Status: 'FAILED' };
+    });
+
+    const out = await handler({
+      action: 'repair-durable-executions',
+      candidates: [{ ...candidate }],
+    });
+
+    expect(out).toEqual({ checked: 1, repaired: 0, skipped: 1, errors: [] });
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'SUCCEEDED',
+      completedAt: '2026-07-21T10:00:00.000Z',
+    });
+  });
+
+  it('gives a legacy relaunch without an explicit expiry a fresh launch window', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const candidate = {
+      ...procStore.get(metaKey),
+      status: 'CREATED',
+      startedAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: new Date().toISOString(),
+      orchestratorStartedAt: null,
+      orchestratorExpiresAt: null,
+      durableExecutionName: null,
+      durableExecutionArn: null,
+    };
+    procStore.set(metaKey, { ...candidate });
+
+    const out = await handler({
+      action: 'repair-durable-executions',
+      candidates: [{ ...candidate }],
+    });
+
+    expect(out).toEqual({ checked: 1, repaired: 0, skipped: 1, errors: [] });
+    expect(procStore.get(metaKey).status).toBe('CREATED');
+  });
+});
+
+describe('scheduled unit PR reconciliation', () => {
+  const seedWait = ({
+    executionId,
+    runId = 'run-current',
+    slug = 'views',
+    repos = [{ repository: 'owner/web', provider: 'github', number: 12 }],
+  }) => {
+    procStore.set(keyOf(`EXEC#${executionId}`, 'META'), {
+      pk: `EXEC#${executionId}`,
+      sk: 'META',
+      type: 'Execution',
+      executionId,
+      intentId: executionId,
+      projectId: 'p-maintenance',
+      status: 'RUNNING',
+      orchestratorRunId: runId,
+      gitProvider: 'github',
+      repoProviders: Object.fromEntries(repos.map((repo) => [repo.repository, repo.provider])),
+    });
+    const snapshot = repos.map((repo) => ({
+      repository: repo.repository,
+      number: repo.number,
+      state: 'open',
+      headSha: `${repo.repository}-head`,
+      targetSha: `${repo.repository}-target`,
+    }));
+    const wait = {
+      pk: `EXEC#${executionId}`,
+      sk: `UNIT#S1#${slug}`,
+      type: 'Unit',
+      executionId,
+      sectionIndex: 1,
+      slug,
+      state: 'PR_READY',
+      prWaitCallbackId: `callback-${executionId}`,
+      prWaitRunId: runId,
+      prWaitSnapshot: snapshot,
+      GSI3PK: 'PR_WAITS',
+      GSI3SK: `EXEC#${executionId}#UNIT#S1#${slug}`,
+    };
+    procStore.set(keyOf(wait.pk, wait.sk), wait);
+    for (const repo of repos) {
+      const row = {
+        pk: `EXEC#${executionId}`,
+        sk: `UNITPR#S1#${slug}#${encodeURIComponent(repo.repository)}`,
+        type: 'UnitPullRequest',
+        executionId,
+        sectionIndex: 1,
+        unitSlug: slug,
+        repository: repo.repository,
+        provider: repo.provider,
+        number: repo.number,
+        state: 'READY',
+      };
+      procStore.set(keyOf(row.pk, row.sk), row);
+    }
+    return { wait, snapshot };
+  };
+
+  it('does not wake an unchanged GitHub wait, then wakes a merge exactly once', async () => {
+    const { wait, snapshot } = seedWait({ executionId: 'exec-github' });
+    let state = 'open';
+    sourceControlOperationHandler = (request) =>
+      request.operation === 'pr-status'
+        ? {
+            number: 12,
+            state,
+            headSha: snapshot[0].headSha,
+            targetSha: snapshot[0].targetSha,
+          }
+        : null;
+
+    const unchanged = await handler({
+      action: 'reconcile-provider-state',
+      waits: [{ ...wait }],
+      candidates: [],
+    });
+    expect(unchanged.prWaits).toMatchObject({ checked: 1, unchanged: 1, woken: 0 });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+
+    state = 'merged';
+    const merged = await handler({
+      action: 'reconcile-provider-state',
+      waits: [{ ...wait }],
+      candidates: [],
+    });
+    expect(merged.prWaits).toMatchObject({ checked: 1, woken: 1 });
+
+    const duplicate = await handler({
+      action: 'reconcile-provider-state',
+      waits: [{ ...wait }],
+      candidates: [],
+    });
+    expect(duplicate.prWaits).toMatchObject({ checked: 1, duplicates: 1 });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+  });
+
+  it('wakes one multi-repository wait when a GitLab target branch moves', async () => {
+    const repos = [
+      { repository: 'owner/api', provider: 'github', number: 21 },
+      { repository: 'group/web', provider: 'gitlab', number: 22 },
+    ];
+    const { wait, snapshot } = seedWait({ executionId: 'exec-multi', repos });
+    const providers = [];
+    sourceControlOperationHandler = (request) => {
+      providers.push(request.provider);
+      const before = snapshot.find((entry) => entry.repository === request.repo);
+      return {
+        number: request.args.number,
+        state: 'open',
+        headSha: before.headSha,
+        targetSha: request.provider === 'gitlab' ? 'advanced-intent-head' : before.targetSha,
+      };
+    };
+
+    const out = await handler({
+      action: 'reconcile-provider-state',
+      waits: [{ ...wait }],
+      candidates: [],
+    });
+
+    expect(out.prWaits).toMatchObject({ checked: 1, woken: 1 });
+    expect(providers.toSorted()).toEqual(['github', 'gitlab']);
+    const result = JSON.parse(
+      Buffer.from(
+        lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)[0].args[0].input.Result,
+      ).toString(),
+    );
+    expect(result.answer.reason).toBe('target_moved');
+  });
+
+  it('wakes queued feedback and drops a stale-run wait without resuming it', async () => {
+    const current = seedWait({ executionId: 'exec-feedback' }).wait;
+    const stale = seedWait({ executionId: 'exec-stale', runId: 'run-old' }).wait;
+    procStore.set(keyOf('EXEC#exec-stale', 'META'), {
+      ...procStore.get(keyOf('EXEC#exec-stale', 'META')),
+      orchestratorRunId: 'run-new',
+    });
+    procStore.set(keyOf('EXEC#exec-feedback', 'FEEDBACK#S1#views#batch-1'), {
+      pk: 'EXEC#exec-feedback',
+      sk: 'FEEDBACK#S1#views#batch-1',
+      type: 'FeedbackBatch',
+      executionId: 'exec-feedback',
+      sectionIndex: 1,
+      unitSlug: 'views',
+      batchId: 'batch-1',
+      state: 'QUEUED',
+    });
+
+    const out = await handler({
+      action: 'reconcile-provider-state',
+      waits: [{ ...current }, { ...stale }],
+      candidates: [],
+    });
+
+    expect(out.prWaits).toMatchObject({ checked: 2, woken: 1, stale: 1 });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+    expect(procStore.get(keyOf(stale.pk, stale.sk))).not.toHaveProperty('prWaitCallbackId');
   });
 });
 
@@ -4289,11 +4597,12 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
         intentId: intent.id,
         stageInstanceIds: expect.arrayContaining([
           siOf('cg', 'asset-containment', 1),
-          siOf('cg', 'blocked-dependent', 1),
           siOf('cg', 'live-data-energy-flow', 1),
-          siOf('cg', 'echarts-integration', 1),
         ]),
       }),
+    );
+    expect(archiveArtifactsSpy.mock.calls[0][0].stageInstanceIds).not.toContain(
+      siOf('cg', 'echarts-integration', 1),
     );
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#foundation'))).toMatchObject({
       state: 'MERGED',
@@ -4308,24 +4617,25 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       'echarts-integration',
     ]) {
       expect(procStore.get(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`))).toMatchObject({
-        state: 'PENDING',
+        state: slug === 'echarts-integration' ? 'PR_DRAFT' : 'PENDING',
         failureReason: null,
       });
       const stageRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', slug, 1)}`));
-      if (slug !== 'blocked-dependent') {
+      if (slug === 'asset-containment' || slug === 'live-data-energy-flow') {
         expect(stageRow).toMatchObject({
           state: 'PENDING',
           attempt: 1,
           pendingHumanTaskId: null,
         });
+      } else if (slug === 'echarts-integration') {
+        expect(stageRow).toMatchObject({ state: 'SUCCEEDED', attempt: 0 });
       }
     }
     expect(
       procStore.get(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#echarts-integration#owner%2Frepo')),
     ).toMatchObject({
-      state: 'DRAFT',
-      readyHeadSha: null,
-      repositoryOutcome: 'replaying_after_lane_repair',
+      state: 'READY',
+      readyHeadSha: 'tainted-head',
     });
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toMatchObject({
       status: 'CREATED',
@@ -4344,6 +4654,134 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
         (row) => row.pk === `EXEC#${intent.id}` && row.eventType === 'v2.execution.lanes_repaired',
       ),
     ).toBe(true);
+  });
+
+  it('reconciles merged PR #11 and resumes draft PR #12 without rebuilding stages', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      prStrategy: 'pr-per-unit',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:old-pr-wait',
+      orchestratorRunId: 'old-pr-wait-run',
+    });
+    seedStageRow(intent.id, 'units-gen');
+    seedStageRow(intent.id, 'cg', 'comparison-feature', 'SUCCEEDED', 1);
+    seedStageRow(intent.id, 'cg', 'views', 'SUCCEEDED', 1);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPLAN'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPLAN',
+      executionId: intent.id,
+      units: [
+        { slug: 'comparison-feature', dependsOn: [] },
+        { slug: 'views', dependsOn: ['comparison-feature'] },
+      ],
+      batches: [['comparison-feature'], ['views']],
+      walkingSkeleton: 'comparison-feature',
+      autonomyMode: 'autonomous',
+    });
+    for (const slug of ['comparison-feature', 'views']) {
+      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `UNIT#S1#${slug}`,
+        type: 'Unit',
+        executionId: intent.id,
+        sectionIndex: 1,
+        slug,
+        state: 'PR_READY',
+      });
+    }
+    const unitPr = (slug, number, headSha) => {
+      const row = {
+        pk: `EXEC#${intent.id}`,
+        sk: `UNITPR#S1#${slug}#owner%2Frepo`,
+        type: 'UnitPullRequest',
+        executionId: intent.id,
+        sectionIndex: 1,
+        unitSlug: slug,
+        repository: 'owner/repo',
+        provider: 'github',
+        number,
+        state: 'READY',
+        sourceBranch: `aidlc/i--s1-unit-${slug}`,
+        targetBranch: 'aidlc/i',
+        headSha,
+        readyHeadSha: headSha,
+        targetSha: 'intent-before',
+      };
+      procStore.set(keyOf(row.pk, row.sk), row);
+    };
+    unitPr('comparison-feature', 11, 'comparison-head');
+    unitPr('views', 12, 'views-head');
+    sourceControlOperationHandler = (request) => {
+      if (request.operation === 'is-ancestor')
+        return request.args.ancestorSha === 'comparison-head';
+      if (request.operation !== 'pr-status') return null;
+      return request.args.number === 11
+        ? {
+            number: 11,
+            state: 'merged',
+            draft: false,
+            headSha: 'comparison-head',
+            targetSha: 'intent-after-comparison',
+          }
+        : {
+            number: 12,
+            state: 'open',
+            draft: true,
+            headSha: 'views-head',
+            targetSha: 'intent-after-comparison',
+          };
+    };
+    vi.stubEnv('V2_ORCHESTRATOR_FUNCTION', 'orchestrator-test:live');
+    try {
+      const res = await repair(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(202);
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#comparison-feature'))).toMatchObject(
+        {
+          state: 'MERGED',
+        },
+      );
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#views'))).toMatchObject({
+        state: 'PR_DRAFT',
+        recoveryPreserveCompleted: true,
+      });
+      expect(
+        procStore.get(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#comparison-feature#owner%2Frepo')),
+      ).toMatchObject({
+        number: 11,
+        state: 'MERGED',
+        repositoryOutcome: 'merged',
+      });
+      expect(
+        procStore.get(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#views#owner%2Frepo')),
+      ).toMatchObject({
+        number: 12,
+        state: 'DRAFT',
+        headSha: 'views-head',
+      });
+      expect(
+        procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'comparison-feature', 1)}`)),
+      ).toMatchObject({ state: 'SUCCEEDED', attempt: 0 });
+      expect(
+        procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'views', 1)}`)),
+      ).toMatchObject({ state: 'SUCCEEDED', attempt: 0 });
+      expect(archiveArtifactsSpy.mock.calls.at(-1)[0].stageInstanceIds).toEqual([]);
+      const relaunch = lambdaMock
+        .commandCalls(InvokeCommand)
+        .find((call) => call.args[0].input.FunctionName === 'orchestrator-test:live');
+      expect(relaunch).toBeDefined();
+      expect(JSON.parse(Buffer.from(relaunch.args[0].input.Payload).toString())).toMatchObject({
+        action: 'start',
+        startAtStageId: 'cg',
+      });
+    } finally {
+      vi.stubEnv('V2_ORCHESTRATOR_FUNCTION', 'orchestrator-test');
+    }
   });
 
   it('leaves a stop failure retryable without archiving or resetting lanes', async () => {

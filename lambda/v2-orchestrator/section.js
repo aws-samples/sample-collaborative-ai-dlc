@@ -436,6 +436,11 @@ export const runParallelSection = async (segment, toolkit) => {
   const persistedUnits = await ctx.step(`load-unit-states-${sk}`, () =>
     store.listUnits(executionId),
   );
+  const persistedBySlug = new Map(
+    (persistedUnits ?? [])
+      .filter((row) => Number(row.sectionIndex) === Number(segment.index))
+      .map((row) => [row.slug, row]),
+  );
   for (const row of persistedUnits ?? []) {
     if (
       Number(row.sectionIndex) === Number(segment.index) &&
@@ -1244,10 +1249,11 @@ export const runParallelSection = async (segment, toolkit) => {
         { unitSlug: slug, sectionIndex: segment.index, state: 'PR_READY' },
       );
 
-      let delaySeconds = 30;
       let repollForReconciliation = false;
-      for (let poll = 0; ; poll += 1) {
-        const pollFeedback = await processNextFeedback(`r${reconciliation}-poll-${poll}`);
+      for (let observation = 0; ; observation += 1) {
+        const pollFeedback = await processNextFeedback(
+          `r${reconciliation}-observation-${observation}`,
+        );
         if (pollFeedback.failed) {
           return laneFailed(laneCtx, slug, round, {
             stageId: 'review-feedback',
@@ -1262,7 +1268,7 @@ export const runParallelSection = async (segment, toolkit) => {
         let pollingError = null;
         try {
           statuses = await laneCtx.step(
-            `unit-pr-status-${sk}-${slug}${rTag}-${reconciliation}-${poll}`,
+            `unit-pr-status-${sk}-${slug}${rTag}-${reconciliation}-${observation}`,
             async () => {
               const out = [];
               for (const row of readyRows) {
@@ -1281,7 +1287,7 @@ export const runParallelSection = async (segment, toolkit) => {
         }
         if (pollingError || statuses.some(({ status }) => !status)) {
           await laneCtx.step(
-            `unit-pr-provider-failure-metric-${sk}-${slug}${rTag}-${reconciliation}-${poll}`,
+            `unit-pr-provider-failure-metric-${sk}-${slug}${rTag}-${reconciliation}-${observation}`,
             () =>
               store
                 .recordMetric?.({
@@ -1304,7 +1310,7 @@ export const runParallelSection = async (segment, toolkit) => {
         for (const { row, status } of statuses) {
           if (status.state === 'merged') {
             const ancestor = await laneCtx.step(
-              `unit-pr-ancestor-${sk}-${slug}-${encodeURIComponent(row.repository)}${rTag}-${reconciliation}-${poll}`,
+              `unit-pr-ancestor-${sk}-${slug}-${encodeURIComponent(row.repository)}${rTag}-${reconciliation}-${observation}`,
               () =>
                 callProvider('isAncestor', {
                   repoId: row.repository,
@@ -1328,7 +1334,7 @@ export const runParallelSection = async (segment, toolkit) => {
           const partial = merged.length > 0;
           if (partial) {
             await laneCtx.step(
-              `unit-pr-partial-metric-${sk}-${slug}${rTag}-${reconciliation}-${poll}`,
+              `unit-pr-partial-metric-${sk}-${slug}${rTag}-${reconciliation}-${observation}`,
               () =>
                 store
                   .recordMetric?.({
@@ -1343,7 +1349,7 @@ export const runParallelSection = async (segment, toolkit) => {
           const mergedRepositories = new Set(merged.map(({ row }) => row.repository));
           for (const { row, status } of statuses) {
             await laneCtx.step(
-              `unit-pr-halt-${sk}-${slug}-${encodeURIComponent(row.repository)}${rTag}-${reconciliation}-${poll}`,
+              `unit-pr-halt-${sk}-${slug}-${encodeURIComponent(row.repository)}${rTag}-${reconciliation}-${observation}`,
               () =>
                 store.updateUnitPr({
                   executionId,
@@ -1429,7 +1435,7 @@ export const runParallelSection = async (segment, toolkit) => {
         }
         if (moved) {
           await laneCtx.step(
-            `unit-pr-redraft-${sk}-${slug}${rTag}-${reconciliation}-${poll}`,
+            `unit-pr-redraft-${sk}-${slug}${rTag}-${reconciliation}-${observation}`,
             async () => {
               for (const { row, status } of statuses) {
                 if (status.state === 'open' && !status.draft) {
@@ -1454,11 +1460,47 @@ export const runParallelSection = async (segment, toolkit) => {
           break;
         }
 
-        await laneCtx.wait(`unit-pr-wait-${sk}-${slug}${rTag}-${reconciliation}-${poll}`, {
-          seconds: delaySeconds,
-        });
+        const [callbackPromise, callbackId] = await laneCtx.createCallback(
+          `unit-pr-wait-${sk}-${slug}${rTag}-${reconciliation}-${observation}`,
+        );
+        const snapshot = statuses.map(({ row, status }) => ({
+          repository: row.repository,
+          number: row.number,
+          state: status.state,
+          headSha: status.headSha ?? null,
+          targetSha: status.targetSha ?? null,
+        }));
+        const callbackBound = await laneCtx.step(
+          `unit-pr-bind-${sk}-${slug}${rTag}-${reconciliation}-${observation}`,
+          () =>
+            store.bindUnitPrWait({
+              executionId,
+              sectionIndex: segment.index,
+              slug,
+              callbackId,
+              runId,
+              snapshot,
+            }),
+        );
+        if (!callbackBound) {
+          const ownership = await laneCtx.step(
+            `unit-pr-bind-owner-${sk}-${slug}${rTag}-${reconciliation}-${observation}`,
+            () => store.getExecution(executionId),
+          );
+          if (
+            ownership?.status === 'CANCELLED' ||
+            (runId && ownership?.orchestratorRunId && ownership.orchestratorRunId !== runId)
+          ) {
+            return { slug, state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId } };
+          }
+          return laneFailed(laneCtx, slug, round, {
+            stageId: 'unit-pr',
+            reason: 'pr_wait_callback_conflict',
+          });
+        }
+        await callbackPromise;
         const ownership = await laneCtx.step(
-          `unit-pr-owner-${sk}-${slug}${rTag}-${reconciliation}-${poll}`,
+          `unit-pr-owner-${sk}-${slug}${rTag}-${reconciliation}-${observation}`,
           () => store.getExecution(executionId),
         );
         if (
@@ -1467,19 +1509,6 @@ export const runParallelSection = async (segment, toolkit) => {
         ) {
           return { slug, state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId } };
         }
-        await laneCtx.step(
-          `unit-pr-wait-metric-${sk}-${slug}${rTag}-${reconciliation}-${poll}`,
-          () =>
-            store
-              .recordMetric?.({
-                executionId,
-                sectionIndex: segment.index,
-                unitSlug: slug,
-                metrics: { prWaitMs: delaySeconds * 1000 },
-              })
-              ?.catch(() => {}),
-        );
-        delaySeconds = Math.min(delaySeconds * 2, 300);
       }
       if (!repollForReconciliation) break;
     }
@@ -1512,6 +1541,7 @@ export const runParallelSection = async (segment, toolkit) => {
       // vanished too, it is recreated from the intent branch — never main.
       baseBranch: intentBranch,
     };
+    const persistedUnit = persistedBySlug.get(slug);
 
     // Dependencies must be MERGED (A2 rule 4). In the wavefront, await the
     // dependency lanes' DurablePromises; settled lanes come from laneState.
@@ -1544,6 +1574,59 @@ export const runParallelSection = async (segment, toolkit) => {
         );
         return { slug, state: 'BLOCKED', blockedOn: dep };
       }
+    }
+
+    // A repair can relaunch a section after construction finished but while its
+    // unit PR was parked. Re-enter directly at provider reconciliation: the
+    // successful stage rows and existing draft PR are durable work, not inputs
+    // to regenerate. The all-terminal check prevents a half-built lane from
+    // skipping construction merely because its UNIT row has a review state.
+    const resumableUnitPr =
+      usesUnitPrs &&
+      round === 0 &&
+      !revive &&
+      ['PR_DRAFT', 'RECONCILING', 'PR_READY'].includes(persistedUnit?.state)
+        ? await laneCtx.step(`unit-pr-resume-check-${sk}-${slug}${rTag}`, async () => {
+            for (const stage of segment.stages) {
+              const stageRow = await store
+                .getStage(
+                  executionId,
+                  toolkit.stageInstanceIdFor(stage.stageId, slug, segment.index),
+                )
+                .catch(() => null);
+              if (!stageRow || !['SUCCEEDED', 'SKIPPED'].includes(stageRow.state)) return null;
+            }
+            const rows = await store.listUnitPrs(executionId, {
+              sectionIndex: segment.index,
+              slug,
+            });
+            return rows.length > 0 ? rows : null;
+          })
+        : null;
+    if (resumableUnitPr) {
+      await emitEvent(
+        laneCtx,
+        `unit-pr-resumed-event-${sk}-${slug}${rTag}`,
+        'v2.unit_pr.resumed',
+        `Unit ${slug} resumed from its existing review PR(s) without rebuilding completed stages`,
+        { unitSlug: slug, sectionIndex: segment.index, state: persistedUnit.state },
+      );
+      await waitForIntegrationTurn(slug);
+      const integrated = await withIntegrationLock(() =>
+        integrateUnitPullRequests({
+          laneCtx,
+          slug,
+          unitBranch,
+          laneSession,
+          round,
+          rTag,
+          rows: resumableUnitPr,
+        }),
+      );
+      await laneCtx
+        .step(`lane-integration-release-${sk}-${slug}${rTag}`, () => stopSession(laneSession))
+        .catch(() => {});
+      return integrated;
     }
 
     // Concurrency permit AFTER the dependency wait — blocked/waiting lanes
@@ -1615,6 +1698,21 @@ export const runParallelSection = async (segment, toolkit) => {
 
       // The section's stages, in plan order, per-unit instances (WP4 model).
       for (const stage of segment.stages) {
+        if (persistedUnit?.recoveryPreserveCompleted && !feedbackTaskId) {
+          const completed = await laneCtx.step(
+            `preserve-completed-${stage.stageId}-u-${slug}${rTag}`,
+            async () => {
+              const row = await store
+                .getStage(
+                  executionId,
+                  toolkit.stageInstanceIdFor(stage.stageId, slug, segment.index),
+                )
+                .catch(() => null);
+              return Boolean(row && ['SUCCEEDED', 'SKIPPED'].includes(row.state));
+            },
+          );
+          if (completed) continue;
+        }
         // Two deterministic per-unit skips, both recorded as SKIPPED rows:
         //   - the human-approved skip matrix (CONDITIONAL stages only);
         //   - kind pruning (produces_kinds): every required output of the
