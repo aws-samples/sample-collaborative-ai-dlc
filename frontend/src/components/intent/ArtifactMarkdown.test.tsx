@@ -36,4 +36,58 @@ describe('ArtifactMarkdown', () => {
     expect(screen.getByText('const answer = 42;')).toBeInTheDocument();
     expect(mermaid.render).not.toHaveBeenCalled();
   });
+
+  it('links known wiki references to artifact previews', () => {
+    const onOpenArtifact = vi.fn();
+    render(
+      <ArtifactMarkdown
+        content="See [[reverse-engineering-timestamp]] for details."
+        artifacts={[
+          { id: 'reverse-engineering-timestamp', title: 'Reverse Engineering Timestamp' },
+        ]}
+        onOpenArtifact={onOpenArtifact}
+      />,
+    );
+
+    const link = screen.getByRole('link', { name: 'Reverse Engineering Timestamp' });
+    expect(link).toHaveAttribute('href', '#artifact-reverse-engineering-timestamp');
+    link.click();
+    expect(onOpenArtifact).toHaveBeenCalledWith('reverse-engineering-timestamp');
+  });
+
+  it('links known derived-item slugs in ordinary Markdown text', () => {
+    const onOpenItem = vi.fn();
+    render(
+      <ArtifactMarkdown
+        content="Maps to story-upload-screen and req-upload-two-buttons."
+        derivedItems={[
+          { id: 'story-node', slug: 'story-upload-screen', label: 'Upload screen' },
+          { id: 'req-node', slug: 'req-upload-two-buttons', label: 'Two upload buttons' },
+        ]}
+        onOpenItem={onOpenItem}
+      />,
+    );
+
+    const storyLink = screen.getByRole('link', { name: 'Upload screen' });
+    const requirementLink = screen.getByRole('link', { name: 'Two upload buttons' });
+    expect(storyLink).toHaveAttribute('href', '#item-story-node');
+    expect(requirementLink).toHaveAttribute('href', '#item-req-node');
+    storyLink.click();
+    requirementLink.click();
+    expect(onOpenItem).toHaveBeenNthCalledWith(1, 'story-node');
+    expect(onOpenItem).toHaveBeenNthCalledWith(2, 'req-node');
+  });
+
+  it('does not link wiki references or derived-item slugs inside code', () => {
+    render(
+      <ArtifactMarkdown
+        content={'`[[artifact-id]] story-upload-screen`'}
+        artifacts={[{ id: 'artifact-id', title: 'Artifact' }]}
+        derivedItems={[{ id: 'story-node', slug: 'story-upload-screen', label: 'Upload screen' }]}
+      />,
+    );
+
+    expect(screen.getByText('[[artifact-id]] story-upload-screen')).toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
 });
