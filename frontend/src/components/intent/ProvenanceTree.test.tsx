@@ -53,7 +53,11 @@ const row = (over: Partial<IntentStageRow> = {}): IntentStageRow => ({
   ...over,
 });
 
-const PHASE_NAMES: Record<string, string> = { '01': 'Inception', '02': 'Construction' };
+const PHASE_NAMES: Record<string, string> = {
+  '01': 'Inception',
+  '02': 'Construction',
+  '03': 'Operation',
+};
 const phaseNameOf = (path: string) =>
   PHASE_NAMES[path] ?? (path ? path.charAt(0).toUpperCase() + path.slice(1) : path);
 
@@ -137,6 +141,79 @@ describe('ProvenanceTree — phase ordering', () => {
       .map((el) => el.id)
       .filter((id) => id.startsWith('provenance-phase-'));
     expect(phaseIds).toEqual(['provenance-phase-01', 'provenance-phase-02', 'provenance-phase-10']);
+  });
+});
+
+describe('ProvenanceTree — document ordering', () => {
+  const artifacts = [
+    doc({ id: 'older', title: 'Older document', createdAt: '2026-01-01T10:00:00Z' }),
+    doc({ id: 'newer', title: 'Newer document', createdAt: '2026-01-01T11:00:00Z' }),
+  ];
+
+  it('defaults to document production order within a stage', () => {
+    renderTree({ detail: { artifacts } as IntentDetail, stageRows: [row()] });
+
+    expect(
+      screen
+        .getByText('Older document')
+        .compareDocumentPosition(screen.getByText('Newer document')),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('reverses phases, stages, and documents together', () => {
+    const artifacts = [
+      doc({
+        id: 'inception-first',
+        title: 'Inception first',
+        createdByStageInstanceId: 'si-inception-first',
+        createdAt: '2026-01-01T10:00:00Z',
+      }),
+      doc({
+        id: 'inception-last',
+        title: 'Inception last',
+        createdByStageInstanceId: 'si-inception-last',
+        createdAt: '2026-01-01T11:00:00Z',
+      }),
+      doc({
+        id: 'operation',
+        title: 'Operation document',
+        createdByStageInstanceId: 'si-operation',
+        createdAt: '2026-01-01T12:00:00Z',
+      }),
+    ];
+    renderTree({
+      detail: { artifacts } as IntentDetail,
+      stageRows: [
+        row({
+          stageId: 'research',
+          stageInstanceId: 'si-inception-first',
+          phase: '01',
+          order: 1,
+        }),
+        row({
+          stageId: 'requirements-analysis',
+          stageInstanceId: 'si-inception-last',
+          phase: '01',
+          order: 2,
+        }),
+        row({ stageId: 'operate', stageInstanceId: 'si-operation', phase: '03', order: 1 }),
+      ],
+      documentOrder: 'newest-first',
+    });
+
+    expect(
+      screen.getByText('Operation').compareDocumentPosition(screen.getByText('Inception')),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(
+      screen
+        .getByText('Requirements Analysis')
+        .compareDocumentPosition(screen.getByText('Research')),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(
+      screen
+        .getByText('Inception last')
+        .compareDocumentPosition(screen.getByText('Inception first')),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });
 
