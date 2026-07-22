@@ -2,12 +2,12 @@
 
 AIDLC Collaborative integrates with external systems on two independent axes:
 
-- **Code host** — GitHub or GitLab. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub) or merge request (GitLab).
-- **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
+- **Code host** — GitHub, GitLab or Bitbucket. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub / Bitbucket) or merge request (GitLab).
+- **Issue trackers** — GitHub Issues, GitLab Issues, Bitbucket Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
 
 A project can bind to _one_ code host and to _zero or more_ trackers. Both are configured per project in **Project Settings**.
 
-GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues), so you authenticate once per provider. Jira Cloud is a tracker only.
+GitHub, GitLab and Bitbucket each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues / Bitbucket Issues), so you authenticate once per provider. Jira Cloud is a tracker only.
 
 ## Operator setup (one time per deployment)
 
@@ -30,6 +30,7 @@ Each user connects their own GitHub / GitLab / Atlassian account once; the conne
 
 - **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
+- **Bitbucket**: choose **Bitbucket** as the provider in the project-creation flow, then click **Connect Bitbucket** and approve the OAuth flow. The connection requests the `account`, `repository`, `repository:write`, `pullrequest` and `pullrequest:write` scopes. The button stays disabled until your administrator has configured Bitbucket OAuth credentials. Bitbucket access tokens are short-lived (~2h); the platform refreshes them automatically from the stored refresh token, so you don't need to reconnect periodically.
 - **Jira Cloud**: open **Project Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
 
 A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab project (and vice versa). Each project uses the connection matching its selected code host.
@@ -37,9 +38,9 @@ A connection is scoped to its provider: connecting GitHub does not satisfy a Git
 ## Selecting a code repository
 
 1. Click **Create new Project** in the project overview.
-2. Choose the code host — **GitHub** or **GitLab**.
+2. Choose the code host — **GitHub**, **GitLab** or **Bitbucket**.
 3. The platform checks for an active connection to that provider and prompts you to connect if one is missing.
-4. Pick the repository (GitHub) or project (GitLab) that should back the collaborative project.
+4. Pick the repository (GitHub / Bitbucket) or project (GitLab) that should back the collaborative project.
 
 The repository is cloned into the agent workspace and becomes available to the agents while an intent executes. Additional repositories can be added later in **Project Settings → Source Control**.
 
@@ -83,7 +84,7 @@ The Jira and GitLab Issues integrations are **read-only** — the agent never wr
 
 If a provider refresh token is revoked (for example, a user logs out of Atlassian or GitLab, or a workspace admin revokes the app), the tracker panel surfaces a **Reconnect** banner for that provider. The binding is preserved — only the user's authentication needs renewing — so reconnecting restores access without losing the project↔tracker relationship.
 
-For GitLab specifically, routine token expiry does **not** require reconnecting: access tokens are refreshed automatically from the stored refresh token. A reconnect is only needed if that refresh token itself is revoked.
+For GitLab and Bitbucket specifically, routine token expiry does **not** require reconnecting: their short-lived access tokens are refreshed automatically from the stored refresh token. A reconnect is only needed if that refresh token itself is revoked.
 
 ## Migrating from legacy issue integration
 
@@ -111,7 +112,7 @@ Why nothing is removed: this is open source. Downstream forks are on their own u
 
 The platform supports two delivery strategies:
 
-- **Intent PR** — completed unit branches are engine-merged into the intent branch. After shared stages pass, one pull request (GitHub) or merge request (GitLab) opens from intent to base.
+- **Intent PR** — completed unit branches are engine-merged into the intent branch. After shared stages pass, one pull request (GitHub / Bitbucket) or merge request (GitLab) opens from intent to base.
 - **PR per unit** — every changed repository gets a draft unit-to-intent PR/MR. Draft reviews may happen concurrently, but the platform promotes one dependency-ready unit at a time after reconciling it with the latest intent branch. The final intent-to-base PR/MR still opens after all units and shared stages complete.
 
 In the intent view, each unit card shows repository-specific review state and links. Project members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.
