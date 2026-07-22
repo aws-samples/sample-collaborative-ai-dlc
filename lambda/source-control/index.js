@@ -232,7 +232,11 @@ const validateProjectBindings = async ({
         },
         repo.repo,
       );
-      if (!access.canWrite) {
+      // App bindings: the probe reaching the repo is the whole check. GET
+      // /repos `permissions` is user-authority shaped and unreliable for
+      // installation tokens; write authority was proven when the repo-scoped
+      // contents:write token minted (resolveBindingCredential above).
+      if (binding.authType !== 'github-app' && !access.canWrite) {
         throw Object.assign(new Error('Repository write access is no longer available'), {
           code: 'INSUFFICIENT_REPOSITORY_ACCESS',
         });

@@ -124,15 +124,18 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
       ...(workflowsGranted ? { workflows: 'write' } : {}),
     },
   });
+  // The repository probe verifies the installation can SEE the repo (it
+  // throws on 404/403). It must NOT gate on access.canWrite: GET /repos
+  // `permissions` is user-style authority and is unreliable for installation
+  // tokens (absent or all-false even with Contents: Read & write). Write
+  // authority is already proven — validateGitHubAppInstallation required
+  // contents:write and the repo-scoped contents:write mint above succeeded
+  // (GitHub refuses to mint permissions the installation lacks).
   const [access, identity] = await Promise.all([
     getProvider('github').getRepositoryAccess({ token }, repo),
     getGitHubAppIdentity({ secrets, appId }),
   ]);
-  if (!access.canWrite) {
-    throw Object.assign(new Error('GitHub App repository write access is required'), {
-      code: 'INSUFFICIENT_REPOSITORY_ACCESS',
-    });
-  }
+  const appAccess = { ...access, canRead: true, canWrite: true };
   return {
     authType: 'github-app',
     credentialRef: appCredentialRef(discovered.installationId),
@@ -142,7 +145,7 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
     actorName: identity.name,
     actorEmail: identity.email,
     capabilities: {
-      ...capabilitiesFor('github', access),
+      ...capabilitiesFor('github', appAccess),
       workflows: workflowsGranted ? 'write' : 'none',
       appPermissions: validated.permissions,
     },

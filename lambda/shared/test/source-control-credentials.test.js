@@ -107,6 +107,44 @@ describe('verifyGitHubAppBinding without workflows:write', () => {
       }),
     );
   });
+
+  it('does not require user-style push/admin permissions on the repo probe', async () => {
+    validateGitHubAppInstallation.mockResolvedValue({
+      accountLogin: 'my-org',
+      permissions: { contents: 'write', pull_requests: 'write', issues: 'write' },
+      missingOptionalPermissions: ['workflows:write'],
+    });
+    // GET /repos with an installation token: `permissions` is user-authority
+    // shaped and comes back absent/all-false even when the App has
+    // Contents: Read & write — canWrite:false despite full write authority.
+    getProvider.mockReturnValue({
+      getRepositoryAccess: vi
+        .fn()
+        .mockResolvedValue({ canRead: true, canWrite: false, permissions: {} }),
+    });
+
+    const credential = await verifyGitHubAppBinding({ ssm, secrets, repo: 'my-org/repo' });
+
+    expect(credential.capabilities.repositoryWrite).toBe(true);
+    expect(credential.capabilities.contents).toBe('write');
+  });
+
+  it('still fails when the installation cannot see the repository at all', async () => {
+    validateGitHubAppInstallation.mockResolvedValue({
+      accountLogin: 'my-org',
+      permissions: { contents: 'write', pull_requests: 'write', issues: 'write' },
+      missingOptionalPermissions: [],
+    });
+    getProvider.mockReturnValue({
+      getRepositoryAccess: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 })),
+    });
+
+    await expect(verifyGitHubAppBinding({ ssm, secrets, repo: 'my-org/repo' })).rejects.toThrow(
+      /Not Found/,
+    );
+  });
 });
 
 describe('resolveBindingCredential app-binding permission scoping', () => {
