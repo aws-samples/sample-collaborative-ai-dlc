@@ -123,7 +123,7 @@ function useCollaborativeReviewFeedback({
   enabled: boolean;
 }) {
   const docId = enabled ? `intent-review-${intentId}-${humanTaskId}` : null;
-  const { doc, remoteUsers, setCursor } = useYjsDocument(
+  const { doc, synced, awareness, remoteUsers } = useYjsDocument(
     docId,
     userName,
     generateColor(userName || humanTaskId),
@@ -144,6 +144,8 @@ function useCollaborativeReviewFeedback({
     return () => text.unobserve(update);
   }, [doc, docId]);
 
+  // Native-textarea fallback for isolated tests. The production editor binds
+  // directly to this Y.Text and does not call this whole-value setter.
   const setFeedback = useCallback(
     (value: string, cursorPos?: number) => {
       if (!doc || !docId) {
@@ -153,8 +155,7 @@ function useCollaborativeReviewFeedback({
       const text = doc.getText('feedback');
       const current = text.toString();
       if (current === value) return;
-      const cursor = cursorPos ?? value.length;
-      const diff = simpleDiffStringWithCursor(current, value, cursor);
+      const diff = simpleDiffStringWithCursor(current, value, cursorPos ?? value.length);
       doc.transact(() => {
         if (diff.remove > 0) text.delete(diff.index, diff.remove);
         if (diff.insert) text.insert(diff.index, diff.insert);
@@ -168,7 +169,15 @@ function useCollaborativeReviewFeedback({
     [doc, docId, feedback],
   );
 
-  return { feedback, setFeedback, getFeedback, remoteUsers, setCursor };
+  return {
+    feedback,
+    feedbackText: doc.getText('feedback'),
+    setFeedback,
+    getFeedback,
+    synced,
+    awareness,
+    remoteUsers,
+  };
 }
 
 export interface StageReviewPanelProps {
@@ -244,7 +253,7 @@ export function StageReviewPanel({
   );
   const pending = gate.status === 'pending';
   const reviewTitle = `Review ${stage?.stageId ?? gate.humanTaskId}`;
-  const { feedback, setFeedback, getFeedback, remoteUsers, setCursor } =
+  const { feedback, feedbackText, setFeedback, getFeedback, synced, awareness, remoteUsers } =
     useCollaborativeReviewFeedback({
       projectId,
       intentId,
@@ -504,14 +513,14 @@ export function StageReviewPanel({
               <Label htmlFor="review-feedback">Feedback for the agent</Label>
               <CollaborativeTextarea
                 id="review-feedback"
+                yText={feedbackText}
+                awareness={awareness}
                 value={feedback}
                 onChange={setFeedback}
-                onCursorChange={setCursor}
-                remoteUsers={remoteUsers}
                 rows={4}
                 placeholder="What should the agent change before this stage can continue?"
                 className="flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={submitting}
+                disabled={submitting || !synced}
               />
               {remoteUsers.size > 0 && (
                 <div className="flex items-center gap-1">
@@ -621,7 +630,7 @@ export function StageReviewPanel({
                 )}
                 <Button
                   variant="outline"
-                  disabled={submitting || !feedback.trim()}
+                  disabled={submitting || !synced || !feedback.trim()}
                   onClick={() => submit('request-changes')}
                 >
                   Request changes

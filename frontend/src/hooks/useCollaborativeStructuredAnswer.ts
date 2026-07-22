@@ -4,6 +4,7 @@ import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useYjsDocument } from './useYjsDocument';
 import { useAutoSave } from './useAutoSave';
 import { generateColor } from '../utils/colors';
+import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 import type { RealtimeScopeTarget } from '../lib/realtimeToken';
 import type { StructuredAnswer, QuestionAnswer } from '../services/questions';
 
@@ -28,7 +29,7 @@ const scopeTargetFor = (scope: CollabScope): RealtimeScopeTarget =>
  *
  * Yjs document structure:
  *   Y.Map "selections"  – key: sub-question index (string), value: Y.Array<number> (selected option indices)
- *   Y.Map "freeTexts"   – key: sub-question index (string), value: Y.Text (CRDT co-editing)
+ *   Y.Text "freeText:N" – one top-level shared type per sub-question
  *   Y.Map "meta"        – "contributors": Y.Array<string>
  *
  * Selections use Y.Array replaced atomically (last-writer-wins per sub-question).
@@ -42,7 +43,7 @@ export function useCollaborativeStructuredAnswer(
   onAutoSave?: (draft: StructuredAnswer) => Promise<void>,
 ) {
   const docId = docPrefixFor(scope, questionId);
-  const { doc, synced, remoteUsers, setCursor } = useYjsDocument(
+  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(
     docId,
     userName,
     generateColor(userName),
@@ -58,8 +59,10 @@ export function useCollaborativeStructuredAnswer(
     if (!doc) return;
 
     const selectionsMap = doc.getMap('selections');
-    const freeTextsMap = doc.getMap('freeTexts');
     const metaMap = doc.getMap('meta');
+    const textDocs = Array.from({ length: questionCount }, (_, index) =>
+      doc.getText(`freeText:${index}`),
+    );
 
     const updateState = () => {
       // Read selections
@@ -72,9 +75,8 @@ export function useCollaborativeStructuredAnswer(
 
       // Read free texts
       const newFreeTexts = new Map<number, string>();
-      freeTextsMap.forEach((value, key) => {
-        const text = value as Y.Text;
-        newFreeTexts.set(Number(key), text.toString());
+      textDocs.forEach((text, index) => {
+        if (text.length > 0) newFreeTexts.set(index, text.toString());
       });
       setFreeTexts(newFreeTexts);
 
@@ -84,16 +86,16 @@ export function useCollaborativeStructuredAnswer(
     };
 
     selectionsMap.observeDeep(updateState);
-    freeTextsMap.observeDeep(updateState);
+    textDocs.forEach((text) => text.observe(updateState));
     metaMap.observeDeep(updateState);
     updateState();
 
     return () => {
       selectionsMap.unobserveDeep(updateState);
-      freeTextsMap.unobserveDeep(updateState);
+      textDocs.forEach((text) => text.unobserve(updateState));
       metaMap.unobserveDeep(updateState);
     };
-  }, [doc]);
+  }, [doc, questionCount]);
 
   // Track contributor
   const addContributor = useCallback(() => {
@@ -138,15 +140,9 @@ export function useCollaborativeStructuredAnswer(
   const setFreeText = useCallback(
     (questionIndex: number, text: string, cursorPos?: number) => {
       if (!doc) return;
-      const freeTextsMap = doc.getMap('freeTexts');
-      const key = String(questionIndex);
+      const textDoc = doc.getText(`freeText:${questionIndex}`);
 
       doc.transact(() => {
-        let textDoc = freeTextsMap.get(key) as Y.Text | undefined;
-        if (!textDoc) {
-          textDoc = new Y.Text();
-          freeTextsMap.set(key, textDoc);
-        }
         const currentValue = textDoc.toString();
         if (currentValue === text) return;
 
@@ -160,6 +156,11 @@ export function useCollaborativeStructuredAnswer(
     [doc, addContributor],
   );
 
+  const getFreeText = useCallback(
+    (questionIndex: number) => doc.getText(`freeText:${questionIndex}`),
+    [doc],
+  );
+
   /**
    * Initialize from a persisted draft (e.g., from Neptune/DynamoDB).
    * Only sets values if the Yjs fields are currently empty.
@@ -167,24 +168,16 @@ export function useCollaborativeStructuredAnswer(
   const initFromDraft = useCallback(
     (draft: StructuredAnswer) => {
       if (!doc) return;
-      const selectionsMap = doc.getMap('selections');
-      const freeTextsMap = doc.getMap('freeTexts');
-
-      doc.transact(() => {
+      seedYjsDocumentIfEmpty(doc, (seed) => {
+        const selectionsMap = seed.getMap('selections');
         draft.answers.forEach((a, i) => {
           const key = String(i);
-          // Init selections if not already set
-          if (!selectionsMap.has(key) && a.selectedOptions.length > 0) {
+          if (a.selectedOptions.length > 0) {
             const arr = new Y.Array<number>();
             arr.insert(0, a.selectedOptions);
             selectionsMap.set(key, arr);
           }
-          // Init free text if not already set
-          if (!freeTextsMap.has(key) && a.freeText) {
-            const textDoc = new Y.Text();
-            textDoc.insert(0, a.freeText);
-            freeTextsMap.set(key, textDoc);
-          }
+          if (a.freeText) seed.getText(`freeText:${i}`).insert(0, a.freeText);
         });
       });
     },
@@ -238,7 +231,10 @@ export function useCollaborativeStructuredAnswer(
     freeTexts,
     setSelection,
     setFreeText,
+    getFreeText,
+    addContributor,
     synced,
+    awareness,
     remoteUsers,
     setCursor,
     contributors,
