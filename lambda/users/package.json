@@ -10,7 +10,7 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@aws-sdk/credential-providers": "^3.1089.0",
+    "@aws-sdk/credential-providers": "^3.1092.0",
     "@smithy/config-resolver": "^4.6.10",
     "@smithy/node-config-provider": "^3.0.0",
     "gremlin": "^3.8.1",

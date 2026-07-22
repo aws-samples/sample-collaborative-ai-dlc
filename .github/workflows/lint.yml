@@ -34,3 +34,6 @@ jobs:
 
       - name: Run formatter check
         run: npm run format:check
+
+      - name: Check AWS SDK version alignment
+        run: npm run sdk:check

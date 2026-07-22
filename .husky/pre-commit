@@ -7,6 +7,13 @@ set -e
 # Always-available checks (npm devDependencies).
 npx lint-staged
 
+# AWS SDK version alignment: only if a package.json is staged. The script has
+# no dependencies (node:fs only), so no node_modules guard is needed.
+staged_pkg=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)package\.json$' || true)
+if [ -n "$staged_pkg" ]; then
+  npm run sdk:check
+fi
+
 # SCA on production deps. Root deps come with `npm install`, so this always
 # runs. Frontend has its own package.json outside workspaces — skip silently
 # if its node_modules don't exist.
