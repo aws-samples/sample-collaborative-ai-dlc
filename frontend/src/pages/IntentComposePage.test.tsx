@@ -30,6 +30,7 @@ const update = vi.fn();
 const compose = vi.fn();
 const listComposes = vi.fn();
 const composeReportUpload = vi.fn();
+const attachments = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -38,6 +39,7 @@ vi.mock('@/services/intents', () => ({
     compose: (...a: unknown[]) => compose(...a),
     listComposes: (...a: unknown[]) => listComposes(...a),
     composeReportUpload: (...a: unknown[]) => composeReportUpload(...a),
+    attachments: (...a: unknown[]) => attachments(...a),
   },
 }));
 
@@ -69,6 +71,7 @@ vi.mock('@/hooks/useCollaborativeIntentDraft', () => ({
     composedGrid: (draftState.composedGrid as Record<string, 'EXECUTE' | 'SKIP'>) ?? null,
     skipStageIds: (draftState.skipStageIds as string[]) ?? null,
     synced: true,
+    hydrated: (draftState.hydrated as boolean) ?? true,
     remoteUsers: new Map(),
     setCursor: vi.fn(),
     initFromIntent: vi.fn(),
@@ -149,6 +152,7 @@ describe('IntentComposePage', () => {
     compose.mockReset().mockResolvedValue({ composeId: 'c1', state: 'PENDING', mode: 'front' });
     listComposes.mockReset().mockResolvedValue({ composes: [] });
     composeReportUpload.mockReset();
+    attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
     flushDraft.mockReset().mockResolvedValue(undefined);
     reloadIntent.mockReset().mockResolvedValue(undefined);
     setSkipStageIds.mockReset();
@@ -248,6 +252,27 @@ describe('IntentComposePage', () => {
     await screen.findByTestId('scope-summary');
     expect(screen.queryByText('Skip stages')).not.toBeInTheDocument();
     expect(screen.getByTestId('grid-editor-toggle')).toBeInTheDocument();
+  });
+
+  it('disables draft-mutating controls until persisted state is hydrated', async () => {
+    const user = userEvent.setup();
+    draftState.hydrated = false;
+
+    renderPage();
+
+    expect(await screen.findByLabelText('Title')).toBeDisabled();
+    expect(screen.getByLabelText('Prompt')).toBeDisabled();
+    expect(screen.getByRole('combobox')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Attach files' })).toBeDisabled();
+    expect(screen.getByTestId('compose-instructions')).toBeDisabled();
+    expect(screen.getByTestId('compose-start')).toBeDisabled();
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+
+    await user.click(screen.getByTestId('grid-editor-toggle'));
+    const designBox = screen
+      .getByTestId('grid-stage-design')
+      .querySelector('input') as HTMLInputElement;
+    expect(designBox).toBeDisabled();
   });
 
   it('legacy deselections render as SKIP in the grid and are absorbed on the first edit', async () => {

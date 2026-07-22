@@ -388,6 +388,7 @@ export const runParallelSection = async (segment, toolkit) => {
     // Derive-time enrichment mode ('off'|'llm'), snapshotted on META — rides
     // the lane derive-artifacts dispatches like the once-per-workflow hook.
     deriveEnrichment = 'off',
+    attachments = [],
   } = toolkit;
   const { executionId, intentId, projectId } = ids;
   const sk = `s${segment.index}`;
@@ -1604,6 +1605,7 @@ export const runParallelSection = async (segment, toolkit) => {
             intentBranch,
             gitToken: await laneGitToken(),
             gitProvider: cloneBase.gitProvider,
+            attachments,
           },
           laneSession,
         ),

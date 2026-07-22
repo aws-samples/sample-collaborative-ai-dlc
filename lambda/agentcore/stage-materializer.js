@@ -13,6 +13,7 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { attachmentPromptManifest } from './attachments.js';
 import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
 
@@ -140,6 +141,7 @@ export const buildStagePrompt = ({
   knowledge = '',
   conductor = '',
   compiledContext = '',
+  attachments = [],
 }) => {
   const sections = [
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
@@ -165,6 +167,8 @@ export const buildStagePrompt = ({
     sections.push('', '## Execution quality (conductor)', neutralizeHarnessDir(conductor));
   if (agentPersona) sections.push('', '## Your role', neutralizeHarnessDir(agentPersona));
   if (compiledContext) sections.push('', neutralizeHarnessDir(compiledContext));
+  const attachmentManifest = attachmentPromptManifest(attachments);
+  if (attachmentManifest) sections.push('', attachmentManifest);
   // Unit lane: the fan-out scoping must precede the stage prose (which is
   // worded once-per-workflow) so the agent reads its lane boundary first.
   const unitScope = renderUnitScope(unit);
@@ -503,6 +507,7 @@ export const materializeStage = async ({
   customServers = {},
   cli = null,
   customRules = [],
+  attachments = [],
 }) => {
   const aidlcDir = path.join(workspaceDir, '.aidlc');
   await mkdir(aidlcDir, { recursive: true });
@@ -529,6 +534,7 @@ export const materializeStage = async ({
     knowledge,
     conductor,
     compiledContext,
+    attachments,
   });
   return { prompt, ...cliContext, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

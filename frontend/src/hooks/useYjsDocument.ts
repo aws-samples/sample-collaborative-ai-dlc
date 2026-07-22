@@ -17,7 +17,10 @@ import {
 export interface AwarenessUser {
   name: string;
   color: string;
-  cursor?: { index: number; length: number };
+  colorLight?: string;
+  cursor?:
+    | { index: number; length: number }
+    | { anchor: Y.RelativePosition; head: Y.RelativePosition };
   /** Set by discussion inputs — typing indicator. */
   typing?: boolean;
 }
@@ -36,22 +39,18 @@ export function useYjsDocument(
   // though the factory doesn't read documentId (the rule flags it as unnecessary).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const doc = useMemo(() => new Y.Doc(), [documentId]);
-  // Destroy the Y.Doc when it is replaced (documentId change) or on unmount.
-  // The effect below (keyed on [documentId, doc, …]) handles ws/listener cleanup
-  // separately — this only prevents the orphaned Y.Doc memory leak.
-  useEffect(
-    () => () => {
-      doc.destroy();
-    },
-    [doc],
-  );
+  const awareness = useMemo(() => new awarenessProtocol.Awareness(doc), [doc]);
   const [synced, setSynced] = useState(false);
-  const [awareness, setAwareness] = useState<awarenessProtocol.Awareness | null>(null);
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
   const tokenRefreshRef = useRef<number | null>(null);
+  const pendingDestroyRef = useRef<{
+    doc: Y.Doc;
+    awareness: awarenessProtocol.Awareness;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
   // Epoch seconds of the scope token backing the current socket. Used by the
   // visibility/focus backstop to tell whether the proactive refresh timer
   // (below) was throttled while the tab was hidden.
@@ -66,9 +65,9 @@ export function useYjsDocument(
 
     let cancelled = false;
     let reconnectAttempts = 0;
-    const maxReconnectAttempts = 10;
-    const awarenessProt = new awarenessProtocol.Awareness(doc);
-    setAwareness(awarenessProt);
+    const awarenessProt = awareness;
+    setSynced(false);
+    setRemoteUsers(new Map());
 
     // Realtime scope token target: the Yjs server verifies signature, expiry,
     // scope coverage for this doc name, and sub binding at upgrade. Resolved
@@ -80,17 +79,41 @@ export function useYjsDocument(
       return;
     }
 
-    const connect = async () => {
+    let connect: () => Promise<void>;
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimeoutRef.current !== null) return;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+      reconnectAttempts = Math.min(reconnectAttempts + 1, 5);
+      if (import.meta.env.DEV)
+        console.log(`Yjs: reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        connect().catch((error) => {
+          console.error('Yjs reconnect failed:', error);
+          scheduleReconnect();
+        });
+      }, delay);
+    };
+
+    connect = async () => {
       if (cancelled) return;
 
       // Fetch a fresh Cognito ID token on every (re)connect. Cognito ID
       // tokens expire after 1 hour, so reusing a captured token across
       // reconnects would eventually fail the upgrade 401. fetchAuthSession
       // refreshes automatically when the token is near expiry.
-      const session = await authService.getSession();
+      let session;
+      try {
+        session = await authService.getSession();
+      } catch (error) {
+        console.error('Yjs: failed to refresh Cognito session:', error);
+        scheduleReconnect();
+        return;
+      }
       if (cancelled) return;
       if (!session?.idToken) {
         console.error('Yjs: no Cognito session, cannot connect');
+        scheduleReconnect();
         return;
       }
 
@@ -99,17 +122,30 @@ export function useYjsDocument(
         docToken = await getRealtimeToken(target);
       } catch (e) {
         console.error('Yjs: failed to fetch realtime token:', e);
+        scheduleReconnect();
         return;
       }
       if (cancelled) return;
 
       const yjsUrl = realtimeService.getYjsUrl(documentId, session.idToken, docToken.token);
-      const ws = new WebSocket(yjsUrl);
+      let ws;
+      try {
+        ws = new WebSocket(yjsUrl);
+      } catch (error) {
+        console.error('Yjs: failed to open WebSocket:', error);
+        scheduleReconnect();
+        return;
+      }
       wsRef.current = ws;
       ws.binaryType = 'arraybuffer';
 
       if (userName) {
-        awarenessProt.setLocalStateField('user', { name: userName, color: userColor || '#888' });
+        const color = userColor || '#888888';
+        awarenessProt.setLocalStateField('user', {
+          name: userName,
+          color,
+          colorLight: /^#[\da-f]{6}$/i.test(color) ? `${color}33` : color,
+        });
       }
 
       let initialSyncDone = false;
@@ -147,6 +183,17 @@ export function useYjsDocument(
         encoding.writeVarUint(encoder, 0);
         syncProtocol.writeSyncStep1(encoder, doc);
         ws.send(encoding.toUint8Array(encoder));
+
+        // setLocalStateField runs before the socket opens, so its update could
+        // not be sent by awarenessHandler. Publish the complete local state as
+        // part of every successful (re)connect handshake.
+        const awarenessEncoder = encoding.createEncoder();
+        encoding.writeVarUint(awarenessEncoder, 1);
+        encoding.writeVarUint8Array(
+          awarenessEncoder,
+          awarenessProtocol.encodeAwarenessUpdate(awarenessProt, [doc.clientID]),
+        );
+        ws.send(encoding.toUint8Array(awarenessEncoder));
 
         // Do NOT setSynced(true) here — wait until server sync response arrives
 
@@ -193,9 +240,19 @@ export function useYjsDocument(
       };
 
       ws.onclose = (event) => {
+        if (cancelled) return;
         if (import.meta.env.DEV) console.log('Yjs WebSocket closed:', event.code, event.reason);
         setSynced(false);
-        if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        const remoteClientIds = [...awarenessProt.getStates().keys()].filter(
+          (clientId) => clientId !== doc.clientID,
+        );
+        if (remoteClientIds.length) {
+          awarenessProtocol.removeAwarenessStates(awarenessProt, remoteClientIds, ws);
+        }
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
         if (tokenRefreshRef.current) {
           clearTimeout(tokenRefreshRef.current);
           tokenRefreshRef.current = null;
@@ -206,16 +263,7 @@ export function useYjsDocument(
         // fresh token instead of replaying the cached one.
         if (event.code === 4401) invalidateRealtimeToken(target);
 
-        // Reconnect with exponential backoff
-        if (reconnectAttempts < maxReconnectAttempts) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-          reconnectAttempts++;
-          if (import.meta.env.DEV)
-            console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
-          reconnectTimeoutRef.current = window.setTimeout(() => {
-            connect().catch((e) => console.error('Yjs reconnect failed:', e));
-          }, delay);
-        }
+        scheduleReconnect();
       };
 
       ws.onerror = (event) => console.error('Yjs WebSocket error:', event);
@@ -294,9 +342,19 @@ export function useYjsDocument(
       window.removeEventListener('focus', refreshIfStale);
       document.removeEventListener('visibilitychange', refreshIfStale);
       awarenessProtocol.removeAwarenessStates(awarenessProt, [doc.clientID], 'disconnect');
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      if (tokenRefreshRef.current) clearTimeout(tokenRefreshRef.current);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      if (tokenRefreshRef.current) {
+        clearTimeout(tokenRefreshRef.current);
+        tokenRefreshRef.current = null;
+      }
+      tokenExpRef.current = null;
       wsRef.current?.close();
       wsRef.current = null;
     };
@@ -304,7 +362,35 @@ export function useYjsDocument(
     // (same identity across renders for a given doc) and re-running on a new
     // object reference would needlessly recycle the socket.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, doc, userName, userColor]);
+  }, [documentId, doc, awareness, userName, userColor]);
+
+  // Registered after the connection effect so its cleanup runs only after the
+  // socket listeners have released the old document and awareness instance.
+  // Destruction is deferred by one task so React Strict Mode's development
+  // cleanup/setup replay can cancel it and safely reuse these memoized objects.
+  useEffect(() => {
+    const pending = pendingDestroyRef.current;
+    if (pending?.doc === doc && pending.awareness === awareness) {
+      clearTimeout(pending.timer);
+      pendingDestroyRef.current = null;
+    }
+
+    return () => {
+      const timer = setTimeout(() => {
+        awareness.destroy();
+        doc.destroy();
+        const current = pendingDestroyRef.current;
+        if (current?.doc === doc && current.awareness === awareness && current.timer === timer) {
+          pendingDestroyRef.current = null;
+        }
+      }, 0);
+      pendingDestroyRef.current = {
+        doc,
+        awareness,
+        timer,
+      };
+    };
+  }, [awareness, doc]);
 
   const setCursor = useCallback(
     (index: number, length: number = 0) => {

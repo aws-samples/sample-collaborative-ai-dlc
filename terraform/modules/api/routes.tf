@@ -1121,6 +1121,24 @@ resource "aws_api_gateway_resource" "intent_composes" {
   path_part   = "composes"
 }
 
+resource "aws_api_gateway_resource" "intent_attachments" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "attachments"
+}
+
+resource "aws_api_gateway_resource" "intent_attachment_upload" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_attachments.id
+  path_part   = "upload"
+}
+
+resource "aws_api_gateway_resource" "intent_attachment" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_attachments.id
+  path_part   = "{attachmentId}"
+}
+
 # In-flight reshape: replace the run's projection with a new composed grid and
 # relaunch at the first not-yet-done stage (retire-and-relaunch, like rewind).
 resource "aws_api_gateway_resource" "intent_recompose" {
@@ -1261,29 +1279,32 @@ resource "aws_api_gateway_resource" "intent_quorum_edit_decision" {
 
 locals {
   intent_routes = {
-    collection_get  = { resource = aws_api_gateway_resource.intents.id, method = "GET" }
-    collection_post = { resource = aws_api_gateway_resource.intents.id, method = "POST" }
-    metrics_get     = { resource = aws_api_gateway_resource.intents_metrics.id, method = "GET" }
-    item_get        = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
-    item_patch      = { resource = aws_api_gateway_resource.intent.id, method = "PATCH" }
-    item_delete     = { resource = aws_api_gateway_resource.intent.id, method = "DELETE" }
-    graph_get       = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
-    audit_get       = { resource = aws_api_gateway_resource.intent_audit.id, method = "GET" }
-    derive_post     = { resource = aws_api_gateway_resource.intent_derive.id, method = "POST" }
-    outputs_get     = { resource = aws_api_gateway_resource.intent_outputs.id, method = "GET" }
-    start_post      = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
-    cancel_post     = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
-    rewind_post     = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
-    repair_post     = { resource = aws_api_gateway_resource.intent_repair.id, method = "POST" }
-    compose_post    = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
-    compose_upload  = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
-    composes_get    = { resource = aws_api_gateway_resource.intent_composes.id, method = "GET" }
-    recompose_post  = { resource = aws_api_gateway_resource.intent_recompose.id, method = "POST" }
-    token_post      = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
-    feedback_get    = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "GET" }
-    feedback_post   = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "POST" }
-    answer_post     = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
-    revise_post     = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
+    collection_get         = { resource = aws_api_gateway_resource.intents.id, method = "GET" }
+    collection_post        = { resource = aws_api_gateway_resource.intents.id, method = "POST" }
+    metrics_get            = { resource = aws_api_gateway_resource.intents_metrics.id, method = "GET" }
+    item_get               = { resource = aws_api_gateway_resource.intent.id, method = "GET" }
+    item_patch             = { resource = aws_api_gateway_resource.intent.id, method = "PATCH" }
+    item_delete            = { resource = aws_api_gateway_resource.intent.id, method = "DELETE" }
+    graph_get              = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
+    audit_get              = { resource = aws_api_gateway_resource.intent_audit.id, method = "GET" }
+    derive_post            = { resource = aws_api_gateway_resource.intent_derive.id, method = "POST" }
+    outputs_get            = { resource = aws_api_gateway_resource.intent_outputs.id, method = "GET" }
+    start_post             = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
+    cancel_post            = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
+    rewind_post            = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
+    repair_post            = { resource = aws_api_gateway_resource.intent_repair.id, method = "POST" }
+    compose_post           = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
+    compose_upload         = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
+    composes_get           = { resource = aws_api_gateway_resource.intent_composes.id, method = "GET" }
+    attachments_get        = { resource = aws_api_gateway_resource.intent_attachments.id, method = "GET" }
+    attachment_upload_post = { resource = aws_api_gateway_resource.intent_attachment_upload.id, method = "POST" }
+    attachment_delete      = { resource = aws_api_gateway_resource.intent_attachment.id, method = "DELETE" }
+    recompose_post         = { resource = aws_api_gateway_resource.intent_recompose.id, method = "POST" }
+    token_post             = { resource = aws_api_gateway_resource.intent_realtime_token.id, method = "POST" }
+    feedback_get           = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "GET" }
+    feedback_post          = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "POST" }
+    answer_post            = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
+    revise_post            = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
     # Post-hoc artifact editing (human + Quorum-supported).
     artifact_impact_get   = { resource = aws_api_gateway_resource.intent_artifact_impact.id, method = "GET" }
     artifact_content_put  = { resource = aws_api_gateway_resource.intent_artifact_content.id, method = "PUT" }
@@ -1324,6 +1345,24 @@ module "cors_intents_metrics" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intents_metrics.id
+}
+
+module "cors_intent_attachments" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_attachments.id
+}
+
+module "cors_intent_attachment_upload" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_attachment_upload.id
+}
+
+module "cors_intent_attachment" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_attachment.id
 }
 
 module "cors_intent" {
