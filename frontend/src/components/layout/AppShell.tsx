@@ -37,6 +37,8 @@ const NON_WORK_SUFFIXES = ['/graph', '/audit', '/compose', '/observability'];
 export function shouldDefaultOpen(pathname: string): boolean {
   // Sprint routes are always work routes.
   if (/\/sprint\//.test(pathname)) return true;
+  // Intent creation is a focused form, not an active intent workspace.
+  if (/\/intent\/new(?:\/|$)/.test(pathname)) return false;
   // Intent routes: open unless the path ends with a non-work section.
   if (/\/intent\//.test(pathname)) {
     return !NON_WORK_SUFFIXES.some((suffix) => pathname.endsWith(suffix));
