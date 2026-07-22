@@ -20,6 +20,7 @@ import {
 import { AlertTriangle } from 'lucide-react';
 import { getTimeAgo } from '@/lib/timeAgo';
 import { nodeTypeTextColor, shortNodeType } from '@/components/graph/nodeStyles';
+import { DerivedItemRow } from '@/components/intent/DerivedItemRow';
 import {
   onWorkProductFocus,
   scrollAndFlash,
@@ -256,7 +257,7 @@ export function ProvenanceTree({
                           {isExpanded && hasItems && (
                             <div className="space-y-0.5 pl-5">
                               {visibleItems.map((item) => (
-                                <ItemRow
+                                <DerivedItemRow
                                   key={item.id}
                                   item={item}
                                   getNeighbors={getNeighbors}
@@ -306,7 +307,7 @@ export function ProvenanceTree({
         >
           <div className="space-y-0.5 pl-5">
             {unlinkedItems.map((item) => (
-              <ItemRow
+              <DerivedItemRow
                 key={item.id}
                 item={item}
                 getNeighbors={getNeighbors}
@@ -456,50 +457,6 @@ function DocumentRow({
       <ArtifactHistoryDrawer artifact={doc} />
       <IntentGraphPopover neighbors={getNeighbors(doc.id)} className="shrink-0" />
       <DiscussButton entityType="artifact" entityId={doc.id} entityTitle={doc.title || doc.id} />
-    </div>
-  );
-}
-
-function ItemRow({
-  item,
-  getNeighbors,
-  onPreview,
-}: {
-  item: IntentGraphNode;
-  getNeighbors: (id: string) => GraphNeighbor[];
-  onPreview: () => void;
-}) {
-  return (
-    <div
-      id={`item-${item.id}`}
-      role="button"
-      tabIndex={0}
-      className="group/item flex items-center gap-1.5 rounded-md px-2 py-1 scroll-mt-4 cursor-pointer hover:bg-muted/50 transition-colors"
-      onClick={onPreview}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onPreview();
-        }
-      }}
-    >
-      <ChevronRight
-        className={cn('h-3 w-3 shrink-0', nodeTypeTextColor(item.type))}
-        strokeWidth={3}
-      />
-      <span className="min-w-0 flex-1 truncate text-sm">{item.label}</span>
-      {item.priority && (
-        <Badge variant="secondary" className="h-4 px-1 text-[9px] shrink-0">
-          {item.priority}
-        </Badge>
-      )}
-      <IntentGraphPopover neighbors={getNeighbors(item.id)} className="shrink-0" />
-      <DiscussButton
-        entityType="item"
-        entityId={item.id}
-        entityTitle={item.label}
-        className="shrink-0"
-      />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { useIntentGraph } from '@/hooks/useIntentGraph';
 import { useYjsDocument } from '@/hooks/useYjsDocument';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
+import { DerivedItemRow } from '@/components/intent/DerivedItemRow';
 import { scrollAndFlash } from '@/components/intent/workProductsFocus';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -191,7 +192,7 @@ export function StageReviewPanel({
   onBack,
 }: StageReviewPanelProps) {
   const [submitting, setSubmitting] = useState(false);
-  const { stageNameOf } = useIntent();
+  const { stageNameOf, openItemPreview } = useIntent();
   // Gate-time "skip to stage X" (stage-skip.js): the backend computed the
   // valid forward targets (every intermediate is CONDITIONAL); '' = none.
   // Rides the approve answer as { decision: 'approve', skipTo } and is
@@ -455,17 +456,15 @@ export function StageReviewPanel({
                       {reviewItemGroupLabel(type)}
                       <span className="ml-1.5 font-normal">({items.length})</span>
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="space-y-0.5">
                       {items.map((item) => (
-                        <Badge
+                        <DerivedItemRow
                           key={item.id}
-                          variant="outline"
-                          className="max-w-full truncate"
-                          title={item.slug ? `${item.slug}: ${item.label}` : item.label}
-                        >
-                          {item.slug ? `${item.slug}: ` : ''}
-                          {item.label}
-                        </Badge>
+                          item={item}
+                          getNeighbors={graph.getNeighbors}
+                          onPreview={() => openItemPreview(item.id)}
+                          showGraph={false}
+                        />
                       ))}
                     </div>
                   </div>

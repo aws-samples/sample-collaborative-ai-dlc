@@ -410,7 +410,12 @@ describe('IntentView', () => {
       .find((b) => b.hasAttribute('aria-expanded'))!;
     expect(identified).toHaveAttribute('aria-expanded', 'false');
     await userEvent.click(identified);
-    expect(await screen.findByText(/REQ-1:/)).toBeInTheDocument();
+    expect(await screen.findByText('MFA is required for sign in')).toBeInTheDocument();
+    const itemDiscuss = screen
+      .getAllByTestId('discuss')
+      .find((button) => button.getAttribute('data-entity') === 'item');
+    expect(itemDiscuss).toHaveAttribute('data-entity-id', 'req-1');
+    expect(itemDiscuss).toHaveAttribute('data-entity-title', 'MFA is required for sign in');
     expect(screen.getByRole('button', { name: /Reviewer Agent findings/i })).toHaveAttribute(
       'aria-expanded',
       'false',
