@@ -157,11 +157,24 @@ const PEM_CACHE_TTL_MS = 15 * 60 * 1000;
 const REQUIRED_GITHUB_APP_PERMISSIONS = Object.freeze({
   contents: 'write',
   pull_requests: 'write',
-  workflows: 'write',
   issues: 'write',
   metadata: 'read',
 });
+// Recommended but not blocking: an installation without workflows:write can
+// still bind — the agent just cannot touch files under .github/workflows/.
+// Reported back so the binding stores the reduced capability and the UI warns.
+const OPTIONAL_GITHUB_APP_PERMISSIONS = Object.freeze({
+  workflows: 'write',
+});
 const PERMISSION_RANK = Object.freeze({ read: 1, write: 2 });
+
+const permissionShortfalls = (granted, wanted) =>
+  Object.entries(wanted)
+    .filter(
+      ([permission, required]) =>
+        (PERMISSION_RANK[granted[permission]] ?? 0) < (PERMISSION_RANK[required] ?? 0),
+    )
+    .map(([permission, required]) => `${permission}:${required}`);
 
 // Drop all App-auth caches. Called by the admin config endpoint after the
 // private key / App config changes so the validation probe (and subsequent
@@ -375,18 +388,23 @@ const getInstallationReadToken = async ({ secrets, appId, installationId, fetchI
 
 const validateGitHubAppInstallation = async (secrets, appId, installationId) => {
   const details = await getInstallationDetails(secrets, appId, installationId);
-  const missingPermissions = Object.entries(REQUIRED_GITHUB_APP_PERMISSIONS)
-    .filter(
-      ([permission, required]) =>
-        (PERMISSION_RANK[details.permissions[permission]] ?? 0) < (PERMISSION_RANK[required] ?? 0),
-    )
-    .map(([permission, required]) => `${permission}:${required}`);
+  const missingPermissions = permissionShortfalls(
+    details.permissions,
+    REQUIRED_GITHUB_APP_PERMISSIONS,
+  );
   if (missingPermissions.length > 0) {
     throw new Error(
       `GitHub App installation is missing required permissions: ${missingPermissions.join(', ')}`,
     );
   }
-  return { accountLogin: details.login, permissions: details.permissions };
+  return {
+    accountLogin: details.login,
+    permissions: details.permissions,
+    missingOptionalPermissions: permissionShortfalls(
+      details.permissions,
+      OPTIONAL_GITHUB_APP_PERMISSIONS,
+    ),
+  };
 };
 
 const getInstallationToken = async ({
@@ -502,6 +520,7 @@ export {
   listAppInstallations,
   validateGitHubAppInstallation,
   REQUIRED_GITHUB_APP_PERMISSIONS,
+  OPTIONAL_GITHUB_APP_PERMISSIONS,
   buildAppJwt,
   getAppPrivateKey,
   clearAppAuthCaches,
@@ -520,6 +539,7 @@ export default {
   listAppInstallations,
   validateGitHubAppInstallation,
   REQUIRED_GITHUB_APP_PERMISSIONS,
+  OPTIONAL_GITHUB_APP_PERMISSIONS,
   buildAppJwt,
   getAppPrivateKey,
   clearAppAuthCaches,

@@ -263,6 +263,15 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
                     Write verified
                   </Badge>
                 )}
+                {repository.status === 'active' &&
+                  repository.authType === 'github-app' &&
+                  repository.capabilities.workflows !== 'write' && (
+                    <span className="flex w-full items-start gap-1.5 pl-5 text-[11px] text-amber-700 dark:text-amber-300">
+                      <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                      The GitHub App installation does not grant Workflows read &amp; write — the
+                      agent cannot create or modify files under .github/workflows/.
+                    </span>
+                  )}
                 {(repository.delegatedBy || repository.installationAccount || repository.actor) && (
                   <span className="text-muted-foreground">
                     {repository.delegatedBy || repository.installationAccount || repository.actor}

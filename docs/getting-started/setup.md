@@ -131,7 +131,7 @@ The connection requests `repo`, `workflow`, and `read:user`. Existing users must
 
 For **GitHub App**:
 
-1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Workflows: Read & write**, **Issues: Read & write**, and metadata read access. No callback URL or webhook is needed.
+1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Issues: Read & write**, and metadata read access. No callback URL or webhook is needed. **Workflows: Read & write** is recommended but optional — without it a binding still verifies, but the agent cannot create or modify files under `.github/workflows/` and the project settings page shows a warning.
 2. Generate a **private key** (PEM) and note the **App ID**.
 3. Install the App on each personal account or organization whose repositories projects may bind.
 4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID and private key, then click **Save**. Installation IDs are discovered per repository when a project is bound.

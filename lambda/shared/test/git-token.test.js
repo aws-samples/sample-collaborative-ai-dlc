@@ -286,3 +286,67 @@ describe('getInstallationToken', () => {
     expect(mintBody.permissions).toEqual({ contents: 'read' });
   });
 });
+
+describe('validateGitHubAppInstallation', () => {
+  let validateGitHubAppInstallation;
+  const app = { appId: '12345', installationId: '67890' };
+  const { privateKey: testPrivateKeyPem } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+
+  const stubInstallation = (permissions) => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ account: { login: 'my-org' }, permissions }),
+    }));
+  };
+
+  beforeEach(async () => {
+    secretsMock.reset();
+    delete globalThis.fetch;
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY_SECRET_NAME', 'test/app-key');
+    vi.resetModules();
+    ({ validateGitHubAppInstallation } = await import('../git-token.js'));
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ privateKey: testPrivateKeyPem }),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    delete globalThis.fetch;
+  });
+
+  it('throws when a required permission is missing', async () => {
+    stubInstallation({ pull_requests: 'write', issues: 'write', metadata: 'read' });
+    await expect(
+      validateGitHubAppInstallation(secrets, app.appId, app.installationId),
+    ).rejects.toThrow(/missing required permissions: contents:write/);
+  });
+
+  it('accepts an installation without workflows:write and reports the shortfall', async () => {
+    stubInstallation({
+      contents: 'write',
+      pull_requests: 'write',
+      issues: 'write',
+      metadata: 'read',
+    });
+    const validated = await validateGitHubAppInstallation(secrets, app.appId, app.installationId);
+    expect(validated.accountLogin).toBe('my-org');
+    expect(validated.missingOptionalPermissions).toEqual(['workflows:write']);
+  });
+
+  it('reports no optional shortfall when workflows:write is granted', async () => {
+    stubInstallation({
+      contents: 'write',
+      pull_requests: 'write',
+      workflows: 'write',
+      issues: 'write',
+      metadata: 'read',
+    });
+    const validated = await validateGitHubAppInstallation(secrets, app.appId, app.installationId);
+    expect(validated.missingOptionalPermissions).toEqual([]);
+  });
+});

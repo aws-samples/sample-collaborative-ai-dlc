@@ -109,11 +109,20 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
     repository: repo,
   });
   const validated = await validateGitHubAppInstallation(secrets, appId, discovered.installationId);
+  // workflows:write is recommended, not required — an installation without it
+  // binds fine but the agent cannot modify .github/workflows/ files. Never
+  // request a permission the installation lacks: GitHub rejects the mint.
+  const workflowsGranted = !validated.missingOptionalPermissions?.includes('workflows:write');
   const token = await getInstallationToken({
     secrets,
     appId,
     installationId: discovered.installationId,
     repositories: [repo],
+    permissions: {
+      contents: 'write',
+      pull_requests: 'write',
+      ...(workflowsGranted ? { workflows: 'write' } : {}),
+    },
   });
   const [access, identity] = await Promise.all([
     getProvider('github').getRepositoryAccess({ token }, repo),
@@ -134,6 +143,7 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
     actorEmail: identity.email,
     capabilities: {
       ...capabilitiesFor('github', access),
+      workflows: workflowsGranted ? 'write' : 'none',
       appPermissions: validated.permissions,
     },
   };
@@ -190,6 +200,9 @@ const resolveBindingCredential = async ({
         code: 'BINDING_INVALID',
       });
     }
+    // Only request workflows:write when the verified binding recorded the
+    // grant — asking for a permission the installation lacks makes GitHub
+    // reject the whole mint.
     token = await getInstallationToken({
       secrets,
       appId,
@@ -202,7 +215,7 @@ const resolveBindingCredential = async ({
               contents: 'write',
               pull_requests: 'write',
               issues: 'write',
-              workflows: 'write',
+              ...(binding.capabilities?.workflows === 'write' ? { workflows: 'write' } : {}),
             },
     });
     username = 'x-access-token';
