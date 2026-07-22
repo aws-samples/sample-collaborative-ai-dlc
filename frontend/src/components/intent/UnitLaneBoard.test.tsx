@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { UnitLaneBoardView, isFanoutActive } from './UnitLaneBoard';
+import { UnitLaneBoardView, isBeforeConstructionPhase, isFanoutActive } from './UnitLaneBoard';
 import type { IntentUnit, IntentUnitPlan, UnitState } from '@/services/intents';
+import type { PhaseNode } from '@/services/workflows';
 
 const unit = (slug: string, state: UnitState, over: Partial<IntentUnit> = {}): IntentUnit => ({
   slug,
@@ -38,6 +39,33 @@ const units: IntentUnit[] = [
   unit('billing', 'RUNNING', { dependsOn: ['auth'], startedAt: '2026-01-01T00:00:00Z' }),
   unit('ui', 'BLOCKED', { dependsOn: ['auth'], blockedOn: 'waiting for merge slot' }),
   unit('reporting', 'PENDING', { dependsOn: ['billing', 'ui'] }),
+];
+
+const phases: PhaseNode[] = [
+  {
+    phaseId: 'inception',
+    name: 'Inception',
+    kind: 'phase',
+    path: '01',
+    parentPath: null,
+    order: 1,
+  },
+  {
+    phaseId: 'construction',
+    name: 'Construction',
+    kind: 'phase',
+    path: '02',
+    parentPath: null,
+    order: 2,
+  },
+  {
+    phaseId: 'operation',
+    name: 'Operation',
+    kind: 'phase',
+    path: '03',
+    parentPath: null,
+    order: 3,
+  },
 ];
 
 const renderView = (over: Partial<React.ComponentProps<typeof UnitLaneBoardView>> = {}) =>
@@ -377,5 +405,17 @@ describe('isFanoutActive', () => {
         ],
       }),
     ).toBe(true);
+  });
+});
+
+describe('isBeforeConstructionPhase', () => {
+  it('hides units during inception, then shows them from construction onward', () => {
+    expect(isBeforeConstructionPhase('01', phases)).toBe(true);
+    expect(isBeforeConstructionPhase('02', phases)).toBe(false);
+    expect(isBeforeConstructionPhase('03', phases)).toBe(false);
+  });
+
+  it('does not hide units when phase metadata is unavailable', () => {
+    expect(isBeforeConstructionPhase('01', null)).toBe(false);
   });
 });
