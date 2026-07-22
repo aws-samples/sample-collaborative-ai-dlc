@@ -588,6 +588,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           workflowVersion,
           scope,
           startedBy: meta.startedBy,
+          attachments: meta.attachments ?? [],
         },
         sessionId,
       ),
@@ -783,6 +784,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       meta.mcpServersByTier ??
       (meta.customMcpServers ? { global: {}, project: meta.customMcpServers } : null);
     const customRules = meta.customRules ?? null;
+    const attachments = Array.isArray(meta.attachments) ? meta.attachments : [];
     // Derive-time graph enrichment mode ('off'|'llm'), snapshotted onto META at
     // create from the Admin SSM setting; forwarded in the derive-artifacts
     // payload so the container needs no redeploy (and no SSM read) to honour it.
@@ -849,6 +851,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         requestedCli,
         mcpServersByTier,
         customRules,
+        attachments,
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
         freshGitToken,
@@ -1038,6 +1041,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       requestedCli,
       cliModels,
       tierModels,
+      attachments,
       deriveEnrichment,
       prStrategy: meta.prStrategy ?? 'intent-pr',
       unitPrProvider,
@@ -1586,6 +1590,7 @@ const runStage = async (
     requestedCli,
     mcpServersByTier,
     customRules,
+    attachments,
     sessionId,
     cloneInputs,
     freshGitToken,
@@ -1633,6 +1638,7 @@ const runStage = async (
         ...(requestedCli ? { requestedCli } : {}),
         ...(mcpServersByTier ? { mcpServersByTier } : {}),
         ...(customRules ? { customRules } : {}),
+        ...(attachments ? { attachments } : {}),
         // repos/branch/baseBranch/gitToken/gitProvider — for source self-heal.
         // The token is re-resolved at dispatch time (inside this step): a
         // GitHub-App installation token from the run-start snapshot would be

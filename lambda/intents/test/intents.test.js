@@ -28,6 +28,12 @@ import {
   InvokeAgentRuntimeCommand,
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import {
+  CopyObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 // Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
@@ -52,6 +58,8 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 const lambdaMock = mockClient(LambdaClient);
 const ssmMock = mockClient(SSMClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
+const s3Mock = mockClient(S3Client);
+let attachmentUpdateConflict = null;
 
 // In-memory single-table fake for the v2 process table + blocks table.
 const procStore = new Map();
@@ -174,6 +182,23 @@ const installDdbFakes = () => {
     ) {
       casFail();
     }
+    if (
+      cond.includes(':ifAttachmentRevision') &&
+      existing?.attachmentRevision !== undefined &&
+      existing.attachmentRevision !== values[':ifAttachmentRevision']
+    ) {
+      casFail();
+    }
+    if (attachmentUpdateConflict && cond.includes(':ifAttachmentRevision')) {
+      const conflict = attachmentUpdateConflict;
+      attachmentUpdateConflict = null;
+      procStore.set(k, {
+        ...existing,
+        attachmentRevision: Number(existing.attachmentRevision ?? 0) + 1,
+        attachments: [...(existing.attachments ?? []), conflict.concurrentAttachment],
+      });
+      casFail();
+    }
     const next = { ...(existing || { pk: input.Key.pk, sk: input.Key.sk }) };
     // Generic SET applier: "SET a = :x, b = :y, #n = :z" (names resolved).
     const setMatch = /SET (.+)$/.exec(input.UpdateExpression || '');
@@ -211,6 +236,7 @@ const installDdbFakes = () => {
   lambdaMock.on(StopDurableExecutionCommand).resolves({
     StopTimestamp: new Date('2026-07-17T00:00:00.000Z'),
   });
+  s3Mock.reset();
 };
 
 // Seed a HUMAN# gate row straight into the fake table (the runtime writes these;
@@ -252,6 +278,7 @@ beforeAll(async () => {
   vi.stubEnv('V2_ORCHESTRATOR_FUNCTION', 'orchestrator-test');
   vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
+  vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
   ({ handler } = await import('../index.js'));
 
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
@@ -276,6 +303,7 @@ beforeEach(() => {
   installDdbFakes();
   ssmMock.reset();
   agentcoreMock.reset();
+  attachmentUpdateConflict = null;
   archiveArtifactsSpy.mockClear();
 });
 
@@ -387,6 +415,86 @@ const createIntent = async (
   });
   return res;
 };
+
+describe('S3 attachment ingestion', () => {
+  it('retries a conflicting attachment revision, deleting the losing copied version', async () => {
+    const intentId = `intent-${randomUUID()}`;
+    const attachmentId = `attachment-${randomUUID()}`;
+    const key = `intent-attachments/staging/${intentId}/${attachmentId}.md`;
+    const concurrentAttachment = {
+      attachmentId: 'concurrent',
+      filename: 'concurrent.md',
+      mimeType: 'text/markdown',
+      size: 4,
+      s3Key: `intent-attachments/committed/${intentId}/concurrent.md`,
+      s3VersionId: 'concurrent-version',
+    };
+    procStore.set(keyOf(`EXEC#${intentId}`, 'META'), {
+      pk: `EXEC#${intentId}`,
+      sk: 'META',
+      status: 'DRAFT',
+      projectId: 'p1',
+      attachmentRevision: 0,
+      attachments: [],
+      pendingAttachmentUploads: [
+        {
+          attachmentId,
+          filename: 'notes.md',
+          mimeType: 'text/markdown',
+          size: 42,
+          s3Key: key,
+          uploadedBy: 'u1',
+          expiresAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    attachmentUpdateConflict = { concurrentAttachment };
+    s3Mock.on(HeadObjectCommand).resolves({
+      ContentType: 'text/markdown',
+      ContentLength: 42,
+      VersionId: 'staging-version',
+    });
+    s3Mock
+      .on(CopyObjectCommand)
+      .resolvesOnce({ VersionId: 'losing-copy-version' })
+      .resolvesOnce({ VersionId: 'committed-version' });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await expect(
+      handler({
+        source: 'aws.s3',
+        detail: {
+          bucket: { name: 'artifacts-test' },
+          object: { key, 'version-id': 'staging-version' },
+        },
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(s3Mock.commandCalls(DeleteObjectCommand).map((call) => call.args[0].input)).toEqual([
+      {
+        Bucket: 'artifacts-test',
+        Key: `intent-attachments/committed/${intentId}/${attachmentId}.md`,
+        VersionId: 'losing-copy-version',
+      },
+      {
+        Bucket: 'artifacts-test',
+        Key: key,
+        VersionId: 'staging-version',
+      },
+    ]);
+    const meta = procStore.get(keyOf(`EXEC#${intentId}`, 'META'));
+    expect(meta.attachmentRevision).toBe(2);
+    expect(meta.pendingAttachmentUploads).toEqual([]);
+    expect(meta.attachments).toEqual([
+      concurrentAttachment,
+      expect.objectContaining({
+        attachmentId,
+        s3Key: `intent-attachments/committed/${intentId}/${attachmentId}.md`,
+        s3VersionId: 'committed-version',
+      }),
+    ]);
+  });
+});
 
 describe('POST /projects/{id}/intents', () => {
   it('creates a DRAFT intent, pinning the workflow latest version', async () => {

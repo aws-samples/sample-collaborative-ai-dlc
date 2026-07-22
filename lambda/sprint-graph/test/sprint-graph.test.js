@@ -4,6 +4,7 @@ import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 
 const PARTITION = `t-${randomUUID()}`;
+const USER_ID = `u-${randomUUID()}`;
 
 let handler;
 let conn;
@@ -36,7 +37,34 @@ beforeEach(async () => {
   await g.V().drop().next();
 });
 
-const addSprint = async (sprintId) => g.addV('Sprint').property('id', sprintId).next();
+const addSprint = async (sprintId) => {
+  const projectId = `p-${randomUUID()}`;
+  await g.addV('Project').property('id', projectId).next();
+  await g.addV('User').property('id', USER_ID).next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .V()
+    .has('User', 'id', USER_ID)
+    .as('u')
+    .addE('HAS_MEMBER')
+    .from_('p')
+    .to('u')
+    .property('role', 'owner')
+    .next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .addV('Sprint')
+    .property('id', sprintId)
+    .as('s')
+    .addE('HAS_SPRINT')
+    .from_('p')
+    .to('s')
+    .next();
+};
 
 // containment is one of: CONTAINS, HAS_REVIEW, HAS_PR, HAS_AGENT_RUN
 const addContained = async (sprintId, label, props, containment = 'CONTAINS') => {
@@ -65,7 +93,12 @@ const addEdge = async (fromLabel, fromId, edge, toLabel, toId) => {
     .next();
 };
 
-const invoke = (sprintId) => handler({ httpMethod: 'GET', pathParameters: { sprintId } });
+const invoke = (sprintId, sub = USER_ID) =>
+  handler({
+    httpMethod: 'GET',
+    pathParameters: { sprintId },
+    requestContext: { authorizer: { claims: { sub } } },
+  });
 
 describe('OPTIONS', () => {
   it('short-circuits with 200', async () => {
@@ -82,6 +115,13 @@ describe('GET /sprint-graph', () => {
     const res = await invoke(sprintId);
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ nodes: [], edges: [] });
+  });
+
+  it('rejects a signed-in non-member', async () => {
+    const sprintId = `s-${randomUUID()}`;
+    await addSprint(sprintId);
+    const res = await invoke(sprintId, 'outsider');
+    expect(res.statusCode).toBe(403);
   });
 
   it('uses the title → file_path → agent_type → status → "(unnamed)" label fallback chain', async () => {

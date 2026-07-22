@@ -270,97 +270,103 @@ resource "aws_iam_role_policy" "agentcore" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        # Pull the container image.
-        Effect   = "Allow"
-        Action   = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
-        Resource = aws_ecr_repository.agentcore.arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ecr:GetAuthorizationToken"]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
-        Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
-      },
-      {
-        # Business graph (Neptune) read + write.
-        Effect   = "Allow"
-        Action   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:connect"]
-        Resource = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
-      },
-      {
-        # v2 process state table (+ its indexes) and the blocks table (read).
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan"]
-        Resource = compact([
-          aws_dynamodb_table.v2_executions.arn,
-          "${aws_dynamodb_table.v2_executions.arn}/index/*",
-          var.blocks_table_arn,
-          var.blocks_table_arn != "" ? "${var.blocks_table_arn}/index/*" : "",
-          var.connections_table_arn,
-          var.connections_table_arn != "" ? "${var.connections_table_arn}/index/*" : "",
-        ])
-      },
-      {
-        # Block bodies + the commit-pinned runtime snapshot (read).
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:ListBucket"]
-        Resource = [var.artifacts_bucket_arn, "${var.artifacts_bucket_arn}/*"]
-      },
-      {
-        # Push live output/questions to the realtime websocket.
-        Effect   = "Allow"
-        Action   = ["execute-api:ManageConnections"]
-        Resource = var.websocket_execution_arn != "" ? "${var.websocket_execution_arn}/*" : "arn:${local.partition}:execute-api:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:*"
-      },
-      {
-        # Read agent model + bearer/api-key settings at startup (no Bedrock IAM —
-        # Claude/Kiro authenticate via the bearer token / API key, as in v1).
-        Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = [
-          aws_ssm_parameter.bedrock_bearer_token.arn,
-          aws_ssm_parameter.kiro_api_key.arn,
-          aws_ssm_parameter.cli_models.arn,
-          aws_ssm_parameter.tier_models.arn,
-        ]
-      },
-      {
-        # MCP secrets: at stage start (and verify) the runtime resolves the
-        # `${VAR}` refs in a config from SSM SecureString, tier-scoped — global at
-        # {prefix}/mcp-secrets/*, project at {prefix}/projects/<id>/mcp-secrets/*.
-        # WithDecryption uses the account-default aws/ssm key, so no explicit
-        # kms:Decrypt statement is needed (implicit for the reader).
-        Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = [
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
-        ]
-      },
-      {
-        # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
-        # background job completes/heartbeats the durable callback the
-        # orchestrator suspended on. ARN constructed from naming convention
-        # (module dependency direction forbids passing the function ARN in:
-        # api → agentcore would become a cycle). Mirrors the intents policy.
-        Effect = "Allow"
-        Action = [
-          "lambda:SendDurableExecutionCallbackSuccess",
-          "lambda:SendDurableExecutionCallbackFailure",
-          "lambda:SendDurableExecutionCallbackHeartbeat",
-        ]
-        Resource = [
-          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
-          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
-        ]
-      },
-    ]
+    Statement = concat(
+      [
+        {
+          # Pull the container image.
+          Effect   = "Allow"
+          Action   = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
+          Resource = aws_ecr_repository.agentcore.arn
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["ecr:GetAuthorizationToken"]
+          Resource = "*"
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
+          Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
+        },
+        {
+          # Business graph (Neptune) read + write.
+          Effect   = "Allow"
+          Action   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:connect"]
+          Resource = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
+        },
+        {
+          # v2 process state table (+ its indexes) and the blocks table (read).
+          Effect = "Allow"
+          Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan"]
+          Resource = compact([
+            aws_dynamodb_table.v2_executions.arn,
+            "${aws_dynamodb_table.v2_executions.arn}/index/*",
+            var.blocks_table_arn,
+            var.blocks_table_arn != "" ? "${var.blocks_table_arn}/index/*" : "",
+            var.connections_table_arn,
+            var.connections_table_arn != "" ? "${var.connections_table_arn}/index/*" : "",
+          ])
+        },
+        {
+          # Block bodies + the commit-pinned runtime snapshot (read).
+          Effect   = "Allow"
+          Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
+          Resource = [var.artifacts_bucket_arn, "${var.artifacts_bucket_arn}/*"]
+        },
+      ],
+      var.websocket_execution_arn != "" ? [
+        {
+          # Push live output/questions to the realtime websocket.
+          Effect   = "Allow"
+          Action   = ["execute-api:ManageConnections"]
+          Resource = "${var.websocket_execution_arn}/*"
+        },
+      ] : [],
+      [
+        {
+          # Read agent model + bearer/api-key settings at startup (no Bedrock IAM —
+          # Claude/Kiro authenticate via the bearer token / API key, as in v1).
+          Effect = "Allow"
+          Action = ["ssm:GetParameter", "ssm:GetParameters"]
+          Resource = [
+            aws_ssm_parameter.bedrock_bearer_token.arn,
+            aws_ssm_parameter.kiro_api_key.arn,
+            aws_ssm_parameter.cli_models.arn,
+            aws_ssm_parameter.tier_models.arn,
+          ]
+        },
+        {
+          # MCP secrets: at stage start (and verify) the runtime resolves the
+          # `${VAR}` refs in a config from SSM SecureString, tier-scoped — global at
+          # {prefix}/mcp-secrets/*, project at {prefix}/projects/<id>/mcp-secrets/*.
+          # WithDecryption uses the account-default aws/ssm key, so no explicit
+          # kms:Decrypt statement is needed (implicit for the reader).
+          Effect = "Allow"
+          Action = ["ssm:GetParameter", "ssm:GetParameters"]
+          Resource = [
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+          ]
+        },
+        {
+          # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
+          # background job completes/heartbeats the durable callback the
+          # orchestrator suspended on. ARN constructed from naming convention
+          # (module dependency direction forbids passing the function ARN in:
+          # api → agentcore would become a cycle). Mirrors the intents policy.
+          Effect = "Allow"
+          Action = [
+            "lambda:SendDurableExecutionCallbackSuccess",
+            "lambda:SendDurableExecutionCallbackFailure",
+            "lambda:SendDurableExecutionCallbackHeartbeat",
+          ]
+          Resource = [
+            "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+            "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+          ]
+        },
+      ],
+    )
   })
 }
 

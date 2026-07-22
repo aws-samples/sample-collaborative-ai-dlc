@@ -1,10 +1,15 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIntent } from '@/contexts/IntentContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { useCollaborativeIntentDraft } from '@/hooks/useCollaborativeIntentDraft';
-import { intentsService, type Intent, type ComposeSession } from '@/services/intents';
+import {
+  intentsService,
+  type Intent,
+  type ComposeSession,
+  type IntentAttachment,
+} from '@/services/intents';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
@@ -27,6 +32,8 @@ import {
   Info,
   Loader2,
   MousePointerClick,
+  Paperclip,
+  Trash2,
   Users,
   X,
 } from 'lucide-react';
@@ -39,6 +46,24 @@ type ScopeSummary = {
   skippedStages: number;
   outOfScopeStages: number;
 };
+
+const ATTACHMENT_TYPES: Record<string, string> = {
+  txt: 'text/plain',
+  md: 'text/markdown',
+  csv: 'text/csv',
+  html: 'text/html',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+};
+const attachmentType = (file: File) =>
+  ATTACHMENT_TYPES[file.name.split('.').pop()?.toLowerCase() ?? ''];
+const formatBytes = (bytes: number) =>
+  `${(bytes / 1024 / 1024).toFixed(bytes >= 1024 * 1024 ? 1 : 2)} MB`;
+const ATTACHMENT_INGEST_POLL_MS = 500;
+const ATTACHMENT_INGEST_TIMEOUT_MS = 30_000;
 
 // The compose step of a DRAFT intent: the shared prompt, the projection
 // (scope or composed grid) and the per-intent stage deselection are edited
@@ -56,6 +81,12 @@ export default function IntentComposePage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [attachments, setAttachments] = useState<IntentAttachment[]>([]);
+  const [attachmentRevision, setAttachmentRevision] = useState(0);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
+  const attachmentInput = useRef<HTMLInputElement>(null);
 
   const draft = useCollaborativeIntentDraft(projectId ?? '', intentId ?? null, userName);
   const { initFromIntent } = draft;
@@ -75,6 +106,8 @@ export default function IntentComposePage() {
           return;
         }
         setIntent(detail.intent);
+        setAttachments(detail.intent.attachments ?? []);
+        setAttachmentRevision(detail.intent.attachmentRevision ?? 0);
       })
       .catch((e) => {
         if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Failed to load intent');
@@ -83,6 +116,120 @@ export default function IntentComposePage() {
       cancelled = true;
     };
   }, [projectId, intentId, navigate]);
+
+  // Attachments intentionally stay out of the Yjs document. Periodic REST
+  // refresh makes the durable set converge for collaborators even if a
+  // websocket reload hint is missed while a browser is reconnecting.
+  useEffect(() => {
+    if (!projectId || !intentId || !intent) return;
+    const refresh = () =>
+      intentsService
+        .attachments(projectId, intentId)
+        .then((result) => {
+          setAttachments(result.attachments);
+          setAttachmentRevision(result.attachmentRevision);
+        })
+        .catch(() => {});
+    const timer = window.setInterval(refresh, 15_000);
+    return () => window.clearInterval(timer);
+  }, [projectId, intentId, intent]);
+
+  const uploadFile = (upload: { url: string; fields: Record<string, string> }, file: File) =>
+    new Promise<void>((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open('POST', upload.url);
+      request.upload.onprogress = (event) => {
+        if (event.lengthComputable)
+          setUploadProgress(Math.round((event.loaded / event.total) * 100));
+      };
+      request.onerror = () => reject(new Error(`Failed to upload ${file.name}`));
+      request.onload = () =>
+        request.status >= 200 && request.status < 300
+          ? resolve()
+          : reject(new Error(`Failed to upload ${file.name}`));
+      const form = new FormData();
+      for (const [name, value] of Object.entries(upload.fields)) form.append(name, value);
+      form.append('file', file);
+      request.send(form);
+    });
+
+  const handleAttachmentPick = async (files: FileList | null) => {
+    if (!projectId || !intentId || !draftReady || !files?.length) return;
+    setAttachmentError(null);
+    const selected = [...files];
+    if (attachments.length + selected.length > 5) {
+      setAttachmentError('Attach up to five files.');
+      return;
+    }
+    const invalid = selected.find(
+      (file) => !attachmentType(file) || file.size < 1 || file.size > 5 * 1024 * 1024,
+    );
+    if (invalid) {
+      setAttachmentError(`${invalid.name} is unsupported or larger than 5 MB.`);
+      return;
+    }
+    if (
+      attachments.reduce((sum, attachment) => sum + attachment.size, 0) +
+        selected.reduce((sum, file) => sum + file.size, 0) >
+      25 * 1024 * 1024
+    ) {
+      setAttachmentError('Attachments cannot exceed 25 MB in total.');
+      return;
+    }
+    setUploadProgress(0);
+    try {
+      const descriptors = selected.map((file) => ({
+        filename: file.name,
+        mimeType: attachmentType(file),
+        size: file.size,
+      }));
+      const { uploads } = await intentsService.attachmentUploadUrls(
+        projectId,
+        intentId,
+        descriptors,
+      );
+      await Promise.all(uploads.map((upload, index) => uploadFile(upload, selected[index])));
+      const expectedIds = new Set(uploads.map((upload) => upload.attachmentId));
+      const deadline = Date.now() + ATTACHMENT_INGEST_TIMEOUT_MS;
+      for (;;) {
+        const refreshed = await intentsService.attachments(projectId, intentId);
+        setAttachments(refreshed.attachments);
+        setAttachmentRevision(refreshed.attachmentRevision);
+        const committedIds = new Set(
+          refreshed.attachments.map((attachment) => attachment.attachmentId),
+        );
+        if ([...expectedIds].every((attachmentId) => committedIds.has(attachmentId))) break;
+        if (Date.now() >= deadline) {
+          throw new Error('Upload is still being processed; refresh and retry.');
+        }
+        await new Promise<void>((resolve) => window.setTimeout(resolve, ATTACHMENT_INGEST_POLL_MS));
+      }
+      setUploadProgress(null);
+    } catch (e) {
+      setUploadProgress(null);
+      setAttachmentError(e instanceof Error ? e.message : 'Failed to upload attachments');
+    } finally {
+      if (attachmentInput.current) attachmentInput.current.value = '';
+    }
+  };
+
+  const removeAttachment = async (attachmentId: string) => {
+    if (!projectId || !intentId || !draftReady) return;
+    setAttachmentError(null);
+    setRemovingAttachmentId(attachmentId);
+    try {
+      await intentsService.deleteAttachment(projectId, intentId, attachmentId, attachmentRevision);
+      // DELETE currently returns no parsed body through the shared API helper;
+      // reload the durable list to get the bumped optimistic-concurrency revision.
+      const refreshed = await intentsService.attachments(projectId, intentId);
+      setAttachments(refreshed.attachments);
+      setAttachmentRevision(refreshed.attachmentRevision);
+    } catch (e) {
+      setAttachmentError(e instanceof Error ? e.message : 'Failed to remove attachment');
+    } finally {
+      setRemovingAttachmentId(null);
+    }
+  };
 
   // Seed the CRDT from the persisted row once synced (no-op if peers already
   // populated it).
@@ -180,7 +327,7 @@ export default function IntentComposePage() {
   const [showGridEditor, setShowGridEditor] = useState(false);
 
   const toggleGridStage = (stageId: string) => {
-    if (lockedStageIds.has(stageId)) return;
+    if (!draftReady || lockedStageIds.has(stageId)) return;
     // First customization materializes the scope's projection into a composed
     // grid (initialization pinned EXECUTE) so the flip has a total baseline.
     // Legacy deselections are folded into the grid at the same moment — after
@@ -197,12 +344,14 @@ export default function IntentComposePage() {
   };
 
   const resetGridToScope = (nextScope: string) => {
+    if (!draftReady) return;
     draft.setScope(nextScope);
     draft.setComposedGrid(null);
     draft.setSkipStageIds(null);
   };
 
   const applyProposal = (proposal: NonNullable<ComposeSession['proposal']>) => {
+    if (!draftReady) return;
     if (proposal.mode === 'matched') {
       resetGridToScope(proposal.scope);
     } else if (proposal.grid) {
@@ -266,7 +415,7 @@ export default function IntentComposePage() {
   }, [workflowId, workflowVersion, scope, gridKey, skipsKey]);
 
   const handleStart = async () => {
-    if (!projectId || !intentId) return;
+    if (!projectId || !intentId || !draftReady || uploadProgress !== null) return;
     setStarting(true);
     setError(null);
     try {
@@ -357,6 +506,78 @@ export default function IntentComposePage() {
               singleLine
               disabled={!draftReady}
             />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <Label className="text-sm font-medium">Reference attachments</Label>
+              <input
+                ref={attachmentInput}
+                type="file"
+                className="hidden"
+                data-testid="attachment-picker"
+                accept=".txt,.md,.csv,.html,.png,.jpg,.jpeg,.webp,.svg"
+                multiple
+                disabled={!draftReady || starting || uploadProgress !== null}
+                onChange={(event) => handleAttachmentPick(event.target.files)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={
+                  !draftReady || starting || uploadProgress !== null || attachments.length >= 5
+                }
+                onClick={() => attachmentInput.current?.click()}
+              >
+                <Paperclip className="mr-1.5 h-3.5 w-3.5" />
+                Attach files
+              </Button>
+            </div>
+            {uploadProgress !== null && (
+              <div
+                className="h-1.5 overflow-hidden rounded bg-muted"
+                data-testid="attachment-progress"
+              >
+                <div
+                  className="h-full bg-primary transition-all"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            )}
+            {attachmentError && <p className="text-xs text-destructive">{attachmentError}</p>}
+            {attachments.length > 0 && (
+              <ul className="divide-y rounded-md border" data-testid="attachment-list">
+                {attachments.map((attachment) => (
+                  <li
+                    key={attachment.attachmentId}
+                    className="flex items-center gap-3 px-3 py-2 text-sm"
+                  >
+                    <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">{attachment.filename}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {formatBytes(attachment.size)}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      disabled={
+                        !draftReady ||
+                        starting ||
+                        uploadProgress !== null ||
+                        removingAttachmentId === attachment.attachmentId
+                      }
+                      onClick={() => removeAttachment(attachment.attachmentId)}
+                      aria-label={`Remove ${attachment.filename}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           <div>
@@ -532,6 +753,7 @@ export default function IntentComposePage() {
               disabled={
                 starting ||
                 !draftReady ||
+                uploadProgress !== null ||
                 !draft.prompt.trim() ||
                 !scope ||
                 previewErrors.length > 0

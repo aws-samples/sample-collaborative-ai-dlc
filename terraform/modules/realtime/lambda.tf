@@ -2,6 +2,8 @@
 # Partition-Aware Data Sources
 # =============================================================================
 data "aws_partition" "realtime" {}
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
 
 locals {
   realtime_partition  = data.aws_partition.realtime.partition
@@ -36,7 +38,7 @@ resource "aws_iam_role_policy" "lambda" {
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:${local.realtime_partition}:logs:*:*:*"
+        Resource = "arn:${local.realtime_partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:*"
       },
       {
         Effect   = "Allow"
@@ -57,8 +59,6 @@ resource "aws_iam_role_policy" "lambda" {
     ]
   })
 }
-
-data "aws_region" "current" {}
 
 # Connection Lambda (handles $connect and $disconnect)
 module "connection_lambda" {

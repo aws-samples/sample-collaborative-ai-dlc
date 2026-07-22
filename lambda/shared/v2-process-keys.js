@@ -373,6 +373,10 @@ const buildExecutionMeta = ({
   // create/start like the skip overlay and threaded identically; mutable only
   // through the recompose path, which retires + relaunches the run.
   composedGrid = null,
+  attachments = [],
+  attachmentRevision = 0,
+  pendingAttachmentUploads = [],
+  pendingAttachmentDeletions = [],
 }) => ({
   ...executionMetaKey(executionId),
   ...projectStatusIndex({ projectId, status, startedAt, executionId }),
@@ -419,6 +423,10 @@ const buildExecutionMeta = ({
   stageSkipping,
   skipStageIds,
   composedGrid,
+  attachments,
+  attachmentRevision,
+  pendingAttachmentUploads,
+  pendingAttachmentDeletions,
   updatedAt: startedAt,
   completedAt: null,
 });

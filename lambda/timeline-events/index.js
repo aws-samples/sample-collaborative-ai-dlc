@@ -1,6 +1,7 @@
 import gremlin from 'gremlin';
 import { create } from 'neptune-lambda-client';
 import { buildResponse } from '../shared/response.js';
+import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
 
 const order = gremlin.process.order;
 
@@ -51,6 +52,8 @@ export const handler = async (event) => {
     // write path was removed together with the v1 execution engine.
     switch (httpMethod) {
       case 'GET': {
+        const auth = await query((g) => authorizeLegacySprintRead(g, event, sprintId));
+        if (auth.denied) return res(auth.statusCode, { error: auth.error });
         const list = await query((g) =>
           g
             .V()
