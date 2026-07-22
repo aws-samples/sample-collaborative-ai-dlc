@@ -2,11 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import {
-  SSMClient,
-  GetParameterCommand,
-  PutParameterCommand,
-} from '@aws-sdk/client-ssm';
+import { SSMClient, GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import {
   CREDENTIAL_ACTIVE_EXECUTION_STATUSES,
@@ -202,8 +198,16 @@ describe('concurrent GitLab credential requests (refresh race)', () => {
       requiredAccess: 'write',
     };
     const [a, b] = await Promise.all([
-      authorizeCredentialRequest(request, { ddbClient: ddb, ssmClient: ssm, secretsClient: secrets }),
-      authorizeCredentialRequest(request, { ddbClient: ddb, ssmClient: ssm, secretsClient: secrets }),
+      authorizeCredentialRequest(request, {
+        ddbClient: ddb,
+        ssmClient: ssm,
+        secretsClient: secrets,
+      }),
+      authorizeCredentialRequest(request, {
+        ddbClient: ddb,
+        ssmClient: ssm,
+        secretsClient: secrets,
+      }),
     ]);
 
     expect(a.token).toBe('fresh');
