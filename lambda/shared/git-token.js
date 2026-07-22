@@ -68,6 +68,21 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
   });
   const data = await res.json();
   if (data.error) {
+    // GitLab refresh tokens are one-time-use: a concurrent request (possibly
+    // in another Lambda container — parallel construction lanes each ask the
+    // credential broker separately) may have already refreshed and persisted a
+    // new token pair, leaving OUR refresh token burned. Before treating the
+    // connection as broken, re-read the stored pair: if it rotated since we
+    // read it, the race was lost, not the connection — use the winner's token.
+    if (data.error === 'invalid_grant') {
+      const stored = await readTokenValue(ssm, item.parameterName).catch(() => null);
+      if (stored?.refreshToken && stored.refreshToken !== tokens.refreshToken) {
+        console.log('[git-token:refresh] refresh race lost, using rotated token', {
+          userId: item?.userId,
+        });
+        return stored.accessToken;
+      }
+    }
     console.error('[git-token:refresh] failed', {
       httpStatus: res.status,
       error: data.error,
@@ -117,23 +132,47 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
   return data.access_token;
 };
 
+// Single-flight refresh guard, keyed by SSM parameter name (one entry per
+// GitLab connection). GitLab refresh tokens are one-time-use, so two
+// concurrent refreshes of the same connection burn each other: the loser gets
+// invalid_grant and (via the credential broker) would invalidate the project
+// binding. Within a warm container, concurrent callers share one refresh
+// promise; cross-container races are handled by the invalid_grant re-read in
+// refreshGitlabToken.
+const _refreshInFlight = new Map();
+
 // Return a valid access token for a connection, refreshing GitLab tokens
 // just-in-time when they are expired or near expiry. GitHub OAuth-App tokens
 // never expire, so this is a passthrough for GitHub (and for any provider
 // without a refresh token). Used by shared/git-handler.js and the GitLab
 // issues tracker so long-running jobs don't push/MR with a stale GitLab token.
-const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider }) => {
+// `staleToken` (401 retry paths) forces a refresh even when the recorded
+// expiry looks fine — the provider has already rejected that token (clock
+// skew, early revocation). If the stored pair has ALREADY rotated past the
+// rejected token (a concurrent refresh won), the rotated token is returned
+// without burning another refresh.
+const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider, staleToken = null }) => {
   if (!item?.parameterName) throw new Error('No SSM parameter name set');
   const tokens = await readTokenValue(ssm, item.parameterName);
   if (gitProvider !== 'gitlab' || !tokens.refreshToken) {
     return tokens.accessToken;
   }
-  const expiresAt = Number(tokens.expiresAt) || 0;
-  const isStale = !expiresAt || expiresAt - Date.now() <= REFRESH_SAFETY_MARGIN_MS;
-  if (!isStale) {
+  if (staleToken && tokens.accessToken !== staleToken) {
     return tokens.accessToken;
   }
-  return refreshGitlabToken({ ssm, secrets, ddb, item, tokens });
+  const expiresAt = Number(tokens.expiresAt) || 0;
+  const isStale = !expiresAt || expiresAt - Date.now() <= REFRESH_SAFETY_MARGIN_MS;
+  if (!isStale && !staleToken) {
+    return tokens.accessToken;
+  }
+  const key = item.parameterName;
+  const inFlight = _refreshInFlight.get(key);
+  if (inFlight) return inFlight;
+  const refresh = refreshGitlabToken({ ssm, secrets, ddb, item, tokens }).finally(() => {
+    _refreshInFlight.delete(key);
+  });
+  _refreshInFlight.set(key, refresh);
+  return refresh;
 };
 
 // GitHub App installation tokens (GitHub-only): used platform-wide when the

@@ -158,6 +158,107 @@ describe('ensureFreshGitToken', () => {
       ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
     ).rejects.toThrow(/refresh token revoked/);
   });
+
+  it('coalesces concurrent refreshes of the same connection into one GitLab call', async () => {
+    storeToken({ accessToken: 'old', refreshToken: 'r1', expiresAt: Date.now() - 1000 });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+    });
+    ssmMock.on(PutParameterCommand).resolves({});
+    ddbMock.on(PutCommand).resolves({});
+    globalThis.fetch = vi.fn(async () => ({
+      json: async () => ({ access_token: 'fresh', refresh_token: 'r2', token_type: 'bearer' }),
+    }));
+
+    const [a, b] = await Promise.all([
+      ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
+      ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
+    ]);
+
+    expect(a).toBe('fresh');
+    expect(b).toBe('fresh');
+    // One-time-use refresh token: a second GitLab call would have failed with
+    // invalid_grant. Single-flight must issue exactly one.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers from a lost cross-container refresh race via the rotated stored pair', async () => {
+    // First read returns the stale pair; after the (losing) refresh fails with
+    // invalid_grant, the re-read returns the pair the winning container saved.
+    let reads = 0;
+    ssmMock.on(GetParameterCommand).callsFake(() => {
+      reads += 1;
+      const value =
+        reads === 1
+          ? { accessToken: 'old', refreshToken: 'r1', expiresAt: Date.now() - 1000 }
+          : { accessToken: 'winner', refreshToken: 'r2', expiresAt: Date.now() + 7200000 };
+      return { Parameter: { Value: JSON.stringify(value) } };
+    });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+    });
+    globalThis.fetch = vi.fn(async () => ({
+      status: 400,
+      json: async () => ({ error: 'invalid_grant' }),
+    }));
+
+    const out = await ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' });
+    expect(out).toBe('winner');
+  });
+
+  it('still throws invalid_grant when the stored pair did not rotate (genuine revocation)', async () => {
+    storeToken({ accessToken: 'old', refreshToken: 'r1', expiresAt: Date.now() - 1000 });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+    });
+    globalThis.fetch = vi.fn(async () => ({
+      status: 400,
+      json: async () => ({ error: 'invalid_grant' }),
+    }));
+
+    await expect(
+      ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
+    ).rejects.toMatchObject({ code: 'CREDENTIAL_REFRESH_FAILED' });
+  });
+
+  it('staleToken forces a refresh of a not-yet-expired token', async () => {
+    storeToken({ accessToken: 'rejected', refreshToken: 'r1', expiresAt: Date.now() + 3600000 });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+    });
+    ssmMock.on(PutParameterCommand).resolves({});
+    ddbMock.on(PutCommand).resolves({});
+    globalThis.fetch = vi.fn(async () => ({
+      json: async () => ({ access_token: 'fresh', refresh_token: 'r2', token_type: 'bearer' }),
+    }));
+
+    const out = await ensureFreshGitToken({
+      ssm,
+      secrets,
+      ddb,
+      item: ITEM,
+      gitProvider: 'gitlab',
+      staleToken: 'rejected',
+    });
+    expect(out).toBe('fresh');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('staleToken returns the stored token without refreshing when it already rotated', async () => {
+    storeToken({ accessToken: 'already-new', refreshToken: 'r2', expiresAt: Date.now() + 3600000 });
+    globalThis.fetch = vi.fn();
+
+    const out = await ensureFreshGitToken({
+      ssm,
+      secrets,
+      ddb,
+      item: ITEM,
+      gitProvider: 'gitlab',
+      staleToken: 'rejected',
+    });
+    expect(out).toBe('already-new');
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe('getInstallationToken', () => {

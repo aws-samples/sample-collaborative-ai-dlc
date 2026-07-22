@@ -7,6 +7,9 @@ vi.mock('../git-token.js', () => ({
   getInstallationToken: vi.fn(),
   validateGitHubAppInstallation: vi.fn(),
 }));
+vi.mock('../git-connection-store.js', () => ({
+  getGitConnection: vi.fn(),
+}));
 vi.mock('../github-auth-config.js', () => ({
   getGitHubAppConfig: vi.fn(),
 }));
@@ -23,10 +26,12 @@ import {
 } from '../source-control-credentials.js';
 import {
   discoverGitHubInstallation,
+  ensureFreshGitToken,
   getGitHubAppIdentity,
   getInstallationToken,
   validateGitHubAppInstallation,
 } from '../git-token.js';
+import { getGitConnection } from '../git-connection-store.js';
 import { getGitHubAppConfig } from '../github-auth-config.js';
 import { getProvider } from '../git-providers.js';
 
@@ -151,5 +156,60 @@ describe('resolveBindingCredential app-binding permission scoping', () => {
         },
       }),
     );
+  });
+});
+
+describe('resolveBindingCredential GitLab 401 retry support', () => {
+  const binding = {
+    authType: 'gitlab-oauth',
+    provider: 'gitlab',
+    repo: 'group/web',
+    status: 'active',
+    connectionUserId: 'u1',
+    credentialRef: 'oauth#gitlab#u1',
+    capabilities: { repositoryWrite: true },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getGitConnection.mockResolvedValue({
+      userId: 'u1',
+      provider: 'gitlab',
+      parameterName: '/proj/dev/git-token/gitlab/u1',
+      scope: 'api read_user',
+    });
+    ensureFreshGitToken.mockResolvedValue('gl-token');
+  });
+
+  it('exposes a refresh callback that forces past the rejected token', async () => {
+    const credential = await resolveBindingCredential({ ddb: {}, ssm: {}, secrets: {}, binding });
+    expect(credential.token).toBe('gl-token');
+    expect(typeof credential.refresh).toBe('function');
+
+    ensureFreshGitToken.mockResolvedValue('gl-rotated');
+    await expect(credential.refresh()).resolves.toBe('gl-rotated');
+    expect(ensureFreshGitToken).toHaveBeenLastCalledWith(
+      expect.objectContaining({ staleToken: 'gl-token', gitProvider: 'gitlab' }),
+    );
+  });
+
+  it('does not expose a refresh callback for github-app bindings', async () => {
+    getGitHubAppConfig.mockResolvedValue({ appId: '12345' });
+    getInstallationToken.mockResolvedValue('ghs_token');
+    const credential = await resolveBindingCredential({
+      ddb: {},
+      ssm: {},
+      secrets: {},
+      binding: {
+        authType: 'github-app',
+        provider: 'github',
+        repo: 'org/repo',
+        status: 'active',
+        installationId: '67890',
+        credentialRef: 'github-app#67890',
+        capabilities: { repositoryWrite: true, workflows: 'write' },
+      },
+    });
+    expect(credential.refresh).toBeUndefined();
   });
 });
