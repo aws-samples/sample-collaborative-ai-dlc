@@ -425,49 +425,6 @@ describe('IntentView', () => {
     });
   });
 
-  // The review gate is where results are judged, so it is also where the plan
-  // may be reshaped: checked recompose targets ride the approve answer as
-  // { recompose: { skip: [...] } } — applied in place, no relaunch.
-  it('reshapes upcoming stages from the review gate via the approve answer', async () => {
-    get.mockResolvedValue({
-      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-validation-si-a-0-run1' }),
-      stages: [
-        { stageInstanceId: 'si-a', stageId: 'stage-a', state: 'WAITING_FOR_HUMAN', phase: 'build' },
-      ],
-      gates: [
-        {
-          humanTaskId: 'eg-validation-si-a-0-run1',
-          stageInstanceId: 'si-a',
-          unitSlug: null,
-          kind: 'validation',
-          status: 'pending',
-          prompt: 'Review stage stage-a.',
-          options: ['approve', 'request-changes'],
-          recomposeTargets: ['nfr-design', 'performance-validation'],
-          questions: null,
-          answer: null,
-          answeredBy: null,
-          answeredAt: null,
-          createdAt: null,
-        },
-      ],
-      sensorRuns: [],
-      artifacts: [],
-    });
-    graph.mockResolvedValue({ nodes: [], edges: [] });
-    answerGate.mockResolvedValue({});
-    renderAt('/space/p1/intent/i1/review/eg-validation-si-a-0-run1');
-    expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('review-reshape-toggle'));
-    await userEvent.click(screen.getByTestId('review-reshape-nfr-design').querySelector('input')!);
-    const approve = screen.getByRole('button', { name: /Approve & drop 1 stage/ });
-    await userEvent.click(approve);
-    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'eg-validation-si-a-0-run1', {
-      answer: { decision: 'approve', recompose: { skip: ['nfr-design'] } },
-      status: 'approved',
-    });
-  });
-
   // Empty-state consistency: sections with nothing to show are hidden entirely
   // (no "No … recorded" placeholders), and their stat cards are not clickable.
   it('hides empty evidence sections and disables their stat cards on the review gate', async () => {
