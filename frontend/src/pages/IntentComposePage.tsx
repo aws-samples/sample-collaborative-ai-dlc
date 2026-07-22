@@ -59,6 +59,7 @@ export default function IntentComposePage() {
 
   const draft = useCollaborativeIntentDraft(projectId ?? '', intentId ?? null, userName);
   const { initFromIntent } = draft;
+  const draftReady = draft.synced && draft.hydrated;
 
   // Load the intent; non-DRAFT intents have left the compose step — show them
   // in the regular intent view instead.
@@ -354,7 +355,7 @@ export default function IntentComposePage() {
               placeholder="e.g. Add user authentication"
               className="mt-1.5 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
               singleLine
-              disabled={!draft.synced}
+              disabled={!draftReady}
             />
           </div>
 
@@ -368,7 +369,7 @@ export default function IntentComposePage() {
               rows={10}
               placeholder="Describe the intent in detail…"
               className="mt-1.5 rounded-md border bg-background px-3 py-2 text-sm"
-              disabled={!draft.synced}
+              disabled={!draftReady}
             />
           </div>
 
@@ -390,7 +391,7 @@ export default function IntentComposePage() {
                     // Picking a stock scope leaves any composed grid behind.
                     if (v) resetGridToScope(v);
                   }}
-                  disabled={scopeOptions.length === 0}
+                  disabled={!draftReady || scopeOptions.length === 0}
                 >
                   <SelectTrigger id="draft-scope">
                     <SelectValue
@@ -415,7 +416,7 @@ export default function IntentComposePage() {
                   <ComposePanel
                     projectId={projectId}
                     intentId={intentId}
-                    disabled={starting}
+                    disabled={starting || !draftReady}
                     onApply={applyProposal}
                   />
                 </div>
@@ -430,8 +431,9 @@ export default function IntentComposePage() {
                 {draft.composedGrid && scope && (
                   <button
                     type="button"
-                    className="ml-auto text-xs underline text-muted-foreground hover:text-foreground"
+                    className="ml-auto text-xs underline text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="grid-reset"
+                    disabled={starting || !draftReady}
                     onClick={() => {
                       const back = scopeOptions.includes(scope.replace(/-custom$/, ''))
                         ? scope.replace(/-custom$/, '')
@@ -514,7 +516,7 @@ export default function IntentComposePage() {
                       phaseNames={phaseNames}
                       grid={effectiveGrid}
                       lockedStageIds={lockedStageIds}
-                      disabled={starting}
+                      disabled={starting || !draftReady}
                       onToggle={toggleGridStage}
                     />
                   </div>
@@ -527,7 +529,13 @@ export default function IntentComposePage() {
             <Button
               type="button"
               onClick={handleStart}
-              disabled={starting || !draft.prompt.trim() || !scope || previewErrors.length > 0}
+              disabled={
+                starting ||
+                !draftReady ||
+                !draft.prompt.trim() ||
+                !scope ||
+                previewErrors.length > 0
+              }
               data-testid="start-intent"
             >
               {starting && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
@@ -539,8 +547,10 @@ export default function IntentComposePage() {
             {!starting && draft.prompt.trim() && !scope && (
               <span className="text-xs text-muted-foreground">Pick a scope to continue</span>
             )}
-            {!draft.synced && (
-              <span className="text-xs text-muted-foreground">connecting live session…</span>
+            {!draftReady && (
+              <span className="text-xs text-muted-foreground">
+                {draft.synced ? 'loading shared draft…' : 'connecting live session…'}
+              </span>
             )}
           </div>
         </div>

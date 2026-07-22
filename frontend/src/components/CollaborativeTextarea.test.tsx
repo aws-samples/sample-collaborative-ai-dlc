@@ -122,6 +122,32 @@ describe('CollaborativeTextarea', () => {
     bob.doc.destroy();
   });
 
+  it('does not insert a newline when Enter is pressed in a single-line editor', () => {
+    const shared = createSharedText('Shared title');
+
+    const { unmount } = render(
+      <CollaborativeTextarea
+        yText={shared.text}
+        awareness={shared.awareness}
+        aria-label="Intent title"
+        singleLine
+      />,
+    );
+
+    const editor = screen.getByRole('textbox', { name: 'Intent title' });
+    const view = EditorView.findFromDOM(editor)!;
+    view.focus();
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    fireEvent.keyDown(editor, { key: 'Enter', code: 'Enter' });
+
+    expect(shared.text.toString()).toBe('Shared title');
+    expect(view.state.doc.lines).toBe(1);
+
+    unmount();
+    shared.awareness.destroy();
+    shared.doc.destroy();
+  });
+
   it('shows who is editing and where their remote cursor is', () => {
     const alice = createSharedText('First line\nSecond line', 'Alice');
     const bob = createSharedText('', 'Bob', '#ef4444');

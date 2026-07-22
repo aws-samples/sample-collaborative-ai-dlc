@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { defaultKeymap } from '@codemirror/commands';
-import { Compartment, EditorState } from '@codemirror/state';
+import { Compartment, EditorState, Prec } from '@codemirror/state';
 import {
   drawSelection,
   dropCursor,
@@ -86,6 +86,14 @@ const editorTheme = EditorView.theme({
     opacity: '1',
   },
 });
+
+const singleLineKeymap = Prec.highest(
+  keymap.of([
+    { key: 'Enter', run: () => true },
+    { key: 'Shift-Enter', run: () => true },
+    { key: 'Mod-Enter', run: () => true },
+  ]),
+);
 
 interface RemotePosition {
   clientId: number;
@@ -210,6 +218,7 @@ export function CollaborativeTextarea({
 
     if (placeholder) extensions.push(placeholderExtension(placeholder));
     if (singleLine) {
+      extensions.push(singleLineKeymap);
       extensions.push(EditorView.clipboardInputFilter.of((text) => text.replaceAll(/\r?\n/g, ' ')));
     }
 

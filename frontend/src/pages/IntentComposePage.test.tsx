@@ -69,6 +69,7 @@ vi.mock('@/hooks/useCollaborativeIntentDraft', () => ({
     composedGrid: (draftState.composedGrid as Record<string, 'EXECUTE' | 'SKIP'>) ?? null,
     skipStageIds: (draftState.skipStageIds as string[]) ?? null,
     synced: true,
+    hydrated: (draftState.hydrated as boolean) ?? true,
     remoteUsers: new Map(),
     setCursor: vi.fn(),
     initFromIntent: vi.fn(),
@@ -248,6 +249,26 @@ describe('IntentComposePage', () => {
     await screen.findByTestId('scope-summary');
     expect(screen.queryByText('Skip stages')).not.toBeInTheDocument();
     expect(screen.getByTestId('grid-editor-toggle')).toBeInTheDocument();
+  });
+
+  it('disables draft-mutating controls until persisted state is hydrated', async () => {
+    const user = userEvent.setup();
+    draftState.hydrated = false;
+
+    renderPage();
+
+    expect(await screen.findByLabelText('Title')).toBeDisabled();
+    expect(screen.getByLabelText('Prompt')).toBeDisabled();
+    expect(screen.getByRole('combobox')).toBeDisabled();
+    expect(screen.getByTestId('compose-instructions')).toBeDisabled();
+    expect(screen.getByTestId('compose-start')).toBeDisabled();
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+
+    await user.click(screen.getByTestId('grid-editor-toggle'));
+    const designBox = screen
+      .getByTestId('grid-stage-design')
+      .querySelector('input') as HTMLInputElement;
+    expect(designBox).toBeDisabled();
   });
 
   it('legacy deselections render as SKIP in the grid and are absorbed on the first edit', async () => {

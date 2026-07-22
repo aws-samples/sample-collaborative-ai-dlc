@@ -60,6 +60,7 @@ export function useCollaborativeIntentDraft(
     skipStageIds: null,
   });
   const seededRef = useRef(false);
+  const [hydratedDoc, setHydratedDoc] = useState<Y.Doc | null>(null);
 
   useEffect(() => {
     if (!doc) return;
@@ -102,6 +103,7 @@ export function useCollaborativeIntentDraft(
           config.set('skipStageIds', JSON.stringify(intent.skipStageIds));
         }
       });
+      setHydratedDoc(doc);
     },
     [doc, synced],
   );
@@ -207,6 +209,7 @@ export function useCollaborativeIntentDraft(
   return {
     ...state,
     synced,
+    hydrated: hydratedDoc === doc,
     awareness,
     remoteUsers,
     titleText: doc.getText('title'),
