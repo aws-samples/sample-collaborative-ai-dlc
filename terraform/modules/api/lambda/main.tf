@@ -1585,8 +1585,7 @@ module "trackers_lambda" {
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
     BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
-    # GitHub App auth (mode-aware token resolution for github-issues)
-    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
+    # GitHub App auth (github-issues app-mode config)
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
     ENVIRONMENT                        = var.environment
@@ -2146,7 +2145,7 @@ resource "aws_iam_role_policy" "intents" {
       {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
-        Resource = compact([var.github_auth_mode_param_arn, var.github_app_config_param_arn])
+        Resource = compact([var.github_app_config_param_arn])
       },
       {
         Effect   = "Allow"
@@ -2380,7 +2379,6 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         Effect = "Allow"
         Action = ["ssm:GetParameter"]
         Resource = compact([
-          var.github_auth_mode_param_arn,
           var.github_app_config_param_arn,
         ])
       },
@@ -2466,7 +2464,6 @@ module "v2_orchestrator_lambda" {
     # GitHub App auth: the orchestrator consults the platform auth mode and, in
     # app mode, mints repo-scoped installation tokens per stage dispatch
     # (installation tokens live ~1h, shorter than a long run).
-    GITHUB_AUTH_MODE_PARAM             = var.github_auth_mode_param_name
     GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
     # GitLab OAuth: access tokens live ~2h, so init-ws refreshes an expired
