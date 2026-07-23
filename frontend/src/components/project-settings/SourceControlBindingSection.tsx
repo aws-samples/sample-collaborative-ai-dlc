@@ -158,8 +158,7 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
           const existing = next.repositories.find(
             (repository) => repository.provider === provider && repository.authType,
           );
-          updated[provider] =
-            existing?.authType ?? defaultAuthTypeFor(provider);
+          updated[provider] = existing?.authType ?? defaultAuthTypeFor(provider);
         }
         return updated;
       });

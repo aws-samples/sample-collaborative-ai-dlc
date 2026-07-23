@@ -1,7 +1,11 @@
 import { api } from './api';
 import type { GitComment, GitFile, GitFileContent, GitProvider } from './gitProvider';
 
-export type SourceControlAuthType = 'github-oauth' | 'github-app' | 'gitlab-oauth' | 'bitbucket-oauth';
+export type SourceControlAuthType =
+  | 'github-oauth'
+  | 'github-app'
+  | 'gitlab-oauth'
+  | 'bitbucket-oauth';
 export type SourceControlBindingState = 'active' | 'invalid' | 'unbound';
 
 // Per-provider source-control auth options + default, centralized so the
@@ -17,10 +21,7 @@ export interface SourceControlAuthOption {
   requiresDelegationConfirmation: boolean;
 }
 
-export const SOURCE_CONTROL_AUTH_OPTIONS: Record<
-  GitProvider,
-  SourceControlAuthOption[]
-> = {
+export const SOURCE_CONTROL_AUTH_OPTIONS: Record<GitProvider, SourceControlAuthOption[]> = {
   github: [
     {
       authType: 'github-app',
@@ -55,9 +56,8 @@ export const SOURCE_CONTROL_AUTH_OPTIONS: Record<
 };
 
 // The preferred (default) auth type for a provider — first option in the list.
-export const defaultAuthTypeFor = (
-  provider: GitProvider,
-): SourceControlAuthType => SOURCE_CONTROL_AUTH_OPTIONS[provider][0].authType;
+export const defaultAuthTypeFor = (provider: GitProvider): SourceControlAuthType =>
+  SOURCE_CONTROL_AUTH_OPTIONS[provider][0].authType;
 
 export interface SourceControlCapabilities {
   metadata?: 'read' | 'none';
