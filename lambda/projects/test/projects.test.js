@@ -1798,7 +1798,7 @@ describe('repo URL validation (injection guards)', () => {
     const { id } = await createProject(sub);
     const res = await handler({
       ...reposEvent('POST', id, {
-        body: JSON.stringify({ url: 'org/repo', provider: 'bitbucket' }),
+        body: JSON.stringify({ url: 'org/repo', provider: 'subversion' }),
       }),
       ...claims(sub),
     });

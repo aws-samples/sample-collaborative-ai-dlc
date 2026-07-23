@@ -351,7 +351,7 @@ module "agentcore" {
   # "claude-opus-4.6" is rejected with "Model '…' does not exist. Available
   # models: auto" and fails the stage. Seed "auto"; override per-CLI at runtime
   # via Admin → Agent Settings (the cli-models SSM param is ignore_changes).
-  kiro_model                  = "auto"
+  kiro_model = "auto"
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.
