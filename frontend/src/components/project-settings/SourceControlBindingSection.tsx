@@ -23,6 +23,7 @@ import { useGitProviderStatus } from '@/hooks/useGitProviderStatus';
 import type { GitProvider } from '@/services/gitProvider';
 import type { Project } from '@/services/projects';
 import {
+  SOURCE_CONTROL_AUTH_OPTIONS,
   sourceControlService,
   type ProjectSourceControlStatus,
   type SourceControlAuthType,
@@ -34,15 +35,12 @@ interface Props {
   canEdit: boolean;
 }
 
-const authOptions = (provider: GitProvider): SourceControlAuthType[] =>
-  provider === 'github' ? ['github-app', 'github-oauth'] : ['gitlab-oauth'];
-
-const authLabel = (authType: SourceControlAuthType) =>
-  authType === 'github-app'
-    ? 'GitHub App'
-    : authType === 'github-oauth'
-      ? 'Delegated GitHub OAuth'
-      : 'Delegated GitLab OAuth';
+const AUTH_TYPE_LABELS: Record<SourceControlAuthType, string> = {
+  'github-app': 'GitHub App',
+  'github-oauth': 'Delegated GitHub OAuth',
+  'gitlab-oauth': 'Delegated GitLab OAuth',
+  'bitbucket-oauth': 'Delegated Bitbucket OAuth',
+};
 
 const readableReason = (reason: string | null) =>
   reason ? reason.replaceAll('_', ' ').replace(/^\w/, (value) => value.toUpperCase()) : null;
@@ -78,9 +76,9 @@ function ProviderBindingControl({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {authOptions(provider).map((option) => (
+            {SOURCE_CONTROL_AUTH_OPTIONS[provider].options.map((option) => (
               <SelectItem key={option} value={option}>
-                {authLabel(option)}
+                {AUTH_TYPE_LABELS[option]}
               </SelectItem>
             ))}
           </SelectContent>
@@ -93,7 +91,7 @@ function ProviderBindingControl({
       </div>
 
       {oauth && (
-        <div className="ml-0 space-y-2 sm:ml-[4.5rem]">
+        <div className="ml-0 space-y-2 sm:ml-18">
           {error ? (
             <p className="text-xs text-destructive">{error}</p>
           ) : (
@@ -140,7 +138,7 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
   );
   const repositoryKey = (project.repos ?? [])
     .map((repo) => `${repo.provider}:${repo.url}`)
-    .sort()
+    .toSorted()
     .join('|');
 
   const load = async () => {
@@ -156,7 +154,7 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
             (repository) => repository.provider === provider && repository.authType,
           );
           updated[provider] =
-            existing?.authType ?? (provider === 'github' ? 'github-app' : 'gitlab-oauth');
+            existing?.authType ?? SOURCE_CONTROL_AUTH_OPTIONS[provider].defaultAuthType;
         }
         return updated;
       });
@@ -256,7 +254,7 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
                 <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate font-mono">{repository.repo}</span>
                 <Badge variant="outline" className="text-[10px]">
-                  {repository.authType ? authLabel(repository.authType) : 'Unbound'}
+                  {repository.authType ? AUTH_TYPE_LABELS[repository.authType] : 'Unbound'}
                 </Badge>
                 {repository.capabilities.repositoryWrite && (
                   <Badge variant="secondary" className="text-[10px]">
@@ -294,7 +292,7 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
                     key={provider}
                     provider={provider}
                     authType={
-                      authTypes[provider] ?? (provider === 'github' ? 'github-app' : 'gitlab-oauth')
+                      authTypes[provider] ?? SOURCE_CONTROL_AUTH_OPTIONS[provider].defaultAuthType
                     }
                     confirmed={Boolean(confirmed[provider])}
                     disabled={saving}

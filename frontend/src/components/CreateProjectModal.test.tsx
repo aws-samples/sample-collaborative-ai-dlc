@@ -52,6 +52,12 @@ vi.mock('../services/gitProvider', async (importOriginal) => {
   };
 });
 vi.mock('../services/sourceControl', () => ({
+  defaultSourceControlAuthType: (provider: string) =>
+    ({
+      github: 'github-app',
+      gitlab: 'gitlab-oauth',
+      bitbucket: 'bitbucket-oauth',
+    })[provider] ?? 'github-app',
   sourceControlService: {
     bind: vi.fn().mockResolvedValue({ ready: true, repositories: [] }),
   },

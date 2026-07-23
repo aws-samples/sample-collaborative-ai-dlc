@@ -9,11 +9,16 @@ import { GitRepoSelect } from './GitRepoSelect';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import {
   githubAppService,
+  gitProviderTerminology,
   trackerIdForGitProvider,
   type GitProvider,
   type GitRepo,
 } from '../services/gitProvider';
-import { sourceControlService, type SourceControlAuthType } from '../services/sourceControl';
+import {
+  defaultSourceControlAuthType,
+  sourceControlService,
+  type SourceControlAuthType,
+} from '../services/sourceControl';
 
 interface Props {
   onClose: () => void;
@@ -48,8 +53,8 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     error: gitStatusError,
     refresh: gitRefresh,
   } = useGitProviderStatus(formData.gitProvider);
-  const [sourceControlAuthType, setSourceControlAuthType] = useState<SourceControlAuthType>(
-    initialProvider === 'gitlab' ? 'gitlab-oauth' : 'github-app',
+  const [sourceControlAuthType, setSourceControlAuthType] = useState<SourceControlAuthType>(() =>
+    defaultSourceControlAuthType(initialProvider || 'github'),
   );
   // Whether the platform GitHub App is configured — gates the App option in
   // step 1. null = still loading.
@@ -135,7 +140,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
 
   const handleProviderChange = (provider: GitProvider) => {
     setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
-    setSourceControlAuthType(provider === 'github' ? 'github-app' : 'gitlab-oauth');
+    setSourceControlAuthType(defaultSourceControlAuthType(provider));
     setDelegationConfirmed(false);
     setSelectedRepos([]);
     setPrimaryRepo('');
@@ -205,15 +210,17 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
       if (formData.issueIntegrationEnabled && formData.gitRepo) {
         // GitHub and GitLab issues both reuse the project's git connection.
         const trackerProvider = trackerIdForGitProvider(gitProvider);
-        try {
-          await trackersService.addToProject(project.id, {
-            provider: trackerProvider,
-            instance: 'public',
-            externalProjectKey: formData.gitRepo,
-            displayName: formData.gitRepo,
-          });
-        } catch (err) {
-          console.error(`Failed to add ${trackerProvider} tracker:`, err);
+        if (trackerProvider) {
+          try {
+            await trackersService.addToProject(project.id, {
+              provider: trackerProvider,
+              instance: 'public',
+              externalProjectKey: formData.gitRepo,
+              displayName: formData.gitRepo,
+            });
+          } catch (err) {
+            console.error(`Failed to add ${trackerProvider} tracker:`, err);
+          }
         }
       }
       onCreated();
@@ -508,7 +515,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <p className="text-sm text-gray-700 dark:text-gray-300">
                 {sourceControlAuthType === 'github-app'
                   ? 'GitHub App installation'
-                  : `Delegated ${formData.gitProvider === 'github' ? 'GitHub' : 'GitLab'} OAuth identity`}
+                  : `Delegated ${gitProviderTerminology(formData.gitProvider || 'github').label} OAuth identity`}
                 <span className="block text-xs text-gray-500 dark:text-gray-400">
                   Chosen in step 1 — go back to change it.
                 </span>

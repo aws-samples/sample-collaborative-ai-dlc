@@ -1,8 +1,24 @@
 import { api } from './api';
 import type { GitComment, GitFile, GitFileContent, GitProvider } from './gitProvider';
 
-export type SourceControlAuthType = 'github-oauth' | 'github-app' | 'gitlab-oauth';
+export type SourceControlAuthType =
+  | 'github-oauth'
+  | 'github-app'
+  | 'gitlab-oauth'
+  | 'bitbucket-oauth';
 export type SourceControlBindingState = 'active' | 'invalid' | 'unbound';
+
+export const SOURCE_CONTROL_AUTH_OPTIONS: Record<
+  GitProvider,
+  { defaultAuthType: SourceControlAuthType; options: SourceControlAuthType[] }
+> = {
+  github: { defaultAuthType: 'github-app', options: ['github-app', 'github-oauth'] },
+  gitlab: { defaultAuthType: 'gitlab-oauth', options: ['gitlab-oauth'] },
+  bitbucket: { defaultAuthType: 'bitbucket-oauth', options: ['bitbucket-oauth'] },
+};
+
+export const defaultSourceControlAuthType = (provider: GitProvider) =>
+  SOURCE_CONTROL_AUTH_OPTIONS[provider].defaultAuthType;
 
 export interface SourceControlCapabilities {
   metadata?: 'read' | 'none';
