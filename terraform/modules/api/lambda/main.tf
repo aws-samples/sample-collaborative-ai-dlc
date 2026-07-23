@@ -784,6 +784,7 @@ resource "aws_iam_role_policy" "source_control" {
         Resource = compact([
           var.github_app_private_key_secret_arn,
           var.gitlab_oauth_secret_arn,
+          var.bitbucket_oauth_secret_arn,
         ])
       },
     ]
@@ -827,6 +828,7 @@ module "source_control_lambda" {
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
     GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
+    BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
   }
@@ -879,6 +881,7 @@ resource "aws_iam_role_policy" "credential_broker" {
         Resource = compact([
           var.github_app_private_key_secret_arn,
           var.gitlab_oauth_secret_arn,
+          var.bitbucket_oauth_secret_arn,
         ])
       },
     ]
@@ -919,6 +922,7 @@ module "credential_broker_lambda" {
     GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
     GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
+    BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
   }
 }
 
