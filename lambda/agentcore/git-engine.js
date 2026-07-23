@@ -8,16 +8,15 @@
 //   - pushes with v1 pushBranchWithRetry semantics ported from the (since
 //     removed) v1 pool worker: retry + linear backoff + remote-HEAD
 //     verification, `'empty'` as a neutral no-commit sentinel,
-//   - owns credentials: the checkout's remote URL is TOKEN-FREE at rest
-//     (workspace.js scrubs it after clone); the tokenized URL is injected only
-//     for the duration of an engine push and always restored in a finally —
-//     the agent CLI can read `.git/config` and find nothing,
+//   - owns credentials: the checkout's remote URL is credential-free and each
+//     network operation receives a temporary GIT_ASKPASS environment from the
+//     AgentCore-only broker,
 //   - skips the network entirely when there is nothing to push (no new commit
 //     and the remote-tracking ref already matches HEAD), so artifact-only
-//     stages on token-less projects behave exactly as before.
+//     stages on repository-free projects behave exactly as before.
 //
-// Safety: every git call is argv-based spawn with shell:false — tokens and
-// branch names are never interpolated into a shell string.
+// Safety: every git call is argv-based spawn with shell:false. Credentials
+// never enter argv, logs, or repository configuration.
 //
 // All functions resolve (never reject): a git failure is a VALUE the caller
 // records and acts on. The stage-failure policy lives in run-stage.js: a push
@@ -28,21 +27,23 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, rm, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
+import {
+  resolveGitCommitter as defaultResolveGitCommitter,
+  withGitCredential as defaultWithGitCredential,
+} from './git-auth.js';
 
 // Neutral committer identity, passed per-command via `-c` so the repo config
 // is never mutated (and the agent can't inherit it for its own commits).
-const GIT_IDENTITY = [
-  '-c',
-  'user.email=aidlc-engine@noreply.local',
-  '-c',
-  'user.name=AI-DLC Engine',
-];
+const DEFAULT_COMMITTER = {
+  name: 'AI-DLC Engine',
+  email: 'aidlc-engine@noreply.local',
+};
 
 // "On behalf of" attribution: when the orchestrator supplies the starting
-// user's identity ({ name, email }, resolved from their OAuth connection),
-// engine commits and merges are AUTHORED by the user while the COMMITTER
-// stays AI-DLC Engine — GitHub renders "<user> authored and AI-DLC Engine
-// committed". Implemented via `-c author.name/author.email` (git ≥2.22):
+// starter's snapshotted identity ({ name, email }), engine commits and merges
+// are AUTHORED by the starter while the COMMITTER is the delegated OAuth or
+// GitHub App identity returned by the broker. Implemented via
+// `-c author.name/author.email` (git >=2.22):
 // unlike `--author` it works for `merge` too, and unlike GIT_AUTHOR_* env it
 // survives sanitizedGitEnv (which must keep stripping ambient overrides so
 // the agent can't spoof authorship).
@@ -52,11 +53,14 @@ const GIT_IDENTITY = [
 // cosmetic, a commit must never fail over it.
 const sanitizeIdentField = (v) => (typeof v === 'string' ? v.replace(/[<>\n\r]/g, ' ').trim() : '');
 
-export const gitIdentity = (author = null) => {
-  const name = sanitizeIdentField(author?.name);
-  const email = sanitizeIdentField(author?.email);
-  if (!name || !email) return GIT_IDENTITY;
-  return [...GIT_IDENTITY, '-c', `author.name=${name}`, '-c', `author.email=${email}`];
+export const gitIdentity = (author = null, committer = null) => {
+  const committerName = sanitizeIdentField(committer?.name) || DEFAULT_COMMITTER.name;
+  const committerEmail = sanitizeIdentField(committer?.email) || DEFAULT_COMMITTER.email;
+  const identity = ['-c', `user.email=${committerEmail}`, '-c', `user.name=${committerName}`];
+  const authorName = sanitizeIdentField(author?.name);
+  const authorEmail = sanitizeIdentField(author?.email);
+  if (!authorName || !authorEmail) return identity;
+  return [...identity, '-c', `author.name=${authorName}`, '-c', `author.email=${authorEmail}`];
 };
 
 // Runtime files that live INSIDE the workspace mount — which, for a
@@ -113,18 +117,18 @@ export const ensureRuntimeExcludes = async ({ dir }) => {
 const AMBIENT_GIT_ENV =
   /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|PREFIX|NAMESPACE|CEILING_DIRECTORIES|AUTHOR_|COMMITTER_)/;
 
-const sanitizedGitEnv = () => {
+const sanitizedGitEnv = (overrides = {}) => {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (!AMBIENT_GIT_ENV.test(k)) env[k] = v;
   }
-  return env;
+  return { ...env, ...overrides };
 };
 
 // argv-based git runner: captures stdout/stderr, resolves { exitCode, stdout,
 // stderr }, never rejects (spawn errors → exitCode null). Mirrors
 // cli/spawn.js#captureChild but is git-scoped and dependency-free.
-export const runGit = (args, { cwd, spawnFn = spawn } = {}) =>
+export const runGit = (args, { cwd, env = {}, spawnFn = spawn } = {}) =>
   new Promise((resolve) => {
     let settled = false;
     const settle = (v) => {
@@ -136,7 +140,7 @@ export const runGit = (args, { cwd, spawnFn = spawn } = {}) =>
     const child = spawnFn('git', args, {
       cwd,
       shell: false,
-      env: sanitizedGitEnv(),
+      env: sanitizedGitEnv(env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -165,6 +169,61 @@ export const scrubRemote = async ({ dir, repo, gitProvider, urls = {}, git = run
   return { scrubbed: add.exitCode === 0 };
 };
 
+const withAuthenticatedRemote = async (
+  {
+    dir,
+    repo,
+    projectId,
+    executionId,
+    gitProvider,
+    requiredAccess,
+    urls = {},
+    git = runGit,
+    withGitCredential = defaultWithGitCredential,
+  },
+  operation,
+) => {
+  // Local integration tests switch to a file remote for the operation. This
+  // URL is never a credential and production callers do not set it.
+  const networkUrl = urls.network ?? urls.auth;
+  if (networkUrl) {
+    const set = await git(['remote', 'set-url', 'origin', networkUrl], { cwd: dir });
+    if (set.exitCode !== 0) throw new Error('remote_set_url_failed');
+    try {
+      return await operation({});
+    } finally {
+      await scrubRemote({ dir, repo, gitProvider, urls, git });
+    }
+  }
+  return withGitCredential(
+    {
+      executionId,
+      projectId,
+      provider: gitProvider,
+      repository: repo,
+      requiredAccess,
+    },
+    ({ env }) => operation(env),
+  );
+};
+
+const resolveCommitterFor = async ({
+  projectId,
+  executionId,
+  gitProvider,
+  repo,
+  urls = {},
+  resolveGitCommitter = defaultResolveGitCommitter,
+}) => {
+  if (urls.network ?? urls.auth) return null;
+  return resolveGitCommitter({
+    executionId,
+    projectId,
+    provider: gitProvider,
+    repository: repo,
+  });
+};
+
 // Stage + commit everything in the tree. Returns:
 //   { committed: true,  sha }             — a new commit was created
 //   { committed: false, reason: 'clean' } — nothing to commit (normal for
@@ -185,6 +244,7 @@ export const commitAll = async ({
   dir,
   message,
   author = null,
+  committer = null,
   git = runGit,
   attempts = 3,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -213,7 +273,9 @@ export const commitAll = async ({
     if (status.exitCode === 0 && status.stdout.trim() === '') {
       return { committed: false, reason: 'clean' };
     }
-    const commit = await git([...gitIdentity(author), 'commit', '-m', message], { cwd: dir });
+    const commit = await git([...gitIdentity(author, committer), 'commit', '-m', message], {
+      cwd: dir,
+    });
     if (commit.exitCode !== 0) {
       return { committed: false, reason: 'commit_failed', detail: commit.stderr.trim(), files };
     }
@@ -268,6 +330,7 @@ export const seedInitialCommit = async ({
   baseBranch, // resolved base name (selected → provider default → 'main')
   message = 'aidlc: initialize repository',
   author = null,
+  committer = null,
   git = runGit,
 }) => {
   const head = await git(['rev-parse', '--verify', 'HEAD'], { cwd: dir });
@@ -280,9 +343,10 @@ export const seedInitialCommit = async ({
   if (onBase.exitCode !== 0) {
     return { seeded: false, reason: 'base_checkout_failed', detail: onBase.stderr.trim() };
   }
-  const commit = await git([...gitIdentity(author), 'commit', '--allow-empty', '-m', message], {
-    cwd: dir,
-  });
+  const commit = await git(
+    [...gitIdentity(author, committer), 'commit', '--allow-empty', '-m', message],
+    { cwd: dir },
+  );
   if (commit.exitCode !== 0) {
     return { seeded: false, reason: 'commit_failed', detail: commit.stderr.trim() };
   }
@@ -375,8 +439,7 @@ export const isAheadOfRemote = async ({ dir, branch, git = runGit }) => {
   return remoteRef.stdout.trim() !== head.stdout.trim();
 };
 
-// Push HEAD to the branch with v1 pushBranchWithRetry semantics. The tokenized
-// remote URL exists ONLY between the set-url and the finally-scrub. Returns:
+// Push HEAD to the branch with v1 pushBranchWithRetry semantics. Returns:
 //   { pushed: 'empty' }               — no commits at all (new/empty repo)
 //   { pushed: true, sha, verified }   — on the remote (verified: ls-remote head
 //                                       matched; a mismatch/unreadable ls-remote
@@ -386,11 +449,13 @@ export const pushBranch = async ({
   dir,
   repo,
   branch,
-  gitToken,
   gitProvider,
+  projectId,
+  executionId,
   attempts = 3,
   urls = {},
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   log = (...a) => console.error('[git-engine]', ...a),
 }) => {
@@ -401,43 +466,65 @@ export const pushBranch = async ({
   if (head.exitCode !== 0) return { pushed: 'empty' };
   const localHead = head.stdout.trim();
 
-  // Inject credentials for the push window only.
-  const authUrl = urls.auth ?? buildCloneUrl(gitProvider, repo, gitToken);
-  const setAuth = await git(['remote', 'set-url', 'origin', authUrl], { cwd: dir });
-  if (setAuth.exitCode !== 0) {
-    return { pushed: false, reason: 'remote_set_url_failed', detail: setAuth.stderr.trim() };
-  }
-
   try {
-    let lastDetail = '';
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      // Push HEAD explicitly to the remote refspec so it works even if the
-      // local branch name diverged (v1 semantics).
-      const push = await git(['push', 'origin', `HEAD:refs/heads/${branch}`], { cwd: dir });
-      if (push.exitCode === 0) {
-        // Remote-HEAD verification. A mismatch can be a legitimate race (the
-        // remote advanced); an unreadable ls-remote falls back to trusting the
-        // push exit code — both still count as pushed (v1 semantics).
-        const remote = await git(['ls-remote', 'origin', branch], { cwd: dir });
-        if (remote.exitCode === 0) {
-          const remoteHead = remote.stdout.trim().split(/\s/)[0] ?? '';
-          const verified = remoteHead === localHead;
-          if (!verified) {
-            log(`push verification mismatch for ${repo}#${branch}:`, { localHead, remoteHead });
+    return await withAuthenticatedRemote(
+      {
+        dir,
+        repo,
+        projectId,
+        executionId,
+        gitProvider,
+        requiredAccess: 'write',
+        urls,
+        git,
+        withGitCredential,
+      },
+      async (env) => {
+        let lastDetail = '';
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          // Push HEAD explicitly to the remote refspec so it works even if the
+          // local branch name diverged (v1 semantics).
+          const push = await git(['push', 'origin', `HEAD:refs/heads/${branch}`], {
+            cwd: dir,
+            env,
+          });
+          if (push.exitCode === 0) {
+            // Remote-HEAD verification. A mismatch can be a legitimate race (the
+            // remote advanced); an unreadable ls-remote falls back to trusting the
+            // push exit code — both still count as pushed (v1 semantics).
+            const remote = await git(['ls-remote', 'origin', branch], { cwd: dir, env });
+            if (remote.exitCode === 0) {
+              const remoteHead = remote.stdout.trim().split(/\s/)[0] ?? '';
+              const verified = remoteHead === localHead;
+              if (!verified) {
+                log(`push verification mismatch for ${repo}#${branch}:`, {
+                  localHead,
+                  remoteHead,
+                });
+              }
+              return { pushed: true, sha: localHead, verified };
+            }
+            log(`ls-remote failed for ${repo}#${branch}; trusting push exit code`);
+            return { pushed: true, sha: localHead, verified: false };
           }
-          return { pushed: true, sha: localHead, verified };
+          lastDetail = (push.stderr || '').trim().slice(-500);
+          log(`push attempt ${attempt}/${attempts} failed for ${repo}#${branch}`);
+          if (attempt < attempts) await sleep(attempt * 2000);
         }
-        log(`ls-remote failed for ${repo}#${branch}; trusting push exit code`);
-        return { pushed: true, sha: localHead, verified: false };
-      }
-      lastDetail = (push.stderr || '').trim().slice(-500);
-      log(`push attempt ${attempt}/${attempts} failed for ${repo}#${branch}`);
-      if (attempt < attempts) await sleep(attempt * 2000);
-    }
-    return { pushed: false, reason: 'push_failed', detail: lastDetail };
-  } finally {
-    // The token must never outlive the push window, even on a crash path.
-    await scrubRemote({ dir, repo, gitProvider, urls, git });
+        return { pushed: false, reason: 'push_failed', detail: lastDetail };
+      },
+    );
+  } catch (error) {
+    const result = {
+      pushed: false,
+      reason:
+        error.message === 'remote_set_url_failed'
+          ? 'remote_set_url_failed'
+          : 'credential_unavailable',
+      detail: error.code || error.message,
+    };
+    log(`push failed for ${gitProvider}: ${result.reason}`);
+    return result;
   }
 };
 
@@ -447,14 +534,11 @@ export const pushBranch = async ({
 export const repoTargetDir = ({ url, workspaceDir, multi }) =>
   multi ? path.join(workspaceDir, url) : workspaceDir;
 
-// Authenticated fetch — the READ counterpart of pushBranch's token window.
-// Clone is the only authenticated read the engine had; lane branching and
-// merge-back both need current remote refs first. The tokenized URL exists
-// only between the set-url and the finally-scrub. Never throws.
+// Authenticated fetch — lane branching and merge-back need current remote refs.
 //   { fetched: true }                    — remote refs are current
 //   { fetched: false, reason, detail }   — set-url or fetch failure
 // Does <branch> exist on the remote? Authenticated `ls-remote` in the same
-// token window pattern as fetchOrigin. Returns:
+// broker credential scope as fetchOrigin. Returns:
 //   { exists: true|false }               — definitive answer
 //   { exists: null, reason, detail }     — could not determine (set-url / ls-remote failed)
 // A null result lets the caller decide (init-ws treats "unknown" as "try the
@@ -463,49 +547,89 @@ export const remoteBranchExists = async ({
   dir,
   repo,
   branch,
-  gitToken,
   gitProvider,
+  projectId,
+  executionId,
   urls = {},
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
 }) => {
   if (!branch) return { exists: null, reason: 'no_branch' };
-  const authUrl = urls.auth ?? buildCloneUrl(gitProvider, repo, gitToken);
-  const setAuth = await git(['remote', 'set-url', 'origin', authUrl], { cwd: dir });
-  if (setAuth.exitCode !== 0) {
-    return { exists: null, reason: 'remote_set_url_failed', detail: setAuth.stderr.trim() };
-  }
   try {
-    const ls = await git(['ls-remote', '--heads', 'origin', branch], { cwd: dir });
-    if (ls.exitCode !== 0) {
-      return { exists: null, reason: 'ls_remote_failed', detail: ls.stderr.trim().slice(-500) };
-    }
-    return { exists: ls.stdout.trim() !== '' };
-  } finally {
-    await scrubRemote({ dir, repo, gitProvider, urls, git });
+    return await withAuthenticatedRemote(
+      {
+        dir,
+        repo,
+        projectId,
+        executionId,
+        gitProvider,
+        requiredAccess: 'read',
+        urls,
+        git,
+        withGitCredential,
+      },
+      async (env) => {
+        const ls = await git(['ls-remote', '--heads', 'origin', branch], { cwd: dir, env });
+        if (ls.exitCode !== 0) {
+          return {
+            exists: null,
+            reason: 'ls_remote_failed',
+            detail: ls.stderr.trim().slice(-500),
+          };
+        }
+        return { exists: ls.stdout.trim() !== '' };
+      },
+    );
+  } catch (error) {
+    return {
+      exists: null,
+      reason: 'credential_unavailable',
+      detail: error.code || error.message,
+    };
   }
 };
 
 export const fetchOrigin = async ({
   dir,
   repo,
-  gitToken,
   gitProvider,
+  projectId,
+  executionId,
   urls = {},
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
 }) => {
-  const authUrl = urls.auth ?? buildCloneUrl(gitProvider, repo, gitToken);
-  const setAuth = await git(['remote', 'set-url', 'origin', authUrl], { cwd: dir });
-  if (setAuth.exitCode !== 0) {
-    return { fetched: false, reason: 'remote_set_url_failed', detail: setAuth.stderr.trim() };
-  }
   try {
-    const fetch = await git(['fetch', 'origin', '--prune'], { cwd: dir });
-    if (fetch.exitCode !== 0) {
-      return { fetched: false, reason: 'fetch_failed', detail: fetch.stderr.trim().slice(-500) };
-    }
-    return { fetched: true };
-  } finally {
-    await scrubRemote({ dir, repo, gitProvider, urls, git });
+    return await withAuthenticatedRemote(
+      {
+        dir,
+        repo,
+        projectId,
+        executionId,
+        gitProvider,
+        requiredAccess: 'read',
+        urls,
+        git,
+        withGitCredential,
+      },
+      async (env) => {
+        const fetch = await git(['fetch', 'origin', '--prune'], { cwd: dir, env });
+        if (fetch.exitCode !== 0) {
+          return {
+            fetched: false,
+            reason: 'fetch_failed',
+            detail: fetch.stderr.trim().slice(-500),
+          };
+        }
+        return { fetched: true };
+      },
+    );
+  } catch (error) {
+    return {
+      fetched: false,
+      reason: 'credential_unavailable',
+      detail: error.code || error.message,
+    };
   }
 };
 
@@ -523,15 +647,26 @@ export const ensureLaneBranch = async ({
   repo,
   unitBranch,
   intentBranch,
-  gitToken,
   gitProvider,
+  projectId,
+  executionId,
   urls = {},
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
   sleep,
   log = (...a) => console.error('[git-engine]', ...a),
 }) => {
   if (!unitBranch || !intentBranch) return { ready: false, reason: 'missing_branch' };
-  const fetch = await fetchOrigin({ dir, repo, gitToken, gitProvider, urls, git });
+  const fetch = await fetchOrigin({
+    dir,
+    repo,
+    projectId,
+    executionId,
+    gitProvider,
+    urls,
+    git,
+    withGitCredential,
+  });
   if (!fetch.fetched) return { ready: false, ...fetch };
 
   const remoteUnitRef = `refs/remotes/origin/${unitBranch}`;
@@ -555,10 +690,12 @@ export const ensureLaneBranch = async ({
           dir,
           repo,
           branch: unitBranch,
-          gitToken,
           gitProvider,
+          projectId,
+          executionId,
           urls,
           git,
+          withGitCredential,
           sleep,
           log,
         });
@@ -584,10 +721,12 @@ export const ensureLaneBranch = async ({
       dir,
       repo,
       branch: unitBranch,
-      gitToken,
       gitProvider,
+      projectId,
+      executionId,
       urls,
       git,
+      withGitCredential,
       sleep,
       log,
     });
@@ -617,10 +756,12 @@ export const ensureLaneBranch = async ({
     dir,
     repo,
     branch: unitBranch,
-    gitToken,
     gitProvider,
+    projectId,
+    executionId,
     urls,
     git,
+    withGitCredential,
     sleep,
     log,
   });
@@ -651,15 +792,28 @@ export const mergeBranchNoFf = async ({
   unitBranch,
   message,
   author = null,
-  gitToken,
+  committer,
   gitProvider,
+  projectId,
+  executionId,
   urls = {},
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
+  resolveGitCommitter = defaultResolveGitCommitter,
   sleep,
   log = (...a) => console.error('[git-engine]', ...a),
 }) => {
   if (!unitBranch || !intentBranch) return { merged: false, reason: 'missing_branch' };
-  const fetch = await fetchOrigin({ dir, repo, gitToken, gitProvider, urls, git });
+  const fetch = await fetchOrigin({
+    dir,
+    repo,
+    projectId,
+    executionId,
+    gitProvider,
+    urls,
+    git,
+    withGitCredential,
+  });
   if (!fetch.fetched) return { merged: false, ...fetch };
 
   const remoteUnit = await git(['rev-parse', '--verify', `refs/remotes/origin/${unitBranch}`], {
@@ -695,9 +849,20 @@ export const mergeBranchNoFf = async ({
     return { merged: 'up_to_date', sha: remoteIntent.stdout.trim() };
   }
 
+  const effectiveCommitter =
+    committer === undefined
+      ? await resolveCommitterFor({
+          projectId,
+          executionId,
+          gitProvider,
+          repo,
+          urls,
+          resolveGitCommitter,
+        }).catch(() => null)
+      : committer;
   const merge = await git(
     [
-      ...gitIdentity(author),
+      ...gitIdentity(author, effectiveCommitter),
       'merge',
       '--no-ff',
       '-m',
@@ -726,10 +891,12 @@ export const mergeBranchNoFf = async ({
     dir,
     repo,
     branch: intentBranch,
-    gitToken,
     gitProvider,
+    projectId,
+    executionId,
     urls,
     git,
+    withGitCredential,
     sleep,
     log,
   });
@@ -760,13 +927,26 @@ export const beginConflictMerge = async ({
   intentBranch,
   message,
   author = null,
-  gitToken,
+  committer,
   gitProvider,
+  projectId,
+  executionId,
   urls = {},
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
+  resolveGitCommitter = defaultResolveGitCommitter,
 }) => {
   if (!unitBranch || !intentBranch) return { conflicted: false, error: 'missing_branch' };
-  const fetch = await fetchOrigin({ dir, repo, gitToken, gitProvider, urls, git });
+  const fetch = await fetchOrigin({
+    dir,
+    repo,
+    projectId,
+    executionId,
+    gitProvider,
+    urls,
+    git,
+    withGitCredential,
+  });
   if (!fetch.fetched) return { conflicted: false, error: fetch.reason, detail: fetch.detail };
 
   const checkout = await git(['checkout', '-B', unitBranch, `refs/remotes/origin/${unitBranch}`], {
@@ -781,9 +961,20 @@ export const beginConflictMerge = async ({
   );
   if (ancestor.exitCode === 0) return { conflicted: false, merged: 'up_to_date' };
 
+  const effectiveCommitter =
+    committer === undefined
+      ? await resolveCommitterFor({
+          projectId,
+          executionId,
+          gitProvider,
+          repo,
+          urls,
+          resolveGitCommitter,
+        }).catch(() => null)
+      : committer;
   const merge = await git(
     [
-      ...gitIdentity(author),
+      ...gitIdentity(author, effectiveCommitter),
       'merge',
       '--no-ff',
       '-m',
@@ -841,10 +1032,14 @@ export const concludeConflictMerge = async ({
   unitBranch,
   conflicts = [],
   author = null,
-  gitToken,
+  committer,
   gitProvider,
+  projectId,
+  executionId,
   urls = {},
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
+  resolveGitCommitter = defaultResolveGitCommitter,
   sleep,
   log = (...a) => console.error('[git-engine]', ...a),
 }) => {
@@ -860,6 +1055,17 @@ export const concludeConflictMerge = async ({
   // MERGE_HEAD) — nothing to stage or commit; only the push remains.
   const inProgress =
     (await git(['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: dir })).exitCode === 0;
+  const effectiveCommitter =
+    committer === undefined
+      ? await resolveCommitterFor({
+          projectId,
+          executionId,
+          gitProvider,
+          repo,
+          urls,
+          resolveGitCommitter,
+        }).catch(() => null)
+      : committer;
   if (inProgress) {
     await ensureRuntimeExcludes({ dir });
     const add = await git(['add', '-A'], { cwd: dir });
@@ -880,7 +1086,9 @@ export const concludeConflictMerge = async ({
     }
     // `git commit` with no -m completes the merge using MERGE_MSG (the message
     // beginConflictMerge supplied via -m).
-    const commit = await git([...gitIdentity(author), 'commit', '--no-edit'], { cwd: dir });
+    const commit = await git([...gitIdentity(author, effectiveCommitter), 'commit', '--no-edit'], {
+      cwd: dir,
+    });
     if (commit.exitCode !== 0) {
       await abort();
       return { concluded: false, reason: 'commit_failed', detail: commit.stderr.trim() };
@@ -891,10 +1099,12 @@ export const concludeConflictMerge = async ({
     dir,
     repo,
     branch: unitBranch,
-    gitToken,
     gitProvider,
+    projectId,
+    executionId,
     urls,
     git,
+    withGitCredential,
     sleep,
     log,
   });
@@ -919,12 +1129,16 @@ export const commitAndPushAll = async ({
   repos = [],
   workspaceDir,
   branch,
-  gitToken,
   gitProvider,
+  repoProviders = null,
+  projectId,
+  executionId,
   message,
   author = null,
   urlsFor = null, // (repoUrl) => { clean, auth } — test seam for file:// remotes
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
+  resolveGitCommitter = defaultResolveGitCommitter,
   sleep,
   log = (...a) => console.error('[git-engine]', ...a),
 }) => {
@@ -932,10 +1146,31 @@ export const commitAndPushAll = async ({
   const multi = repos.length > 1;
   for (const repo of repos) {
     const url = typeof repo === 'string' ? repo : repo.url;
+    const provider =
+      (typeof repo === 'object' && repo?.provider) ||
+      repoProviders?.[url] ||
+      gitProvider ||
+      'github';
     const dir = repoTargetDir({ url, workspaceDir, multi });
     const urls = urlsFor ? urlsFor(url) : {};
     try {
-      const commit = await commitAll({ dir, message, author, git, sleep, log });
+      const committer = await resolveCommitterFor({
+        projectId,
+        executionId,
+        gitProvider: provider,
+        repo: url,
+        urls,
+        resolveGitCommitter,
+      }).catch(() => null);
+      const commit = await commitAll({
+        dir,
+        message,
+        author,
+        committer,
+        git,
+        sleep,
+        log,
+      });
       if (commit.reason === 'add_failed' || commit.reason === 'commit_failed') {
         results.push({ repo: url, ...commit, pushed: false });
         continue;
@@ -951,10 +1186,12 @@ export const commitAndPushAll = async ({
         dir,
         repo: url,
         branch,
-        gitToken,
-        gitProvider,
+        gitProvider: provider,
+        projectId,
+        executionId,
         urls,
         git,
+        withGitCredential,
         sleep,
         log,
       });

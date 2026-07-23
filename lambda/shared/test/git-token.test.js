@@ -158,10 +158,112 @@ describe('ensureFreshGitToken', () => {
       ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
     ).rejects.toThrow(/refresh token revoked/);
   });
+
+  it('coalesces concurrent refreshes of the same connection into one GitLab call', async () => {
+    storeToken({ accessToken: 'old', refreshToken: 'r1', expiresAt: Date.now() - 1000 });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+    });
+    ssmMock.on(PutParameterCommand).resolves({});
+    ddbMock.on(PutCommand).resolves({});
+    globalThis.fetch = vi.fn(async () => ({
+      json: async () => ({ access_token: 'fresh', refresh_token: 'r2', token_type: 'bearer' }),
+    }));
+
+    const [a, b] = await Promise.all([
+      ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
+      ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
+    ]);
+
+    expect(a).toBe('fresh');
+    expect(b).toBe('fresh');
+    // One-time-use refresh token: a second GitLab call would have failed with
+    // invalid_grant. Single-flight must issue exactly one.
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers from a lost cross-container refresh race via the rotated stored pair', async () => {
+    // First read returns the stale pair; after the (losing) refresh fails with
+    // invalid_grant, the re-read returns the pair the winning container saved.
+    let reads = 0;
+    ssmMock.on(GetParameterCommand).callsFake(() => {
+      reads += 1;
+      const value =
+        reads === 1
+          ? { accessToken: 'old', refreshToken: 'r1', expiresAt: Date.now() - 1000 }
+          : { accessToken: 'winner', refreshToken: 'r2', expiresAt: Date.now() + 7200000 };
+      return { Parameter: { Value: JSON.stringify(value) } };
+    });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+    });
+    globalThis.fetch = vi.fn(async () => ({
+      status: 400,
+      json: async () => ({ error: 'invalid_grant' }),
+    }));
+
+    const out = await ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' });
+    expect(out).toBe('winner');
+  });
+
+  it('still throws invalid_grant when the stored pair did not rotate (genuine revocation)', async () => {
+    storeToken({ accessToken: 'old', refreshToken: 'r1', expiresAt: Date.now() - 1000 });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+    });
+    globalThis.fetch = vi.fn(async () => ({
+      status: 400,
+      json: async () => ({ error: 'invalid_grant' }),
+    }));
+
+    await expect(
+      ensureFreshGitToken({ ssm, secrets, ddb, item: ITEM, gitProvider: 'gitlab' }),
+    ).rejects.toMatchObject({ code: 'CREDENTIAL_REFRESH_FAILED' });
+  });
+
+  it('staleToken forces a refresh of a not-yet-expired token', async () => {
+    storeToken({ accessToken: 'rejected', refreshToken: 'r1', expiresAt: Date.now() + 3600000 });
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'csec' }),
+    });
+    ssmMock.on(PutParameterCommand).resolves({});
+    ddbMock.on(PutCommand).resolves({});
+    globalThis.fetch = vi.fn(async () => ({
+      json: async () => ({ access_token: 'fresh', refresh_token: 'r2', token_type: 'bearer' }),
+    }));
+
+    const out = await ensureFreshGitToken({
+      ssm,
+      secrets,
+      ddb,
+      item: ITEM,
+      gitProvider: 'gitlab',
+      staleToken: 'rejected',
+    });
+    expect(out).toBe('fresh');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('staleToken returns the stored token without refreshing when it already rotated', async () => {
+    storeToken({ accessToken: 'already-new', refreshToken: 'r2', expiresAt: Date.now() + 3600000 });
+    globalThis.fetch = vi.fn();
+
+    const out = await ensureFreshGitToken({
+      ssm,
+      secrets,
+      ddb,
+      item: ITEM,
+      gitProvider: 'gitlab',
+      staleToken: 'rejected',
+    });
+    expect(out).toBe('already-new');
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe('getInstallationToken', () => {
   let getInstallationToken;
+  const app = { appId: '12345', installationId: '67890' };
   // Throwaway keypair generated per test run — never a literal PEM in the
   // repo, so secret scanners stay green.
   const { privateKey: testPrivateKeyPem } = generateKeyPairSync('rsa', {
@@ -175,8 +277,6 @@ describe('getInstallationToken', () => {
     secretsMock.reset();
     delete globalThis.fetch;
     vi.stubEnv('GITHUB_APP_PRIVATE_KEY_SECRET_NAME', 'test/app-key');
-    vi.stubEnv('GITHUB_APP_ID', '12345');
-    vi.stubEnv('GITHUB_INSTALLATION_ID', '67890');
     // Re-import to get a fresh module with clean caches.
     vi.resetModules();
     ({ getInstallationToken } = await import('../git-token.js'));
@@ -191,14 +291,22 @@ describe('getInstallationToken', () => {
   });
 
   it('throws when repositories array is missing (fail-closed)', async () => {
-    await expect(getInstallationToken({ secrets })).rejects.toThrow(
+    await expect(getInstallationToken({ secrets, ...app })).rejects.toThrow(
       /repositories array is required/,
     );
   });
 
   it('throws when repositories array is empty (fail-closed)', async () => {
-    await expect(getInstallationToken({ secrets, repositories: [] })).rejects.toThrow(
+    await expect(getInstallationToken({ secrets, ...app, repositories: [] })).rejects.toThrow(
       /repositories array is required/,
+    );
+  });
+
+  it('does not fall back to global installation environment variables', async () => {
+    vi.stubEnv('GITHUB_APP_ID', '12345');
+    vi.stubEnv('GITHUB_INSTALLATION_ID', '67890');
+    await expect(getInstallationToken({ secrets, repositories: ['org/repo'] })).rejects.toThrow(
+      /appId and installationId are required/,
     );
   });
 
@@ -218,7 +326,7 @@ describe('getInstallationToken', () => {
     });
 
     await expect(
-      getInstallationToken({ secrets, repositories: ['other-org/repo'] }),
+      getInstallationToken({ secrets, ...app, repositories: ['other-org/repo'] }),
     ).rejects.toThrow(/owner does not match installation account/);
   });
 
@@ -236,7 +344,11 @@ describe('getInstallationToken', () => {
       return { ok: true, json: async () => ({ account: { login: 'My-Org' } }) };
     });
 
-    const token = await getInstallationToken({ secrets, repositories: ['my-org/my-repo'] });
+    const token = await getInstallationToken({
+      secrets,
+      ...app,
+      repositories: ['my-org/my-repo'],
+    });
     expect(token).toBe('ghs_abc');
     // Verify the mint call used short repo names
     const mintCall = globalThis.fetch.mock.calls.find((c) => c[0].includes('/access_tokens'));
@@ -266,6 +378,7 @@ describe('getInstallationToken', () => {
 
     await getInstallationToken({
       secrets,
+      ...app,
       repositories: ['org/repo'],
       permissions: { contents: 'read' },
     });
@@ -275,56 +388,30 @@ describe('getInstallationToken', () => {
   });
 });
 
-// ── mode-aware resolution (platform GitHub auth mode, shared/github-auth-config)
-
-describe('resolveGitHubTokenForMode / getInstallationTokenFromConfig / getInstallationReadToken', () => {
-  let gitToken;
-  const { privateKey: pem } = generateKeyPairSync('rsa', {
+describe('validateGitHubAppInstallation', () => {
+  let validateGitHubAppInstallation;
+  const app = { appId: '12345', installationId: '67890' };
+  const { privateKey: testPrivateKeyPem } = generateKeyPairSync('rsa', {
     modulusLength: 2048,
     privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
     publicKeyEncoding: { type: 'spki', format: 'pem' },
   });
 
-  const MODE_PARAM = '/proj/dev/github-auth-mode';
-  const CONFIG_PARAM = '/proj/dev/github-app-config';
-
-  const stubAppConfig = (mode = 'app', appId = '12345', installationId = '67890') => {
-    ssmMock.on(GetParameterCommand, { Name: MODE_PARAM }).resolves({ Parameter: { Value: mode } });
-    ssmMock
-      .on(GetParameterCommand, { Name: CONFIG_PARAM })
-      .resolves({ Parameter: { Value: JSON.stringify({ appId, installationId }) } });
-  };
-
-  const stubGitHubApi = (login = 'org') => {
-    globalThis.fetch = vi.fn(async (url) => {
-      if (url.includes('/access_tokens')) {
-        return {
-          ok: true,
-          json: async () => ({
-            token: 'ghs_mode',
-            expires_at: new Date(Date.now() + 3600000).toISOString(),
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({ account: { login } }) };
-    });
+  const stubInstallation = (permissions) => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ account: { login: 'my-org' }, permissions }),
+    }));
   };
 
   beforeEach(async () => {
-    ssmMock.reset();
     secretsMock.reset();
     delete globalThis.fetch;
     vi.stubEnv('GITHUB_APP_PRIVATE_KEY_SECRET_NAME', 'test/app-key');
-    vi.stubEnv('GITHUB_AUTH_MODE_PARAM', MODE_PARAM);
-    vi.stubEnv('GITHUB_APP_CONFIG_PARAM', CONFIG_PARAM);
     vi.resetModules();
-    gitToken = await import('../git-token.js');
-    // Explicitly drop module-level caches; both modules cache reads.
-    gitToken.clearAppAuthCaches();
-    const authConfig = await import('../github-auth-config.js');
-    authConfig.clearGitHubAuthConfigCache();
+    ({ validateGitHubAppInstallation } = await import('../git-token.js'));
     secretsMock.on(GetSecretValueCommand).resolves({
-      SecretString: JSON.stringify({ privateKey: pem }),
+      SecretString: JSON.stringify({ privateKey: testPrivateKeyPem }),
     });
   });
 
@@ -333,87 +420,34 @@ describe('resolveGitHubTokenForMode / getInstallationTokenFromConfig / getInstal
     delete globalThis.fetch;
   });
 
-  it('app mode mints a repo-scoped installation token from the SSM config', async () => {
-    stubAppConfig('app');
-    stubGitHubApi('org');
-    const out = await gitToken.resolveGitHubTokenForMode(
-      { ssm, secrets, ddb },
-      { userId: 'user-1', repositories: ['org/repo'] },
-    );
-    expect(out).toEqual({ mode: 'app', token: 'ghs_mode' });
-  });
-
-  it('getInstallationTokenFromConfig throws when the App config is incomplete', async () => {
-    stubAppConfig('app', null, null);
+  it('throws when a required permission is missing', async () => {
+    stubInstallation({ pull_requests: 'write', issues: 'write', metadata: 'read' });
     await expect(
-      gitToken.getInstallationTokenFromConfig({ ssm, secrets, repositories: ['org/repo'] }),
-    ).rejects.toThrow(/GitHub App is not configured/);
+      validateGitHubAppInstallation(secrets, app.appId, app.installationId),
+    ).rejects.toThrow(/missing required permissions: contents:write/);
   });
 
-  it('oauth mode resolves the per-user connection token', async () => {
-    vi.stubEnv('GIT_CONNECTIONS_TABLE', 'test-git-connections');
-    vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', 'test-git-provider-connections');
-    ssmMock
-      .on(GetParameterCommand, { Name: MODE_PARAM })
-      .resolves({ Parameter: { Value: 'oauth' } });
-    ssmMock
-      .on(GetParameterCommand, { Name: '/proj/dev/git-token/user-1' })
-      .resolves({ Parameter: { Value: JSON.stringify({ accessToken: 'gho_user' }) } });
-    const { GetCommand } = await import('@aws-sdk/lib-dynamodb');
-    ddbMock.on(GetCommand).resolves({
-      Item: { userId: 'user-1', provider: 'github', parameterName: '/proj/dev/git-token/user-1' },
+  it('accepts an installation without workflows:write and reports the shortfall', async () => {
+    stubInstallation({
+      contents: 'write',
+      pull_requests: 'write',
+      issues: 'write',
+      metadata: 'read',
     });
-
-    const out = await gitToken.resolveGitHubTokenForMode(
-      { ssm, secrets, ddb },
-      { userId: 'user-1', repositories: ['org/repo'] },
-    );
-    expect(out).toEqual({ mode: 'oauth', token: 'gho_user' });
+    const validated = await validateGitHubAppInstallation(secrets, app.appId, app.installationId);
+    expect(validated.accountLogin).toBe('my-org');
+    expect(validated.missingOptionalPermissions).toEqual(['workflows:write']);
   });
 
-  it('oauth mode returns a null token when the user has no connection', async () => {
-    vi.stubEnv('GIT_CONNECTIONS_TABLE', 'test-git-connections');
-    vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', 'test-git-provider-connections');
-    ssmMock
-      .on(GetParameterCommand, { Name: MODE_PARAM })
-      .resolves({ Parameter: { Value: 'oauth' } });
-    const { GetCommand } = await import('@aws-sdk/lib-dynamodb');
-    ddbMock.on(GetCommand).resolves({});
-
-    const out = await gitToken.resolveGitHubTokenForMode(
-      { ssm, secrets, ddb },
-      { userId: 'user-1' },
-    );
-    expect(out).toEqual({ mode: 'oauth', token: null });
-  });
-
-  it('getInstallationReadToken mints an unscoped metadata:read token', async () => {
-    stubAppConfig('app');
-    stubGitHubApi('org');
-    const token = await gitToken.getInstallationReadToken({ ssm, secrets });
-    expect(token).toBe('ghs_mode');
-    const mintCall = globalThis.fetch.mock.calls.find((c) => c[0].includes('/access_tokens'));
-    const mintBody = JSON.parse(mintCall[1].body);
-    // No repositories field (discovery must see all installation repos) and
-    // permissions pinned to metadata:read.
-    expect(mintBody.repositories).toBeUndefined();
-    expect(mintBody.permissions).toEqual({ metadata: 'read' });
-  });
-
-  it('clearAppAuthCaches forces a re-mint', async () => {
-    stubAppConfig('app');
-    stubGitHubApi('org');
-    await gitToken.getInstallationReadToken({ ssm, secrets });
-    await gitToken.getInstallationReadToken({ ssm, secrets });
-    const mintsBefore = globalThis.fetch.mock.calls.filter((c) =>
-      c[0].includes('/access_tokens'),
-    ).length;
-    expect(mintsBefore).toBe(1); // cached
-    gitToken.clearAppAuthCaches();
-    await gitToken.getInstallationReadToken({ ssm, secrets });
-    const mintsAfter = globalThis.fetch.mock.calls.filter((c) =>
-      c[0].includes('/access_tokens'),
-    ).length;
-    expect(mintsAfter).toBe(2);
+  it('reports no optional shortfall when workflows:write is granted', async () => {
+    stubInstallation({
+      contents: 'write',
+      pull_requests: 'write',
+      workflows: 'write',
+      issues: 'write',
+      metadata: 'read',
+    });
+    const validated = await validateGitHubAppInstallation(secrets, app.appId, app.installationId);
+    expect(validated.missingOptionalPermissions).toEqual([]);
   });
 });

@@ -139,6 +139,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     startedAt,
     completedAt,
     failureReason,
+    startedBy,
+    starterName,
+    starterEmail,
     constructionAutonomyMode,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
@@ -213,6 +216,18 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (failureReason !== undefined) {
       sets.push('failureReason = :fr');
       values[':fr'] = failureReason;
+    }
+    if (startedBy !== undefined) {
+      sets.push('startedBy = :sby');
+      values[':sby'] = startedBy;
+    }
+    if (starterName !== undefined) {
+      sets.push('starterName = :snm');
+      values[':snm'] = starterName;
+    }
+    if (starterEmail !== undefined) {
+      sets.push('starterEmail = :sem');
+      values[':sem'] = starterEmail;
     }
     if (orchestratorRunId !== undefined) {
       sets.push('orchestratorRunId = :orid');
@@ -1160,6 +1175,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     baseBranch,
     baseBranches,
     repos,
+    repoProviders,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -1176,6 +1192,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     maybe('baseBranch', ':baseBranch', baseBranch);
     maybe('baseBranches', ':baseBranches', baseBranches);
     maybe('repos', ':repos', repos);
+    maybe('repoProviders', ':repoProviders', repoProviders);
     const { Attributes } = await ddb.send(
       new UpdateCommand({
         TableName: table(),

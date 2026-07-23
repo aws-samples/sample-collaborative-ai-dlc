@@ -75,7 +75,7 @@ const oauth = {
   secretEnvName: 'GITLAB_OAUTH_SECRET_NAME',
   redirectUriEnvName: 'GITLAB_REDIRECT_URI',
   scopes: 'api read_user',
-  requiredConnectionScopes: ['api'],
+  requiredConnectionScopes: ['api', 'read_user'],
 
   buildAuthorizeUrl({ clientId, redirectUri, state }) {
     return `https://gitlab.com/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
@@ -155,6 +155,22 @@ const oauth = {
   },
 };
 
+const getAuthenticatedUser = async (ctx) => {
+  const res = await glFetch(ctx, `${API_BASE}/user`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.username) {
+    throw new ProviderError(res.status || 400, data?.message || 'Failed to fetch user');
+  }
+  return {
+    login: data.username,
+    authorName: data.name || data.username,
+    authorEmail:
+      data.public_email ||
+      data.commit_email ||
+      `${data.id}+${data.username}@users.noreply.gitlab.com`,
+  };
+};
+
 // ---------------------------------------------------------------------------
 // Repo browse
 // ---------------------------------------------------------------------------
@@ -209,6 +225,28 @@ const getDefaultBranch = async (ctx, repoId) => {
   return data?.default_branch ?? null;
 };
 
+const getRepositoryAccess = async (ctx, repoId) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(
+      res.status || 400,
+      data?.message || data?.error || 'Failed to access project',
+    );
+  }
+  const projectLevel = Number(data.permissions?.project_access?.access_level || 0);
+  const groupLevel = Number(data.permissions?.group_access?.access_level || 0);
+  const accessLevel = Math.max(projectLevel, groupLevel);
+  return {
+    defaultBranch: data.default_branch ?? null,
+    private: data.visibility !== 'public',
+    accessLevel,
+    canRead: accessLevel >= 20,
+    canWrite: accessLevel >= 30,
+  };
+};
+
 const getTree = async (ctx, repoId, branch = 'main') => {
   const project = encodeProject(repoId);
   const res = await glFetch(
@@ -245,6 +283,122 @@ const getFileContents = async (ctx, repoId, filePath, branch = 'main') => {
     size: data.size,
     content: Buffer.from(data.content, 'base64').toString('utf-8'),
   };
+};
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+const mapIssue = (issue) => ({
+  resourceId: String(issue.iid),
+  resourceUrl: issue.web_url,
+  resourceType: 'issue',
+  entityType: issue.issue_type || null,
+  entityIconUrl: null,
+  title: issue.title,
+  body: issue.description ?? null,
+  state: issue.state === 'closed' ? 'closed' : 'open',
+  labels: Array.isArray(issue.labels) ? issue.labels.map((name) => ({ name, color: null })) : [],
+  author: {
+    handle: issue.author?.username || '',
+    avatarUrl: issue.author?.avatar_url || '',
+  },
+  createdAt: issue.created_at,
+  updatedAt: issue.updated_at,
+});
+
+const mapIssueDiscussionComment = (comment) => ({
+  id: String(comment.id),
+  author: {
+    handle: comment.author?.username || '',
+    avatarUrl: comment.author?.avatar_url || '',
+  },
+  body: comment.body ?? '',
+  createdAt: comment.created_at,
+  updatedAt: comment.updated_at,
+});
+
+const issuePageSize = (raw) => {
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 100) : 30;
+};
+
+const issuePageNumber = (raw) => {
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+};
+
+const listIssues = async (ctx, repoId, options = {}) => {
+  const project = encodeProject(repoId);
+  const state = ['open', 'closed', 'all'].includes(options.state) ? options.state : 'open';
+  const page = issuePageNumber(options.page);
+  const perPage = issuePageSize(options.perPage);
+  const params = new URLSearchParams({
+    per_page: String(perPage),
+    page: String(page),
+    order_by: 'updated_at',
+  });
+  if (state !== 'all') params.set('state', state === 'open' ? 'opened' : 'closed');
+  const query = String(options.q || '').trim();
+  if (query) params.set('search', query);
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/issues?${params.toString()}`);
+  if (res.status === 404) {
+    return { items: [], page, perPage, hasNext: false, hasPrev: false, totalCount: null };
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to fetch issues');
+  }
+  const items = Array.isArray(data) ? data.map(mapIssue) : [];
+  const totalPages = Number.parseInt(res.headers?.get?.('x-total-pages') || '0', 10);
+  const totalCount = Number.parseInt(res.headers?.get?.('x-total') || '', 10);
+  return {
+    items,
+    page,
+    perPage,
+    hasNext: totalPages > 0 ? page < totalPages : items.length === perPage,
+    hasPrev: page > 1,
+    totalCount: Number.isFinite(totalCount) ? totalCount : null,
+  };
+};
+
+const getIssue = async (ctx, repoId, issueNumber) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/issues/${issueNumber}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to fetch issue');
+  }
+  return mapIssue(data);
+};
+
+const listIssueComments = async (ctx, repoId, issueNumber) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/issues/${issueNumber}/notes?per_page=100&sort=asc`,
+  );
+  if (res.status === 404) return [];
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to fetch issue comments');
+  }
+  return Array.isArray(data)
+    ? data.filter((comment) => !comment.system).map(mapIssueDiscussionComment)
+    : [];
+};
+
+const addIssueComment = async (ctx, repoId, issueNumber, body) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/issues/${issueNumber}/notes`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to add issue comment');
+  }
+  return mapIssueDiscussionComment(data);
 };
 
 // ---------------------------------------------------------------------------
@@ -813,12 +967,18 @@ export {
   apiHeaders,
   glFetch,
   oauth,
+  getAuthenticatedUser,
   mapRepo,
   listRepos,
   listBranches,
   getDefaultBranch,
+  getRepositoryAccess,
   getTree,
   getFileContents,
+  listIssues,
+  getIssue,
+  listIssueComments,
+  addIssueComment,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
@@ -844,12 +1004,18 @@ export default {
   apiHeaders,
   glFetch,
   oauth,
+  getAuthenticatedUser,
   mapRepo,
   listRepos,
   listBranches,
   getDefaultBranch,
+  getRepositoryAccess,
   getTree,
   getFileContents,
+  listIssues,
+  getIssue,
+  listIssueComments,
+  addIssueComment,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,

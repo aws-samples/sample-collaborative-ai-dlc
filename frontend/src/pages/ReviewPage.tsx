@@ -5,11 +5,8 @@ import { useSprintEvents } from '@/hooks/useSprintEvents';
 import { useQuestionAnchor } from '@/hooks/useQuestionAnchor';
 import { questionAnchorId } from '@/lib/questionAnchor';
 import { useProjectCache } from '@/hooks/useProjectsCache';
-import {
-  getGitProviderService,
-  gitProviderTerminology,
-  type GitComment,
-} from '@/services/gitProvider';
+import { gitProviderTerminology, type GitComment } from '@/services/gitProvider';
+import { sourceControlService } from '@/services/sourceControl';
 import { sprintGraphService, extractPrs, type PrInfo } from '@/services/sprintGraph';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -198,8 +195,8 @@ export default function ReviewPage() {
     // Clear previous PR's comments so a slow response can't show them under the
     // newly selected PR, and guard against out-of-order resolution on fast switches.
     setPrComments([]);
-    getGitProviderService(project.gitProvider)
-      .getPullRequestComments(activeRepo, parseInt(activePrNumber))
+    sourceControlService
+      .getReviewComments(project.id, project.gitProvider, activeRepo, parseInt(activePrNumber))
       .then((res) => {
         if (!cancelled) setPrComments(res.comments);
       })

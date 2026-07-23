@@ -15,17 +15,24 @@ import {
   remoteBranchExists as defaultRemoteBranchExists,
   seedInitialCommit as defaultSeedInitialCommit,
 } from '../git-engine.js';
-import { getProvider } from '../../shared/git-providers.js';
+import { resolveGitCommitter as defaultResolveGitCommitter } from '../git-auth.js';
+import { invokeSourceControlOperation } from '../clients.js';
 import { materializeAttachments } from '../attachments.js';
 
 const { cardinality } = gremlin.process;
 
 // The repo's provider default branch (populated even for an empty repo). Used
 // to root an empty repo on the right base. null on any provider error.
-const providerDefaultBranch = async ({ repo, gitProvider, gitToken }) => {
+const providerDefaultBranch = async ({ projectId, repo, gitProvider }) => {
   try {
-    const provider = getProvider(gitProvider);
-    return (await provider.getDefaultBranch({ token: gitToken }, repo)) ?? null;
+    return (
+      (await invokeSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo,
+        operation: 'default-branch',
+      })) ?? null
+    );
   } catch {
     return null;
   }
@@ -60,8 +67,9 @@ export const initWs = async (
     branch,
     baseBranch,
     baseBranches,
-    gitToken,
     gitProvider,
+    repoProviders = null,
+    gitAuthor = null,
     title,
     workflowId,
     workflowVersion,
@@ -82,6 +90,7 @@ export const initWs = async (
     remoteBranchExists = defaultRemoteBranchExists,
     seedInitialCommit = defaultSeedInitialCommit,
     resolveDefaultBranch = providerDefaultBranch,
+    resolveGitCommitter = defaultResolveGitCommitter,
   } = deps;
   const now = clock();
 
@@ -93,24 +102,24 @@ export const initWs = async (
       branch,
       baseBranch,
       baseBranches,
-      gitToken,
       gitProvider,
+      repoProviders,
+      projectId,
+      executionId,
       workspaceDir,
     });
   } catch (e) {
     console.error('[init-ws] checkout_failed:', e?.message, e?.stack);
     return { ok: false, reason: 'checkout_failed', detail: e.message };
   }
-  // checkoutRepo degrades a FAILED clone to `git init` (cloned:false). That
-  // fallback can only ever mask real breakage — `git clone` of a genuinely
-  // empty repo exits 0 — so a repo that "checked out" without cloning means
-  // the remote was unreachable or unauthorized. Fail the init loudly instead.
+  // An empty remote clones successfully. Any `cloned:false` row is a real
+  // authentication, authorization, or repository error.
   const notCloned = checkedOut.filter((r) => r.cloned === false).map((r) => r.repo);
   if (notCloned.length > 0) {
     return {
       ok: false,
       reason: 'checkout_failed',
-      detail: `clone failed for ${notCloned.join(', ')} — repository unreachable or credentials missing/insufficient (check the git connection for the starting user)`,
+      detail: `clone failed for ${notCloned.join(', ')} — repository unreachable or the project binding is unavailable`,
     };
   }
   // The clone came down but the intent branch could not be set up (all three
@@ -150,12 +159,14 @@ export const initWs = async (
   if (branch && checkedOut.length > 0) {
     const pushFailures = [];
     for (const r of checkedOut) {
+      const provider = repoProviders?.[r.repo] || gitProvider || 'github';
       const existing = await remoteBranchExists({
         dir: r.targetDir,
         repo: r.repo,
         branch,
-        gitToken,
-        gitProvider,
+        gitProvider: provider,
+        projectId,
+        executionId,
       }).catch(() => ({ exists: null }));
       // Already on the remote → nothing to establish.
       if (existing.exists === true) continue;
@@ -166,12 +177,20 @@ export const initWs = async (
       const base =
         baseBranches?.[r.repo] ??
         baseBranch ??
-        (await resolveDefaultBranch({ repo: r.repo, gitProvider, gitToken })) ??
+        (await resolveDefaultBranch({ projectId, repo: r.repo, gitProvider: provider })) ??
         'main';
+      const committer = await resolveGitCommitter({
+        executionId,
+        projectId,
+        provider,
+        repository: r.repo,
+      }).catch(() => null);
       const seed = await seedInitialCommit({
         dir: r.targetDir,
         branch,
         baseBranch: base,
+        author: gitAuthor,
+        committer,
       }).catch((e) => ({ seeded: false, reason: 'seed_crashed', detail: e?.message }));
       if (seed.seeded === false && seed.reason !== 'not_empty') {
         pushFailures.push(
@@ -188,8 +207,9 @@ export const initWs = async (
           dir: r.targetDir,
           repo: r.repo,
           branch: seed.baseBranch,
-          gitToken,
-          gitProvider,
+          gitProvider: provider,
+          projectId,
+          executionId,
         }).catch((e) => ({ pushed: false, reason: 'push_crashed', detail: e?.message }));
         if (basePush.pushed !== true) {
           pushFailures.push(
@@ -203,8 +223,9 @@ export const initWs = async (
         dir: r.targetDir,
         repo: r.repo,
         branch,
-        gitToken,
-        gitProvider,
+        gitProvider: provider,
+        projectId,
+        executionId,
       }).catch((e) => ({ pushed: false, reason: 'push_crashed', detail: e?.message }));
       // After seeding, `empty` can only mean the repo STILL has no HEAD — the
       // branch cannot be published, so it is a failure, not an accepted no-op.

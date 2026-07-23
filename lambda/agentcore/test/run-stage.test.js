@@ -2419,7 +2419,6 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     repos: ['owner/repo'],
     branch: 'ai-dlc/i1',
     baseBranch: 'main',
-    gitToken: 'tok',
     gitProvider: 'github',
   };
   // With repos present the real source self-heal would try to git-clone the
@@ -2500,8 +2499,9 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       repos: ['owner/repo'],
       workspaceDir: '/ws',
       branch: 'ai-dlc/i1',
-      gitToken: 'tok',
       gitProvider: 'github',
+      projectId: 'p1',
+      executionId: 'e1',
       message: 'aidlc(requirements-analysis): e1',
     });
     // No gitAuthor in the payload → engine-only identity (author: null).
@@ -2528,8 +2528,8 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
         order.push('provider-recheck');
         expect(input).toMatchObject({
           targets,
+          projectId: 'p1',
           gitProvider: 'github',
-          gitToken: 'tok',
         });
         return [
           {
