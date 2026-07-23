@@ -306,6 +306,7 @@ module "yjs_server" {
   project_name                  = var.project_name
   environment                   = var.environment
   aws_region                    = var.aws_region
+  docker_build_args             = var.docker_build_args
   vpc_id                        = module.networking.vpc_id
   private_subnet_ids            = module.networking.private_subnet_ids
   cognito_user_pool_id          = module.auth.user_pool_id
@@ -327,6 +328,7 @@ module "agentcore" {
   project_name                = var.project_name
   environment                 = var.environment
   aws_region                  = var.aws_region
+  docker_build_args           = var.docker_build_args
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id
   artifacts_bucket_name       = module.s3.artifacts_bucket_name

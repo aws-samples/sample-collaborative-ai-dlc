@@ -24,6 +24,7 @@ OUTPUT_DIR="${E2E_OUTPUT_DIR:-$ROOT/test/e2e/artifacts/agent-output/$RUN_ID}"
 SECRET_FILE=""
 OVERALL_FAIL=0
 IMAGE=""
+DOCKER_PROXY_VARIABLES="HTTP_PROXY HTTPS_PROXY FTP_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy ftp_proxy no_proxy all_proxy"
 
 declare -a SELECTED_CLIS=()
 SELECTED_CLI_COUNT=0
@@ -98,6 +99,9 @@ set_result() {
 }
 
 preflight() {
+  local proxy_name
+  local -a outbound_check=(docker run --rm --platform linux/arm64)
+
   log "Preflight"
   command -v docker >/dev/null 2>&1 || fail "docker is required"
   command -v node >/dev/null 2>&1 || fail "node is required"
@@ -116,7 +120,12 @@ preflight() {
 
   docker run --rm --platform linux/arm64 alpine:3.20 true >/dev/null 2>&1 ||
     fail "Docker cannot execute linux/arm64 containers"
-  docker run --rm --platform linux/arm64 curlimages/curl:8.12.1 \
+
+  for proxy_name in $DOCKER_PROXY_VARIABLES; do
+    [ -n "${!proxy_name:-}" ] && outbound_check+=(--env "$proxy_name")
+  done
+  outbound_check+=(curlimages/curl:8.12.1)
+  "${outbound_check[@]}" \
     -fsS --connect-timeout 10 --max-time 20 -o /dev/null https://aws.amazon.com/ ||
     fail "containers do not have outbound HTTPS access"
   printf 'Preflight passed for %s\n' "${SELECTED_CLIS[*]}"
@@ -124,6 +133,9 @@ preflight() {
 }
 
 build_image() {
+  local proxy_name
+  local -a build_command=(docker buildx build)
+
   log "AgentCore image"
   if [ -n "${AGENTCORE_IMAGE:-}" ]; then
     IMAGE="$AGENTCORE_IMAGE"
@@ -133,12 +145,17 @@ build_image() {
     return
   fi
   IMAGE="aidlc-agentcore-e2e:$RUN_ID"
-  docker buildx build \
-    --platform linux/arm64 \
-    --load \
-    --tag "$IMAGE" \
-    --file "$ROOT/lambda/agentcore/Dockerfile" \
+  for proxy_name in $DOCKER_PROXY_VARIABLES; do
+    [ -n "${!proxy_name:-}" ] && build_command+=(--build-arg "$proxy_name")
+  done
+  build_command+=(
+    --platform linux/arm64
+    --load
+    --tag "$IMAGE"
+    --file "$ROOT/lambda/agentcore/Dockerfile"
     "$ROOT/lambda"
+  )
+  "${build_command[@]}"
 }
 
 write_secret_file() {
@@ -152,6 +169,8 @@ write_secret_file() {
 }
 
 container_args() {
+  local proxy_name
+
   printf '%s\n' \
     --platform linux/arm64 \
     --label "$LABEL" \
@@ -171,6 +190,9 @@ container_args() {
     --env "V2_QUESTION_PARK_GRACE_MS=300" \
     --env "E2E_SECRET_FILE=/run/secrets/aidlc-e2e.env" \
     --volume "$SECRET_FILE:/run/secrets/aidlc-e2e.env:ro"
+  for proxy_name in $DOCKER_PROXY_VARIABLES; do
+    [ -n "${!proxy_name:-}" ] && printf '%s\n' --env "$proxy_name"
+  done
 }
 
 start_services() {

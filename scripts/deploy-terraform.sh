@@ -44,6 +44,21 @@ if [[ "$PLAN_FILE" != /* ]]; then
     PLAN_FILE="$(pwd)/$PLAN_FILE"
 fi
 
+configure_docker_build_args() {
+    if [[ -n "${TF_VAR_docker_build_args+x}" ]]; then
+        return
+    fi
+
+    local detected_build_args
+    detected_build_args="$(node "$SCRIPT_DIR/docker-proxy-build-args.mjs")"
+    if [[ "$detected_build_args" == "{}" ]]; then
+        return
+    fi
+
+    export TF_VAR_docker_build_args="$detected_build_args"
+    echo "Forwarding detected proxy settings to Docker image builds."
+}
+
 tfvar_string() {
     local name="$1"
     local file="$2"
@@ -144,6 +159,8 @@ fi
 echo "Deploying environment: $ENVIRONMENT ($PHASE)"
 
 if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
+    configure_docker_build_args
+
     if [[ "${AIDLC_SKIP_NPM_CI:-0}" != "1" ]]; then
         echo "Installing root npm dependencies..."
         (cd "$SCRIPT_DIR/.." && npm ci)

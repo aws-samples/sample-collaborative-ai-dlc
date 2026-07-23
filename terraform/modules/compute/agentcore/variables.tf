@@ -13,6 +13,13 @@ variable "aws_region" {
   type        = string
 }
 
+variable "docker_build_args" {
+  description = "Optional arguments passed to the AgentCore Docker build"
+  type        = map(string)
+  default     = {}
+  sensitive   = true
+}
+
 variable "neptune_endpoint" {
   description = "Neptune cluster endpoint"
   type        = string

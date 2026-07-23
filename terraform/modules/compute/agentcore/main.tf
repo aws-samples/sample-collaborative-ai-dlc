@@ -163,8 +163,9 @@ module "agentcore_docker_build" {
   source_path      = local.agentcore_source_path
   docker_file_path = "${local.agentcore_source_path}/agentcore/Dockerfile"
   # AgentCore Runtime runs arm64 only.
-  platform = "linux/arm64"
-  builder  = "default"
+  platform   = "linux/arm64"
+  builder    = "default"
+  build_args = var.docker_build_args
 
   triggers = {
     dir_sha = local.agentcore_files_sha

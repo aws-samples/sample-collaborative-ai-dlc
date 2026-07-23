@@ -56,6 +56,22 @@ key presence, model syntax, and outbound connectivity. It supplies inert AWS
 credentials to DynamoDB Local and does not require an AWS profile, Terraform
 state, Cognito login, or deployed stack.
 
+When running behind an HTTP proxy, export the standard proxy variables before
+starting the E2E:
+
+```bash
+export HTTP_PROXY=http://proxy.example.com:8080
+export HTTPS_PROXY=http://proxy.example.com:8080
+export NO_PROXY=localhost,127.0.0.1
+./scripts/agent-e2e-testing.sh
+```
+
+The harness forwards non-empty standard proxy variables, including lowercase
+variants, to the Buildx build, outbound-connectivity check, and AgentCore test
+containers. No proxy flags or container variables are added when none are set.
+The Docker daemon still needs its own proxy configuration to pull base and test
+images.
+
 ### Run all CLIs
 
 To avoid placing credentials directly in shell history, enter them in a Bash
