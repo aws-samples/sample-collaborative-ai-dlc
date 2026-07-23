@@ -93,8 +93,8 @@ const bbFetch = async (ctx, url, options = {}) => {
 const oauth = {
   secretEnvName: 'BITBUCKET_OAUTH_SECRET_NAME',
   redirectUriEnvName: 'BITBUCKET_REDIRECT_URI',
-  scopes: 'account repository repository:write pullrequest pullrequest:write',
-  requiredConnectionScopes: ['account', 'repository', 'pullrequest'],
+  scopes: 'account email repository repository:write pullrequest pullrequest:write',
+  requiredConnectionScopes: ['account', 'email', 'repository', 'pullrequest'],
 
   buildAuthorizeUrl({ clientId, redirectUri, state }) {
     return `https://bitbucket.org/site/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
@@ -268,6 +268,86 @@ const getDefaultBranch = async (ctx, repoId) => {
   if (!res.ok) return null;
   const data = await res.json();
   return data?.mainbranch?.name ?? null;
+};
+
+// Authenticated user identity for commit attribution ("on behalf of": author =
+// user, committer = AI-DLC Engine). Bitbucket's /user payload has NO email
+// (GDPR, 2019), and `username` was removed too — the stable handle is
+// `nickname`. The email comes from the separate /user/emails endpoint (primary
+// + confirmed), which requires the `email` scope. Falls back to the noreply
+// form so attribution never blocks a run.
+const getAuthenticatedUser = async (ctx) => {
+  const res = await bbFetch(ctx, `${API_BASE}/user`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !(data?.nickname || data?.display_name || data?.account_id)) {
+    throw new ProviderError(res.status || 400, data?.error?.message || 'Failed to fetch user');
+  }
+  const login = data.nickname || data.display_name || data.account_id;
+
+  // Email lives on a separate endpoint and needs the `email` scope. Best-effort:
+  // a missing/failed lookup degrades to the noreply form rather than failing.
+  let email = null;
+  try {
+    const emailRes = await bbFetch(ctx, `${API_BASE}/user/emails?pagelen=100`);
+    if (emailRes.ok) {
+      const emailData = await emailRes.json().catch(() => ({}));
+      const rows = Array.isArray(emailData.values) ? emailData.values : [];
+      const primary = rows.find((e) => e.is_primary && e.is_confirmed);
+      const confirmed = rows.find((e) => e.is_confirmed);
+      email = (primary || confirmed || rows[0])?.email || null;
+    }
+  } catch {
+    // ignore — fall through to the noreply form
+  }
+
+  const accountId = data.account_id || login;
+  return {
+    login,
+    authorName: data.display_name || login,
+    authorEmail: email || `${accountId}@users.noreply.bitbucket.org`,
+  };
+};
+
+// Caller's access to a repo, used by binding verification. The repository
+// object carries default branch + visibility; the caller's permission level
+// comes from /user/permissions/repositories (values: admin | write | read).
+const getRepositoryAccess = async (ctx, repoId) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const res = await bbFetch(ctx, `${API_BASE}/repositories/${workspace}/${repoSlug}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(
+      res.status || 400,
+      data?.error?.message || 'Failed to access repository',
+    );
+  }
+
+  // Permission probe — scoped to this repo by uuid. Best-effort: if it fails we
+  // assume read-only (canRead true, canWrite false) rather than throwing, so a
+  // transient permissions-endpoint hiccup doesn't fail an otherwise valid bind.
+  let permission = null;
+  try {
+    const permRes = await bbFetch(
+      ctx,
+      `${API_BASE}/user/permissions/repositories?q=${encodeURIComponent(
+        `repository.uuid="${data.uuid}"`,
+      )}`,
+    );
+    if (permRes.ok) {
+      const permData = await permRes.json().catch(() => ({}));
+      permission = permData?.values?.[0]?.permission ?? null;
+    }
+  } catch {
+    // ignore — treat as read-only below
+  }
+
+  return {
+    defaultBranch: data.mainbranch?.name ?? null,
+    private: Boolean(data.is_private),
+    permission,
+    canRead: true,
+    canWrite: permission === 'write' || permission === 'admin',
+  };
 };
 
 // List directory contents WITHOUT ?format=meta (which returns single dir object, not entries).
@@ -923,6 +1003,8 @@ export {
   listRepos,
   listBranches,
   getDefaultBranch,
+  getAuthenticatedUser,
+  getRepositoryAccess,
   getTree,
   getFileContents,
   listPRComments,
@@ -954,6 +1036,8 @@ export default {
   listRepos,
   listBranches,
   getDefaultBranch,
+  getAuthenticatedUser,
+  getRepositoryAccess,
   getTree,
   getFileContents,
   listPRComments,

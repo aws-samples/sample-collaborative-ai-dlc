@@ -1113,6 +1113,69 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
     expect(out).toBe('conflict');
     expect(fetchImpl.calls.some((c) => c.url.includes('/pullrequests/1/decline'))).toBe(true);
   });
+
+  it('getAuthenticatedUser resolves login from nickname and email from /user/emails', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/user/emails',
+        {
+          json: {
+            values: [
+              { email: 'alt@example.com', is_primary: false, is_confirmed: true },
+              { email: 'jane@example.com', is_primary: true, is_confirmed: true },
+            ],
+          },
+        },
+      ],
+      ['/user', { json: { account_id: 'acc-1', nickname: 'jane', display_name: 'Jane Dev' } }],
+    ]);
+    const user = await bb.getAuthenticatedUser({ token: 't', fetchImpl });
+    expect(user).toEqual({
+      login: 'jane',
+      authorName: 'Jane Dev',
+      authorEmail: 'jane@example.com',
+    });
+  });
+
+  it('getAuthenticatedUser falls back to a noreply email when /user/emails is unavailable', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/emails', { status: 403, json: {} }],
+      ['/user', { json: { account_id: 'acc-9', nickname: 'bob', display_name: 'Bob' } }],
+    ]);
+    const user = await bb.getAuthenticatedUser({ token: 't', fetchImpl });
+    expect(user.login).toBe('bob');
+    expect(user.authorEmail).toBe('acc-9@users.noreply.bitbucket.org');
+  });
+
+  it('getRepositoryAccess reports write access from the permissions probe', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/permissions/repositories', { json: { values: [{ permission: 'write' }] } }],
+      [
+        '/repositories/ws/repo',
+        { json: { uuid: '{u}', is_private: true, mainbranch: { name: 'main' } } },
+      ],
+    ]);
+    const access = await bb.getRepositoryAccess({ token: 't', fetchImpl }, 'ws/repo');
+    expect(access).toMatchObject({
+      defaultBranch: 'main',
+      private: true,
+      permission: 'write',
+      canRead: true,
+      canWrite: true,
+    });
+  });
+
+  it('getRepositoryAccess degrades to read-only when the permissions probe fails', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/permissions/repositories', { status: 500, json: {} }],
+      [
+        '/repositories/ws/repo',
+        { json: { uuid: '{u}', is_private: false, mainbranch: { name: 'dev' } } },
+      ],
+    ]);
+    const access = await bb.getRepositoryAccess({ token: 't', fetchImpl }, 'ws/repo');
+    expect(access).toMatchObject({ defaultBranch: 'dev', canRead: true, canWrite: false });
+  });
 });
 
 describe('OAuth metadata', () => {
@@ -1132,7 +1195,7 @@ describe('OAuth metadata', () => {
     // path names) or the authorize call fails with "Unknown scope".
     expect(getProvider('bitbucket').oauth.secretEnvName).toBe('BITBUCKET_OAUTH_SECRET_NAME');
     expect(getProvider('bitbucket').oauth.scopes).toBe(
-      'account repository repository:write pullrequest pullrequest:write',
+      'account email repository repository:write pullrequest pullrequest:write',
     );
     expect(getProvider('bitbucket').oauth.refreshAccessToken).toBeTypeOf('function');
   });
