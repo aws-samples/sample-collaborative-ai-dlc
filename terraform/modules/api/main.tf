@@ -166,8 +166,6 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.block_item_get,
     aws_api_gateway_integration.block_item_put,
     aws_api_gateway_integration.block_item_script_get,
-    aws_api_gateway_integration.github_pulls_comments_get,
-    aws_api_gateway_integration.github_pulls_comments_post,
     aws_api_gateway_integration.bitbucket_auth_get,
     aws_api_gateway_integration.bitbucket_callback_get,
     aws_api_gateway_integration.bitbucket_repos_get,
