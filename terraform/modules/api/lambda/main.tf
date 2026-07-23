@@ -2481,7 +2481,7 @@ module "v2_orchestrator_lambda" {
     # The refresh exchange needs the OAuth consumer credentials; without this
     # env var the refresh throws and the clone degrades to "Access denied".
     BITBUCKET_OAUTH_SECRET_NAME = var.bitbucket_oauth_secret_name
-    SOURCE_CONTROL_FUNCTION = module.source_control_lambda.lambda_function_name
+    SOURCE_CONTROL_FUNCTION     = module.source_control_lambda.lambda_function_name
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts

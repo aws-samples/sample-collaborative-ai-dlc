@@ -147,30 +147,6 @@ export const bitbucketService: GitProviderService = {
   getStatus: () => api.get<GitProviderStatus>('/bitbucket/status'),
   listRepos: () => api.get<GitRepo[]>('/bitbucket/repos'),
   disconnect: () => api.delete('/bitbucket/disconnect'),
-  listBranches: (repoId: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ branches: string[]; defaultBranch?: string }>(
-      `/bitbucket/repos/${owner}/${repo}/branches`,
-    );
-  },
-  getRepoTree: (repoId: string, branch?: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ tree: GitFile[] }>(
-      `/bitbucket/repos/${owner}/${repo}/tree${branch ? `?branch=${branch}` : ''}`,
-    );
-  },
-  getFileContents: (repoId: string, path: string, branch?: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<GitFileContent>(
-      `/bitbucket/repos/${owner}/${repo}/contents?path=${encodeURIComponent(path)}${branch ? `&branch=${branch}` : ''}`,
-    );
-  },
-  getPullRequestComments: (repoId: string, prNumber: number) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ comments: GitComment[] }>(
-      `/bitbucket/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
-    );
-  },
 };
 
 // =============================================================================

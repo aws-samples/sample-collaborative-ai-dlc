@@ -159,7 +159,6 @@ describe('ensureFreshGitToken', () => {
     ).rejects.toThrow(/refresh token revoked/);
   });
 
-
   it('refreshes a near-expiry Bitbucket token (form-encoded, no redirect_uri) and persists it', async () => {
     vi.stubEnv('BITBUCKET_OAUTH_SECRET_NAME', 'test/bitbucket-oauth');
     const bbItem = { userId: 'user-1', provider: 'bitbucket', parameterName: PARAM };
