@@ -240,22 +240,25 @@ const listRepos = async (ctx) => {
 
 const listBranches = async (ctx, repoId) => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
-  const res = await bbFetch(
-    ctx,
-    `${API_BASE}/repositories/${workspace}/${repoSlug}/refs/branches?pagelen=100`,
-  );
-  if (res.status === 404) return [];
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    console.error('[bitbucket:listBranches] error response', {
-      httpStatus: res.status,
-      message: data.error?.message,
-    });
-    throw new ProviderError(res.status, data.error?.message || 'Failed to fetch branches');
+  const names = [];
+  let url = `${API_BASE}/repositories/${workspace}/${repoSlug}/refs/branches?pagelen=100`;
+  while (url) {
+    const res = await bbFetch(ctx, url);
+    if (res.status === 404) return [];
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      console.error('[bitbucket:listBranches] error response', {
+        httpStatus: res.status,
+        message: data.error?.message,
+      });
+      throw new ProviderError(res.status, data.error?.message || 'Failed to fetch branches');
+    }
+    const data = await res.json();
+    if (!Array.isArray(data.values)) break;
+    names.push(...data.values.map((b) => b.name));
+    url = data.next || null;
   }
-  const data = await res.json();
-  if (!Array.isArray(data.values)) return [];
-  return data.values.map((b) => b.name);
+  return names;
 };
 
 // The repository's real default branch.
@@ -334,7 +337,7 @@ const getFileContents = async (ctx, repoId, filePath, branch = 'main') => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
   const res = await bbFetch(
     ctx,
-    `${API_BASE}/repositories/${workspace}/${repoSlug}/src/${encodeURIComponent(branch)}/${encodeURIComponent(filePath)}`,
+    `${API_BASE}/repositories/${workspace}/${repoSlug}/src/${encodeURIComponent(branch)}/${filePath.split('/').map(encodeURIComponent).join('/')}`,
   );
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -358,10 +361,10 @@ const mapComment = (c) => ({
   type: 'issue',
   body: c.content?.raw || '',
   user: {
-    login: c.user?.username || c.user?.nickname || '',
+    login: c.user?.nickname || c.user?.display_name || '',
     avatarUrl: c.user?.links?.avatar?.href || null,
   },
-  bot: Boolean(c.user?.type === 'team'),
+  bot: false,
   system: false,
   path: null,
   line: null,
@@ -375,10 +378,10 @@ const mapInlineComment = (c) => ({
   type: 'review',
   body: c.content?.raw || '',
   user: {
-    login: c.user?.username || c.user?.nickname || '',
+    login: c.user?.nickname || c.user?.display_name || '',
     avatarUrl: c.user?.links?.avatar?.href || null,
   },
-  bot: Boolean(c.user?.type === 'team'),
+  bot: false,
   system: false,
   path: c.inline?.path || null,
   line: c.inline?.to || null,
@@ -408,19 +411,15 @@ const listPaginated = async (ctx, url) => {
 
 const listPRComments = async (ctx, repoId, prId) => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
-  const [generalComments, inlineComments] = await Promise.all([
-    listPaginated(
-      ctx,
-      `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}/comments?pagelen=100`,
-    ),
-    listPaginated(
-      ctx,
-      `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}/comments?pagelen=100&q=inline!=null`,
-    ),
-  ]);
+  // One pass returns every comment (inline ones included); partition by
+  // `c.inline` rather than issuing a second q=inline!=null request.
+  const all = await listPaginated(
+    ctx,
+    `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}/comments?pagelen=100`,
+  );
 
-  const general = generalComments.filter((c) => !c.inline).map(mapComment);
-  const inline = inlineComments.filter((c) => c.inline).map(mapInlineComment);
+  const general = all.filter((c) => !c.inline).map(mapComment);
+  const inline = all.filter((c) => c.inline).map(mapInlineComment);
 
   return [...general, ...inline].toSorted(
     (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
@@ -459,7 +458,7 @@ const addPRComment = async (ctx, repoId, prId, { body, path, line }) => {
     id: result.id,
     body: result.content?.raw || body,
     user: {
-      login: result.user?.username || result.user?.nickname || '',
+      login: result.user?.nickname || result.user?.display_name || '',
       avatarUrl: result.user?.links?.avatar?.href || null,
     },
     url: result.links?.html?.href || null,
@@ -482,19 +481,24 @@ const listConstructionTaskBranches = async (ctx, repoId, branch) => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
   const prefix = constructionBranchPrefix(branch);
 
-  // Bitbucket doesn't have a direct search, so we get all branches and filter
-  const res = await bbFetch(
-    ctx,
-    `${API_BASE}/repositories/${workspace}/${repoSlug}/refs/branches?pagelen=100`,
-  );
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to list construction task branches: ${errorText}`);
+  // Bitbucket has no branch-name search, so page through ALL branches and
+  // filter by prefix. Must follow `next` — a task branch beyond page 1 would
+  // otherwise escape the fan-in merged-completeness check.
+  const names = [];
+  let url = `${API_BASE}/repositories/${workspace}/${repoSlug}/refs/branches?pagelen=100`;
+  while (url) {
+    const res = await bbFetch(ctx, url);
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Failed to list construction task branches: ${errorText}`);
+    }
+    const data = await res.json();
+    if (!Array.isArray(data.values)) break;
+    names.push(...data.values.map((b) => b.name));
+    url = data.next || null;
   }
-  const data = await res.json();
-  if (!Array.isArray(data.values)) return [];
 
-  return data.values.map((b) => b.name).filter((name) => name.startsWith(prefix));
+  return names.filter((name) => name.startsWith(prefix));
 };
 
 const isBranchMergedInto = async (ctx, repoId, sourceBranch, targetBranch) => {
@@ -515,31 +519,27 @@ const isBranchMergedInto = async (ctx, repoId, sourceBranch, targetBranch) => {
   return !Array.isArray(data.values) || data.values.length === 0;
 };
 
-// Real ancestor check — page through GET /commits/{descendantRef} until we find ancestorSha
+// Ancestor check via the merge-base endpoint (single call, O(1) instead of
+// walking the whole history of descendantRef): ancestorSha is an ancestor of
+// descendantRef iff their merge-base IS ancestorSha.
 const isCommitAncestor = async (ctx, repoId, ancestorSha, descendantRef) => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
 
-  let nextUrl = `${API_BASE}/repositories/${workspace}/${repoSlug}/commits/${encodeURIComponent(descendantRef)}?pagelen=100`;
+  const res = await bbFetch(
+    ctx,
+    `${API_BASE}/repositories/${workspace}/${repoSlug}/merge-base/${encodeURIComponent(
+      ancestorSha,
+    )}..${encodeURIComponent(descendantRef)}`,
+  );
+  if (!res.ok) return false;
 
-  while (nextUrl) {
-    const res = await bbFetch(ctx, nextUrl);
-    if (!res.ok) return false;
+  const data = await res.json().catch(() => ({}));
+  const mergeBaseHash = data?.hash;
+  if (!mergeBaseHash) return false;
 
-    const data = await res.json();
-    if (!Array.isArray(data.values)) return false;
-
-    // Check if ancestorSha is in this page of commits
-    for (const commit of data.values) {
-      if (commit.hash === ancestorSha) {
-        return true;
-      }
-    }
-
-    // Move to next page
-    nextUrl = data.next || null;
-  }
-
-  return false;
+  // ancestorSha may be a short hash; merge-base returns the full hash. Compare
+  // both directions so a prefix match still counts.
+  return mergeBaseHash === ancestorSha || mergeBaseHash.startsWith(ancestorSha);
 };
 
 const getUnmergedConstructionTaskBranches = async (ctx, repoId, branch) => {
@@ -833,6 +833,23 @@ const reopenPullRequest = async (_ctx, _repoId, _prId) => {
   throw new ProviderError(400, 'Reopening pull requests is not supported by Bitbucket API');
 };
 
+// Best-effort decline of a temporary auto-merge PR (see mergeBranch). A failed
+// decline must not mask the underlying merge outcome, so errors are swallowed.
+const declinePullRequest = async (ctx, workspace, repoSlug, prId) => {
+  try {
+    await bbFetch(
+      ctx,
+      `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}/decline`,
+      { method: 'POST' },
+    );
+  } catch (e) {
+    console.error('[bitbucket:mergeBranch] failed to decline temp PR', {
+      prId,
+      message: e?.message,
+    });
+  }
+};
+
 const mergeBranch = async (ctx, repoId, { base, head, message }) => {
   // Bitbucket doesn't have a direct merge API like GitHub
   // We would need to create and immediately merge a PR
@@ -874,6 +891,10 @@ const mergeBranch = async (ctx, repoId, { base, head, message }) => {
     );
 
     if (mergeRes.ok) return 'merged';
+
+    // The merge failed — decline the temporary PR we just opened so a failed
+    // engine merge doesn't leave an open "Merge X into Y (auto)" PR behind.
+    await declinePullRequest(ctx, workspace, repoSlug, pr.id);
 
     // Handle merge conflicts
     if ([400, 409, 422].includes(mergeRes.status)) {

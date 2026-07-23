@@ -941,28 +941,25 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
     expect(fetchImpl.calls[0].url).toContain('max_depth=100');
   });
 
-  it('isCommitAncestor pages commit history and matches on hash', async () => {
-    const fetchImpl = makeFetch([
-      [
-        '/commits/intent',
-        (url) =>
-          url.includes('page=2')
-            ? { json: { values: [{ hash: 'target-sha' }] } }
-            : {
-                json: {
-                  values: [{ hash: 'zzz' }],
-                  next: 'https://api.bitbucket.org/2.0/repositories/ws/repo/commits/intent?page=2',
-                },
-              },
-      ],
-    ]);
+  it('isCommitAncestor uses the merge-base endpoint (single call) and matches on hash', async () => {
+    const fetchImpl = makeFetch([['/merge-base/', { json: { hash: 'target-sha' } }]]);
     expect(
       await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'target-sha', 'intent'),
     ).toBe(true);
+    // Exactly one API call — no O(history) commit-log walk.
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(fetchImpl.calls[0].url).toContain('/merge-base/target-sha..intent');
   });
 
-  it('isCommitAncestor returns false when the sha never appears', async () => {
-    const fetchImpl = makeFetch([['/commits/intent', { json: { values: [{ hash: 'other' }] } }]]);
+  it('isCommitAncestor matches when merge-base returns the full hash for a short ancestor', async () => {
+    const fetchImpl = makeFetch([['/merge-base/', { json: { hash: 'abcdef1234567890' } }]]);
+    expect(
+      await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'abcdef1', 'intent'),
+    ).toBe(true);
+  });
+
+  it('isCommitAncestor returns false when the merge-base is a different commit', async () => {
+    const fetchImpl = makeFetch([['/merge-base/', { json: { hash: 'other-sha' } }]]);
     expect(
       await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'missing-sha', 'intent'),
     ).toBe(false);
@@ -985,6 +982,136 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
     expect(out).toMatchObject({ state: 'open', draft: true });
     // No PUT issued because the desired state already matched.
     expect(fetchImpl.calls.every((c) => (c.options.method ?? 'GET') === 'GET')).toBe(true);
+  });
+
+  it('getFileContents encodes each path segment but preserves the slashes', async () => {
+    const fetchImpl = makeFetch([['/src/', { text: 'file body', json: {} }]]);
+    await bb.getFileContents({ token: 't', fetchImpl }, 'ws/repo', 'src/main/App.java', 'main');
+    const url = fetchImpl.calls[0].url;
+    // Slashes between segments stay literal; only segment contents are encoded.
+    expect(url).toContain('/src/main/src/main/App.java');
+    expect(url).not.toContain('src%2Fmain%2FApp.java');
+  });
+
+  it('getFileContents percent-encodes reserved chars WITHIN a segment', async () => {
+    const fetchImpl = makeFetch([['/src/', { text: 'x', json: {} }]]);
+    await bb.getFileContents({ token: 't', fetchImpl }, 'ws/repo', 'dir/a b.txt', 'main');
+    const url = fetchImpl.calls[0].url;
+    expect(url).toContain('/dir/a%20b.txt');
+  });
+
+  it('listBranches follows pagination (data.next) across pages', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/refs/branches',
+        (url) =>
+          url.includes('page=2')
+            ? { json: { values: [{ name: 'feature/b' }] } }
+            : {
+                json: {
+                  values: [{ name: 'main' }],
+                  next: 'https://api.bitbucket.org/2.0/repositories/ws/repo/refs/branches?page=2',
+                },
+              },
+      ],
+    ]);
+    const names = await bb.listBranches({ token: 't', fetchImpl }, 'ws/repo');
+    expect(names).toEqual(['main', 'feature/b']);
+    expect(fetchImpl.calls.some((c) => c.url.includes('page=2'))).toBe(true);
+  });
+
+  it('getUnmergedConstructionTaskBranches sees task branches beyond page 1', async () => {
+    const branchPage = (url) =>
+      url.includes('page=2')
+        ? { json: { values: [{ name: 'intent--task-late' }] } }
+        : {
+            json: {
+              values: [{ name: 'main' }],
+              next: 'https://api.bitbucket.org/2.0/repositories/ws/repo/refs/branches?page=2',
+            },
+          };
+    const fetchImpl = makeFetch([
+      ['/refs/branches', branchPage],
+      // task branch is NOT merged: exclude returns a commit
+      ['/commits/intent--task-late', { json: { values: [{ hash: 'c1' }] } }],
+    ]);
+    const unmerged = await bb.getUnmergedConstructionTaskBranches(
+      { token: 't', fetchImpl },
+      'ws/repo',
+      'intent',
+    );
+    expect(unmerged).toContain('intent--task-late');
+  });
+
+  it('listPRComments fetches the comment list once and partitions by inline', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/pullrequests/7/comments',
+        {
+          json: {
+            values: [
+              {
+                id: 1,
+                content: { raw: 'general' },
+                user: { nickname: 'jane' },
+                created_on: '2026-01-01',
+              },
+              {
+                id: 2,
+                content: { raw: 'inline' },
+                inline: { path: 'a.js', to: 3 },
+                user: { nickname: 'bob' },
+                created_on: '2026-01-02',
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const comments = await bb.listPRComments({ token: 't', fetchImpl }, 'ws/repo', 7);
+    // Exactly one network call (no second q=inline!=null request).
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(fetchImpl.calls[0].url).not.toContain('inline!=null');
+    expect(comments.map((c) => c.type)).toEqual(['issue', 'review']);
+    expect(comments[1]).toMatchObject({ path: 'a.js', line: 3 });
+  });
+
+  it('maps comment authors via nickname and never mislabels teams as bots', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/pullrequests/7/comments',
+        {
+          json: {
+            values: [
+              {
+                id: 1,
+                content: { raw: 'x' },
+                user: { nickname: 'acme-team', type: 'team' },
+                created_on: '2026-01-01',
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const [c] = await bb.listPRComments({ token: 't', fetchImpl }, 'ws/repo', 7);
+    expect(c.user.login).toBe('acme-team');
+    expect(c.bot).toBe(false);
+  });
+
+  it('mergeBranch declines the temporary PR when the merge conflicts', async () => {
+    const fetchImpl = makeFetch([
+      ['/pullrequests/1/merge', { status: 409, json: { error: { message: 'conflict' } } }],
+      ['/pullrequests/1/decline', { json: { id: 1, state: 'DECLINED' } }],
+      // create-PR (generic pullrequests POST) returns the temp PR id
+      ['/pullrequests', { json: { id: 1 } }],
+    ]);
+    const out = await bb.mergeBranch({ token: 't', fetchImpl }, 'ws/repo', {
+      base: 'main',
+      head: 'feat',
+    });
+    expect(out).toBe('conflict');
+    expect(fetchImpl.calls.some((c) => c.url.includes('/pullrequests/1/decline'))).toBe(true);
   });
 });
 
