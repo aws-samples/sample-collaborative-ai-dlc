@@ -467,7 +467,11 @@ export default function ConstructionPage() {
               </Button>
             </CardHeader>
             <CardContent className="p-0">
-              <GitFileBrowser provider={project.gitProvider} repoId={project.gitRepo} />
+              <GitFileBrowser
+                projectId={project.id}
+                provider={project.gitProvider}
+                repoId={project.gitRepo}
+              />
             </CardContent>
           </Card>
         </div>

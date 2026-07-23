@@ -27,14 +27,6 @@ const SSM_PREFIX = 'test/git/tokens';
 const CLIENT_ID = 'test-client-id';
 const CLIENT_SECRET = 'test-client-secret';
 const USER_ID = 'user-123';
-const GITHUB_MODE_PARAM = '/test/github-auth-mode';
-const GITHUB_APP_CONFIG_PARAM = '/test/github-app-config';
-const GITHUB_APP_KEY_SECRET = 'test/github-app-key';
-const { privateKey: GITHUB_APP_PRIVATE_KEY } = crypto.generateKeyPairSync('rsa', {
-  modulusLength: 2048,
-  privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
-  publicKeyEncoding: { type: 'spki', format: 'pem' },
-});
 
 const loadHandler = async () => {
   vi.resetModules();
@@ -68,26 +60,6 @@ const mockResolveGitToken = (token = 'ghp_test-token') => {
   ssmMock.on(GetParameterCommand).resolves({
     Parameter: { Value: JSON.stringify({ accessToken: token }) },
   });
-};
-
-const mockGitHubAppMode = (permissions) => {
-  vi.stubEnv('GITHUB_AUTH_MODE_PARAM', GITHUB_MODE_PARAM);
-  vi.stubEnv('GITHUB_APP_CONFIG_PARAM', GITHUB_APP_CONFIG_PARAM);
-  vi.stubEnv('GITHUB_APP_PRIVATE_KEY_SECRET_NAME', GITHUB_APP_KEY_SECRET);
-  ssmMock
-    .on(GetParameterCommand, { Name: GITHUB_MODE_PARAM })
-    .resolves({ Parameter: { Value: 'app' } });
-  ssmMock.on(GetParameterCommand, { Name: GITHUB_APP_CONFIG_PARAM }).resolves({
-    Parameter: { Value: JSON.stringify({ appId: '123', installationId: '456' }) },
-  });
-  secretsMock.on(GetSecretValueCommand, { SecretId: GITHUB_APP_KEY_SECRET }).resolves({
-    SecretString: GITHUB_APP_PRIVATE_KEY,
-  });
-  globalThis.fetch = vi.fn(async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ({ account: { login: 'acme' }, permissions }),
-  }));
 };
 
 const mockFetch = (responses = []) => {
@@ -539,7 +511,7 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: true, provider: 'github', mode: 'oauth' });
+      expect(body).toEqual({ connected: true, provider: 'github' });
     });
 
     it('requires reauthorization when the stored token lacks workflow scope', async () => {
@@ -554,7 +526,6 @@ describe('github handler', () => {
       expect(JSON.parse(res.body)).toEqual({
         connected: false,
         provider: 'github',
-        mode: 'oauth',
         reauthorizationRequired: true,
         missingScopes: ['workflow'],
       });
@@ -571,7 +542,6 @@ describe('github handler', () => {
       expect(JSON.parse(res.body)).toEqual({
         connected: true,
         provider: 'github',
-        mode: 'oauth',
       });
     });
 
@@ -583,28 +553,7 @@ describe('github handler', () => {
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body).toEqual({ connected: false, provider: undefined, mode: 'oauth' });
-    });
-
-    it('reports missing GitHub App workflow permission as configuration required', async () => {
-      mockGitHubAppMode({
-        contents: 'write',
-        pull_requests: 'write',
-        issues: 'read',
-      });
-
-      const handler = await loadHandler();
-      const res = await handler(makeEvent('GET', '/github/status'));
-
-      expect(res.statusCode).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({
-        connected: false,
-        provider: 'github',
-        mode: 'app',
-        configurationRequired: true,
-        configurationError:
-          'GitHub App installation is missing required permissions: workflows:write',
-      });
+      expect(body).toEqual({ connected: false });
     });
   });
 

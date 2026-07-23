@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useYjsDocument } from './useYjsDocument';
 import { useAutoSave } from './useAutoSave';
+import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 
 /**
  * Generic hook for collaborative editing of any artifact.
@@ -24,7 +25,7 @@ export function useCollaborativeArtifact<T extends Record<string, string>>(
   onAutoSave?: (values: T) => Promise<void>,
 ) {
   const docId = isEditing ? `${artifactType}-${sprintId}-${artifactId}` : null;
-  const { doc, synced, remoteUsers, setCursor } = useYjsDocument(docId, userName);
+  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(docId, userName);
   const [values, setValues] = useState<T>({} as T);
 
   // Stabilize fields reference so it doesn't cause effect re-runs. fields is a
@@ -82,15 +83,14 @@ export function useCollaborativeArtifact<T extends Record<string, string>>(
     [doc],
   );
 
+  const getFieldText = useCallback((field: keyof T) => doc.getText(field as string), [doc]);
+
   const initFields = useCallback(
     (initial: Partial<T>) => {
       if (!doc) return;
-      doc.transact(() => {
+      seedYjsDocumentIfEmpty(doc, (seed) => {
         Object.entries(initial).forEach(([key, val]) => {
-          const text = doc.getText(key);
-          if (text.length === 0 && val) {
-            text.insert(0, val as string);
-          }
+          if (val) seed.getText(key).insert(0, val as string);
         });
       });
     },
@@ -125,5 +125,15 @@ export function useCollaborativeArtifact<T extends Record<string, string>>(
     enabled: isEditing && synced && !!onAutoSave,
   });
 
-  return { values, setField, initFields, synced, remoteUsers, setCursor, doc };
+  return {
+    values,
+    setField,
+    getFieldText,
+    initFields,
+    synced,
+    awareness,
+    remoteUsers,
+    setCursor,
+    doc,
+  };
 }

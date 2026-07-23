@@ -1,11 +1,15 @@
 import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
+import { invalidateProjectBindingsByDelegator } from '../shared/source-control-bindings.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const VALID_ROLES = ['owner', 'admin', 'member'];
 
@@ -287,6 +291,13 @@ export const handler = async (event) => {
           }
         }
 
+        await invalidateProjectBindingsByDelegator(
+          ddb,
+          projectId,
+          targetUserId,
+          'delegator_removed',
+          { actor: requestingUserId },
+        );
         await g
           .V()
           .has('Project', 'id', projectId)

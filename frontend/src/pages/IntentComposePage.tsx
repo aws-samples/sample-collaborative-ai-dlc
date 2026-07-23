@@ -15,7 +15,6 @@ import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -91,6 +90,7 @@ export default function IntentComposePage() {
 
   const draft = useCollaborativeIntentDraft(projectId ?? '', intentId ?? null, userName);
   const { initFromIntent } = draft;
+  const draftReady = draft.synced && draft.hydrated;
 
   // Load the intent; non-DRAFT intents have left the compose step — show them
   // in the regular intent view instead.
@@ -154,7 +154,7 @@ export default function IntentComposePage() {
     });
 
   const handleAttachmentPick = async (files: FileList | null) => {
-    if (!projectId || !intentId || !files?.length) return;
+    if (!projectId || !intentId || !draftReady || !files?.length) return;
     setAttachmentError(null);
     const selected = [...files];
     if (attachments.length + selected.length > 5) {
@@ -214,7 +214,7 @@ export default function IntentComposePage() {
   };
 
   const removeAttachment = async (attachmentId: string) => {
-    if (!projectId || !intentId) return;
+    if (!projectId || !intentId || !draftReady) return;
     setAttachmentError(null);
     setRemovingAttachmentId(attachmentId);
     try {
@@ -327,7 +327,7 @@ export default function IntentComposePage() {
   const [showGridEditor, setShowGridEditor] = useState(false);
 
   const toggleGridStage = (stageId: string) => {
-    if (lockedStageIds.has(stageId)) return;
+    if (!draftReady || lockedStageIds.has(stageId)) return;
     // First customization materializes the scope's projection into a composed
     // grid (initialization pinned EXECUTE) so the flip has a total baseline.
     // Legacy deselections are folded into the grid at the same moment — after
@@ -344,12 +344,14 @@ export default function IntentComposePage() {
   };
 
   const resetGridToScope = (nextScope: string) => {
+    if (!draftReady) return;
     draft.setScope(nextScope);
     draft.setComposedGrid(null);
     draft.setSkipStageIds(null);
   };
 
   const applyProposal = (proposal: NonNullable<ComposeSession['proposal']>) => {
+    if (!draftReady) return;
     if (proposal.mode === 'matched') {
       resetGridToScope(proposal.scope);
     } else if (proposal.grid) {
@@ -413,7 +415,7 @@ export default function IntentComposePage() {
   }, [workflowId, workflowVersion, scope, gridKey, skipsKey]);
 
   const handleStart = async () => {
-    if (!projectId || !intentId || uploadProgress !== null) return;
+    if (!projectId || !intentId || !draftReady || uploadProgress !== null) return;
     setStarting(true);
     setError(null);
     try {
@@ -494,12 +496,15 @@ export default function IntentComposePage() {
         <div className="space-y-4">
           <div>
             <Label htmlFor="draft-title">Title</Label>
-            <Input
+            <CollaborativeTextarea
               id="draft-title"
+              yText={draft.titleText}
+              awareness={draft.awareness}
               value={draft.title}
-              onChange={(e) => draft.setTitle(e.target.value, e.target.selectionStart ?? undefined)}
               placeholder="e.g. Add user authentication"
-              className="mt-1.5"
+              className="mt-1.5 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+              singleLine
+              disabled={!draftReady}
             />
           </div>
 
@@ -513,13 +518,16 @@ export default function IntentComposePage() {
                 data-testid="attachment-picker"
                 accept=".txt,.md,.csv,.html,.png,.jpg,.jpeg,.webp,.svg"
                 multiple
+                disabled={!draftReady || starting || uploadProgress !== null}
                 onChange={(event) => handleAttachmentPick(event.target.files)}
               />
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={starting || uploadProgress !== null || attachments.length >= 5}
+                disabled={
+                  !draftReady || starting || uploadProgress !== null || attachments.length >= 5
+                }
                 onClick={() => attachmentInput.current?.click()}
               >
                 <Paperclip className="mr-1.5 h-3.5 w-3.5" />
@@ -556,6 +564,7 @@ export default function IntentComposePage() {
                       size="icon"
                       className="h-7 w-7"
                       disabled={
+                        !draftReady ||
                         starting ||
                         uploadProgress !== null ||
                         removingAttachmentId === attachment.attachmentId
@@ -575,13 +584,13 @@ export default function IntentComposePage() {
             <Label htmlFor="draft-prompt">Prompt</Label>
             <CollaborativeTextarea
               id="draft-prompt"
+              yText={draft.promptText}
+              awareness={draft.awareness}
               value={draft.prompt}
-              onChange={(text, cursorPos) => draft.setPrompt(text, cursorPos)}
-              onCursorChange={(index, length) => draft.setCursor(index, length)}
-              remoteUsers={draft.remoteUsers}
               rows={10}
               placeholder="Describe the intent in detail…"
               className="mt-1.5 rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={!draftReady}
             />
           </div>
 
@@ -603,7 +612,7 @@ export default function IntentComposePage() {
                     // Picking a stock scope leaves any composed grid behind.
                     if (v) resetGridToScope(v);
                   }}
-                  disabled={scopeOptions.length === 0}
+                  disabled={!draftReady || scopeOptions.length === 0}
                 >
                   <SelectTrigger id="draft-scope">
                     <SelectValue
@@ -628,7 +637,7 @@ export default function IntentComposePage() {
                   <ComposePanel
                     projectId={projectId}
                     intentId={intentId}
-                    disabled={starting}
+                    disabled={starting || !draftReady}
                     onApply={applyProposal}
                   />
                 </div>
@@ -643,8 +652,9 @@ export default function IntentComposePage() {
                 {draft.composedGrid && scope && (
                   <button
                     type="button"
-                    className="ml-auto text-xs underline text-muted-foreground hover:text-foreground"
+                    className="ml-auto text-xs underline text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="grid-reset"
+                    disabled={starting || !draftReady}
                     onClick={() => {
                       const back = scopeOptions.includes(scope.replace(/-custom$/, ''))
                         ? scope.replace(/-custom$/, '')
@@ -727,7 +737,7 @@ export default function IntentComposePage() {
                       phaseNames={phaseNames}
                       grid={effectiveGrid}
                       lockedStageIds={lockedStageIds}
-                      disabled={starting}
+                      disabled={starting || !draftReady}
                       onToggle={toggleGridStage}
                     />
                   </div>
@@ -742,6 +752,7 @@ export default function IntentComposePage() {
               onClick={handleStart}
               disabled={
                 starting ||
+                !draftReady ||
                 uploadProgress !== null ||
                 !draft.prompt.trim() ||
                 !scope ||
@@ -758,8 +769,10 @@ export default function IntentComposePage() {
             {!starting && draft.prompt.trim() && !scope && (
               <span className="text-xs text-muted-foreground">Pick a scope to continue</span>
             )}
-            {!draft.synced && (
-              <span className="text-xs text-muted-foreground">connecting live session…</span>
+            {!draftReady && (
+              <span className="text-xs text-muted-foreground">
+                {draft.synced ? 'loading shared draft…' : 'connecting live session…'}
+              </span>
             )}
           </div>
         </div>

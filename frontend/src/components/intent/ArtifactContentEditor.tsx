@@ -27,7 +27,7 @@ export function ArtifactContentEditor({
   const [finishing, setFinishing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const { content, setContent, initContent, getContent, synced, remoteUsers, setCursor } =
+  const { content, contentText, initContent, getContent, synced, awareness, remoteUsers } =
     useCollaborativeArtifactContent({
       projectId,
       intentId,
@@ -74,10 +74,9 @@ export function ArtifactContentEditor({
   return (
     <div className="mt-2 space-y-2">
       <CollaborativeTextarea
+        yText={contentText}
+        awareness={awareness}
         value={content}
-        onChange={setContent}
-        onCursorChange={setCursor}
-        remoteUsers={remoteUsers}
         disabled={!synced}
         placeholder={synced ? 'Document content (markdown)…' : 'Connecting…'}
         className="min-h-64 rounded-md border bg-background p-3 font-mono text-xs leading-relaxed"

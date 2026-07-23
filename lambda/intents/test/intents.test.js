@@ -58,6 +58,8 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 const lambdaMock = mockClient(LambdaClient);
 const ssmMock = mockClient(SSMClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
+let sourceControlReviewComments = [];
+let sourceControlValidationResponse = { ready: true, repositories: [] };
 const s3Mock = mockClient(S3Client);
 let attachmentUpdateConflict = null;
 
@@ -229,7 +231,19 @@ const installDdbFakes = () => {
     return { UnprocessedItems: {} };
   });
   lambdaMock.reset();
-  lambdaMock.on(InvokeCommand).resolves({ StatusCode: 202 });
+  lambdaMock.on(InvokeCommand).callsFake((input) => {
+    if (input.FunctionName === 'source-control-test') {
+      const request = JSON.parse(Buffer.from(input.Payload).toString());
+      const response =
+        request.action === 'validate-project'
+          ? sourceControlValidationResponse
+          : request.operation === 'list-review-comments'
+            ? { ok: true, result: sourceControlReviewComments }
+            : { ok: true, result: null };
+      return { StatusCode: 200, Payload: Buffer.from(JSON.stringify(response)) };
+    }
+    return { StatusCode: 202 };
+  });
   lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).resolves({});
   lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'TIMED_OUT' });
   lambdaMock.on(ListDurableExecutionsByFunctionCommand).resolves({ DurableExecutions: [] });
@@ -276,6 +290,7 @@ beforeAll(async () => {
   vi.stubEnv('V2_PROCESS_TABLE', 'v2-proc-test');
   vi.stubEnv('BLOCKS_TABLE', 'blocks-test');
   vi.stubEnv('V2_ORCHESTRATOR_FUNCTION', 'orchestrator-test');
+  vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control-test');
   vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
@@ -301,6 +316,8 @@ afterAll(async () => {
 
 beforeEach(() => {
   installDdbFakes();
+  sourceControlReviewComments = [];
+  sourceControlValidationResponse = { ready: true, repositories: [] };
   ssmMock.reset();
   agentcoreMock.reset();
   attachmentUpdateConflict = null;
@@ -310,6 +327,11 @@ beforeEach(() => {
 const claims = (sub) => ({
   requestContext: { authorizer: { claims: { sub, email: `${sub}@x` } } },
 });
+
+const orchestratorInvokes = () =>
+  lambdaMock
+    .commandCalls(InvokeCommand)
+    .filter((call) => call.args[0].input.FunctionName === 'orchestrator-test');
 
 // Seed a v2 project with an owner member + a primary repo + a workflow META row.
 const seedV2Project = async (sub) => {
@@ -993,164 +1015,131 @@ describe('unit PR review feedback', () => {
       sourceBranch: 'unit',
       targetBranch: 'intent',
     });
-    procStore.set(`CONN#${sub}`, {
-      userId: sub,
-      provider: 'github',
-      parameterName: '/collab/dev/git-token/reviewer',
-    });
     return { projectId, intent };
   };
 
   it('refetches selectable comments and queues an idempotent versioned batch', async () => {
-    vi.stubEnv('GIT_CONNECTIONS_TABLE', 'legacy-git-connections');
-    ssmMock
-      .on(GetParameterCommand, {
-        Name: '/collab/dev/git-token/reviewer',
-        WithDecryption: true,
-      })
-      .resolves({ Parameter: { Value: JSON.stringify({ accessToken: 'token' }) } });
-    const fetchMock = vi.fn(async (url) => {
-      const path = String(url);
-      const rows = path.includes('/pulls/7/comments')
-        ? [
-            {
-              id: 101,
-              body: 'Handle the empty state',
-              user: { login: 'reviewer', type: 'User' },
-              path: 'src/view.tsx',
-              line: 42,
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:01:00Z',
-            },
-            {
-              id: 102,
-              body: 'Automated note',
-              user: { login: 'ci[bot]', type: 'Bot' },
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:00:00Z',
-            },
-          ]
-        : [];
-      return {
-        ok: true,
-        status: 200,
-        json: async () => rows,
-        text: async () => JSON.stringify(rows),
-        headers: new Headers(),
-      };
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    try {
-      const sub = `u-${randomUUID()}`;
-      const { projectId, intent } = await seedActiveReview(sub);
-      const path = `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`;
-      const get = await handler({
-        httpMethod: 'GET',
-        path,
-        pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
-        ...claims(sub),
-      });
-      expect(get.statusCode).toBe(200);
-      expect(JSON.parse(get.body).comments).toHaveLength(1);
-
-      const post = await handler({
-        httpMethod: 'POST',
-        path,
-        pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
-        body: JSON.stringify({
-          comments: [{ repository: 'owner/repo', commentId: '101' }],
-        }),
-        ...claims(sub),
-      });
-      expect(post.statusCode).toBe(202);
-      const batch = JSON.parse(post.body);
-      expect(batch).toMatchObject({
-        sectionIndex: 1,
-        unitSlug: 'auth',
-        state: 'QUEUED',
-        requestedBy: sub,
-      });
-      expect(batch.comments[0]).toMatchObject({
-        id: '101',
-        repository: 'owner/repo',
+    sourceControlReviewComments = [
+      {
+        id: 101,
+        type: 'review',
+        body: 'Handle the empty state',
+        user: { login: 'reviewer' },
+        bot: false,
+        system: false,
+        path: 'src/view.tsx',
+        line: 42,
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:01:00Z',
         version: '2026-01-01T00:01:00Z',
-      });
-    } finally {
-      vi.unstubAllGlobals();
-      vi.stubEnv('GIT_CONNECTIONS_TABLE', undefined);
-    }
+      },
+      {
+        id: 102,
+        type: 'issue',
+        body: 'Automated note',
+        user: { login: 'ci[bot]' },
+        bot: true,
+        system: false,
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        version: '2026-01-01T00:00:00Z',
+      },
+    ];
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedActiveReview(sub);
+    const path = `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`;
+    const get = await handler({
+      httpMethod: 'GET',
+      path,
+      pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
+      ...claims(sub),
+    });
+    expect(get.statusCode).toBe(200);
+    expect(JSON.parse(get.body).comments).toHaveLength(1);
+
+    const post = await handler({
+      httpMethod: 'POST',
+      path,
+      pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
+      body: JSON.stringify({
+        comments: [{ repository: 'owner/repo', commentId: '101' }],
+      }),
+      ...claims(sub),
+    });
+    expect(post.statusCode).toBe(202);
+    const batch = JSON.parse(post.body);
+    expect(batch).toMatchObject({
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      state: 'QUEUED',
+      requestedBy: sub,
+    });
+    expect(batch.comments[0]).toMatchObject({
+      id: '101',
+      repository: 'owner/repo',
+      version: '2026-01-01T00:01:00Z',
+    });
   });
 
   it('atomically rejects concurrent feedback batches that overlap on a comment version', async () => {
-    vi.stubEnv('GIT_CONNECTIONS_TABLE', 'legacy-git-connections');
-    ssmMock
-      .on(GetParameterCommand, {
-        Name: '/collab/dev/git-token/reviewer',
-        WithDecryption: true,
-      })
-      .resolves({ Parameter: { Value: JSON.stringify({ accessToken: 'token' }) } });
-    const rows = [
+    sourceControlReviewComments = [
       {
         id: 101,
+        type: 'review',
         body: 'Handle the empty state',
-        user: { login: 'reviewer', type: 'User' },
+        user: { login: 'reviewer' },
+        bot: false,
+        system: false,
         path: 'src/view.tsx',
         line: 42,
-        created_at: '2026-01-01T00:00:00Z',
-        updated_at: '2026-01-01T00:01:00Z',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:01:00Z',
+        version: '2026-01-01T00:01:00Z',
       },
       {
         id: 103,
+        type: 'review',
         body: 'Cover the loading state',
-        user: { login: 'reviewer', type: 'User' },
+        user: { login: 'reviewer' },
+        bot: false,
+        system: false,
         path: 'src/view.tsx',
         line: 51,
-        created_at: '2026-01-01T00:02:00Z',
-        updated_at: '2026-01-01T00:03:00Z',
+        createdAt: '2026-01-01T00:02:00Z',
+        updatedAt: '2026-01-01T00:03:00Z',
+        version: '2026-01-01T00:03:00Z',
       },
     ];
-    vi.stubGlobal('fetch', async (url) => ({
-      ok: true,
-      status: 200,
-      json: async () => (String(url).includes('/pulls/7/comments') ? rows : []),
-      text: async () => JSON.stringify(rows),
-      headers: new Headers(),
-    }));
-    try {
-      const sub = `u-${randomUUID()}`;
-      const { projectId, intent } = await seedActiveReview(sub);
-      const path = `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`;
-      const request = (comments) =>
-        handler({
-          httpMethod: 'POST',
-          path,
-          pathParameters: {
-            projectId,
-            intentId: intent.id,
-            sectionIndex: '1',
-            unitSlug: 'auth',
-          },
-          body: JSON.stringify({ comments }),
-          ...claims(sub),
-        });
-      const responses = await Promise.all([
-        request([{ repository: 'owner/repo', commentId: '101' }]),
-        request([
-          { repository: 'owner/repo', commentId: '101' },
-          { repository: 'owner/repo', commentId: '103' },
-        ]),
-      ]);
-      expect(responses.map((response) => response.statusCode).toSorted()).toEqual([202, 409]);
-      const batches = [...procStore.values()].filter((row) => row.type === 'FeedbackBatch');
-      expect(batches).toHaveLength(1);
-      const claimsFor101 = [...procStore.values()].filter(
-        (row) => row.type === 'FeedbackCommentClaim' && row.commentId === '101',
-      );
-      expect(claimsFor101).toHaveLength(1);
-    } finally {
-      vi.unstubAllGlobals();
-      vi.stubEnv('GIT_CONNECTIONS_TABLE', undefined);
-    }
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedActiveReview(sub);
+    const path = `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`;
+    const request = (comments) =>
+      handler({
+        httpMethod: 'POST',
+        path,
+        pathParameters: {
+          projectId,
+          intentId: intent.id,
+          sectionIndex: '1',
+          unitSlug: 'auth',
+        },
+        body: JSON.stringify({ comments }),
+        ...claims(sub),
+      });
+    const responses = await Promise.all([
+      request([{ repository: 'owner/repo', commentId: '101' }]),
+      request([
+        { repository: 'owner/repo', commentId: '101' },
+        { repository: 'owner/repo', commentId: '103' },
+      ]),
+    ]);
+    expect(responses.map((response) => response.statusCode).toSorted()).toEqual([202, 409]);
+    const batches = [...procStore.values()].filter((row) => row.type === 'FeedbackBatch');
+    expect(batches).toHaveLength(1);
+    const claimsFor101 = [...procStore.values()].filter(
+      (row) => row.type === 'FeedbackCommentClaim' && row.commentId === '101',
+    );
+    expect(claimsFor101).toHaveLength(1);
   });
 });
 
@@ -1865,7 +1854,7 @@ describe('POST /recompose — in-flight reshape', () => {
       build: 'SKIP',
     });
     // Relaunched at the parked stage (the first not-yet-done one).
-    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const calls = orchestratorInvokes();
     const payload = JSON.parse(Buffer.from(calls.at(-1).args[0].input.Payload).toString());
     expect(payload).toMatchObject({ action: 'start', startAtStageId: 'optional' });
     // The parked instance was reset for its fresh attempt.
@@ -1990,7 +1979,7 @@ describe('POST /recompose — in-flight reshape', () => {
       build: 'EXECUTE',
     });
     // Relaunched at the parked stage.
-    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const calls = orchestratorInvokes();
     const payload = JSON.parse(Buffer.from(calls.at(-1).args[0].input.Payload).toString());
     expect(payload).toMatchObject({ action: 'start', startAtStageId: 'build' });
   });
@@ -2064,6 +2053,54 @@ describe('POST /recompose — in-flight reshape', () => {
 });
 
 describe('POST /start', () => {
+  it('returns typed SOURCE_CONTROL_NOT_READY before mutating intent state', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    sourceControlValidationResponse = {
+      ready: false,
+      repositories: [
+        {
+          provider: 'github',
+          repo: 'owner/repo',
+          authType: null,
+          ready: false,
+          code: 'UNBOUND',
+          reason: 'Source control setup is required',
+        },
+      ],
+    };
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'SOURCE_CONTROL_NOT_READY',
+      repositories: [expect.objectContaining({ repo: 'owner/repo', code: 'UNBOUND' })],
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('DRAFT');
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
+  it('starts repository-free projects without source-control validation', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    await g.V().has('Project', 'id', projectId).outE('HAS_REPO').drop().next();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    expect(intent.repos).toEqual([]);
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(202);
+    expect(orchestratorInvokes()).toHaveLength(1);
+  });
+
   it('flips DRAFT → CREATED and invokes the orchestrator', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -2076,7 +2113,7 @@ describe('POST /start', () => {
     });
     expect(res.statusCode).toBe(202);
     expect(JSON.parse(res.body).status).toBe('CREATED');
-    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const calls = orchestratorInvokes();
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
     expect(payload).toMatchObject({ action: 'start', intentId: intent.id });
@@ -2093,7 +2130,9 @@ describe('POST /start', () => {
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
     // Hand-off throws (e.g. unqualified-ARN / transient invoke error).
-    lambdaMock.on(InvokeCommand).rejectsOnce(new Error('invoke failed'));
+    lambdaMock
+      .on(InvokeCommand, { FunctionName: 'orchestrator-test' })
+      .rejectsOnce(new Error('invoke failed'));
     const failed = await handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
@@ -2164,7 +2203,7 @@ describe('POST /start', () => {
       expect(res.statusCode).toBe(202);
       expect(JSON.parse(res.body).status).toBe('CREATED');
       // Orchestrator was (re-)invoked.
-      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+      expect(orchestratorInvokes()).toHaveLength(1);
     },
   );
 });
@@ -2684,7 +2723,7 @@ describe('POST /start — preconditions', () => {
       ...claims(sub),
     });
     expect(res.statusCode).toBe(400);
-    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
   });
 
   it('404s starting an intent that does not belong to the project', async () => {
@@ -2786,7 +2825,7 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     const cbCalls = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand);
     expect(cbCalls).toHaveLength(1);
     expect(cbCalls[0].args[0].input.CallbackId).toBe('cb-h1');
-    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
   });
 
   it('does NOT resume when answering a sibling gate without a callbackId (D3)', async () => {
@@ -3728,7 +3767,7 @@ describe('POST /rewind', () => {
     });
 
     // Relaunched at the rewind point.
-    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const calls = orchestratorInvokes();
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
     expect(payload).toMatchObject({ action: 'start', startAtStageId: 'implement' });
@@ -3786,7 +3825,7 @@ describe('POST /rewind', () => {
       stageBefore,
     );
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1'))).toEqual(gateBefore);
-    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
     expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
     expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(0);
     expect([...procStore.keys()].filter((key) => key.includes('|STEER#'))).toHaveLength(0);
@@ -3803,7 +3842,7 @@ describe('POST /rewind', () => {
       guidance: 'nope',
     });
     expect(res.statusCode).toBe(409);
-    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
   });
 
   it('400s an unknown stage, listing the plan stages', async () => {
@@ -3841,7 +3880,7 @@ describe('POST /rewind', () => {
     const designRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('design')}`));
     expect(designRow.state).toBe('SUCCEEDED');
     // Relaunched at the retried stage.
-    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const calls = orchestratorInvokes();
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
     expect(payload).toMatchObject({ action: 'start', startAtStageId: 'implement' });
@@ -3855,7 +3894,9 @@ describe('POST /rewind', () => {
     setStatus(intent.id, { status: 'WAITING', pendingHumanTaskId: 'h1' });
     seedStageRow(intent.id, 'implement', 'FAILED');
     seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
-    lambdaMock.on(InvokeCommand).rejectsOnce(new Error('invoke failed'));
+    lambdaMock
+      .on(InvokeCommand, { FunctionName: 'orchestrator-test' })
+      .rejectsOnce(new Error('invoke failed'));
     const res = await rewind(sub, projectId, intent.id, {
       fromStageId: 'implement',
       guidance: 'x',
@@ -3889,7 +3930,7 @@ describe('POST /rewind', () => {
         true,
       );
       // The relaunch still went out after the stop.
-      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+      expect(orchestratorInvokes()).toHaveLength(1);
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;
     }
@@ -3907,7 +3948,7 @@ describe('POST /rewind', () => {
       agentcoreMock.on(StopRuntimeSessionCommand).rejects(new Error('already stopped'));
       const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
       expect(res.statusCode).toBe(202);
-      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+      expect(orchestratorInvokes()).toHaveLength(1);
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;
     }
@@ -3947,7 +3988,7 @@ describe('POST /rewind', () => {
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toContain('not executed in scope');
     // Nothing was reset or relaunched.
-    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
   });
 
   it('still 400s a genuinely unknown rewind target (with the in-scope stage list)', async () => {
@@ -4292,7 +4333,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       rewindFromStageId: 'cg',
       failureReason: null,
     });
-    const invokes = lambdaMock.commandCalls(InvokeCommand);
+    const invokes = orchestratorInvokes();
     expect(invokes).toHaveLength(1);
     expect(JSON.parse(Buffer.from(invokes[0].args[0].input.Payload).toString())).toMatchObject({
       action: 'start',
@@ -4331,7 +4372,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     expect(res.statusCode).toBe(502);
     expect(JSON.parse(res.body)).toMatchObject({ code: 'durable_stop_failed' });
     expect(archiveArtifactsSpy).not.toHaveBeenCalled();
-    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toMatchObject({
       status: 'FAILED',
       failureReason: 'lane_repair_durable_stop_failed',
@@ -4381,7 +4422,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).sections).toEqual([]);
     expect(lambdaMock.commandCalls(StopDurableExecutionCommand)).toHaveLength(0);
-    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
   });
 
   it('resets every lane instance of a forEach stage and re-opens the touched lanes', async () => {
@@ -4594,7 +4635,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     expect(
       procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'foundation', 1)}`)),
     ).toMatchObject({ state: 'PENDING', attempt: 1 });
-    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const calls = orchestratorInvokes();
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
     expect(payload).toMatchObject({ action: 'start', startAtStageId: 'design' });
@@ -4862,7 +4903,7 @@ describe('POST /artifacts/{id}/quorum-edit', () => {
       changeDescription: 'Target the EU market',
     });
     // Orchestrator invoked with the quorum-edit action.
-    const invoke = lambdaMock.commandCalls(InvokeCommand)[0].args[0].input;
+    const invoke = orchestratorInvokes()[0].args[0].input;
     expect(JSON.parse(Buffer.from(invoke.Payload).toString())).toMatchObject({
       action: 'quorum-edit',
       intentId: intent.id,
@@ -5172,7 +5213,7 @@ describe('stage skipping — create-time deselection + rewind un-skip', () => {
     const row = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('optional')}`));
     expect(row).toMatchObject({ state: 'PENDING', attempt: 1 });
     // Relaunched AT the un-skipped stage.
-    const calls = lambdaMock.commandCalls(InvokeCommand);
+    const calls = orchestratorInvokes();
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
     expect(payload).toMatchObject({ action: 'start', startAtStageId: 'optional' });

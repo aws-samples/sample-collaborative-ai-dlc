@@ -12,6 +12,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { S3Client } from '@aws-sdk/client-s3';
 import {
   LambdaClient,
+  InvokeCommand,
   SendDurableExecutionCallbackSuccessCommand,
   SendDurableExecutionCallbackHeartbeatCommand,
 } from '@aws-sdk/client-lambda';
@@ -20,6 +21,7 @@ import {
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { parseLambdaPayload } from '../shared/lambda-payload.js';
 
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
@@ -30,6 +32,75 @@ export const ddb = DynamoDBDocumentClient.from(
 );
 export const s3 = new S3Client({});
 const lambda = new LambdaClient({});
+
+// AgentCore's only credential entry point. The broker is not API-facing and
+// its IAM policy allows invocation solely from the AgentCore runtime role.
+export const invokeCredentialBroker = async (request) => {
+  const functionName = process.env.CREDENTIAL_BROKER_FUNCTION;
+  if (!functionName) {
+    throw Object.assign(new Error('Credential broker is not configured'), {
+      code: 'CREDENTIAL_BROKER_NOT_CONFIGURED',
+    });
+  }
+  const response = await lambda.send(
+    new InvokeCommand({
+      FunctionName: functionName,
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(JSON.stringify(request)),
+    }),
+  );
+  if (response.FunctionError) {
+    throw Object.assign(new Error('Credential broker invocation failed'), {
+      code: 'CREDENTIAL_BROKER_FAILED',
+    });
+  }
+  const result = parseLambdaPayload(response.Payload);
+  if (!result?.ok) {
+    throw Object.assign(new Error('Credential broker denied the request'), {
+      code: result?.code || 'CREDENTIAL_BROKER_FAILED',
+    });
+  }
+  return result;
+};
+
+export const invokeSourceControlOperation = async ({
+  projectId,
+  provider,
+  repo,
+  operation,
+  args = {},
+}) => {
+  const functionName = process.env.SOURCE_CONTROL_FUNCTION;
+  if (!functionName) {
+    throw Object.assign(new Error('Source-control service is not configured'), {
+      code: 'SOURCE_CONTROL_NOT_CONFIGURED',
+    });
+  }
+  const response = await lambda.send(
+    new InvokeCommand({
+      FunctionName: functionName,
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(
+        JSON.stringify({
+          action: 'operate',
+          projectId,
+          provider,
+          repo,
+          operation,
+          args,
+        }),
+      ),
+    }),
+  );
+  if (response.FunctionError) throw new Error('Source-control service invocation failed');
+  const result = parseLambdaPayload(response.Payload);
+  if (!result?.ok) {
+    throw Object.assign(new Error('Source-control operation failed'), {
+      code: result?.code || 'SOURCE_CONTROL_OPERATION_FAILED',
+    });
+  }
+  return result.result;
+};
 
 // Complete the durable callback the orchestrator suspended on for an async
 // stage (docs/v2-parallel.md WP1). The result object is the run-stage return

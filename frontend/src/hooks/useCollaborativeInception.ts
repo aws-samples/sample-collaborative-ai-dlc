@@ -4,6 +4,7 @@ import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useYjsDocument } from './useYjsDocument';
 import { useAutoSave } from './useAutoSave';
 import { generateColor } from '../utils/colors';
+import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 import type { StructuredAnswer, QuestionAnswer } from '../services/questions';
 
 interface StructuredAnswerState {
@@ -108,12 +109,9 @@ export function useCollaborativeInception(
   const initDescription = useCallback(
     (text: string) => {
       if (!doc) return;
-      const descriptionText = doc.getText('description');
-      if (descriptionText.length === 0 && text) {
-        doc.transact(() => {
-          descriptionText.insert(0, text);
-        });
-      }
+      seedYjsDocumentIfEmpty(doc, (seed) => {
+        if (text) seed.getText('description').insert(0, text);
+      });
     },
     [doc],
   );

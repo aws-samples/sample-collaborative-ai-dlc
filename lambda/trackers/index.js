@@ -11,6 +11,7 @@ import {
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, DeleteParameterCommand } from '@aws-sdk/client-ssm';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -24,6 +25,10 @@ import {
   fetchMembershipRole,
 } from '../shared/trackers.js';
 import { getGitConnection, deleteGitConnection } from '../shared/git-connection-store.js';
+import {
+  invalidateBindingsByCredentialRef,
+  oauthCredentialRef,
+} from '../shared/source-control-bindings.js';
 import { getProvider, KNOWN_PROVIDERS, ProviderError } from './providers/index.js';
 import {
   buildAuthorizeUrl,
@@ -38,6 +43,55 @@ const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const lambda = new LambdaClient({});
+
+const trackerGitProvider = (provider) =>
+  provider === 'github-issues' ? 'github' : provider === 'gitlab-issues' ? 'gitlab' : null;
+
+const invokeProjectSourceControl = async ({
+  projectId,
+  trackerProvider,
+  repository,
+  operation,
+  args = {},
+}) => {
+  const provider = trackerGitProvider(trackerProvider);
+  if (!provider) throw new ProviderError(400, 'Tracker is not backed by source control');
+  const functionName = process.env.SOURCE_CONTROL_FUNCTION;
+  if (!functionName) throw new ProviderError(503, 'Project source control is not configured');
+  const result = await lambda.send(
+    new InvokeCommand({
+      FunctionName: functionName,
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(
+        JSON.stringify({
+          action: 'operate',
+          projectId,
+          provider,
+          repo: repository,
+          operation,
+          args,
+        }),
+      ),
+    }),
+  );
+  if (result.FunctionError) {
+    throw new ProviderError(502, 'Project source-control service failed');
+  }
+  const payload = JSON.parse(Buffer.from(result.Payload || []).toString() || '{}');
+  if (!payload.ok) {
+    const status =
+      payload.code === 'SOURCE_CONTROL_NOT_READY'
+        ? 409
+        : payload.code === 'REPOSITORY_NOT_ON_PROJECT'
+          ? 403
+          : 502;
+    throw new ProviderError(status, 'Project source control is not ready', {
+      code: payload.code || 'SOURCE_CONTROL_OPERATION_FAILED',
+    });
+  }
+  return payload.result;
+};
 
 // HMAC-signed envelope for the OAuth `state` parameter and the multi-site
 // `ticket` payload. Mirrors the pattern used in lambda/github/index.js —
@@ -353,6 +407,12 @@ const disconnectTracker = async (response, userId, provider, instance) => {
     }
     // Remove from both the new and legacy tables.
     await deleteGitConnection(ddb, userId, gitProvider);
+    await invalidateBindingsByCredentialRef(
+      ddb,
+      oauthCredentialRef(gitProvider, userId),
+      'oauth_disconnected',
+      { actor: userId },
+    );
     return response(200, { success: true });
   }
   if (provider === 'jira-cloud' && instance === 'cloud') {
@@ -720,16 +780,29 @@ export const handler = async (event) => {
         return handleProviderError(response, err);
       }
 
-      // Require an active connection so the binding is actually usable.
+      // Git-backed trackers use the project binding, not the caller's personal
+      // connection. The read probe also rejects repositories not on the project.
       if (provider === 'github-issues') {
-        const Item = await getGitConnection(ddb, userId, 'github');
-        if (!Item) {
-          return response(400, { error: 'GitHub not connected' });
+        try {
+          await invokeProjectSourceControl({
+            projectId,
+            trackerProvider: provider,
+            repository: externalProjectKey,
+            operation: 'default-branch',
+          });
+        } catch (err) {
+          return handleProviderError(response, err);
         }
       } else if (provider === 'gitlab-issues') {
-        const Item = await getGitConnection(ddb, userId, 'gitlab');
-        if (!Item) {
-          return response(400, { error: 'GitLab not connected' });
+        try {
+          await invokeProjectSourceControl({
+            projectId,
+            trackerProvider: provider,
+            repository: externalProjectKey,
+            operation: 'default-branch',
+          });
+        } catch (err) {
+          return handleProviderError(response, err);
         }
       } else if (provider === 'jira-cloud') {
         const { Item } = await ddb.send(
@@ -813,7 +886,25 @@ export const handler = async (event) => {
       return handleProviderError(response, err);
     }
 
-    const ctx = { ddb, ssm, secrets, userId };
+    const gitProvider = trackerGitProvider(binding.provider);
+    const ctx = {
+      ddb,
+      ssm,
+      secrets,
+      userId,
+      ...(gitProvider
+        ? {
+            sourceControl: ({ repository, operation, args }) =>
+              invokeProjectSourceControl({
+                projectId,
+                trackerProvider: binding.provider,
+                repository,
+                operation,
+                args,
+              }),
+          }
+        : {}),
+    };
 
     try {
       const resourceId = pathParameters.resourceId;
@@ -828,6 +919,23 @@ export const handler = async (event) => {
         return response(200, comments);
       }
 
+      // POST /projects/{id}/trackers/{bid}/issues/{rid}/comments
+      if (httpMethod === 'POST' && resourceId && path.endsWith('/comments')) {
+        if (!gitProvider)
+          return response(405, { error: 'Comments are read-only for this tracker' });
+        const data = body ? JSON.parse(body) : {};
+        if (!String(data.body || '').trim()) {
+          return response(400, { error: 'body is required' });
+        }
+        const comment = await provider.addIssueComment(
+          ctx,
+          binding.externalProjectKey,
+          resourceId,
+          String(data.body).trim(),
+        );
+        return response(201, comment);
+      }
+
       // GET /projects/{id}/trackers/{bid}/issues/{rid}
       if (httpMethod === 'GET' && resourceId) {
         const issue = await provider.getIssue(ctx, binding.externalProjectKey, resourceId);
@@ -836,7 +944,7 @@ export const handler = async (event) => {
 
       // GET /projects/{id}/trackers/{bid}/issues
       if (httpMethod === 'GET' && path.endsWith('/issues')) {
-        const issues = await provider.listIssues(ctx, binding.externalProjectKey, {
+        const options = {
           state: queryStringParameters?.state,
           q: queryStringParameters?.q,
           page: queryStringParameters?.page,
@@ -844,7 +952,8 @@ export const handler = async (event) => {
           // Cursor for providers (Jira Cloud since CHANGE-2046) that require
           // it; ignored by GitHub which uses page-number pagination.
           pageToken: queryStringParameters?.pageToken,
-        });
+        };
+        const issues = await provider.listIssues(ctx, binding.externalProjectKey, options);
         return response(200, issues);
       }
     } catch (err) {

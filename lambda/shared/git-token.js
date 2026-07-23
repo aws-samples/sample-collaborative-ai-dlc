@@ -1,12 +1,8 @@
 import crypto from 'crypto';
 import { GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { getGitConnection, putGitConnection } from './git-connection-store.js';
-import {
-  clearGitHubAuthConfigCache,
-  getGitHubAppConfig,
-  getGitHubAuthMode,
-} from './github-auth-config.js';
+import { putGitConnection } from './git-connection-store.js';
+import { clearGitHubAuthConfigCache } from './github-auth-config.js';
 
 // Matches the git-token SSM parameter path. Legacy connections used a
 // 4-segment path (/PREFIX/env/git-token/userId); per-provider connections add a
@@ -72,6 +68,21 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
   });
   const data = await res.json();
   if (data.error) {
+    // GitLab refresh tokens are one-time-use: a concurrent request (possibly
+    // in another Lambda container — parallel construction lanes each ask the
+    // credential broker separately) may have already refreshed and persisted a
+    // new token pair, leaving OUR refresh token burned. Before treating the
+    // connection as broken, re-read the stored pair: if it rotated since we
+    // read it, the race was lost, not the connection — use the winner's token.
+    if (data.error === 'invalid_grant') {
+      const stored = await readTokenValue(ssm, item.parameterName).catch(() => null);
+      if (stored?.refreshToken && stored.refreshToken !== tokens.refreshToken) {
+        console.log('[git-token:refresh] refresh race lost, using rotated token', {
+          userId: item?.userId,
+        });
+        return stored.accessToken;
+      }
+    }
     console.error('[git-token:refresh] failed', {
       httpStatus: res.status,
       error: data.error,
@@ -79,7 +90,10 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
       userId: item?.userId,
       hasRedirectUri: Boolean(redirectUri),
     });
-    throw new Error(data.error_description || data.error);
+    throw Object.assign(new Error(data.error_description || data.error), {
+      code: 'CREDENTIAL_REFRESH_FAILED',
+      status: res.status || 401,
+    });
   }
   console.log('[git-token:refresh] ok', { userId: item?.userId, expiresIn: data.expires_in });
   const expiresAt = data.expires_in ? Date.now() + Number(data.expires_in) * 1000 : undefined;
@@ -118,23 +132,47 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
   return data.access_token;
 };
 
+// Single-flight refresh guard, keyed by SSM parameter name (one entry per
+// GitLab connection). GitLab refresh tokens are one-time-use, so two
+// concurrent refreshes of the same connection burn each other: the loser gets
+// invalid_grant and (via the credential broker) would invalidate the project
+// binding. Within a warm container, concurrent callers share one refresh
+// promise; cross-container races are handled by the invalid_grant re-read in
+// refreshGitlabToken.
+const _refreshInFlight = new Map();
+
 // Return a valid access token for a connection, refreshing GitLab tokens
 // just-in-time when they are expired or near expiry. GitHub OAuth-App tokens
 // never expire, so this is a passthrough for GitHub (and for any provider
 // without a refresh token). Used by shared/git-handler.js and the GitLab
 // issues tracker so long-running jobs don't push/MR with a stale GitLab token.
-const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider }) => {
+// `staleToken` (401 retry paths) forces a refresh even when the recorded
+// expiry looks fine — the provider has already rejected that token (clock
+// skew, early revocation). If the stored pair has ALREADY rotated past the
+// rejected token (a concurrent refresh won), the rotated token is returned
+// without burning another refresh.
+const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider, staleToken = null }) => {
   if (!item?.parameterName) throw new Error('No SSM parameter name set');
   const tokens = await readTokenValue(ssm, item.parameterName);
   if (gitProvider !== 'gitlab' || !tokens.refreshToken) {
     return tokens.accessToken;
   }
-  const expiresAt = Number(tokens.expiresAt) || 0;
-  const isStale = !expiresAt || expiresAt - Date.now() <= REFRESH_SAFETY_MARGIN_MS;
-  if (!isStale) {
+  if (staleToken && tokens.accessToken !== staleToken) {
     return tokens.accessToken;
   }
-  return refreshGitlabToken({ ssm, secrets, ddb, item, tokens });
+  const expiresAt = Number(tokens.expiresAt) || 0;
+  const isStale = !expiresAt || expiresAt - Date.now() <= REFRESH_SAFETY_MARGIN_MS;
+  if (!isStale && !staleToken) {
+    return tokens.accessToken;
+  }
+  const key = item.parameterName;
+  const inFlight = _refreshInFlight.get(key);
+  if (inFlight) return inFlight;
+  const refresh = refreshGitlabToken({ ssm, secrets, ddb, item, tokens }).finally(() => {
+    _refreshInFlight.delete(key);
+  });
+  _refreshInFlight.set(key, refresh);
+  return refresh;
 };
 
 // GitHub App installation tokens (GitHub-only): used platform-wide when the
@@ -158,10 +196,24 @@ const PEM_CACHE_TTL_MS = 15 * 60 * 1000;
 const REQUIRED_GITHUB_APP_PERMISSIONS = Object.freeze({
   contents: 'write',
   pull_requests: 'write',
+  issues: 'write',
+  metadata: 'read',
+});
+// Recommended but not blocking: an installation without workflows:write can
+// still bind — the agent just cannot touch files under .github/workflows/.
+// Reported back so the binding stores the reduced capability and the UI warns.
+const OPTIONAL_GITHUB_APP_PERMISSIONS = Object.freeze({
   workflows: 'write',
-  issues: 'read',
 });
 const PERMISSION_RANK = Object.freeze({ read: 1, write: 2 });
+
+const permissionShortfalls = (granted, wanted) =>
+  Object.entries(wanted)
+    .filter(
+      ([permission, required]) =>
+        (PERMISSION_RANK[granted[permission]] ?? 0) < (PERMISSION_RANK[required] ?? 0),
+    )
+    .map(([permission, required]) => `${permission}:${required}`);
 
 // Drop all App-auth caches. Called by the admin config endpoint after the
 // private key / App config changes so the validation probe (and subsequent
@@ -237,8 +289,14 @@ const getInstallationDetails = async (secrets, appId, installationId) => {
   );
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.account?.login) {
-    throw new Error(
-      `Failed to resolve installation account (HTTP ${res.status}): ${data.message || 'unknown'}`,
+    throw Object.assign(
+      new Error(
+        `Failed to resolve installation account (HTTP ${res.status}): ${data.message || 'unknown'}`,
+      ),
+      {
+        code: res.status === 404 ? 'APP_INSTALLATION_UNAVAILABLE' : 'APP_CREDENTIAL_FAILED',
+        status: res.status,
+      },
     );
   }
   const details = {
@@ -253,20 +311,139 @@ const getInstallationDetails = async (secrets, appId, installationId) => {
 const getInstallationAccountLogin = async (secrets, appId, installationId) =>
   (await getInstallationDetails(secrets, appId, installationId)).login;
 
+const githubAppHeaders = (jwt) => ({
+  Authorization: `Bearer ${jwt}`,
+  Accept: 'application/vnd.github+json',
+  'X-GitHub-Api-Version': '2022-11-28',
+  'User-Agent': 'collaborative-ai-dlc',
+});
+
+const discoverGitHubInstallation = async ({ secrets, appId, repository, fetchImpl = fetch }) => {
+  if (!appId || !repository) throw new Error('appId and repository are required');
+  const parts = String(repository).split('/');
+  if (parts.length !== 2 || parts.some((part) => !part)) {
+    throw new Error(`Invalid GitHub repository "${repository}"`);
+  }
+  const privateKeyPem = await getAppPrivateKey(secrets);
+  const jwt = buildAppJwt(appId, privateKeyPem);
+  const res = await fetchImpl(
+    `https://api.github.com/repos/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}/installation`,
+    { headers: githubAppHeaders(jwt) },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) {
+    throw new Error(
+      data.message || `GitHub App is not installed for ${repository} (HTTP ${res.status})`,
+    );
+  }
+  return {
+    installationId: String(data.id),
+    installationAccount: data.account?.login || parts[0],
+  };
+};
+
+const getGitHubAppIdentity = async ({ secrets, appId, fetchImpl = fetch }) => {
+  if (!appId) throw new Error('appId is required');
+  const privateKeyPem = await getAppPrivateKey(secrets);
+  const jwt = buildAppJwt(appId, privateKeyPem);
+  const res = await fetchImpl('https://api.github.com/app', {
+    headers: githubAppHeaders(jwt),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.slug) {
+    throw new Error(data.message || `Failed to resolve GitHub App identity (HTTP ${res.status})`);
+  }
+  return {
+    login: `${data.slug}[bot]`,
+    name: data.name || data.slug,
+    email: `${data.id}+${data.slug}[bot]@users.noreply.github.com`,
+  };
+};
+
+// Every installation of the configured App (paginated). Used by repo
+// DISCOVERY in the create-space flow: the App path must list candidate
+// repositories without any personal OAuth connection.
+const listAppInstallations = async ({ secrets, appId, fetchImpl = fetch }) => {
+  if (!appId) throw new Error('appId is required');
+  const privateKeyPem = await getAppPrivateKey(secrets);
+  const jwt = buildAppJwt(appId, privateKeyPem);
+  const installations = [];
+  let page = 1;
+  // Defensive page cap — mirrors listInstallationRepos.
+  while (page <= 10) {
+    const res = await fetchImpl(
+      `https://api.github.com/app/installations?per_page=100&page=${page}`,
+      { headers: githubAppHeaders(jwt) },
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !Array.isArray(data)) {
+      throw new Error(data.message || `Failed to list App installations (HTTP ${res.status})`);
+    }
+    installations.push(
+      ...data.map((installation) => ({
+        installationId: String(installation.id),
+        account: installation.account?.login || null,
+      })),
+    );
+    if (data.length < 100) break;
+    page += 1;
+  }
+  return installations;
+};
+
+// Metadata-read installation token for repo DISCOVERY (the app-path repo
+// picker calls GET /installation/repositories, which must not be repo-scoped
+// or GitHub would only return the scoped repos). The deliberate exception to
+// getInstallationToken's fail-closed repo requirement: permissions are pinned
+// to metadata:read — the least GitHub grants any installation token — so this
+// token can list repos and branches but never touch contents.
+const getInstallationReadToken = async ({ secrets, appId, installationId, fetchImpl = fetch }) => {
+  if (!appId || !installationId) {
+    throw new Error('appId and installationId are required');
+  }
+  const cacheKey = `${installationId}|__all__|metadata=read`;
+  const cached = _installationTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt - Date.now() > REFRESH_SAFETY_MARGIN_MS) {
+    return cached.token;
+  }
+  const privateKeyPem = await getAppPrivateKey(secrets);
+  const jwt = buildAppJwt(appId, privateKeyPem);
+  const res = await fetchImpl(
+    `https://api.github.com/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
+    {
+      method: 'POST',
+      headers: { ...githubAppHeaders(jwt), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ permissions: { metadata: 'read' } }),
+    },
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.token) {
+    throw new Error(data.message || `Failed to mint installation read token (HTTP ${res.status})`);
+  }
+  const expiresAt = data.expires_at ? Date.parse(data.expires_at) : Date.now() + 60 * 60 * 1000;
+  _installationTokenCache.set(cacheKey, { token: data.token, expiresAt });
+  return data.token;
+};
+
 const validateGitHubAppInstallation = async (secrets, appId, installationId) => {
   const details = await getInstallationDetails(secrets, appId, installationId);
-  const missingPermissions = Object.entries(REQUIRED_GITHUB_APP_PERMISSIONS)
-    .filter(
-      ([permission, required]) =>
-        (PERMISSION_RANK[details.permissions[permission]] ?? 0) < (PERMISSION_RANK[required] ?? 0),
-    )
-    .map(([permission, required]) => `${permission}:${required}`);
+  const missingPermissions = permissionShortfalls(
+    details.permissions,
+    REQUIRED_GITHUB_APP_PERMISSIONS,
+  );
   if (missingPermissions.length > 0) {
     throw new Error(
       `GitHub App installation is missing required permissions: ${missingPermissions.join(', ')}`,
     );
   }
-  return { accountLogin: details.login, permissions: details.permissions };
+  return {
+    accountLogin: details.login,
+    permissions: details.permissions,
+    missingOptionalPermissions: permissionShortfalls(
+      details.permissions,
+      OPTIONAL_GITHUB_APP_PERMISSIONS,
+    ),
+  };
 };
 
 const getInstallationToken = async ({
@@ -276,10 +453,10 @@ const getInstallationToken = async ({
   repositories,
   permissions,
 } = {}) => {
-  const resolvedAppId = appId || process.env.GITHUB_APP_ID;
-  const resolvedInstallationId = installationId || process.env.GITHUB_INSTALLATION_ID;
+  const resolvedAppId = appId;
+  const resolvedInstallationId = installationId;
   if (!resolvedAppId || !resolvedInstallationId) {
-    throw new Error('GITHUB_APP_ID and GITHUB_INSTALLATION_ID are required for GitHub App auth');
+    throw new Error('appId and installationId are required for GitHub App auth');
   }
 
   // SECURITY: fail closed — never mint an installation-wide token.
@@ -351,7 +528,13 @@ const getInstallationToken = async ({
       installationId: resolvedInstallationId,
       scopedRepos,
     });
-    throw new Error(data.message || `Failed to mint installation token (HTTP ${res.status})`);
+    throw Object.assign(
+      new Error(data.message || `Failed to mint installation token (HTTP ${res.status})`),
+      {
+        code: res.status === 404 ? 'APP_INSTALLATION_UNAVAILABLE' : 'APP_CREDENTIAL_FAILED',
+        status: res.status,
+      },
+    );
   }
 
   const expiresAt = data.expires_at ? Date.parse(data.expires_at) : Date.now() + 60 * 60 * 1000;
@@ -364,102 +547,19 @@ const getInstallationToken = async ({
   return data.token;
 };
 
-// Installation-token minting with App credentials sourced from the
-// admin-managed SSM config parameter (GITHUB_APP_CONFIG_PARAM) instead of
-// caller-supplied/env values. This is the runtime entry point used by
-// mode-aware callers (orchestrator, trackers, git-handler).
-const getInstallationTokenFromConfig = async ({ ssm, secrets, repositories, permissions } = {}) => {
-  const { appId, installationId } = await getGitHubAppConfig(ssm);
-  if (!appId || !installationId) {
-    throw new Error(
-      'GitHub App is not configured (missing appId/installationId) — set it up on the Admin page',
-    );
-  }
-  return getInstallationToken({ secrets, appId, installationId, repositories, permissions });
-};
-
-// Metadata-read installation token for repo DISCOVERY (the app-mode repo
-// picker calls GET /installation/repositories, which must not be repo-scoped
-// or GitHub would only return the scoped repos). The deliberate exception to
-// getInstallationToken's fail-closed repo requirement: permissions are pinned
-// to metadata:read — the least GitHub grants any installation token — so this
-// token can list repos and branches but never touch contents.
-const getInstallationReadToken = async ({ ssm, secrets } = {}) => {
-  const { appId, installationId } = await getGitHubAppConfig(ssm);
-  if (!appId || !installationId) {
-    throw new Error(
-      'GitHub App is not configured (missing appId/installationId) — set it up on the Admin page',
-    );
-  }
-  const cacheKey = `${installationId}|__all__|metadata=read`;
-  const cached = _installationTokenCache.get(cacheKey);
-  if (cached && cached.expiresAt - Date.now() > REFRESH_SAFETY_MARGIN_MS) {
-    return cached.token;
-  }
-  const privateKeyPem = await getAppPrivateKey(secrets);
-  const jwt = buildAppJwt(appId, privateKeyPem);
-  const res = await fetch(
-    `https://api.github.com/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${jwt}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': 'collaborative-ai-dlc',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ permissions: { metadata: 'read' } }),
-    },
-  );
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.token) {
-    throw new Error(data.message || `Failed to mint installation read token (HTTP ${res.status})`);
-  }
-  const expiresAt = data.expires_at ? Date.parse(data.expires_at) : Date.now() + 60 * 60 * 1000;
-  _installationTokenCache.set(cacheKey, { token: data.token, expiresAt });
-  return data.token;
-};
-
-/**
- * Mode-aware GitHub token resolution — THE single dispatch point between the
- * two platform auth modes (see shared/github-auth-config.js):
- *
- *   oauth — resolve the user's per-user OAuth token from their connection row
- *           (returns { mode:'oauth', token:null } when not connected so the
- *           caller can surface its provider-specific "not connected" error).
- *   app   — mint a repo-scoped installation token; `repositories` is required
- *           (fail-closed, see getInstallationToken). userId is irrelevant.
- *
- * @param {object} deps { ssm, secrets, ddb }
- * @param {object} opts { userId, repositories, permissions }
- * @returns {Promise<{ mode: 'oauth'|'app', token: string|null }>}
- */
-const resolveGitHubTokenForMode = async (
-  { ssm, secrets, ddb },
-  { userId, repositories, permissions } = {},
-) => {
-  const mode = await getGitHubAuthMode(ssm);
-  if (mode === 'app') {
-    const token = await getInstallationTokenFromConfig({ ssm, secrets, repositories, permissions });
-    return { mode, token };
-  }
-  const item = userId ? await getGitConnection(ddb, userId, 'github') : null;
-  if (!item) return { mode, token: null };
-  return { mode, token: await resolveGitToken(ssm, item) };
-};
-
 export {
   GIT_TOKEN_PARAM_PATTERN,
   resolveGitToken,
   ensureFreshGitToken,
   getInstallationToken,
-  getInstallationTokenFromConfig,
   getInstallationReadToken,
-  resolveGitHubTokenForMode,
   getInstallationAccountLogin,
+  discoverGitHubInstallation,
+  getGitHubAppIdentity,
+  listAppInstallations,
   validateGitHubAppInstallation,
   REQUIRED_GITHUB_APP_PERMISSIONS,
+  OPTIONAL_GITHUB_APP_PERMISSIONS,
   buildAppJwt,
   getAppPrivateKey,
   clearAppAuthCaches,
@@ -471,12 +571,14 @@ export default {
   resolveGitToken,
   ensureFreshGitToken,
   getInstallationToken,
-  getInstallationTokenFromConfig,
   getInstallationReadToken,
-  resolveGitHubTokenForMode,
   getInstallationAccountLogin,
+  discoverGitHubInstallation,
+  getGitHubAppIdentity,
+  listAppInstallations,
   validateGitHubAppInstallation,
   REQUIRED_GITHUB_APP_PERMISSIONS,
+  OPTIONAL_GITHUB_APP_PERMISSIONS,
   buildAppJwt,
   getAppPrivateKey,
   clearAppAuthCaches,

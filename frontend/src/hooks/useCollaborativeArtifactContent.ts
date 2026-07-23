@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useYjsDocument } from './useYjsDocument';
 import { useAutoSave } from './useAutoSave';
+import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 
 /**
  * Collaborative editing of a v2 intent artifact's markdown content (post-hoc
@@ -33,10 +34,15 @@ export function useCollaborativeArtifactContent({
   onAutoSave?: (content: string) => Promise<void>;
 }) {
   const docId = enabled ? `intent-artifact-${intentId}-${artifactId}` : null;
-  const { doc, synced, remoteUsers, setCursor } = useYjsDocument(docId, userName, userColor, {
-    intentId,
-    projectId,
-  });
+  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(
+    docId,
+    userName,
+    userColor,
+    {
+      intentId,
+      projectId,
+    },
+  );
   const [content, setContentState] = useState('');
 
   useEffect(() => {
@@ -76,8 +82,9 @@ export function useCollaborativeArtifactContent({
   const initContent = useCallback(
     (initial: string) => {
       if (!doc || !docId) return;
-      const text = doc.getText('content');
-      if (text.length === 0 && initial) text.insert(0, initial);
+      seedYjsDocumentIfEmpty(doc, (seed) => {
+        if (initial) seed.getText('content').insert(0, initial);
+      });
     },
     [doc, docId],
   );
@@ -106,5 +113,15 @@ export function useCollaborativeArtifactContent({
     enabled: enabled && synced && !!onAutoSave,
   });
 
-  return { content, setContent, initContent, getContent, synced, remoteUsers, setCursor };
+  return {
+    content,
+    contentText: doc.getText('content'),
+    setContent,
+    initContent,
+    getContent,
+    synced,
+    awareness,
+    remoteUsers,
+    setCursor,
+  };
 }

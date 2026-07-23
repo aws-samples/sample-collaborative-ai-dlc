@@ -34,25 +34,8 @@ resource "aws_secretsmanager_secret" "github_app_private_key" {
   tags = var.tags
 }
 
-# Platform-wide GitHub auth mode: 'oauth' (per-user OAuth tokens) or 'app'
-# (GitHub App installation tokens). Runtime-editable from the Admin page
-# (platform-admin only); Terraform only seeds the default and never fights
-# the admin's choice (ignore_changes).
-resource "aws_ssm_parameter" "github_auth_mode" {
-  name  = "/${var.project_name}/${var.environment}/github-auth-mode"
-  type  = "String"
-  value = "oauth"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-
-  tags = var.tags
-}
-
-# GitHub App configuration ({"appId": "...", "installationId": "..."}) —
-# non-secret companion to the private-key secret above. Written from the
-# Admin page; Terraform seeds an empty object.
+# GitHub App identity configuration ({"appId": "..."}). Installation IDs are
+# discovered and stored on project repository bindings, never globally.
 resource "aws_ssm_parameter" "github_app_config" {
   name  = "/${var.project_name}/${var.environment}/github-app-config"
   type  = "String"
@@ -119,6 +102,50 @@ resource "aws_dynamodb_table" "git_provider_connections" {
   ttl {
     attribute_name = "expiresAt"
     enabled        = true
+  }
+
+  tags = var.tags
+}
+
+# Project-owned source-control authorization. A binding is one repository on
+# one project; it points at an OAuth identity or GitHub App installation by an
+# opaque reference. Provider credentials and SSM parameter names never live in
+# this table.
+resource "aws_dynamodb_table" "source_control_bindings" {
+  name         = "${var.project_name}-${var.environment}-source-control-bindings"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "projectId"
+  range_key    = "bindingKey"
+
+  attribute {
+    name = "projectId"
+    type = "S"
+  }
+
+  attribute {
+    name = "bindingKey"
+    type = "S"
+  }
+
+  attribute {
+    name = "credentialRef"
+    type = "S"
+  }
+
+  attribute {
+    name = "credentialBindingKey"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "CredentialRefIndex"
+    projection_type = "ALL"
+    hash_key        = "credentialRef"
+    range_key       = "credentialBindingKey"
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags
