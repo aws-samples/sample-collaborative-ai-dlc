@@ -346,12 +346,7 @@ module "agentcore" {
   websocket_execution_arn     = module.realtime.websocket_execution_arn
   aidlc_repo_ref              = var.aidlc_repo_ref
   bedrock_model               = var.bedrock_model
-  # The Kiro CLI shipped in the AgentCore image only accepts the model id
-  # "auto" (it maps to Kiro's own default) — a Bedrock-style id like
-  # "claude-opus-4.6" is rejected with "Model '…' does not exist. Available
-  # models: auto" and fails the stage. Seed "auto"; override per-CLI at runtime
-  # via Admin → Agent Settings (the cli-models SSM param is ignore_changes).
-  kiro_model = "auto"
+  kiro_model                  = "claude-opus-4.6"
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.

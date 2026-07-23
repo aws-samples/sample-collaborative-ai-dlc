@@ -1585,11 +1585,8 @@ module "trackers_lambda" {
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
     BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
-    # GitHub App auth (github-issues app-mode config)
-    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
-    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
-    ENVIRONMENT                        = var.environment
-    CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
 }
 
