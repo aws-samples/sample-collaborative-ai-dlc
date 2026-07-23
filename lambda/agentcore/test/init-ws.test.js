@@ -2,7 +2,32 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { initWs, ensureIntentVertex } from '../commands/init-ws.js';
-import { checkoutRepos, checkoutRepo, ensureWorkspaceSource } from '../workspace.js';
+import {
+  checkoutRepos as checkoutReposImpl,
+  checkoutRepo as checkoutRepoImpl,
+  ensureWorkspaceSource as ensureWorkspaceSourceImpl,
+} from '../workspace.js';
+
+const TEST_SECRET = ['broker', 'credential'].join('-');
+const withTestCredential = async (context, operation) =>
+  operation({
+    env: {
+      GIT_ASKPASS: '/tmp/test-askpass',
+      GIT_TERMINAL_PROMPT: '0',
+      AIDLC_GIT_USERNAME: context.provider === 'gitlab' ? 'oauth2' : 'x-access-token',
+      AIDLC_GIT_PASSWORD: TEST_SECRET,
+    },
+  });
+const credentialContext = {
+  projectId: 'p1',
+  executionId: 'e1',
+  gitProvider: 'github',
+  withGitCredential: withTestCredential,
+};
+const checkoutRepo = (args) => checkoutRepoImpl({ ...credentialContext, ...args });
+const checkoutRepos = (args) => checkoutReposImpl({ ...credentialContext, ...args });
+const ensureWorkspaceSource = (args) =>
+  ensureWorkspaceSourceImpl({ ...credentialContext, ...args });
 
 const PARTITION = 'agentcore-init-ws';
 let conn;
@@ -147,11 +172,9 @@ describe('initWs', () => {
     );
     expect(res).toMatchObject({ ok: false, reason: 'checkout_failed' });
   });
-  it('FAILS loudly when a clone degraded to git init', async () => {
-    // checkoutRepo falls back to `git init` on clone failure and reports
-    // cloned:false. A genuinely empty repo clones fine (exit 0), so
-    // cloned:false ALWAYS means unreachable/unauthorized — the run must not
-    // proceed blind against an empty tree.
+  it('FAILS loudly when a clone fails', async () => {
+    // A genuinely empty repo clones successfully. cloned:false therefore means
+    // unreachable/unauthorized and must never become reusable local git state.
     const d = deps({
       checkoutRepos: async ({ repos }) =>
         repos.map((r) => ({ repo: typeof r === 'string' ? r : r.url, cloned: false })),
@@ -173,7 +196,7 @@ describe('initWs', () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('checkout_failed');
     expect(res.detail).toContain('owner/private-repo');
-    expect(res.detail).toContain('credentials');
+    expect(res.detail).toContain('binding');
   });
 
   it('FAILS loudly when the intent branch could not be set up (branchOk:false)', async () => {
@@ -222,20 +245,20 @@ describe('initWs', () => {
         repos: ['acme/api', 'acme/web'],
         branch: 'aidlc/i1',
         baseBranch: 'main',
-        gitToken: 'tok',
         gitProvider: 'github',
       },
       d,
     );
     expect(res.ok).toBe(true);
-    // One publish per repo, targeting the intent branch, with the fresh token.
+    // One publish per repo, targeting the intent branch with broker context.
     expect(pushed).toHaveLength(2);
     expect(pushed[0]).toMatchObject({
       dir: '/tmp/ws/acme/api',
       repo: 'acme/api',
       branch: 'aidlc/i1',
-      gitToken: 'tok',
       gitProvider: 'github',
+      projectId: 'p1',
+      executionId: 'e1',
     });
     expect(pushed[1]).toMatchObject({ repo: 'acme/web', branch: 'aidlc/i1' });
   });
@@ -252,7 +275,6 @@ describe('initWs', () => {
         repos: ['acme/api'],
         branch: 'aidlc/i1',
         baseBranch: 'main',
-        gitToken: 'tok',
         gitProvider: 'gitlab',
       },
       d,
@@ -285,7 +307,6 @@ describe('initWs', () => {
         repos: ['acme/empty'],
         branch: 'aidlc/i1',
         baseBranch: 'main',
-        gitToken: 'tok',
         gitProvider: 'github',
       },
       d,
@@ -319,7 +340,6 @@ describe('initWs', () => {
         repos: ['acme/empty'],
         branch: 'aidlc/i1',
         // no baseBranch / baseBranches → provider default wins
-        gitToken: 'tok',
         gitProvider: 'github',
       },
       d,
@@ -349,7 +369,6 @@ describe('initWs', () => {
         repos: ['acme/empty'],
         branch: 'aidlc/i1',
         baseBranch: 'main',
-        gitToken: 'tok',
         gitProvider: 'github',
       },
       d,
@@ -372,7 +391,6 @@ describe('initWs', () => {
         repos: ['acme/api'],
         branch: 'aidlc/i1',
         baseBranch: 'main',
-        gitToken: 'tok',
         gitProvider: 'github',
       },
       d,
@@ -398,7 +416,6 @@ describe('initWs', () => {
         repos: ['acme/api'],
         branch: 'aidlc/i1',
         baseBranch: 'main',
-        gitToken: 'tok',
         gitProvider: 'github',
       },
       d,
@@ -430,7 +447,6 @@ describe('workspace checkout (mocked git runner)', () => {
       repo: 'acme/api',
       branch: 'aidlc/x',
       baseBranch: 'main',
-      gitToken: 'tok',
       targetDir: '/ws',
       runner,
       ensureDir: noMkdir,
@@ -442,11 +458,37 @@ describe('workspace checkout (mocked git runner)', () => {
     // Remote is still (re-)scrubbed and the intent branch ensured.
     expect(cmds[0]).toBe('git remote set-url origin https://github.com/acme/api.git');
     expect(cmds[1]).toBe('git checkout aidlc/x');
-    // Nothing in the reuse path ever sees the token.
-    for (const c of cmds) expect(c).not.toContain('tok');
+    // Nothing in the reuse path ever sees a credential.
+    for (const c of cmds) expect(c).not.toContain(TEST_SECRET);
   });
 
-  it('clones, scrubs the token from origin, then checks out the branch', async () => {
+  it('clones with askpass, keeps argv clean, then checks out the branch', async () => {
+    const cmds = [];
+    const environments = [];
+    const runner = async (command, args, options = {}) => {
+      cmds.push([command, ...args].join(' '));
+      environments.push(options.env ?? {});
+      return { code: 0 };
+    };
+    await checkoutRepo({
+      repo: 'acme/api',
+      branch: 'feat/x',
+      baseBranch: 'main',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+    });
+    expect(cmds[0]).toBe('git clone https://github.com/acme/api.git /ws');
+    expect(environments[0]).toMatchObject({
+      GIT_ASKPASS: '/tmp/test-askpass',
+      AIDLC_GIT_PASSWORD: TEST_SECRET,
+    });
+    expect(cmds[1]).toBe('git remote set-url origin https://github.com/acme/api.git');
+    expect(cmds[2]).toBe('git checkout feat/x');
+    for (const c of cmds) expect(c).not.toContain(TEST_SECRET);
+  });
+
+  it('removes a stale origin pushurl from the durable git config', async () => {
     const cmds = [];
     const runner = async (command, args) => {
       cmds.push([command, ...args].join(' '));
@@ -455,40 +497,35 @@ describe('workspace checkout (mocked git runner)', () => {
     await checkoutRepo({
       repo: 'acme/api',
       branch: 'feat/x',
-      baseBranch: 'main',
-      gitToken: 'tok',
       targetDir: '/ws',
       runner,
       ensureDir: noMkdir,
+      readGitConfig: async () =>
+        '[remote "origin"]\n\turl = https://github.com/acme/api.git\n\tpushurl = https://old@example.invalid/repo.git\n',
     });
-    expect(cmds[0]).toContain('git clone https://x-access-token:tok@github.com/acme/api.git /ws');
-    // WP2 credential scrubbing: origin is reset to the token-FREE URL right
-    // after the clone, BEFORE anything else runs in the checkout.
-    expect(cmds[1]).toBe('git remote set-url origin https://github.com/acme/api.git');
-    expect(cmds[2]).toBe('git checkout feat/x');
-    // No command after the clone ever carries the token again.
-    for (const c of cmds.slice(1)) expect(c).not.toContain('tok@');
+    expect(cmds).toContain('git config --unset-all remote.origin.pushurl');
   });
 
-  it('adds a token-free origin after the git-init fallback (empty repo has no remote)', async () => {
+  it('removes partial checkout state after clone failure without running git init', async () => {
     const cmds = [];
+    const removed = [];
     const runner = async (command, args) => {
       cmds.push([command, ...args].join(' '));
-      // clone fails (empty repo) and set-url fails (no origin yet).
       if (args[0] === 'clone') return { code: 128 };
-      if (args[0] === 'remote' && args[1] === 'set-url') return { code: 2 };
       return { code: 0 };
     };
-    await checkoutRepo({
+    const result = await checkoutRepo({
       repo: 'acme/new',
       branch: 'feat/x',
-      gitToken: 'tok',
       targetDir: '/ws',
       runner,
       ensureDir: noMkdir,
+      removeDir: async (dir) => removed.push(dir),
     });
-    expect(cmds).toContain('git init /ws');
-    expect(cmds).toContain('git remote add origin https://github.com/acme/new.git');
+    expect(result).toMatchObject({ cloned: false, branchOk: false });
+    expect(cmds).toEqual(['git clone https://github.com/acme/new.git /ws']);
+    expect(removed).toEqual(['/ws']);
+    expect(cmds.some((command) => command.startsWith('git init'))).toBe(false);
   });
 
   it('scrubs with the provider-correct clean URL for gitlab', async () => {
@@ -500,7 +537,6 @@ describe('workspace checkout (mocked git runner)', () => {
     await checkoutRepo({
       repo: 'group/proj',
       branch: 'b',
-      gitToken: 'tok',
       gitProvider: 'gitlab',
       targetDir: '/ws',
       runner,
@@ -509,25 +545,28 @@ describe('workspace checkout (mocked git runner)', () => {
     expect(cmds[1]).toBe('git remote set-url origin https://gitlab.com/group/proj.git');
   });
 
-  it('uses the GitLab oauth2 clone scheme when gitProvider is gitlab', async () => {
+  it('uses a clean GitLab clone URL and supplies oauth2 through askpass', async () => {
     const cmds = [];
-    const runner = async (command, args) => {
+    const environments = [];
+    const runner = async (command, args, options = {}) => {
       cmds.push([command, ...args].join(' '));
+      environments.push(options.env ?? {});
       return { code: 0 };
     };
     await checkoutRepo({
       repo: 'group/proj',
       branch: 'feat/x',
-      gitToken: 'tok',
       gitProvider: 'gitlab',
       targetDir: '/ws',
       runner,
       ensureDir: noMkdir,
     });
-    expect(cmds[0]).toContain('git clone https://oauth2:tok@gitlab.com/group/proj.git /ws');
+    expect(cmds[0]).toBe('git clone https://gitlab.com/group/proj.git /ws');
+    expect(environments[0].AIDLC_GIT_USERNAME).toBe('oauth2');
+    expect(environments[0].AIDLC_GIT_PASSWORD).toBe(TEST_SECRET);
   });
 
-  it('defaults to the GitHub scheme when gitProvider is omitted', async () => {
+  it('defaults to a clean GitHub URL when gitProvider is omitted', async () => {
     const cmds = [];
     const runner = async (command, args) => {
       cmds.push([command, ...args].join(' '));
@@ -535,12 +574,11 @@ describe('workspace checkout (mocked git runner)', () => {
     };
     await checkoutRepo({
       repo: 'acme/api',
-      gitToken: 'tok',
       targetDir: '/ws',
       runner,
       ensureDir: noMkdir,
     });
-    expect(cmds[0]).toContain('git clone https://x-access-token:tok@github.com/acme/api.git /ws');
+    expect(cmds[0]).toBe('git clone https://github.com/acme/api.git /ws');
   });
 
   it('creates the branch when checkout fails', async () => {
@@ -709,7 +747,6 @@ describe('workspace checkout (mocked git runner)', () => {
     await checkoutRepos({
       repos: ['acme/api', 'acme/web'],
       branch: 'b',
-      gitToken: 't',
       workspaceDir: '/ws',
       runner,
       ensureDir: noMkdir,
@@ -717,7 +754,7 @@ describe('workspace checkout (mocked git runner)', () => {
     expect(targets).toEqual(['/ws/acme/api', '/ws/acme/web']);
   });
 
-  it('threads gitProvider through to each repo clone URL', async () => {
+  it('threads gitProvider through to each clean repo clone URL', async () => {
     const cloneUrls = [];
     const runner = async (command, args) => {
       if (args[0] === 'clone') cloneUrls.push(args[1]);
@@ -726,15 +763,14 @@ describe('workspace checkout (mocked git runner)', () => {
     await checkoutRepos({
       repos: ['group/api', 'group/web'],
       branch: 'b',
-      gitToken: 't',
       gitProvider: 'gitlab',
       workspaceDir: '/ws',
       runner,
       ensureDir: noMkdir,
     });
     expect(cloneUrls).toEqual([
-      'https://oauth2:t@gitlab.com/group/api.git',
-      'https://oauth2:t@gitlab.com/group/web.git',
+      'https://gitlab.com/group/api.git',
+      'https://gitlab.com/group/web.git',
     ]);
   });
 
@@ -752,7 +788,6 @@ describe('workspace checkout (mocked git runner)', () => {
       branch: 'aidlc/i1',
       baseBranch: 'main',
       baseBranches: { 'acme/api': 'develop' },
-      gitToken: 't',
       workspaceDir: '/ws',
       runner,
       ensureDir: noMkdir,
@@ -770,7 +805,6 @@ describe('workspace checkout (mocked git runner)', () => {
     await checkoutRepos({
       repos: ['acme/docs'],
       branch: 'aidlc/i1',
-      gitToken: 't',
       workspaceDir: '/ws',
       runner,
       ensureDir: noMkdir,
@@ -801,7 +835,6 @@ describe('ensureWorkspaceSource (self-heal a wiped checkout)', () => {
     const res = await ensureWorkspaceSource({
       repos: ['acme/api'],
       branch: 'b',
-      gitToken: 't',
       workspaceDir: '/ws',
       runner,
       ensureDir: noMkdir,
@@ -873,7 +906,7 @@ describe('ensureWorkspaceSource (self-heal a wiped checkout)', () => {
   });
 
   it('reports a repo that could not be re-cloned as failed', async () => {
-    // clone exits non-zero → checkoutRepo falls back to `git init` (cloned:false).
+    // clone exits non-zero and no local repository is initialized.
     const runner = async (command, args) => ({ code: args[0] === 'clone' ? 1 : 0 });
     const res = await ensureWorkspaceSource({
       repos: ['acme/api'],

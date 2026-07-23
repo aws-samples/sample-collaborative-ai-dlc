@@ -20,12 +20,10 @@ import {
   getUserId,
 } from './git-oauth.js';
 import { getGitConnection, putGitConnection, deleteGitConnection } from './git-connection-store.js';
-import { getGitHubAuthMode, getGitHubAppConfig } from './github-auth-config.js';
 import {
-  getInstallationTokenFromConfig,
-  getInstallationReadToken,
-  validateGitHubAppInstallation,
-} from './git-token.js';
+  invalidateBindingsByCredentialRef,
+  oauthCredentialRef,
+} from './source-control-bindings.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
@@ -45,11 +43,6 @@ export const createGitHandler = (provider, routes) => {
   const secretName = () => process.env[provider.oauth.secretEnvName];
   const redirectUri = () => process.env[provider.oauth.redirectUriEnvName];
 
-  // GitHub only: the platform-wide auth mode ('oauth' | 'app', admin-managed,
-  // see shared/github-auth-config.js). Every other provider is always 'oauth'.
-  const isGitHub = provider.id === 'github';
-  const authMode = async () => (isGitHub ? getGitHubAuthMode(ssm) : 'oauth');
-
   // Resolve the caller's connection row for THIS provider. Backed by the
   // composite-key git-provider-connections table; a user can hold a GitHub and
   // a GitLab connection at once. Connections written before the cutover are
@@ -65,13 +58,23 @@ export const createGitHandler = (provider, routes) => {
     const ctx = { token: tokens.accessToken };
     if (typeof provider.oauth.refreshAccessToken === 'function') {
       ctx.onRefresh = async () => {
-        const creds = await getOAuthCredentials(secrets, secretName(), providerLabel);
-        const refreshed = await provider.oauth.refreshAccessToken({
-          clientId: creds.client_id,
-          clientSecret: creds.client_secret,
-          refreshToken: tokens.refreshToken,
-          redirectUri: redirectUri(),
-        });
+        let refreshed;
+        try {
+          const creds = await getOAuthCredentials(secrets, secretName(), providerLabel);
+          refreshed = await provider.oauth.refreshAccessToken({
+            clientId: creds.client_id,
+            clientSecret: creds.client_secret,
+            refreshToken: tokens.refreshToken,
+            redirectUri: redirectUri(),
+          });
+        } catch (error) {
+          await invalidateBindingsByCredentialRef(
+            ddb,
+            oauthCredentialRef(provider.id, item.userId),
+            'oauth_refresh_failed',
+          ).catch(() => {});
+          throw error;
+        }
         await ssm.send(
           new PutParameterCommand({
             Name: item.parameterName,
@@ -104,21 +107,12 @@ export const createGitHandler = (provider, routes) => {
     return ctx;
   };
 
-  // Mode-aware ctx resolution for repo-scoped routes. In GitHub-App mode the
-  // per-user connection is bypassed entirely: a repo-scoped installation
-  // token (down-scoped to `permissions`) is minted instead; without a repo
-  // scope a metadata:read discovery token is used. Returns { ctx:null } when
-  // the caller has no usable credentials (oauth mode + not connected).
-  const resolveRouteCtx = async (userId, { repositories, permissions } = {}) => {
-    if ((await authMode()) === 'app') {
-      const token = repositories?.length
-        ? await getInstallationTokenFromConfig({ ssm, secrets, repositories, permissions })
-        : await getInstallationReadToken({ ssm, secrets });
-      return { ctx: { token }, mode: 'app' };
-    }
+  // Personal endpoints always resolve the caller's OAuth identity. Project
+  // workflows use /projects/{id}/source-control and never reach this path.
+  const resolveRouteCtx = async (userId) => {
     const Item = await getConnection(userId);
-    if (!Item) return { ctx: null, mode: 'oauth' };
-    return { ctx: await buildCtx(Item), mode: 'oauth' };
+    if (!Item) return { ctx: null };
+    return { ctx: await buildCtx(Item) };
   };
 
   return async (event) => {
@@ -160,14 +154,6 @@ export const createGitHandler = (provider, routes) => {
     try {
       // GET /{provider}/auth — return OAuth URL
       if (httpMethod === 'GET' && path.endsWith('/auth')) {
-        if ((await authMode()) === 'app') {
-          // No per-user connect flow in app mode — the platform authenticates
-          // as the GitHub App installation (admin-configured).
-          return response(409, {
-            error: `${providerLabel} uses GitHub App authentication on this platform — no per-user connection is needed`,
-            code: 'APP_MODE',
-          });
-        }
         const { client_id, client_secret } = await getOAuthCredentials(
           secrets,
           secretName(),
@@ -268,28 +254,6 @@ export const createGitHandler = (provider, routes) => {
       // GET /{provider}/status
       if (httpMethod === 'GET' && path.endsWith('/status')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
-        const mode = await authMode();
-        if (mode === 'app') {
-          // App mode: "connected" is a platform property (App configured),
-          // not a per-user one. The frontend uses `mode` to hide the
-          // connect/disconnect UI.
-          const appConfig = await getGitHubAppConfig(ssm);
-          if (!appConfig.appId || !appConfig.installationId) {
-            return response(200, { connected: false, provider: provider.id, mode });
-          }
-          try {
-            await validateGitHubAppInstallation(secrets, appConfig.appId, appConfig.installationId);
-            return response(200, { connected: true, provider: provider.id, mode });
-          } catch (error) {
-            return response(200, {
-              connected: false,
-              provider: provider.id,
-              mode,
-              configurationRequired: true,
-              configurationError: error?.message ?? 'GitHub App validation failed',
-            });
-          }
-        }
         const Item = await getConnection(userId);
         const grantedScopes = new Set(
           String(Item?.scope ?? '')
@@ -300,28 +264,27 @@ export const createGitHandler = (provider, routes) => {
           (scope) => !grantedScopes.has(scope),
         );
         if (Item && missingScopes.length > 0) {
+          await invalidateBindingsByCredentialRef(
+            ddb,
+            oauthCredentialRef(provider.id, userId),
+            'oauth_scopes_missing',
+          ).catch(() => {});
           return response(200, {
             connected: false,
             provider: Item.provider,
-            mode,
             reauthorizationRequired: true,
             missingScopes,
           });
         }
-        return response(200, { connected: !!Item, provider: Item?.provider, mode });
+        return response(200, { connected: !!Item, provider: Item?.provider });
       }
 
       // GET /{provider}/repos
       if (httpMethod === 'GET' && path.endsWith('/repos')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
-        const { ctx, mode } = await resolveRouteCtx(userId);
+        const { ctx } = await resolveRouteCtx(userId);
         if (!ctx) return response(400, { error: `${providerLabel} not connected` });
-        // App mode lists the repos the installation can access (installation
-        // scoping replaces the per-user repo list); oauth lists the user's.
-        const repos =
-          mode === 'app' && typeof provider.listInstallationRepos === 'function'
-            ? await provider.listInstallationRepos(ctx)
-            : await provider.listRepos(ctx);
+        const repos = await provider.listRepos(ctx);
         return response(200, repos);
       }
 
@@ -342,6 +305,12 @@ export const createGitHandler = (provider, routes) => {
         // Delete from BOTH the new and legacy tables so a stale legacy row
         // can't resurrect this connection via migrate-on-read.
         await deleteGitConnection(ddb, userId, provider.id);
+        await invalidateBindingsByCredentialRef(
+          ddb,
+          oauthCredentialRef(provider.id, userId),
+          'oauth_disconnected',
+          { actor: userId },
+        );
         return response(200, { success: true });
       }
 

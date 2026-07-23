@@ -6,9 +6,11 @@ import userEvent from '@testing-library/user-event';
 // in jsdom without network or Radix portal complexity. The GitRepoSelect stub
 // exposes a button that selects one repo, standing in for the provider-backed
 // picker.
+// Per-test switch: the "App path without OAuth" test flips this to false.
+let oauthConnected = true;
 vi.mock('../hooks/useGitProviderStatus', () => ({
   useGitProviderStatus: () => ({
-    status: { connected: true },
+    status: { connected: oauthConnected },
     loading: false,
     error: null,
     refresh: () => {},
@@ -23,7 +25,10 @@ vi.mock('./GitRepoSelect', () => ({
   ),
 }));
 vi.mock('../services/projects', () => ({
-  projectsService: { create: vi.fn().mockResolvedValue({ id: 'p1' }) },
+  projectsService: {
+    create: vi.fn().mockResolvedValue({ id: 'p1' }),
+    delete: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 vi.mock('../services/workflows', () => ({
   workflowsService: {
@@ -36,14 +41,39 @@ vi.mock('../services/workflows', () => ({
   },
 }));
 vi.mock('../services/trackers', () => ({ trackersService: { addToProject: vi.fn() } }));
+vi.mock('../services/gitProvider', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/gitProvider')>();
+  return {
+    ...actual,
+    githubAppService: {
+      getStatus: vi.fn().mockResolvedValue({ configured: true }),
+      listRepos: vi.fn().mockResolvedValue([]),
+    },
+  };
+});
+vi.mock('../services/sourceControl', () => ({
+  sourceControlService: {
+    bind: vi.fn().mockResolvedValue({ ready: true, repositories: [] }),
+  },
+}));
 
 import { CreateProjectModal } from './CreateProjectModal';
 import { projectsService } from '../services/projects';
+import { sourceControlService } from '../services/sourceControl';
 import { workflowsService } from '../services/workflows';
+import { githubAppService } from '../services/gitProvider';
 
 describe('CreateProjectModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    oauthConnected = true;
+    vi.mocked(projectsService.create).mockResolvedValue({ id: 'p1' } as never);
+    vi.mocked(projectsService.delete).mockResolvedValue(undefined as never);
+    vi.mocked(sourceControlService.bind).mockResolvedValue({
+      ready: true,
+      repositories: [],
+    });
+    vi.mocked(githubAppService.getStatus).mockResolvedValue({ configured: true });
   });
 
   // The workflow catalog loads on mount; flush that promise inside act so the
@@ -95,7 +125,102 @@ describe('CreateProjectModal', () => {
         repos: [{ url: 'acme/widgets', role: 'primary' }],
       }),
     );
+    expect(sourceControlService.bind).toHaveBeenCalledWith('p1', {
+      github: { authType: 'github-app' },
+    });
     expect(onCreated).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('requires explicit confirmation before delegating OAuth', async () => {
+    const user = userEvent.setup();
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="github" />,
+    );
+
+    // Step 1: switch from the default App path to OAuth delegation.
+    await user.click(screen.getByRole('radio', { name: /My GitHub OAuth identity/ }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    const createButton = screen.getByRole('button', { name: 'Create Space' });
+    expect(createButton).toBeDisabled();
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: /I confirm that this space may use my connected identity/,
+      }),
+    );
+    expect(createButton).toBeEnabled();
+    await user.click(createButton);
+
+    await waitFor(() =>
+      expect(sourceControlService.bind).toHaveBeenCalledWith('p1', {
+        github: { authType: 'github-oauth', confirmDelegation: true },
+      }),
+    );
+  });
+
+  it('lets an unconnected user create a space via the GitHub App path', async () => {
+    oauthConnected = false;
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={onCreated} initialProvider="github" />,
+    );
+
+    // App is configured, so Next is enabled despite connected=false.
+    const nextButton = screen.getByRole('button', { name: 'Next' });
+    await waitFor(() => expect(nextButton).toBeEnabled());
+    await user.click(nextButton);
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    const createBtn = await screen.findByRole('button', { name: 'Create Space' });
+    await waitFor(() => expect(createBtn).toBeEnabled());
+    await user.click(createBtn);
+
+    await waitFor(() =>
+      expect(sourceControlService.bind).toHaveBeenCalledWith('p1', {
+        github: { authType: 'github-app' },
+      }),
+    );
+    expect(onCreated).toHaveBeenCalled();
+  });
+
+  it('blocks the App path and falls back to OAuth when the App is unconfigured', async () => {
+    vi.mocked(githubAppService.getStatus).mockResolvedValue({ configured: false });
+    oauthConnected = false;
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="github" />,
+    );
+
+    // App option disabled; selection fell back to OAuth, which is not
+    // connected — so Next stays disabled.
+    await waitFor(() => expect(screen.getByRole('radio', { name: /GitHub App/ })).toBeDisabled());
+    expect(screen.getByRole('radio', { name: /My GitHub OAuth identity/ })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+  });
+
+  it('keeps a newly created project (unbound) when binding verification fails', async () => {
+    vi.mocked(sourceControlService.bind).mockRejectedValueOnce(
+      new Error('GitHub App is not installed for acme/widgets'),
+    );
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    const onClose = vi.fn();
+    await renderModal(
+      <CreateProjectModal onClose={onClose} onCreated={onCreated} initialProvider="github" />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(await screen.findByRole('button', { name: 'Create Space' }));
+
+    // The project survives unbound; the launch guard blocks repository-backed
+    // starts until an owner rebinds it in project settings.
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(projectsService.delete).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
 });

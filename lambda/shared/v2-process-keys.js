@@ -264,6 +264,8 @@ const buildExecutionMeta = ({
   currentStage = null,
   pendingHumanTaskId = null,
   startedBy = null,
+  starterName = null,
+  starterEmail = null,
   startedAt,
   // Intent configuration captured at create, read by the orchestrator at Start
   // and forwarded to init-ws/run-stage (one place owns the run config — see
@@ -280,6 +282,10 @@ const buildExecutionMeta = ({
   // caller didn't override anything (the common case).
   baseBranches = null,
   repos = null,
+  // Provider lookup by repository id. Most projects use one provider and keep
+  // `gitProvider` as the fallback; this map preserves mixed-provider projects
+  // without changing the long-standing string shape of `repos`.
+  repoProviders = null,
   // The project's selected agent CLI (claude|kiro|…) snapshotted at create; the
   // orchestrator forwards it to run-stage as `requestedCli` so the run honours the
   // project's explicit choice (selection depends on which CLI is authed). null =
@@ -393,6 +399,8 @@ const buildExecutionMeta = ({
   currentStage,
   pendingHumanTaskId,
   startedBy,
+  starterName,
+  starterEmail,
   startedAt,
   title,
   prompt,
@@ -400,6 +408,7 @@ const buildExecutionMeta = ({
   baseBranch,
   baseBranches,
   repos,
+  repoProviders,
   gitProvider,
   agentCli,
   cliModels,

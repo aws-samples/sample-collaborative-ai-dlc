@@ -4,7 +4,7 @@ import { useProjectCache } from '@/hooks/useProjectsCache';
 import { intentsService } from '@/services/intents';
 import { trackersService, type TrackerIssue } from '@/services/trackers';
 import type { TrackerBinding } from '@/services/projects';
-import { getGitProviderService } from '@/services/gitProvider';
+import { sourceControlService } from '@/services/sourceControl';
 import { buildSprintDescription } from '@/lib/buildSprintDescription';
 import { IntentSourcePicker } from '@/components/IntentSourcePicker';
 import { Button } from '@/components/ui/button';
@@ -72,12 +72,11 @@ export default function NewIntentPage() {
   // it, so there is no reason to hit the git provider on every page load.
   useEffect(() => {
     if (!showBaseBranch || !project || repos.length === 0) return;
-    const service = getGitProviderService(project.gitProvider);
     for (const repo of repos) {
       if (branchOptions[repo.url] || branchLoading[repo.url]) continue;
       setBranchLoading((prev) => ({ ...prev, [repo.url]: true }));
-      service
-        .listBranches(repo.url)
+      sourceControlService
+        .listBranches(project.id, repo.provider || project.gitProvider, repo.url)
         .then(({ branches, defaultBranch }) => {
           setBranchOptions((prev) => ({ ...prev, [repo.url]: branches }));
           if (defaultBranch) {

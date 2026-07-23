@@ -28,9 +28,8 @@ import { cn } from '@/lib/utils';
 import { projectsService, type Project } from '@/services/projects';
 import { gitProviderTerminology, type GitProvider, type GitRepo } from '@/services/gitProvider';
 import { GitRepoSelect } from '@/components/GitRepoSelect';
-import { GitConnectButton } from '@/components/GitConnectButton';
 import { SettingsCard } from '@/components/settings/SettingsCard';
-import { useGitProviderStatus } from '@/hooks/useGitProviderStatus';
+import { SourceControlBindingSection } from './SourceControlBindingSection';
 
 const REPO_ROLE_COLORS: Record<string, string> = {
   primary: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
@@ -54,14 +53,6 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
   const repos = project.repos ?? [];
   const provider = (project.gitProvider ?? 'github') as GitProvider;
   const providerLabel = gitProviderTerminology(provider).label;
-  const {
-    status: providerStatus,
-    loading: providerStatusLoading,
-    error: providerStatusError,
-    refresh: refreshProviderStatus,
-  } = useGitProviderStatus(provider);
-  const providerManaged = provider === 'github' && providerStatus?.mode === 'app';
-
   const [error, setError] = useState<string | null>(null);
 
   // Add dialog
@@ -134,61 +125,7 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
 
   return (
     <div className="space-y-6">
-      <SettingsCard
-        icon={<GitBranch />}
-        title={`${providerLabel} connection`}
-        badge={
-          <span
-            className={cn(
-              'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium leading-4',
-              providerStatus?.reauthorizationRequired
-                ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                : providerStatus?.connected
-                  ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                  : 'bg-muted text-muted-foreground',
-            )}
-          >
-            {providerStatus?.reauthorizationRequired
-              ? 'Action required'
-              : providerStatus?.connected
-                ? 'Connected'
-                : 'Not connected'}
-          </span>
-        }
-        description="Your credential used to browse repositories and push agent changes."
-      >
-        {providerStatusLoading ? (
-          <p className="text-xs text-muted-foreground">Checking connection...</p>
-        ) : providerStatusError ? (
-          <p className="flex items-center gap-1.5 text-xs text-destructive">
-            <XCircle className="h-3.5 w-3.5 shrink-0" /> {providerStatusError}
-          </p>
-        ) : providerManaged ? (
-          providerStatus?.configurationRequired ? (
-            <p className="flex items-start gap-1.5 text-xs text-destructive">
-              <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>
-                {providerStatus.configurationError ||
-                  'The GitHub App installation needs administrator attention.'}{' '}
-                Open <strong>Platform Admin → Source Control</strong> after updating the App
-                permissions in GitHub.
-              </span>
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              This platform uses a GitHub App installation. No personal connection is required.
-            </p>
-          )
-        ) : (
-          <GitConnectButton
-            provider={provider}
-            connected={providerStatus?.connected ?? false}
-            reauthorizationRequired={providerStatus?.reauthorizationRequired}
-            missingScopes={providerStatus?.missingScopes}
-            onDisconnect={refreshProviderStatus}
-          />
-        )}
-      </SettingsCard>
+      <SourceControlBindingSection project={project} canEdit={canEdit} />
 
       <SettingsCard
         icon={<GitBranch />}

@@ -10,5 +10,8 @@
     "lint": "oxlint .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@aws-sdk/client-lambda": "^3.1089.0"
   }
 }

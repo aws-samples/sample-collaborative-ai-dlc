@@ -2190,42 +2190,27 @@ resource "aws_api_gateway_resource" "github_disconnect" {
   path_part   = "disconnect"
 }
 
-# /github/repos/{owner}
-resource "aws_api_gateway_resource" "github_repos_owner" {
+# /github/app — App-credentialed discovery for the create-space App path
+# (status + installation repos; works without a personal OAuth connection).
+resource "aws_api_gateway_resource" "github_app" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos.id
-  path_part   = "{owner}"
+  parent_id   = aws_api_gateway_resource.github.id
+  path_part   = "app"
 }
 
-# /github/repos/{owner}/{repo}
-resource "aws_api_gateway_resource" "github_repos_owner_repo" {
+resource "aws_api_gateway_resource" "github_app_status" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_owner.id
-  path_part   = "{repo}"
+  parent_id   = aws_api_gateway_resource.github_app.id
+  path_part   = "status"
 }
 
-# /github/repos/{owner}/{repo}/branches
-resource "aws_api_gateway_resource" "github_repos_branches" {
+resource "aws_api_gateway_resource" "github_app_repos" {
   rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_owner_repo.id
-  path_part   = "branches"
+  parent_id   = aws_api_gateway_resource.github_app.id
+  path_part   = "repos"
 }
 
-# /github/repos/{owner}/{repo}/tree
-resource "aws_api_gateway_resource" "github_repos_tree" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_owner_repo.id
-  path_part   = "tree"
-}
-
-# /github/repos/{owner}/{repo}/contents
-resource "aws_api_gateway_resource" "github_repos_contents" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_owner_repo.id
-  path_part   = "contents"
-}
-
-# /github/admin — platform-admin GitHub configuration (auth mode + App config)
+# /github/admin — platform-admin OAuth + GitHub App identity configuration
 resource "aws_api_gateway_resource" "github_admin" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.github.id
@@ -2314,6 +2299,42 @@ resource "aws_api_gateway_integration" "github_status_get" {
   uri                     = var.github_lambda_invoke_arn
 }
 
+# GET /github/app/status (authenticated) — is the GitHub App configured?
+resource "aws_api_gateway_method" "github_app_status_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.github_app_status.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "github_app_status_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.github_app_status.id
+  http_method             = aws_api_gateway_method.github_app_status_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.github_lambda_invoke_arn
+}
+
+# GET /github/app/repos (authenticated) — repos across the App's installations
+resource "aws_api_gateway_method" "github_app_repos_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.github_app_repos.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "github_app_repos_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.github_app_repos.id
+  http_method             = aws_api_gateway_method.github_app_repos_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.github_lambda_invoke_arn
+}
+
 # DELETE /github/disconnect (authenticated)
 resource "aws_api_gateway_method" "github_disconnect_delete" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
@@ -2369,60 +2390,6 @@ resource "aws_api_gateway_integration" "github_admin_config_put" {
   uri                     = var.github_lambda_invoke_arn
 }
 
-# GET /github/repos/{owner}/{repo}/branches (authenticated)
-resource "aws_api_gateway_method" "github_repos_branches_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.github_repos_branches.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "github_repos_branches_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.github_repos_branches.id
-  http_method             = aws_api_gateway_method.github_repos_branches_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.github_lambda_invoke_arn
-}
-
-# GET /github/repos/{owner}/{repo}/tree (authenticated)
-resource "aws_api_gateway_method" "github_repos_tree_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.github_repos_tree.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "github_repos_tree_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.github_repos_tree.id
-  http_method             = aws_api_gateway_method.github_repos_tree_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.github_lambda_invoke_arn
-}
-
-# GET /github/repos/{owner}/{repo}/contents (authenticated)
-resource "aws_api_gateway_method" "github_repos_contents_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.github_repos_contents.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "github_repos_contents_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.github_repos_contents.id
-  http_method             = aws_api_gateway_method.github_repos_contents_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.github_lambda_invoke_arn
-}
-
 # -----------------------------------------------------------------------------
 # GitHub CORS
 # -----------------------------------------------------------------------------
@@ -2456,91 +2423,22 @@ module "cors_github_disconnect" {
   resource_id = aws_api_gateway_resource.github_disconnect.id
 }
 
-module "cors_github_repos_branches" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.github_repos_branches.id
-}
-
-module "cors_github_repos_tree" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.github_repos_tree.id
-}
-
-module "cors_github_repos_contents" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.github_repos_contents.id
-}
-
 module "cors_github_admin_config" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.github_admin_config.id
 }
 
-# /github/repos/{owner}/{repo}/pulls
-resource "aws_api_gateway_resource" "github_repos_pulls" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_owner_repo.id
-  path_part   = "pulls"
-}
-
-# /github/repos/{owner}/{repo}/pulls/{prNumber}
-resource "aws_api_gateway_resource" "github_repos_pulls_number" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_pulls.id
-  path_part   = "{prNumber}"
-}
-
-# /github/repos/{owner}/{repo}/pulls/{prNumber}/comments
-resource "aws_api_gateway_resource" "github_repos_pulls_comments" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.github_repos_pulls_number.id
-  path_part   = "comments"
-}
-
-# GET /github/repos/{owner}/{repo}/pulls/{prNumber}/comments (authenticated)
-resource "aws_api_gateway_method" "github_pulls_comments_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.github_repos_pulls_comments.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "github_pulls_comments_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.github_repos_pulls_comments.id
-  http_method             = aws_api_gateway_method.github_pulls_comments_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.github_lambda_invoke_arn
-}
-
-# POST /github/repos/{owner}/{repo}/pulls/{prNumber}/comments (authenticated)
-resource "aws_api_gateway_method" "github_pulls_comments_post" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.github_repos_pulls_comments.id
-  http_method   = "POST"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "github_pulls_comments_post" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.github_repos_pulls_comments.id
-  http_method             = aws_api_gateway_method.github_pulls_comments_post.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.github_lambda_invoke_arn
-}
-
-module "cors_github_repos_pulls_comments" {
+module "cors_github_app_status" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.github_repos_pulls_comments.id
+  resource_id = aws_api_gateway_resource.github_app_status.id
+}
+
+module "cors_github_app_repos" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.github_app_repos.id
 }
 
 # -----------------------------------------------------------------------------
@@ -2953,64 +2851,6 @@ resource "aws_api_gateway_resource" "gitlab_disconnect" {
   path_part   = "disconnect"
 }
 
-# /gitlab/projects
-resource "aws_api_gateway_resource" "gitlab_projects" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab.id
-  path_part   = "projects"
-}
-
-# GitLab project paths are namespaced (group/project, often group/subgroup/
-# project). Encoded slashes (%2F) in a REST API Gateway path segment are
-# fragile — API Gateway / CloudFront may reject or normalize them. So the
-# project reference travels as a `?project=<url-encoded path>` QUERY STRING
-# (passed through verbatim by API Gateway) rather than a path segment. The
-# Lambda then URL-encodes it into the GitLab API path, which is the format
-# GitLab requires on the server-to-server hop (no API Gateway in between).
-
-# /gitlab/projects/branches  (GET ?project=)
-resource "aws_api_gateway_resource" "gitlab_projects_branches" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects.id
-  path_part   = "branches"
-}
-
-# /gitlab/projects/tree  (GET ?project=&branch=)
-resource "aws_api_gateway_resource" "gitlab_projects_tree" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects.id
-  path_part   = "tree"
-}
-
-# /gitlab/projects/contents  (GET ?project=&path=&branch=)
-resource "aws_api_gateway_resource" "gitlab_projects_contents" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects.id
-  path_part   = "contents"
-}
-
-# /gitlab/projects/merge_requests  (mrIid is numeric, so it is slash-free and
-# safe as a path segment; the project still travels as ?project=)
-resource "aws_api_gateway_resource" "gitlab_projects_merge_requests" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects.id
-  path_part   = "merge_requests"
-}
-
-# /gitlab/projects/merge_requests/{mrIid}
-resource "aws_api_gateway_resource" "gitlab_projects_mr_iid" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects_merge_requests.id
-  path_part   = "{mrIid}"
-}
-
-# /gitlab/projects/merge_requests/{mrIid}/notes
-resource "aws_api_gateway_resource" "gitlab_projects_mr_notes" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.gitlab_projects_mr_iid.id
-  path_part   = "notes"
-}
-
 # -----------------------------------------------------------------------------
 # GitLab Methods
 # -----------------------------------------------------------------------------
@@ -3104,96 +2944,6 @@ resource "aws_api_gateway_integration" "gitlab_disconnect_delete" {
   uri                     = var.gitlab_lambda_invoke_arn
 }
 
-# GET /gitlab/projects/branches?project= (authenticated)
-resource "aws_api_gateway_method" "gitlab_projects_branches_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.gitlab_projects_branches.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "gitlab_projects_branches_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.gitlab_projects_branches.id
-  http_method             = aws_api_gateway_method.gitlab_projects_branches_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.gitlab_lambda_invoke_arn
-}
-
-# GET /gitlab/projects/tree?project=&branch= (authenticated)
-resource "aws_api_gateway_method" "gitlab_projects_tree_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.gitlab_projects_tree.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "gitlab_projects_tree_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.gitlab_projects_tree.id
-  http_method             = aws_api_gateway_method.gitlab_projects_tree_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.gitlab_lambda_invoke_arn
-}
-
-# GET /gitlab/projects/contents?project=&path=&branch= (authenticated)
-resource "aws_api_gateway_method" "gitlab_projects_contents_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.gitlab_projects_contents.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "gitlab_projects_contents_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.gitlab_projects_contents.id
-  http_method             = aws_api_gateway_method.gitlab_projects_contents_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.gitlab_lambda_invoke_arn
-}
-
-# GET /gitlab/projects/merge_requests/{mrIid}/notes?project= (authenticated)
-resource "aws_api_gateway_method" "gitlab_mr_notes_get" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.gitlab_projects_mr_notes.id
-  http_method   = "GET"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "gitlab_mr_notes_get" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.gitlab_projects_mr_notes.id
-  http_method             = aws_api_gateway_method.gitlab_mr_notes_get.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.gitlab_lambda_invoke_arn
-}
-
-# POST /gitlab/projects/merge_requests/{mrIid}/notes?project= (authenticated)
-resource "aws_api_gateway_method" "gitlab_mr_notes_post" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.gitlab_projects_mr_notes.id
-  http_method   = "POST"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "gitlab_mr_notes_post" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.gitlab_projects_mr_notes.id
-  http_method             = aws_api_gateway_method.gitlab_mr_notes_post.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.gitlab_lambda_invoke_arn
-}
-
 # -----------------------------------------------------------------------------
 # GitLab CORS
 # -----------------------------------------------------------------------------
@@ -3225,30 +2975,6 @@ module "cors_gitlab_disconnect" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.gitlab_disconnect.id
-}
-
-module "cors_gitlab_projects_branches" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.gitlab_projects_branches.id
-}
-
-module "cors_gitlab_projects_tree" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.gitlab_projects_tree.id
-}
-
-module "cors_gitlab_projects_contents" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.gitlab_projects_contents.id
-}
-
-module "cors_gitlab_mr_notes" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.gitlab_projects_mr_notes.id
 }
 
 # -----------------------------------------------------------------------------
@@ -4149,4 +3875,148 @@ module "cors_custom_rules" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.custom_rules.id
+}
+
+# =============================================================================
+# Project-bound source control
+# =============================================================================
+
+resource "aws_api_gateway_resource" "source_control" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "source-control"
+}
+
+resource "aws_api_gateway_resource" "source_control_branches" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.source_control.id
+  path_part   = "branches"
+}
+
+resource "aws_api_gateway_resource" "source_control_tree" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.source_control.id
+  path_part   = "tree"
+}
+
+resource "aws_api_gateway_resource" "source_control_contents" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.source_control.id
+  path_part   = "contents"
+}
+
+resource "aws_api_gateway_resource" "source_control_reviews" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.source_control.id
+  path_part   = "reviews"
+}
+
+resource "aws_api_gateway_resource" "source_control_review" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.source_control_reviews.id
+  path_part   = "{reviewId}"
+}
+
+resource "aws_api_gateway_resource" "source_control_review_comments" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.source_control_review.id
+  path_part   = "comments"
+}
+
+locals {
+  source_control_routes = {
+    root_get = {
+      resource_id = aws_api_gateway_resource.source_control.id
+      method      = "GET"
+    }
+    root_put = {
+      resource_id = aws_api_gateway_resource.source_control.id
+      method      = "PUT"
+    }
+    root_delete = {
+      resource_id = aws_api_gateway_resource.source_control.id
+      method      = "DELETE"
+    }
+    branches_get = {
+      resource_id = aws_api_gateway_resource.source_control_branches.id
+      method      = "GET"
+    }
+    tree_get = {
+      resource_id = aws_api_gateway_resource.source_control_tree.id
+      method      = "GET"
+    }
+    contents_get = {
+      resource_id = aws_api_gateway_resource.source_control_contents.id
+      method      = "GET"
+    }
+    comments_get = {
+      resource_id = aws_api_gateway_resource.source_control_review_comments.id
+      method      = "GET"
+    }
+    comments_post = {
+      resource_id = aws_api_gateway_resource.source_control_review_comments.id
+      method      = "POST"
+    }
+  }
+}
+
+resource "aws_api_gateway_method" "source_control" {
+  for_each      = local.source_control_routes
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = each.value.resource_id
+  http_method   = each.value.method
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+
+  request_parameters = {
+    "method.request.path.projectId" = true
+  }
+}
+
+resource "aws_api_gateway_integration" "source_control" {
+  for_each                = local.source_control_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = each.value.resource_id
+  http_method             = aws_api_gateway_method.source_control[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.source_control_lambda_invoke_arn
+}
+
+module "cors_source_control" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.source_control.id
+}
+
+module "cors_source_control_branches" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.source_control_branches.id
+}
+
+module "cors_source_control_tree" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.source_control_tree.id
+}
+
+module "cors_source_control_contents" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.source_control_contents.id
+}
+
+module "cors_source_control_review_comments" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.source_control_review_comments.id
+}
+
+resource "aws_lambda_permission" "source_control_api_gateway" {
+  statement_id  = "AllowAPIGatewayInvokeSourceControl"
+  action        = "lambda:InvokeFunction"
+  function_name = var.source_control_lambda_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }

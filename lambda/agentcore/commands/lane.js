@@ -15,8 +15,8 @@
 //                 paths and fails the lane — the WP6 conflict-resolution stage
 //                 consumes them.
 //
-// Both are deterministic engine git — the agent CLI is never involved and no
-// credentials outlive the token windows inside git-engine. Failures are
+// Both are deterministic engine git — the agent CLI is never involved and
+// credentials exist only in broker-scoped git child environments. Failures are
 // VALUES ({ ok:false, reason, detail }) — the orchestrator decides policy.
 
 import {
@@ -31,9 +31,8 @@ import {
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
 } from '../workspace.js';
 import { stat } from 'node:fs/promises';
+import { repoUrl, repoProvider } from '../../shared/repo-provider.js';
 import { materializeAttachments } from '../attachments.js';
-
-const repoUrl = (repo) => (typeof repo === 'string' ? repo : repo.url);
 
 const hasCheckout = async (dir, statFn = stat) => {
   try {
@@ -55,8 +54,8 @@ export const initLane = async (
     repos = [],
     unitBranch,
     intentBranch,
-    gitToken,
     gitProvider,
+    repoProviders = null,
     workspaceDir,
     attachments = [],
   },
@@ -91,6 +90,7 @@ export const initLane = async (
   const prepared = [];
   for (const repo of repos) {
     const url = repoUrl(repo);
+    const provider = repoProvider(repo, gitProvider, repoProviders);
     const dir = repoTargetDir({ url, workspaceDir, multi });
     // Fresh lane mount → clone first. Checkout the INTENT branch (it exists on
     // the remote — the pre-section stages pushed it); the unit branch is
@@ -101,15 +101,16 @@ export const initLane = async (
         repo: url,
         branch: intentBranch,
         baseBranch: intentBranch,
-        gitToken,
-        gitProvider,
+        gitProvider: provider,
+        projectId,
+        executionId,
         targetDir: dir,
       }).catch((e) => ({ error: e?.message ?? String(e) }));
       if (cloned?.error || cloned?.cloned === false) {
         return {
           ok: false,
           reason: 'lane_clone_failed',
-          detail: `${url}: ${cloned?.error ?? 'clone fell back to git init (unreachable/auth?)'}`,
+          detail: `${url}: ${cloned?.error ?? 'clone failed (repository or project binding unavailable)'}`,
         };
       }
     }
@@ -118,8 +119,9 @@ export const initLane = async (
       repo: url,
       unitBranch,
       intentBranch,
-      gitToken,
-      gitProvider,
+      gitProvider: provider,
+      projectId,
+      executionId,
       urls: urlsFor ? urlsFor(url) : {},
     });
     if (!lane.ready) {
@@ -174,8 +176,8 @@ export const mergeLane = async (
     intentBranch,
     baseBranch,
     baseBranches,
-    gitToken,
     gitProvider,
+    repoProviders = null,
     // Commit attribution: merge commits are authored by the starting user,
     // committed by AI-DLC Engine (see git-engine.js gitIdentity).
     gitAuthor = null,
@@ -208,8 +210,10 @@ export const mergeLane = async (
     branch: intentBranch,
     baseBranch: baseBranch ?? intentBranch,
     baseBranches,
-    gitToken,
     gitProvider,
+    repoProviders,
+    projectId,
+    executionId,
     workspaceDir,
   }).catch((e) => ({ error: e?.message ?? String(e) }));
   if (heal?.error || heal?.failed?.length) {
@@ -224,6 +228,7 @@ export const mergeLane = async (
   const results = [];
   for (const repo of repos) {
     const url = repoUrl(repo);
+    const provider = repoProvider(repo, gitProvider, repoProviders);
     const dir = repoTargetDir({ url, workspaceDir, multi });
     const res = await mergeBranchNoFf({
       dir,
@@ -232,8 +237,9 @@ export const mergeLane = async (
       unitBranch,
       message: `aidlc(merge): ${unitSlug} — ${executionId}`,
       author: gitAuthor,
-      gitToken,
-      gitProvider,
+      gitProvider: provider,
+      projectId,
+      executionId,
       urls: urlsFor ? urlsFor(url) : {},
     });
     results.push({ repo: url, ...res });
@@ -304,8 +310,8 @@ export const reconcileLane = async (
     repos = [],
     unitBranch,
     intentBranch,
-    gitToken,
     gitProvider,
+    repoProviders = null,
     gitAuthor = null,
     workspaceDir,
   },
@@ -326,8 +332,10 @@ export const reconcileLane = async (
     repos,
     branch: unitBranch,
     baseBranch: intentBranch,
-    gitToken,
     gitProvider,
+    repoProviders,
+    projectId,
+    executionId,
     workspaceDir,
   }).catch((error) => ({ error: error?.message ?? String(error) }));
   if (heal?.error || heal?.failed?.length) {
@@ -342,6 +350,7 @@ export const reconcileLane = async (
   const results = [];
   for (const repo of repos) {
     const url = repoUrl(repo);
+    const provider = repoProvider(repo, gitProvider, repoProviders);
     const result = await mergeBranchNoFf({
       dir: repoTargetDir({ url, workspaceDir, multi }),
       repo: url,
@@ -350,8 +359,9 @@ export const reconcileLane = async (
       unitBranch: intentBranch,
       message: `aidlc(reconcile): ${unitSlug} - ${executionId}`,
       author: gitAuthor,
-      gitToken,
-      gitProvider,
+      gitProvider: provider,
+      projectId,
+      executionId,
       urls: urlsFor ? urlsFor(url) : {},
     });
     results.push({ repo: url, ...result });
@@ -400,7 +410,17 @@ export const reconcileLane = async (
 // after provider-side unit integration. Shared stages must never run against a
 // stale pre-merge checkout.
 export const refreshIntentWorkspace = async (
-  { repos = [], intentBranch, baseBranch, baseBranches, gitToken, gitProvider, workspaceDir },
+  {
+    projectId,
+    executionId,
+    repos = [],
+    intentBranch,
+    baseBranch,
+    baseBranches,
+    gitProvider,
+    repoProviders = null,
+    workspaceDir,
+  },
   deps,
 ) => {
   const {
@@ -415,8 +435,10 @@ export const refreshIntentWorkspace = async (
     branch: intentBranch,
     baseBranch: baseBranch ?? intentBranch,
     baseBranches,
-    gitToken,
     gitProvider,
+    repoProviders,
+    projectId,
+    executionId,
     workspaceDir,
   }).catch((error) => ({ error: error?.message ?? String(error) }));
   if (heal?.error || heal?.failed?.length) {
@@ -430,12 +452,14 @@ export const refreshIntentWorkspace = async (
   const results = [];
   for (const repo of repos) {
     const url = repoUrl(repo);
+    const provider = repoProvider(repo, gitProvider, repoProviders);
     const dir = repoTargetDir({ url, workspaceDir, multi });
     const fetched = await fetchOrigin({
       dir,
       repo: url,
-      gitToken,
-      gitProvider,
+      gitProvider: provider,
+      projectId,
+      executionId,
       urls: urlsFor ? urlsFor(url) : {},
       git,
     });

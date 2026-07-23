@@ -372,10 +372,7 @@ export const runParallelSection = async (segment, toolkit) => {
     executeStage, // (ctxArg, stage, opts) → { state, reason?, value? }
     ids,
     intentBranch,
-    cloneBase, // { repos, baseBranch, baseBranches, gitToken, gitProvider }
-    // Dispatch-time git-token refresh (GitHub-App mode mints ~1h tokens; the
-    // run-start snapshot goes stale). Optional: falls back to cloneBase.gitToken.
-    freshGitToken = null,
+    cloneBase, // { repos, baseBranch, baseBranches, gitProvider, repoProviders }
     intentSessionId,
     maxParallelUnits,
     // Forwarded to the conflict-resolution stage's CLI run (WP6).
@@ -392,10 +389,6 @@ export const runParallelSection = async (segment, toolkit) => {
   } = toolkit;
   const { executionId, intentId, projectId } = ids;
   const sk = `s${segment.index}`;
-
-  // Fresh (or snapshot) git token for lane dispatches — must be resolved
-  // INSIDE durable step bodies only (replay never re-executes memoized steps).
-  const laneGitToken = async () => (freshGitToken ? await freshGitToken() : cloneBase.gitToken);
 
   const unitPlan = await ctx.step(`load-unit-plan-${sk}`, () => store.getUnitPlan(executionId));
   if (!unitPlan || (unitPlan.units ?? []).length === 0) {
@@ -457,9 +450,10 @@ export const runParallelSection = async (segment, toolkit) => {
     if (!unitPrProvider || typeof unitPrProvider[method] !== 'function') {
       throw new Error(`unit PR provider does not implement ${method}`);
     }
+    const provider = cloneBase.repoProviders?.[args.repoId] || cloneBase.gitProvider || 'github';
     return unitPrProvider[method]({
-      gitProvider: cloneBase.gitProvider,
-      token: await laneGitToken(),
+      projectId,
+      gitProvider: provider,
       ...args,
     });
   };
@@ -471,7 +465,8 @@ export const runParallelSection = async (segment, toolkit) => {
         sectionIndex: segment.index,
         unitSlug: slug,
         repoId: row.repository,
-        provider: row.provider ?? cloneBase.gitProvider,
+        provider:
+          row.provider || cloneBase.repoProviders?.[row.repository] || cloneBase.gitProvider,
         prUrl: row.url,
         prNumber: row.number,
         sourceBranch: row.sourceBranch,
@@ -556,7 +551,7 @@ export const runParallelSection = async (segment, toolkit) => {
             sectionIndex: segment.index,
             slug,
             repository,
-            provider: cloneBase.gitProvider,
+            provider: cloneBase.repoProviders?.[repository] || cloneBase.gitProvider || 'github',
             sourceBranch: unitBranch,
             targetBranch: intentBranch,
             state: 'UNCHANGED',
@@ -654,7 +649,7 @@ export const runParallelSection = async (segment, toolkit) => {
               sectionIndex: segment.index,
               slug,
               repository,
-              provider: cloneBase.gitProvider,
+              provider: cloneBase.repoProviders?.[repository] || cloneBase.gitProvider || 'github',
               ...fields,
               state: 'DRAFT',
             });
@@ -694,8 +689,8 @@ export const runParallelSection = async (segment, toolkit) => {
           intentBranch,
           baseBranch: cloneBase.baseBranch,
           baseBranches: cloneBase.baseBranches,
-          gitToken: await laneGitToken(),
           gitProvider: cloneBase.gitProvider,
+          repoProviders: cloneBase.repoProviders ?? null,
         },
         intentSessionId,
       ),
@@ -1141,8 +1136,8 @@ export const runParallelSection = async (segment, toolkit) => {
               repos: cloneBase.repos,
               unitBranch,
               intentBranch,
-              gitToken: await laneGitToken(),
               gitProvider: cloneBase.gitProvider,
+              repoProviders: cloneBase.repoProviders ?? null,
               ...(cloneBase.gitAuthor ? { gitAuthor: cloneBase.gitAuthor } : {}),
             },
             laneSession,
@@ -1163,8 +1158,8 @@ export const runParallelSection = async (segment, toolkit) => {
                 repos: cloneBase.repos,
                 unitBranch,
                 intentBranch,
-                gitToken: await laneGitToken(),
                 gitProvider: cloneBase.gitProvider,
+                repoProviders: cloneBase.repoProviders ?? null,
                 ...(cloneBase.gitAuthor ? { gitAuthor: cloneBase.gitAuthor } : {}),
                 requestedCli,
                 ...(cliModels ? { cliModels } : {}),
@@ -1603,8 +1598,8 @@ export const runParallelSection = async (segment, toolkit) => {
             repos: cloneBase.repos,
             unitBranch,
             intentBranch,
-            gitToken: await laneGitToken(),
             gitProvider: cloneBase.gitProvider,
+            repoProviders: cloneBase.repoProviders ?? null,
             attachments,
           },
           laneSession,
@@ -1805,8 +1800,8 @@ export const runParallelSection = async (segment, toolkit) => {
                 intentBranch,
                 baseBranch: cloneBase.baseBranch,
                 baseBranches: cloneBase.baseBranches,
-                gitToken: await laneGitToken(),
                 gitProvider: cloneBase.gitProvider,
+                repoProviders: cloneBase.repoProviders ?? null,
                 ...(cloneBase.gitAuthor ? { gitAuthor: cloneBase.gitAuthor } : {}),
               },
               intentSessionId,
@@ -1843,8 +1838,8 @@ export const runParallelSection = async (segment, toolkit) => {
               repos: cloneBase.repos,
               unitBranch,
               intentBranch,
-              gitToken: await laneGitToken(),
               gitProvider: cloneBase.gitProvider,
+              repoProviders: cloneBase.repoProviders ?? null,
               ...(cloneBase.gitAuthor ? { gitAuthor: cloneBase.gitAuthor } : {}),
               requestedCli,
               ...(cliModels ? { cliModels } : {}),

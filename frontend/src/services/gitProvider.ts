@@ -32,40 +32,26 @@ export interface GitRepo {
   defaultBranch: string;
 }
 
-// Platform-wide GitHub auth mode (admin-managed): 'oauth' = per-user OAuth
-// connections; 'app' = GitHub App installation tokens (no per-user connect).
-export type GitHubAuthMode = 'oauth' | 'app';
-
 export interface GitProviderStatus {
   connected: boolean;
   provider?: string;
   reauthorizationRequired?: boolean;
   missingScopes?: string[];
-  configurationRequired?: boolean;
-  configurationError?: string;
-  // Present for GitHub (and defaulted to 'oauth' for GitLab). In 'app' mode
-  // the connect/disconnect UI is hidden — the platform authenticates as the
-  // GitHub App installation.
-  mode?: GitHubAuthMode;
 }
 
 // Admin-only GitHub integration config (GET/PUT /github/admin/config,
 // platform-admin gated on the backend).
 export interface GitHubAdminConfig {
-  mode: GitHubAuthMode;
+  oauthConfigured: boolean;
   appId: string | null;
-  installationId: string | null;
   privateKeySet: boolean;
   appConfigured: boolean;
   appConfigurationError?: string;
-  // Returned by PUT when the live installation probe ran successfully.
-  installationAccount?: string;
+  appIdentity?: string | null;
 }
 
 export interface GitHubAdminConfigUpdate {
-  mode?: GitHubAuthMode;
   appId?: string;
-  installationId?: string;
   privateKey?: string;
 }
 
@@ -73,6 +59,14 @@ export const githubAdminService = {
   getConfig: () => api.get<GitHubAdminConfig>('/github/admin/config'),
   updateConfig: (update: GitHubAdminConfigUpdate) =>
     api.put<GitHubAdminConfig>('/github/admin/config', update),
+};
+
+// App-credentialed discovery for the create-space GitHub App path. These
+// routes authenticate with the platform App (not the caller's OAuth
+// connection), so they work for users who never connected GitHub personally.
+export const githubAppService = {
+  getStatus: () => api.get<{ configured: boolean }>('/github/app/status'),
+  listRepos: () => api.get<GitRepo[]>('/github/app/repos'),
 };
 
 export interface GitFile {
@@ -113,15 +107,6 @@ export interface GitProviderService {
   getStatus: () => Promise<GitProviderStatus>;
   listRepos: () => Promise<GitRepo[]>;
   disconnect: () => Promise<unknown>;
-  // `defaultBranch` (best-effort — omitted if the provider lookup failed) is
-  // the repo's ACTUAL default branch, for preselecting a base-branch picker
-  // instead of assuming 'main'.
-  listBranches: (repoId: string) => Promise<{ branches: string[]; defaultBranch?: string }>;
-  getRepoTree: (repoId: string, branch?: string) => Promise<{ tree: GitFile[] }>;
-  getFileContents: (repoId: string, path: string, branch?: string) => Promise<GitFileContent>;
-  // PR (GitHub) / MR (GitLab) comments — read-only in the UI (ReviewPage
-  // displays them). prNumber is the GitHub PR number or the GitLab MR iid.
-  getPullRequestComments: (repoId: string, prNumber: number) => Promise<{ comments: GitComment[] }>;
 }
 
 // =============================================================================
@@ -129,40 +114,11 @@ export interface GitProviderService {
 // two path segments the GitHub routes expect.
 // =============================================================================
 
-const splitOwnerRepo = (repoId: string): [string, string] => {
-  const [owner, repo] = repoId.split('/');
-  return [owner, repo];
-};
-
 export const githubService: GitProviderService = {
   getAuthUrl: () => api.get<{ url: string }>('/github/auth'),
   getStatus: () => api.get<GitProviderStatus>('/github/status'),
   listRepos: () => api.get<GitRepo[]>('/github/repos'),
   disconnect: () => api.delete('/github/disconnect'),
-  listBranches: (repoId: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ branches: string[]; defaultBranch?: string }>(
-      `/github/repos/${owner}/${repo}/branches`,
-    );
-  },
-  getRepoTree: (repoId: string, branch?: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ tree: GitFile[] }>(
-      `/github/repos/${owner}/${repo}/tree${branch ? `?branch=${branch}` : ''}`,
-    );
-  },
-  getFileContents: (repoId: string, path: string, branch?: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<GitFileContent>(
-      `/github/repos/${owner}/${repo}/contents?path=${encodeURIComponent(path)}${branch ? `&branch=${branch}` : ''}`,
-    );
-  },
-  getPullRequestComments: (repoId: string, prNumber: number) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ comments: GitComment[] }>(
-      `/github/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
-    );
-  },
 };
 
 // =============================================================================
@@ -177,22 +133,6 @@ export const gitlabService: GitProviderService = {
   getStatus: () => api.get<GitProviderStatus>('/gitlab/status'),
   listRepos: () => api.get<GitRepo[]>('/gitlab/repos'),
   disconnect: () => api.delete('/gitlab/disconnect'),
-  listBranches: (repoId: string) =>
-    api.get<{ branches: string[]; defaultBranch?: string }>(
-      `/gitlab/projects/branches?project=${encodeURIComponent(repoId)}`,
-    ),
-  getRepoTree: (repoId: string, branch?: string) =>
-    api.get<{ tree: GitFile[] }>(
-      `/gitlab/projects/tree?project=${encodeURIComponent(repoId)}${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`,
-    ),
-  getFileContents: (repoId: string, path: string, branch?: string) =>
-    api.get<GitFileContent>(
-      `/gitlab/projects/contents?project=${encodeURIComponent(repoId)}&path=${encodeURIComponent(path)}${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`,
-    ),
-  getPullRequestComments: (repoId: string, mrIid: number) =>
-    api.get<{ comments: GitComment[] }>(
-      `/gitlab/projects/merge_requests/${mrIid}/notes?project=${encodeURIComponent(repoId)}`,
-    ),
 };
 
 // =============================================================================

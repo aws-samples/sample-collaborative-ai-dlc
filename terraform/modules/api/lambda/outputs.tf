@@ -173,6 +173,31 @@ output "bitbucket_lambda_name" {
   value       = module.bitbucket_lambda.lambda_function_name
 }
 
+output "source_control_lambda_arn" {
+  description = "ARN of the project source-control Lambda"
+  value       = module.source_control_lambda.lambda_function_arn
+}
+
+output "source_control_lambda_invoke_arn" {
+  description = "Invoke ARN of the project source-control Lambda"
+  value       = module.source_control_lambda.lambda_function_invoke_arn
+}
+
+output "source_control_lambda_name" {
+  description = "Name of the project source-control Lambda"
+  value       = module.source_control_lambda.lambda_function_name
+}
+
+output "credential_broker_lambda_arn" {
+  description = "ARN of the AgentCore-only credential broker"
+  value       = module.credential_broker_lambda.lambda_function_arn
+}
+
+output "credential_broker_lambda_name" {
+  description = "Name of the AgentCore-only credential broker"
+  value       = module.credential_broker_lambda.lambda_function_name
+}
+
 output "trackers_lambda_arn" {
   description = "ARN of the trackers Lambda function"
   value       = module.trackers_lambda.lambda_function_arn

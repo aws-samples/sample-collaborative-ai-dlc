@@ -23,7 +23,7 @@ import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
 import { getGitConnection } from '../shared/git-connection-store.js';
-import { ensureFreshGitToken, resolveGitHubTokenForMode } from '../shared/git-token.js';
+import { ensureFreshGitToken } from '../shared/git-token.js';
 import { getProvider } from '../shared/git-providers.js';
 import {
   getVal,
@@ -470,29 +470,13 @@ function detectRoleFromContents(fileNames, dirNames, frameworks) {
   return null;
 }
 
-// Resolve a git access token for a given provider, for the optional repo
-// stack-detection below. GitHub dispatches on the platform auth mode (see
-// shared/github-auth-config.js): app mode mints a repo-scoped contents:read
-// installation token; oauth mode reads the user's connection row + SSM token.
+// Resolve the caller's personal OAuth token for optional stack detection.
+// Project workflows use project bindings; this pre-binding project setup path
+// is only repository discovery metadata and never supplies runtime credentials.
 // Returns null when no credential is available — detection is best-effort,
 // so callers treat null as "skip detection".
-const getUserGitToken = async (userId, provider, repoSlug = null) => {
+const getUserGitToken = async (userId, provider) => {
   if (!provider) return null;
-  if (provider === 'github') {
-    try {
-      const { token } = await resolveGitHubTokenForMode(
-        { ssm, secrets, ddb },
-        {
-          userId,
-          repositories: repoSlug ? [repoSlug] : [],
-          permissions: { contents: 'read' },
-        },
-      );
-      return token || null;
-    } catch {
-      return null;
-    }
-  }
   if (!userId) return null;
   try {
     const item = await getGitConnection(ddb, userId, provider);

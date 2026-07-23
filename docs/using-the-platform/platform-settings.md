@@ -22,7 +22,7 @@ Everything the agent runtime needs to run:
 
 Platform-wide code-host configuration:
 
-- **GitHub** — the OAuth app credentials plus the runtime-switchable **authentication mode**: **OAuth** (each user connects their own account; activity attributed to the user) or **GitHub App** (the platform acts as an App installation — a bot; users connect nothing). Switching to App mode is validated live against GitHub before it lands. See [Git integration → GitHub authentication mode](git-integration.md#github-authentication-mode).
+- **GitHub** — GitHub OAuth app status and GitHub App identity/private-key configuration are shown simultaneously. Projects choose OAuth or App independently; there is no global mode or installation ID. See [Git integration → Project-bound authentication](git-integration.md#project-bound-authentication).
 - **GitLab** — the GitLab OAuth app credentials.
 - **Default PR strategy** — **Intent PR** opens only the final intent-to-base review; **PR per unit** also opens draft unit-to-intent reviews and integrates them in dependency order. Projects may inherit or override this default. The default is **Intent PR**.
 

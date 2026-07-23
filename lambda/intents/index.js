@@ -14,7 +14,6 @@ import {
   StopDurableExecutionCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import {
   S3Client,
   PutObjectCommand,
@@ -46,9 +45,6 @@ import {
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
 import { effectivePrStrategy, normalizePlatformPrStrategy } from '../shared/pr-strategy.js';
-import { getGitConnection } from '../shared/git-connection-store.js';
-import { ensureFreshGitToken, resolveGitHubTokenForMode } from '../shared/git-token.js';
-import { getProvider } from '../shared/git-providers.js';
 import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
@@ -68,6 +64,7 @@ import {
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
+import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
@@ -90,7 +87,6 @@ const { cardinality } = gremlin.process;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
-const secrets = new SecretsManagerClient({});
 const s3 = new S3Client({});
 const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
@@ -103,6 +99,7 @@ const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
 // The AgentCore stage-executor runtime — used for the manual derive backfill
 // (POST .../derive). Same ARN + session-id convention as the orchestrator.
 const AGENTCORE_RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN || '';
+const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION || '';
 // Compose report uploads land here (presigned PUT) and are read back at
 // compose dispatch. Key shape: compose-reports/<intentId>/<uuid>.json.
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
@@ -260,38 +257,84 @@ const composeSessionIdFor = (composeId) => `aidlc-compose-${composeId}`.padEnd(3
 // Unit-lane session ids — must mirror v2-orchestrator/section.js laneSessionIdFor.
 const laneSessionIdFor = (intentId, sectionIndex, slug) =>
   `aidlc-intent-${intentId}-s${sectionIndex}-${slug}`.padEnd(33, '0');
-const toRepoSlug = (repo) =>
-  String(typeof repo === 'string' ? repo : (repo?.url ?? ''))
-    .replace(/^https?:\/\/[^/]+\//, '')
-    .replace(/\.git$/, '')
-    .replace(/^\/+|\/+$/g, '');
-
-const resolveReviewToken = async (meta) => {
-  const provider = meta.gitProvider || 'github';
-  if (provider === 'github') {
-    const { token } = await resolveGitHubTokenForMode(
-      { ssm, secrets, ddb },
-      {
-        userId: meta.startedBy,
-        repositories: (meta.repos ?? []).map(toRepoSlug).filter(Boolean),
-        permissions: {
-          contents: 'read',
-          pull_requests: 'write',
-          issues: 'write',
-        },
-      },
-    );
-    return token || null;
+const invokeSourceControl = async (input) => {
+  if (!SOURCE_CONTROL_FN()) {
+    throw Object.assign(new Error('Source-control service is not configured'), {
+      code: 'SOURCE_CONTROL_NOT_CONFIGURED',
+    });
   }
-  const connection = await getGitConnection(ddb, meta.startedBy, provider);
-  if (!connection?.parameterName) return null;
-  return ensureFreshGitToken({
-    ssm,
-    secrets,
-    ddb,
-    item: connection,
-    gitProvider: provider,
+  const result = await lambdaClient.send(
+    new InvokeCommand({
+      FunctionName: SOURCE_CONTROL_FN(),
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(JSON.stringify(input)),
+    }),
+  );
+  if (result.FunctionError) {
+    throw Object.assign(new Error('Source-control service invocation failed'), {
+      code: 'SOURCE_CONTROL_SERVICE_FAILED',
+    });
+  }
+  return parseLambdaPayload(result.Payload);
+};
+
+const sourceControlOperation = async ({ projectId, provider, repo, operation, args = {} }) => {
+  const response = await invokeSourceControl({
+    action: 'operate',
+    projectId,
+    provider,
+    repo,
+    operation,
+    args,
   });
+  if (!response?.ok) {
+    throw Object.assign(new Error('Source-control operation failed'), {
+      code: response?.code || 'SOURCE_CONTROL_OPERATION_FAILED',
+    });
+  }
+  return response.result;
+};
+
+const validateSourceControlForLaunch = async (meta) => {
+  if ((meta.repos ?? []).length === 0) return { ready: true, repositories: [] };
+  const result = await invokeSourceControl({
+    action: 'validate-project',
+    projectId: meta.projectId,
+  });
+  if (!result || result.ok === false) {
+    throw Object.assign(new Error('Source-control validation failed'), {
+      code: result?.code || 'SOURCE_CONTROL_SERVICE_FAILED',
+    });
+  }
+  return result;
+};
+
+const sourceControlNotReadyResponse = (response, validation, projectId) => {
+  const blocked = (validation?.repositories ?? []).filter((repo) => !repo.ready);
+  console.error('[intents] source control not ready', {
+    projectId,
+    reasonCodes: [...new Set(blocked.map((repo) => repo.code).filter(Boolean))].join(','),
+  });
+  return response(409, {
+    error: 'Source control setup required',
+    code: 'SOURCE_CONTROL_NOT_READY',
+    repositories: blocked,
+  });
+};
+
+const sourceControlLaunchGuard = async (meta, response) => {
+  try {
+    const validation = await validateSourceControlForLaunch(meta);
+    return validation.ready
+      ? null
+      : sourceControlNotReadyResponse(response, validation, meta.projectId);
+  } catch (error) {
+    console.error('Source-control launch validation failed:', error.code || error.message);
+    return response(503, {
+      error: 'Source-control validation is temporarily unavailable',
+      code: 'SOURCE_CONTROL_VALIDATION_FAILED',
+    });
+  }
 };
 
 const isSelectableReviewComment = (comment) => {
@@ -476,7 +519,8 @@ const getResponder = (event) => {
   const claims = event?.requestContext?.authorizer?.claims || {};
   return {
     sub: claims.sub || '',
-    displayName: claims['custom:display_name'] || claims.email || claims.sub || '',
+    displayName: claims['custom:display_name'] || claims.name || claims.email || claims.sub || '',
+    email: claims.email || null,
   };
 };
 
@@ -658,14 +702,18 @@ const fetchProjectConfig = async (g, projectId) => {
     .hasLabel('Repository')
     .order()
     .by(__.coalesce(__.values('added_at'), __.constant('')))
-    .project('url', 'role')
+    .project('url', 'role', 'provider')
     .by('url')
     .by(__.coalesce(__.values('role'), __.constant('unknown')))
+    .by(__.coalesce(__.values('provider'), __.constant('github')))
     .toList();
   const repos = repoRows.map((r) => r.get('url'));
   // Primary first so init-ws clones it as the working repo.
   const primary = repoRows.find((r) => r.get('role') === 'primary')?.get('url');
   const ordered = primary ? [primary, ...repos.filter((u) => u !== primary)] : repos;
+  const repoProviders = Object.fromEntries(
+    repoRows.map((row) => [row.get('url'), row.get('provider') || 'github']),
+  );
   // Tracker bindings — used to validate an optional kick-off source (the intent
   // can only cite a tracker the project is actually bound to).
   const trackerRes = await g
@@ -729,6 +777,7 @@ const fetchProjectConfig = async (g, projectId) => {
     mcpServersByTier: hasMcpServers ? mcpServersByTier : null,
     customRules: customRules.length ? customRules : null,
     repos: ordered,
+    repoProviders,
     trackers,
     gitProvider: getVal(v, 'git_provider') || 'github',
     // null = each repo's actual default branch (resolved lazily downstream by
@@ -1082,6 +1131,7 @@ const mapIntent = (meta) => ({
   baseBranch: meta.baseBranch ?? null,
   baseBranches: meta.baseBranches ?? null,
   repos: meta.repos ?? null,
+  repoProviders: meta.repoProviders ?? null,
   gitProvider: meta.gitProvider ?? null,
   workflowId: meta.workflowId,
   workflowVersion: meta.workflowVersion ?? null,
@@ -1216,22 +1266,29 @@ export const handler = async (event) => {
       if (prs.length === 0) {
         return response(409, { error: 'The unit lane has no review pull requests' });
       }
-      let token;
-      try {
-        token = await resolveReviewToken(meta);
-      } catch (error) {
-        console.error('Review credential resolution failed:', error.message);
-        return response(502, { error: 'Could not refresh source-control credentials' });
-      }
-      if (!token) {
-        return response(409, {
-          error: `No ${meta.gitProvider || 'github'} credential is available`,
-        });
-      }
-      const provider = getProvider(meta.gitProvider || 'github');
       const fetched = [];
       for (const pr of prs) {
-        const comments = await provider.listPRComments({ token }, pr.repository, pr.number);
+        const provider =
+          pr.provider || meta.repoProviders?.[pr.repository] || meta.gitProvider || 'github';
+        let comments;
+        try {
+          comments = await sourceControlOperation({
+            projectId,
+            provider,
+            repo: pr.repository,
+            operation: 'list-review-comments',
+            args: { number: pr.number },
+          });
+        } catch (error) {
+          console.error('Review comment refresh failed:', error.code || error.message);
+          return response(error.code === 'SOURCE_CONTROL_NOT_READY' ? 409 : 502, {
+            error:
+              error.code === 'SOURCE_CONTROL_NOT_READY'
+                ? 'Project source control setup is required'
+                : 'Could not refresh review comments',
+            code: error.code,
+          });
+        }
         const selectable = comments.filter(isSelectableReviewComment).map((comment) => ({
           ...comment,
           id: String(comment.id),
@@ -2111,11 +2168,14 @@ export const handler = async (event) => {
           });
         }
       }
+      const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
+      if (sourceControlBlocked) return sourceControlBlocked;
       // Flip <current> → CREATED (CAS on the observed status) so a double-start
       // can't launch two runs, then hand off to the orchestrator (init-ws + run the
       // plan). If the hand-off throws, roll back to the prior status — otherwise the
       // intent strands in CREATED (the orchestrator never ran) and never retries.
       const priorStatus = meta.status;
+      const starter = getResponder(event);
       const durableExecutionName = durableExecutionNameForIntent(intentId);
       let updated;
       try {
@@ -2130,7 +2190,12 @@ export const handler = async (event) => {
           durableExecutionArn: null,
           orchestratorStartedAt: null,
           orchestratorExpiresAt: null,
+          // Clear any stale failure from a prior attempt as we re-enter the pipeline.
           failureReason: null,
+          startedBy: starter.sub,
+          starterName: starter.displayName,
+          starterEmail: starter.email,
+          // Launch-time skip override (validated above; undefined = untouched).
           ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
           ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
         });
@@ -2976,6 +3041,8 @@ export const handler = async (event) => {
       const responder = getResponder(event);
       const repairId = `repair-${randomUUID()}`;
       const repairReason = `Repair orphaned parallel lanes in section ${sectionIndex}`;
+      const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
+      if (sourceControlBlocked) return sourceControlBlocked;
       let priorDurableExecutionArn = meta.durableExecutionArn ?? null;
       if (!priorDurableExecutionArn && meta.durableExecutionName && ORCHESTRATOR_FN()) {
         const listed = await lambdaClient.send(
@@ -3120,6 +3187,9 @@ export const handler = async (event) => {
         failureReason: null,
         completedAt: null,
         rewindFromStageId: fromStageId,
+        startedBy: responder.sub,
+        starterName: responder.displayName,
+        starterEmail: responder.email,
       });
       try {
         const invoked = await invokeOrchestrator(
@@ -3320,6 +3390,8 @@ export const handler = async (event) => {
       const restartReason = guidance
         ? `Rewind to ${fromStageId}: ${guidance}`
         : `Retry from ${fromStageId}`;
+      const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
+      if (sourceControlBlocked) return sourceControlBlocked;
 
       // Artifact history is a hard precondition for a restart. Snapshot before
       // META, gates, stage rows, lanes, or sessions are touched; a Neptune
@@ -3448,6 +3520,9 @@ export const handler = async (event) => {
         failureReason: null,
         completedAt: null,
         rewindFromStageId: fromStageId,
+        startedBy: responder.sub,
+        starterName: responder.displayName,
+        starterEmail: responder.email,
         // Un-skip: the rewind target leaves the intent's skip overlay so the
         // relaunch (and every later plan recompute) actually runs it.
         ...(unskipping ? { skipStageIds: rewindSkipIds.length ? rewindSkipIds : null } : {}),
@@ -3639,6 +3714,8 @@ export const handler = async (event) => {
         });
       }
       const responder = getResponder(event);
+      const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
+      if (sourceControlBlocked) return sourceControlBlocked;
       // Reset the relaunch stage's non-terminal instances (a parked/failed
       // stage re-runs from scratch, attempt+1).
       const resetIds = (rowsByStageId.get(fromStage.stageId) ?? [])
@@ -3691,6 +3768,9 @@ export const handler = async (event) => {
         // pins a skip the new grid already excludes.
         skipStageIds: priorSkipIds.length ? priorSkipIds : null,
         planWarnings: planResult.warnings?.length ? planResult.warnings : null,
+        startedBy: responder.sub,
+        starterName: responder.displayName,
+        starterEmail: responder.email,
       });
       try {
         const invoked = await invokeOrchestrator(
@@ -4054,6 +4134,7 @@ export const handler = async (event) => {
         baseBranch: data.baseBranch || cfg.baseBranch,
         baseBranches,
         repos: cfg.repos,
+        repoProviders: cfg.repoProviders,
         gitProvider: cfg.gitProvider,
         agentCli: cfg.agentCli,
         cliModels: cfg.cliModels,

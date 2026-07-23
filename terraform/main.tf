@@ -185,8 +185,6 @@ module "lambda" {
   github_oauth_secret_arn             = module.git.github_oauth_secret_arn
   github_app_private_key_secret_name  = module.git.github_app_private_key_secret_name
   github_app_private_key_secret_arn   = module.git.github_app_private_key_secret_arn
-  github_auth_mode_param_name         = module.git.github_auth_mode_param_name
-  github_auth_mode_param_arn          = module.git.github_auth_mode_param_arn
   github_app_config_param_name        = module.git.github_app_config_param_name
   github_app_config_param_arn         = module.git.github_app_config_param_arn
   gitlab_oauth_secret_name            = module.git.gitlab_oauth_secret_name
@@ -197,6 +195,8 @@ module "lambda" {
   git_connections_table_arn           = module.git.git_connections_table_arn
   git_provider_connections_table_name = module.git.git_provider_connections_table_name
   git_provider_connections_table_arn  = module.git.git_provider_connections_table_arn
+  source_control_bindings_table_name  = module.git.source_control_bindings_table_name
+  source_control_bindings_table_arn   = module.git.source_control_bindings_table_arn
   tracker_connections_table_name      = module.git.tracker_connections_table_name
   tracker_connections_table_arn       = module.git.tracker_connections_table_arn
   github_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/github/callback"
@@ -267,6 +267,8 @@ module "api" {
   gitlab_lambda_name                = module.lambda.gitlab_lambda_name
   bitbucket_lambda_invoke_arn       = module.lambda.bitbucket_lambda_invoke_arn
   bitbucket_lambda_name             = module.lambda.bitbucket_lambda_name
+  source_control_lambda_invoke_arn  = module.lambda.source_control_lambda_invoke_arn
+  source_control_lambda_name        = module.lambda.source_control_lambda_name
   trackers_lambda_invoke_arn        = module.lambda.trackers_lambda_invoke_arn
   trackers_lambda_name              = module.lambda.trackers_lambda_name
   cognito_users_lambda_invoke_arn   = module.lambda.cognito_users_lambda_invoke_arn

@@ -1,5 +1,15 @@
 import { useState, useEffect, useMemo } from 'react';
-import { getGitProviderService, type GitProvider, type GitRepo } from '../services/gitProvider';
+import {
+  getGitProviderService,
+  githubAppService,
+  type GitProvider,
+  type GitRepo,
+} from '../services/gitProvider';
+
+// Where the repo list comes from: 'oauth' (default) lists the caller's own
+// repos via their personal connection; 'github-app' lists repos across the
+// platform App's installations — no personal connection needed.
+type RepoSource = 'oauth' | 'github-app';
 
 interface SingleProps {
   provider: GitProvider;
@@ -7,6 +17,7 @@ interface SingleProps {
   value: string;
   onChange: (repo: GitRepo | null) => void;
   exclude?: string[];
+  repoSource?: RepoSource;
 }
 
 interface MultiProps {
@@ -15,13 +26,14 @@ interface MultiProps {
   value: string[];
   onChange: (repos: GitRepo[]) => void;
   exclude?: string[];
+  repoSource?: RepoSource;
 }
 
 export type GitRepoSelectProps = SingleProps | MultiProps;
 
 export function GitRepoSelect(props: GitRepoSelectProps) {
   const { provider } = props;
-  const service = getGitProviderService(provider);
+  const repoSource = props.repoSource ?? 'oauth';
 
   const [repos, setRepos] = useState<GitRepo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,12 +41,17 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    service
-      .listRepos()
+    const listRepos =
+      repoSource === 'github-app'
+        ? githubAppService.listRepos
+        : getGitProviderService(provider).listRepos;
+    setLoading(true);
+    setError(null);
+    listRepos()
       .then(setRepos)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [service]);
+  }, [provider, repoSource]);
 
   const excludeSet = useMemo(() => new Set(props.exclude ?? []), [props.exclude]);
 

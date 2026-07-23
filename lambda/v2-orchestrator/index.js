@@ -18,18 +18,21 @@
 // agent stage on re-drive (RETRY_INTERRUPTED_STEP). Proven in
 // test/poc/poc-c-interrupted-step.test.js / poc-d-async-stage.test.js.
 //
-// REPLAY DISCIPLINE: every side effect (agent invokes, all store writes, the
-// git-token read) MUST be inside ctx.step(...) or it re-executes on replay.
+// REPLAY DISCIPLINE: every side effect (agent invokes, provider operations,
+// and all store writes) MUST be inside ctx.step(...) or it re-executes on replay.
 
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { SSMClient } from '@aws-sdk/client-ssm';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import { parseLambdaPayload } from '../shared/lambda-payload.js';
+import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
+import { getProvider } from '../shared/git-providers.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
 import {
@@ -37,10 +40,6 @@ import {
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
 import { resolveSkipTo, skipTargetsFrom, resolveRecomposeSkips } from '../shared/stage-skip.js';
-import { getGitConnection, putGitConnection } from '../shared/git-connection-store.js';
-import { ensureFreshGitToken, getInstallationTokenFromConfig } from '../shared/git-token.js';
-import { getGitHubAuthMode } from '../shared/github-auth-config.js';
-import { getProvider } from '../shared/git-providers.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import {
   awaitEngineGate,
@@ -51,16 +50,15 @@ import {
   fanoutGateAddendum,
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
-import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const ssm = new SSMClient({});
-const secrets = new SecretsManagerClient({});
+const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
 
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
+const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
@@ -110,16 +108,38 @@ const streamToString = async (body) => {
   return Buffer.concat(chunks).toString('utf8');
 };
 
-// Normalize a repo entry (slug or URL, string or {url}) to an "owner/repo"
-// slug — the shape both the provider layer and installation-token minting use.
-const toRepoSlug = (repo) => {
-  const raw = typeof repo === 'string' ? repo : (repo?.url ?? '');
-  const slug = raw.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
-  let start = 0;
-  let end = slug.length;
-  while (start < end && slug[start] === '/') start += 1;
-  while (end > start && slug[end - 1] === '/') end -= 1;
-  return slug.slice(start, end);
+const defaultSourceControlOperation = async ({
+  projectId,
+  provider,
+  repo,
+  operation,
+  args = {},
+}) => {
+  if (!SOURCE_CONTROL_FN()) throw new Error('SOURCE_CONTROL_FUNCTION is not configured');
+  const response = await lambda.send(
+    new InvokeCommand({
+      FunctionName: SOURCE_CONTROL_FN(),
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(
+        JSON.stringify({
+          action: 'operate',
+          projectId,
+          provider,
+          repo,
+          operation,
+          args,
+        }),
+      ),
+    }),
+  );
+  if (response.FunctionError) throw new Error('Source-control service invocation failed');
+  const body = parseLambdaPayload(response.Payload);
+  if (!body?.ok) {
+    throw Object.assign(new Error('Source-control operation failed'), {
+      code: body?.code || 'SOURCE_CONTROL_OPERATION_FAILED',
+    });
+  }
+  return body.result;
 };
 
 // Resolve the git token for the intent's run. Mode-aware for GitHub (see
@@ -137,6 +157,22 @@ const toRepoSlug = (repo) => {
 // blind run against an empty repo.
 const tokenLog = (outcome, extra = {}) =>
   console.log(JSON.stringify({ at: 'resolveToken', outcome, ...extra }));
+
+// Normalize a repo reference to the provider's `owner/repo` (GitHub) /
+// `workspace/repo` (Bitbucket) slug used by installation-token minting.
+// Accepts both a bare slug ("acme/api") and a clone URL
+// ("https://github.com/acme/api.git"); returns null for anything unusable so
+// callers can .filter(Boolean).
+const toRepoSlug = (repo) => {
+  if (!repo || typeof repo !== 'string') return null;
+  let s = repo.trim();
+  const urlMatch = s.match(/^(?:https?:\/\/|git@)[^/:]+[/:](.+)$/);
+  if (urlMatch) s = urlMatch[1];
+  s = s.replace(/\.git$/, '').replace(/^\/+|\/+$/g, '');
+  const parts = s.split('/').filter(Boolean);
+  if (parts.length < 2) return null;
+  return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+};
 
 // `io` bundles the shared-module collaborators so tests can exercise the
 // mode/fallback matrix without mocking module singletons (same injection
@@ -304,6 +340,9 @@ export const defaultMintFreshToken = async (
   }
 };
 
+const repoProvider = (meta, repoId) =>
+  sharedRepoProvider(repoId, meta.gitProvider, meta.repoProviders);
+
 // Map a timeline event type to the live broadcast payload the UI routes on
 // (useIntentEvents → refetch on agent.workspace / agent.execution). The
 // orchestrator is NOT VPC-attached and reaches the connections table over the
@@ -330,59 +369,110 @@ const livePayloadFor = (type, summary) => {
   return { action: 'agent.note', noteType: type, summary };
 };
 
-// The orchestrator's collaborators, injectable for tests. Defaults bind the real
-// store / plan loader / runtime invoke / git-token resolver.
+// The orchestrator's collaborators, injectable for tests. Provider operations
+// cross the source-control service boundary; credentials never enter this process.
 const defaultDeps = () => ({
   store: defaultStore,
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
   invokeRuntime: defaultInvokeRuntime,
-  resolveToken: defaultResolveToken,
-  mintFreshToken: defaultMintFreshToken,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
-  // WP6: open the fan-in PR through the shared provider layer. Injectable so
-  // tests never touch provider APIs.
-  openPr: ({ gitProvider, token, repoId, branch, baseBranch, title, body }) =>
-    getProvider(gitProvider).createPullRequest({ token }, repoId, {
-      branch,
-      baseBranch,
-      title,
-      body,
+  openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body }) =>
+    defaultSourceControlOperation({
+      projectId,
+      provider: gitProvider,
+      repo: repoId,
+      operation: 'create-pr',
+      args: { branch, baseBranch, title, body },
     }),
   // PR-time verification (2026-07 incident): compare base...head BEFORE the PR
   // call so a never-pushed or commit-less intent branch is a LOUD failure, not
   // a benign "no changes" skip. Injectable so tests never touch provider APIs.
-  comparePrBranches: ({ gitProvider, token, repoId, base, head }) =>
-    getProvider(gitProvider).compareBranches({ token }, repoId, { base, head }),
+  comparePrBranches: ({ projectId, gitProvider, repoId, base, head }) =>
+    defaultSourceControlOperation({
+      projectId,
+      provider: gitProvider,
+      repo: repoId,
+      operation: 'compare',
+      args: { base, head },
+    }),
   unitPrProvider: {
-    compare: ({ gitProvider, token, repoId, base, head }) =>
-      getProvider(gitProvider).compareBranches({ token }, repoId, { base, head }),
-    find: ({ gitProvider, token, repoId, sourceBranch, targetBranch, state = 'open' }) =>
-      getProvider(gitProvider).findPullRequest({ token }, repoId, {
-        sourceBranch,
-        targetBranch,
-        state: gitProvider === 'gitlab' && state === 'open' ? 'opened' : state,
+    compare: ({ projectId, gitProvider, repoId, base, head }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'compare',
+        args: { base, head },
       }),
-    createDraft: ({ gitProvider, token, repoId, branch, baseBranch, title, body }) =>
-      getProvider(gitProvider).createPullRequest({ token }, repoId, {
-        branch,
-        baseBranch,
-        title,
-        body,
-        draft: true,
+    find: ({ projectId, gitProvider, repoId, sourceBranch, targetBranch, state = 'open' }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'find-pr',
+        args: {
+          sourceBranch,
+          targetBranch,
+          state: gitProvider === 'gitlab' && state === 'open' ? 'opened' : state,
+        },
       }),
-    status: ({ gitProvider, token, repoId, number }) =>
-      getProvider(gitProvider).getPullRequestStatus({ token }, repoId, number),
-    setDraft: ({ gitProvider, token, repoId, number, draft }) =>
-      getProvider(gitProvider).setPullRequestDraft({ token }, repoId, number, draft),
-    reopen: ({ gitProvider, token, repoId, number }) =>
-      getProvider(gitProvider).reopenPullRequest({ token }, repoId, number),
-    isAncestor: ({ gitProvider, token, repoId, ancestorSha, descendantRef }) =>
-      getProvider(gitProvider).isCommitAncestor({ token }, repoId, ancestorSha, descendantRef),
-    listComments: ({ gitProvider, token, repoId, number }) =>
-      getProvider(gitProvider).listPRComments({ token }, repoId, number),
-    addComment: ({ gitProvider, token, repoId, number, body }) =>
-      getProvider(gitProvider).addPRComment({ token }, repoId, number, { body }),
+    createDraft: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'create-pr',
+        args: { branch, baseBranch, title, body, draft: true },
+      }),
+    status: ({ projectId, gitProvider, repoId, number }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'pr-status',
+        args: { number },
+      }),
+    setDraft: ({ projectId, gitProvider, repoId, number, draft }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'set-pr-draft',
+        args: { number, draft },
+      }),
+    reopen: ({ projectId, gitProvider, repoId, number }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'reopen-pr',
+        args: { number },
+      }),
+    isAncestor: ({ projectId, gitProvider, repoId, ancestorSha, descendantRef }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'is-ancestor',
+        args: { ancestorSha, descendantRef },
+      }),
+    listComments: ({ projectId, gitProvider, repoId, number }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'list-review-comments',
+        args: { number },
+      }),
+    addComment: ({ projectId, gitProvider, repoId, number, body }) =>
+      defaultSourceControlOperation({
+        projectId,
+        provider: gitProvider,
+        repo: repoId,
+        operation: 'add-review-comment',
+        args: { number, body },
+      }),
   },
 });
 
@@ -391,8 +481,6 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     store,
     loadPlan,
     invokeRuntime,
-    resolveToken,
-    mintFreshToken,
     stopSession,
     broadcast,
     openPr,
@@ -524,50 +612,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // init-ws — clone repos, create the Neptune Intent anchor, seed RUNNING state.
     // Idempotent in the runtime (ConditionalCheckFailed → already initialized), so
     // a replay of this step is safe.
-    // Token resolution returns { token, reason } (a legacy string stub is
-    // normalized). A repo-ful run with NO token is loudly recorded — the run
-    // proceeds (init-ws now fails a private clone honestly; public/read-only
-    // flows still work) but the reason is on the timeline, not swallowed.
-    const tokenResult = await ctx.step('git-token', async () => {
-      const res = await resolveToken({
-        startedBy: meta.startedBy,
-        gitProvider,
-        repos: meta.repos ?? [],
-      });
-      return typeof res === 'string' ? { token: res } : res;
-    });
-    const token = tokenResult?.token ?? '';
-    // Commit-attribution identity ({ name, email }) resolved with the token —
-    // rides every payload that can produce engine commits so they are authored
-    // by the starting user (committer stays AI-DLC Engine). null = engine-only.
-    const gitAuthor = tokenResult?.author ?? null;
-    if (!token && (meta.repos ?? []).length > 0) {
-      await emitEvent(
-        ctx,
-        'git-token-missing',
-        'v2.git.token_unavailable',
-        tokenResult?.mode === 'app'
-          ? `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; check the GitHub App configuration on the Admin page or connect ${gitProvider} for the starting user`
-          : `No usable git credentials for this run (${tokenResult?.reason ?? 'unknown'}) — private clones and pushes will fail; connect ${gitProvider} for the starting user`,
-      );
-    }
-    // Current-token accessor for every later dispatch that hands git
-    // credentials to the runtime. App tokens are re-minted when needed and
-    // OAuth connections are re-read so a reconnect during an active run takes
-    // effect. Called INSIDE durable step bodies only; replay never re-executes
-    // a memoized step, so credential refresh cannot fork durable state.
-    const freshGitToken = async () => {
-      try {
-        const fresh = await mintFreshToken?.({
-          gitProvider,
-          startedBy: meta.startedBy,
-          repos: meta.repos ?? [],
-        });
-        return fresh || token;
-      } catch {
-        return token;
-      }
-    };
+    const gitAuthor =
+      meta.starterName && meta.starterEmail
+        ? { name: meta.starterName, email: meta.starterEmail }
+        : null;
     const sessionId = sessionIdFor(intentId);
     await emitEvent(
       ctx,
@@ -586,8 +634,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           branch: meta.branch,
           baseBranch: meta.baseBranch,
           baseBranches: meta.baseBranches,
-          gitToken: token,
           gitProvider,
+          repoProviders: meta.repoProviders ?? null,
+          ...(gitAuthor ? { gitAuthor } : {}),
           title: meta.title,
           prompt: meta.prompt,
           workflowId,
@@ -798,17 +847,16 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // Seconds a parked stage's warm microVM lingers before release (D1).
     const parkReleaseSeconds = meta.parkReleaseSeconds ?? null;
 
-    // Clone inputs so run-stage can self-heal a wiped source checkout (the mount is
-    // wiped on every runtime redeploy). Same values init-ws used; forwarded on every
-    // run-stage invoke (fresh + resume). The token read is already a durable step;
-    // in app mode the dispatch-time freshGitToken override supersedes gitToken.
+    // Clone inputs so run-stage can self-heal a wiped source checkout. These are
+    // references only; AgentCore asks the credential broker at each git network
+    // operation.
     const cloneInputs = {
       repos: meta.repos ?? [],
       branch: meta.branch,
       baseBranch: meta.baseBranch,
       baseBranches: meta.baseBranches,
-      gitToken: token,
       gitProvider,
+      repoProviders: meta.repoProviders ?? null,
       ...(gitAuthor ? { gitAuthor } : {}),
     };
 
@@ -860,7 +908,6 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         attachments,
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
-        freshGitToken,
         reviewFeedback,
       };
       let result = await runStage(ctxArg, invokeRuntime, {
@@ -1035,13 +1082,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         repos: meta.repos ?? [],
         baseBranch: meta.baseBranch,
         baseBranches: meta.baseBranches,
-        gitToken: token,
         gitProvider,
+        repoProviders: meta.repoProviders ?? null,
         ...(gitAuthor ? { gitAuthor } : {}),
       },
-      // Dispatch-time token refresh for lane init/merge/conflict dispatches
-      // (see freshGitToken above) — called inside durable step bodies only.
-      freshGitToken,
       intentSessionId: sessionId,
       maxParallelUnits: meta.maxParallelUnits ?? 0,
       requestedCli,
@@ -1494,10 +1538,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
     // ── PR at fan-in (docs/v2-parallel.md WP6, A3: "execution SUCCEEDED →
     // PR(s) per project prStrategy"). intent-pr: ONE PR per repo from the
-    // intent branch onto the base branch, via the shared provider layer (the
+    // intent branch onto the base branch, via the source-control service (the
     // v1 unmerged-branch guard lives inside createPullRequest). PR problems
     // never un-succeed the run — every outcome is a loud timeline event. A
-    // token-less project records a skip instead of failing silently.
     const prResults = await ctx.step('open-pr', async () =>
       openIntentPrs({
         openPr,
@@ -1505,9 +1548,6 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         store,
         meta,
         executionId,
-        // Re-resolve at PR time: an app-mode run that outlived the ~1h
-        // installation token must not open PRs with the stale snapshot.
-        token: await freshGitToken(),
         gitProvider,
         log: (m) => ctx.logger?.info?.(m, { intentId }),
       }),
@@ -1599,7 +1639,6 @@ const runStage = async (
     attachments,
     sessionId,
     cloneInputs,
-    freshGitToken,
     resumeFrom,
     reviewFeedback = null,
   },
@@ -1645,12 +1684,9 @@ const runStage = async (
         ...(mcpServersByTier ? { mcpServersByTier } : {}),
         ...(customRules ? { customRules } : {}),
         ...(attachments ? { attachments } : {}),
-        // repos/branch/baseBranch/gitToken/gitProvider — for source self-heal.
-        // The token is re-resolved at dispatch time (inside this step): a
-        // GitHub-App installation token from the run-start snapshot would be
-        // expired by now on any stage past the first hour.
+        // Repository and branch references for source self-heal. AgentCore
+        // resolves a short-lived credential directly from the broker.
         ...cloneInputs,
-        ...(freshGitToken ? { gitToken: await freshGitToken() } : {}),
         resumeFrom: resumeFrom ?? null,
         reviewFeedback: reviewFeedback
           ? {
@@ -1764,8 +1800,8 @@ const validationPrompt = (
 
 // ── WP6: open the fan-in PR(s) (intent-pr strategy) ─────────────────────────
 // One PR per repo from the intent branch onto the base branch. NEVER throws —
-// every outcome (opened / already-open / no-changes / guard-conflict / error /
-// no-token) becomes a timeline event the caller records. The PR body carries
+// every outcome (opened / already-open / no-changes / guard-conflict / error)
+// becomes a timeline event the caller records. The PR body carries
 // the execution id and an HONEST unit summary: lanes that were skipped after
 // failure are named, so the reviewer knows what the increment does NOT
 // contain (the human explicitly chose to continue without them — the fan-in
@@ -1776,7 +1812,6 @@ const openIntentPrs = async ({
   store,
   meta,
   executionId,
-  token,
   gitProvider,
   log,
 }) => {
@@ -1792,16 +1827,6 @@ const openIntentPrs = async ({
       { eventType: 'v2.pr.skipped', summary: 'No repositories on this intent — no PR to open' },
     ];
   }
-  if (!token) {
-    const firstRepoId = typeof repos[0] === 'string' ? repos[0] : repos[0]?.url;
-    return [
-      {
-        eventType: 'v2.pr.skipped',
-        summary: `No git credentials — open the PR manually from ${branch} onto ${baseFor(firstRepoId) ?? 'the default branch'}`,
-      },
-    ];
-  }
-
   // Deterministic lost-work signal (2026-07 incident): did the engine record
   // repo work during this run? v2.git.pushed names repos whose commits reached
   // the remote; v2.git.push_failed names repos whose work did NOT become
@@ -1855,6 +1880,7 @@ const openIntentPrs = async ({
   const results = [];
   for (const repo of repos) {
     const repoId = typeof repo === 'string' ? repo : repo.url;
+    const provider = repoProvider(meta, repoId);
     try {
       const activity = repoGitActivity(repoId);
       // Pre-check: does the intent branch exist remotely with commits ahead of
@@ -1862,8 +1888,8 @@ const openIntentPrs = async ({
       // — the pre-check adds safety, never a new way to block a good PR.
       const cmp = comparePrBranches
         ? await comparePrBranches({
-            gitProvider,
-            token,
+            projectId: meta.projectId,
+            gitProvider: provider,
             repoId,
             base: baseFor(repoId),
             head: branch,
@@ -1901,8 +1927,8 @@ const openIntentPrs = async ({
         continue;
       }
       const res = await openPr({
-        gitProvider,
-        token,
+        projectId: meta.projectId,
+        gitProvider: provider,
         repoId,
         branch,
         baseBranch: baseFor(repoId),

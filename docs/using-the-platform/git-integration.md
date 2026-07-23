@@ -5,7 +5,7 @@ AIDLC Collaborative integrates with external systems on two independent axes:
 - **Code host** — GitHub, GitLab or Bitbucket. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub / Bitbucket) or merge request (GitLab).
 - **Issue trackers** — GitHub Issues, GitLab Issues, Bitbucket Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
 
-A project can bind to _one_ code host and to _zero or more_ trackers. Both are configured per project in **Project Settings**.
+A project can attach one or more repositories and zero or more trackers. Repository authorization is configured explicitly per project in **Project Settings**.
 
 GitHub, GitLab and Bitbucket each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues / Bitbucket Issues), so you authenticate once per provider. Jira Cloud is a tracker only.
 
@@ -15,18 +15,21 @@ Before users can connect their accounts, an administrator registers OAuth apps w
 
 The status of each provider is visible in **Admin → Trackers**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
 
-### GitHub authentication mode
+### Project-bound authentication
 
-GitHub supports two platform-wide authentication modes, switchable at runtime by a platform admin in **Admin → Source Control → GitHub**:
+GitHub OAuth and GitHub App configuration remain available at the same time. There is no platform-wide runtime mode:
 
-- **OAuth mode** (default) — each user connects their own GitHub account (described below). All git activity is attributed to the individual user.
-- **GitHub App mode** — the platform authenticates as a GitHub App installation (a bot). Users don't connect personal GitHub accounts at all; the repo picker lists the repositories the App is installed on, and commits/PRs/comments are attributed to the App. Which repositories are reachable is controlled by the App installation on GitHub — installing/uninstalling repos there takes effect immediately.
+- A project owner or admin selects **GitHub OAuth** or **GitHub App** for that project's GitHub repositories.
+- A project may use only one GitHub authentication type, but different projects may choose differently.
+- OAuth delegation is explicit. The owner/admin can delegate only their own connected identity and must confirm that the project may act through it.
+- For GitHub App bindings, the platform discovers and stores the installation for each repository. No global installation ID is configured.
+- GitLab repositories use an explicitly delegated GitLab OAuth connection.
 
-Switching modes takes effect for new work right away; in-flight runs finish under the mode they started with. Switching to App mode is validated live against GitHub (App ID + installation + private key) before it lands, so a broken configuration can never strand the platform.
+Every repository is verified before any binding is written. Existing repository-backed projects remain unbound after upgrade and cannot start until an owner/admin completes this step. Repository-free projects are unaffected.
 
 ## Connecting your account
 
-Each user connects their own GitHub / GitLab / Atlassian account once; the connection is reused across every project that needs that provider. (In GitHub App mode there is nothing to connect for GitHub — the section below applies to OAuth mode.)
+Each user connects their own GitHub / GitLab / Atlassian account once. A personal connection is available for repository discovery, but a project uses it only after an owner/admin explicitly delegates it.
 
 - **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
@@ -39,10 +42,11 @@ A connection is scoped to its provider: connecting GitHub does not satisfy a Git
 
 1. Click **Create new Project** in the project overview.
 2. Choose the code host — **GitHub**, **GitLab** or **Bitbucket**.
-3. The platform checks for an active connection to that provider and prompts you to connect if one is missing.
-4. Pick the repository (GitHub / Bitbucket) or project (GitLab) that should back the collaborative project.
+3. For GitHub, choose the authentication type: **GitHub App** (uses the platform App's installations — no personal connection needed) or **My GitHub OAuth identity** (delegates your own connection). GitLab and Bitbucket always delegate your OAuth identity. On the OAuth paths the platform prompts you to connect if no active connection exists.
+4. Pick the repository (GitHub / Bitbucket) or project (GitLab) that should back the collaborative project. On the App path the picker lists the repositories the App is installed on; on the OAuth paths it lists your own.
+5. Confirm the binding (OAuth delegation requires an explicit confirmation). If verification fails, the project is created unbound — rebind it in **Project Settings → Repositories** before starting intents.
 
-The repository is cloned into the agent workspace and becomes available to the agents while an intent executes. Additional repositories can be added later in **Project Settings → Source Control**.
+The repository is cloned into the agent workspace and becomes available to the agents while an intent executes. Additional repositories can be added later in **Project Settings → Repositories**; the project binding must then be reverified.
 
 ## Branches
 
@@ -82,7 +86,7 @@ The Jira and GitLab Issues integrations are **read-only** — the agent never wr
 
 ## Reconnecting a tracker
 
-If a provider refresh token is revoked (for example, a user logs out of Atlassian or GitLab, or a workspace admin revokes the app), the tracker panel surfaces a **Reconnect** banner for that provider. The binding is preserved — only the user's authentication needs renewing — so reconnecting restores access without losing the project↔tracker relationship.
+If an OAuth token or refresh token is revoked, every dependent project source-control binding is marked invalid. Reconnect the personal account, then have a project owner/admin explicitly rebind the affected repositories. Removing the delegating member or uninstalling a GitHub App installation also invalidates dependent bindings.
 
 For GitLab and Bitbucket specifically, routine token expiry does **not** require reconnecting: their short-lived access tokens are refreshed automatically from the stored refresh token. A reconnect is only needed if that refresh token itself is revoked.
 

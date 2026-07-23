@@ -8,6 +8,7 @@ import {
   GetCommand,
   PutCommand,
   DeleteCommand,
+  QueryCommand,
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
@@ -21,10 +22,12 @@ import {
   GetSecretValueCommand,
   PutSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const ssmMock = mockClient(SSMClient);
 const secretsMock = mockClient(SecretsManagerClient);
+const lambdaMock = mockClient(LambdaClient);
 
 const NOW = new Date('2026-05-28T00:00:00.000Z');
 const PARTITION = `t-${randomUUID()}`;
@@ -52,6 +55,7 @@ beforeAll(async () => {
   vi.stubEnv('GREMLIN_PARTITION', PARTITION);
   vi.stubEnv('AWS_PROFILE', undefined);
   vi.stubEnv('GIT_CONNECTIONS_TABLE', GIT_TABLE);
+  vi.stubEnv('SOURCE_CONTROL_BINDINGS_TABLE', 'test-source-control-bindings');
   vi.stubEnv('TRACKER_CONNECTIONS_TABLE', TRACKER_TABLE);
   vi.stubEnv('CORS_ALLOWED_ORIGINS', 'https://example.com');
   vi.stubEnv('JIRA_OAUTH_SECRET_NAME', JIRA_OAUTH_SECRET_NAME);
@@ -60,6 +64,7 @@ beforeAll(async () => {
   vi.stubEnv('BITBUCKET_OAUTH_SECRET_NAME', BITBUCKET_OAUTH_SECRET_NAME);
   vi.stubEnv('JIRA_REDIRECT_URI', JIRA_REDIRECT_URI);
   vi.stubEnv('JIRA_TOKEN_SSM_PREFIX', 'aidlc/dev/jira-token');
+  vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control-test');
   ({ handler } = await import('../index.js'));
   ({ __resetCache: resetProviderCache } = await import('../providers/github-issues.js'));
 
@@ -89,6 +94,7 @@ beforeEach(() => {
   ddbMock.reset();
   ssmMock.reset();
   secretsMock.reset();
+  lambdaMock.reset();
   resetProviderCache();
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
@@ -101,6 +107,10 @@ beforeEach(() => {
     Parameter: { Value: JSON.stringify({ accessToken: TOKEN }) },
   });
   ddbMock.on(ScanCommand, { TableName: TRACKER_TABLE }).resolves({ Items: [] });
+  ddbMock.on(QueryCommand, { TableName: 'test-source-control-bindings' }).resolves({ Items: [] });
+  lambdaMock.on(InvokeCommand).resolves({
+    Payload: Buffer.from(JSON.stringify({ ok: true, result: 'main' })),
+  });
   secretsMock.on(GetSecretValueCommand).resolves({
     SecretString: JSON.stringify({ client_id: JIRA_CLIENT_ID, client_secret: JIRA_CLIENT_SECRET }),
   });
@@ -253,34 +263,39 @@ const okResponse = (body, headers = {}) => ({
   json: async () => body,
   headers: makeHeaders(headers),
 });
-const errResponse = (status, body, headers = {}) => ({
-  ok: false,
-  status,
-  json: async () => body,
-  headers: makeHeaders(headers),
-});
-
-const issueFixture = (overrides = {}) => ({
-  number: 42,
+const trackerIssueFixture = (overrides = {}) => ({
+  resourceId: '42',
+  resourceUrl: 'https://github.com/acme/widgets/issues/42',
+  resourceType: 'issue',
+  entityType: null,
+  entityIconUrl: null,
   title: 'Add login flow',
   body: 'We need login.',
   state: 'open',
-  html_url: 'https://github.com/acme/widgets/issues/42',
   labels: [{ name: 'enhancement', color: 'a2eeef' }],
-  user: { login: 'octocat', avatar_url: 'https://example.com/a.png' },
-  created_at: '2026-05-01T00:00:00Z',
-  updated_at: '2026-05-02T00:00:00Z',
+  author: { handle: 'octocat', avatarUrl: 'https://example.com/a.png' },
+  createdAt: '2026-05-01T00:00:00Z',
+  updatedAt: '2026-05-02T00:00:00Z',
   ...overrides,
 });
 
-const commentFixture = (overrides = {}) => ({
-  id: 1001,
-  user: { login: 'octocat', avatar_url: 'https://example.com/a.png' },
+const trackerCommentFixture = (overrides = {}) => ({
+  id: '1001',
+  author: { handle: 'octocat', avatarUrl: 'https://example.com/a.png' },
   body: 'I think we should also handle X.',
-  created_at: '2026-05-03T00:00:00Z',
-  updated_at: '2026-05-03T00:00:00Z',
+  createdAt: '2026-05-03T00:00:00Z',
+  updatedAt: '2026-05-03T00:00:00Z',
   ...overrides,
 });
+
+const sourceControlResponse = (result) => ({
+  Payload: Buffer.from(JSON.stringify({ ok: true, result })),
+});
+
+const sourceControlRequest = (index = 0) =>
+  JSON.parse(
+    Buffer.from(lambdaMock.commandCalls(InvokeCommand)[index].args[0].input.Payload).toString(),
+  );
 
 describe('OPTIONS', () => {
   it('short-circuits with 200 + CORS headers', async () => {
@@ -370,6 +385,7 @@ describe('DELETE /trackers/{provider}/{instance}', () => {
     expect(JSON.parse(res.body)).toEqual({ success: true });
     expect(ssmMock).toHaveReceivedCommand(DeleteParameterCommand);
     expect(ddbMock).toHaveReceivedCommand(DeleteCommand);
+    expect(ddbMock).toHaveReceivedCommand(QueryCommand);
   });
 
   it('returns 400 for unknown provider/instance pair', async () => {
@@ -488,8 +504,10 @@ describe('POST /projects/{id}/trackers', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('returns 400 when GitHub is not connected', async () => {
-    ddbMock.on(GetCommand, { TableName: GIT_TABLE }).resolves({});
+  it('rejects a git-backed tracker when the project binding is not ready', async () => {
+    lambdaMock.on(InvokeCommand).resolves({
+      Payload: Buffer.from(JSON.stringify({ ok: false, code: 'SOURCE_CONTROL_NOT_READY' })),
+    });
     const projectId = await seedProjectWithRole('owner');
     const res = await handler({
       httpMethod: 'POST',
@@ -503,8 +521,11 @@ describe('POST /projects/{id}/trackers', () => {
       }),
       ...claims(),
     });
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).error).toBe('GitHub not connected');
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      error: 'Project source control is not ready',
+      code: 'SOURCE_CONTROL_NOT_READY',
+    });
   });
 });
 
@@ -555,8 +576,17 @@ describe('GET /projects/{id}/trackers/{bid}/issues (github-issues provider)', ()
     ...overrides,
   });
 
-  it('lists open issues by default with paged response shape', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse([issueFixture()]));
+  it('lists issues through the project source-control service', async () => {
+    lambdaMock.on(InvokeCommand).resolves(
+      sourceControlResponse({
+        items: [trackerIssueFixture()],
+        page: 1,
+        perPage: 30,
+        hasNext: false,
+        hasPrev: false,
+        totalCount: null,
+      }),
+    );
     const res = await handler(issuesEvent());
 
     expect(res.statusCode).toBe(200);
@@ -576,149 +606,45 @@ describe('GET /projects/{id}/trackers/{bid}/issues (github-issues provider)', ()
       resourceType: 'issue',
       author: { handle: 'octocat' },
     });
-    const [url] = fetchMock.mock.calls[0];
-    expect(url).toBe(
-      'https://api.github.com/repos/acme/widgets/issues?per_page=30&page=1&state=open',
-    );
+    expect(sourceControlRequest()).toEqual({
+      action: 'operate',
+      projectId,
+      provider: 'github',
+      repo: 'acme/widgets',
+      operation: 'list-issues',
+      args: {},
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('forwards page and perPage and clamps perPage to 100', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse([]));
-    await handler(issuesEvent({ queryStringParameters: { page: '3', perPage: '500' } }));
-
-    const url = fetchMock.mock.calls[0][0];
-    expect(url).toContain('per_page=100');
-    expect(url).toContain('page=3');
-  });
-
-  it('parses Link header for hasNext/hasPrev', async () => {
-    fetchMock.mockResolvedValueOnce(
-      okResponse([issueFixture()], {
-        link: '<https://api.github.com/repos/a/b/issues?page=3>; rel="next", <https://api.github.com/repos/a/b/issues?page=1>; rel="prev"',
+  it('forwards issue filters without resolving a caller credential', async () => {
+    lambdaMock.on(InvokeCommand).resolves(
+      sourceControlResponse({
+        items: [],
+        page: 3,
+        perPage: 100,
+        hasNext: false,
+        hasPrev: true,
+        totalCount: 0,
       }),
     );
-    const res = await handler(issuesEvent({ queryStringParameters: { page: '2' } }));
+    await handler(issuesEvent({ queryStringParameters: { page: '3', perPage: '500' } }));
 
-    const body = JSON.parse(res.body);
-    expect(body.hasNext).toBe(true);
-    expect(body.hasPrev).toBe(true);
-    expect(body.page).toBe(2);
-  });
-
-  it('filters out pull requests from the issues list', async () => {
-    fetchMock.mockResolvedValueOnce(
-      okResponse([
-        issueFixture({ number: 1, title: 'Real issue' }),
-        issueFixture({ number: 2, title: 'A PR', pull_request: { url: 'x' } }),
-      ]),
-    );
-
-    const res = await handler(issuesEvent());
-
-    const body = JSON.parse(res.body);
-    expect(body.items).toHaveLength(1);
-    expect(body.items[0].resourceId).toBe('1');
-  });
-
-  it('honours the state query parameter', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse([]));
-    await handler(issuesEvent({ queryStringParameters: { state: 'closed' } }));
-    expect(fetchMock.mock.calls[0][0]).toContain('state=closed');
-  });
-
-  it('routes to /search/issues with is:issue and returns totalCount', async () => {
-    fetchMock.mockResolvedValueOnce(
-      okResponse({ items: [issueFixture({ number: 9 })], total_count: 1234 }),
-    );
-    const res = await handler(
-      issuesEvent({ queryStringParameters: { q: 'login flow', state: 'open' } }),
-    );
-
-    expect(res.statusCode).toBe(200);
-    const url = fetchMock.mock.calls[0][0];
-    expect(url).toContain('https://api.github.com/search/issues?q=');
-    expect(url).toContain('repo:acme/widgets');
-    expect(url).toContain('state:open');
-    expect(url).toContain('is:issue');
-    expect(url).toContain(encodeURIComponent('login flow'));
-    const body = JSON.parse(res.body);
-    expect(body.items).toHaveLength(1);
-    expect(body.totalCount).toBe(1234);
-  });
-
-  it('sends Authorization: Bearer <token> header', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse([]));
-    await handler(issuesEvent());
-
-    const [, opts] = fetchMock.mock.calls[0];
-    expect(opts.headers.Authorization).toBe(`Bearer ${TOKEN}`);
-    expect(opts.headers.Accept).toBe('application/vnd.github+json');
-  });
-
-  it('caches by ETag and serves cached body on 304', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse([issueFixture()], { etag: 'W/"abc123"' }));
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 304,
-      json: async () => ({}),
-      headers: makeHeaders({}),
+    expect(sourceControlRequest()).toMatchObject({
+      operation: 'list-issues',
+      args: { page: '3', perPage: '500' },
     });
-
-    const first = await handler(issuesEvent());
-    const second = await handler(issuesEvent());
-
-    expect(first.statusCode).toBe(200);
-    expect(second.statusCode).toBe(200);
-    expect(JSON.parse(second.body).items).toHaveLength(1);
-    expect(fetchMock.mock.calls[1][1].headers['If-None-Match']).toBe('W/"abc123"');
+    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
+    expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(0);
   });
 
-  it('maps 403 with x-ratelimit-remaining: 0 to 429 with retryAfter', async () => {
-    const futureReset = Math.floor(Date.now() / 1000) + 90;
-    fetchMock.mockResolvedValueOnce(
-      errResponse(
-        403,
-        { message: 'rate limited' },
-        {
-          'x-ratelimit-remaining': '0',
-          'x-ratelimit-reset': String(futureReset),
-        },
-      ),
-    );
-
+  it('returns 409 when the project binding is not ready', async () => {
+    lambdaMock.on(InvokeCommand).resolves({
+      Payload: Buffer.from(JSON.stringify({ ok: false, code: 'SOURCE_CONTROL_NOT_READY' })),
+    });
     const res = await handler(issuesEvent());
-
-    expect(res.statusCode).toBe(429);
-    const body = JSON.parse(res.body);
-    expect(body.error).toContain('rate limit');
-    expect(body.retryAfter).toBeGreaterThan(0);
-    expect(body.retryAfter).toBeLessThanOrEqual(90);
-  });
-
-  it('returns 400 when GitHub is not connected', async () => {
-    ddbMock.on(GetCommand, { TableName: GIT_TABLE }).resolves({});
-    const res = await handler(issuesEvent());
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).error).toBe('GitHub not connected');
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('returns 400 when the SSM parameter name is malformed', async () => {
-    ddbMock
-      .on(GetCommand, { TableName: GIT_TABLE })
-      .resolves({ Item: { userId: 'user-1', parameterName: '../../etc/passwd' } });
-    const res = await handler(issuesEvent());
-    expect(res.statusCode).toBe(400);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('returns empty paged result when GitHub responds 404 to the listing', async () => {
-    fetchMock.mockResolvedValueOnce(errResponse(404, { message: 'Not Found' }));
-    const res = await handler(issuesEvent());
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.items).toEqual([]);
-    expect(body.hasNext).toBe(false);
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('SOURCE_CONTROL_NOT_READY');
   });
 });
 
@@ -739,8 +665,8 @@ describe('GET /projects/{id}/trackers/{bid}/issues/{rid}', () => {
     ...claims(),
   });
 
-  it('returns mapped issue from the detail endpoint', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse(issueFixture()));
+  it('returns issue detail through the project source-control service', async () => {
+    lambdaMock.on(InvokeCommand).resolves(sourceControlResponse(trackerIssueFixture()));
     const res = await handler(detailEvent());
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -749,16 +675,17 @@ describe('GET /projects/{id}/trackers/{bid}/issues/{rid}', () => {
       resourceUrl: 'https://github.com/acme/widgets/issues/42',
       resourceType: 'issue',
     });
-  });
-
-  it('returns 404 when the detail endpoint is requested for a PR', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse(issueFixture({ pull_request: { url: 'x' } })));
-    const res = await handler(detailEvent());
-    expect(res.statusCode).toBe(404);
+    expect(sourceControlRequest()).toMatchObject({
+      projectId,
+      provider: 'github',
+      repo: 'acme/widgets',
+      operation: 'get-issue',
+      args: { number: '42' },
+    });
   });
 });
 
-describe('GET /projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
+describe('/projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
   let projectId;
   let bindingId;
 
@@ -766,19 +693,25 @@ describe('GET /projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
     ({ projectId, bindingId } = await seedProjectAndBinding({ gitRepo: 'acme/widgets' }));
   });
 
-  const commentsEvent = (resourceId = '42') => ({
+  const commentsEvent = (resourceId = '42', overrides = {}) => ({
     httpMethod: 'GET',
     path: `/projects/${projectId}/trackers/${bindingId}/issues/${resourceId}/comments`,
     pathParameters: { projectId, bindingId, resourceId },
     headers: { origin: 'https://example.com' },
     queryStringParameters: null,
     ...claims(),
+    ...overrides,
   });
 
-  it('returns mapped comments and uses per_page=100', async () => {
-    fetchMock.mockResolvedValueOnce(
-      okResponse([commentFixture({ id: 1 }), commentFixture({ id: 2, body: 'Another point.' })]),
-    );
+  it('returns comments through the project source-control service', async () => {
+    lambdaMock
+      .on(InvokeCommand)
+      .resolves(
+        sourceControlResponse([
+          trackerCommentFixture({ id: '1' }),
+          trackerCommentFixture({ id: '2', body: 'Another point.' }),
+        ]),
+      );
 
     const res = await handler(commentsEvent());
 
@@ -790,50 +723,27 @@ describe('GET /projects/{id}/trackers/{bid}/issues/{rid}/comments', () => {
       author: { handle: 'octocat' },
       body: 'I think we should also handle X.',
     });
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      'https://api.github.com/repos/acme/widgets/issues/42/comments?per_page=100',
-    );
-  });
-
-  it('returns [] when GitHub responds 404', async () => {
-    fetchMock.mockResolvedValueOnce(errResponse(404, { message: 'Not Found' }));
-    const res = await handler(commentsEvent());
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual([]);
-  });
-
-  it('maps rate-limited response to 429', async () => {
-    fetchMock.mockResolvedValueOnce(
-      errResponse(
-        403,
-        { message: 'rate limited' },
-        {
-          'x-ratelimit-remaining': '0',
-          'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 30),
-        },
-      ),
-    );
-    const res = await handler(commentsEvent());
-    expect(res.statusCode).toBe(429);
-    expect(JSON.parse(res.body).retryAfter).toBeGreaterThan(0);
-  });
-
-  it('uses ETag and serves cached body on 304', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse([commentFixture()], { etag: 'W/"c1"' }));
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 304,
-      json: async () => ({}),
-      headers: makeHeaders({}),
+    expect(sourceControlRequest()).toMatchObject({
+      operation: 'list-issue-comments',
+      args: { number: '42' },
     });
+  });
 
-    const first = await handler(commentsEvent());
-    const second = await handler(commentsEvent());
-
-    expect(first.statusCode).toBe(200);
-    expect(second.statusCode).toBe(200);
-    expect(JSON.parse(second.body)).toHaveLength(1);
-    expect(fetchMock.mock.calls[1][1].headers['If-None-Match']).toBe('W/"c1"');
+  it('adds a comment through the project source-control service', async () => {
+    lambdaMock
+      .on(InvokeCommand)
+      .resolves(sourceControlResponse(trackerCommentFixture({ body: 'Ship it.' })));
+    const res = await handler(
+      commentsEvent('42', {
+        httpMethod: 'POST',
+        body: JSON.stringify({ body: ' Ship it. ' }),
+      }),
+    );
+    expect(res.statusCode).toBe(201);
+    expect(sourceControlRequest()).toMatchObject({
+      operation: 'add-issue-comment',
+      args: { number: '42', body: 'Ship it.' },
+    });
   });
 });
 
@@ -865,7 +775,16 @@ describe('Legacy github-issues binding (#194)', () => {
 
   it('GET /projects/{id}/trackers/legacy-github/issues serves the FE panel', async () => {
     const projectId = await seedLegacyProject({ gitRepo: 'acme/widgets' });
-    fetchMock.mockResolvedValueOnce(okResponse([issueFixture()]));
+    lambdaMock.on(InvokeCommand).resolves(
+      sourceControlResponse({
+        items: [trackerIssueFixture()],
+        page: 1,
+        perPage: 30,
+        hasNext: false,
+        hasPrev: false,
+        totalCount: null,
+      }),
+    );
 
     const res = await handler({
       httpMethod: 'GET',
@@ -879,14 +798,16 @@ describe('Legacy github-issues binding (#194)', () => {
     const body = JSON.parse(res.body);
     expect(body.items).toHaveLength(1);
     expect(body.items[0]).toMatchObject({ resourceId: '42', title: 'Add login flow' });
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      'https://api.github.com/repos/acme/widgets/issues?per_page=30&page=1&state=open',
-    );
+    expect(sourceControlRequest()).toMatchObject({
+      projectId,
+      repo: 'acme/widgets',
+      operation: 'list-issues',
+    });
   });
 
   it('GET .../legacy-github/issues/{rid}/comments works', async () => {
     const projectId = await seedLegacyProject({ gitRepo: 'acme/widgets' });
-    fetchMock.mockResolvedValueOnce(okResponse([commentFixture()]));
+    lambdaMock.on(InvokeCommand).resolves(sourceControlResponse([trackerCommentFixture()]));
 
     const res = await handler({
       httpMethod: 'GET',

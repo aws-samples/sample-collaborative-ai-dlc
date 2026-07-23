@@ -38,14 +38,6 @@ output "github_app_private_key_secret_name" {
   value = aws_secretsmanager_secret.github_app_private_key.name
 }
 
-output "github_auth_mode_param_name" {
-  value = aws_ssm_parameter.github_auth_mode.name
-}
-
-output "github_auth_mode_param_arn" {
-  value = aws_ssm_parameter.github_auth_mode.arn
-}
-
 output "github_app_config_param_name" {
   value = aws_ssm_parameter.github_app_config.name
 }
@@ -68,6 +60,14 @@ output "git_provider_connections_table_name" {
 
 output "git_provider_connections_table_arn" {
   value = aws_dynamodb_table.git_provider_connections.arn
+}
+
+output "source_control_bindings_table_name" {
+  value = aws_dynamodb_table.source_control_bindings.name
+}
+
+output "source_control_bindings_table_arn" {
+  value = aws_dynamodb_table.source_control_bindings.arn
 }
 
 output "tracker_connections_table_name" {
