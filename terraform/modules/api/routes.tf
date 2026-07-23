@@ -2501,6 +2501,12 @@ resource "aws_api_gateway_resource" "bitbucket_disconnect" {
   path_part   = "disconnect"
 }
 
+resource "aws_api_gateway_resource" "bitbucket_oauth_config" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.bitbucket.id
+  path_part   = "oauth-config"
+}
+
 # /bitbucket/repos/{owner}
 resource "aws_api_gateway_resource" "bitbucket_repos_owner" {
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -2650,6 +2656,41 @@ resource "aws_api_gateway_integration" "bitbucket_disconnect_delete" {
   uri                     = var.bitbucket_lambda_invoke_arn
 }
 
+# GET/PUT /bitbucket/oauth-config (platform-admin; status and OAuth secret writer)
+resource "aws_api_gateway_method" "bitbucket_oauth_config_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_oauth_config.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_oauth_config_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_oauth_config.id
+  http_method             = aws_api_gateway_method.bitbucket_oauth_config_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
+resource "aws_api_gateway_method" "bitbucket_oauth_config_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.bitbucket_oauth_config.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "bitbucket_oauth_config_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.bitbucket_oauth_config.id
+  http_method             = aws_api_gateway_method.bitbucket_oauth_config_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.bitbucket_lambda_invoke_arn
+}
+
 # GET /bitbucket/repos/{owner}/{repo}/branches (authenticated)
 resource "aws_api_gateway_method" "bitbucket_repos_branches_get" {
   rest_api_id   = aws_api_gateway_rest_api.main.id
@@ -2771,6 +2812,12 @@ module "cors_bitbucket_disconnect" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.bitbucket_disconnect.id
+}
+
+module "cors_bitbucket_oauth_config" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.bitbucket_oauth_config.id
 }
 
 module "cors_bitbucket_repos_branches" {

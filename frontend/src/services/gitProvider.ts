@@ -64,10 +64,20 @@ export interface GitHubAdminConfigUpdate {
   privateKey?: string;
 }
 
+export interface OAuthProviderAdminConfig {
+  configured: boolean;
+}
+
 export const githubAdminService = {
   getConfig: () => api.get<GitHubAdminConfig>('/github/admin/config'),
   updateConfig: (update: GitHubAdminConfigUpdate) =>
     api.put<GitHubAdminConfig>('/github/admin/config', update),
+};
+
+export const bitbucketAdminService = {
+  getConfig: () => api.get<OAuthProviderAdminConfig>('/bitbucket/oauth-config'),
+  setOAuthConfig: (clientId: string, clientSecret: string) =>
+    api.put<{ success: true }>('/bitbucket/oauth-config', { clientId, clientSecret }),
 };
 
 // App-credentialed discovery for the create-space GitHub App path. These

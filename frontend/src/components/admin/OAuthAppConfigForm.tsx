@@ -27,13 +27,20 @@ import { getTrackerProvider } from '@/lib/trackerProviders';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 
 interface Props {
-  /** Tracker-provider id owning the OAuth secret slot (e.g. 'github-issues'). */
+  /** Identifier for form fields and optional tracker setup metadata. */
   providerId: string;
   configured: boolean;
   onSaved: () => void;
+  saveCredentials?: (clientId: string, clientSecret: string) => Promise<unknown>;
 }
 
-export function OAuthAppConfigForm({ providerId, configured, onSaved }: Props) {
+export function OAuthAppConfigForm({
+  providerId,
+  configured,
+  onSaved,
+  saveCredentials = (clientId, clientSecret) =>
+    trackersService.setOAuthConfig(providerId, clientId, clientSecret),
+}: Props) {
   // Collapsed summary when credentials already exist; expanded form otherwise.
   const [editing, setEditing] = useState(!configured);
   const [justRotated, setJustRotated] = useState(false);
@@ -56,7 +63,7 @@ export function OAuthAppConfigForm({ providerId, configured, onSaved }: Props) {
     setSaveResult(null);
     setErrorMessage(null);
     try {
-      await trackersService.setOAuthConfig(providerId, clientId.trim(), clientSecret.trim());
+      await saveCredentials(clientId.trim(), clientSecret.trim());
       setClientId('');
       setClientSecret('');
       onSaved();

@@ -21,6 +21,9 @@ vi.mock('@/components/admin/GitHubSourceControlCard', () => ({
     <div data-testid="github-card" data-oauth-configured={String(oauthConfigured)} />
   ),
 }));
+vi.mock('@/components/admin/BitbucketSourceControlCard', () => ({
+  BitbucketSourceControlCard: () => <div data-testid="bitbucket-card" />,
+}));
 vi.mock('@/components/admin/TrackerMigrationCard', () => ({
   TrackerMigrationCard: () => <div data-testid="tracker-migration-card" />,
 }));
@@ -92,9 +95,10 @@ describe('PlatformAdmin', () => {
     const githubCard = await screen.findByTestId('github-card');
     // github-issues is configured in the mocked provider list.
     expect(githubCard).toHaveAttribute('data-oauth-configured', 'true');
-    // GitLab's source-control card renders with a not-configured badge.
+    // GitLab renders with a tracker-provided not-configured badge. Bitbucket
+    // loads its configuration directly from the Bitbucket source-control API.
     expect(screen.getByText('GitLab')).toBeInTheDocument();
-    expect(screen.queryByText('Bitbucket')).not.toBeInTheDocument();
+    expect(screen.getByTestId('bitbucket-card')).toBeInTheDocument();
     expect(screen.getAllByText('Not configured')).toHaveLength(1);
   });
 

@@ -10,6 +10,7 @@ import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { GitHubSourceControlCard } from '../GitHubSourceControlCard';
 import { OAuthAppConfigForm } from '../OAuthAppConfigForm';
 import { PrStrategyCard } from '../PrStrategyCard';
+import { BitbucketSourceControlCard } from '../BitbucketSourceControlCard';
 
 interface Props {
   providers: TrackerProviderStatus[];
@@ -33,7 +34,6 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
   }
 
   const gitlabConfigured = isConfigured(providers, 'gitlab-issues');
-
   return (
     <div className="space-y-6">
       <PrStrategyCard />
@@ -54,6 +54,8 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
           onSaved={onProvidersChanged}
         />
       </SettingsCard>
+
+      <BitbucketSourceControlCard />
     </div>
   );
 }

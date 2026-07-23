@@ -1484,7 +1484,7 @@ resource "aws_iam_role_policy" "bitbucket_connector" {
       },
       {
         Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
+        Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
         Resource = [var.bitbucket_oauth_secret_arn]
       },
       {
