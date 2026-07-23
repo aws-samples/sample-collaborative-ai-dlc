@@ -21,6 +21,30 @@ bash /tmp/aidlc-install.sh install \
   --admin <administrator-email>
 ```
 
+For a managed install or update behind an HTTP proxy, export the proxy settings
+before downloading or running the installer:
+
+```bash
+export HTTP_PROXY=http://proxy.example.com:8080
+export HTTPS_PROXY=http://proxy.example.com:8080
+export NO_PROXY=localhost,127.0.0.1
+
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email>
+```
+
+The installer passes non-empty standard proxy variables, including lowercase
+variants, to both Docker Buildx builds. It adds no proxy build arguments in a
+non-proxy environment. Set `TF_VAR_docker_build_args` to a JSON object to
+override auto-detection. These values are hidden in Terraform CLI output but
+remain in saved plans and Terraform state, so protect both and keep the backend
+encrypted and access-restricted.
+
 The password prompt is silent and the permanent password is never stored. The installer keeps immutable tagged checkouts under the XDG data directory, keeps Terraform configuration under the XDG config directory, and only changes `current` after infrastructure, administrator setup, and frontend deployment all succeed.
 
 Use the same script to inspect or update the deployment:
@@ -267,6 +291,9 @@ To review a saved plan before applying:
 ```
 
 The plan is rejected if it would destroy a Cognito user pool, Neptune cluster, S3 bucket, or DynamoDB table. The check runs in both phases, so a saved plan is re-inspected before it is applied.
+
+Manual deployments honor the same proxy variables documented for the managed
+installer. You can also define `docker_build_args` in the `.tfvars` file.
 
 The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
 
