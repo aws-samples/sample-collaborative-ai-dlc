@@ -12,11 +12,13 @@ describe('source-control project contract', () => {
         providers: {
           github: { authType: 'github-app' },
           gitlab: { authType: 'gitlab-oauth', confirmDelegation: true },
+          bitbucket: { authType: 'bitbucket-oauth', confirmDelegation: true },
         },
       }),
     ).toEqual({
       github: { authType: 'github-app' },
       gitlab: { authType: 'gitlab-oauth', confirmDelegation: true },
+      bitbucket: { authType: 'bitbucket-oauth', confirmDelegation: true },
     });
     expect(() =>
       normalizeProviderSelections({

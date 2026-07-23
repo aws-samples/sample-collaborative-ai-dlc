@@ -480,7 +480,7 @@ export const handler = async (event) => {
         return response(400, { error: 'Projects may bind at most 50 repositories' });
       }
       for (const [provider, selection] of Object.entries(selections)) {
-        if (!['github', 'gitlab'].includes(provider) || !selection?.authType) {
+        if (!['github', 'gitlab', 'bitbucket'].includes(provider) || !selection?.authType) {
           return response(400, { error: `Invalid source-control selection for ${provider}` });
         }
         if (AUTH_TYPE_PROVIDER[selection.authType] !== provider) {

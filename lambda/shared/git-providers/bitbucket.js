@@ -93,8 +93,8 @@ const bbFetch = async (ctx, url, options = {}) => {
 const oauth = {
   secretEnvName: 'BITBUCKET_OAUTH_SECRET_NAME',
   redirectUriEnvName: 'BITBUCKET_REDIRECT_URI',
-  scopes: 'account repository repository:write pullrequest pullrequest:write',
-  requiredConnectionScopes: ['account', 'repository', 'pullrequest'],
+  scopes: 'account email repository repository:write pullrequest pullrequest:write',
+  requiredConnectionScopes: ['account', 'email', 'repository', 'pullrequest'],
 
   buildAuthorizeUrl({ clientId, redirectUri, state }) {
     return `https://bitbucket.org/site/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
@@ -160,6 +160,53 @@ const oauth = {
       expiresIn: data.expires_in,
     };
   },
+};
+
+// ---------------------------------------------------------------------------
+// Identity / repository access
+// ---------------------------------------------------------------------------
+
+const getAuthenticatedUser = async (ctx) => {
+  const res = await bbFetch(ctx, `${API_BASE}/user`);
+  const data = await res.json().catch(() => ({}));
+  const login = data.nickname || data.username || data.account_id;
+  if (!res.ok || !login) {
+    throw new ProviderError(res.status || 400, data.error?.message || 'Failed to fetch user');
+  }
+  return {
+    login,
+    authorName: data.display_name || login,
+    authorEmail: data.email || `${login}@users.noreply.bitbucket.org`,
+  };
+};
+
+const getRepositoryAccess = async (ctx, repoId) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const query = `repository.full_name="${workspace}/${repoSlug}"`;
+  const res = await bbFetch(
+    ctx,
+    `${API_BASE}/user/permissions/repositories?q=${encodeURIComponent(query)}&pagelen=1`,
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(
+      res.status || 400,
+      data.error?.message || 'Failed to access repository permissions',
+    );
+  }
+  const permission = data.values?.[0]?.permission;
+  const repository = data.values?.[0]?.repository;
+  if (!permission || !repository) {
+    throw new ProviderError(404, 'Repository is not accessible to the connected Bitbucket user');
+  }
+  const canWrite = ['write', 'admin', 'owner'].includes(permission);
+  return {
+    defaultBranch: repository.mainbranch?.name ?? null,
+    private: Boolean(repository.is_private),
+    permission,
+    canRead: ['read', 'write', 'admin', 'owner'].includes(permission),
+    canWrite,
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -898,6 +945,8 @@ export {
   apiHeaders,
   bbFetch,
   oauth,
+  getAuthenticatedUser,
+  getRepositoryAccess,
   mapRepo,
   listRepos,
   listBranches,
@@ -929,6 +978,8 @@ export default {
   apiHeaders,
   bbFetch,
   oauth,
+  getAuthenticatedUser,
+  getRepositoryAccess,
   mapRepo,
   listRepos,
   listBranches,

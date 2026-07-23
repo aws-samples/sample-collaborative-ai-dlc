@@ -31,6 +31,7 @@ describe('source-control bindings', () => {
   it('canonicalizes repository URLs and builds opaque credential references', () => {
     expect(canonicalRepo('github', 'https://github.com/Acme/API.git')).toBe('acme/api');
     expect(bindingKeyFor('gitlab', 'Group/Sub/Repo')).toBe('gitlab#group/sub/repo');
+    expect(bindingKeyFor('bitbucket', 'Workspace/Repo.git')).toBe('bitbucket#workspace/repo');
     expect(oauthCredentialRef('github', 'user-1')).toBe('oauth#github#user-1');
     expect(appCredentialRef('1234')).toBe('github-app#1234');
   });

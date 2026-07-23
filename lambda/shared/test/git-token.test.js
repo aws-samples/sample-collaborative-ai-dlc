@@ -297,8 +297,8 @@ describe('ensureFreshGitToken', () => {
     // Correct endpoint + form-urlencoded body, and NO redirect_uri (Bitbucket
     // rejects unknown params on the refresh grant).
     expect(globalThis.fetch).toHaveBeenCalledWith(
-        'https://bitbucket.org/site/oauth2/access_token',
-        expect.objectContaining({ method: 'POST' }),
+      'https://bitbucket.org/site/oauth2/access_token',
+      expect.objectContaining({ method: 'POST' }),
     );
     const body = globalThis.fetch.mock.calls[0][1].body;
     expect(body).toBeInstanceOf(URLSearchParams);
@@ -335,8 +335,6 @@ describe('ensureFreshGitToken', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });
-
-
 
 describe('getInstallationToken', () => {
   let getInstallationToken;

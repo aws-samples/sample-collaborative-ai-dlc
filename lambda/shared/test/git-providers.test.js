@@ -901,6 +901,51 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
     await expect(bb.listRepos({ token: 't', fetchImpl })).rejects.toThrow(ProviderError);
   });
 
+  it('maps the authenticated user and verifies repository write access', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/user/permissions/repositories',
+        {
+          json: {
+            values: [
+              {
+                permission: 'write',
+                repository: {
+                  full_name: 'ws/repo',
+                  is_private: true,
+                  mainbranch: { name: 'develop' },
+                },
+              },
+            ],
+          },
+        },
+      ],
+      [
+        '/user',
+        {
+          json: {
+            nickname: 'janedev',
+            display_name: 'Jane Dev',
+            email: 'jane@example.com',
+          },
+        },
+      ],
+    ]);
+
+    await expect(bb.getAuthenticatedUser({ token: 't', fetchImpl })).resolves.toEqual({
+      login: 'janedev',
+      authorName: 'Jane Dev',
+      authorEmail: 'jane@example.com',
+    });
+    await expect(bb.getRepositoryAccess({ token: 't', fetchImpl }, 'ws/repo')).resolves.toEqual({
+      defaultBranch: 'develop',
+      private: true,
+      permission: 'write',
+      canRead: true,
+      canWrite: true,
+    });
+  });
+
   it('getTree walks subdirectories (max_depth) and paginates', async () => {
     let page = 0;
     const fetchImpl = makeFetch([
@@ -1005,8 +1050,14 @@ describe('OAuth metadata', () => {
     // path names) or the authorize call fails with "Unknown scope".
     expect(getProvider('bitbucket').oauth.secretEnvName).toBe('BITBUCKET_OAUTH_SECRET_NAME');
     expect(getProvider('bitbucket').oauth.scopes).toBe(
-      'account repository repository:write pullrequest pullrequest:write',
+      'account email repository repository:write pullrequest pullrequest:write',
     );
+    expect(getProvider('bitbucket').oauth.requiredConnectionScopes).toEqual([
+      'account',
+      'email',
+      'repository',
+      'pullrequest',
+    ]);
     expect(getProvider('bitbucket').oauth.refreshAccessToken).toBeTypeOf('function');
   });
 

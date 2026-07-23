@@ -251,3 +251,39 @@ describe('resolveBindingCredential GitLab 401 retry support', () => {
     expect(credential.refresh).toBeUndefined();
   });
 });
+
+describe('resolveBindingCredential Bitbucket support', () => {
+  const binding = {
+    authType: 'bitbucket-oauth',
+    provider: 'bitbucket',
+    repo: 'workspace/repo',
+    status: 'active',
+    connectionUserId: 'u1',
+    credentialRef: 'oauth#bitbucket#u1',
+    capabilities: { repositoryWrite: true },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getGitConnection.mockResolvedValue({
+      userId: 'u1',
+      provider: 'bitbucket',
+      parameterName: '/proj/dev/git-token/bitbucket/u1',
+      scope: 'account email repository pullrequest',
+    });
+    ensureFreshGitToken.mockResolvedValue('bb-token');
+  });
+
+  it('returns Bitbucket git credentials and retries a rejected token', async () => {
+    const credential = await resolveBindingCredential({ ddb: {}, ssm: {}, secrets: {}, binding });
+
+    expect(credential).toMatchObject({ token: 'bb-token', username: 'x-token-auth' });
+    expect(typeof credential.refresh).toBe('function');
+
+    ensureFreshGitToken.mockResolvedValue('bb-rotated');
+    await expect(credential.refresh()).resolves.toBe('bb-rotated');
+    expect(ensureFreshGitToken).toHaveBeenLastCalledWith(
+      expect.objectContaining({ staleToken: 'bb-token', gitProvider: 'bitbucket' }),
+    );
+  });
+});

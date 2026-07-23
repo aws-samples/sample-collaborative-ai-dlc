@@ -234,7 +234,7 @@ const _refreshInFlight = new Map();
 const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider, staleToken = null }) => {
   if (!item?.parameterName) throw new Error('No SSM parameter name set');
   const tokens = await readTokenValue(ssm, item.parameterName);
-  // Only GitLab and Bitbucket issue expiring OAuth tokens with refresh tokens.
+  // Only GitLab and Bitbucket OAuth access tokens expire and carry refresh tokens.
   // GitHub OAuth-App tokens never expire (passthrough); a provider without a
   // stored refresh token can't be refreshed either.
   const refreshable = gitProvider === 'gitlab' || gitProvider === 'bitbucket';
@@ -252,10 +252,9 @@ const ensureFreshGitToken = async ({ ssm, secrets, ddb, item, gitProvider, stale
   const key = item.parameterName;
   const inFlight = _refreshInFlight.get(key);
   if (inFlight) return inFlight;
-  const refreshToken =
-      gitProvider === 'bitbucket' ? refreshBitbucketToken : refreshGitlabToken;
+  const refreshToken = gitProvider === 'bitbucket' ? refreshBitbucketToken : refreshGitlabToken;
 
-  const refresh = refreshToken({ssm, secrets, ddb, item, tokens}).finally(() => {
+  const refresh = refreshToken({ ssm, secrets, ddb, item, tokens }).finally(() => {
     _refreshInFlight.delete(key);
   });
 
