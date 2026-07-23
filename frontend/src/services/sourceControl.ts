@@ -56,8 +56,10 @@ export const SOURCE_CONTROL_AUTH_OPTIONS: Record<GitProvider, SourceControlAuthO
 };
 
 // The preferred (default) auth type for a provider — first option in the list.
-export const defaultAuthTypeFor = (provider: GitProvider): SourceControlAuthType =>
-  SOURCE_CONTROL_AUTH_OPTIONS[provider][0].authType;
+// Accepts a not-yet-selected provider (empty string in the create-project
+// modal before a provider is picked) and falls back to the github-app default.
+export const defaultAuthTypeFor = (provider: GitProvider | ''): SourceControlAuthType =>
+  (provider && SOURCE_CONTROL_AUTH_OPTIONS[provider]?.[0]?.authType) || 'github-app';
 
 export interface SourceControlCapabilities {
   metadata?: 'read' | 'none';
