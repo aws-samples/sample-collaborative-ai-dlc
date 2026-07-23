@@ -904,7 +904,7 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
   it('maps the authenticated user and verifies repository write access', async () => {
     const fetchImpl = makeFetch([
       [
-        '/user/permissions/repositories',
+        '/user/workspaces/ws/permissions/repositories',
         {
           json: {
             values: [

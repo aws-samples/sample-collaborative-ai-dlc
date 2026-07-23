@@ -185,7 +185,9 @@ const getRepositoryAccess = async (ctx, repoId) => {
   const query = `repository.full_name="${workspace}/${repoSlug}"`;
   const res = await bbFetch(
     ctx,
-    `${API_BASE}/user/permissions/repositories?q=${encodeURIComponent(query)}&pagelen=1`,
+    `${API_BASE}/user/workspaces/${workspace}/permissions/repositories?q=${encodeURIComponent(
+      query,
+    )}&pagelen=1`,
   );
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
