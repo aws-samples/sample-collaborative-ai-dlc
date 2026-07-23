@@ -693,7 +693,11 @@ const findPullRequest = async (
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
 
   const stateFilter = state === 'OPEN' ? 'OPEN' : state;
-  let query = `source.branch.name="${sourceBranch}" AND state="${stateFilter}"`;
+  // The List-PR endpoint excludes draft PRs unless the query names the draft
+  // field explicitly (BCLOUD-23659). Without `(draft=true OR draft=false)` a
+  // draft unit-PR is silently missed at fan-in, so keep the clause on every
+  // lookup regardless of state.
+  let query = `source.branch.name="${sourceBranch}" AND state="${stateFilter}" AND (draft=true OR draft=false)`;
   if (targetBranch) {
     query += ` AND destination.branch.name="${targetBranch}"`;
   }
@@ -741,17 +745,18 @@ const createPullRequest = async (
             providerId: existing.id,
             headSha: existing.source?.commit?.hash ?? null,
             targetSha: existing.destination?.commit?.hash ?? null,
-            draft: Boolean(existing.title?.toLowerCase().startsWith('draft:')),
+            draft: Boolean(existing.draft),
           }
         : {}),
     };
   }
 
   const prPayload = {
-    title: draft && !title.toLowerCase().startsWith('draft:') ? `Draft: ${title}` : title,
+    title,
     description: body,
     source: { branch: { name: branch } },
     destination: { branch: { name: resolvedBase } },
+    draft: Boolean(draft),
   };
 
   const res = await bbFetch(ctx, `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests`, {
@@ -807,7 +812,7 @@ const createPullRequest = async (
           providerId: pr.id,
           headSha: pr.source?.commit?.hash ?? null,
           targetSha: pr.destination?.commit?.hash ?? null,
-          draft: Boolean(pr.title?.toLowerCase().startsWith('draft:')),
+          draft: Boolean(pr.draft),
         }
       : {}),
   };
@@ -871,7 +876,7 @@ const getPullRequestStatus = async (ctx, repoId, prId) => {
     headSha: pr.source?.commit?.hash ?? null,
     targetSha: pr.destination?.commit?.hash ?? null,
     state,
-    draft: Boolean(pr.title?.toLowerCase().startsWith('draft:')),
+    draft: Boolean(pr.draft),
     mergeable: null, // Bitbucket doesn't expose this directly
     mergeableState: null,
     mergedAt: pr.state === 'MERGED' ? pr.updated_on : null,
@@ -887,13 +892,12 @@ const setPullRequestDraft = async (ctx, repoId, prId, draft) => {
   if (!current || current.state !== 'open') return current;
   if (current.draft === draft) return current;
 
-  const plainTitle = String(current.title ?? '').replace(/^draft:\s*/i, '');
   const res = await bbFetch(
     ctx,
     `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests/${prId}`,
     {
       method: 'PUT',
-      body: JSON.stringify({ title: draft ? `Draft: ${plainTitle}` : plainTitle }),
+      body: JSON.stringify({ draft: Boolean(draft) }),
     },
   );
 

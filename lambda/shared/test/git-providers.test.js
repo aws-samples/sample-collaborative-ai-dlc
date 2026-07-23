@@ -971,17 +971,49 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
     ).rejects.toThrow(ProviderError);
   });
 
-  it('setPullRequestDraft emulates draft via a "Draft:" title prefix', async () => {
-    // Bitbucket has no native draft flag; the provider models it through the
-    // PR title. When the PR is already in the requested draft state the call
-    // short-circuits after the status read (no PUT).
+  it('setPullRequestDraft short-circuits when the native draft flag already matches', async () => {
+    // Bitbucket Cloud exposes a native `draft` boolean; when the PR is already
+    // in the requested draft state the call short-circuits after the status
+    // read (no PUT).
     const fetchImpl = makeFetch([
-      ['/pullrequests/1', { json: { id: 1, state: 'OPEN', title: 'Draft: feat' } }],
+      ['/pullrequests/1', { json: { id: 1, state: 'OPEN', title: 'feat', draft: true } }],
     ]);
     const out = await bb.setPullRequestDraft({ token: 't', fetchImpl }, 'ws/repo', 1, true);
     expect(out).toMatchObject({ state: 'open', draft: true });
     // No PUT issued because the desired state already matched.
     expect(fetchImpl.calls.every((c) => (c.options.method ?? 'GET') === 'GET')).toBe(true);
+  });
+
+  it('setPullRequestDraft sets the native draft boolean via PUT (no title mangling)', async () => {
+    let draft = false;
+    const fetchImpl = makeFetch([
+      [
+        '/pullrequests/1',
+        (url, options) => {
+          if ((options?.method ?? 'GET') === 'PUT') {
+            const body = JSON.parse(options.body);
+            draft = body.draft;
+            // The title must NOT be touched by a draft transition.
+            expect(body.title).toBeUndefined();
+            return { json: { id: 1, state: 'OPEN', title: 'feat', draft } };
+          }
+          return { json: { id: 1, state: 'OPEN', title: 'feat', draft } };
+        },
+      ],
+    ]);
+    const out = await bb.setPullRequestDraft({ token: 't', fetchImpl }, 'ws/repo', 1, true);
+    expect(out).toMatchObject({ state: 'open', draft: true });
+    expect(fetchImpl.calls.some((c) => (c.options.method ?? 'GET') === 'PUT')).toBe(true);
+  });
+
+  it('findPullRequest names the draft field so draft PRs are not hidden (BCLOUD-23659)', async () => {
+    const fetchImpl = makeFetch([['/pullrequests', { json: { values: [{ id: 9 }] } }]]);
+    await bb.findPullRequest({ token: 't', fetchImpl }, 'ws/repo', {
+      sourceBranch: 'feat',
+      targetBranch: 'main',
+    });
+    const url = decodeURIComponent(fetchImpl.calls[0].url);
+    expect(url).toContain('draft=true OR draft=false');
   });
 
   it('getFileContents encodes each path segment but preserves the slashes', async () => {

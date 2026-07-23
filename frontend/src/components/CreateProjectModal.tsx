@@ -13,7 +13,11 @@ import {
   type GitProvider,
   type GitRepo,
 } from '../services/gitProvider';
-import { sourceControlService, type SourceControlAuthType } from '../services/sourceControl';
+import {
+  sourceControlService,
+  defaultAuthTypeFor,
+  type SourceControlAuthType,
+} from '../services/sourceControl';
 
 interface Props {
   onClose: () => void;
@@ -49,7 +53,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     refresh: gitRefresh,
   } = useGitProviderStatus(formData.gitProvider);
   const [sourceControlAuthType, setSourceControlAuthType] = useState<SourceControlAuthType>(
-    initialProvider === 'gitlab' ? 'gitlab-oauth' : 'github-app',
+    defaultAuthTypeFor(initialProvider),
   );
   // Whether the platform GitHub App is configured — gates the App option in
   // step 1. null = still loading.
@@ -135,7 +139,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
 
   const handleProviderChange = (provider: GitProvider) => {
     setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
-    setSourceControlAuthType(provider === 'github' ? 'github-app' : 'gitlab-oauth');
+    setSourceControlAuthType(defaultAuthTypeFor(provider));
     setDelegationConfirmed(false);
     setSelectedRepos([]);
     setPrimaryRepo('');
