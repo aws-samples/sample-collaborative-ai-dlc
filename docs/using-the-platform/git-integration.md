@@ -3,11 +3,11 @@
 AIDLC Collaborative integrates with external systems on two independent axes:
 
 - **Code host** — GitHub, GitLab or Bitbucket. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub / Bitbucket) or merge request (GitLab).
-- **Issue trackers** — GitHub Issues, GitLab Issues, Bitbucket Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
+- **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
 
 A project can attach one or more repositories and zero or more trackers. Repository authorization is configured explicitly per project in **Project Settings**.
 
-GitHub, GitLab and Bitbucket each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues / Bitbucket Issues), so you authenticate once per provider. Jira Cloud is a tracker only.
+GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker. Bitbucket is a code host only. Jira Cloud is a tracker only.
 
 ## Operator setup (one time per deployment)
 
@@ -33,7 +33,7 @@ Each user connects their own GitHub / GitLab / Atlassian account once. A persona
 
 - **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
-- **Bitbucket**: choose **Bitbucket** as the provider in the project-creation flow, then click **Connect Bitbucket** and approve the OAuth flow. The connection requests the `account`, `repository`, `repository:write`, `pullrequest` and `pullrequest:write` scopes. The button stays disabled until your administrator has configured Bitbucket OAuth credentials. Bitbucket access tokens are short-lived (~2h); the platform refreshes them automatically from the stored refresh token, so you don't need to reconnect periodically.
+- **Bitbucket**: choose **Bitbucket** as the provider in the project-creation flow, then click **Connect Bitbucket** and approve the OAuth flow. The connection requests the `account`, `repository`, `repository:write`, `pullrequest` and `pullrequest:write` scopes. Bitbucket OAuth credentials are provisioned in the deployment's Secrets Manager secret. Bitbucket access tokens are short-lived (~2h); the platform refreshes them automatically from the stored refresh token, so you don't need to reconnect periodically.
 - **Jira Cloud**: open **Project Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
 
 A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab project (and vice versa). Each project uses the connection matching its selected code host.

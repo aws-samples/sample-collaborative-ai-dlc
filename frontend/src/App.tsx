@@ -70,14 +70,13 @@ function App() {
               <Routes>
                 {/* Public routes (no shell) */}
                 <Route path="/login" element={<Login />} />
-                {/* Git provider OAuth callbacks (GitHub, GitLab) — same shape,
-                  driven from the tracker registry. Jira differs (auth-gated +
-                  its own component) so it stays a separate route below. */}
-                {(['github-issues', 'gitlab-issues', 'bitbucket-issues'] as const).map((id) => (
+                {/* Git provider OAuth callbacks use the same token-exchange
+                  flow. Jira differs (auth-gated + its own component). */}
+                {(['github', 'gitlab', 'bitbucket'] as const).map((gitProvider) => (
                   <Route
-                    key={id}
-                    path={TRACKER_PROVIDERS[id].callbackPath}
-                    element={<GitOAuthCallback trackerProviderId={id} />}
+                    key={gitProvider}
+                    path={`/${gitProvider}/callback`}
+                    element={<GitOAuthCallback gitProvider={gitProvider} />}
                   />
                 ))}
                 <Route

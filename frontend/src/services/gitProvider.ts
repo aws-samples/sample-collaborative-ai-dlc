@@ -9,20 +9,29 @@ import { api } from './api';
 // the DB — a union assigns directly from those strings with zero runtime cost.
 export type GitProvider = 'github' | 'gitlab' | 'bitbucket';
 
-// A git provider and its issue-tracker share one OAuth app/connection, so each
-// git provider maps to exactly one tracker-provider id. Centralized here so the
-// association lives in one place instead of being re-derived with inline
-// ternaries at every call site.
-export type GitTrackerProviderId = 'github-issues' | 'gitlab-issues' | 'bitbucket-issues';
+// GitHub and GitLab each share one OAuth app/connection with their issue
+// tracker. Bitbucket is a code host only, so it has no tracker-provider id.
+export type GitTrackerProviderId = 'github-issues' | 'gitlab-issues';
 
-const GIT_PROVIDER_TRACKER_ID: Record<GitProvider, GitTrackerProviderId> = {
+const GIT_PROVIDER_TRACKER_ID: Partial<Record<GitProvider, GitTrackerProviderId>> = {
   github: 'github-issues',
   gitlab: 'gitlab-issues',
-  bitbucket: 'bitbucket-issues',
 };
 
-export const trackerIdForGitProvider = (provider: GitProvider): GitTrackerProviderId =>
-  GIT_PROVIDER_TRACKER_ID[provider];
+export const trackerIdForGitProvider = (provider: GitProvider): GitTrackerProviderId | null =>
+  GIT_PROVIDER_TRACKER_ID[provider] ?? null;
+
+const GIT_PROVIDER_CALLBACK_META: Record<
+  GitProvider,
+  { callbackPath: string; displayName: string }
+> = {
+  github: { callbackPath: '/github/callback', displayName: 'GitHub' },
+  gitlab: { callbackPath: '/gitlab/callback', displayName: 'GitLab' },
+  bitbucket: { callbackPath: '/bitbucket/callback', displayName: 'Bitbucket' },
+};
+
+export const gitProviderCallbackMeta = (provider: GitProvider) =>
+  GIT_PROVIDER_CALLBACK_META[provider];
 
 export interface GitRepo {
   id: number;
@@ -135,11 +144,9 @@ export const gitlabService: GitProviderService = {
   disconnect: () => api.delete('/gitlab/disconnect'),
 };
 
-// =============================================================================
-// Bitbucket service implementation — Bitbucket Cloud addresses repositories by
-// a two-segment "workspace/repo_slug" path, the same shape as GitHub's
-// "owner/repo", so it splits the repoId into two path segments exactly like
-// the GitHub service (not GitLab's ?project= query string).
+// ============================================================================
+// Bitbucket service implementation. Project-bound repository operations use
+// sourceControlService.
 // =============================================================================
 
 export const bitbucketService: GitProviderService = {
@@ -147,30 +154,6 @@ export const bitbucketService: GitProviderService = {
   getStatus: () => api.get<GitProviderStatus>('/bitbucket/status'),
   listRepos: () => api.get<GitRepo[]>('/bitbucket/repos'),
   disconnect: () => api.delete('/bitbucket/disconnect'),
-  listBranches: (repoId: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ branches: string[]; defaultBranch?: string }>(
-      `/bitbucket/repos/${owner}/${repo}/branches`,
-    );
-  },
-  getRepoTree: (repoId: string, branch?: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ tree: GitFile[] }>(
-      `/bitbucket/repos/${owner}/${repo}/tree${branch ? `?branch=${branch}` : ''}`,
-    );
-  },
-  getFileContents: (repoId: string, path: string, branch?: string) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<GitFileContent>(
-      `/bitbucket/repos/${owner}/${repo}/contents?path=${encodeURIComponent(path)}${branch ? `&branch=${branch}` : ''}`,
-    );
-  },
-  getPullRequestComments: (repoId: string, prNumber: number) => {
-    const [owner, repo] = splitOwnerRepo(repoId);
-    return api.get<{ comments: GitComment[] }>(
-      `/bitbucket/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
-    );
-  },
 };
 
 // =============================================================================

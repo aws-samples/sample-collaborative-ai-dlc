@@ -109,9 +109,9 @@ aws cognito-idp admin-add-user-to-group \
 
 ### Configure provider OAuth apps
 
-The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket) and issue trackers (GitHub Issues, GitLab Issues, Bitbucket Issues, Jira Cloud) so an intent can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** in the deployed app.
+The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each provider you want to enable, register an OAuth app. Configure GitHub, GitLab, and Jira in the deployed app's **Admin** panel; store Bitbucket credentials in its provisioned Secrets Manager secret.
 
-For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
+For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket is a code host only. Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
 
 #### GitHub (code host + GitHub Issues)
 
@@ -152,7 +152,7 @@ Existing projects must be explicitly bound by an owner/admin before intents can 
 
 GitLab's `api` scope includes repository writes, including changes to `.gitlab-ci.yml`; there is no separate workflow-file scope. Connections missing `api` are reported as requiring reauthorization.
 
-#### Bitbucket (code host + Bitbucket Issues)
+#### Bitbucket (code host)
 
 1. Open **Bitbucket → Workspace settings → OAuth consumers → Add consumer**.
 2. Set:
@@ -160,9 +160,9 @@ GitLab's `api` scope includes repository writes, including changes to `.gitlab-c
    - **Permissions**: Account (Read), Repositories (Read & Write), Pull requests (Read & Write).
    - Leave **This is a private consumer** enabled.
 3. Save, then copy the **Key** (Client ID) and **Secret**.
-4. In the deployed app, sign in and open **Admin → Trackers → Bitbucket Issues**. Paste both values and click **Save**.
+4. Store both values in the Bitbucket OAuth secret using the AWS CLI command below.
 
-Bitbucket OAuth scopes are the singular scope names (`account`, `repository`, `repository:write`, `pullrequest`, `pullrequest:write`), requested automatically by the platform. Bitbucket access tokens are short-lived (~2h); the engine refreshes them just-in-time from the stored refresh token, so long-running construction jobs keep a valid token and users don't need to reconnect periodically.
+Bitbucket OAuth scopes are the singular scope names (`account`, `email`, `repository`, `repository:write`, `pullrequest`, `pullrequest:write`), requested automatically by the platform. Bitbucket access tokens are short-lived (~2h); the engine refreshes them just-in-time from the stored refresh token, so long-running construction jobs keep a valid token and users don't need to reconnect periodically.
 
 #### Jira Cloud
 

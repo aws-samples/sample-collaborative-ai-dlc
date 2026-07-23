@@ -92,11 +92,10 @@ describe('PlatformAdmin', () => {
     const githubCard = await screen.findByTestId('github-card');
     // github-issues is configured in the mocked provider list.
     expect(githubCard).toHaveAttribute('data-oauth-configured', 'true');
-    // GitLab and Bitbucket cards each render with their not-configured badge
-    // (neither gitlab-issues nor bitbucket-issues is configured in the mock).
+    // GitLab's source-control card renders with a not-configured badge.
     expect(screen.getByText('GitLab')).toBeInTheDocument();
-    expect(screen.getByText('Bitbucket')).toBeInTheDocument();
-    expect(screen.getAllByText('Not configured')).toHaveLength(2);
+    expect(screen.queryByText('Bitbucket')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Not configured')).toHaveLength(1);
   });
 
   it('renders Jira and git-backed tracker rows on the Trackers tab', async () => {

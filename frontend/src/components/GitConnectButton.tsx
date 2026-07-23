@@ -16,8 +16,7 @@ export interface GitConnectButtonProps {
   onDisconnect: () => void;
 }
 
-// Button styling + label per provider. The git→tracker association lives in
-// the gitProvider service (trackerIdForGitProvider) — not duplicated here.
+// Button styling + label per provider.
 const PROVIDER_META = {
   github: {
     label: 'GitHub',
@@ -57,19 +56,16 @@ export function GitConnectButton({
   const meta = PROVIDER_META[provider];
   const service = getGitProviderService(provider);
 
-  // Operator-side OAuth-app config — disable the Connect button when the
-  // deployment hasn't populated this provider's OAuth secret yet, with helper
-  // text pointing the user at the Admin panel. The git provider and its
-  // issue-tracker share one OAuth app, so config status is keyed by tracker id.
   const trackerId = trackerIdForGitProvider(provider);
   const { providers, loading: providersLoading, failed: providersFailed } = useTrackerProviders();
-  // null while loading; true if the provider reports configured OR the fetch
-  // itself failed (let the user try anyway rather than block on a transient blip).
+  // Only code hosts that also implement a tracker reuse tracker OAuth
+  // configuration. Code-host-only providers validate their own OAuth setup
+  // when starting the authorization flow.
   const configured = providersLoading
     ? null
     : providersFailed
       ? true
-      : (providers.find((p) => p.id === trackerId)?.configured ?? false);
+      : trackerId === null || (providers.find((p) => p.id === trackerId)?.configured ?? false);
 
   const handleConnect = async () => {
     setLoading(true);

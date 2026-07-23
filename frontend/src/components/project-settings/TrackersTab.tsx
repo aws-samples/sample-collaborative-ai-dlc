@@ -123,17 +123,8 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
       sessionStorage.setItem('oauth_return_to', `/space/${project.id}/settings?tab=trackers`);
       // Git-based trackers (github-issues / gitlab-issues) share the git
       // provider's OAuth connection — reconnect via the git auth flow.
-      if (
-        binding.provider === 'github-issues' ||
-        binding.provider === 'gitlab-issues' ||
-        binding.provider === 'bitbucket-issues'
-      ) {
-        const gitProvider =
-          binding.provider === 'gitlab-issues'
-            ? 'gitlab'
-            : binding.provider === 'bitbucket-issues'
-              ? 'bitbucket'
-              : 'github';
+      if (binding.provider === 'github-issues' || binding.provider === 'gitlab-issues') {
+        const gitProvider = binding.provider === 'gitlab-issues' ? 'gitlab' : 'github';
         const { url } = await getGitProviderService(gitProvider).getAuthUrl();
         window.location.href = url;
         return;
@@ -169,13 +160,9 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
   // has issues support and isn't already bound for this repo.
   const gitTrackerCta = (() => {
     if (!canEdit || !project.gitRepo) return null;
-    if (
-      project.gitProvider !== 'github' &&
-      project.gitProvider !== 'gitlab' &&
-      project.gitProvider !== 'bitbucket'
-    )
-      return null;
+    if (project.gitProvider !== 'github' && project.gitProvider !== 'gitlab') return null;
     const trackerId = trackerIdForGitProvider(project.gitProvider);
+    if (!trackerId) return null;
     const meta = TRACKER_PROVIDERS[trackerId];
     const alreadyBound = bindings.some(
       (b) => b.provider === meta.id && b.externalProjectKey === project.gitRepo,

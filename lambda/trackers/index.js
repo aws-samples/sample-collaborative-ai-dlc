@@ -149,12 +149,6 @@ const PROVIDER_OAUTH_CONFIG = {
     secretEnvVar: 'GITLAB_OAUTH_SECRET_NAME',
     callbackPath: '/gitlab/callback',
   },
-  'bitbucket-issues': {
-    label: 'Bitbucket Issues',
-    instances: ['public'],
-    secretEnvVar: 'BITBUCKET_OAUTH_SECRET_NAME',
-    callbackPath: '/bitbucket/callback',
-  },
 };
 
 // Reads + validates an OAuth secret. Returns the parsed credentials on

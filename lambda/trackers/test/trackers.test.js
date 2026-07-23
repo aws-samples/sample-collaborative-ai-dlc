@@ -39,7 +39,6 @@ const TOKEN = 'gho_testtoken';
 const JIRA_OAUTH_SECRET_NAME = 'jira-oauth-secret';
 const GITHUB_OAUTH_SECRET_NAME = 'github-oauth-secret';
 const GITLAB_OAUTH_SECRET_NAME = 'gitlab-oauth-secret';
-const BITBUCKET_OAUTH_SECRET_NAME = 'bitbucket-oauth-secret';
 const JIRA_CLIENT_ID = 'jira-cid';
 const JIRA_CLIENT_SECRET = 'jira-cs';
 const JIRA_REDIRECT_URI = 'https://example.com/trackers/callback/jira-cloud';
@@ -61,7 +60,6 @@ beforeAll(async () => {
   vi.stubEnv('JIRA_OAUTH_SECRET_NAME', JIRA_OAUTH_SECRET_NAME);
   vi.stubEnv('GITHUB_OAUTH_SECRET_NAME', GITHUB_OAUTH_SECRET_NAME);
   vi.stubEnv('GITLAB_OAUTH_SECRET_NAME', GITLAB_OAUTH_SECRET_NAME);
-  vi.stubEnv('BITBUCKET_OAUTH_SECRET_NAME', BITBUCKET_OAUTH_SECRET_NAME);
   vi.stubEnv('JIRA_REDIRECT_URI', JIRA_REDIRECT_URI);
   vi.stubEnv('JIRA_TOKEN_SSM_PREFIX', 'aidlc/dev/jira-token');
   vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control-test');

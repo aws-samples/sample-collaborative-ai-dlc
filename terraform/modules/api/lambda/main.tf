@@ -313,13 +313,6 @@ resource "aws_iam_role_policy" "trackers" {
           Resource = [var.gitlab_oauth_secret_arn]
         }
       ] : [],
-      var.bitbucket_oauth_secret_arn != "" ? [
-        {
-          Effect   = "Allow"
-          Action   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
-          Resource = [var.bitbucket_oauth_secret_arn]
-        }
-      ] : [],
     )
   })
 }
@@ -1581,8 +1574,6 @@ module "trackers_lambda" {
     GITHUB_OAUTH_SECRET_NAME       = var.github_oauth_secret_name
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
-    BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
-    BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
     SOURCE_CONTROL_FUNCTION        = module.source_control_lambda.lambda_function_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     ENVIRONMENT                    = var.environment

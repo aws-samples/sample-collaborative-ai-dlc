@@ -6,7 +6,8 @@ vi.mock('../services/gitProvider', () => ({
     getAuthUrl: vi.fn(),
     disconnect: vi.fn(),
   }),
-  trackerIdForGitProvider: () => 'github-issues',
+  trackerIdForGitProvider: (provider: string) =>
+    provider === 'bitbucket' ? null : 'github-issues',
 }));
 
 vi.mock('@/hooks/useTrackerProviders', () => ({
@@ -40,5 +41,11 @@ describe('GitConnectButton', () => {
 
     expect(screen.getByText('GitHub Connected')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+  });
+
+  it('does not use tracker configuration to gate Bitbucket', () => {
+    render(<GitConnectButton provider="bitbucket" connected={false} onDisconnect={() => {}} />);
+
+    expect(screen.getByRole('button', { name: 'Connect Bitbucket' })).toBeEnabled();
   });
 });
