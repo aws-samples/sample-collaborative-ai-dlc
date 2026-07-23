@@ -46,12 +46,17 @@ const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }>
     label: 'OpenCode',
     description: 'OpenCode CLI — AWS Bedrock authentication',
   },
+  codex: {
+    label: 'Codex',
+    description: 'OpenAI Codex CLI — AWS Bedrock authentication (OpenAI models)',
+  },
 };
 
 const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
   kiro: 'Kiro',
   claude: 'Claude',
   opencode: 'OpenCode',
+  codex: 'Codex',
 };
 
 const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
@@ -70,6 +75,10 @@ const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
     label: 'Bedrock model IDs',
     url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
   },
+  codex: {
+    label: 'Codex on Bedrock model IDs',
+    url: 'https://help.openai.com/en/articles/20001252-use-codex-with-amazon-bedrock',
+  },
 };
 
 interface Props {
@@ -85,6 +94,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     kiro: true,
     claude: true,
     opencode: true,
+    codex: true,
   });
   const [modelOptions, setModelOptions] = useState<Partial<Record<AgentCli, AgentModel[]>>>({});
   const [runtimeClis, setRuntimeClis] = useState<RuntimeCliStatus[] | null>(null);

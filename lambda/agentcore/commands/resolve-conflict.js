@@ -40,6 +40,7 @@ import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
   materializeOpenCodeConfig as defaultMaterializeOpenCodeConfig,
+  materializeCodexHome as defaultMaterializeCodexHome,
 } from '../stage-materializer.js';
 import {
   restoreKiroStore as defaultRestoreKiroStore,
@@ -114,6 +115,7 @@ export const resolveConflict = async (
     materializeMcpConfig = defaultMaterializeMcpConfig,
     materializeKiroAgent = defaultMaterializeKiroAgent,
     materializeOpenCodeConfig = defaultMaterializeOpenCodeConfig,
+    materializeCodexHome = defaultMaterializeCodexHome,
     restoreKiroStore = defaultRestoreKiroStore,
     persistKiroStore = defaultPersistKiroStore,
     withOpenCodeStore = defaultWithOpenCodeStore,
@@ -225,6 +227,9 @@ export const resolveConflict = async (
         env,
       });
       invocation = driver.buildInvocation({ prompt, model, opencodeConfigContent });
+    } else if (cli === 'codex') {
+      const codexHome = await materializeCodexHome({ workspaceDir, mcpEntry, scope, env });
+      invocation = driver.buildInvocation({ prompt, model, codexHome });
     } else {
       const mcpConfigPath = await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env });
       invocation = driver.buildInvocation({ prompt, model, allowedTools: [], mcpConfigPath });

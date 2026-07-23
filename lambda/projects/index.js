@@ -1614,7 +1614,7 @@ export const handler = async (event) => {
             .next();
         }
         if (data.agentCli) {
-          const validClis = ['kiro', 'claude', 'opencode'];
+          const validClis = ['kiro', 'claude', 'opencode', 'codex'];
           if (!validClis.includes(data.agentCli)) {
             return response(400, {
               error: `Invalid agentCli value. Must be one of: ${validClis.join(', ')}`,

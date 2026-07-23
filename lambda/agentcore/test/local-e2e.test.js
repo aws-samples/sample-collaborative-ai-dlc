@@ -57,6 +57,18 @@ describe('local E2E configuration', () => {
     ).toBe('amazon-bedrock/us.anthropic.claude-sonnet-4-6');
     expect(localE2eModelFor({ cli: 'kiro', kiroModel: 'auto' })).toBe('auto');
   });
+
+  it('gives Codex its own openai.* model, never the Bedrock/Kiro values', () => {
+    expect(localE2eModelFor({ cli: 'codex' })).toBe('openai.gpt-5.5');
+    expect(
+      localE2eModelFor({
+        cli: 'codex',
+        bedrockModel: 'us.anthropic.claude-sonnet-4-6',
+        codexModel: 'openai.gpt-5.6-sol',
+      }),
+    ).toBe('openai.gpt-5.6-sol');
+    expect(normalizeLocalE2eClis('codex')).toEqual(['codex']);
+  });
 });
 
 describe('local E2E shell safety contract', () => {
@@ -84,6 +96,7 @@ describe('local E2E shell safety contract', () => {
     expect(script).toContain('set_result "$cli" "FAIL"');
     expect(script).toContain('Claude:');
     expect(script).toContain('OpenCode:');
+    expect(script).toContain('Codex:');
     expect(script).not.toContain('phaseb.sh');
     expect(script).not.toContain('API_BASE_URL');
     expect(script).not.toContain('E2E_ID_TOKEN');

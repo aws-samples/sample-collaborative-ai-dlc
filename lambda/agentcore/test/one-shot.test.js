@@ -215,6 +215,46 @@ describe('runOneShotPrompt', () => {
     expect(withOpenCodeStore).toHaveBeenCalledOnce();
   });
 
+  it('runs Codex with CODEX_HOME, Bedrock bearer auth, and turn usage', async () => {
+    let argv;
+    let childEnv;
+    const spawnFn = vi.fn((command, args, options) => {
+      argv = { command, args };
+      childEnv = options.env;
+      return fakeChild({
+        stdout: [
+          JSON.stringify({ type: 'thread.started', thread_id: 'thread_1' }),
+          JSON.stringify({
+            type: 'item.completed',
+            item: { type: 'agent_message', text: '{"gist":"codex"}' },
+          }),
+          JSON.stringify({
+            type: 'turn.completed',
+            usage: { input_tokens: 40, cached_input_tokens: 5, output_tokens: 10 },
+          }),
+        ].join('\n'),
+      });
+    });
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['codex'],
+      cliModels: { codex: 'openai.gpt-5.5' },
+      codexHome: '/ws/.aidlc/codex-home',
+      env: { AWS_REGION: 'us-east-1', AWS_BEARER_TOKEN_BEDROCK: 'secret' },
+      spawnFn,
+    });
+    expect(out).toMatchObject({
+      ok: true,
+      cli: 'codex',
+      text: '{"gist":"codex"}',
+      metrics: { tokensInput: 40, tokensOutput: 10, tokensCacheRead: 5 },
+    });
+    expect(argv.command).toBe('codex');
+    expect(argv.args).toContain('openai.gpt-5.5');
+    expect(childEnv.CODEX_HOME).toBe('/ws/.aidlc/codex-home');
+    expect(childEnv.AWS_BEARER_TOKEN_BEDROCK).toBe('secret');
+  });
+
   it('claude one-shots never touch the kiro store', async () => {
     const restoreKiroStore = vi.fn();
     const persistKiroStore = vi.fn();

@@ -16,6 +16,7 @@ import path from 'node:path';
 import { attachmentPromptManifest } from './attachments.js';
 import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
+import { MCP_SERVER_NAME } from './cli/drivers.js';
 
 // The MCP execution annex — the harness binding that redirects the upstream
 // stage prose (which is written for a filesystem + `bun` harness) onto our MCP
@@ -393,6 +394,180 @@ export const materializeOpenCodeConfig = async ({
   customServers = {},
 }) => JSON.stringify(buildOpenCodeConfig({ mcpEntry, scope, env, customServers }));
 
+// ── Codex config (per-stage CODEX_HOME) ──
+//
+// Codex reads all behavioral config from $CODEX_HOME/config.toml. We materialize
+// a PRIVATE home under the workspace (.aidlc/codex-home) per stage so:
+//   - repo files (AGENTS.md, .codex/) stay untouched,
+//   - session rollout files ($CODEX_HOME/sessions, plain JSONL) land on the
+//     persistent mount and survive microVM reaps — mount-direct like Claude's
+//     CLAUDE_CONFIG_DIR, no copy protocol needed,
+//   - the SQLite state DB is redirected to EPHEMERAL local disk (sqlite_home):
+//     the managed mount lacks the fcntl locking SQLite needs (same constraint
+//     that forced the kiro/opencode store copy protocol).
+
+// TOML value emitters — config values here are flat strings/arrays/maps, so a
+// tiny local emitter beats a dependency. Strings are emitted as TOML basic
+// strings via JSON.stringify (valid TOML for our value space: no control-char
+// escapes beyond \n\t\", which JSON and TOML share).
+const tomlString = (value) => JSON.stringify(String(value));
+const tomlArray = (values) => `[${values.map(tomlString).join(', ')}]`;
+
+// Resolve `${VAR}` references against the provided env. Codex's mcp_servers env
+// maps take LITERAL strings (no interpolation syntax like OpenCode's {env:VAR}),
+// so refs must be resolved at materialization time. The config.toml lives in the
+// runtime-owned .aidlc dir — same trust level as the Kiro agent file, which
+// already embeds the literal scope values.
+const codexEnvValue = (value, env) =>
+  typeof value === 'string'
+    ? value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => env[name] ?? '')
+    : String(value);
+
+// Codex spawns MCP stdio servers with a SANITIZED environment (verified live:
+// the aidlc bridge got "Could not load credentials from any providers" while
+// the other CLIs' children inherit the container env). Forward the standard
+// AWS credential-chain vars into the RESERVED aidlc server's env map so its
+// SDK clients resolve credentials — static keys (local e2e's inert pair),
+// container-credentials URIs (the AgentCore runtime role), or web identity.
+// Only present, non-empty vars are written; custom servers NEVER receive them
+// (a user-configured server must not silently inherit runtime credentials).
+const CODEX_AIDLC_FORWARD_ENV = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_ARN',
+  'AWS_ROLE_SESSION_NAME',
+  'AWS_DEFAULT_REGION',
+];
+
+const codexForwardedAwsEnv = (env = {}) =>
+  Object.fromEntries(
+    CODEX_AIDLC_FORWARD_ENV.filter((key) => env[key]).map((key) => [key, env[key]]),
+  );
+
+// Convert the validated common MCP shape to codex [mcp_servers.*] TOML tables.
+// `aidlc` is emitted LAST (buildMcpConfig's insertion order preserved) and is
+// marked required — if the runtime bridge fails to initialize, codex exits with
+// an error instead of running the stage toolless.
+export const toCodexMcpToml = (mcpServers = {}, env = {}) => {
+  const sections = [];
+  for (const [name, server] of Object.entries(mcpServers)) {
+    if (!server || typeof server !== 'object') continue;
+    const lines = [`[mcp_servers.${JSON.stringify(name)}]`];
+    if (server.command) {
+      lines.push(`command = ${tomlString(server.command)}`);
+      if (Array.isArray(server.args) && server.args.length) {
+        lines.push(`args = ${tomlArray(server.args)}`);
+      }
+      const envEntries = Object.entries({
+        ...server.env,
+        // Reserved bridge only: codex sanitizes MCP child env, so the AWS
+        // credential chain must be forwarded explicitly (see the comment on
+        // CODEX_AIDLC_FORWARD_ENV). Spread AFTER server.env so the forwarded
+        // values can never be shadowed by a same-named scope entry.
+        ...(name === MCP_SERVER_NAME && codexForwardedAwsEnv(env)),
+      });
+      if (envEntries.length) {
+        lines.push(`[mcp_servers.${JSON.stringify(name)}.env]`);
+        for (const [key, value] of envEntries) {
+          lines.push(`${JSON.stringify(key)} = ${tomlString(codexEnvValue(value, env))}`);
+        }
+      }
+    } else if (server.url) {
+      lines.push(`url = ${tomlString(server.url)}`);
+      const headers = Object.entries(server.headers ?? {});
+      if (headers.length) {
+        lines.push(`[mcp_servers.${JSON.stringify(name)}.http_headers]`);
+        for (const [key, value] of headers) {
+          lines.push(`${JSON.stringify(key)} = ${tomlString(codexEnvValue(value, env))}`);
+        }
+      }
+    } else {
+      continue;
+    }
+    if (name === MCP_SERVER_NAME) {
+      // Required + generous timeouts: the bridge polls durable gates, so tool
+      // calls (ask_question while a human answers) legitimately run long.
+      // Inserted directly after the table header — TOML keys must precede any
+      // nested table ([….env]) inside the same section.
+      lines.splice(1, 0, 'required = true', 'startup_timeout_sec = 30', 'tool_timeout_sec = 600');
+    }
+    sections.push(lines.join('\n'));
+  }
+  return sections.join('\n\n');
+};
+
+// Ephemeral-local SQLite home for codex state (see header comment). Overridable
+// for tests/local runs via env.
+const codexSqliteHome = (env) => env.V2_CODEX_SQLITE_HOME || '/home/node/.codex-state';
+
+export const buildCodexConfigToml = ({ mcpEntry, scope, env = {}, customServers = {} }) => {
+  // A custom server named `aidlc` keeps its FIRST insertion position through the
+  // buildMcpConfig spread (JS re-assignment preserves key order) even though the
+  // reserved VALUE wins — re-append it so the emitted table is also last.
+  const { [MCP_SERVER_NAME]: aidlc, ...others } = buildMcpConfig({
+    mcpEntry,
+    scope,
+    env,
+    customServers,
+  }).mcpServers;
+  const mcpServers = { ...others, [MCP_SERVER_NAME]: aidlc };
+  return [
+    '# Materialized by the AI-DLC runtime — regenerated every stage run.',
+    'model_provider = "amazon-bedrock"',
+    'approval_policy = "never"',
+    'sandbox_mode = "danger-full-access"',
+    // The rendered rules doc doubles as the project doc when the repo has no
+    // AGENTS.md. When it HAS one, the global $CODEX_HOME/AGENTS.md (written by
+    // materializeCodexHome) still points codex at the runtime rules.
+    'project_doc_fallback_filenames = [".aidlc/rules.md"]',
+    `sqlite_home = ${tomlString(codexSqliteHome(env))}`,
+    '',
+    '[history]',
+    'persistence = "save-all"',
+    '',
+    toCodexMcpToml(mcpServers, env),
+    '',
+  ].join('\n');
+};
+
+// Global-guidance doc written into the codex home. Codex merges
+// $CODEX_HOME/AGENTS.md ahead of the project doc, so this survives even when
+// the repo ships its own AGENTS.md (which would shadow the
+// project_doc_fallback_filenames entry).
+const CODEX_GLOBAL_AGENTS_MD = [
+  '# AI-DLC runtime guidance',
+  '',
+  'This session is driven by the AI-DLC stage runner. If the files exist,',
+  'read and follow `.aidlc/rules.md` (methodology rules for this stage) and',
+  'every markdown file under `.aidlc/codex-instructions/` (project custom',
+  'rules) before acting.',
+  '',
+].join('\n');
+
+// Effectful: write <workspaceDir>/.aidlc/codex-home/{config.toml,AGENTS.md}
+// and return the home dir to pass via CODEX_HOME. Factored out like
+// materializeMcpConfig so the resume branch reuses it.
+export const materializeCodexHome = async ({
+  workspaceDir,
+  mcpEntry,
+  scope,
+  env = process.env,
+  customServers = {},
+}) => {
+  const homeDir = path.join(workspaceDir, '.aidlc', 'codex-home');
+  await mkdir(homeDir, { recursive: true });
+  const toml = buildCodexConfigToml({ mcpEntry, scope, env, customServers });
+  await writeFile(path.join(homeDir, 'config.toml'), toml, 'utf8');
+  await writeFile(path.join(homeDir, 'AGENTS.md'), CODEX_GLOBAL_AGENTS_MD, 'utf8');
+  return homeDir;
+};
+
 // Materialize only the selected CLI's context and return the kwargs accepted by
 // its driver. This is shared by stages, reviewers, conflict resolution, and
 // one-shot surfaces so no execution writes another CLI's repository files.
@@ -426,6 +601,17 @@ export const materializeCliContext = async ({
       }),
     };
   }
+  if (cli === 'codex') {
+    return {
+      codexHome: await materializeCodexHome({
+        workspaceDir,
+        mcpEntry,
+        scope,
+        env,
+        customServers,
+      }),
+    };
+  }
   return {
     mcpConfigPath: await materializeMcpConfig({
       workspaceDir,
@@ -445,6 +631,9 @@ const CLI_RULES_DIR = {
   claude: path.join('.claude', 'rules'),
   kiro: path.join('.kiro', 'steering'),
   opencode: path.join('.aidlc', 'opencode-instructions'),
+  // Referenced from the codex-home AGENTS.md (materializeCodexHome) — codex has
+  // no native auto-loaded rules dir, so the global doc directs it here.
+  codex: path.join('.aidlc', 'codex-instructions'),
 };
 
 // Sanitize an uploaded rule filename and resolve its destination inside

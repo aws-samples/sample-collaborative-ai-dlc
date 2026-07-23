@@ -16,7 +16,7 @@ describe('normalizeCliModels', () => {
       issues: [
         {
           path: 'cursor',
-          message: 'Unknown model key "cursor". Allowed: kiro, claude, opencode.',
+          message: 'Unknown model key "cursor". Allowed: kiro, claude, opencode, codex.',
         },
       ],
       value: {},
@@ -72,6 +72,23 @@ describe('normalizeCliModels', () => {
         message: 'OpenCode model must start with "amazon-bedrock/".',
       },
     ]);
+  });
+
+  it('accepts an exact openai.* id for Codex', () => {
+    expect(normalizeCliModels({ codex: ' openai.gpt-5.5 ' })).toEqual({
+      valid: true,
+      issues: [],
+      value: { codex: 'openai.gpt-5.5' },
+    });
+  });
+
+  it('rejects Codex model values outside the openai.* namespace', () => {
+    for (const bad of ['us.anthropic.claude-sonnet-4-6', 'amazon-bedrock/openai.gpt-5.5']) {
+      const result = normalizeCliModels({ codex: bad });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0]).toMatchObject({ path: 'codex' });
+      expect(result.issues[0].message).toContain('openai.');
+    }
   });
 });
 

@@ -42,6 +42,7 @@ import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
   materializeOpenCodeConfig as defaultMaterializeOpenCodeConfig,
+  materializeCodexHome as defaultMaterializeCodexHome,
 } from '../stage-materializer.js';
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
 import { materializeAttachments } from '../attachments.js';
@@ -348,6 +349,7 @@ const runReviewer = async ({
   materializeMcpConfig,
   materializeKiroAgent,
   materializeOpenCodeConfig,
+  materializeCodexHome,
   store,
   executionId,
   projectId,
@@ -396,9 +398,13 @@ const runReviewer = async ({
               env,
             }),
           }
-        : {
-            mcpConfigPath: await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env }),
-          };
+        : cli === 'codex'
+          ? {
+              codexHome: await materializeCodexHome({ workspaceDir, mcpEntry, scope, env }),
+            }
+          : {
+              mcpConfigPath: await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env }),
+            };
   const invocation = driver.buildInvocation({
     prompt,
     model,
@@ -936,6 +942,7 @@ export const runStage = async (
     materializeMcpConfig = defaultMaterializeMcpConfig,
     materializeKiroAgent = defaultMaterializeKiroAgent,
     materializeOpenCodeConfig = defaultMaterializeOpenCodeConfig,
+    materializeCodexHome = defaultMaterializeCodexHome,
     renderRulesDoc,
     mcpEntry,
     openGraph = null,
@@ -1592,6 +1599,16 @@ export const runStage = async (
       });
       return { opencodeConfigContent };
     }
+    if (cli === 'codex') {
+      const codexHome = await materializeCodexHome({
+        workspaceDir,
+        mcpEntry,
+        scope: stageScope,
+        env,
+        customServers,
+      });
+      return { codexHome };
+    }
     const mcpConfigPath = await materializeMcpConfig({
       workspaceDir,
       mcpEntry,
@@ -1718,9 +1735,11 @@ export const runStage = async (
         ? { agentName: materialized.agentName }
         : cli === 'opencode' && materialized.opencodeConfigContent
           ? { opencodeConfigContent: materialized.opencodeConfigContent }
-          : cli === 'claude' && materialized.mcpConfigPath
-            ? { mcpConfigPath: materialized.mcpConfigPath }
-            : await materializeCliMcp();
+          : cli === 'codex' && materialized.codexHome
+            ? { codexHome: materialized.codexHome }
+            : cli === 'claude' && materialized.mcpConfigPath
+              ? { mcpConfigPath: materialized.mcpConfigPath }
+              : await materializeCliMcp();
     invocation = driver.buildInvocation({
       prompt,
       model,
@@ -1821,7 +1840,9 @@ export const runStage = async (
     cli,
     emit: emitCliOutput,
     onSession: (observedSessionId) => {
-      if (cli !== 'opencode' || cliSessionId) return;
+      // OpenCode and Codex choose their own session/thread id; capture the
+      // first one observed on the stream so a later resume can target it.
+      if ((cli !== 'opencode' && cli !== 'codex') || cliSessionId) return;
       cliSessionId = observedSessionId;
       // Persist the first id immediately; the queue is awaited before the park
       // check so a WAITING row can never be written ahead of its resume handle.
@@ -2106,11 +2127,11 @@ export const runStage = async (
     unitSlug,
     sectionIndex,
   });
-  if (parked && cli === 'opencode' && !cliSessionId) {
+  if (parked && (cli === 'opencode' || cli === 'codex') && !cliSessionId) {
     return fail(
       stageInstanceId,
-      'opencode_session_missing',
-      'OpenCode parked the stage without emitting a session id; the conversation cannot be resumed',
+      `${cli}_session_missing`,
+      `${cli === 'codex' ? 'Codex' : 'OpenCode'} parked the stage without emitting a session id; the conversation cannot be resumed`,
     );
   }
   if (!parked && exitCode !== 0) {
@@ -2285,6 +2306,7 @@ export const runStage = async (
         materializeMcpConfig,
         materializeKiroAgent,
         materializeOpenCodeConfig,
+        materializeCodexHome,
         store,
         executionId,
         projectId,
