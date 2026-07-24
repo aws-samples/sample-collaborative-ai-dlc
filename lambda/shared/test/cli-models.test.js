@@ -90,6 +90,14 @@ describe('normalizeCliModels', () => {
       expect(result.issues[0].message).toContain('openai.');
     }
   });
+
+  it('rejects a bare/incomplete Codex prefix (would fail at invocation time)', () => {
+    for (const bad of ['openai.', 'openai. gpt-5.5', 'openai.gpt 5']) {
+      const result = normalizeCliModels({ codex: bad });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0]).toMatchObject({ path: 'codex' });
+    }
+  });
 });
 
 describe('parseCliModels', () => {

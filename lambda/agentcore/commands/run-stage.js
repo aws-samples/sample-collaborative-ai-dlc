@@ -1606,6 +1606,10 @@ export const runStage = async (
         scope: stageScope,
         env,
         customServers,
+        // Embedded `${VAR}` refs (e.g. `Bearer ${KEY}`) resolve against the
+        // SSM-resolved secret env; full-value refs are forwarded by NAME via
+        // codex's env_vars/env_http_headers and expand from the child env.
+        secretEnv: mcpSecretEnv,
       });
       return { codexHome };
     }
@@ -1710,6 +1714,9 @@ export const runStage = async (
       scope: stageScope,
       env,
       customServers,
+      // Codex only: embedded `${VAR}` refs in custom-server config resolve
+      // against the SSM-resolved secret env (see materializeCliMcp above).
+      secretEnv: mcpSecretEnv,
       cli,
       customRules: customRuleDocs,
       attachments: attachmentRefs,
@@ -1727,19 +1734,13 @@ export const runStage = async (
     if (steeringMessage) {
       prompt = `${steeringMessage}\n\n---\n\n${prompt}`;
     }
-    // The stage materializer already created only the selected CLI's context.
-    // Older injected test materializers may return just the prompt, so retain a
-    // fallback through the shared context helper.
-    const mcpKwargs =
-      cli === 'kiro' && materialized.agentName
-        ? { agentName: materialized.agentName }
-        : cli === 'opencode' && materialized.opencodeConfigContent
-          ? { opencodeConfigContent: materialized.opencodeConfigContent }
-          : cli === 'codex' && materialized.codexHome
-            ? { codexHome: materialized.codexHome }
-            : cli === 'claude' && materialized.mcpConfigPath
-              ? { mcpConfigPath: materialized.mcpConfigPath }
-              : await materializeCliMcp();
+    // The stage materializer already created only the selected CLI's context;
+    // pick it up via the driver's contextKey. Older injected test materializers
+    // may return just the prompt, so retain a fallback through the shared
+    // context helper.
+    const mcpKwargs = materialized[driver.contextKey]
+      ? { [driver.contextKey]: materialized[driver.contextKey] }
+      : await materializeCliMcp();
     invocation = driver.buildInvocation({
       prompt,
       model,

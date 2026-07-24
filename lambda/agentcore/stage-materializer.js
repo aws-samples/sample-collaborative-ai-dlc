@@ -413,24 +413,29 @@ export const materializeOpenCodeConfig = async ({
 const tomlString = (value) => JSON.stringify(String(value));
 const tomlArray = (values) => `[${values.map(tomlString).join(', ')}]`;
 
-// Resolve `${VAR}` references against the provided env. Codex's mcp_servers env
-// maps take LITERAL strings (no interpolation syntax like OpenCode's {env:VAR}),
-// so refs must be resolved at materialization time. The config.toml lives in the
-// runtime-owned .aidlc dir — same trust level as the Kiro agent file, which
-// already embeds the literal scope values.
-const codexEnvValue = (value, env) =>
+// Resolve `${VAR}` references against the provided lookup (container env merged
+// with the resolved MCP secret env). Used only for the LITERAL-fallback cases
+// below — values codex cannot forward by name.
+const codexEnvValue = (value, refEnv) =>
   typeof value === 'string'
-    ? value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => env[name] ?? '')
+    ? value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => refEnv[name] ?? '')
     : String(value);
+
+// A value that is EXACTLY one `${VAR}` token (nothing around it) — forwardable
+// by name; an embedded ref like `Bearer ${VAR}` is not.
+const FULL_REF_TOKEN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
 // Codex spawns MCP stdio servers with a SANITIZED environment (verified live:
 // the aidlc bridge got "Could not load credentials from any providers" while
-// the other CLIs' children inherit the container env). Forward the standard
-// AWS credential-chain vars into the RESERVED aidlc server's env map so its
-// SDK clients resolve credentials — static keys (local e2e's inert pair),
+// the other CLIs' children inherit the container env). Codex's `env_vars` key
+// is a NAME whitelist — listed vars are forwarded from the codex process env
+// into the MCP child, so no value is ever written to config.toml. The standard
+// AWS credential-chain vars are forwarded to the RESERVED aidlc server ONLY so
+// its SDK clients resolve credentials — static keys (local e2e's inert pair),
 // container-credentials URIs (the AgentCore runtime role), or web identity.
-// Only present, non-empty vars are written; custom servers NEVER receive them
-// (a user-configured server must not silently inherit runtime credentials).
+// Absent names are skipped by codex at spawn time. Custom servers NEVER get
+// this list (a user-configured server must not silently inherit runtime
+// credentials).
 const CODEX_AIDLC_FORWARD_ENV = [
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
@@ -445,16 +450,20 @@ const CODEX_AIDLC_FORWARD_ENV = [
   'AWS_DEFAULT_REGION',
 ];
 
-const codexForwardedAwsEnv = (env = {}) =>
-  Object.fromEntries(
-    CODEX_AIDLC_FORWARD_ENV.filter((key) => env[key]).map((key) => [key, env[key]]),
-  );
-
 // Convert the validated common MCP shape to codex [mcp_servers.*] TOML tables.
 // `aidlc` is emitted LAST (buildMcpConfig's insertion order preserved) and is
 // marked required — if the runtime bridge fails to initialize, codex exits with
 // an error instead of running the stage toolless.
-export const toCodexMcpToml = (mcpServers = {}, env = {}) => {
+//
+// Secret handling: run-stage injects the resolved `${VAR}` values into the codex
+// CHILD env (mcpSecretEnv), so wherever codex can forward an env var / header BY
+// NAME, we do that and the secret never lands in this file:
+//   - stdio env value that IS `${VAR}` with key === VAR  → `env_vars` whitelist
+//   - remote header value that IS `${VAR}`               → `env_http_headers`
+// Only the remaining shapes (embedded refs like `Bearer ${VAR}`, or a ref
+// renamed to a different key) fall back to a literal resolved against `refEnv`
+// — which MUST include the resolved secret env, or they resolve empty.
+export const toCodexMcpToml = (mcpServers = {}, refEnv = {}) => {
   const sections = [];
   for (const [name, server] of Object.entries(mcpServers)) {
     if (!server || typeof server !== 'object') continue;
@@ -464,27 +473,43 @@ export const toCodexMcpToml = (mcpServers = {}, env = {}) => {
       if (Array.isArray(server.args) && server.args.length) {
         lines.push(`args = ${tomlArray(server.args)}`);
       }
-      const envEntries = Object.entries({
-        ...server.env,
-        // Reserved bridge only: codex sanitizes MCP child env, so the AWS
-        // credential chain must be forwarded explicitly (see the comment on
-        // CODEX_AIDLC_FORWARD_ENV). Spread AFTER server.env so the forwarded
-        // values can never be shadowed by a same-named scope entry.
-        ...(name === MCP_SERVER_NAME && codexForwardedAwsEnv(env)),
-      });
-      if (envEntries.length) {
+      const forwarded = [];
+      const literal = [];
+      for (const [key, value] of Object.entries(server.env ?? {})) {
+        const full = typeof value === 'string' ? value.match(FULL_REF_TOKEN) : null;
+        if (full && full[1] === key) forwarded.push(key);
+        else literal.push([key, codexEnvValue(value, refEnv)]);
+      }
+      if (name === MCP_SERVER_NAME) forwarded.push(...CODEX_AIDLC_FORWARD_ENV);
+      // TOML: plain keys (env_vars) must precede any nested table ([….env]).
+      if (forwarded.length) lines.push(`env_vars = ${tomlArray(forwarded)}`);
+      if (literal.length) {
         lines.push(`[mcp_servers.${JSON.stringify(name)}.env]`);
-        for (const [key, value] of envEntries) {
-          lines.push(`${JSON.stringify(key)} = ${tomlString(codexEnvValue(value, env))}`);
+        for (const [key, value] of literal) {
+          lines.push(`${JSON.stringify(key)} = ${tomlString(value)}`);
         }
       }
     } else if (server.url) {
       lines.push(`url = ${tomlString(server.url)}`);
-      const headers = Object.entries(server.headers ?? {});
-      if (headers.length) {
+      const literalHeaders = [];
+      const envHeaders = [];
+      for (const [key, value] of Object.entries(server.headers ?? {})) {
+        const full = typeof value === 'string' ? value.match(FULL_REF_TOKEN) : null;
+        if (full) envHeaders.push([key, full[1]]);
+        else literalHeaders.push([key, codexEnvValue(value, refEnv)]);
+      }
+      if (literalHeaders.length) {
         lines.push(`[mcp_servers.${JSON.stringify(name)}.http_headers]`);
-        for (const [key, value] of headers) {
-          lines.push(`${JSON.stringify(key)} = ${tomlString(codexEnvValue(value, env))}`);
+        for (const [key, value] of literalHeaders) {
+          lines.push(`${JSON.stringify(key)} = ${tomlString(value)}`);
+        }
+      }
+      if (envHeaders.length) {
+        // Values are ENV VAR NAMES — codex reads each header's value from its
+        // own process env at request time (never written here).
+        lines.push(`[mcp_servers.${JSON.stringify(name)}.env_http_headers]`);
+        for (const [key, varName] of envHeaders) {
+          lines.push(`${JSON.stringify(key)} = ${tomlString(varName)}`);
         }
       }
     } else {
@@ -506,7 +531,13 @@ export const toCodexMcpToml = (mcpServers = {}, env = {}) => {
 // for tests/local runs via env.
 const codexSqliteHome = (env) => env.V2_CODEX_SQLITE_HOME || '/home/node/.codex-state';
 
-export const buildCodexConfigToml = ({ mcpEntry, scope, env = {}, customServers = {} }) => {
+export const buildCodexConfigToml = ({
+  mcpEntry,
+  scope,
+  env = {},
+  customServers = {},
+  secretEnv = {},
+}) => {
   // A custom server named `aidlc` keeps its FIRST insertion position through the
   // buildMcpConfig spread (JS re-assignment preserves key order) even though the
   // reserved VALUE wins — re-append it so the emitted table is also last.
@@ -531,7 +562,10 @@ export const buildCodexConfigToml = ({ mcpEntry, scope, env = {}, customServers 
     '[history]',
     'persistence = "save-all"',
     '',
-    toCodexMcpToml(mcpServers, env),
+    // Refs resolve against the RESOLVED MCP secret env only (fail-closed SSM
+    // values) — never the raw container env, whose reserved keys a ref may not
+    // name anyway (mcp-secret-resolver RESERVED_MCP_ENV_KEYS).
+    toCodexMcpToml(mcpServers, secretEnv),
     '',
   ].join('\n');
 };
@@ -559,10 +593,11 @@ export const materializeCodexHome = async ({
   scope,
   env = process.env,
   customServers = {},
+  secretEnv = {},
 }) => {
   const homeDir = path.join(workspaceDir, '.aidlc', 'codex-home');
   await mkdir(homeDir, { recursive: true });
-  const toml = buildCodexConfigToml({ mcpEntry, scope, env, customServers });
+  const toml = buildCodexConfigToml({ mcpEntry, scope, env, customServers, secretEnv });
   await writeFile(path.join(homeDir, 'config.toml'), toml, 'utf8');
   await writeFile(path.join(homeDir, 'AGENTS.md'), CODEX_GLOBAL_AGENTS_MD, 'utf8');
   return homeDir;
@@ -578,6 +613,7 @@ export const materializeCliContext = async ({
   scope,
   env = process.env,
   customServers = {},
+  secretEnv = {},
 }) => {
   if (cli === 'kiro') {
     return {
@@ -609,6 +645,7 @@ export const materializeCliContext = async ({
         scope,
         env,
         customServers,
+        secretEnv,
       }),
     };
   }
@@ -694,6 +731,7 @@ export const materializeStage = async ({
   scope,
   env = process.env,
   customServers = {},
+  secretEnv = {},
   cli = null,
   customRules = [],
   attachments = [],
@@ -712,6 +750,7 @@ export const materializeStage = async ({
     scope,
     env,
     customServers,
+    secretEnv,
   });
 
   const prompt = buildStagePrompt({

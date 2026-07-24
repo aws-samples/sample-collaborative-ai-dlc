@@ -90,8 +90,8 @@ variable "codex_model" {
   default     = ""
 
   validation {
-    condition     = var.codex_model == "" || can(regex("^openai\\.", var.codex_model))
-    error_message = "codex_model must be an exact Bedrock OpenAI model id starting with \"openai.\" (e.g. openai.gpt-5.5)."
+    condition     = var.codex_model == "" || can(regex("^openai\\.[A-Za-z0-9][A-Za-z0-9._-]*$", var.codex_model))
+    error_message = "codex_model must be a full Bedrock OpenAI model id: \"openai.\" followed by a model name (e.g. openai.gpt-5.5)."
   }
 }
 

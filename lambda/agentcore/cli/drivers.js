@@ -7,6 +7,9 @@
 // code.
 //
 // Each driver exposes a SMALL surface:
+//   contextKey — the kwarg name its materialized MCP context travels under
+//     (mcpConfigPath / agentName / opencodeConfigContent / codexHome); callers
+//     pick the right materializer output generically instead of per-CLI ternaries
 //   buildInvocation({ prompt, mcpConfigPath, model, allowedTools }) ->
 //     { command, args, env, promptViaStdin }
 //   envForAuth(env) -> { ...auth env vars }   (Bedrock bearer / Kiro key)
@@ -30,6 +33,7 @@ export const MCP_SERVER_NAME = 'aidlc';
 // "text", unaffected by the stream-json OUTPUT format.
 const claudeDriver = {
   name: 'claude',
+  contextKey: 'mcpConfigPath',
   buildInvocation({ prompt, mcpConfigPath, model, allowedTools = [], sessionId = null }) {
     const args = ['-p'];
     // MCP config is optional: a plain one-shot prompt (e.g. derive-time
@@ -90,6 +94,7 @@ const claudeDriver = {
 // pipes it in (see cli/spawn.js).
 const kiroDriver = {
   name: 'kiro',
+  contextKey: 'agentName',
   buildInvocation({ prompt, agentName, model }) {
     const args = ['chat', '--no-interactive', '--trust-all-tools'];
     if (agentName) args.push('--agent', agentName);
@@ -123,6 +128,7 @@ const openCodeModel = (model) => {
 
 const opencodeDriver = {
   name: 'opencode',
+  contextKey: 'opencodeConfigContent',
   buildInvocation({ prompt, model, opencodeConfigContent = null }) {
     const args = ['run', '--format', 'json', '--auto'];
     const resolvedModel = openCodeModel(model);
@@ -186,6 +192,7 @@ const CODEX_BASE_OVERRIDES = [
 
 const codexDriver = {
   name: 'codex',
+  contextKey: 'codexHome',
   buildInvocation({ prompt, model, codexHome = null }) {
     const args = ['exec', '--json', '--skip-git-repo-check', ...CODEX_BASE_OVERRIDES];
     if (model) args.push('-m', model);

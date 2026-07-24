@@ -532,60 +532,58 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
     expect(toml).toContain('"V2_EXECUTION_ID" = "e1"');
   });
 
-  it('resolves ${VAR} refs to LITERAL values (codex env maps do not interpolate)', () => {
+  it('forwards full-value ${VAR} refs BY NAME (env_vars / env_http_headers) — no secret on disk', () => {
     const toml = toCodexMcpToml(
       {
-        local: { command: 'uvx', args: ['server'], env: { API_KEY: 'Bearer ${LOCAL_KEY}' } },
+        local: { command: 'uvx', args: ['server'], env: { LOCAL_KEY: '${LOCAL_KEY}' } },
         remote: { url: 'https://mcp.example/sse', headers: { Authorization: '${REMOTE_KEY}' } },
       },
       { LOCAL_KEY: 'k-123', REMOTE_KEY: 'r-456' },
     );
+    expect(toml).toContain('env_vars = ["LOCAL_KEY"]');
+    expect(toml).toContain('[mcp_servers."remote".env_http_headers]');
+    expect(toml).toContain('"Authorization" = "REMOTE_KEY"');
+    // The resolved values never land in the config file.
+    expect(toml).not.toContain('k-123');
+    expect(toml).not.toContain('r-456');
+  });
+
+  it('resolves EMBEDDED / renamed ${VAR} refs to literals from the secret env', () => {
+    const toml = toCodexMcpToml(
+      {
+        local: { command: 'uvx', args: ['server'], env: { API_KEY: 'Bearer ${LOCAL_KEY}' } },
+      },
+      { LOCAL_KEY: 'k-123' },
+    );
+    // `Bearer ${VAR}` cannot be forwarded by name — falls back to the resolved
+    // literal (config.toml lives in the runtime-owned .aidlc dir).
     expect(toml).toContain('"API_KEY" = "Bearer k-123"');
-    expect(toml).toContain('url = "https://mcp.example/sse"');
-    expect(toml).toContain('[mcp_servers."remote".http_headers]');
-    expect(toml).toContain('"Authorization" = "r-456"');
     expect(toml).not.toContain('${');
   });
 
-  it('forwards the AWS credential chain to the aidlc bridge ONLY (codex sanitizes MCP child env)', () => {
-    const env = {
-      AWS_ACCESS_KEY_ID: 'AKIALOCAL',
-      AWS_SECRET_ACCESS_KEY: 'secretlocal',
-      AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/creds',
-      AWS_CONTAINER_AUTHORIZATION_TOKEN: 'container-token',
-      UNRELATED_VAR: 'never-forwarded',
-    };
+  it('whitelists the AWS credential chain by NAME for the aidlc bridge ONLY', () => {
     const toml = buildCodexConfigToml({
       mcpEntry: '/opt/agentcore/mcp/index.js',
       scope: { executionId: 'e1', intentId: 'i1' },
-      env,
+      env: { AWS_ACCESS_KEY_ID: 'AKIALOCAL', AWS_SECRET_ACCESS_KEY: 'secretlocal' },
       customServers: { custom: { command: 'uvx', args: ['server'], env: { FOO: 'bar' } } },
     });
     const aidlcSection = toml.slice(toml.indexOf('[mcp_servers."aidlc"]'));
-    expect(aidlcSection).toContain('"AWS_ACCESS_KEY_ID" = "AKIALOCAL"');
-    expect(aidlcSection).toContain('"AWS_SECRET_ACCESS_KEY" = "secretlocal"');
-    expect(aidlcSection).toContain(
-      '"AWS_CONTAINER_CREDENTIALS_FULL_URI" = "http://169.254.170.2/creds"',
-    );
-    expect(aidlcSection).not.toContain('UNRELATED_VAR');
-    // The custom server never inherits runtime credentials.
+    // Names only — codex forwards the values from its process env at spawn
+    // time; the credential VALUES never land in the config file.
+    expect(aidlcSection).toContain('env_vars = [');
+    expect(aidlcSection).toContain('"AWS_ACCESS_KEY_ID"');
+    expect(aidlcSection).toContain('"AWS_CONTAINER_CREDENTIALS_FULL_URI"');
+    expect(toml).not.toContain('AKIALOCAL');
+    expect(toml).not.toContain('secretlocal');
+    // The custom server never gets the credential whitelist.
     const customSection = toml.slice(
       toml.indexOf('[mcp_servers."custom"]'),
       toml.indexOf('[mcp_servers."aidlc"]'),
     );
     expect(customSection).toContain('"FOO" = "bar"');
     expect(customSection).not.toContain('AWS_ACCESS_KEY_ID');
-    expect(customSection).not.toContain('AWS_SECRET_ACCESS_KEY');
-  });
-
-  it('omits absent credential vars instead of writing empty strings', () => {
-    const toml = buildCodexConfigToml({
-      mcpEntry: '/opt/agentcore/mcp/index.js',
-      scope: { executionId: 'e1', intentId: 'i1' },
-      env: { AWS_ACCESS_KEY_ID: '' },
-    });
-    expect(toml).not.toContain('"AWS_ACCESS_KEY_ID"');
-    expect(toml).not.toContain('"AWS_SESSION_TOKEN"');
+    expect(customSection).not.toContain('env_vars');
   });
 
   it('emits the reserved aidlc server LAST so a custom entry can never shadow it', () => {
