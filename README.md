@@ -48,6 +48,31 @@ bash /tmp/aidlc-install.sh install \
   --admin <administrator-email>
 ```
 
+For managed installs or updates behind an HTTP proxy, export the standard proxy
+variables before downloading or running the installer:
+
+```bash
+export HTTP_PROXY=http://proxy.example.com:8080
+export HTTPS_PROXY=http://proxy.example.com:8080
+export NO_PROXY=localhost,127.0.0.1
+
+curl -fsSLo /tmp/aidlc-install.sh \
+  https://raw.githubusercontent.com/aws-samples/sample-collaborative-ai-dlc/main/scripts/install.sh
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email>
+```
+
+The installer inherits these settings and forwards non-empty `HTTP_PROXY`,
+`HTTPS_PROXY`, `FTP_PROXY`, `NO_PROXY`, and `ALL_PROXY` variables (including
+lowercase variants) to both Docker Buildx builds. Without those variables, no
+proxy build arguments are added. Set `TF_VAR_docker_build_args` to a JSON object
+to override auto-detection. Proxy values are hidden in Terraform CLI output but
+remain in saved plans and Terraform state, so protect both and keep the state
+backend encrypted and access-restricted.
+
 The password prompt is silent. The permanent Cognito password is sent directly to Cognito and is never written to installer configuration. After installation, sign in at the URL reported by `status`:
 
 ```bash
@@ -124,6 +149,9 @@ cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 ./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
 ./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
 ```
+
+Manual deployments honor the same proxy variables documented for the managed
+installer. You can also define `docker_build_args` in the `.tfvars` file.
 
 ### Post-install Configuration
 

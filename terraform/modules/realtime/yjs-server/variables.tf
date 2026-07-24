@@ -13,6 +13,13 @@ variable "aws_region" {
   type        = string
 }
 
+variable "docker_build_args" {
+  description = "Optional arguments passed to the Yjs server Docker build"
+  type        = map(string)
+  default     = {}
+  sensitive   = true
+}
+
 variable "vpc_id" {
   description = "VPC ID"
   type        = string
