@@ -20,6 +20,7 @@ import {
 import { AlertTriangle } from 'lucide-react';
 import { getTimeAgo } from '@/lib/timeAgo';
 import { nodeTypeTextColor, shortNodeType } from '@/components/graph/nodeStyles';
+import { DerivedItemRow } from '@/components/intent/DerivedItemRow';
 import {
   onWorkProductFocus,
   scrollAndFlash,
@@ -36,6 +37,7 @@ interface ProvenanceTreeProps {
   codeItems: CodeItem[];
   openArtifactPreview: (id: string) => void;
   openItemPreview: (id: string) => void;
+  documentOrder?: 'oldest-first' | 'newest-first';
 }
 
 interface PhaseNode {
@@ -64,6 +66,7 @@ export function ProvenanceTree({
   codeItems,
   openArtifactPreview,
   openItemPreview,
+  documentOrder = 'oldest-first',
 }: ProvenanceTreeProps) {
   const activeArtifacts = detail.artifacts.filter((a) => !a.supersededAt);
   const documents = activeArtifacts.filter(isDocumentArtifact);
@@ -80,7 +83,10 @@ export function ProvenanceTree({
     [stageRows, phaseNameOf],
   );
 
-  const tree = useMemo(() => buildPhaseTree(documents, getProvenance), [documents, getProvenance]);
+  const tree = useMemo(
+    () => buildPhaseTree(documents, getProvenance, documentOrder),
+    [documents, getProvenance, documentOrder],
+  );
 
   // Derived items keep the standardized graph node palette (nodeStyles).
   const itemTypeLegend = useMemo(() => {
@@ -251,7 +257,7 @@ export function ProvenanceTree({
                           {isExpanded && hasItems && (
                             <div className="space-y-0.5 pl-5">
                               {visibleItems.map((item) => (
-                                <ItemRow
+                                <DerivedItemRow
                                   key={item.id}
                                   item={item}
                                   getNeighbors={getNeighbors}
@@ -301,7 +307,7 @@ export function ProvenanceTree({
         >
           <div className="space-y-0.5 pl-5">
             {unlinkedItems.map((item) => (
-              <ItemRow
+              <DerivedItemRow
                 key={item.id}
                 item={item}
                 getNeighbors={getNeighbors}
@@ -455,50 +461,6 @@ function DocumentRow({
   );
 }
 
-function ItemRow({
-  item,
-  getNeighbors,
-  onPreview,
-}: {
-  item: IntentGraphNode;
-  getNeighbors: (id: string) => GraphNeighbor[];
-  onPreview: () => void;
-}) {
-  return (
-    <div
-      id={`item-${item.id}`}
-      role="button"
-      tabIndex={0}
-      className="group/item flex items-center gap-1.5 rounded-md px-2 py-1 scroll-mt-4 cursor-pointer hover:bg-muted/50 transition-colors"
-      onClick={onPreview}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onPreview();
-        }
-      }}
-    >
-      <ChevronRight
-        className={cn('h-3 w-3 shrink-0', nodeTypeTextColor(item.type))}
-        strokeWidth={3}
-      />
-      <span className="min-w-0 flex-1 truncate text-sm">{item.label}</span>
-      {item.priority && (
-        <Badge variant="secondary" className="h-4 px-1 text-[9px] shrink-0">
-          {item.priority}
-        </Badge>
-      )}
-      <IntentGraphPopover neighbors={getNeighbors(item.id)} className="shrink-0" />
-      <DiscussButton
-        entityType="item"
-        entityId={item.id}
-        entityTitle={item.label}
-        className="shrink-0"
-      />
-    </div>
-  );
-}
-
 function CodeItemRow({ item }: { item: CodeItem }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5">
@@ -550,6 +512,7 @@ const artifactTs = (a: IntentArtifact) => (a.createdAt ? new Date(a.createdAt).g
 function buildPhaseTree(
   documents: IntentArtifact[],
   getProvenance: (a: IntentArtifact) => DocProvenance,
+  documentOrder: 'oldest-first' | 'newest-first',
 ): PhaseNode[] {
   const phases = new Map<string, PhaseNode>();
   const stageNodeMap = new Map<string, StageNode>();
@@ -581,12 +544,18 @@ function buildPhaseTree(
 
   for (const phase of phases.values()) {
     phase.stages.sort((a, b) => {
-      if (a.order !== b.order) return a.order - b.order;
+      const stageOrder =
+        a.order !== b.order
+          ? a.order - b.order
+          : codepointCompare(a.unitSlug ?? '', b.unitSlug ?? '');
       // Same order (same stage, different units): tie-break with unitSlug for determinism.
-      return codepointCompare(a.unitSlug ?? '', b.unitSlug ?? '');
+      return documentOrder === 'newest-first' ? -stageOrder : stageOrder;
     });
     for (const stage of phase.stages) {
-      stage.documents.sort((a, b) => artifactTs(a) - artifactTs(b));
+      stage.documents.sort((a, b) => {
+        const chronological = artifactTs(a) - artifactTs(b);
+        return documentOrder === 'newest-first' ? -chronological : chronological;
+      });
     }
   }
 
@@ -596,7 +565,8 @@ function buildPhaseTree(
   return [...phases.values()].toSorted((a, b) => {
     if (a.phasePath === '__other__') return 1;
     if (b.phasePath === '__other__') return -1;
-    return codepointCompare(a.phasePath, b.phasePath);
+    const phaseOrder = codepointCompare(a.phasePath, b.phasePath);
+    return documentOrder === 'newest-first' ? -phaseOrder : phaseOrder;
   });
 }
 

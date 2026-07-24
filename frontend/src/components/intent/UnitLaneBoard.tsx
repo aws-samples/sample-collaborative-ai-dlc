@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 import { deriveLaneWaits, laneWaitKey, type LaneWaitStatus } from '@/lib/intentRecovery';
 import { useIntent, type IntentStageRow } from '@/contexts/IntentContext';
 import { formatDuration, useTick } from '@/components/intent/stageStyle';
+import type { PhaseNode } from '@/services/workflows';
 import {
   intentsService,
   type IntentFeedbackBatch,
@@ -624,10 +625,28 @@ export function isFanoutActive(detail: { events?: { type: string }[] } | null): 
   return open > 0;
 }
 
+export function isBeforeConstructionPhase(
+  currentPhasePath: string | null,
+  workflowPhases: PhaseNode[] | null,
+): boolean {
+  if (!currentPhasePath || !workflowPhases) return false;
+  const constructionPhase = workflowPhases.find((phase) => phase.phaseId === 'construction');
+  return Boolean(constructionPhase && currentPhasePath < constructionPhase.path);
+}
+
 export function UnitLaneBoard({
   onViewLiveOutput,
 }: { onViewLiveOutput?: (stageInstanceId: string) => void } = {}) {
-  const { detail, stageRows, gates, outputBuffers, ensureOutputs, outputVersion } = useIntent();
+  const {
+    detail,
+    stageRows,
+    gates,
+    outputBuffers,
+    ensureOutputs,
+    outputVersion,
+    currentPhasePath,
+    workflowPhases,
+  } = useIntent();
   const unitPlan = detail?.unitPlan ?? null;
   const units = useMemo(() => detail?.units ?? [], [detail?.units]);
   const unitPrs = useMemo(() => detail?.unitPrs ?? [], [detail?.unitPrs]);
@@ -678,7 +697,13 @@ export function UnitLaneBoard({
   // Keep the complete unit review history visible after fan-in. IntentView
   // still uses isFanoutActive to decide whether the single running-stage card
   // should yield to this board while lanes are live.
-  if (!unitPlan || units.length === 0) return null;
+  if (
+    !unitPlan ||
+    units.length === 0 ||
+    isBeforeConstructionPhase(currentPhasePath, workflowPhases)
+  ) {
+    return null;
+  }
 
   return (
     <>

@@ -8,6 +8,7 @@ import { RecomposePanel } from '@/components/intent/RecomposePanel';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
+import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -246,10 +247,10 @@ export default function IntentView() {
                   rel="noopener noreferrer"
                   className="underline hover:no-underline"
                 >
-                  from {intent.source.resourceId}
+                  from {formatTrackerSourceLabel(intent.source)}
                 </a>
               ) : (
-                <>from {intent.source.resourceId}</>
+                <>from {formatTrackerSourceLabel(intent.source)}</>
               )}
             </span>
           )}
