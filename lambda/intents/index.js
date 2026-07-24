@@ -1198,11 +1198,14 @@ export const handler = async (event) => {
     await ingestAttachmentUpload(event);
     return { ok: true };
   }
+  if (event?.action === 'repair-durable-executions') {
+    return runDurableExecutionWatchdog(event);
+  }
   if (
-    event?.action === 'repair-durable-executions' ||
+    event?.action === 'reconcile-provider-state' ||
     (event?.source === 'aws.events' && event?.['detail-type'] === 'Scheduled Event')
   ) {
-    return runDurableExecutionWatchdog(event);
+    return runScheduledMaintenance(event);
   }
   if (event.httpMethod === 'OPTIONS') return response(200, {});
 
@@ -1402,6 +1405,15 @@ export const handler = async (event) => {
             state: 'QUEUED',
             summary,
           }).catch(() => {});
+          const wait = await store.getUnit(intentId, sectionIndex, unitSlug).catch(() => null);
+          if (wait?.prWaitCallbackId) {
+            await wakeUnitPrWait(wait, {
+              reason: 'queued_feedback',
+              detail: { batchId, commentCount: selected.length },
+            }).catch((error) =>
+              console.error('Queued feedback PR-wait wake failed:', error.message),
+            );
+          }
         }
         return response(created.created ? 202 : 200, mapFeedbackBatch(created.item));
       }
@@ -2965,19 +2977,37 @@ export const handler = async (event) => {
           stage.unitSlug &&
           !pendingByStage.has(stage.stageInstanceId),
       );
-      if (orphaned.length === 0) {
+      const activeReviewStates = new Set([
+        'PR_DRAFT',
+        'RECONCILING',
+        'PR_READY',
+        'ADDRESSING_FEEDBACK',
+        'MERGING',
+      ]);
+      const prUnits = (records.units ?? []).filter(
+        (unit) =>
+          activeReviewStates.has(unit.state) &&
+          (records.unitPrs ?? []).some(
+            (pr) =>
+              Number(pr.sectionIndex) === Number(unit.sectionIndex) &&
+              pr.unitSlug === unit.slug &&
+              pr.number != null,
+          ),
+      );
+      if (orphaned.length === 0 && prUnits.length === 0) {
         return response(409, {
-          error: 'No orphaned parallel lane waits were detected',
+          error: 'No orphaned parallel lane waits or recoverable PR reviews were detected',
           code: 'repair_not_needed',
         });
       }
       const sectionIndexes = [
         ...new Set(
-          orphaned
-            .map((stage) => stage.sectionIndex)
-            .filter(
-              (index) => index !== null && index !== undefined && Number.isInteger(Number(index)),
-            ),
+          [
+            ...orphaned.map((stage) => stage.sectionIndex),
+            ...prUnits.map((unit) => unit.sectionIndex),
+          ].filter(
+            (index) => index !== null && index !== undefined && Number.isInteger(Number(index)),
+          ),
         ),
       ];
       if (sectionIndexes.length !== 1) {
@@ -3031,18 +3061,77 @@ export const handler = async (event) => {
       }
       const planNamespace =
         planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
-      const resetInstances = sectionStages.flatMap((stage) =>
+      const sectionInstances = sectionStages.flatMap((stage) =>
         repairSlugs.map((slug) => ({
           stage,
           slug,
           stageInstanceId: planStageInstanceId(planNamespace, stage.stageId, slug, sectionIndex),
         })),
       );
+      const stagesByInstance = new Map(
+        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+      );
+      const completedStageStates = new Set(['SUCCEEDED', 'SKIPPED']);
+      const resetInstances = sectionInstances.filter((instance) => {
+        const row = stagesByInstance.get(instance.stageInstanceId);
+        return row && !completedStageStates.has(row.state);
+      });
       const responder = getResponder(event);
       const repairId = `repair-${randomUUID()}`;
-      const repairReason = `Repair orphaned parallel lanes in section ${sectionIndex}`;
+      const repairReason = `Recover durable parallel work in section ${sectionIndex}`;
       const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
       if (sourceControlBlocked) return sourceControlBlocked;
+
+      // Reconcile provider truth before retiring the old execution. A merged PR
+      // is accepted only when the exact reviewed head is reachable from the
+      // intent branch; open drafts are retained for the resumed lane.
+      const repairPrs = (records.unitPrs ?? []).filter(
+        (pr) => Number(pr.sectionIndex) === sectionIndex && repairSlugs.includes(pr.unitSlug),
+      );
+      const remotePrs = new Map();
+      try {
+        for (const pr of repairPrs) {
+          if (pr.state === 'UNCHANGED' || pr.number == null) continue;
+          const provider =
+            pr.provider || meta.repoProviders?.[pr.repository] || meta.gitProvider || 'github';
+          const status = await sourceControlOperation({
+            projectId,
+            provider,
+            repo: pr.repository,
+            operation: 'pr-status',
+            args: { number: pr.number },
+          });
+          if (!status?.state) {
+            throw new Error(`${pr.repository}#${pr.number}: provider status unavailable`);
+          }
+          let mergedHeadIsAncestor = null;
+          if (status.state === 'merged') {
+            const reviewedHead = pr.readyHeadSha ?? pr.headSha ?? status.headSha;
+            mergedHeadIsAncestor =
+              Boolean(reviewedHead) &&
+              Boolean(
+                await sourceControlOperation({
+                  projectId,
+                  provider,
+                  repo: pr.repository,
+                  operation: 'is-ancestor',
+                  args: {
+                    ancestorSha: reviewedHead,
+                    descendantRef: pr.targetBranch ?? meta.branch,
+                  },
+                }),
+              );
+          }
+          remotePrs.set(pr.sk, { status, mergedHeadIsAncestor });
+        }
+      } catch (error) {
+        console.error('Repair provider reconciliation failed:', error.code || error.message);
+        return response(502, {
+          error: 'Pull request state could not be reconciled; repair made no changes',
+          code: 'provider_reconciliation_failed',
+        });
+      }
+
       let priorDurableExecutionArn = meta.durableExecutionArn ?? null;
       if (!priorDurableExecutionArn && meta.durableExecutionName && ORCHESTRATOR_FN()) {
         const listed = await lambdaClient.send(
@@ -3132,42 +3221,97 @@ export const handler = async (event) => {
           })
           .catch(() => {});
       });
-      await mapWithConcurrency(repairSlugs, 8, (slug) =>
-        store.updateUnitState({
-          executionId: intentId,
-          sectionIndex,
-          slug,
-          state: 'PENDING',
-          fields: {
-            failureReason: null,
-            blockedOn: null,
-            integrationOwner: false,
-            blockedReason: 'Replaying after orphaned lane recovery',
-          },
-        }),
-      );
-      const repairPrs = (records.unitPrs ?? []).filter(
-        (pr) => Number(pr.sectionIndex) === sectionIndex && repairSlugs.includes(pr.unitSlug),
-      );
-      await mapWithConcurrency(repairPrs, 8, (pr) =>
-        store.updateUnitPr({
+      const reconciledPrs = await mapWithConcurrency(repairPrs, 8, async (pr) => {
+        if (pr.state === 'UNCHANGED' || pr.number == null) return pr;
+        const remote = remotePrs.get(pr.sk);
+        const status = remote.status;
+        let state;
+        let repositoryOutcome = null;
+        if (status.state === 'merged') {
+          state = remote.mergedHeadIsAncestor ? 'MERGED' : 'FAILED';
+          repositoryOutcome = remote.mergedHeadIsAncestor ? 'merged' : 'ready_head_not_on_intent';
+        } else if (status.state === 'closed') {
+          state = 'CLOSED';
+          repositoryOutcome = 'closed_without_merge';
+        } else {
+          const stillReady =
+            !status.draft &&
+            pr.readyHeadSha &&
+            status.headSha === pr.readyHeadSha &&
+            (!pr.targetSha || !status.targetSha || status.targetSha === pr.targetSha);
+          state = stillReady ? 'READY' : 'DRAFT';
+        }
+        return store.updateUnitPr({
           executionId: intentId,
           sectionIndex,
           slug: pr.unitSlug,
           repository: pr.repository,
-          state: 'DRAFT',
+          state,
           fields: {
-            readyHeadSha: null,
-            repositoryOutcome: 'replaying_after_lane_repair',
+            providerId: status.providerId ?? pr.providerId ?? null,
+            number: status.number ?? pr.number,
+            url: status.url ?? pr.url,
+            sourceBranch: status.sourceBranch ?? pr.sourceBranch,
+            targetBranch: status.targetBranch ?? pr.targetBranch,
+            headSha: status.headSha ?? pr.headSha ?? null,
+            targetSha: status.targetSha ?? pr.targetSha ?? null,
+            readyHeadSha: state === 'READY' || state === 'MERGED' ? pr.readyHeadSha : null,
+            mergeable: status.mergeable ?? null,
+            repositoryOutcome,
           },
-        }),
-      );
+        });
+      });
+      const prsByUnit = new Map();
+      for (const pr of reconciledPrs.filter(Boolean)) {
+        const rows = prsByUnit.get(pr.unitSlug) ?? [];
+        rows.push(pr);
+        prsByUnit.set(pr.unitSlug, rows);
+      }
+      await mapWithConcurrency(repairSlugs, 8, async (slug) => {
+        const prs = prsByUnit.get(slug) ?? [];
+        const changed = prs.filter((pr) => pr.state !== 'UNCHANGED');
+        const constructionComplete = sectionStages.every((stage) => {
+          const stageInstanceId = planStageInstanceId(
+            planNamespace,
+            stage.stageId,
+            slug,
+            sectionIndex,
+          );
+          return completedStageStates.has(stagesByInstance.get(stageInstanceId)?.state);
+        });
+        const fullyMerged =
+          changed.length > 0 &&
+          changed.every((pr) => pr.state === 'MERGED') &&
+          prs.every((pr) => pr.state === 'MERGED' || pr.state === 'UNCHANGED');
+        const resumeReview =
+          constructionComplete &&
+          changed.some((pr) => pr.state === 'DRAFT' || pr.state === 'READY') &&
+          !changed.some((pr) => pr.state === 'CLOSED' || pr.state === 'FAILED');
+        return store.updateUnitState({
+          executionId: intentId,
+          sectionIndex,
+          slug,
+          state: fullyMerged ? 'MERGED' : resumeReview ? 'PR_DRAFT' : 'PENDING',
+          fields: {
+            failureReason: null,
+            blockedOn: null,
+            integrationOwner: false,
+            recoveryPreserveCompleted: true,
+            blockedReason: fullyMerged
+              ? null
+              : resumeReview
+                ? 'Resuming existing pull request after durable recovery'
+                : 'Replaying unfinished work after durable recovery',
+            ...(fullyMerged ? { mergedAt: true } : {}),
+          },
+        });
+      });
       await store
         .appendEvent({
           executionId: intentId,
           type: 'v2.execution.lanes_repaired',
           actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} repaired section ${sectionIndex}; replaying active lanes [${repairSlugs.join(', ')}] (${archivedArtifacts.length} artifact version(s) archived)`,
+          summary: `${responder.displayName || 'Someone'} recovered section ${sectionIndex}; reconciled ${repairPrs.length} pull request(s), preserved completed stages, and relaunched unfinished lanes [${repairSlugs.join(', ')}] (${archivedArtifacts.length} artifact version(s) archived)`,
         })
         .catch(() => {});
 
@@ -4201,6 +4345,59 @@ const resumeDurableCallback = async (callbackId, answer) => {
   );
 };
 
+const isMissingDurableCallbackError = (error) =>
+  isCallbackTimeoutError(error) ||
+  [
+    'ResourceNotFoundException',
+    'CallbackNotFoundException',
+    'InvalidParameterValueException',
+  ].includes(error?.name);
+
+// A provider scheduler and a feedback request can observe the same transition.
+// Claim the persisted wait before sending so only one caller completes the
+// one-shot durable callback. A transient send failure releases the claim; a
+// callback that is already gone clears the sparse wait instead of retrying it
+// forever.
+const wakeUnitPrWait = async (wait, { reason, detail = null } = {}) => {
+  if (!wait?.prWaitCallbackId || !wait?.prWaitRunId) return { woken: false };
+  const claimId = `wake-${randomUUID()}`;
+  const claimExpiresAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+  const identity = {
+    executionId: wait.executionId,
+    sectionIndex: Number(wait.sectionIndex),
+    slug: wait.slug,
+    callbackId: wait.prWaitCallbackId,
+    runId: wait.prWaitRunId,
+  };
+  const claimed = await store.claimUnitPrWait({
+    ...identity,
+    claimId,
+    claimExpiresAt,
+  });
+  if (!claimed) return { woken: false, duplicate: true };
+
+  try {
+    await resumeDurableCallback(wait.prWaitCallbackId, {
+      type: 'unit-pr-transition',
+      reason,
+      detail,
+    });
+  } catch (error) {
+    if (!isMissingDurableCallbackError(error)) {
+      await store.releaseUnitPrWaitClaim({ ...identity, claimId }).catch(() => {});
+      throw error;
+    }
+  }
+  await store
+    .completeUnitPrWait({
+      ...identity,
+      claimId,
+      reason,
+    })
+    .catch((error) => console.error('PR-wait completion cleanup failed:', error.message));
+  return { woken: true };
+};
+
 // A UNIQUE durable execution name per launch: durable executions are
 // idempotent by name, so every start/rewind/recompose relaunch needs a fresh
 // one. The service caps DurableExecutionName at 64 chars — `intent-` (7) +
@@ -4256,14 +4453,16 @@ const repairExpiredDurableExecution = async ({
   actor = 'system',
   eventType = 'v2.execution.repaired',
   summary = 'Durable execution expired while the intent was waiting',
+  failureReason = 'durable_callback_expired',
 }) => {
   const updated = await store.updateExecution({
     executionId,
     projectId,
     status: 'FAILED',
+    ...(meta?.status ? { fromStatus: meta.status } : {}),
     startedAt: meta?.startedAt,
     completedAt: new Date().toISOString(),
-    failureReason: 'durable_callback_expired',
+    failureReason,
     pendingHumanTaskId: null,
     ...(meta?.orchestratorRunId ? { ifOrchestratorRunId: meta.orchestratorRunId } : {}),
   });
@@ -4282,35 +4481,176 @@ const runDurableExecutionWatchdog = async ({ candidates: injectedCandidates = nu
   const nowIso = new Date().toISOString();
   const candidates =
     injectedCandidates ??
-    (await store.listStaleActiveExecutions({
-      nowIso,
-      timeoutSeconds: DURABLE_EXECUTION_TIMEOUT_SECONDS(),
+    (await store.listActiveExecutions({
       limit: Number(process.env.DURABLE_WATCHDOG_LIMIT || 100),
     }));
   const out = { checked: candidates.length, repaired: 0, skipped: 0, errors: [] };
   for (const meta of candidates) {
     try {
       const durableStatus = await lookupDurableExecutionStatus(meta).catch((err) => {
-        if (err?.name === 'ResourceNotFoundException') return 'TIMED_OUT';
+        if (err?.name === 'ResourceNotFoundException') return 'NOT_FOUND';
         throw err;
       });
-      if (durableStatus && !DURABLE_TERMINAL_STATUSES.has(durableStatus)) {
+      const terminal =
+        DURABLE_TERMINAL_STATUSES.has(durableStatus) || durableStatus === 'NOT_FOUND';
+      const expiry = Date.parse(meta.orchestratorExpiresAt ?? '');
+      // Legacy rows may not carry an explicit durable expiry. Prefer the most
+      // recent process write over the intent's original start time so a rewind
+      // or repair cannot be declared stale in the narrow launch-before-claim
+      // window.
+      const legacyStart = Date.parse(
+        meta.orchestratorStartedAt ?? meta.updatedAt ?? meta.startedAt ?? '',
+      );
+      const legacyExpiry =
+        Number.isFinite(legacyStart) &&
+        legacyStart + DURABLE_EXECUTION_TIMEOUT_SECONDS() * 1000 <= Date.parse(nowIso);
+      const expired = Number.isFinite(expiry) ? expiry <= Date.parse(nowIso) : legacyExpiry;
+      if (!terminal && (durableStatus || !expired)) {
         out.skipped += 1;
         continue;
       }
+      const failureReason = terminal
+        ? `durable_execution_${String(durableStatus).toLowerCase()}`
+        : 'durable_callback_expired';
       await repairExpiredDurableExecution({
         executionId: meta.executionId,
         projectId: meta.projectId,
         meta,
         actor: 'durable-watchdog',
-        summary: `Watchdog repaired stale ${meta.status} intent after durable execution ${durableStatus ?? 'exceeded local timeout'}`,
+        failureReason,
+        summary: `Watchdog repaired active ${meta.status} intent after durable execution ${durableStatus ?? 'exceeded local timeout'}`,
       });
       out.repaired += 1;
     } catch (err) {
+      // The execution can finish locally after the sparse-index read but
+      // before this repair write. The status CAS deliberately loses that race.
+      if (err?.name === 'ConditionalCheckFailedException') {
+        out.skipped += 1;
+        continue;
+      }
       out.errors.push({ executionId: meta.executionId, error: err?.message ?? String(err) });
     }
   }
   return out;
+};
+
+const normalizePrSnapshot = (pr, status) => ({
+  repository: pr.repository,
+  number: pr.number,
+  state: status.state,
+  headSha: status.headSha ?? null,
+  targetSha: status.targetSha ?? null,
+});
+
+const providerTransitionFor = (before, after) => {
+  if (!before) return null;
+  if (after.state === 'merged' && before.state !== 'merged') return 'merged';
+  if (after.state === 'closed' && before.state !== 'closed') return 'closed';
+  if (after.state !== 'open') return null;
+  if (before.headSha && after.headSha && before.headSha !== after.headSha) return 'head_moved';
+  if (before.targetSha && after.targetSha && before.targetSha !== after.targetSha) {
+    return 'target_moved';
+  }
+  return null;
+};
+
+const runPrWaitReconciler = async ({ waits: injectedWaits = null } = {}) => {
+  const waits =
+    injectedWaits ??
+    (await store.listUnitPrWaits({
+      limit: Number(process.env.PR_WAIT_RECONCILER_LIMIT || 100),
+    }));
+  const out = {
+    checked: waits.length,
+    woken: 0,
+    unchanged: 0,
+    stale: 0,
+    duplicates: 0,
+    errors: [],
+  };
+  for (const wait of waits) {
+    try {
+      const meta = await store.getExecution(wait.executionId);
+      if (
+        !meta ||
+        !['CREATED', 'RUNNING', 'WAITING'].includes(meta.status) ||
+        !wait.prWaitRunId ||
+        meta.orchestratorRunId !== wait.prWaitRunId
+      ) {
+        await store
+          .clearUnitPrWait({
+            executionId: wait.executionId,
+            sectionIndex: Number(wait.sectionIndex),
+            slug: wait.slug,
+            callbackId: wait.prWaitCallbackId,
+            runId: wait.prWaitRunId,
+          })
+          .catch(() => {});
+        out.stale += 1;
+        continue;
+      }
+
+      const queued = await store.listFeedbackBatches(wait.executionId, {
+        sectionIndex: Number(wait.sectionIndex),
+        slug: wait.slug,
+        state: 'QUEUED',
+      });
+      let reason = queued.length > 0 ? 'queued_feedback' : null;
+      let detail = queued.length > 0 ? { batchId: queued[0].batchId } : null;
+
+      if (!reason) {
+        const prior = new Map(
+          (Array.isArray(wait.prWaitSnapshot) ? wait.prWaitSnapshot : []).map((entry) => [
+            entry.repository,
+            entry,
+          ]),
+        );
+        const prs = (
+          await store.listUnitPrs(wait.executionId, {
+            sectionIndex: Number(wait.sectionIndex),
+            slug: wait.slug,
+          })
+        ).filter((pr) => pr.number != null && prior.has(pr.repository));
+        const observations = [];
+        for (const pr of prs) {
+          const provider =
+            pr.provider || meta.repoProviders?.[pr.repository] || meta.gitProvider || 'github';
+          const status = await sourceControlOperation({
+            projectId: meta.projectId,
+            provider,
+            repo: pr.repository,
+            operation: 'pr-status',
+            args: { number: pr.number },
+          });
+          const observation = normalizePrSnapshot(pr, status);
+          observations.push(observation);
+          reason ??= providerTransitionFor(prior.get(pr.repository), observation);
+        }
+        if (reason) detail = { observations };
+      }
+
+      if (!reason) {
+        out.unchanged += 1;
+        continue;
+      }
+      const wake = await wakeUnitPrWait(wait, { reason, detail });
+      if (wake.woken) out.woken += 1;
+      else if (wake.duplicate) out.duplicates += 1;
+    } catch (error) {
+      out.errors.push({
+        executionId: wait.executionId,
+        unitSlug: wait.slug,
+        error: error?.message ?? String(error),
+      });
+    }
+  }
+  return out;
+};
+
+const runScheduledMaintenance = async (event = {}) => {
+  const prWaits = await runPrWaitReconciler(event);
+  const durableExecutions = await runDurableExecutionWatchdog(event);
+  return { prWaits, durableExecutions };
 };
 
 // Retire a parked run for cancel/rewind: supersede every still-pending gate
@@ -4343,6 +4683,12 @@ const retireParkedRun = async (executionId, reason) => {
         )
         .catch((err) => console.error('Cancel callback send failed:', err.message));
     }
+  }
+  for (const wait of (records.units ?? []).filter((unit) => unit.prWaitCallbackId)) {
+    await wakeUnitPrWait(wait, {
+      reason: 'retired',
+      detail: { reason },
+    }).catch((error) => console.error('Retired PR-wait callback send failed:', error.message));
   }
 };
 

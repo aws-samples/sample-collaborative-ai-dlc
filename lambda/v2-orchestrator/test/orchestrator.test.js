@@ -1446,6 +1446,7 @@ describe('PR per unit delivery', () => {
     });
     deps.store.listFeedbackBatches = vi.fn(async () => []);
     deps.store.updateFeedbackBatch = vi.fn(async (args) => args);
+    deps.store.bindUnitPrWait = vi.fn(async (args) => args);
     deps.store.recordMetric = vi.fn(async (args) => {
       metrics.push(args.metrics);
       return args;
@@ -1545,6 +1546,109 @@ describe('PR per unit delivery', () => {
       expect.arrayContaining(['PR_DRAFT', 'RECONCILING', 'PR_READY', 'MERGED']),
     );
     expect(deps.stopSession).toHaveBeenCalledWith('aidlc-intent-i1-s1-auth'.padEnd(33, '0'));
+  });
+
+  it('parks one callback for a long unchanged PR wait without growing durable operations', async () => {
+    const originalCreateCallback = ctx.createCallback;
+    let resolvePrWait;
+    ctx.step = vi.fn(async (_name, fn) => fn());
+    ctx.wait = vi.fn(async () => undefined);
+    ctx.createCallback = async (name) => {
+      if (!String(name).startsWith('unit-pr-wait-')) return originalCreateCallback(name);
+      const promise = new Promise((resolve) => {
+        resolvePrWait = resolve;
+      });
+      return [promise, `cb-${name}`];
+    };
+    let merged = false;
+    configure({
+      statusFor: async ({ number }) => ({
+        providerId: `provider-${number}`,
+        number,
+        url: `https://example.test/pr/${number}`,
+        sourceBranch: 'aidlc/i1--s1-unit-auth',
+        targetBranch: 'aidlc/i1',
+        headSha: `head-${number}`,
+        targetSha: 'intent-before',
+        state: merged ? 'merged' : 'open',
+        draft: false,
+        mergeable: true,
+      }),
+    });
+
+    const running = start();
+    await vi.waitFor(() => expect(deps.store.bindUnitPrWait).toHaveBeenCalledOnce());
+    const operationCount = ctx.step.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(ctx.step).toHaveBeenCalledTimes(operationCount);
+    expect(ctx.wait).not.toHaveBeenCalled();
+
+    merged = true;
+    resolvePrWait({ answer: { reason: 'merged' } });
+    await expect(running).resolves.toMatchObject({ ok: true });
+    expect(deps.store.bindUnitPrWait).toHaveBeenCalledOnce();
+  });
+
+  it('resumes an existing draft PR after repair without rerunning successful construction', async () => {
+    let statusCalls = 0;
+    configure({
+      statusFor: async ({ number }) => {
+        statusCalls += 1;
+        return {
+          providerId: `provider-${number}`,
+          number,
+          url: `https://example.test/pr/${number}`,
+          sourceBranch: 'aidlc/i1--s1-unit-auth',
+          targetBranch: 'aidlc/i1',
+          headSha: 'head-12',
+          targetSha: 'intent-before',
+          state: statusCalls >= 2 ? 'merged' : 'open',
+          draft: statusCalls < 2,
+          mergeable: true,
+        };
+      },
+    });
+    const existing = {
+      executionId: 'i1',
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      repository: 'owner/repo',
+      provider: 'github',
+      number: 12,
+      sourceBranch: 'aidlc/i1--s1-unit-auth',
+      targetBranch: 'aidlc/i1',
+      headSha: 'head-12',
+      state: 'DRAFT',
+    };
+    unitPrRows.set('owner/repo', existing);
+    deps.store.listUnits = vi.fn(async () => [
+      { executionId: 'i1', sectionIndex: 1, slug: 'auth', state: 'PR_DRAFT' },
+    ]);
+    deps.store.listUnitPrs = vi.fn(async () => [existing]);
+    deps.store.getStage = vi.fn(async () => ({ state: 'SUCCEEDED' }));
+    deps.store.getUnitPlan = vi.fn(async () =>
+      UNIT_PLAN({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+        autonomyMode: 'autonomous',
+      }),
+    );
+
+    const result = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1', startAtStageId: 'cg' },
+      ctx,
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(deps.unitPrProvider.createDraft).not.toHaveBeenCalled();
+    expect(invokes.filter((payload) => payload.command === 'init-lane')).toHaveLength(0);
+    expect(
+      stageStarts().filter((payload) => payload.stageId === 'cg' && payload.unitSlug === 'auth'),
+    ).toHaveLength(0);
+    expect(unitPrStates).toContainEqual(
+      expect.objectContaining({ repository: 'owner/repo', state: 'MERGED' }),
+    );
   });
 
   it('claims selected feedback, revises the last successful stage, and posts one summary', async () => {

@@ -2098,15 +2098,15 @@ module "intents_lambda" {
 
 resource "aws_cloudwatch_event_rule" "intents_durable_watchdog" {
   name                = "${var.project_name}-intents-durable-watchdog-${var.environment}"
-  description         = "Repair v2 intents whose durable orchestrator expired while process state remained active"
-  schedule_expression = "rate(1 day)"
+  description         = "Reconcile parked PR waits and detect terminal durable orchestrators"
+  schedule_expression = "rate(1 minute)"
 }
 
 resource "aws_cloudwatch_event_target" "intents_durable_watchdog" {
   rule      = aws_cloudwatch_event_rule.intents_durable_watchdog.name
   target_id = "intents-durable-watchdog"
   arn       = module.intents_lambda.lambda_function_arn
-  input     = jsonencode({ action = "repair-durable-executions" })
+  input     = jsonencode({ action = "reconcile-provider-state" })
 }
 
 resource "aws_lambda_permission" "intents_durable_watchdog" {
