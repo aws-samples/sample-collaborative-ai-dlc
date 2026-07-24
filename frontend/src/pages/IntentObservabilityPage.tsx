@@ -155,6 +155,7 @@ export default function IntentObservabilityPage() {
   const handleCopyPrompt = async () => {
     const prompt = detail?.intent.prompt;
     if (!prompt?.trim()) return;
+    setActionError(null);
     try {
       await navigator.clipboard.writeText(prompt);
       setPromptCopied(true);
