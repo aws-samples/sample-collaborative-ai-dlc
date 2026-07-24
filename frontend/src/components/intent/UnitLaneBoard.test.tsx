@@ -415,6 +415,46 @@ describe('isBeforeConstructionPhase', () => {
     expect(isBeforeConstructionPhase('03', phases)).toBe(false);
   });
 
+  it('uses nested zero-padded paths rather than sibling order', () => {
+    const nestedPhases: PhaseNode[] = [
+      {
+        phaseId: 'discovery',
+        name: 'Discovery',
+        kind: 'phase',
+        path: '01',
+        parentPath: null,
+        order: 1,
+      },
+      {
+        phaseId: 'inception',
+        name: 'Inception',
+        kind: 'phase',
+        path: '01.02',
+        parentPath: '01',
+        order: 2,
+      },
+      {
+        phaseId: 'construction',
+        name: 'Construction',
+        kind: 'phase',
+        path: '02',
+        parentPath: null,
+        order: 2,
+      },
+      {
+        phaseId: 'implementation',
+        name: 'Implementation',
+        kind: 'phase',
+        path: '02.01',
+        parentPath: '02',
+        order: 1,
+      },
+    ];
+
+    expect(isBeforeConstructionPhase('01.02', nestedPhases)).toBe(true);
+    expect(isBeforeConstructionPhase('02.01', nestedPhases)).toBe(false);
+  });
+
   it('does not hide units when phase metadata is unavailable', () => {
     expect(isBeforeConstructionPhase('01', null)).toBe(false);
   });

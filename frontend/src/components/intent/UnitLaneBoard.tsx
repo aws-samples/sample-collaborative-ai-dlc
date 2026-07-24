@@ -630,9 +630,8 @@ export function isBeforeConstructionPhase(
   workflowPhases: PhaseNode[] | null,
 ): boolean {
   if (!currentPhasePath || !workflowPhases) return false;
-  const currentPhase = workflowPhases.find((phase) => phase.path === currentPhasePath);
   const constructionPhase = workflowPhases.find((phase) => phase.phaseId === 'construction');
-  return Boolean(currentPhase && constructionPhase && currentPhase.order < constructionPhase.order);
+  return Boolean(constructionPhase && currentPhasePath < constructionPhase.path);
 }
 
 export function UnitLaneBoard({
