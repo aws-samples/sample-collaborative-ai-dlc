@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Local, credentialed AgentCore lifecycle E2E. Runs Claude, Kiro, and OpenCode
-# sequentially against DynamoDB Local + Gremlin Server with cold-container
+# Local, credentialed AgentCore lifecycle E2E. Runs Claude, Kiro, OpenCode, and
+# Codex sequentially against DynamoDB Local + Gremlin Server with cold-container
 # park/resume recovery. This script never contacts a deployed stack.
 #
 # Usage:
@@ -11,7 +11,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 BEDROCK_MODEL="${BEDROCK_MODEL:-us.anthropic.claude-sonnet-4-6}"
 KIRO_MODEL="${KIRO_MODEL:-auto}"
-E2E_CLIS="${E2E_CLIS:-claude,kiro,opencode}"
+CODEX_MODEL="${CODEX_MODEL:-openai.gpt-5.5}"
+E2E_CLIS="${E2E_CLIS:-claude,kiro,opencode,codex}"
 KEEP_E2E="${KEEP_E2E:-0}"
 BEDROCK_TOKEN="${BEDROCK_API_KEY:-${AWS_BEARER_TOKEN_BEDROCK:-}}"
 RUN_ID="$(date +%Y%m%d%H%M%S)-$$"
@@ -30,6 +31,7 @@ SELECTED_CLI_COUNT=0
 CLAUDE_RESULT="SKIPPED"
 KIRO_RESULT="SKIPPED"
 OPENCODE_RESULT="SKIPPED"
+CODEX_RESULT="SKIPPED"
 
 log() { printf '\n== %s ==\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -63,7 +65,7 @@ parse_clis() {
     cli="${cli//[[:space:]]/}"
     [ -n "$cli" ] || continue
     case "$cli" in
-      claude|kiro|opencode) ;;
+      claude|kiro|opencode|codex) ;;
       *) fail "E2E_CLIS contains unsupported CLI '$cli'" ;;
     esac
     duplicate=0
@@ -94,6 +96,7 @@ set_result() {
     claude) CLAUDE_RESULT="$2" ;;
     kiro) KIRO_RESULT="$2" ;;
     opencode) OPENCODE_RESULT="$2" ;;
+    codex) CODEX_RESULT="$2" ;;
   esac
 }
 
@@ -106,7 +109,9 @@ preflight() {
   [[ "$BEDROCK_MODEL" =~ ^[^[:space:]/]+$ ]] ||
     fail "BEDROCK_MODEL must be a bare Bedrock model/profile id"
   [ -n "$KIRO_MODEL" ] || fail "KIRO_MODEL must not be empty"
-  if is_selected claude || is_selected opencode; then
+  [[ "$CODEX_MODEL" =~ ^openai\. ]] ||
+    fail "CODEX_MODEL must be an exact openai.* Bedrock model id (e.g. openai.gpt-5.5)"
+  if is_selected claude || is_selected opencode || is_selected codex; then
     [ -n "$BEDROCK_TOKEN" ] ||
       fail "BEDROCK_API_KEY (or AWS_BEARER_TOKEN_BEDROCK) is required"
   fi
@@ -167,6 +172,7 @@ container_args() {
     --env "GREMLIN_PROTOCOL=ws" \
     --env "BEDROCK_MODEL=$BEDROCK_MODEL" \
     --env "KIRO_MODEL=$KIRO_MODEL" \
+    --env "CODEX_MODEL=$CODEX_MODEL" \
     --env "V2_QUESTION_POLL_MS=100" \
     --env "V2_QUESTION_PARK_GRACE_MS=300" \
     --env "E2E_SECRET_FILE=/run/secrets/aidlc-e2e.env" \
@@ -282,6 +288,7 @@ print_summary() {
   printf '\nClaude:   %s\n' "$CLAUDE_RESULT"
   printf 'Kiro:     %s\n' "$KIRO_RESULT"
   printf 'OpenCode: %s\n' "$OPENCODE_RESULT"
+  printf 'Codex:    %s\n' "$CODEX_RESULT"
 }
 
 parse_clis

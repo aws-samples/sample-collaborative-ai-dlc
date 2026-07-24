@@ -22,6 +22,12 @@ variable "bedrock_model" {
   default     = "us.anthropic.claude-sonnet-4-6"
 }
 
+variable "codex_model" {
+  description = "Default Codex-on-Bedrock model id (exact openai.* id, e.g. openai.gpt-5.5) seeded into the cli-models SSM parameter (empty = none)"
+  type        = string
+  default     = "openai.gpt-5.5"
+}
+
 variable "aidlc_repo_ref" {
   description = "Pinned ref (commit SHA/tag/branch) of awslabs/aidlc-workflows the seed + AgentCore runtime use. Keep in sync with the seed-blocks lambda."
   type        = string

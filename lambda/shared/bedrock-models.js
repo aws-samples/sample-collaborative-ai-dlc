@@ -64,6 +64,19 @@ const listClaudeModels = async ({ listInferenceProfiles, region = process.env.AW
   return models;
 };
 
+// The OpenAI models Bedrock's OpenAI-compatible Responses API serves for the
+// Codex CLI (per the Codex-on-Bedrock docs). These are EXACT ids in codex's own
+// namespace — no geo prefix, no provider prefix — and ListInferenceProfiles does
+// not surface them, so a curated static list is the honest source for the UI
+// picker. Regional availability still applies at invoke time.
+const CODEX_BEDROCK_MODELS = [
+  { id: 'openai.gpt-5.6-sol', name: 'GPT-5.6 Sol', description: null },
+  { id: 'openai.gpt-5.6-terra', name: 'GPT-5.6 Terra', description: null },
+  { id: 'openai.gpt-5.6-luna', name: 'GPT-5.6 Luna', description: null },
+  { id: 'openai.gpt-5.5', name: 'GPT-5.5', description: null },
+  { id: 'openai.gpt-5.4', name: 'GPT-5.4', description: null },
+];
+
 const __test = { isUsable, toModel };
-export { listClaudeModels, regionPrefix, __test };
-export default { listClaudeModels, regionPrefix, __test };
+export { listClaudeModels, regionPrefix, CODEX_BEDROCK_MODELS, __test };
+export default { listClaudeModels, regionPrefix, CODEX_BEDROCK_MODELS, __test };

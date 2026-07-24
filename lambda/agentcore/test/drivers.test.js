@@ -6,6 +6,7 @@ import {
   claudeDriver,
   kiroDriver,
   opencodeDriver,
+  codexDriver,
   SUPPORTED_CLIS,
   buildKiroListSessions,
   parseLatestKiroSession,
@@ -33,8 +34,8 @@ describe('selectCli', () => {
     expect(selectCli({ availableClis: [] })).toBeNull();
     expect(selectCli({ requested: 'claude', availableClis: ['opencode'] })).toBeNull();
   });
-  it('preference order is claude, kiro, then opencode', () => {
-    expect(SUPPORTED_CLIS).toEqual(['claude', 'kiro', 'opencode']);
+  it('preference order is claude, kiro, opencode, then codex', () => {
+    expect(SUPPORTED_CLIS).toEqual(['claude', 'kiro', 'opencode', 'codex']);
   });
 });
 
@@ -324,9 +325,88 @@ describe('Kiro credit capture', () => {
   });
 });
 
+describe('codex driver', () => {
+  it('builds a headless exec invocation: JSONL out, stdin prompt sentinel, CODEX_HOME', () => {
+    const inv = codexDriver.buildInvocation({
+      prompt: 'do it',
+      model: 'openai.gpt-5.5',
+      codexHome: '/ws/.aidlc/codex-home',
+    });
+    expect(inv.command).toBe('codex');
+    expect(inv.args).toEqual([
+      'exec',
+      '--json',
+      '--skip-git-repo-check',
+      '-c',
+      'model_provider="amazon-bedrock"',
+      '-c',
+      'approval_policy="never"',
+      '-m',
+      'openai.gpt-5.5',
+      '-',
+    ]);
+    // Prompt on stdin (`-` sentinel), never argv — ARG_MAX/E2BIG guard.
+    expect(inv.args).not.toContain('do it');
+    expect(inv.prompt).toBe('do it');
+    expect(inv.promptViaStdin).toBe(true);
+    expect(inv.env).toEqual({ CODEX_HOME: '/ws/.aidlc/codex-home' });
+  });
+
+  it('pins the Bedrock provider on argv even without a materialized CODEX_HOME', () => {
+    // A one-shot (no codexHome) must never fall through to codex's default
+    // OpenAI-hosted provider — this deployment only holds Bedrock credentials.
+    const inv = codexDriver.buildInvocation({ prompt: 'x' });
+    expect(inv.args).toEqual([
+      'exec',
+      '--json',
+      '--skip-git-repo-check',
+      '-c',
+      'model_provider="amazon-bedrock"',
+      '-c',
+      'approval_policy="never"',
+      '-',
+    ]);
+    expect(inv.env).toEqual({});
+  });
+
+  it('resumes the same thread with `exec resume <id>`', () => {
+    const inv = codexDriver.buildResumeInvocation({
+      sessionId: 'thread_123',
+      answerMessage: 'continue',
+      model: 'openai.gpt-5.5',
+      codexHome: '/ws/.aidlc/codex-home',
+    });
+    expect(inv.args).toEqual([
+      'exec',
+      'resume',
+      'thread_123',
+      '--json',
+      '--skip-git-repo-check',
+      '-c',
+      'model_provider="amazon-bedrock"',
+      '-c',
+      'approval_policy="never"',
+      '-m',
+      'openai.gpt-5.5',
+      '-',
+    ]);
+    expect(inv.prompt).toBe('continue');
+    expect(inv.args).not.toContain('continue');
+    expect(inv.promptViaStdin).toBe(true);
+  });
+
+  it('auths via the Bedrock bearer token + region (no CLAUDE_CODE vars)', () => {
+    expect(
+      codexDriver.envForAuth({ AWS_REGION: 'eu-central-1', AWS_BEARER_TOKEN_BEDROCK: 'tok' }),
+    ).toEqual({ AWS_REGION: 'eu-central-1', AWS_BEARER_TOKEN_BEDROCK: 'tok' });
+    expect(codexDriver.envForAuth({}).AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+    expect(codexDriver.envForAuth({}).AWS_REGION).toBe('us-east-1');
+  });
+});
+
 describe('getDriver', () => {
   it('throws on an unsupported CLI', () => {
-    expect(() => getDriver('codex')).toThrow(/unsupported CLI/);
+    expect(() => getDriver('gemini')).toThrow(/unsupported CLI/);
   });
 });
 

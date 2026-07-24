@@ -42,6 +42,7 @@ import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
   materializeOpenCodeConfig as defaultMaterializeOpenCodeConfig,
+  materializeCodexHome as defaultMaterializeCodexHome,
 } from '../stage-materializer.js';
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
 import { materializeAttachments } from '../attachments.js';
@@ -357,6 +358,7 @@ const runReviewer = async ({
   materializeMcpConfig,
   materializeKiroAgent,
   materializeOpenCodeConfig,
+  materializeCodexHome,
   store,
   executionId,
   projectId,
@@ -405,9 +407,13 @@ const runReviewer = async ({
               env,
             }),
           }
-        : {
-            mcpConfigPath: await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env }),
-          };
+        : cli === 'codex'
+          ? {
+              codexHome: await materializeCodexHome({ workspaceDir, mcpEntry, scope, env }),
+            }
+          : {
+              mcpConfigPath: await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env }),
+            };
   const invocation = driver.buildInvocation({
     prompt,
     model,
@@ -945,6 +951,7 @@ export const runStage = async (
     materializeMcpConfig = defaultMaterializeMcpConfig,
     materializeKiroAgent = defaultMaterializeKiroAgent,
     materializeOpenCodeConfig = defaultMaterializeOpenCodeConfig,
+    materializeCodexHome = defaultMaterializeCodexHome,
     renderRulesDoc,
     mcpEntry,
     openGraph = null,
@@ -1603,6 +1610,20 @@ export const runStage = async (
       });
       return { opencodeConfigContent };
     }
+    if (cli === 'codex') {
+      const codexHome = await materializeCodexHome({
+        workspaceDir,
+        mcpEntry,
+        scope: stageScope,
+        env,
+        customServers,
+        // Embedded `${VAR}` refs (e.g. `Bearer ${KEY}`) resolve against the
+        // SSM-resolved secret env; full-value refs are forwarded by NAME via
+        // codex's env_vars/env_http_headers and expand from the child env.
+        secretEnv: mcpSecretEnv,
+      });
+      return { codexHome };
+    }
     const mcpConfigPath = await materializeMcpConfig({
       workspaceDir,
       mcpEntry,
@@ -1704,6 +1725,9 @@ export const runStage = async (
       scope: stageScope,
       env,
       customServers,
+      // Codex only: embedded `${VAR}` refs in custom-server config resolve
+      // against the SSM-resolved secret env (see materializeCliMcp above).
+      secretEnv: mcpSecretEnv,
       cli,
       customRules: customRuleDocs,
       attachments: attachmentRefs,
@@ -1721,17 +1745,13 @@ export const runStage = async (
     if (steeringMessage) {
       prompt = `${steeringMessage}\n\n---\n\n${prompt}`;
     }
-    // The stage materializer already created only the selected CLI's context.
-    // Older injected test materializers may return just the prompt, so retain a
-    // fallback through the shared context helper.
-    const mcpKwargs =
-      cli === 'kiro' && materialized.agentName
-        ? { agentName: materialized.agentName }
-        : cli === 'opencode' && materialized.opencodeConfigContent
-          ? { opencodeConfigContent: materialized.opencodeConfigContent }
-          : cli === 'claude' && materialized.mcpConfigPath
-            ? { mcpConfigPath: materialized.mcpConfigPath }
-            : await materializeCliMcp();
+    // The stage materializer already created only the selected CLI's context;
+    // pick it up via the driver's contextKey. Older injected test materializers
+    // may return just the prompt, so retain a fallback through the shared
+    // context helper.
+    const mcpKwargs = materialized[driver.contextKey]
+      ? { [driver.contextKey]: materialized[driver.contextKey] }
+      : await materializeCliMcp();
     invocation = driver.buildInvocation({
       prompt,
       model,
@@ -1832,7 +1852,9 @@ export const runStage = async (
     cli,
     emit: emitCliOutput,
     onSession: (observedSessionId) => {
-      if (cli !== 'opencode' || cliSessionId) return;
+      // OpenCode and Codex choose their own session/thread id; capture the
+      // first one observed on the stream so a later resume can target it.
+      if ((cli !== 'opencode' && cli !== 'codex') || cliSessionId) return;
       cliSessionId = observedSessionId;
       // Persist the first id immediately; the queue is awaited before the park
       // check so a WAITING row can never be written ahead of its resume handle.
@@ -2108,11 +2130,11 @@ export const runStage = async (
     unitSlug,
     sectionIndex,
   });
-  if (parked && cli === 'opencode' && !cliSessionId) {
+  if (parked && (cli === 'opencode' || cli === 'codex') && !cliSessionId) {
     return fail(
       stageInstanceId,
-      'opencode_session_missing',
-      'OpenCode parked the stage without emitting a session id; the conversation cannot be resumed',
+      `${cli}_session_missing`,
+      `${cli === 'codex' ? 'Codex' : 'OpenCode'} parked the stage without emitting a session id; the conversation cannot be resumed`,
     );
   }
   if (!parked && exitCode !== 0) {
@@ -2287,6 +2309,7 @@ export const runStage = async (
         materializeMcpConfig,
         materializeKiroAgent,
         materializeOpenCodeConfig,
+        materializeCodexHome,
         store,
         executionId,
         projectId,

@@ -25,6 +25,7 @@ import {
   persistKiroStore as defaultPersistKiroStore,
 } from './kiro-store.js';
 import { parseOpenCodeJsonl } from './opencode-parser.js';
+import { parseCodexJsonl } from './codex-parser.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
 
 // Extract the assistant text + token usage from Claude's `--output-format
@@ -107,6 +108,7 @@ export const runOneShotPrompt = async ({
   mcpConfigPath = null,
   agentName = null,
   opencodeConfigContent = null,
+  codexHome = null,
   timeoutMs = DEFAULT_ONE_SHOT_TIMEOUT_MS,
   spawnFn,
   restoreKiroStore = defaultRestoreKiroStore,
@@ -124,6 +126,7 @@ export const runOneShotPrompt = async ({
     mcpConfigPath,
     agentName,
     opencodeConfigContent,
+    codexHome,
   });
   // Kiro's SQLite conversation store: bracket exactly like resolve-conflict —
   // restore (mount → local) before the spawn so we never run against a stale
@@ -190,8 +193,8 @@ export const runOneShotPrompt = async ({
       ...(text ? {} : { sample: sampleOf(stdout), resultSubtype }),
     };
   }
-  if (cli === 'opencode') {
-    const parsed = parseOpenCodeJsonl(stdout);
+  if (cli === 'opencode' || cli === 'codex') {
+    const parsed = cli === 'codex' ? parseCodexJsonl(stdout) : parseOpenCodeJsonl(stdout);
     const text = parsed.text.trim();
     return {
       ok: Boolean(text),

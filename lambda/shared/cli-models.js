@@ -1,6 +1,10 @@
-const ALLOWED_CLI_MODEL_KEYS = new Set(['kiro', 'claude', 'opencode']);
+const ALLOWED_CLI_MODEL_KEYS = new Set(['kiro', 'claude', 'opencode', 'codex']);
 const MAX_CLI_MODEL_LENGTH = 200;
 const OPENCODE_MODEL_PREFIX = 'amazon-bedrock/';
+const CODEX_MODEL_PREFIX = 'openai.';
+// A full Codex-on-Bedrock id: the prefix plus a non-empty model name (bare
+// "openai." would pass a prefix check but fail at invocation time).
+const CODEX_MODEL_ID = /^openai\.[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function describe(value) {
   if (value === null) return 'null';
@@ -70,6 +74,16 @@ function normalizeCliModels(value) {
       issues.push({
         path: key,
         message: `Claude model must be a bare Bedrock inference profile ID (no "${OPENCODE_MODEL_PREFIX}" prefix).`,
+      });
+      continue;
+    }
+    // Codex on Bedrock uses its own namespace of exact "openai.*" ids (e.g.
+    // "openai.gpt-5.5") — no geo prefix, no "amazon-bedrock/" provider prefix,
+    // and a bare "openai." (empty model name) is rejected too.
+    if (key === 'codex' && trimmed && !CODEX_MODEL_ID.test(trimmed)) {
+      issues.push({
+        path: key,
+        message: `Codex model must be a full Bedrock OpenAI model ID starting with "${CODEX_MODEL_PREFIX}" (e.g. "openai.gpt-5.5").`,
       });
       continue;
     }

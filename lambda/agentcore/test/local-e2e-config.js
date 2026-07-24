@@ -1,6 +1,6 @@
-export const LOCAL_E2E_CLIS = ['claude', 'kiro', 'opencode'];
+export const LOCAL_E2E_CLIS = ['claude', 'kiro', 'opencode', 'codex'];
 
-export const normalizeLocalE2eClis = (value = 'claude,kiro,opencode') => {
+export const normalizeLocalE2eClis = (value = 'claude,kiro,opencode,codex') => {
   const selected = [];
   for (const raw of String(value).split(',')) {
     const cli = raw.trim();
@@ -16,8 +16,10 @@ export const localE2eModelFor = ({
   cli,
   bedrockModel = 'us.anthropic.claude-sonnet-4-6',
   kiroModel = 'auto',
+  codexModel = 'openai.gpt-5.5',
 }) => {
   if (cli === 'kiro') return kiroModel;
+  if (cli === 'codex') return codexModel;
   if (cli === 'opencode' && !bedrockModel.startsWith('amazon-bedrock/')) {
     return `amazon-bedrock/${bedrockModel}`;
   }

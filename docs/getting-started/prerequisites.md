@@ -70,11 +70,13 @@ Kiro API keys are turned **off by default**. A Kiro administrator must first ena
 
 In the platform settings, enter this key as the **Kiro API Key**. The AgentCore runtime reads it at container startup and provides it to Kiro-driven agents as the `KIRO_API_KEY` environment variable.
 
-### Amazon Bedrock API key (required for Claude Code and OpenCode setups)
+### Amazon Bedrock API key (required for Claude Code, OpenCode, and Codex setups)
 
 Generate an Amazon Bedrock API key in the AWS Console (**Amazon Bedrock → API keys → Generate long-term API key**, scoped to your account and region). In the platform settings, enter this key as the **Bedrock Bearer Token**. The platform stores it and provides it to agent containers as the `AWS_BEARER_TOKEN_BEDROCK` environment variable.
 
-This token is required for Claude Code and OpenCode agents: the Bedrock AgentCore runtime's IAM role intentionally has no Amazon Bedrock model-invocation permissions, so there is no IAM-role fallback. Agents authenticate to Bedrock exclusively through this token.
+This token is required for Claude Code, OpenCode, and Codex agents: the Bedrock AgentCore runtime's IAM role intentionally has no Amazon Bedrock model-invocation permissions, so there is no IAM-role fallback. Agents authenticate to Bedrock exclusively through this token.
+
+For Codex, additionally enable access to the OpenAI models (`openai.gpt-5.*`) in the Bedrock console for your Region — Codex uses Bedrock's OpenAI-compatible Responses API, and the models are Region-limited. See [Use Codex with Amazon Bedrock](https://help.openai.com/en/articles/20001252-use-codex-with-amazon-bedrock). (GPT models are also available through Kiro, but Kiro accesses them via its own API key — no Bedrock model access is involved there.)
 
 ### Where these values are stored
 

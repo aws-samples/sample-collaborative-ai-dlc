@@ -20,7 +20,8 @@ RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
     && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs — installed for all supported drivers; selectCli picks what's
-# present at runtime. Kiro (API-key auth), Claude Code + OpenCode (Bedrock).
+# present at runtime. Kiro (API-key auth), Claude Code + OpenCode + Codex
+# (Bedrock).
 RUN curl -fsSL https://cli.kiro.dev/install | bash \
     && mkdir -p /opt/kiro \
     && cp -a /root/.local/bin /opt/kiro/bin \
@@ -33,6 +34,12 @@ RUN mkdir -p /opt/opencode/bin \
     | tar -xz -C /opt/opencode/bin \
     && chmod +x /opt/opencode/bin/opencode \
     && /opt/opencode/bin/opencode --version | grep -F "${OPENCODE_VERSION}"
+# Codex — pinned for reproducibility (the npm package ships the arm64 binary).
+# The per-stage CODEX_HOME (config.toml) is materialized at run time; the
+# version assert catches a broken/mismatched install at build time.
+ARG CODEX_VERSION=0.145.0
+RUN npm install -g @openai/codex@${CODEX_VERSION} \
+    && codex --version | grep -F "${CODEX_VERSION}"
 
 # Bun — the runtime the deterministic CODE sensors (linter, type-check) run on.
 # They shell out to `bunx eslint`/`bunx tsc` against the workspace checkout, so
@@ -72,8 +79,8 @@ RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 # /mnt/workspace is the AgentCore managed-session-storage mount (present only at
 # invocation time). Create a fallback dir for local/non-AgentCore runs; chown so
 # the node user can write the checkout + CLI stores when the mount is absent.
-RUN mkdir -p /mnt/workspace \
-    && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/opencode /opt/bun /opt/uv
+RUN mkdir -p /mnt/workspace /home/node/.codex-state \
+    && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/opencode /opt/bun /opt/uv /home/node/.codex-state
 
 WORKDIR /mnt/workspace
 USER node
@@ -88,6 +95,10 @@ USER node
 #    recalls the conversation. See cli/kiro-store.js.
 #  - OpenCode: SQLite — the same copy protocol, but its XDG override is applied
 #    only to OpenCode children so Kiro's global XDG placement is unchanged.
+#  - Codex: plain JSONL rollouts — CODEX_HOME is materialized per stage UNDER
+#    the persistent mount (<ws>/.aidlc/codex-home), so sessions survive reaps
+#    like Claude's; only its SQLite state DB is redirected to ephemeral local
+#    disk (config sqlite_home → /home/node/.codex-state, created above).
 ENV HOME=/home/node \
     PATH=/opt/kiro/bin:/opt/opencode/bin:/opt/bun/bin:/opt/uv/bin:/usr/local/bin:/usr/bin:/bin \
     V2_WORKSPACE_DIR=/mnt/workspace \

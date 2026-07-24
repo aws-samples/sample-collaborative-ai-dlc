@@ -55,7 +55,7 @@ Add or remove members and assign their project role (owner / admin / member).
 
 ### Agent
 
-- **Agent CLI** — which headless CLI executes stages: **Kiro**, **Claude Code**, or **OpenCode**. Availability reflects which credentials the operator has configured in [Platform Admin → Agents](platform-settings.md#agents).
+- **Agent CLI** — which headless CLI executes stages: **Kiro**, **Claude Code**, **OpenCode**, or **Codex** (OpenAI models on Bedrock). Availability reflects which credentials the operator has configured in [Platform Admin → Agents](platform-settings.md#agents).
 - **Model Override** — pin a specific model per CLI for this project. When unset, the platform-wide default model from **Admin → Agents → Default Models** applies. Project overrides take precedence over the stage/agent-level model hints in the workflow.
 
 ### Source Control

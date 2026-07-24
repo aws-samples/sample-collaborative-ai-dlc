@@ -15,6 +15,8 @@ import {
   materializeKiroAgent,
   KIRO_AGENT_NAME,
   buildOpenCodeConfig,
+  buildCodexConfigToml,
+  toCodexMcpToml,
   materializeCliContext,
   OPENCODE_INSTRUCTIONS,
   renderRulesDoc,
@@ -498,6 +500,146 @@ describe('OpenCode inline config', () => {
     expect(JSON.parse(context.opencodeConfigContent).share).toBe('disabled');
     await expect(readFile(path.join(ws, '.opencode', 'opencode.json'), 'utf8')).rejects.toThrow();
     await expect(readFile(path.join(ws, 'AGENTS.md'), 'utf8')).rejects.toThrow();
+  });
+});
+
+describe('Codex config (per-stage CODEX_HOME)', () => {
+  it('pins the Bedrock provider, full-auto policy, and ephemeral sqlite home', () => {
+    const toml = buildCodexConfigToml({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+    });
+    expect(toml).toContain('model_provider = "amazon-bedrock"');
+    expect(toml).toContain('approval_policy = "never"');
+    expect(toml).toContain('sandbox_mode = "danger-full-access"');
+    expect(toml).toContain('project_doc_fallback_filenames = [".aidlc/rules.md"]');
+    expect(toml).toContain('sqlite_home = "/home/node/.codex-state"');
+    expect(toml).toContain('persistence = "save-all"');
+  });
+
+  it('emits the aidlc MCP server as required, with scope env and timeouts', () => {
+    const toml = buildCodexConfigToml({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+    });
+    expect(toml).toContain('[mcp_servers."aidlc"]');
+    expect(toml).toContain('required = true');
+    expect(toml).toContain('startup_timeout_sec = 30');
+    expect(toml).toContain('tool_timeout_sec = 600');
+    expect(toml).toContain('command = "node"');
+    expect(toml).toContain('args = ["/opt/agentcore/mcp/index.js"]');
+    expect(toml).toContain('[mcp_servers."aidlc".env]');
+    expect(toml).toContain('"V2_EXECUTION_ID" = "e1"');
+  });
+
+  it('forwards full-value ${VAR} refs BY NAME (env_vars / env_http_headers) — no secret on disk', () => {
+    const toml = toCodexMcpToml(
+      {
+        local: { command: 'uvx', args: ['server'], env: { LOCAL_KEY: '${LOCAL_KEY}' } },
+        remote: { url: 'https://mcp.example/sse', headers: { Authorization: '${REMOTE_KEY}' } },
+      },
+      { LOCAL_KEY: 'k-123', REMOTE_KEY: 'r-456' },
+    );
+    expect(toml).toContain('env_vars = ["LOCAL_KEY"]');
+    expect(toml).toContain('[mcp_servers."remote".env_http_headers]');
+    expect(toml).toContain('"Authorization" = "REMOTE_KEY"');
+    // The resolved values never land in the config file.
+    expect(toml).not.toContain('k-123');
+    expect(toml).not.toContain('r-456');
+  });
+
+  it('resolves EMBEDDED / renamed ${VAR} refs to literals from the secret env', () => {
+    const toml = toCodexMcpToml(
+      {
+        local: { command: 'uvx', args: ['server'], env: { API_KEY: 'Bearer ${LOCAL_KEY}' } },
+      },
+      { LOCAL_KEY: 'k-123' },
+    );
+    // `Bearer ${VAR}` cannot be forwarded by name — falls back to the resolved
+    // literal (config.toml lives in the runtime-owned .aidlc dir).
+    expect(toml).toContain('"API_KEY" = "Bearer k-123"');
+    expect(toml).not.toContain('${');
+  });
+
+  it('whitelists the AWS credential chain by NAME for the aidlc bridge ONLY', () => {
+    const toml = buildCodexConfigToml({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      env: { AWS_ACCESS_KEY_ID: 'AKIALOCAL', AWS_SECRET_ACCESS_KEY: 'secretlocal' },
+      customServers: { custom: { command: 'uvx', args: ['server'], env: { FOO: 'bar' } } },
+    });
+    const aidlcSection = toml.slice(toml.indexOf('[mcp_servers."aidlc"]'));
+    // Names only — codex forwards the values from its process env at spawn
+    // time; the credential VALUES never land in the config file.
+    expect(aidlcSection).toContain('env_vars = [');
+    expect(aidlcSection).toContain('"AWS_ACCESS_KEY_ID"');
+    expect(aidlcSection).toContain('"AWS_CONTAINER_CREDENTIALS_FULL_URI"');
+    expect(toml).not.toContain('AKIALOCAL');
+    expect(toml).not.toContain('secretlocal');
+    // The custom server never gets the credential whitelist.
+    const customSection = toml.slice(
+      toml.indexOf('[mcp_servers."custom"]'),
+      toml.indexOf('[mcp_servers."aidlc"]'),
+    );
+    expect(customSection).toContain('"FOO" = "bar"');
+    expect(customSection).not.toContain('AWS_ACCESS_KEY_ID');
+    expect(customSection).not.toContain('env_vars');
+  });
+
+  it('emits the reserved aidlc server LAST so a custom entry can never shadow it', () => {
+    const toml = buildCodexConfigToml({
+      mcpEntry: '/real/mcp.js',
+      scope: { executionId: 'e', intentId: 'i' },
+      customServers: { aidlc: { command: 'evil' }, other: { command: 'node' } },
+    });
+    const aidlcIdx = toml.lastIndexOf('[mcp_servers."aidlc"]');
+    const otherIdx = toml.indexOf('[mcp_servers."other"]');
+    expect(aidlcIdx).toBeGreaterThan(otherIdx);
+    expect(toml.slice(aidlcIdx)).toContain('args = ["/real/mcp.js"]');
+    expect(toml.slice(aidlcIdx)).not.toContain('"evil"');
+  });
+
+  it('materializes CODEX_HOME under .aidlc with config.toml + AGENTS.md, repo files untouched', async () => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-codex-'));
+    const context = await materializeCliContext({
+      cli: 'codex',
+      workspaceDir: ws,
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e', intentId: 'i' },
+    });
+    expect(context.codexHome).toBe(path.join(ws, '.aidlc', 'codex-home'));
+    const toml = await readFile(path.join(context.codexHome, 'config.toml'), 'utf8');
+    expect(toml).toContain('model_provider = "amazon-bedrock"');
+    const agentsMd = await readFile(path.join(context.codexHome, 'AGENTS.md'), 'utf8');
+    expect(agentsMd).toContain('.aidlc/rules.md');
+    expect(agentsMd).toContain('.aidlc/codex-instructions');
+    // Repo-level files stay untouched.
+    await expect(readFile(path.join(ws, 'AGENTS.md'), 'utf8')).rejects.toThrow();
+    await expect(readFile(path.join(ws, '.codex', 'config.toml'), 'utf8')).rejects.toThrow();
+  });
+
+  it('writes custom rules to .aidlc/codex-instructions for the codex driver', async () => {
+    const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-codex-rules-'));
+    const written = await materializeCustomRules({
+      workspaceDir: ws,
+      cli: 'codex',
+      customRules: [{ filename: 'team.md', body: '# team rules' }],
+    });
+    expect(written).toEqual(['custom--team.md']);
+    const body = await readFile(
+      path.join(ws, '.aidlc', 'codex-instructions', 'custom--team.md'),
+      'utf8',
+    );
+    expect(body).toBe('# team rules');
+  });
+
+  it('honors the V2_CODEX_SQLITE_HOME override', async () => {
+    const toml = buildCodexConfigToml({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e', intentId: 'i' },
+      env: { V2_CODEX_SQLITE_HOME: '/tmp/codex-state' },
+    });
+    expect(toml).toContain('sqlite_home = "/tmp/codex-state"');
   });
 });
 

@@ -84,6 +84,17 @@ variable "kiro_model" {
   default     = ""
 }
 
+variable "codex_model" {
+  description = "Default Codex-on-Bedrock model id (exact openai.* id, e.g. openai.gpt-5.5) seeded into the cli-models SSM parameter (empty = none)"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.codex_model == "" || can(regex("^openai\\.[A-Za-z0-9][A-Za-z0-9._-]*$", var.codex_model))
+    error_message = "codex_model must be a full Bedrock OpenAI model id: \"openai.\" followed by a model name (e.g. openai.gpt-5.5)."
+  }
+}
+
 # AgentCore Runtime network mode. Neptune lives in a private VPC, so VPC mode is
 # the default — the runtime's ENIs are placed in dedicated subnets in this VPC
 # (in AgentCore-supported AZs) and reach Neptune over the VPC. Set to PUBLIC only

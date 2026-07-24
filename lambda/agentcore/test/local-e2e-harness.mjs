@@ -58,7 +58,7 @@ const idsFor = (selectedCli) => ({
 
 const assertCli = () => {
   if (!LOCAL_E2E_CLIS.includes(cli)) {
-    throw new Error(`expected CLI argument claude|kiro|opencode, got ${cli || '(missing)'}`);
+    throw new Error(`expected CLI argument claude|kiro|opencode|codex, got ${cli || '(missing)'}`);
   }
 };
 
@@ -207,6 +207,7 @@ const modelFor = (selectedCli) => {
     cli: selectedCli,
     bedrockModel: process.env.BEDROCK_MODEL,
     kiroModel: process.env.KIRO_MODEL,
+    codexModel: process.env.CODEX_MODEL,
   });
 };
 

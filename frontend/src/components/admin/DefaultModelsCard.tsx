@@ -25,6 +25,7 @@ const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
   kiro: 'Kiro',
   claude: 'Claude',
   opencode: 'OpenCode',
+  codex: 'Codex',
 };
 
 const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
@@ -46,12 +47,17 @@ const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
     label: 'Bedrock model IDs',
     url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
   },
+  codex: {
+    label: 'Codex on Bedrock model IDs',
+    url: 'https://help.openai.com/en/articles/20001252-use-codex-with-amazon-bedrock',
+  },
 };
 
 const MODEL_PLACEHOLDERS: Record<RuntimeModelCli, string> = {
   kiro: 'Model ID',
   claude: 'us.anthropic.claude-sonnet-4-6',
   opencode: 'amazon-bedrock/us.anthropic.claude-sonnet-4-6',
+  codex: 'openai.gpt-5.5',
 };
 
 function canonicalCliModels(models: CliModels = {}) {

@@ -5,8 +5,8 @@ two separate test layers:
 
 1. The deterministic AgentCore test project, which uses local test containers
    and does not call a model.
-2. The credentialed local E2E, which runs the real Claude, Kiro, and OpenCode
-   CLIs against real models.
+2. The credentialed local E2E, which runs the real Claude, Kiro, OpenCode, and
+   Codex CLIs against real models.
 
 Neither test requires a deployed AI-DLC stack.
 
@@ -39,17 +39,19 @@ is the only user-facing runtime E2E command. It builds and runs the production
 AgentCore container locally, using DynamoDB Local and Gremlin Server instead of
 deployed AWS resources.
 
-The E2E makes real model calls and can incur usage charges. Claude, Kiro, and
-OpenCode run sequentially to limit spend and avoid shared conversation-store
-races.
+The E2E makes real model calls and can incur usage charges. Claude, Kiro,
+OpenCode, and Codex run sequentially to limit spend and avoid shared
+conversation-store races.
 
 ### Prerequisites
 
 - Docker with Buildx
 - Native ARM64 execution or working `linux/arm64` emulation
 - Outbound HTTPS access from Docker containers
-- A Bedrock API key for Claude and OpenCode
+- A Bedrock API key for Claude, OpenCode, and Codex
 - A Kiro API key for Kiro
+- For Codex, the OpenAI models (`openai.gpt-5.*`) enabled in Bedrock for the
+  chosen `AWS_REGION`
 
 Before making model calls, the script checks Docker, Buildx, ARM64 execution,
 key presence, model syntax, and outbound connectivity. It supplies inert AWS
@@ -85,32 +87,33 @@ BEDROCK_API_KEY=... KIRO_API_KEY=... ./scripts/agent-e2e-testing.sh
 CLIs are required:
 
 ```bash
-# Claude and OpenCode use the same Bedrock key.
-E2E_CLIS=claude,opencode ./scripts/agent-e2e-testing.sh
+# Claude, OpenCode, and Codex use the same Bedrock key.
+E2E_CLIS=claude,opencode,codex ./scripts/agent-e2e-testing.sh
 
 # Kiro only.
 E2E_CLIS=kiro ./scripts/agent-e2e-testing.sh
 
-# OpenCode only.
-E2E_CLIS=opencode ./scripts/agent-e2e-testing.sh
+# Codex only.
+E2E_CLIS=codex ./scripts/agent-e2e-testing.sh
 ```
 
 The examples assume the corresponding key was already exported.
 
 ### Configuration
 
-| Variable                   | Default                                              | Purpose                                           |
-| -------------------------- | ---------------------------------------------------- | ------------------------------------------------- |
-| `BEDROCK_API_KEY`          | none                                                 | Bedrock authentication for Claude and OpenCode    |
-| `AWS_BEARER_TOKEN_BEDROCK` | none                                                 | Alias used when `BEDROCK_API_KEY` is absent       |
-| `KIRO_API_KEY`             | none                                                 | Kiro authentication                               |
-| `AWS_REGION`               | `us-east-1`                                          | Bedrock region                                    |
-| `BEDROCK_MODEL`            | `us.anthropic.claude-sonnet-4-6`                     | Bare Bedrock model or inference-profile ID        |
-| `KIRO_MODEL`               | `auto`                                               | Kiro model ID                                     |
-| `E2E_CLIS`                 | `claude,kiro,opencode`                               | CLIs to run, in execution order                   |
-| `AGENTCORE_IMAGE`          | none                                                 | Existing local ARM64 image; skips the image build |
-| `KEEP_E2E`                 | `0`                                                  | Set to `1` to retain resources after a failed run |
-| `E2E_OUTPUT_DIR`           | per-run path under `test/e2e/artifacts/agent-output` | Normalized output reports                         |
+| Variable                   | Default                                              | Purpose                                            |
+| -------------------------- | ---------------------------------------------------- | -------------------------------------------------- |
+| `BEDROCK_API_KEY`          | none                                                 | Bedrock authentication for Claude, OpenCode, Codex |
+| `AWS_BEARER_TOKEN_BEDROCK` | none                                                 | Alias used when `BEDROCK_API_KEY` is absent        |
+| `KIRO_API_KEY`             | none                                                 | Kiro authentication                                |
+| `AWS_REGION`               | `us-east-1`                                          | Bedrock region                                     |
+| `BEDROCK_MODEL`            | `us.anthropic.claude-sonnet-4-6`                     | Bare Bedrock model or inference-profile ID         |
+| `KIRO_MODEL`               | `auto`                                               | Kiro model ID                                      |
+| `CODEX_MODEL`              | `openai.gpt-5.5`                                     | Exact Codex-on-Bedrock model ID (`openai.*`)       |
+| `E2E_CLIS`                 | `claude,kiro,opencode,codex`                         | CLIs to run, in execution order                    |
+| `AGENTCORE_IMAGE`          | none                                                 | Existing local ARM64 image; skips the image build  |
+| `KEEP_E2E`                 | `0`                                                  | Set to `1` to retain resources after a failed run  |
+| `E2E_OUTPUT_DIR`           | per-run path under `test/e2e/artifacts/agent-output` | Normalized output reports                          |
 
 Do not prefix `BEDROCK_MODEL` with `amazon-bedrock/`. The harness adds that
 provider prefix for OpenCode and passes the bare value to Claude.
@@ -143,8 +146,8 @@ For each selected CLI, the harness:
 8. Verifies the successful stage, graph edge, output, metric, session identity,
    native edit parsing, output timestamps, and Git runtime exclusions.
 
-Starting fresh and resume legs in separate containers exercises Claude's
-durable JSONL state and Kiro/OpenCode SQLite restore and persistence.
+Starting fresh and resume legs in separate containers exercises Claude's and
+Codex's durable JSONL state and Kiro/OpenCode SQLite restore and persistence.
 
 The script continues after an individual CLI failure and prints a flat summary:
 
@@ -152,6 +155,7 @@ The script continues after an individual CLI failure and prints a flat summary:
 Claude:   PASS
 Kiro:     PASS
 OpenCode: PASS
+Codex:    PASS
 ```
 
 It exits nonzero if any selected CLI fails.

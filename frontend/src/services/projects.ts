@@ -2,8 +2,8 @@ import { api } from './api';
 import type { GitProvider } from './gitProvider';
 
 export type ProjectRole = 'owner' | 'admin' | 'member';
-export type AgentCli = 'kiro' | 'claude' | 'opencode';
-export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode';
+export type AgentCli = 'kiro' | 'claude' | 'opencode' | 'codex';
+export type RuntimeModelCli = 'kiro' | 'claude' | 'opencode' | 'codex';
 export type CliModels = Partial<Record<RuntimeModelCli, string>>;
 
 // Agent tier → model configuration (flat-row shape, mirroring the backend's

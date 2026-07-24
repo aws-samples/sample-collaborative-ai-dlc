@@ -27,6 +27,7 @@ const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
   kiro: 'Kiro',
   claude: 'Claude',
   opencode: 'OpenCode',
+  codex: 'Codex',
 };
 const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
 
