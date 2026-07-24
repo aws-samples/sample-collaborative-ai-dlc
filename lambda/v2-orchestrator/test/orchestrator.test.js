@@ -1036,6 +1036,33 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
     expect(failCall[0].failureReason).toContain('duplicate: auth');
   });
 
+  it('a synthesized one-unit promotion (trivial intent, issue #336) continues the run', async () => {
+    deps.loadPlan.mockResolvedValue(PLAN_WITH_DAG_PRODUCER);
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units')
+        return {
+          ok: true,
+          unitCount: 1,
+          batchCount: 1,
+          walkingSkeleton: 'whole-intent',
+          synthesized: true,
+        };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    // The run proceeded past promotion to the next stage.
+    expect(invokes.filter((p) => p.command === 'run-stage-start')).toHaveLength(2);
+    const evTypes = deps.store.appendEvent.mock.calls.map((c) => c[0].type);
+    expect(evTypes).toContain('v2.units.plan_ready');
+    expect(evTypes).not.toContain('v2.execution.failed');
+  });
+
   it('promotion runs after the park loop drains (gate answered first)', async () => {
     deps.store.getExecution
       .mockResolvedValueOnce(META)

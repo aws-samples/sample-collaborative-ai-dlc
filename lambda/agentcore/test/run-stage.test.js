@@ -1109,6 +1109,97 @@ describe('runStage — deterministic sensors', () => {
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
   });
 
+  // Required-output existence (issue #336): a stage that exits 0 without ever
+  // recording a declared non-optional output via create_artifact fails HERE,
+  // at the producing stage — not one step later in a downstream consumer.
+  describe('required-output existence check', () => {
+    // A graph whose lookupArtifacts traversal yields the given rows.
+    const graphWithRows =
+      (rows, { throwOnQuery = false } = {}) =>
+      async () => {
+        const proxy = new Proxy(
+          {},
+          {
+            get(_t, prop) {
+              if (prop === 'then' || typeof prop === 'symbol') return undefined;
+              if (prop === 'toList') {
+                return async () => {
+                  if (throwOnQuery) throw new Error('neptune unavailable');
+                  return rows;
+                };
+              }
+              if (prop === 'next') return async () => ({ value: rows[0] });
+              if (prop === 'hasNext') return async () => true;
+              return () => proxy;
+            },
+          },
+        );
+        return proxy;
+      };
+
+    it('fails the stage (missing_output_artifacts) when a required output was never recorded', async () => {
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        openGraph: graphWithRows([]),
+      });
+      const res = await runStage(baseArgs, deps);
+      expect(res).toMatchObject({ ok: false, reason: 'missing_output_artifacts' });
+      expect(res.detail).toContain('requirements-analysis');
+      expect(
+        deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+      ).toBe(true);
+    });
+
+    it('succeeds when the required output exists in the graph', async () => {
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        openGraph: graphWithRows([
+          { id: ['a1'], content: ['body'], artifact_type: ['requirements-analysis'] },
+        ]),
+      });
+      const res = await runStage(baseArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    });
+
+    it('a missing OPTIONAL output never fails the stage', async () => {
+      const lib = library();
+      lib.stagesById['requirements-analysis'].produces = [];
+      lib.stagesById['requirements-analysis'].optionalProduces = ['requirements-analysis'];
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+        openGraph: graphWithRows([]),
+      });
+      const res = await runStage(baseArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    });
+
+    it('a missing unit-of-work-dependency is exempt (promotion degenerates instead)', async () => {
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: unitWorkflow(), library: unitLibrary() }),
+        openGraph: graphWithRows([]),
+      });
+      const res = await runStage({ ...baseArgs, stageId: 'units-generation' }, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    });
+
+    it('a graph outage never fails a successful run (best-effort check)', async () => {
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        openGraph: graphWithRows([], { throwOnQuery: true }),
+      });
+      const res = await runStage(baseArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    });
+
+    it('no openGraph in deps skips the check entirely', async () => {
+      const deps = baseDeps({ spawnFn: okSpawn });
+      const res = await runStage(baseArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    });
+  });
+
   // Regression: the session process is long-lived and reused across every stage.
   // Each openGraph() opens a WebSocket (a socket fd); if run-stage doesn't close
   // it, fds accumulate stage-over-stage until the process hits EMFILE ("too many

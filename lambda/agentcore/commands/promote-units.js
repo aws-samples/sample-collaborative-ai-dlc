@@ -2,9 +2,10 @@
 // scheduling data model.
 //
 // Invoked by the orchestrator (durable step) right after the stage producing
-// `unit-of-work-dependency` SUCCEEDS — i.e. after its sensors passed (the
-// blocking `required-sections` sensor already ran parseBoltDag on the body)
-// and after every question gate the stage opened was answered. This command:
+// `unit-of-work-dependency` SUCCEEDS and after every question gate the stage
+// opened was answered. Sensors are advisory here — nothing upstream guarantees
+// the DAG artifact exists or parses; this command re-derives everything itself.
+// This command:
 //
 //   1. reads the artifact body from the business graph (the container is the
 //      only VPC-attached component on this path; the orchestrator has no
@@ -26,16 +27,52 @@
 //   walkingSkeleton first slug of the first batch (stable: batches are sorted)
 //   autonomyMode    null              — decided at the autonomy-ladder prompt
 //
+// Trivial-intent degeneration (issue #336): a small intent can leave the model
+// with nothing to fan out, so units-generation exits 0 without ever recording
+// the DAG artifact (or records prose with no units: block). Instead of aborting
+// the run one step after the stage was marked SUCCEEDED, promotion synthesizes
+// a one-unit plan — the whole intent as a single unit with no dependencies —
+// writes it as a real artifact (provenance/traceability identical to an
+// agent-written one) and promotes it through the normal path. The fan-out
+// validation gate still presents the 1-unit plan to the human. A DAG that
+// EXISTS but is broken (cycle, bad kind, unparseable entries) keeps failing
+// loudly: that is an agent defect, not a trivial intent.
+//
 // Returns values, never throws for expected conditions:
-//   { ok: true, unitCount, ... }               — promoted
-//   { ok: false, reason: 'artifact_not_found' }— no (current) DAG artifact
-//   { ok: false, reason: 'dag_absent'|'dag_malformed'|'dag_cyclic', detail }
+//   { ok: true, unitCount, ... }               — promoted (synthesized: true
+//                                                when the plan was degenerated)
+//   { ok: false, reason: 'dag_malformed'|'dag_cyclic', detail }
 //   { ok: false, reason: 'promotion_failed', detail } — infra error
 
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { parseBoltDag } from '../../shared/v2-sensor-contract.js';
 
 const DAG_ARTIFACT_TYPE = 'unit-of-work-dependency';
+
+// Deterministic slug for the degenerate plan: stable across re-promotions
+// (lanes are keyed by slug), git-ref-safe, and free of `--` (reserved as the
+// unit-lane separator in branch names — see unitBranchFor).
+const SYNTH_UNIT_SLUG = 'whole-intent';
+const SYNTH_ARTIFACT_ID = 'unit-of-work-dependency-synthesized';
+
+const SYNTH_DAG_BODY = `# Unit of Work Dependency
+
+No unit decomposition was produced by units-generation — the intent is small
+enough to build as a single unit of work. This plan was synthesized by the
+platform so the workflow can continue; the whole intent is one unit.
+
+\`\`\`yaml
+units:
+  - name: ${SYNTH_UNIT_SLUG}
+    depends_on: []
+\`\`\`
+`;
+
+// The degeneration cases: no artifact at all, an artifact without a units:
+// block, or a units: block with zero entries. Everything else malformed stays
+// a loud failure.
+const isDegenerateDag = (dag) =>
+  dag.reason === 'absent' || (dag.reason === 'malformed' && dag.detail === 'no entries');
 
 // Pick the artifact row to promote: current (non-superseded) rows win; among
 // those the newest by updated_at/created_at. A rewind marks old rows
@@ -95,12 +132,29 @@ export const promoteUnits = async (payload, deps) => {
       artifactType: DAG_ARTIFACT_TYPE,
       includeContent: true,
     });
-    const artifact = pickCurrentArtifact(rows);
-    if (!artifact) {
-      await event('v2.units.promotion_failed', `no current ${DAG_ARTIFACT_TYPE} artifact`);
-      return { ok: false, reason: 'artifact_not_found' };
+    let artifact = pickCurrentArtifact(rows);
+    let dag = artifact ? parseBoltDag(String(artifact.content ?? '')) : null;
+    let synthesized = false;
+    if (!artifact || (!dag.ok && isDegenerateDag(dag))) {
+      // Trivial-intent degeneration: no DAG (or an empty one) collapses to a
+      // single unit spanning the whole intent. Written as a real artifact so
+      // sourceArtifactId/DERIVED_FROM provenance and rewind supersession work
+      // exactly as for an agent-written DAG. Re-promotion is idempotent: the
+      // synthesized artifact is itself a valid DAG the next lookup finds.
+      const created = await graph.createArtifact({
+        artifactType: DAG_ARTIFACT_TYPE,
+        id: SYNTH_ARTIFACT_ID,
+        title: 'Unit of Work Dependency (synthesized single unit)',
+        content: SYNTH_DAG_BODY,
+      });
+      artifact = { id: created.id, content: SYNTH_DAG_BODY };
+      dag = parseBoltDag(SYNTH_DAG_BODY);
+      synthesized = true;
+      await event(
+        'v2.units.synthesized',
+        `no unit DAG produced — intent degenerated to a single unit "${SYNTH_UNIT_SLUG}"`,
+      );
     }
-    const dag = parseBoltDag(String(artifact.content ?? ''));
     if (!dag.ok) {
       await event('v2.units.promotion_failed', `DAG ${dag.reason}: ${dag.detail}`);
       return { ok: false, reason: `dag_${dag.reason}`, detail: dag.detail };
@@ -163,6 +217,7 @@ export const promoteUnits = async (payload, deps) => {
       unitCount: units.length,
       batchCount: batches.length,
       walkingSkeleton: plan.walkingSkeleton,
+      synthesized,
       sync,
       mirror,
     };

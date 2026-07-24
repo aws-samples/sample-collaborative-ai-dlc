@@ -493,6 +493,54 @@ const summarizeSensorDetail = (detail) => {
   return '';
 };
 
+// Types the required-output check exempts: the platform degenerates for them
+// downstream instead of failing the stage (promote-units synthesizes a
+// one-unit DAG when this artifact is missing — issue #336).
+const OUTPUT_CHECK_EXEMPT_TYPES = new Set(['unit-of-work-dependency']);
+
+// Required-output existence check (issue #336): a stage whose CLI exits 0 but
+// never records a declared, non-optional output via create_artifact must fail
+// HERE — at the producing stage, where restart/rewind-with-guidance re-runs
+// it — not one step later in a downstream consumer with an opaque reason.
+// Returns the list of missing artifact types ([] when all present). Best
+// effort by contract: any infra error (graph unreachable, lookup throw)
+// returns [] — an outage must never fail a successful run; content sensors
+// and downstream consumers still stand behind this check.
+const findMissingOutputArtifacts = async ({
+  stage,
+  unitSlug = null,
+  projectId,
+  intentId,
+  executionId,
+  openGraph,
+}) => {
+  const required = (stage.outputArtifacts ?? [])
+    .map((o) => ({ artifact: o?.artifact ?? o, optional: Boolean(o?.optional) }))
+    .filter((o) => o.artifact && !o.optional && !OUTPUT_CHECK_EXEMPT_TYPES.has(o.artifact));
+  if (required.length === 0 || !openGraph) return [];
+  let gConn = null;
+  try {
+    gConn = await openGraph();
+    const graph = createGraphWriter({ g: gConn, scope: { projectId, intentId, executionId } });
+    const missing = [];
+    for (const { artifact: artifactType } of required) {
+      const rows = await graph.lookupArtifacts({ artifactType });
+      // Per-unit lanes only count rows this lane wrote — unit A's artifact
+      // must not satisfy unit B's contract. Untagged rows (once-per-workflow
+      // producers) still count for any lane.
+      const mine = unitSlug
+        ? rows.filter((r) => r.unit_slug == null || String(r.unit_slug) === String(unitSlug))
+        : rows;
+      if (mine.length === 0) missing.push(artifactType);
+    }
+    return missing;
+  } catch {
+    return [];
+  } finally {
+    await closeGraphSource(gConn);
+  }
+};
+
 // Run the stage's deterministic sensors after the agent finishes. Records a
 // SensorRun verdict + broadcasts an `agent.note` per sensor. Returns a
 // human-readable reason string when a BLOCKING sensor held the stage, else null.
@@ -2221,6 +2269,25 @@ export const runStage = async (
     // 'git_commit_failed' is the new durability failure (work never became a
     // commit at all — the loss mode the engine exists to close).
     return fail(stageInstanceId, uncommitted ? 'git_commit_failed' : 'push_failed', detail);
+  }
+
+  // 5b. Required-output existence (issue #336) — before the content sensors so
+  // the clearer "output missing entirely" reason wins over a shape finding.
+  const missingOutputs = await findMissingOutputArtifacts({
+    stage,
+    unitSlug,
+    projectId,
+    intentId,
+    executionId,
+    openGraph,
+  }).catch(() => []);
+  if (missingOutputs.length > 0) {
+    return fail(
+      stageInstanceId,
+      'missing_output_artifacts',
+      `stage exited 0 but never recorded required output artifact(s) via create_artifact: ` +
+        `${missingOutputs.join(', ')} — restart or rewind this stage to re-run it`,
+    );
   }
 
   // 6. Deterministic sensors — the verification axis that runs AFTER the agent.

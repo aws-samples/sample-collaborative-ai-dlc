@@ -45,6 +45,9 @@ export const OUTPUT_CONTRACT = [
   '',
   '- Record EVERY business artifact via `create_artifact`; wire links with',
   '  `link_artifacts`. Output not written through a tool is DISCARDED.',
+  '- Record every non-conditional expected output even when the result seems',
+  '  trivial or degenerate (e.g. a single-unit plan) — the stage FAILS if a',
+  '  required output is missing from the graph.',
   '- Finish with a `send_output` summary and `collect_metric` for usage.',
   '- Do exactly THIS stage. Do not start other stages or invent status.',
 ].join('\n');

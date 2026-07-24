@@ -52,6 +52,7 @@ beforeEach(() => {
   writer = {
     lookupArtifacts: vi.fn(async () => [artifactRow()]),
     mirrorUnitDag: vi.fn(async () => ({ mirrored: 3, superseded: 0 })),
+    createArtifact: vi.fn(async ({ id }) => ({ id })),
   };
   deps = {
     store,
@@ -191,19 +192,61 @@ describe('promoteUnits', () => {
     );
   });
 
-  it('fails with artifact_not_found when no current DAG artifact exists', async () => {
+  // Trivial-intent degeneration (issue #336): a missing or empty DAG collapses
+  // to a synthesized one-unit plan instead of aborting the run.
+  it('synthesizes a one-unit plan when no current DAG artifact exists', async () => {
     writer.lookupArtifacts = vi.fn(async () => []);
     const res = await promoteUnits(basePayload, deps);
-    expect(res).toMatchObject({ ok: false, reason: 'artifact_not_found' });
-    expect(store.putUnitPlan).not.toHaveBeenCalled();
+    expect(res).toMatchObject({
+      ok: true,
+      unitCount: 1,
+      batchCount: 1,
+      synthesized: true,
+      walkingSkeleton: 'whole-intent',
+    });
+    expect(writer.createArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ artifactType: 'unit-of-work-dependency' }),
+    );
+    expect(store.putUnitPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        units: [{ slug: 'whole-intent', dependsOn: [], kind: null }],
+        batches: [['whole-intent']],
+        sourceArtifactId: 'unit-of-work-dependency-synthesized',
+      }),
+    );
     const evTypes = store.appendEvent.mock.calls.map((c) => c[0].type);
-    expect(evTypes).toContain('v2.units.promotion_failed');
+    expect(evTypes).toContain('v2.units.synthesized');
+    expect(evTypes).toContain('v2.units.promoted');
+    expect(evTypes).not.toContain('v2.units.promotion_failed');
   });
 
-  it('fails with the parser reason for a malformed DAG body', async () => {
+  it('synthesizes a one-unit plan when the artifact has no units: block', async () => {
     writer.lookupArtifacts = vi.fn(async () => [artifactRow({ content: 'no yaml here' })]);
     const res = await promoteUnits(basePayload, deps);
-    expect(res).toMatchObject({ ok: false, reason: 'dag_absent' });
+    expect(res).toMatchObject({ ok: true, unitCount: 1, synthesized: true });
+    const evTypes = store.appendEvent.mock.calls.map((c) => c[0].type);
+    expect(evTypes).toContain('v2.units.synthesized');
+  });
+
+  it('synthesizes a one-unit plan when the units: block has zero entries', async () => {
+    writer.lookupArtifacts = vi.fn(async () => [artifactRow({ content: '```yaml\nunits:\n```' })]);
+    const res = await promoteUnits(basePayload, deps);
+    expect(res).toMatchObject({ ok: true, unitCount: 1, synthesized: true });
+  });
+
+  it('a normal promotion reports synthesized: false', async () => {
+    const res = await promoteUnits(basePayload, deps);
+    expect(res).toMatchObject({ ok: true, unitCount: 3, synthesized: false });
+    expect(writer.createArtifact).not.toHaveBeenCalled();
+  });
+
+  it('fails with promotion_failed when the synthesized artifact cannot be written', async () => {
+    writer.lookupArtifacts = vi.fn(async () => []);
+    writer.createArtifact = vi.fn(async () => {
+      throw new Error('graph write refused');
+    });
+    const res = await promoteUnits(basePayload, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'promotion_failed' });
     expect(store.putUnitPlan).not.toHaveBeenCalled();
   });
 
