@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { GitHubIcon, GitLabIcon } from '@/components/icons/git-providers';
+import { GitHubIcon, GitLabIcon, BitbucketIcon } from '@/components/icons/git-providers';
 import type { GitProvider } from '@/services/gitProvider';
 
 interface RepoLinkProps {
@@ -13,11 +13,13 @@ interface RepoLinkProps {
 const PROVIDER_URL: Record<GitProvider, string> = {
   github: 'https://github.com',
   gitlab: 'https://gitlab.com',
+  bitbucket: 'https://bitbucket.org',
 };
 
 const PROVIDER_ICON: Record<GitProvider, typeof GitHubIcon> = {
   github: GitHubIcon,
   gitlab: GitLabIcon,
+  bitbucket: BitbucketIcon,
 };
 
 export function GitRepoLink({

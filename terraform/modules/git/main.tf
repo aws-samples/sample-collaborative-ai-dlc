@@ -14,6 +14,16 @@ resource "aws_secretsmanager_secret" "gitlab_oauth" {
   tags = var.tags
 }
 
+# Secrets Manager for Bitbucket Cloud OAuth consumer credentials. Sibling to
+# github_oauth / gitlab_oauth. Bitbucket access + refresh tokens are JWTs
+# (~2800+ chars) stored per-user in SSM by the git-handler (Intelligent-Tiering).
+resource "aws_secretsmanager_secret" "bitbucket_oauth" {
+  name_prefix = "${var.project_name}-${var.environment}-bitbucket-oauth-"
+  description = "Bitbucket OAuth consumer credentials (client_id, client_secret)"
+
+  tags = var.tags
+}
+
 # Secrets Manager for Jira Cloud OAuth 2.0 (3LO) App credentials. Sibling to
 # github_oauth — kept as a separate secret (not nested under a "tracker-oauth"
 # umbrella) so existing operators don't need to migrate their GitHub setup.

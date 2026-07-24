@@ -133,9 +133,9 @@ Configure agent authentication in **Admin → Agent Settings**: enter a Bedrock 
 
 ### Configure Provider OAuth Apps
 
-The platform integrates with external providers as **code hosts** (GitHub, GitLab) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app with it, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
+The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket) and **issue trackers** (GitHub Issues, GitLab Issues, Bitbucket Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app with it, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
 
-For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker — you register it once. Jira Cloud is a tracker only.
+For GitHub, GitLab and Bitbucket a single OAuth app serves both the code host and that provider's issue tracker — you register it once. Jira Cloud is a tracker only.
 
 All providers are optional. Skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI will stay disabled.
 
@@ -177,6 +177,18 @@ For **GitHub App mode**:
 
 GitLab's `api` scope includes repository writes, including changes to `.gitlab-ci.yml`; there is no separate workflow-file scope. Connections missing `api` are reported as requiring reauthorization.
 
+#### Bitbucket (code host + Bitbucket Issues)
+
+1. Open **Bitbucket → Workspace settings → OAuth consumers → Add consumer**.
+2. Use:
+   - **Callback URL**: `https://<your-cloudfront-domain>/bitbucket/callback`
+   - **Permissions**: Account (Read), Repositories (Read & Write), Pull requests (Read & Write).
+   - Leave **This is a private consumer** enabled.
+3. Save, then copy the **Key** (Client ID) and **Secret**.
+4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Bitbucket Issues**. Paste both values and click **Save**.
+
+Bitbucket OAuth scopes are the singular scope names (`account`, `repository`, `repository:write`, `pullrequest`, `pullrequest:write`) — the platform requests these automatically. Bitbucket access tokens are short-lived (~2h); the engine refreshes them just-in-time using the stored refresh token, so long-running construction jobs keep a valid token.
+
 #### Jira Cloud
 
 1. Open the [Atlassian Developer Console](https://developer.atlassian.com/console/myapps) and create an **OAuth 2.0 integration**.
@@ -188,7 +200,7 @@ GitLab's `api` scope includes repository writes, including changes to `.gitlab-c
 4. Open the **Settings** tab of your app and copy the **Client ID** and **Client Secret**.
 5. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Jira Cloud**. Paste both values and click **Save**.
 
-Users then connect their personal accounts from the project-creation flow (GitHub/GitLab) or **Project Settings → Trackers** (Jira) for any project that needs the integration. The Jira Cloud and GitLab Issues tracker integrations are read-only — no issue comments or status changes are pushed back.
+Users then connect their personal accounts from the project-creation flow (GitHub/GitLab/Bitbucket) or **Project Settings → Trackers** (Jira) for any project that needs the integration. The Jira Cloud and GitLab Issues tracker integrations are read-only — no issue comments or status changes are pushed back.
 
 You can rotate credentials later by entering new values into the same form; clicking **Save** overwrites the previously stored secret.
 
@@ -204,6 +216,10 @@ aws secretsmanager put-secret-value \
 
 aws secretsmanager put-secret-value \
   --secret-id $(terraform -chdir=terraform output -raw gitlab_oauth_secret_name) \
+  --secret-string '{"client_id":"...","client_secret":"..."}'
+
+aws secretsmanager put-secret-value \
+  --secret-id $(terraform -chdir=terraform output -raw bitbucket_oauth_secret_name) \
   --secret-string '{"client_id":"...","client_secret":"..."}'
 
 aws secretsmanager put-secret-value \

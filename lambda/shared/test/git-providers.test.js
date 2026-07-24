@@ -46,11 +46,12 @@ describe('git-providers registry', () => {
   it('isKnownProvider treats undefined as the default (github)', () => {
     expect(isKnownProvider(undefined)).toBe(true);
     expect(isKnownProvider('gitlab')).toBe(true);
-    expect(isKnownProvider('bitbucket')).toBe(false);
+    expect(isKnownProvider('bitbucket')).toBe(true);
+    expect(isKnownProvider('nope')).toBe(false);
   });
 
   it('throws ProviderError for an unknown provider', () => {
-    expect(() => getProvider('bitbucket')).toThrow(ProviderError);
+    expect(() => getProvider('nope')).toThrow(ProviderError);
   });
 });
 
@@ -818,6 +819,397 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
   });
 });
 
+describe('bitbucket provider — workspace listing + tree + ancestor + validation', () => {
+  const bb = getProvider('bitbucket');
+
+  it('splitWorkspaceRepo rejects injection and malformed refs', () => {
+    expect(() => bb.splitWorkspaceRepo('ws/repo/extra')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('ws')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('ws/repo?x=1')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('../repo')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('ws/..')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('ws/re po')).toThrow(ProviderError);
+    expect(() => bb.splitWorkspaceRepo('../etc/passwd')).toThrow(ProviderError);
+    expect(bb.splitWorkspaceRepo('my-ws/my.repo_1')).toEqual({
+      workspace: 'my-ws',
+      repoSlug: 'my.repo_1',
+    });
+  });
+
+  it('buildCloneUrl uses the x-token-auth scheme', () => {
+    expect(bb.buildCloneUrl('ws/repo', 'tok')).toBe(
+      'https://x-token-auth:tok@bitbucket.org/ws/repo.git',
+    );
+    expect(bb.buildCloneUrl('ws/repo')).toBe('https://bitbucket.org/ws/repo.git');
+  });
+
+  it('listRepos enumerates via /user/workspaces then aggregates per-workspace repos', async () => {
+    const fetchImpl = makeFetch([
+      // /user/workspaces returns MEMBERSHIP objects nesting the workspace under
+      // `.workspace` (slug at item.workspace.slug). Include one nested and one
+      // top-level shape so the resolver must handle both.
+      [
+        '/user/workspaces',
+        { json: { values: [{ workspace: { slug: 'acme' } }, { slug: 'beta' }] } },
+      ],
+      [
+        '/repositories/acme?role=member',
+        {
+          json: {
+            values: [
+              {
+                uuid: '{1}',
+                name: 'app',
+                full_name: 'acme/app',
+                is_private: true,
+                mainbranch: { name: 'main' },
+              },
+            ],
+          },
+        },
+      ],
+      [
+        '/repositories/beta?role=member',
+        {
+          json: {
+            values: [
+              {
+                uuid: '{2}',
+                name: 'lib',
+                full_name: 'beta/lib',
+                is_private: false,
+                mainbranch: { name: 'develop' },
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const repos = await bb.listRepos({ token: 't', fetchImpl });
+    expect(repos).toEqual([
+      { id: '{1}', name: 'app', fullName: 'acme/app', private: true, defaultBranch: 'main' },
+      { id: '{2}', name: 'lib', fullName: 'beta/lib', private: false, defaultBranch: 'develop' },
+    ]);
+    // Must hit the CHANGE-2770-safe workspace endpoint, never the removed
+    // cross-workspace ?role=member listing.
+    expect(fetchImpl.calls.some((c) => c.url.includes('/user/workspaces'))).toBe(true);
+    expect(fetchImpl.calls.some((c) => /\/repositories\?role=member/.test(c.url))).toBe(false);
+  });
+
+  it('listRepos surfaces a clear error when the token cannot enumerate workspaces (410)', async () => {
+    const fetchImpl = makeFetch([['/user/workspaces', { status: 410, json: {} }]]);
+    await expect(bb.listRepos({ token: 't', fetchImpl })).rejects.toThrow(ProviderError);
+  });
+
+  it('getTree walks subdirectories (max_depth) and paginates', async () => {
+    let page = 0;
+    const fetchImpl = makeFetch([
+      [
+        '/src/main/',
+        () => {
+          page += 1;
+          return page === 1
+            ? {
+                json: {
+                  values: [
+                    { type: 'commit_directory', path: 'src' },
+                    { type: 'commit_file', path: 'README.md', size: 10, commit: { hash: 'a1' } },
+                  ],
+                  next: 'https://api.bitbucket.org/2.0/repositories/ws/repo/src/main/?page=2',
+                },
+              }
+            : {
+                json: {
+                  values: [
+                    {
+                      type: 'commit_file',
+                      path: 'src/App.java',
+                      size: 20,
+                      commit: { hash: 'b2' },
+                    },
+                  ],
+                },
+              };
+        },
+      ],
+    ]);
+    const tree = await bb.getTree({ token: 't', fetchImpl }, 'ws/repo', 'main');
+    expect(tree).toEqual([
+      { path: 'README.md', sha: 'a1', size: 10 },
+      { path: 'src/App.java', sha: 'b2', size: 20 },
+    ]);
+    expect(fetchImpl.calls[0].url).toContain('max_depth=100');
+  });
+
+  it('isCommitAncestor uses the merge-base endpoint (single call) and matches on hash', async () => {
+    const fetchImpl = makeFetch([['/merge-base/', { json: { hash: 'target-sha' } }]]);
+    expect(
+      await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'target-sha', 'intent'),
+    ).toBe(true);
+    // Exactly one API call — no O(history) commit-log walk.
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(fetchImpl.calls[0].url).toContain('/merge-base/target-sha..intent');
+  });
+
+  it('isCommitAncestor matches when merge-base returns the full hash for a short ancestor', async () => {
+    const fetchImpl = makeFetch([['/merge-base/', { json: { hash: 'abcdef1234567890' } }]]);
+    expect(
+      await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'abcdef1', 'intent'),
+    ).toBe(true);
+  });
+
+  it('isCommitAncestor returns false when the merge-base is a different commit', async () => {
+    const fetchImpl = makeFetch([['/merge-base/', { json: { hash: 'other-sha' } }]]);
+    expect(
+      await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'missing-sha', 'intent'),
+    ).toBe(false);
+  });
+
+  it('reopenPullRequest throws (Bitbucket cannot reopen declined PRs via API)', async () => {
+    await expect(
+      bb.reopenPullRequest({ token: 't', fetchImpl: makeFetch([]) }, 'ws/repo', 1),
+    ).rejects.toThrow(ProviderError);
+  });
+
+  it('setPullRequestDraft short-circuits when the native draft flag already matches', async () => {
+    // Bitbucket Cloud exposes a native `draft` boolean; when the PR is already
+    // in the requested draft state the call short-circuits after the status
+    // read (no PUT).
+    const fetchImpl = makeFetch([
+      ['/pullrequests/1', { json: { id: 1, state: 'OPEN', title: 'feat', draft: true } }],
+    ]);
+    const out = await bb.setPullRequestDraft({ token: 't', fetchImpl }, 'ws/repo', 1, true);
+    expect(out).toMatchObject({ state: 'open', draft: true });
+    // No PUT issued because the desired state already matched.
+    expect(fetchImpl.calls.every((c) => (c.options.method ?? 'GET') === 'GET')).toBe(true);
+  });
+
+  it('setPullRequestDraft sets the native draft boolean via PUT (no title mangling)', async () => {
+    let draft = false;
+    const fetchImpl = makeFetch([
+      [
+        '/pullrequests/1',
+        (url, options) => {
+          if ((options?.method ?? 'GET') === 'PUT') {
+            const body = JSON.parse(options.body);
+            draft = body.draft;
+            // The title must NOT be touched by a draft transition.
+            expect(body.title).toBeUndefined();
+            return { json: { id: 1, state: 'OPEN', title: 'feat', draft } };
+          }
+          return { json: { id: 1, state: 'OPEN', title: 'feat', draft } };
+        },
+      ],
+    ]);
+    const out = await bb.setPullRequestDraft({ token: 't', fetchImpl }, 'ws/repo', 1, true);
+    expect(out).toMatchObject({ state: 'open', draft: true });
+    expect(fetchImpl.calls.some((c) => (c.options.method ?? 'GET') === 'PUT')).toBe(true);
+  });
+
+  it('findPullRequest names the draft field so draft PRs are not hidden (BCLOUD-23659)', async () => {
+    const fetchImpl = makeFetch([['/pullrequests', { json: { values: [{ id: 9 }] } }]]);
+    await bb.findPullRequest({ token: 't', fetchImpl }, 'ws/repo', {
+      sourceBranch: 'feat',
+      targetBranch: 'main',
+    });
+    const url = decodeURIComponent(fetchImpl.calls[0].url);
+    expect(url).toContain('draft=true OR draft=false');
+  });
+
+  it('getFileContents encodes each path segment but preserves the slashes', async () => {
+    const fetchImpl = makeFetch([['/src/', { text: 'file body', json: {} }]]);
+    await bb.getFileContents({ token: 't', fetchImpl }, 'ws/repo', 'src/main/App.java', 'main');
+    const url = fetchImpl.calls[0].url;
+    // Slashes between segments stay literal; only segment contents are encoded.
+    expect(url).toContain('/src/main/src/main/App.java');
+    expect(url).not.toContain('src%2Fmain%2FApp.java');
+  });
+
+  it('getFileContents percent-encodes reserved chars WITHIN a segment', async () => {
+    const fetchImpl = makeFetch([['/src/', { text: 'x', json: {} }]]);
+    await bb.getFileContents({ token: 't', fetchImpl }, 'ws/repo', 'dir/a b.txt', 'main');
+    const url = fetchImpl.calls[0].url;
+    expect(url).toContain('/dir/a%20b.txt');
+  });
+
+  it('listBranches follows pagination (data.next) across pages', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/refs/branches',
+        (url) =>
+          url.includes('page=2')
+            ? { json: { values: [{ name: 'feature/b' }] } }
+            : {
+                json: {
+                  values: [{ name: 'main' }],
+                  next: 'https://api.bitbucket.org/2.0/repositories/ws/repo/refs/branches?page=2',
+                },
+              },
+      ],
+    ]);
+    const names = await bb.listBranches({ token: 't', fetchImpl }, 'ws/repo');
+    expect(names).toEqual(['main', 'feature/b']);
+    expect(fetchImpl.calls.some((c) => c.url.includes('page=2'))).toBe(true);
+  });
+
+  it('getUnmergedConstructionTaskBranches sees task branches beyond page 1', async () => {
+    const branchPage = (url) =>
+      url.includes('page=2')
+        ? { json: { values: [{ name: 'intent--task-late' }] } }
+        : {
+            json: {
+              values: [{ name: 'main' }],
+              next: 'https://api.bitbucket.org/2.0/repositories/ws/repo/refs/branches?page=2',
+            },
+          };
+    const fetchImpl = makeFetch([
+      ['/refs/branches', branchPage],
+      // task branch is NOT merged: exclude returns a commit
+      ['/commits/intent--task-late', { json: { values: [{ hash: 'c1' }] } }],
+    ]);
+    const unmerged = await bb.getUnmergedConstructionTaskBranches(
+      { token: 't', fetchImpl },
+      'ws/repo',
+      'intent',
+    );
+    expect(unmerged).toContain('intent--task-late');
+  });
+
+  it('listPRComments fetches the comment list once and partitions by inline', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/pullrequests/7/comments',
+        {
+          json: {
+            values: [
+              {
+                id: 1,
+                content: { raw: 'general' },
+                user: { nickname: 'jane' },
+                created_on: '2026-01-01',
+              },
+              {
+                id: 2,
+                content: { raw: 'inline' },
+                inline: { path: 'a.js', to: 3 },
+                user: { nickname: 'bob' },
+                created_on: '2026-01-02',
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const comments = await bb.listPRComments({ token: 't', fetchImpl }, 'ws/repo', 7);
+    // Exactly one network call (no second q=inline!=null request).
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(fetchImpl.calls[0].url).not.toContain('inline!=null');
+    expect(comments.map((c) => c.type)).toEqual(['issue', 'review']);
+    expect(comments[1]).toMatchObject({ path: 'a.js', line: 3 });
+  });
+
+  it('maps comment authors via nickname and never mislabels teams as bots', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/pullrequests/7/comments',
+        {
+          json: {
+            values: [
+              {
+                id: 1,
+                content: { raw: 'x' },
+                user: { nickname: 'acme-team', type: 'team' },
+                created_on: '2026-01-01',
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const [c] = await bb.listPRComments({ token: 't', fetchImpl }, 'ws/repo', 7);
+    expect(c.user.login).toBe('acme-team');
+    expect(c.bot).toBe(false);
+  });
+
+  it('mergeBranch declines the temporary PR when the merge conflicts', async () => {
+    const fetchImpl = makeFetch([
+      ['/pullrequests/1/merge', { status: 409, json: { error: { message: 'conflict' } } }],
+      ['/pullrequests/1/decline', { json: { id: 1, state: 'DECLINED' } }],
+      // create-PR (generic pullrequests POST) returns the temp PR id
+      ['/pullrequests', { json: { id: 1 } }],
+    ]);
+    const out = await bb.mergeBranch({ token: 't', fetchImpl }, 'ws/repo', {
+      base: 'main',
+      head: 'feat',
+    });
+    expect(out).toBe('conflict');
+    expect(fetchImpl.calls.some((c) => c.url.includes('/pullrequests/1/decline'))).toBe(true);
+  });
+
+  it('getAuthenticatedUser resolves login from nickname and email from /user/emails', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/user/emails',
+        {
+          json: {
+            values: [
+              { email: 'alt@example.com', is_primary: false, is_confirmed: true },
+              { email: 'jane@example.com', is_primary: true, is_confirmed: true },
+            ],
+          },
+        },
+      ],
+      ['/user', { json: { account_id: 'acc-1', nickname: 'jane', display_name: 'Jane Dev' } }],
+    ]);
+    const user = await bb.getAuthenticatedUser({ token: 't', fetchImpl });
+    expect(user).toEqual({
+      login: 'jane',
+      authorName: 'Jane Dev',
+      authorEmail: 'jane@example.com',
+    });
+  });
+
+  it('getAuthenticatedUser falls back to a noreply email when /user/emails is unavailable', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/emails', { status: 403, json: {} }],
+      ['/user', { json: { account_id: 'acc-9', nickname: 'bob', display_name: 'Bob' } }],
+    ]);
+    const user = await bb.getAuthenticatedUser({ token: 't', fetchImpl });
+    expect(user.login).toBe('bob');
+    expect(user.authorEmail).toBe('acc-9@users.noreply.bitbucket.org');
+  });
+
+  it('getRepositoryAccess reports write access from the permissions probe', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/permissions/repositories', { json: { values: [{ permission: 'write' }] } }],
+      [
+        '/repositories/ws/repo',
+        { json: { uuid: '{u}', is_private: true, mainbranch: { name: 'main' } } },
+      ],
+    ]);
+    const access = await bb.getRepositoryAccess({ token: 't', fetchImpl }, 'ws/repo');
+    expect(access).toMatchObject({
+      defaultBranch: 'main',
+      private: true,
+      permission: 'write',
+      canRead: true,
+      canWrite: true,
+    });
+  });
+
+  it('getRepositoryAccess degrades to read-only when the permissions probe fails', async () => {
+    const fetchImpl = makeFetch([
+      ['/user/permissions/repositories', { status: 500, json: {} }],
+      [
+        '/repositories/ws/repo',
+        { json: { uuid: '{u}', is_private: false, mainbranch: { name: 'dev' } } },
+      ],
+    ]);
+    const access = await bb.getRepositoryAccess({ token: 't', fetchImpl }, 'ws/repo');
+    expect(access).toMatchObject({ defaultBranch: 'dev', canRead: true, canWrite: false });
+  });
+});
+
 describe('OAuth metadata', () => {
   it('exposes provider-specific secret env names and scopes', () => {
     expect(getProvider('github').oauth.secretEnvName).toBe('GITHUB_OAUTH_SECRET_NAME');
@@ -831,6 +1223,13 @@ describe('OAuth metadata', () => {
     expect(getProvider('gitlab').oauth.requiredConnectionScopes).toEqual(['api', 'read_user']);
     expect(getProvider('gitlab').oauth.refreshAccessToken).toBeTypeOf('function');
     expect(getProvider('github').oauth.refreshAccessToken).toBeUndefined();
+    // Bitbucket OAuth scopes MUST be singular scope names (not the plural REST
+    // path names) or the authorize call fails with "Unknown scope".
+    expect(getProvider('bitbucket').oauth.secretEnvName).toBe('BITBUCKET_OAUTH_SECRET_NAME');
+    expect(getProvider('bitbucket').oauth.scopes).toBe(
+      'account email repository repository:write pullrequest pullrequest:write',
+    );
+    expect(getProvider('bitbucket').oauth.refreshAccessToken).toBeTypeOf('function');
   });
 
   it('gitlab refreshAccessToken sends redirect_uri (GitLab rejects refresh without it)', async () => {

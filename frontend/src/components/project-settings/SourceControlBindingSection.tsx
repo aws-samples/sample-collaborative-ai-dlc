@@ -24,6 +24,8 @@ import type { GitProvider } from '@/services/gitProvider';
 import type { Project } from '@/services/projects';
 import {
   sourceControlService,
+  SOURCE_CONTROL_AUTH_OPTIONS,
+  defaultAuthTypeFor,
   type ProjectSourceControlStatus,
   type SourceControlAuthType,
   type SourceControlProviderSelection,
@@ -35,14 +37,15 @@ interface Props {
 }
 
 const authOptions = (provider: GitProvider): SourceControlAuthType[] =>
-  provider === 'github' ? ['github-app', 'github-oauth'] : ['gitlab-oauth'];
+  SOURCE_CONTROL_AUTH_OPTIONS[provider].map((option) => option.authType);
 
-const authLabel = (authType: SourceControlAuthType) =>
-  authType === 'github-app'
-    ? 'GitHub App'
-    : authType === 'github-oauth'
-      ? 'Delegated GitHub OAuth'
-      : 'Delegated GitLab OAuth';
+const authLabel = (authType: SourceControlAuthType) => {
+  for (const options of Object.values(SOURCE_CONTROL_AUTH_OPTIONS)) {
+    const match = options.find((option) => option.authType === authType);
+    if (match) return match.label;
+  }
+  return authType;
+};
 
 const readableReason = (reason: string | null) =>
   reason ? reason.replaceAll('_', ' ').replace(/^\w/, (value) => value.toUpperCase()) : null;
@@ -155,8 +158,7 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
           const existing = next.repositories.find(
             (repository) => repository.provider === provider && repository.authType,
           );
-          updated[provider] =
-            existing?.authType ?? (provider === 'github' ? 'github-app' : 'gitlab-oauth');
+          updated[provider] = existing?.authType ?? defaultAuthTypeFor(provider);
         }
         return updated;
       });

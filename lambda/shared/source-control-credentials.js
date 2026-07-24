@@ -246,12 +246,17 @@ const resolveBindingCredential = async ({
       item: connection,
       gitProvider: binding.provider,
     });
-    username = binding.provider === 'gitlab' ? 'oauth2' : 'x-access-token';
+    username =
+      binding.provider === 'gitlab'
+        ? 'oauth2'
+        : binding.provider === 'bitbucket'
+          ? 'x-token-auth'
+          : 'x-access-token';
     // 401 recovery for provider API calls (glFetch ctx.onRefresh): the stored
     // token can be rejected before its recorded expiry (clock skew, revocation,
     // or a refresh race that this call read mid-rotation). Refresh past the
     // rejected token and retry before anyone concludes the binding is broken.
-    if (binding.provider === 'gitlab') {
+    if (binding.provider === 'gitlab' || binding.provider === 'bitbucket') {
       const rejectedToken = token;
       refresh = () =>
         ensureFreshGitToken({
