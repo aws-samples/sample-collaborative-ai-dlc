@@ -2253,8 +2253,41 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
-        # Provider API operations are delegated to the source-control service.
-        # The durable history therefore contains only project/repository refs.
+        # Git-token SSM: read the starter's per-user OAuth token and write back
+        # the refreshed pair during init-ws (ensureFreshGitToken).
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
+      },
+      {
+        # GitHub App auth (read-only): mode dispatch + per-stage installation
+        # token minting when the platform runs in app mode.
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = compact([
+          var.github_app_config_param_arn,
+        ])
+      },
+      {
+        # Best-effort persist of refreshed GitLab connection metadata (the token
+        # itself lives in SSM above; this only rotates the row's scope/updatedAt).
+        Effect = "Allow"
+        Action = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+        ])
+      },
+      {
+        # GitHub App private key AND the GitLab OAuth app credentials — the
+        # latter is needed to exchange a refresh token for a fresh access token
+        # during init-ws (refreshGitlabToken → getGitlabOAuthCredentials).
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = compact([var.github_app_private_key_secret_arn, var.gitlab_oauth_secret_arn])
+      },
+      {
+        # Delegate provider API operations to the source-control service.
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
         Resource = [local.source_control_function_arn]
@@ -2301,11 +2334,31 @@ module "v2_orchestrator_lambda" {
   lambda_role = aws_iam_role.v2_orchestrator.arn
 
   environment_variables = {
-    ENVIRONMENT             = var.environment
-    V2_PROCESS_TABLE        = var.v2_executions_table_name
-    BLOCKS_TABLE            = var.blocks_table_name
-    AGENTCORE_RUNTIME_ARN   = var.agentcore_runtime_arn
-    SOURCE_CONTROL_FUNCTION = module.source_control_lambda.lambda_function_name
+    ENVIRONMENT           = var.environment
+    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    BLOCKS_TABLE          = var.blocks_table_name
+    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    GIT_TOKEN_SSM_PREFIX  = "${var.project_name}/${var.environment}/git-token"
+    # Git-token resolution: resolveToken reads the starter's connection row from
+    # these tables, then the SSM token. The IAM statements were wired from day
+    # one but these env vars were MISSING — getGitConnection threw on TableName
+    # undefined, resolveToken degraded to an empty token, and a private-repo
+    # clone silently fell back to `git init` (see init-ws).
+    GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    # GitHub App auth: the orchestrator consults the platform auth mode and, in
+    # app mode, mints repo-scoped installation tokens per stage dispatch
+    # (installation tokens live ~1h, shorter than a long run).
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    # GitLab OAuth: access tokens live ~2h, so init-ws refreshes an expired
+    # token just-in-time (ensureFreshGitToken → refreshGitlabToken). The refresh
+    # exchange needs the OAuth app credentials (secret) and the same redirect_uri
+    # used at authorization time; without these the refresh throws and the clone
+    # degrades to an unauthenticated "Access denied".
+    GITLAB_OAUTH_SECRET_NAME = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI      = var.gitlab_redirect_uri
+    SOURCE_CONTROL_FUNCTION  = module.source_control_lambda.lambda_function_name
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts
