@@ -1485,9 +1485,20 @@ resource "aws_iam_role_policy" "bitbucket_connector" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
-        Resource = compact([var.git_connections_table_arn, var.git_provider_connections_table_arn])
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+        ]
+        Resource = compact([
+          var.git_connections_table_arn,
+          var.git_provider_connections_table_arn,
+          var.source_control_bindings_table_arn,
+          "${var.source_control_bindings_table_arn}/index/*",
+        ])
       },
       {
         Effect   = "Allow"
@@ -1533,6 +1544,7 @@ module "bitbucket_lambda" {
     BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
     BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
     ENVIRONMENT                    = var.environment
