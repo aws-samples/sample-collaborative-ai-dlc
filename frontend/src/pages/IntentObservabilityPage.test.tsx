@@ -21,6 +21,7 @@ const deleteIntent = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
+const writeText = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -100,6 +101,11 @@ const renderPage = () =>
 beforeEach(() => {
   vi.clearAllMocks();
   clearIntentCache();
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  });
+  writeText.mockResolvedValue(undefined);
   graph.mockResolvedValue({ nodes: [], edges: [] });
   compiled.mockResolvedValue({ graph: { nodes: [], edges: [] } });
   workflowGet.mockResolvedValue({ id: 'w', name: 'wf', version: 1, stages: [] });
@@ -190,6 +196,34 @@ describe('IntentObservabilityPage — Header simplification', () => {
     expect(screen.queryByText(/^Space:/)).not.toBeInTheDocument();
     expect(screen.getByText('Test Intent')).toBeInTheDocument();
     expect(screen.getByLabelText('Back to space')).toBeInTheDocument();
+  });
+});
+
+describe('IntentObservabilityPage — Initial prompt', () => {
+  it('shows the final user draft and copies it verbatim', async () => {
+    const prompt = 'Add account recovery.\n\nKeep existing sessions active.';
+    get.mockResolvedValue(baseDetail({ prompt }));
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        (_, element) =>
+          element?.classList.contains('select-text') === true && element.textContent === prompt,
+      ),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy initial prompt' }));
+
+    expect(writeText).toHaveBeenCalledWith(prompt);
+    expect(screen.getByRole('button', { name: 'Initial prompt copied' })).toBeInTheDocument();
+  });
+
+  it('shows an empty state and disables copy when no prompt was recorded', async () => {
+    get.mockResolvedValue(baseDetail({ prompt: null }));
+    renderPage();
+
+    expect(await screen.findByText('No initial prompt recorded')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy initial prompt' })).toBeDisabled();
   });
 });
 

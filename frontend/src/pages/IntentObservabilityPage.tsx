@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
 import type { StageState } from '@/services/intents';
@@ -32,7 +32,17 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Loader2, MoreHorizontal, ScrollText, Trash2, X, XCircle } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  Copy,
+  Loader2,
+  MoreHorizontal,
+  ScrollText,
+  Trash2,
+  X,
+  XCircle,
+} from 'lucide-react';
 
 type ObsView = 'diagram' | 'graph' | 'list';
 const VALID_VIEWS: ReadonlySet<ObsView> = new Set(['diagram', 'graph', 'list']);
@@ -134,6 +144,24 @@ export default function IntentObservabilityPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [promptCopied, setPromptCopied] = useState(false);
+
+  useEffect(() => {
+    if (!promptCopied) return;
+    const timeout = window.setTimeout(() => setPromptCopied(false), 2_000);
+    return () => window.clearTimeout(timeout);
+  }, [promptCopied]);
+
+  const handleCopyPrompt = async () => {
+    const prompt = detail?.intent.prompt;
+    if (!prompt?.trim()) return;
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setPromptCopied(true);
+    } catch {
+      setActionError('Failed to copy initial prompt');
+    }
+  };
 
   const handleCancel = async () => {
     const message =
@@ -396,6 +424,40 @@ export default function IntentObservabilityPage() {
             {actionError}
           </div>
         )}
+
+        {/* ── INITIAL USER PROMPT ───────────────────────────────────── */}
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-sm">Initial prompt</CardTitle>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                aria-label={promptCopied ? 'Initial prompt copied' : 'Copy initial prompt'}
+                title={promptCopied ? 'Copied' : 'Copy initial prompt'}
+                disabled={!intent.prompt?.trim()}
+                onClick={() => void handleCopyPrompt()}
+              >
+                {promptCopied ? (
+                  <Check className="h-3.5 w-3.5 text-agent-success" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {intent.prompt?.trim() ? (
+              <div className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 text-foreground select-text">
+                {intent.prompt}
+              </div>
+            ) : (
+              <span className="text-xs text-muted-foreground">No initial prompt recorded</span>
+            )}
+          </CardContent>
+        </Card>
 
         {/* ── USAGE & COST + RUNNING AGENTS ──────────────────────────── */}
         <Card>
