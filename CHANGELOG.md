@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional static egress for OAuth connectors, credential resolution, and seed-blocks through `lambda_vpc_scope = "public-egress"`, with NAT public IP outputs and addresses printed in the deployment summary for external allow-lists.
+
 ## [2.0.0] - 2026-08-06
 
 Second and final step of the v2 release, building on `2.0.0-preview0`. Everything listed below is new since that preview; see the `2.0.0-preview0` entry for the v2 platform itself.

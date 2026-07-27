@@ -279,6 +279,16 @@ output "private_subnet_ids" {
   value       = module.networking.private_subnet_ids
 }
 
+output "nat_egress_public_ips" {
+  description = "Static public IPv4 addresses to add to external allowlists"
+  value       = module.networking.nat_public_ips
+}
+
+output "lambda_vpc_scope" {
+  description = "Applied Lambda VPC placement scope"
+  value       = var.lambda_vpc_scope
+}
+
 output "aws_region" {
   description = "AWS region"
   value       = var.aws_region

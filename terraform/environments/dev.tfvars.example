@@ -1,6 +1,11 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
+# Keep only Lambdas already requiring private resources in the VPC. Set to
+# "public-egress" to also route OAuth connectors, credential resolution, and
+# seed-blocks through NAT.
+lambda_vpc_scope = "required"
+
 # Bedrock model pinning (for claude and opencode drivers)
 bedrock_model = "us.anthropic.claude-sonnet-4-6"
 

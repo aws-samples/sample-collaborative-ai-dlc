@@ -282,6 +282,7 @@ Bootstrap creates `terraform/environments/dev.s3.tfbackend`. The environment arg
 ./scripts/bootstrap.sh dev
 cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 # Set aws_region = "<aws-region>" in dev.tfvars.
+# For static provider egress IPs, set lambda_vpc_scope = "public-egress".
 # For a custom domain, also set app_domain plus either acm_certificate_arn or
 # route53_zone_id — see "Custom domain → Without the installer" above.
 ./scripts/deploy-terraform.sh dev
@@ -318,6 +319,8 @@ These environment variables are useful when iterating:
 | `AIDLC_TFVARS_FILE`   | Path to an alternative `.tfvars`, overriding the `<environment>.tfvars` convention.                        |
 | `AIDLC_BACKEND_FILE`  | Path to an alternative `.s3.tfbackend`.                                                                    |
 | `AIDLC_CONFIG_DIR`    | Directory holding `environments/`, if you keep Terraform configuration outside the checkout.               |
+
+With `lambda_vpc_scope = "public-egress"`, the deployment summary prints the NAT addresses to add to provider allow-lists. Development environments expose one address and production environments expose two; allow-list every address printed. See [Git and Tracker Integration → Static egress IPs](../using-the-platform/git-integration.md#static-egress-ips) for the affected services.
 
 ### Bootstrap the first platform administrator
 

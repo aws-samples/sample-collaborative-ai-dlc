@@ -115,13 +115,14 @@ tf_output() {
 }
 
 print_deployment_summary() {
-    local application_url region deployed_environment custom_domain aliases auth_mode providers
+    local application_url region deployed_environment custom_domain aliases auth_mode providers lambda_vpc_scope nat_ips
     local oidc_callback saml_acs saml_entity_id
     application_url="$(tf_output application_url)"
     region="$(tf_output aws_region)"
     deployed_environment="$(tf_output environment)"
     custom_domain="$(tf_output custom_domain_enabled)"
     auth_mode="$(tf_output auth_mode)"
+    lambda_vpc_scope="$(tf_output lambda_vpc_scope)"
 
     echo ""
     echo "Infrastructure deployment complete"
@@ -157,6 +158,10 @@ print_deployment_summary() {
     [[ -n "$oidc_callback" ]] && printf '  OIDC callback:   %s\n' "$oidc_callback"
     [[ -n "$saml_acs" ]] && printf '  SAML ACS:        %s\n' "$saml_acs"
     [[ -n "$saml_entity_id" ]] && printf '  SAML entity ID:  %s\n' "$saml_entity_id"
+    if [[ "$lambda_vpc_scope" == "public-egress" ]]; then
+        nat_ips="$(terraform -chdir="$TF_DIR" output -json nat_egress_public_ips 2>/dev/null || true)"
+        [[ -n "$nat_ips" ]] && printf '  NAT egress IPs:  %s\n' "$nat_ips"
+    fi
     printf '  Next step:       %s/deploy-frontend.sh %s\n' "$SCRIPT_DIR" "$ENVIRONMENT"
 }
 
