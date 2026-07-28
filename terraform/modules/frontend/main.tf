@@ -166,6 +166,11 @@ resource "aws_cloudfront_distribution" "frontend" {
   is_ipv6_enabled     = true
   default_root_object = "index.html"
 
+  # Empty unless a custom domain is configured, in which case CloudFront also
+  # answers on these hostnames. Every alias must be covered by the certificate
+  # in var.acm_certificate_arn and must not be claimed by another distribution.
+  aliases = var.aliases
+
   default_cache_behavior {
     allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods         = ["GET", "HEAD"]
@@ -283,8 +288,15 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
+  # cloudfront_default_certificate and acm_certificate_arn are mutually
+  # exclusive, so the unused attributes are nulled out rather than omitted.
+  # The default certificate pins the viewer protocol to TLSv1; supplying an ACM
+  # certificate is what allows minimum_protocol_version to be raised.
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.acm_certificate_arn == "" ? true : null
+    acm_certificate_arn            = var.acm_certificate_arn != "" ? var.acm_certificate_arn : null
+    ssl_support_method             = var.acm_certificate_arn != "" ? "sni-only" : null
+    minimum_protocol_version       = var.acm_certificate_arn != "" ? "TLSv1.2_2021" : null
   }
 
   tags = {

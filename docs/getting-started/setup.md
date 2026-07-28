@@ -51,6 +51,82 @@ bash /tmp/aidlc-install.sh install \
 
 This is a non-release mode. The installer resolves the branch to an immutable commit snapshot, records the tracked branch, and follows newer branch commits when `update` runs. Normal installations continue to require immutable version tags.
 
+### Custom domain
+
+Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
+
+Every public path — the SPA, `/api/*`, `/ws` and `/yjs/*` — is served by a single CloudFront distribution, so a custom domain needs exactly one certificate and one distribution change. There is no API Gateway custom domain, no Cognito hosted-UI domain and no load balancer certificate to configure.
+
+The certificate **must be in `us-east-1`** regardless of the deployment region, because CloudFront accepts viewer certificates from no other region.
+
+#### Bring your own certificate
+
+For centrally managed, imported, wildcard or private-CA certificates, and for DNS that lives outside Route53 or in another AWS account. The certificate must already be `ISSUED`.
+
+```bash
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email> \
+  --domain aidlc.example.com \
+  --certificate-arn arn:aws:acm:us-east-1:111122223333:certificate/<id>
+```
+
+The installer prints the DNS records to create when it finishes. Add `--hosted-zone-id` alongside `--certificate-arn` to keep your own certificate but let Terraform manage the records.
+
+#### Terraform-managed certificate
+
+Requires the Route53 hosted zone to be in the same account. Terraform requests the certificate, publishes the validation records, waits for issuance, and creates the A/AAAA alias records.
+
+```bash
+bash /tmp/aidlc-install.sh install \
+  --profile <aws-profile> \
+  --region <aws-region> \
+  --environment dev \
+  --admin <administrator-email> \
+  --domain aidlc.example.com \
+  --hosted-zone-id Z1234567890ABC
+```
+
+#### Multiple hostnames
+
+Additional hostnames for the same deployment use `--domain-alias`, repeated as needed:
+
+```bash
+  --domain aidlc.example.com \
+  --domain-alias www.aidlc.example.com
+```
+
+`--domain` is canonical: it is the hostname used for the OAuth redirect URIs and baked into the frontend build, so there can only be one. Aliases are additional names CloudFront answers on. The CloudFront domain also keeps working, which is useful when DNS is misconfigured.
+
+Before touching AWS the installer verifies that the certificate is in `us-east-1`, is `ISSUED`, and covers every hostname (wildcards included); that the hosted zone exists and contains every hostname; and that no other CloudFront distribution already claims the hostnames. Each of these would otherwise fail several minutes into a distribution update.
+
+The same flags work on `update`, and `--no-domain` removes a configured domain.
+
+#### External DNS
+
+Terraform only manages records when `--hosted-zone-id` is given. Otherwise create them yourself, pointing at the value the installer prints:
+
+```bash
+terraform -chdir=terraform output -raw dns_target
+```
+
+Use an alias/ANAME record where your provider supports it and a CNAME otherwise. Apex domains require alias records — a CNAME is not valid there. Both `A` and `AAAA` are needed because the distribution is IPv6-enabled. CloudFront accepts the hostname as soon as the certificate covers it, so the apply succeeds before the records exist; the deployment is simply unreachable on that hostname until they are published.
+
+#### Adding a domain to a running deployment
+
+Setting the domain at initial install avoids all of the following. On an existing deployment:
+
+1. Obtain a `us-east-1` certificate covering the hostname, `ISSUED`.
+2. Run `update` with the domain flags. The CloudFront distribution update takes 5–15 minutes.
+3. Create the DNS records if you manage DNS yourself.
+4. The frontend is rebuilt and redeployed automatically — the endpoint URLs are inlined at build time, so a Terraform apply alone is not enough.
+5. Update the **Authorization callback URL** in every configured OAuth provider to the new hostname. GitHub App mode needs no change.
+6. **Every GitLab connection must be reauthorized.** GitLab requires `redirect_uri` on the refresh-token grant and it must match the original authorization request, so changing the canonical hostname invalidates all stored GitLab refresh tokens. GitHub OAuth tokens and Jira connections are unaffected.
+
+`update --no-domain` reverses the change. The CloudFront domain never changes, so it remains a working entry point throughout.
+
 ### Adopt an existing v1 deployment
 
 The existing checkout must contain its environment's `.tfvars` and `.s3.tfbackend` files:
@@ -84,6 +160,8 @@ Bootstrap creates `terraform/environments/dev.s3.tfbackend`. The environment arg
 ./scripts/bootstrap.sh dev
 cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 # Set aws_region = "<aws-region>" in dev.tfvars.
+# For a custom domain, also set app_domain plus either acm_certificate_arn or
+# route53_zone_id — see the commented block in the example file.
 ./scripts/deploy-terraform.sh dev
 ```
 
@@ -113,6 +191,12 @@ The platform integrates with external providers as code hosts (GitHub, GitLab) a
 
 For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
 
+`<your-app-domain>` below is the deployment's canonical hostname: the custom domain when one is configured, otherwise the CloudFront domain. The Admin page shows it at the top and each provider's setup guide shows the exact callback URL to paste, so copying from there is safer than assembling it by hand. Retrieve it directly with:
+
+```bash
+terraform -chdir=terraform output -raw application_domain
+```
+
 #### GitHub (code host + GitHub Issues)
 
 Configure OAuth and GitHub App independently. They remain enabled simultaneously, and each project chooses its authentication type.
@@ -122,8 +206,8 @@ For **GitHub OAuth**:
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
    Choose an **OAuth App**, _not_ a GitHub App — this mode expects OAuth App semantics.
 2. Set:
-   - **Homepage URL**: `https://<your-cloudfront-domain>`
-   - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
+   - **Homepage URL**: `https://<your-app-domain>`
+   - **Authorization callback URL**: `https://<your-app-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Trackers → GitHub Issues**. Paste both values and click **Save**.
 
@@ -144,7 +228,7 @@ Existing projects must be explicitly bound by an owner/admin before intents can 
 
 1. Open [GitLab → User Settings → Applications](https://gitlab.com/-/user_settings/applications) → **Add new application**.
 2. Set:
-   - **Redirect URI**: `https://<your-cloudfront-domain>/gitlab/callback`
+   - **Redirect URI**: `https://<your-app-domain>/gitlab/callback`
    - **Scopes**: `api` and `read_user`
    - Leave **Confidential** enabled.
 3. Save, then copy the **Application ID** (Client ID) and **Secret**.
@@ -159,7 +243,7 @@ GitLab's `api` scope includes repository writes, including changes to `.gitlab-c
    - `read:jira-work`
    - `read:jira-user`
    - `offline_access` (required for refresh tokens — don't skip)
-3. Under **Authorization**, set the callback URL to `https://<your-cloudfront-domain>/trackers/callback/jira-cloud`.
+3. Under **Authorization**, set the callback URL to `https://<your-app-domain>/trackers/callback/jira-cloud`.
 4. Open the **Settings** tab of the app and copy the **Client ID** and **Client Secret**.
 5. In the deployed app, sign in and open **Admin → Trackers → Jira Cloud**. Paste both values and click **Save**.
 
@@ -266,6 +350,9 @@ For advanced manual installations:
 | ------------------------------- | ----------------------------------- |
 | Backend (Lambda, agents, infra) | `./scripts/deploy-terraform.sh dev` |
 | Frontend only                   | `./scripts/deploy-frontend.sh dev`  |
+| Custom domain                   | both, in that order                 |
+
+A domain change needs both steps: Terraform updates the distribution and the OAuth redirect URIs, then the frontend has to be rebuilt because the endpoint URLs are inlined into the bundle at build time.
 
 ### One-time tracker-data migration (only relevant for installs with pre-#194 data)
 
@@ -335,4 +422,22 @@ Verify User Pool ID and App Client ID match Terraform outputs, and that the user
 
 **Provider integration not working (GitHub, GitLab, or Jira)**
 
-In the deployed app, open **Admin → Trackers**. Each provider should show **Configured**; if it shows **Not configured**, finish the OAuth-app setup and paste the credentials. Also confirm the OAuth app's **Authorization callback URL** matches the values listed above for your CloudFront domain — provider apps reject mismatched callbacks at sign-in time.
+In the deployed app, open **Admin → Trackers**. Each provider should show **Configured**; if it shows **Not configured**, finish the OAuth-app setup and paste the credentials. Also confirm the OAuth app's **Authorization callback URL** matches the value shown in that provider's setup guide — provider apps reject mismatched callbacks at sign-in time.
+
+**Custom domain returns a certificate or DNS error**
+
+The browser showing a certificate warning, or the hostname not resolving, means the deployment applied but DNS is not pointing at the distribution yet. Compare what your DNS returns with:
+
+```bash
+terraform -chdir=terraform output -raw dns_target
+```
+
+The CloudFront domain keeps working throughout, so use `terraform -chdir=terraform output -raw cloudfront_domain_name` to reach the app while sorting DNS out. Note that requests through the CloudFront domain are still accepted by CORS, but the Admin page will flag that you are not on the canonical hostname.
+
+**Custom domain apply fails with `CNAMEAlreadyExists`**
+
+Another CloudFront distribution, possibly in a different AWS account, already claims the hostname. CloudFront aliases are globally unique. Remove it there first. The installer checks for this before applying; a direct `terraform apply` does not.
+
+**GitLab connections break after changing the domain**
+
+Expected. GitLab requires `redirect_uri` on the refresh-token grant and it must match the original authorization request, so a changed canonical hostname invalidates every stored GitLab refresh token. Each user has to reconnect GitLab once.

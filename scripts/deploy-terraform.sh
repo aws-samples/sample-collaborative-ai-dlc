@@ -65,10 +65,11 @@ tf_output() {
 }
 
 print_deployment_summary() {
-    local application_url region deployed_environment
+    local application_url region deployed_environment custom_domain aliases
     application_url="$(tf_output application_url)"
     region="$(tf_output aws_region)"
     deployed_environment="$(tf_output environment)"
+    custom_domain="$(tf_output custom_domain_enabled)"
 
     echo ""
     echo "Infrastructure deployment complete"
@@ -79,7 +80,41 @@ print_deployment_summary() {
     else
         echo "  Application URL: unavailable (run 'terraform -chdir=terraform output -raw application_url')"
     fi
+    if [[ "$custom_domain" == "true" ]]; then
+        printf '  Custom domain:   %s\n' "$(tf_output application_domain)"
+        aliases="$(terraform -chdir="$TF_DIR" output -json application_aliases 2>/dev/null || true)"
+        print_dns_instructions "$aliases"
+    fi
     printf '  Next step:       %s/deploy-frontend.sh %s\n' "$SCRIPT_DIR" "$ENVIRONMENT"
+}
+
+# Without a Route53 zone in this account nothing resolves to the distribution
+# until the operator publishes the records, so print exactly what is needed.
+print_dns_instructions() {
+    local aliases_json="$1" target host
+    [[ "$(tf_output dns_managed_by_terraform)" == "true" ]] && return 0
+    target="$(tf_output dns_target)"
+    [[ -z "$target" ]] && return 0
+
+    echo ""
+    echo "  DNS is managed outside this deployment. Create these records:"
+    while IFS= read -r host; do
+        [[ -z "$host" ]] && continue
+        printf '    %s  A     -> %s\n' "$host" "$target"
+        printf '    %s  AAAA  -> %s\n' "$host" "$target"
+    done < <(printf '%s' "$aliases_json" | node -e '
+      let s = "";
+      process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        try {
+          for (const host of JSON.parse(s)) console.log(host);
+        } catch {
+          // No aliases output available; the records cannot be listed.
+        }
+      });
+    ')
+    echo "    Use an alias/ANAME record where your provider supports it, otherwise a"
+    echo "    CNAME. Apex domains require alias records; a CNAME is not valid there."
+    echo ""
 }
 
 stop_retired_agent_tasks() {

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional custom domains. `app_domain` puts the application on your own hostname; leaving it empty keeps the CloudFront-assigned domain and creates no additional resources. Because every public path is served by a single CloudFront distribution, this needs only one `us-east-1` ACM certificate and one distribution change — no API Gateway custom domain, no Cognito hosted-UI domain and no load balancer certificate. Supply an existing certificate with `acm_certificate_arn` for centrally managed, imported, wildcard or private-CA certificates and manage DNS anywhere, or supply `route53_zone_id` to have Terraform request, validate and publish everything. `app_domain_aliases` adds further hostnames to the same distribution. The installer gains `--domain`, `--domain-alias`, `--certificate-arn`, `--hosted-zone-id` and `--no-domain`, persists them across updates, reports them in `status`, and validates certificate region, status and hostname coverage, hosted-zone containment, and CloudFront alias availability before applying. New `application_domain`, `application_aliases`, `custom_domain_enabled`, `acm_certificate_arn`, `dns_managed_by_terraform`, `dns_target` and `dns_target_hosted_zone_id` outputs; the deployment summary prints the exact records to create when DNS is managed externally.
+- A read-only deployment strip on the Platform Admin page showing the canonical application URL, environment and region, and warning when the page is being browsed on a hostname other than the canonical one.
+
+### Changed
+
+- The OAuth callback URL shown in the Admin UI is now built from the deployment's canonical origin instead of the browsing origin. A deployment answers on the CloudFront domain and on every alias, so an admin could previously be shown a callback URL that did not match the redirect URI the backend sends, which providers reject at sign-in time.
+- The application hostname is now derived once and reused by the OAuth redirect URIs, the CORS allowlists, the artifacts bucket CORS rules, the `application_url` output and the frontend build, replacing seven separate recomputations. The CloudFront domain stays in the CORS allowlists alongside any custom hostname, so enabling a custom domain does not break already-loaded bundles.
+- The installer now updates the environment `tfvars` on every run instead of only writing it once, so deployment settings can be changed or removed by an update rather than requiring a hand edit.
+- Terraform now requires 1.4 or later.
+
+### Notes
+
+- Changing the canonical hostname of a running deployment requires updating the **Authorization callback URL** in every configured OAuth provider, and every GitLab connection must be reauthorized: GitLab requires `redirect_uri` on the refresh-token grant to match the original authorization request, so stored GitLab refresh tokens become unusable. GitHub OAuth tokens, GitHub App bindings and Jira connections are unaffected. Setting the domain at initial install avoids this entirely.
+
 ## [2.0.0-preview0] - 2026-07-17
 
 ### Added

@@ -9,11 +9,16 @@
 // survive refreshes. Tracker-provider statuses are fetched once here and
 // shared by the Source Control and Trackers tabs (both render the same
 // underlying per-platform OAuth slots).
+//
+// The deployment strip under the header is page-level context rather than a
+// setting: it is shown on every tab because the canonical hostname it reports
+// is what the OAuth callback URLs on two of them are built from.
 
 import { useSearchParams } from 'react-router-dom';
 import { Bot, ClipboardList, GitBranch, Users } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
+import { DeploymentInfoCard } from '@/components/admin/DeploymentInfoCard';
 import { UserManagementCard } from '@/components/admin/UserManagementCard';
 import { AgentCredentialsCard } from '@/components/admin/AgentCredentialsCard';
 import { DefaultModelsCard } from '@/components/admin/DefaultModelsCard';
@@ -60,6 +65,8 @@ export default function PlatformAdmin() {
             Users, agents, source control and issue trackers — all platform-wide settings.
           </p>
         </div>
+
+        <DeploymentInfoCard />
 
         <Tabs value={activeTab} onValueChange={selectTab}>
           <TabsList className="h-10 gap-1 bg-muted/60 p-1">

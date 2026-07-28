@@ -54,6 +54,26 @@ The password prompt is silent. The permanent Cognito password is sent directly t
 bash /tmp/aidlc-install.sh status
 ```
 
+### Custom Domain (optional)
+
+By default the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS. To use your own hostname, add either an existing certificate or a Route53 hosted zone:
+
+```bash
+# Bring your own certificate; manage DNS wherever you like.
+bash /tmp/aidlc-install.sh install ... \
+  --domain aidlc.example.com \
+  --certificate-arn arn:aws:acm:us-east-1:111122223333:certificate/<id>
+
+# Or let Terraform request the certificate and create the records.
+bash /tmp/aidlc-install.sh install ... \
+  --domain aidlc.example.com \
+  --hosted-zone-id Z1234567890ABC
+```
+
+The certificate must be in `us-east-1` regardless of the deployment region — CloudFront accepts no other region. Add `--domain-alias` (repeatable) for additional hostnames, and `--no-domain` on `update` to remove a configured domain. The installer validates the certificate, hosted zone, and hostname availability before touching AWS.
+
+See [Setup → Custom domain](https://aidlc.dev/getting-started/setup/#custom-domain) for the external-DNS records, and for what to update when adding a domain to a running deployment.
+
 ### Versions, Adoption, and Updates
 
 All tagged releases, including previews such as `v2.0.0-preview0`, are shown by default. With no explicit version, install and update select the highest tag by SemVer precedence. A stable `v2.0.0` therefore supersedes `v2.0.0-preview0`:
@@ -139,6 +159,8 @@ For GitHub and GitLab a single OAuth app serves both the code host and that prov
 
 All providers are optional. Skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI will stay disabled.
 
+`<your-app-domain>` is the deployment's canonical hostname — the custom domain when one is configured, otherwise the CloudFront domain. The Admin page shows it, and each provider's setup guide shows the exact callback URL to copy. To read it directly: `terraform -chdir=terraform output -raw application_domain`.
+
 #### GitHub (code host + GitHub Issues)
 
 GitHub supports two platform-wide authentication modes, switchable at runtime in **Admin → GitHub Integration**:
@@ -151,8 +173,8 @@ For **OAuth mode**:
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
    (Choose an **OAuth App**, _not_ a GitHub App — this mode expects OAuth App semantics.)
 2. Use:
-   - **Homepage URL**: `https://<your-cloudfront-domain>`
-   - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
+   - **Homepage URL**: `https://<your-app-domain>`
+   - **Authorization callback URL**: `https://<your-app-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
 
@@ -169,7 +191,7 @@ For **GitHub App mode**:
 
 1. Open [GitLab → User Settings → Applications](https://gitlab.com/-/user_settings/applications) → **Add new application**.
 2. Use:
-   - **Redirect URI**: `https://<your-cloudfront-domain>/gitlab/callback`
+   - **Redirect URI**: `https://<your-app-domain>/gitlab/callback`
    - **Scopes**: `api` and `read_user`
    - Leave **Confidential** enabled.
 3. Save, then copy the **Application ID** (Client ID) and **Secret**.
@@ -184,7 +206,7 @@ GitLab's `api` scope includes repository writes, including changes to `.gitlab-c
    - `read:jira-work`
    - `read:jira-user`
    - `offline_access` (required so refresh tokens are issued — don’t skip this)
-3. Under **Authorization**, set the callback URL to `https://<your-cloudfront-domain>/trackers/callback/jira-cloud`.
+3. Under **Authorization**, set the callback URL to `https://<your-app-domain>/trackers/callback/jira-cloud`.
 4. Open the **Settings** tab of your app and copy the **Client ID** and **Client Secret**.
 5. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Jira Cloud**. Paste both values and click **Save**.
 
@@ -234,7 +256,7 @@ Group membership is read from the ID token — users need to sign out and back i
 ./scripts/deploy-frontend.sh dev
 ```
 
-The application is available at the CloudFront domain:
+The application is available at its canonical URL — the custom domain when one is configured, otherwise the CloudFront domain:
 
 ```bash
 terraform -chdir=terraform output -raw application_url

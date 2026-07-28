@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -234,7 +235,15 @@ const createReleaseRepository = () => {
   writeJson(join(repository, 'frontend/package.json'), { name: 'frontend', private: true });
   writeFileSync(
     join(repository, 'terraform/environments/dev.tfvars.example'),
-    'environment = "dev"\naws_region = "us-east-1"\n',
+    [
+      'environment = "dev"',
+      'aws_region = "us-east-1"',
+      'app_domain          = ""',
+      'app_domain_aliases  = []',
+      'acm_certificate_arn = ""',
+      'route53_zone_id     = ""',
+      '',
+    ].join('\n'),
   );
   writeFileSync(join(repository, 'scripts/bootstrap.sh'), '#!/usr/bin/env bash\nexit 99\n', {
     mode: 0o755,
@@ -411,6 +420,8 @@ case "$*" in
   *" output -raw cloudfront_domain_name"*) printf 'example.invalid\\n' ;;
   *" output -raw s3_bucket_name"*) printf 'bucket-1\\n' ;;
   *" output -raw cloudfront_distribution_id"*) printf 'distribution-1\\n' ;;
+  *" output -raw application_domain"*) printf 'example.invalid\\n' ;;
+  *" output -raw dns_target"*) printf 'd111111abcdef8.cloudfront.net\\n' ;;
 esac
 `,
     { mode: 0o755 },
@@ -419,6 +430,20 @@ esac
     join(bin, 'aws'),
     `#!/usr/bin/env bash
 printf 'profile=%s region=%s %s\\n' "\${AWS_PROFILE:-}" "\${AWS_REGION:-}" "$*" >> "$AIDLC_AWS_LOG"
+case "$*" in
+  *"acm describe-certificate"*)
+    printf '{"Certificate":{"Status":"%s","DomainName":"%s","SubjectAlternativeNames":%s}}\\n' \\
+      "\${AIDLC_FAKE_CERT_STATUS:-ISSUED}" \\
+      "\${AIDLC_FAKE_CERT_DOMAIN:-aidlc.example.com}" \\
+      "\${AIDLC_FAKE_CERT_SANS:-[\\"aidlc.example.com\\"]}"
+    exit 0
+    ;;
+  *"route53 get-hosted-zone"*) printf '%s\\n' "\${AIDLC_FAKE_ZONE_NAME:-example.com.}"; exit 0 ;;
+  *"cloudfront list-distributions"*)
+    printf '{"DistributionList":{"Items":%s}}\\n' "\${AIDLC_FAKE_DISTRIBUTIONS:-[]}"
+    exit 0
+    ;;
+esac
 [[ "$*" == *"admin-get-user"* ]] && exit 1
 exit 0
 `,
@@ -504,4 +529,419 @@ test('installer creates permanent administrators with v1 and v2 roles', () => {
   assert.equal(ambientOverride.status, 0, ambientOverride.stderr);
   upgradeAws = readFileSync(upgradeEnv.AIDLC_AWS_LOG, 'utf8');
   assert.match(upgradeAws, /--region eu-central-1/);
+});
+
+const tfvarsOf = (env, environment = 'dev') =>
+  readFileSync(
+    join(env.XDG_CONFIG_HOME, `collaborative-ai-dlc/terraform/environments/${environment}.tfvars`),
+    'utf8',
+  );
+
+const configOf = (env) =>
+  readFileSync(join(env.XDG_CONFIG_HOME, 'collaborative-ai-dlc/install.conf'), 'utf8');
+
+test('installer leaves the custom domain unset by default', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-nodomain-'));
+  const env = managedEnv(dir, repository);
+  const tfvarsPath = join(
+    env.XDG_CONFIG_HOME,
+    'collaborative-ai-dlc/terraform/environments/dev.tfvars',
+  );
+  // Fresh install: the tfvars is templated from dev.tfvars.example.
+  rmSync(tfvarsPath);
+
+  const installed = run('bash', [installer, 'install', '--version', '2.0.0'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+
+  const tfvars = tfvarsOf(env);
+  assert.match(tfvars, /^app_domain = ""$/m);
+  assert.match(tfvars, /^app_domain_aliases = \[\]$/m);
+  assert.match(tfvars, /^acm_certificate_arn = ""$/m);
+  assert.match(tfvars, /^route53_zone_id = ""$/m);
+
+  const status = run('bash', [installer, 'status'], { env });
+  assert.equal(status.status, 0, status.stderr);
+  assert.match(status.stdout, /Domain:\s+CloudFront default \(no custom domain\)/);
+});
+
+test('installer leaves a domain-free tfvars untouched when no domain is requested', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-nodomain-legacy-'));
+  // managedEnv seeds a tfvars predating the custom domain variables.
+  const env = managedEnv(dir, repository);
+
+  const installed = run('bash', [installer, 'install', '--version', '2.0.0'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.doesNotMatch(tfvarsOf(env), /app_domain|acm_certificate_arn|route53_zone_id/);
+});
+
+test('installer records a custom domain with a supplied certificate', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-cert-'));
+  const env = managedEnv(dir, repository);
+
+  const installed = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'aidlc.example.com',
+      '--domain-alias',
+      'www.aidlc.example.com',
+      '--domain-alias',
+      'aidlc-alt.example.com',
+      '--certificate-arn',
+      'arn:aws:acm:us-east-1:111122223333:certificate/abc-123',
+    ],
+    { env },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+
+  const tfvars = tfvarsOf(env);
+  assert.match(tfvars, /^app_domain = "aidlc\.example\.com"$/m);
+  assert.match(
+    tfvars,
+    /^app_domain_aliases = \["www\.aidlc\.example\.com", "aidlc-alt\.example\.com"\]$/m,
+  );
+  assert.match(
+    tfvars,
+    /^acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate\/abc-123"$/m,
+  );
+  assert.match(tfvars, /^route53_zone_id = ""$/m);
+
+  const config = configOf(env);
+  assert.match(config, /AIDLC_APP_DOMAIN=aidlc\.example\.com/);
+  // write_config shell-escapes values, so the separator may be quoted.
+  assert.match(
+    config,
+    /AIDLC_APP_DOMAIN_ALIASES=www\.aidlc\.example\.com\\?,aidlc-alt\.example\.com/,
+  );
+
+  const status = run('bash', [installer, 'status'], { env });
+  assert.equal(status.status, 0, status.stderr);
+  assert.match(status.stdout, /Domain:\s+aidlc\.example\.com/);
+  assert.match(status.stdout, /Aliases:\s+www\.aidlc\.example\.com, aidlc-alt\.example\.com/);
+  assert.match(status.stdout, /DNS:\s+managed externally/);
+});
+
+test('installer records a Route53-managed custom domain', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-zone-'));
+  const env = managedEnv(dir, repository);
+
+  const installed = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'aidlc.example.com',
+      '--hosted-zone-id',
+      'Z1234567890ABC',
+    ],
+    { env },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.match(tfvarsOf(env), /^route53_zone_id = "Z1234567890ABC"$/m);
+
+  const status = run('bash', [installer, 'status'], { env });
+  assert.match(status.stdout, /DNS:\s+Route53 zone Z1234567890ABC \(managed by Terraform\)/);
+});
+
+test('installer rewrites existing custom domain assignments in place', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-rewrite-'));
+  const env = managedEnv(dir, repository);
+  const tfvarsPath = join(
+    env.XDG_CONFIG_HOME,
+    'collaborative-ai-dlc/terraform/environments/dev.tfvars',
+  );
+  writeFileSync(
+    tfvarsPath,
+    [
+      'environment = "dev"',
+      'aws_region = "us-east-1"',
+      'app_domain          = "old.example.com"',
+      'app_domain_aliases  = ["stale.example.com"]',
+      'acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/old"',
+      'route53_zone_id     = "ZOLD"',
+      '',
+    ].join('\n'),
+  );
+
+  const installed = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'new.example.com',
+      '--hosted-zone-id',
+      'ZNEW',
+    ],
+    { env },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+
+  const tfvars = tfvarsOf(env);
+  assert.match(tfvars, /^app_domain = "new\.example\.com"$/m);
+  assert.match(tfvars, /^app_domain_aliases = \[\]$/m);
+  assert.match(tfvars, /^acm_certificate_arn = ""$/m);
+  assert.match(tfvars, /^route53_zone_id = "ZNEW"$/m);
+  assert.doesNotMatch(tfvars, /old\.example\.com|stale\.example\.com|ZOLD/);
+  // Substituted rather than appended, so each key appears exactly once.
+  assert.equal(tfvars.match(/^app_domain = /gm).length, 1);
+});
+
+test('installer carries the custom domain across an update and can remove it', () => {
+  const repository = createReleaseRepository();
+  writeJson(join(repository, 'package.json'), { name: 'aidlc', version: '2.2.0', private: true });
+  execFileSync('git', ['add', 'package.json'], { cwd: repository });
+  execFileSync('git', ['commit', '-qm', 'v2.2'], { cwd: repository });
+  execFileSync('git', ['tag', 'v2.2.0'], { cwd: repository });
+
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-update-'));
+  const env = managedEnv(dir, repository);
+
+  const installed = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'aidlc.example.com',
+      '--hosted-zone-id',
+      'Z1234567890ABC',
+    ],
+    { env },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+
+  // No domain flags: the persisted configuration must survive.
+  const updated = run('bash', [installer, 'update', '--version', '2.2.0'], { env });
+  assert.equal(updated.status, 0, updated.stderr);
+  assert.match(tfvarsOf(env), /^app_domain = "aidlc\.example\.com"$/m);
+  assert.match(configOf(env), /AIDLC_ROUTE53_ZONE_ID=Z1234567890ABC/);
+
+  const removed = run(
+    'bash',
+    [installer, 'update', '--version', '2.0.0', '--allow-downgrade', '--no-domain'],
+    { env },
+  );
+  assert.equal(removed.status, 0, removed.stderr);
+
+  const tfvars = tfvarsOf(env);
+  assert.match(tfvars, /^app_domain = ""$/m);
+  assert.match(tfvars, /^app_domain_aliases = \[\]$/m);
+  assert.match(tfvars, /^route53_zone_id = ""$/m);
+  assert.match(configOf(env), /AIDLC_APP_DOMAIN=''/);
+
+  const status = run('bash', [installer, 'status'], { env });
+  assert.match(status.stdout, /Domain:\s+CloudFront default/);
+});
+
+test('installer rejects unusable custom domain configurations', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-invalid-'));
+  const env = managedEnv(dir, repository);
+
+  const noCertificate = run(
+    'bash',
+    [installer, 'install', '--version', '2.0.0', '--domain', 'aidlc.example.com'],
+    { env },
+  );
+  assert.equal(noCertificate.status, 2);
+  assert.match(noCertificate.stderr, /needs a certificate/);
+  assert.match(noCertificate.stderr, /--certificate-arn/);
+  assert.match(noCertificate.stderr, /--hosted-zone-id/);
+
+  const withScheme = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'https://aidlc.example.com',
+      '--hosted-zone-id',
+      'Z1',
+    ],
+    { env },
+  );
+  assert.equal(withScheme.status, 2);
+  assert.match(withScheme.stderr, /Invalid hostname/);
+
+  const badAlias = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'aidlc.example.com',
+      '--domain-alias',
+      'WWW.example.com',
+      '--hosted-zone-id',
+      'Z1',
+    ],
+    { env },
+  );
+  assert.equal(badAlias.status, 2);
+  assert.match(badAlias.stderr, /Invalid hostname 'WWW\.example\.com'/);
+
+  const onV1 = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '1.1.0',
+      '--domain',
+      'aidlc.example.com',
+      '--hosted-zone-id',
+      'Z1',
+    ],
+    { env },
+  );
+  assert.equal(onV1.status, 2);
+  assert.match(onV1.stderr, /require AI-DLC v2 or newer/);
+
+  // A failed preflight must not leave a managed installation behind.
+  assert.equal(existsSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')), false);
+});
+
+test('installer preflight validates the certificate, zone and hostname availability', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-preflight-'));
+  const env = mockedCommandEnv(dir, repository);
+  const domainArgs = [
+    '--domain',
+    'aidlc.example.com',
+    '--certificate-arn',
+    'arn:aws:acm:us-east-1:111122223333:certificate/abc-123',
+    '--hosted-zone-id',
+    'Z1234567890ABC',
+  ];
+
+  const wrongRegion = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'aidlc.example.com',
+      '--certificate-arn',
+      'arn:aws:acm:eu-west-1:111122223333:certificate/abc-123',
+    ],
+    { env },
+  );
+  assert.equal(wrongRegion.status, 2);
+  assert.match(wrongRegion.stderr, /not in us-east-1/);
+
+  const pending = run('bash', [installer, 'install', '--version', '2.0.0', ...domainArgs], {
+    env: { ...env, AIDLC_FAKE_CERT_STATUS: 'PENDING_VALIDATION' },
+  });
+  assert.equal(pending.status, 2);
+  assert.match(pending.stderr, /is PENDING_VALIDATION, not ISSUED/);
+
+  const notCovered = run('bash', [installer, 'install', '--version', '2.0.0', ...domainArgs], {
+    env: {
+      ...env,
+      AIDLC_FAKE_CERT_DOMAIN: 'other.example.com',
+      AIDLC_FAKE_CERT_SANS: '["other.example.com"]',
+    },
+  });
+  assert.equal(notCovered.status, 2);
+  assert.match(notCovered.stderr, /does not cover 'aidlc\.example\.com'/);
+
+  const outsideZone = run('bash', [installer, 'install', '--version', '2.0.0', ...domainArgs], {
+    env: { ...env, AIDLC_FAKE_ZONE_NAME: 'elsewhere.test.' },
+  });
+  assert.equal(outsideZone.status, 2);
+  assert.match(outsideZone.stderr, /is not inside hosted zone 'elsewhere\.test'/);
+
+  const taken = run('bash', [installer, 'install', '--version', '2.0.0', ...domainArgs], {
+    env: {
+      ...env,
+      AIDLC_FAKE_DISTRIBUTIONS: '[{"Id":"OTHERDIST","Aliases":{"Items":["aidlc.example.com"]}}]',
+    },
+  });
+  assert.equal(taken.status, 2);
+  assert.match(taken.stderr, /already an alias of CloudFront distribution OTHERDIST/);
+
+  // Nothing was installed while the preflight kept rejecting.
+  assert.equal(existsSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')), false);
+
+  // A wildcard certificate covers the hostname.
+  const wildcardEnv = {
+    ...env,
+    AIDLC_FAKE_CERT_DOMAIN: '*.example.com',
+    AIDLC_FAKE_CERT_SANS: '["*.example.com"]',
+  };
+  const accepted = run('bash', [installer, 'install', '--version', '2.0.0', ...domainArgs], {
+    env: wildcardEnv,
+  });
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.match(accepted.stdout, /Custom domain:\s+aidlc\.example\.com/);
+
+  // Re-running against the deployment's own distribution is not a collision.
+  const readopted = run('bash', [installer, 'update', '--ref', 'aidlc-v2'], {
+    env: {
+      ...wildcardEnv,
+      AIDLC_FAKE_DISTRIBUTIONS:
+        '[{"Id":"distribution-1","Aliases":{"Items":["aidlc.example.com"]}}]',
+    },
+  });
+  assert.equal(readopted.status, 0, readopted.stderr);
+});
+
+test('installer prints external DNS records when Route53 is not managed', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-domain-dns-'));
+  const env = mockedCommandEnv(dir, repository);
+
+  const installed = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--domain',
+      'aidlc.example.com',
+      '--domain-alias',
+      'www.aidlc.example.com',
+      '--certificate-arn',
+      'arn:aws:acm:us-east-1:111122223333:certificate/abc-123',
+    ],
+    {
+      env: {
+        ...env,
+        AIDLC_FAKE_CERT_DOMAIN: '*.example.com',
+        AIDLC_FAKE_CERT_SANS: '["*.example.com","*.aidlc.example.com"]',
+      },
+    },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.match(installed.stdout, /DNS is managed outside this deployment/);
+  assert.match(installed.stdout, /aidlc\.example\.com\s+A\s+-> d111111abcdef8\.cloudfront\.net/);
+  assert.match(installed.stdout, /aidlc\.example\.com\s+AAAA\s+-> d111111abcdef8\.cloudfront\.net/);
+  assert.match(
+    installed.stdout,
+    /www\.aidlc\.example\.com\s+A\s+-> d111111abcdef8\.cloudfront\.net/,
+  );
 });

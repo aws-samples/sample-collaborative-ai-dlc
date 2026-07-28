@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { trackersService } from '@/services/trackers';
 import { getTrackerProvider } from '@/lib/trackerProviders';
+import { appOrigin } from '@/lib/appOrigin';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 
 interface Props {
@@ -47,7 +48,9 @@ export function OAuthAppConfigForm({ providerId, configured, onSaved }: Props) {
 
   const meta = getTrackerProvider(providerId);
   const guide = meta.registration;
-  const callbackUrl = meta.callbackPath ? `${window.location.origin}${meta.callbackPath}` : null;
+  // Built from the deployment's canonical origin, not the browsing origin — see
+  // lib/appOrigin. This value has to match the redirect URI the backend sends.
+  const callbackUrl = meta.callbackPath ? `${appOrigin()}${meta.callbackPath}` : null;
 
   const canSave = clientId.trim() !== '' && clientSecret.trim() !== '' && !saving;
 

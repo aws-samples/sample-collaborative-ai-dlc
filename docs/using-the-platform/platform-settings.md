@@ -4,6 +4,10 @@ The **Admin** page holds all platform-wide settings: users, agents, source contr
 
 The page is organized into four tabs.
 
+A read-only **Deployment** strip sits above the tabs, showing the canonical application URL, environment, and region. The hostname it reports is the one the backend puts in its OAuth redirect URIs, so it is what every provider's callback URL must match. If you are browsing a hostname other than the canonical one — a deployment with a custom domain still answers on the CloudFront domain and on every alias — the strip says so, because the callback URLs shown further down deliberately use the canonical hostname rather than the one in the address bar.
+
+The hostname itself is not editable here. It is set by the `app_domain` Terraform variable, and changing it needs a certificate, a CloudFront update, and a frontend rebuild. See [Setup → Custom domain](../getting-started/setup.md#custom-domain).
+
 ## Users
 
 **User Management** — grant or revoke the platform-admin role for any Cognito user. Changes apply at the user's next sign-in. Self-demotion is blocked, so an installation can never lock itself out of administration.
@@ -41,4 +45,4 @@ Until a provider shows **Configured** here, its **Connect** buttons across the p
 Not everything operator-facing lives on the Admin page:
 
 - **Workflow and block authoring** — the [Workflows](workflows.md) area, also gated on `platform-admin`.
-- **Infrastructure-level settings** — the upstream methodology pin (`aidlc_repo_ref`) and deployment configuration live in Terraform; see [Setup](../getting-started/setup.md).
+- **Infrastructure-level settings** — the upstream methodology pin (`aidlc_repo_ref`), the custom domain (`app_domain`), and the rest of the deployment configuration live in Terraform; see [Setup](../getting-started/setup.md).

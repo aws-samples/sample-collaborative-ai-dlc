@@ -23,6 +23,10 @@ REGION="${AIDLC_REGION:-${AWS_REGION:-us-east-1}}"
 PROFILE="${AIDLC_AWS_PROFILE:-${AWS_PROFILE:-}}"
 ADMIN_USERNAME="${AIDLC_ADMIN_USERNAME:-}"
 REPOSITORY_URL="${AIDLC_REPOSITORY_URL:-$DEFAULT_REPOSITORY}"
+APP_DOMAIN="${AIDLC_APP_DOMAIN:-}"
+APP_DOMAIN_ALIASES="${AIDLC_APP_DOMAIN_ALIASES:-}"
+ACM_CERTIFICATE_ARN="${AIDLC_ACM_CERTIFICATE_ARN:-}"
+ROUTE53_ZONE_ID="${AIDLC_ROUTE53_ZONE_ID:-}"
 ENVIRONMENT_EXPLICIT="${AIDLC_ENVIRONMENT+x}"
 REGION_EXPLICIT="${AIDLC_REGION+x}"
 PROFILE_EXPLICIT="${AIDLC_AWS_PROFILE+x}"
@@ -30,6 +34,10 @@ ADMIN_EXPLICIT="${AIDLC_ADMIN_USERNAME+x}"
 REPOSITORY_EXPLICIT="${AIDLC_REPOSITORY_URL+x}"
 VERSION_EXPLICIT="${AIDLC_VERSION+x}"
 REF_EXPLICIT="${AIDLC_REF+x}"
+APP_DOMAIN_EXPLICIT="${AIDLC_APP_DOMAIN+x}"
+APP_DOMAIN_ALIASES_EXPLICIT="${AIDLC_APP_DOMAIN_ALIASES+x}"
+ACM_CERTIFICATE_ARN_EXPLICIT="${AIDLC_ACM_CERTIFICATE_ARN+x}"
+ROUTE53_ZONE_ID_EXPLICIT="${AIDLC_ROUTE53_ZONE_ID+x}"
 SOURCE=""
 ASSUME_YES="${AIDLC_YES:-0}"
 ALLOW_DOWNGRADE="${AIDLC_ALLOW_DOWNGRADE:-0}"
@@ -58,6 +66,17 @@ Options:
   --allow-prerelease           Compatibility option; prereleases are allowed
   --allow-downgrade            Permit an explicit downgrade
   --yes                        Accept non-secret prompts
+
+Custom domain (all optional; omit every flag to serve on the CloudFront domain):
+  --domain HOST                Canonical hostname, e.g. aidlc.example.com
+  --domain-alias HOST          Additional hostname; repeat for more than one
+  --certificate-arn ARN        Existing us-east-1 ACM certificate covering all
+                               hostnames. Use this when certificates are managed
+                               centrally or DNS lives outside Route53.
+  --hosted-zone-id ID          Route53 hosted zone in this account. Terraform
+                               creates the DNS records and, without
+                               --certificate-arn, requests the certificate.
+  --no-domain                  Remove a previously configured custom domain
 EOF
 }
 
@@ -71,6 +90,20 @@ while [[ $# -gt 0 ]]; do
         --admin) ADMIN_USERNAME="${2:?--admin requires a value}"; ADMIN_EXPLICIT=1; shift 2 ;;
         --repo-url) REPOSITORY_URL="${2:?--repo-url requires a value}"; REPOSITORY_EXPLICIT=1; shift 2 ;;
         --source) SOURCE="${2:?--source requires a path}"; shift 2 ;;
+        --domain) APP_DOMAIN="${2:?--domain requires a hostname}"; APP_DOMAIN_EXPLICIT=1; shift 2 ;;
+        --domain-alias)
+            APP_DOMAIN_ALIASES="${APP_DOMAIN_ALIASES:+$APP_DOMAIN_ALIASES,}${2:?--domain-alias requires a hostname}"
+            APP_DOMAIN_ALIASES_EXPLICIT=1
+            shift 2
+            ;;
+        --certificate-arn) ACM_CERTIFICATE_ARN="${2:?--certificate-arn requires an ACM ARN}"; ACM_CERTIFICATE_ARN_EXPLICIT=1; shift 2 ;;
+        --hosted-zone-id) ROUTE53_ZONE_ID="${2:?--hosted-zone-id requires a Route53 zone ID}"; ROUTE53_ZONE_ID_EXPLICIT=1; shift 2 ;;
+        --no-domain)
+            APP_DOMAIN=""; APP_DOMAIN_ALIASES=""; ACM_CERTIFICATE_ARN=""; ROUTE53_ZONE_ID=""
+            APP_DOMAIN_EXPLICIT=1; APP_DOMAIN_ALIASES_EXPLICIT=1
+            ACM_CERTIFICATE_ARN_EXPLICIT=1; ROUTE53_ZONE_ID_EXPLICIT=1
+            shift
+            ;;
         --yes) ASSUME_YES=1; shift ;;
         --include-prereleases|--allow-prerelease) shift ;;
         --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
@@ -180,6 +213,10 @@ load_config() {
         local requested_profile="$PROFILE"
         local requested_admin="$ADMIN_USERNAME"
         local requested_repository="$REPOSITORY_URL"
+        local requested_app_domain="$APP_DOMAIN"
+        local requested_app_domain_aliases="$APP_DOMAIN_ALIASES"
+        local requested_certificate_arn="$ACM_CERTIFICATE_ARN"
+        local requested_zone_id="$ROUTE53_ZONE_ID"
         # The file is written by write_config using shell-escaped values.
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
@@ -189,12 +226,20 @@ load_config() {
         ADMIN_USERNAME="${AIDLC_ADMIN_USERNAME:-$requested_admin}"
         REPOSITORY_URL="${AIDLC_REPOSITORY_URL:-$requested_repository}"
         REF="${AIDLC_REF:-$requested_ref}"
+        APP_DOMAIN="${AIDLC_APP_DOMAIN:-$requested_app_domain}"
+        APP_DOMAIN_ALIASES="${AIDLC_APP_DOMAIN_ALIASES:-$requested_app_domain_aliases}"
+        ACM_CERTIFICATE_ARN="${AIDLC_ACM_CERTIFICATE_ARN:-$requested_certificate_arn}"
+        ROUTE53_ZONE_ID="${AIDLC_ROUTE53_ZONE_ID:-$requested_zone_id}"
         [[ -n "$ENVIRONMENT_EXPLICIT" ]] && ENVIRONMENT="$requested_environment"
         [[ -n "$REGION_EXPLICIT" ]] && REGION="$requested_region"
         [[ -n "$PROFILE_EXPLICIT" ]] && PROFILE="$requested_profile"
         [[ -n "$ADMIN_EXPLICIT" ]] && ADMIN_USERNAME="$requested_admin"
         [[ -n "$REPOSITORY_EXPLICIT" ]] && REPOSITORY_URL="$requested_repository"
         [[ -n "$REF_EXPLICIT" ]] && REF="$requested_ref"
+        [[ -n "$APP_DOMAIN_EXPLICIT" ]] && APP_DOMAIN="$requested_app_domain"
+        [[ -n "$APP_DOMAIN_ALIASES_EXPLICIT" ]] && APP_DOMAIN_ALIASES="$requested_app_domain_aliases"
+        [[ -n "$ACM_CERTIFICATE_ARN_EXPLICIT" ]] && ACM_CERTIFICATE_ARN="$requested_certificate_arn"
+        [[ -n "$ROUTE53_ZONE_ID_EXPLICIT" ]] && ROUTE53_ZONE_ID="$requested_zone_id"
         if [[ -n "$VERSION_EXPLICIT" && -z "$REF_EXPLICIT" ]]; then
             REF=""
         fi
@@ -210,8 +255,232 @@ write_config() {
         printf 'AIDLC_ADMIN_USERNAME=%q\n' "$ADMIN_USERNAME"
         printf 'AIDLC_REPOSITORY_URL=%q\n' "$REPOSITORY_URL"
         printf 'AIDLC_REF=%q\n' "$REF"
+        printf 'AIDLC_APP_DOMAIN=%q\n' "$APP_DOMAIN"
+        printf 'AIDLC_APP_DOMAIN_ALIASES=%q\n' "$APP_DOMAIN_ALIASES"
+        printf 'AIDLC_ACM_CERTIFICATE_ARN=%q\n' "$ACM_CERTIFICATE_ARN"
+        printf 'AIDLC_ROUTE53_ZONE_ID=%q\n' "$ROUTE53_ZONE_ID"
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
+}
+
+# Canonical hostname followed by any aliases. Bash 3.2 has no namerefs, so a
+# well-known global is the portable way to hand an array back to the caller.
+DOMAIN_HOSTS=()
+
+collect_domain_hosts() {
+    DOMAIN_HOSTS=()
+    [[ -z "$APP_DOMAIN" ]] && return 0
+    DOMAIN_HOSTS=("$APP_DOMAIN")
+    [[ -z "$APP_DOMAIN_ALIASES" ]] && return 0
+    local host
+    # Newline-splitting via read avoids the glob expansion that unquoted
+    # comma-splitting on IFS would perform.
+    while IFS= read -r host; do
+        [[ -n "$host" && "$host" != "$APP_DOMAIN" ]] && DOMAIN_HOSTS+=("$host")
+    done <<<"${APP_DOMAIN_ALIASES//,/$'\n'}"
+    return 0
+}
+
+# Renders the alias list as an HCL list literal for the tfvars file.
+domain_aliases_hcl() {
+    local rendered="" count index=1
+    collect_domain_hosts
+    count=${#DOMAIN_HOSTS[@]}
+    # Index 0 is the canonical hostname, which Terraform takes separately.
+    # Index-based iteration keeps values out of word splitting and globbing.
+    while [[ "$index" -lt "$count" ]]; do
+        rendered="${rendered:+$rendered, }\"${DOMAIN_HOSTS[$index]}\""
+        index=$((index + 1))
+    done
+    printf '[%s]' "$rendered"
+}
+
+domain_configured() {
+    [[ -n "$APP_DOMAIN" ]]
+}
+
+# A cleared canonical hostname leaves nothing for aliases, certificate or zone
+# to attach to, and Terraform rejects that combination. --no-domain clears all
+# four, but an operator may have cleared only AIDLC_APP_DOMAIN.
+normalize_domain_config() {
+    if ! domain_configured; then
+        APP_DOMAIN_ALIASES=""
+        ACM_CERTIFICATE_ARN=""
+        ROUTE53_ZONE_ID=""
+    fi
+}
+
+# Reports whether an ACM certificate domain entry covers a hostname, honouring
+# single-label wildcards: *.example.com matches a.example.com but not a.b.example.com.
+certificate_domain_covers() {
+    local pattern="$1" host="$2" suffix
+    [[ "$pattern" == "$host" ]] && return 0
+    if [[ "$pattern" == '*.'* ]]; then
+        suffix="${pattern#\*.}"
+        [[ "$host" == *".$suffix" && "${host%.$suffix}" != *.* ]] && return 0
+    fi
+    return 1
+}
+
+# Fails fast on custom domain mistakes that AWS would otherwise surface minutes
+# into a CloudFront apply, or not at all (a certificate stuck in
+# PENDING_VALIDATION never blocks the plan, it just never becomes usable).
+validate_domain_config() {
+    local checkout="${1:-}" host
+    normalize_domain_config
+    domain_configured || return 0
+    collect_domain_hosts
+
+    if [[ "${VERSION%%.*}" -lt 2 ]]; then
+        echo "Custom domains require AI-DLC v2 or newer; the selected release is v$VERSION." >&2
+        exit 2
+    fi
+
+    for host in "${DOMAIN_HOSTS[@]}"; do
+        if ! printf '%s' "$host" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'; then
+            echo "Invalid hostname '$host'. Use a bare lowercase hostname without scheme, port or path (e.g. aidlc.example.com)." >&2
+            exit 2
+        fi
+    done
+
+    if [[ -z "$ACM_CERTIFICATE_ARN" && -z "$ROUTE53_ZONE_ID" ]]; then
+        cat >&2 <<EOF
+Custom domain '$APP_DOMAIN' needs a certificate. Choose one of:
+
+  --certificate-arn ARN    Use an existing us-east-1 ACM certificate covering
+                           the hostname. DNS can be managed anywhere; the
+                           records to create are printed after the deployment.
+
+  --hosted-zone-id ID      Let Terraform request and DNS-validate the
+                           certificate and create the records. Requires the
+                           Route53 hosted zone to be in this account.
+
+Both may be combined to use an existing certificate with Route53-managed DNS.
+EOF
+        exit 2
+    fi
+
+    [[ "${AIDLC_TEST_MODE:-0}" == 1 ]] && return 0
+
+    [[ -n "$ACM_CERTIFICATE_ARN" ]] && validate_certificate
+    [[ -n "$ROUTE53_ZONE_ID" ]] && validate_hosted_zone
+    validate_alias_availability "$checkout"
+    return 0
+}
+
+validate_certificate() {
+    local describe status covered="" host pattern match
+    if [[ "$ACM_CERTIFICATE_ARN" != arn:aws*:acm:us-east-1:* ]]; then
+        echo "Certificate '$ACM_CERTIFICATE_ARN' is not in us-east-1. CloudFront accepts viewer certificates from that region only." >&2
+        exit 2
+    fi
+
+    # Pinned to us-east-1: the certificate cannot live anywhere else.
+    if ! describe="$(aws acm describe-certificate --certificate-arn "$ACM_CERTIFICATE_ARN" \
+        --region us-east-1 --output json 2>/dev/null)"; then
+        echo "Cannot read certificate '$ACM_CERTIFICATE_ARN' in us-east-1." >&2
+        echo "Check the ARN, the AWS profile (${PROFILE:-default credential chain}) and that acm:DescribeCertificate is permitted." >&2
+        exit 2
+    fi
+
+    status="$(printf '%s' "$describe" | node -e '
+      let s = "";
+      process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        process.stdout.write(JSON.parse(s).Certificate?.Status ?? "");
+      });
+    ')"
+    if [[ "$status" != "ISSUED" ]]; then
+        echo "Certificate '$ACM_CERTIFICATE_ARN' is $status, not ISSUED." >&2
+        if [[ "$status" == "PENDING_VALIDATION" ]]; then
+            echo "Complete its DNS validation first; CloudFront rejects certificates that are not yet issued." >&2
+            printf '%s' "$describe" | node -e '
+              let s = "";
+              process.stdin.on("data", (d) => (s += d)).on("end", () => {
+                for (const o of JSON.parse(s).Certificate?.DomainValidationOptions ?? []) {
+                  const r = o.ResourceRecord;
+                  if (r) console.error(`  ${o.DomainName}: ${r.Type} ${r.Name} -> ${r.Value}`);
+                }
+              });
+            ' || true
+        fi
+        exit 2
+    fi
+
+    covered="$(printf '%s' "$describe" | node -e '
+      let s = "";
+      process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        const c = JSON.parse(s).Certificate ?? {};
+        const names = [c.DomainName, ...(c.SubjectAlternativeNames ?? [])].filter(Boolean);
+        process.stdout.write([...new Set(names)].join(" "));
+      });
+    ')"
+
+    for host in "${DOMAIN_HOSTS[@]}"; do
+        match=0
+        for pattern in $covered; do
+            if certificate_domain_covers "$pattern" "$host"; then
+                match=1
+                break
+            fi
+        done
+        if [[ "$match" == 0 ]]; then
+            echo "Certificate '$ACM_CERTIFICATE_ARN' does not cover '$host'." >&2
+            echo "It covers: $covered" >&2
+            echo "Reissue the certificate including the missing name, or drop the hostname." >&2
+            exit 2
+        fi
+    done
+}
+
+validate_hosted_zone() {
+    local zone_name host
+    if ! zone_name="$(aws route53 get-hosted-zone --id "$ROUTE53_ZONE_ID" \
+        --query 'HostedZone.Name' --output text 2>/dev/null)"; then
+        echo "Cannot read Route53 hosted zone '$ROUTE53_ZONE_ID'." >&2
+        echo "Check the zone ID and that it lives in this account (${PROFILE:-default credential chain})." >&2
+        echo "To manage DNS elsewhere, drop --hosted-zone-id and pass --certificate-arn instead." >&2
+        exit 2
+    fi
+    zone_name="${zone_name%.}"
+
+    for host in "${DOMAIN_HOSTS[@]}"; do
+        if [[ "$host" != "$zone_name" && "$host" != *".$zone_name" ]]; then
+            echo "Hostname '$host' is not inside hosted zone '$zone_name'." >&2
+            echo "Use a zone that covers every hostname, or manage DNS externally with --certificate-arn only." >&2
+            exit 2
+        fi
+    done
+}
+
+# CloudFront aliases are globally unique. Without this check a collision only
+# surfaces as CNAMEAlreadyExists partway through a multi-minute distribution
+# update, and the apply has to be rerun.
+validate_alias_availability() {
+    local checkout="${1:-}" distributions distribution_id current_id="" host
+    if ! distributions="$(aws cloudfront list-distributions --output json 2>/dev/null)"; then
+        echo "Warning: could not list CloudFront distributions to check hostname availability; continuing." >&2
+        return 0
+    fi
+    if [[ -n "$checkout" && -d "$checkout/terraform" ]]; then
+        current_id="$(terraform -chdir="$checkout/terraform" output -raw cloudfront_distribution_id 2>/dev/null || true)"
+    fi
+
+    for host in "${DOMAIN_HOSTS[@]}"; do
+        distribution_id="$(printf '%s' "$distributions" | node -e '
+          const host = process.argv[1];
+          let s = "";
+          process.stdin.on("data", (d) => (s += d)).on("end", () => {
+            const items = JSON.parse(s).DistributionList?.Items ?? [];
+            const hit = items.find((d) => (d.Aliases?.Items ?? []).includes(host));
+            process.stdout.write(hit ? hit.Id : "");
+          });
+        ' "$host")"
+        if [[ -n "$distribution_id" && "$distribution_id" != "$current_id" ]]; then
+            echo "Hostname '$host' is already an alias of CloudFront distribution $distribution_id." >&2
+            echo "CloudFront aliases are globally unique. Remove it there first, or choose another hostname." >&2
+            exit 2
+        fi
+    done
 }
 
 require_commands() {
@@ -389,6 +658,22 @@ target_description() {
     fi
 }
 
+# Sets a single HCL assignment in a tfvars file: rewrites the value in place if
+# the key is present, appends the assignment otherwise. sed alone cannot insert,
+# and the file is no longer written only once, so both paths are needed for
+# installations whose tfvars predate a variable.
+tfvars_upsert() {
+    local file="$1" key="$2" value="$3"
+    if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+        # A literal newline in the replacement would break sed, and values here
+        # are hostnames, ARNs, zone IDs and short HCL lists.
+        sed -i.bak -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${value}|" "$file"
+        rm -f "$file.bak"
+    else
+        printf '%s = %s\n' "$key" "$value" >> "$file"
+    fi
+}
+
 configure_environment() {
     local checkout="$1"
     mkdir -p "$CONFIG_ROOT/terraform/environments" "$DATA_ROOT/backups" "$DATA_ROOT/plans"
@@ -396,12 +681,21 @@ configure_environment() {
     local backend="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.s3.tfbackend"
     if [[ ! -f "$tfvars" ]]; then
         cp "$checkout/terraform/environments/dev.tfvars.example" "$tfvars"
-        sed -i.bak -E \
-            -e "s/^environment[[:space:]]*=.*/environment = \"$ENVIRONMENT\"/" \
-            -e "s/^aws_region[[:space:]]*=.*/aws_region  = \"$REGION\"/" \
-            "$tfvars"
-        rm -f "$tfvars.bak"
     fi
+    tfvars_upsert "$tfvars" environment "\"$ENVIRONMENT\""
+    tfvars_upsert "$tfvars" aws_region "\"$REGION\""
+
+    normalize_domain_config
+    # Written whenever a domain is configured, and whenever the keys are already
+    # present so an update can change or clear them. Skipped otherwise, which
+    # keeps the tfvars of releases predating these variables clean.
+    if domain_configured || grep -qE '^[[:space:]]*app_domain[[:space:]]*=' "$tfvars"; then
+        tfvars_upsert "$tfvars" app_domain "\"$APP_DOMAIN\""
+        tfvars_upsert "$tfvars" app_domain_aliases "$(domain_aliases_hcl)"
+        tfvars_upsert "$tfvars" acm_certificate_arn "\"$ACM_CERTIFICATE_ARN\""
+        tfvars_upsert "$tfvars" route53_zone_id "\"$ROUTE53_ZONE_ID\""
+    fi
+
     if [[ ! -f "$backend" ]]; then
         AIDLC_CONFIG_DIR="$CONFIG_ROOT/terraform" AWS_REGION="$REGION" \
             "$checkout/scripts/bootstrap.sh" "$ENVIRONMENT"
@@ -475,6 +769,9 @@ deploy_frontend() {
         return
     fi
     local tf="$checkout/terraform" frontend="$checkout/frontend" pool client domain bucket distribution
+    # Frozen v1 path. v1 has no custom domain support, so this deliberately
+    # keeps building the endpoints from the CloudFront domain and omits
+    # VITE_APP_ORIGIN. v2 goes through scripts/deploy-frontend.sh above.
     pool="$(terraform -chdir="$tf" output -raw user_pool_id)"
     client="$(terraform -chdir="$tf" output -raw user_pool_client_id)"
     domain="$(terraform -chdir="$tf" output -raw cloudfront_domain_name)"
@@ -578,7 +875,33 @@ print_managed_summary() {
     else
         echo "  Application URL: unavailable; run the status command after Terraform is initialized."
     fi
+    if domain_configured; then
+        printf '  Custom domain:   %s\n' "$APP_DOMAIN"
+        [[ -n "$APP_DOMAIN_ALIASES" ]] && printf '  Also serving:    %s\n' "${APP_DOMAIN_ALIASES//,/, }"
+        print_dns_instructions "$checkout"
+    fi
     printf '  Status:          bash %q status\n' "$SCRIPT_DIR/install.sh"
+}
+
+# With an external DNS provider nothing points at the distribution until the
+# operator creates the records, so the deployment is not reachable on the custom
+# domain until this is done.
+print_dns_instructions() {
+    local checkout="$1" target host
+    [[ -n "$ROUTE53_ZONE_ID" ]] && return 0
+    [[ "${AIDLC_TEST_MODE:-0}" == 1 ]] && return 0
+    target="$(terraform -chdir="$checkout/terraform" output -raw dns_target 2>/dev/null || true)"
+    [[ -z "$target" ]] && return 0
+
+    echo ""
+    echo "  DNS is managed outside this deployment. Create these records:"
+    collect_domain_hosts
+    for host in "${DOMAIN_HOSTS[@]}"; do
+        printf '    %s  A     -> %s\n' "$host" "$target"
+        printf '    %s  AAAA  -> %s\n' "$host" "$target"
+    done
+    echo "    Use an alias/ANAME record where your provider supports it, otherwise a"
+    echo "    CNAME. Apex domains require alias records; a CNAME is not valid there."
 }
 
 install_command() {
@@ -595,6 +918,7 @@ install_command() {
     if [[ -n "$REF" ]]; then
         echo "Warning: --ref tracks mutable branch '$REF'; this is a non-release test deployment."
     fi
+    validate_domain_config
     confirm "Install $(target_description) into AWS environment $ENVIRONMENT?" || exit 1
     prompt_password
     configure_environment "$checkout"
@@ -678,6 +1002,7 @@ update_command() {
     if [[ -n "$REF" ]]; then
         echo "Warning: update is following mutable branch '$REF'."
     fi
+    validate_domain_config "$old_checkout"
     confirm "Update AI-DLC from v$old_version to $(target_description)?" || exit 1
     configure_environment "$checkout"
     plan_id="v$old_version-to-v$VERSION"
@@ -758,7 +1083,19 @@ status_command() {
     else
         echo "Source:      v$version"
     fi
+    if domain_configured; then
+        echo "Domain:      $APP_DOMAIN"
+        [[ -n "$APP_DOMAIN_ALIASES" ]] && echo "Aliases:     ${APP_DOMAIN_ALIASES//,/, }"
+        if [[ -n "$ROUTE53_ZONE_ID" ]]; then
+            echo "DNS:         Route53 zone $ROUTE53_ZONE_ID (managed by Terraform)"
+        else
+            echo "DNS:         managed externally"
+        fi
+    else
+        echo "Domain:      CloudFront default (no custom domain)"
+    fi
     [[ -n "$url" ]] && echo "URL:         $url"
+    return 0
 }
 
 case "$COMMAND" in

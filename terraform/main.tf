@@ -1,5 +1,6 @@
 terraform {
-  required_version = ">= 1.0"
+  # terraform_data (used for the custom domain plan-time guards) requires 1.4.
+  required_version = ">= 1.4"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -28,6 +29,20 @@ provider "aws" {
   }
 }
 
+# CloudFront viewer certificates must live in us-east-1 regardless of where the
+# rest of the stack is deployed. Used only by module.domain.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Environment = var.environment
+      Project     = var.project_name
+    }
+  }
+}
+
 # Cloud Control provider (used only for the Bedrock AgentCore Runtime). Pin it to
 # the deployment region so the AgentCore application region matches the ECR image
 # region — otherwise awscc falls back to the profile/AWS_REGION default and a
@@ -41,6 +56,76 @@ data "aws_partition" "current" {}
 locals {
   partition  = data.aws_partition.current.partition
   dns_suffix = data.aws_partition.current.dns_suffix
+
+  custom_domain_enabled = var.app_domain != ""
+
+  # Canonical hostname and URL for the deployment. Every consumer — OAuth
+  # redirect URIs, CORS allowlists, the application_url output and the frontend
+  # build — derives from these two values rather than recomputing the host.
+  app_domain = local.custom_domain_enabled ? var.app_domain : module.frontend.cloudfront_domain_name
+  app_url    = "https://${local.app_domain}"
+
+  # All hostnames CloudFront answers on. Empty without a custom domain, which
+  # keeps the distribution on its default certificate.
+  app_aliases = local.custom_domain_enabled ? distinct(concat([var.app_domain], var.app_domain_aliases)) : []
+
+  # The CloudFront domain stays in the allowlist alongside any custom domain.
+  # It costs nothing, makes enabling a custom domain a zero-downtime change for
+  # already-loaded bundles, and leaves operators a working entry point when
+  # custom DNS is misconfigured. The canonical origin is first because
+  # lambda/shared/response.js falls back to the first entry for unknown origins.
+  cors_origin_list = distinct(concat(
+    ["https://${local.app_domain}"],
+    [for a in local.app_aliases : "https://${a}"],
+    ["https://${module.frontend.cloudfront_domain_name}"],
+    ["http://localhost:5173"],
+  ))
+  cors_allowed_origins = join(",", local.cors_origin_list)
+}
+
+# Fails the plan on custom domain configurations that would otherwise surface as
+# an opaque error minutes into a CloudFront apply. scripts/install.sh performs
+# the same checks (plus certificate coverage and alias collisions) up front;
+# these are the backstop for direct terraform runs.
+resource "terraform_data" "domain_preconditions" {
+  input = var.app_domain
+
+  lifecycle {
+    precondition {
+      condition     = var.app_domain != "" || length(var.app_domain_aliases) == 0
+      error_message = "app_domain_aliases is set but app_domain is empty. Set app_domain to the canonical hostname; aliases are additional names for the same deployment."
+    }
+
+    precondition {
+      condition     = var.app_domain == "" || var.acm_certificate_arn != "" || var.route53_zone_id != ""
+      error_message = "app_domain is set but neither acm_certificate_arn nor route53_zone_id was provided. Supply an existing us-east-1 certificate ARN, or a Route53 hosted zone ID so Terraform can request and validate one."
+    }
+
+    precondition {
+      condition     = var.app_domain != "" || (var.acm_certificate_arn == "" && var.route53_zone_id == "")
+      error_message = "acm_certificate_arn or route53_zone_id is set but app_domain is empty. Set app_domain to enable the custom domain, or clear both to serve on the CloudFront domain."
+    }
+  }
+}
+
+# Certificate first, then the distribution that references it, then the alias
+# records that point at the distribution. Splitting the certificate and the
+# records into different graph positions is what avoids a dependency cycle.
+module "domain" {
+  source = "./modules/domain"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  project_name    = var.project_name
+  environment     = var.environment
+  enabled         = local.custom_domain_enabled
+  domain_name     = var.app_domain
+  aliases         = var.app_domain_aliases
+  certificate_arn = var.acm_certificate_arn
+  route53_zone_id = var.route53_zone_id
 }
 
 # Account-level API Gateway CloudWatch logging role.
@@ -96,6 +181,30 @@ module "frontend" {
   api_gateway_domain_name        = module.api.api_gateway_domain_name
   api_gateway_stage_path         = "/${var.environment}"
   websocket_domain_name          = regex("wss://([^/]+)", module.realtime.websocket_api_endpoint)[0]
+  aliases                        = local.app_aliases
+  acm_certificate_arn            = module.domain.certificate_arn
+}
+
+# Route53 alias records for the custom domain. Only created when the hosted zone
+# lives in this account; otherwise the dns_target and dns_target_hosted_zone_id
+# outputs carry everything an external DNS provider needs.
+#
+# Both record types are required because the distribution has is_ipv6_enabled.
+resource "aws_route53_record" "app" {
+  for_each = var.route53_zone_id == "" ? {} : {
+    for pair in setproduct(local.app_aliases, ["A", "AAAA"]) :
+    "${pair[0]}-${pair[1]}" => { name = pair[0], type = pair[1] }
+  }
+
+  zone_id = var.route53_zone_id
+  name    = each.value.name
+  type    = each.value.type
+
+  alias {
+    name                   = module.frontend.cloudfront_domain_name
+    zone_id                = module.frontend.cloudfront_hosted_zone_id
+    evaluate_target_health = false
+  }
 }
 
 # VPC Endpoints
@@ -197,14 +306,14 @@ module "lambda" {
   source_control_bindings_table_arn   = module.git.source_control_bindings_table_arn
   tracker_connections_table_name      = module.git.tracker_connections_table_name
   tracker_connections_table_arn       = module.git.tracker_connections_table_arn
-  github_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/github/callback"
-  gitlab_redirect_uri                 = "https://${module.frontend.cloudfront_domain_name}/gitlab/callback"
+  github_redirect_uri                 = "${local.app_url}/github/callback"
+  gitlab_redirect_uri                 = "${local.app_url}/gitlab/callback"
   jira_oauth_secret_name              = module.git.jira_oauth_secret_name
   jira_oauth_secret_arn               = module.git.jira_oauth_secret_arn
-  jira_redirect_uri                   = "https://${module.frontend.cloudfront_domain_name}/trackers/callback/jira-cloud"
+  jira_redirect_uri                   = "${local.app_url}/trackers/callback/jira-cloud"
   cognito_user_pool_id                = module.auth.user_pool_id
   cognito_user_pool_arn               = module.auth.user_pool_arn
-  cors_allowed_origins                = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
+  cors_allowed_origins                = local.cors_allowed_origins
   realtime_doc_secret_param_arn       = module.realtime.realtime_doc_secret_param_arn
   realtime_doc_secret_param_name      = module.realtime.realtime_doc_secret_param_name
 
@@ -275,7 +384,7 @@ module "api" {
   private_subnet_ids                = module.networking.private_subnet_ids
   lambda_security_group_ids         = [module.lambda.lambda_security_group_id]
   neptune_endpoint                  = module.neptune.cluster_endpoint
-  cors_allowed_origins              = "https://${module.frontend.cloudfront_domain_name},http://localhost:5173"
+  cors_allowed_origins              = local.cors_allowed_origins
   cloudfront_origin_secret          = module.frontend.cloudfront_origin_secret
   enable_cloudfront_origin_policy   = false
   # Pass a non-deprecated attribute (the account's CloudWatch role ARN, not the
@@ -400,7 +509,7 @@ module "git" {
 
 # CORS for the artifacts bucket — frontend uploads steering docs and attachments
 # directly via presigned PUT/POST URLs, so the browser preflight needs the
-# CloudFront origin.
+# application origin.
 # Defined here (not in module.s3) to avoid a cycle: module.frontend already
 # depends on module.s3 for the access-logs bucket.
 resource "aws_s3_bucket_cors_configuration" "artifacts" {
@@ -408,10 +517,7 @@ resource "aws_s3_bucket_cors_configuration" "artifacts" {
 
   cors_rule {
     allowed_methods = ["GET", "PUT", "POST", "HEAD"]
-    allowed_origins = [
-      "https://${module.frontend.cloudfront_domain_name}",
-      "http://localhost:5173",
-    ]
+    allowed_origins = local.cors_origin_list
     allowed_headers = ["*"]
     expose_headers  = ["ETag"]
     max_age_seconds = 3000
