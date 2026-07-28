@@ -104,6 +104,63 @@ Before touching AWS the installer verifies that the certificate is in `us-east-1
 
 The same flags work on `update`, and `--no-domain` removes a configured domain.
 
+#### Without the installer
+
+Invoking `deploy-terraform.sh` and `deploy-frontend.sh` directly works the same way — set the variables in your environment's `.tfvars` instead of passing flags:
+
+```hcl
+# terraform/environments/dev.tfvars
+app_domain         = "aidlc.example.com"
+app_domain_aliases = ["www.aidlc.example.com"] # optional
+
+# Supply either of the next two, or both. With only a certificate ARN you
+# manage DNS yourself; with only a zone ID Terraform requests the certificate
+# as well; with both it uses your certificate and manages the records.
+acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/<id>"
+route53_zone_id     = ""
+```
+
+Then apply and rebuild the frontend, **in that order**:
+
+```bash
+./scripts/deploy-terraform.sh dev
+./scripts/deploy-frontend.sh dev
+```
+
+Both steps are required. Terraform updates the distribution, the OAuth redirect URIs and the CORS allowlists; the frontend then has to be rebuilt because its endpoint URLs are inlined into the bundle at build time. `deploy-terraform.sh` prints the DNS records to create when `route53_zone_id` is empty.
+
+!!! warning "The installer's preflight checks do not run on this path"
+
+    Terraform verifies that the variable combination is coherent and that the certificate ARN is in `us-east-1`, but it cannot check the certificate's status, what hostnames it covers, or whether another CloudFront distribution already claims your hostname. Those failures surface several minutes into the apply — or, for a certificate still pending validation, never fail and simply never work.
+
+    Verify by hand first:
+
+    ```bash
+    # Must be ISSUED, and the names must cover every hostname
+    # (a wildcard covers one label: *.example.com matches a.example.com only).
+    aws acm describe-certificate \
+      --certificate-arn arn:aws:acm:us-east-1:111122223333:certificate/<id> \
+      --region us-east-1 \
+      --query 'Certificate.{Status:Status,Names:SubjectAlternativeNames}'
+
+    # Your hostname must not appear here — CloudFront aliases are globally unique.
+    aws cloudfront list-distributions \
+      --query 'DistributionList.Items[].{Id:Id,Aliases:Aliases.Items}' \
+      --output table
+
+    # If using route53_zone_id, the zone must contain every hostname.
+    aws route53 get-hosted-zone --id Z1234567890ABC --query 'HostedZone.Name'
+    ```
+
+To review the plan before applying — worth doing when adding or removing a domain, since it changes the distribution, the environment variables of every Lambda that handles OAuth or returns CORS headers, and the artifacts bucket CORS rules:
+
+```bash
+./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
+./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
+```
+
+Removing a domain is the same edit in reverse: clear all four values back to `""` / `[]`, then run both scripts again.
+
 #### External DNS
 
 Terraform only manages records when `--hosted-zone-id` is given. Otherwise create them yourself, pointing at the value the installer prints:
@@ -161,9 +218,12 @@ Bootstrap creates `terraform/environments/dev.s3.tfbackend`. The environment arg
 cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 # Set aws_region = "<aws-region>" in dev.tfvars.
 # For a custom domain, also set app_domain plus either acm_certificate_arn or
-# route53_zone_id — see the commented block in the example file.
+# route53_zone_id — see "Custom domain → Without the installer" above.
 ./scripts/deploy-terraform.sh dev
+./scripts/deploy-frontend.sh dev
 ```
+
+Unlike the managed installer, nothing here rewrites `dev.tfvars` for you — it is yours to edit, and the scripts only read it.
 
 To review a saved plan before applying:
 
@@ -172,7 +232,19 @@ To review a saved plan before applying:
 ./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
 ```
 
+The plan is rejected if it would destroy a Cognito user pool, Neptune cluster, S3 bucket, or DynamoDB table. The check runs in both phases, so a saved plan is re-inspected before it is applied.
+
 The deployment takes 15-30 minutes. Neptune DB cluster creation takes the longest.
+
+These environment variables are useful when iterating:
+
+| Variable              | Effect                                                                                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `AIDLC_SKIP_NPM_CI=1` | Skips the root `npm ci` before planning. Saves a lot of time on repeat runs when dependencies are current. |
+| `AIDLC_KEEP_PLAN=1`   | Keeps the plan file after a successful apply instead of deleting it.                                       |
+| `AIDLC_TFVARS_FILE`   | Path to an alternative `.tfvars`, overriding the `<environment>.tfvars` convention.                        |
+| `AIDLC_BACKEND_FILE`  | Path to an alternative `.s3.tfbackend`.                                                                    |
+| `AIDLC_CONFIG_DIR`    | Directory holding `environments/`, if you keep Terraform configuration outside the checkout.               |
 
 ### Bootstrap the first platform administrator
 
@@ -297,29 +369,48 @@ Day-to-day access to a project's intents, discussions, and settings is governed 
 
 ## Set up the frontend
 
+All commands in this section run from the repository root.
+
 ### Install dependencies
 
+Only needed for local development — `deploy-frontend.sh` runs `npm ci` itself.
+
 ```bash
-cd frontend
-npm install
+npm --prefix frontend install
 ```
 
 ### Configure environment variables
 
+`deploy-frontend.sh` generates `frontend/.env` from Terraform outputs before every build, so there is normally nothing to do here. To generate it without building — which is what you want before `npm run dev` — run it directly:
+
 ```bash
-cp .env.example .env
+./scripts/generate-env.sh dev
 ```
 
-Edit `.env` with values from your Terraform deployment.
+It requires `terraform/` to be initialized against the environment's backend, and refuses to run if the initialized backend belongs to a different environment.
+
+The generated values all derive from one hostname, `application_domain` — the custom domain when one is configured, otherwise the CloudFront domain:
+
+| Variable                       | Value                              |
+| ------------------------------ | ---------------------------------- |
+| `VITE_APP_ORIGIN`              | `https://<application_domain>`     |
+| `VITE_API_BASE_URL`            | `https://<application_domain>/api` |
+| `VITE_WEBSOCKET_URL`           | `wss://<application_domain>/ws`    |
+| `VITE_YJS_SERVER_URL`          | `wss://<application_domain>/yjs`   |
+| `VITE_AWS_REGION`              | `aws_region` output                |
+| `VITE_AWS_USER_POOL_ID`        | `user_pool_id` output              |
+| `VITE_AWS_USER_POOL_CLIENT_ID` | `user_pool_client_id` output       |
+| `VITE_ENVIRONMENT`             | the environment argument           |
+
+Because these are inlined at build time, changing the domain always requires a rebuild — see [Updating a deployment](#updating-a-deployment). `.env.example` exists for reference and for the rare case of pointing a local build at something Terraform doesn't know about.
 
 ### Deploy to S3 and CloudFront
 
 ```bash
-cd ..
 ./scripts/deploy-frontend.sh dev
 ```
 
-This builds the frontend, uploads it to S3, and invalidates the CloudFront cache.
+This regenerates `.env`, builds the frontend, uploads it to S3, and invalidates the CloudFront cache.
 
 ### Access the application
 
@@ -331,14 +422,19 @@ Open the domain in your browser to reach the sign-in page.
 
 ## Local frontend development
 
-For iterating on the frontend locally (while connected to the deployed AWS backend):
+For iterating on the frontend locally while connected to the deployed AWS backend:
 
 ```bash
-cd frontend
-npm run dev
+./scripts/generate-env.sh dev
+npm --prefix frontend run dev
 ```
 
-This starts the Vite development server on `http://localhost:5173`.
+This starts the Vite development server on `http://localhost:5173`, calling the deployed API, WebSocket and Yjs endpoints. `http://localhost:5173` is already in the CORS allowlist, alongside the deployment's own hostnames.
+
+Two things to expect on a deployment with a custom domain:
+
+- The **Admin** page reports that you are not on the canonical hostname. That is correct and intentional: the OAuth callback URLs it shows are the deployed ones, because those are what the backend actually sends to providers. Paste those, not a `localhost` variant.
+- Provider OAuth flows cannot complete against a local dev server, since the provider redirects the browser to the deployed callback URL. Connect your accounts in the deployed app instead; the tokens are stored per user server-side, so your local session picks them up.
 
 ## Updating a deployment
 

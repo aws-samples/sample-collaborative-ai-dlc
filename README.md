@@ -133,17 +133,25 @@ export AWS_REGION=<aws-region>
 ./scripts/bootstrap.sh dev
 cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 # Set aws_region = "<aws-region>" in terraform/environments/dev.tfvars.
+# For a custom domain, set app_domain plus either acm_certificate_arn or
+# route53_zone_id in the same file — the commented block there explains both.
 
 ./scripts/deploy-terraform.sh dev
 ./scripts/deploy-frontend.sh dev
 ```
 
-`bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. For an approval boundary between planning and applying:
+`bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. Nothing rewrites the tfvars on this path — it is yours to edit. For an approval boundary between planning and applying:
 
 ```bash
 ./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
 ./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
 ```
+
+Both deploy scripts are needed after a custom-domain change: Terraform updates the distribution and the OAuth redirect URIs, then the frontend has to be rebuilt because its endpoint URLs are inlined into the bundle at build time. `deploy-terraform.sh` prints the DNS records to create when `route53_zone_id` is empty.
+
+Note that the installer's custom-domain preflight checks do not run on this path. Terraform cannot verify a certificate's status, which hostnames it covers, or whether another distribution already claims your hostname — see [Setup → Custom domain → Without the installer](https://aidlc.dev/getting-started/setup/#without-the-installer) for the commands to check by hand.
+
+`AIDLC_SKIP_NPM_CI=1` skips the root `npm ci` before planning, which speeds up repeat runs.
 
 ### Post-install Configuration
 
@@ -254,6 +262,12 @@ Group membership is read from the ID token — users need to sign out and back i
 
 ```bash
 ./scripts/deploy-frontend.sh dev
+```
+
+This regenerates `frontend/.env` from Terraform outputs, builds, uploads to S3, and invalidates the CloudFront cache. To regenerate `.env` without building — before `npm --prefix frontend run dev`, for instance:
+
+```bash
+./scripts/generate-env.sh dev
 ```
 
 The application is available at its canonical URL — the custom domain when one is configured, otherwise the CloudFront domain:
