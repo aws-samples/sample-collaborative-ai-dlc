@@ -193,6 +193,8 @@ Removing a domain is the same edit in reverse: clear all four values back to `""
   --var route53_zone_id=
 ```
 
+Removing or renaming a domain whose certificate Terraform owns takes about five minutes longer than the distribution update alone. CloudFront releases a certificate asynchronously, so ACM still reports it as in use for a while after the distribution reports `Deployed`, and deleting it too early fails. The apply waits that out before deleting. A supplied `acm_certificate_arn` is never deleted by Terraform and so is not affected.
+
 #### External DNS
 
 Terraform only manages records when `--hosted-zone-id` is given. Otherwise create them yourself, pointing at the value the installer prints:
@@ -565,6 +567,28 @@ The CloudFront domain keeps working throughout, so use `terraform -chdir=terrafo
 **Custom domain apply fails with `CNAMEAlreadyExists`**
 
 Another CloudFront distribution, possibly in a different AWS account, already claims the hostname. CloudFront aliases are globally unique. Remove it there first. The installer checks for this before applying; a direct `terraform apply` does not.
+
+**Removing a domain fails with `ResourceInUseException` deleting the ACM certificate**
+
+```
+Error: deleting ACM Certificate (arn:aws:acm:us-east-1:…): ResourceInUseException:
+Certificate arn:aws:acm:us-east-1:… in account … is in use.
+```
+
+CloudFront releases a certificate asynchronously, so ACM can still report it as in use for several minutes after the distribution reports `Deployed`. The apply now waits that out before attempting the delete, so this should not occur on a current version.
+
+If you hit it on an older version, the important part already succeeded: the distribution was updated first, so the aliases are gone and the deployment is back on the CloudFront domain. Only the certificate is left behind. Either wait for the release to propagate and re-run the deployment, which retries just the delete:
+
+```bash
+./scripts/deploy-terraform.sh dev
+```
+
+Or, if you would rather not wait, drop it from state and delete it out of band later — an unused certificate costs nothing:
+
+```bash
+terraform -chdir=terraform state rm 'module.domain.aws_acm_certificate.this[0]'
+aws acm delete-certificate --certificate-arn <arn> --region us-east-1   # once released
+```
 
 **GitLab connections break after changing the domain**
 

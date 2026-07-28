@@ -23,11 +23,12 @@ locals {
 
   # Resolving through aws_acm_certificate_validation rather than the certificate
   # itself is what makes the distribution wait for validation to complete.
+  # Routed through time_sleep so the release delay lands between the
+  # distribution update and the certificate deletion — see that resource.
   resolved_certificate_arn = (
     !var.enabled ? "" :
     var.certificate_arn != "" ? var.certificate_arn :
-    local.validate_via_route53 ? aws_acm_certificate_validation.this[0].certificate_arn :
-    aws_acm_certificate.this[0].arn
+    time_sleep.certificate_release[0].triggers["certificate_arn"]
   )
 }
 
@@ -74,4 +75,38 @@ resource "aws_acm_certificate_validation" "this" {
 
   certificate_arn         = aws_acm_certificate.this[0].arn
   validation_record_fqdns = [for r in aws_route53_record.certificate_validation : r.fqdn]
+}
+
+# Holds the certificate ARN on its way to the distribution, purely to create a
+# graph position between the two.
+#
+# CloudFront releases a certificate asynchronously. The distribution reaching
+# Deployed does not mean ACM has observed the disassociation yet, so deleting the
+# certificate immediately afterwards fails with ResourceInUseException. Because
+# dependents are dealt with before their dependencies on destroy, sitting here
+# means the wait happens after the distribution has been updated off this
+# certificate and before ACM is asked to delete it:
+#
+#   distribution updated -> this delay -> validation destroyed -> certificate deleted
+#
+# Only present when Terraform owns the certificate. A supplied certificate ARN is
+# never deleted by Terraform, so it cannot hit the race.
+resource "time_sleep" "certificate_release" {
+  count = local.issue_certificate ? 1 : 0
+
+  destroy_duration = var.certificate_release_delay
+
+  triggers = {
+    certificate_arn = (
+      local.validate_via_route53
+      ? aws_acm_certificate_validation.this[0].certificate_arn
+      : aws_acm_certificate.this[0].arn
+    )
+  }
+
+  # Matches the certificate so a domain rename creates the replacement before
+  # tearing down the old pair.
+  lifecycle {
+    create_before_destroy = true
+  }
 }

@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Notes
 
 - Changing the canonical hostname of a running deployment requires updating the **Authorization callback URL** in every configured OAuth provider, and every GitLab connection must be reauthorized: GitLab requires `redirect_uri` on the refresh-token grant to match the original authorization request, so stored GitLab refresh tokens become unusable. GitHub OAuth tokens, GitHub App bindings and Jira connections are unaffected. Setting the domain at initial install avoids this entirely.
+- Removing or renaming a domain whose certificate Terraform owns takes roughly five minutes longer than the distribution update alone. CloudFront releases certificates asynchronously and ACM reports them as in use until it observes the release, so the delete is deliberately delayed rather than allowed to fail. A supplied `acm_certificate_arn` is never deleted by Terraform and is unaffected.
 
 ## [2.0.0-preview0] - 2026-07-17
 

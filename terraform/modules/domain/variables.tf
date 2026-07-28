@@ -43,3 +43,9 @@ variable "validation_record_ttl" {
   type        = number
   default     = 60
 }
+
+variable "certificate_release_delay" {
+  description = "How long to wait after CloudFront stops using a Terraform-managed certificate before deleting it. CloudFront releases certificates asynchronously, so deleting immediately fails with ResourceInUseException. Only applies when Terraform owns the certificate, and only on the way out — removing or renaming a domain takes this much longer. Set to 0s to disable and delete immediately."
+  type        = string
+  default     = "5m"
+}
