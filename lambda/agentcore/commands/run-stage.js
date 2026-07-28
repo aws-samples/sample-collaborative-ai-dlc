@@ -516,6 +516,7 @@ const runStageSensors = async ({
   openGraph,
   loadBlockScript,
   workspaceDir,
+  changedFiles = null,
   env,
   spawnFn,
   store,
@@ -541,6 +542,7 @@ const runStageSensors = async ({
       executionId,
       loadBlockScript,
       workspaceDir,
+      changedFiles,
       env,
       spawnFn,
       store,
@@ -581,6 +583,7 @@ const runSensorsWithGraph = async ({
   executionId,
   loadBlockScript,
   workspaceDir,
+  changedFiles = null,
   env,
   spawnFn,
   store,
@@ -590,6 +593,7 @@ const runSensorsWithGraph = async ({
     graph,
     loadBlockScript,
     workspaceDir,
+    changedFiles,
     // The upstream sensor commands embed {{HARNESS_DIR}}; the materializer
     // already neutralizes it in prose, but the script-argv builder ignores the
     // command path entirely (it runs the S3-materialized script), so no
@@ -2245,6 +2249,14 @@ export const runStage = async (
     return fail(stageInstanceId, uncommitted ? 'git_commit_failed' : 'push_failed', detail);
   }
 
+  // The paths this stage actually changed on disk, captured by the git engine
+  // before it staged the tree. Computed HERE (above the sensor pass) because the
+  // script sensors scope their inspection to it — a stage is graded on its own
+  // work, never on source a previous stage left in the checkout.
+  const changedFiles = [
+    ...new Set(gitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
+  ].toSorted();
+
   // 6. Deterministic sensors — the verification axis that runs AFTER the agent.
   // Graph sensors evaluate the produced artifacts' content in-process; script
   // sensors spawn against the workspace checkout. Advisory verdicts record a
@@ -2264,6 +2276,7 @@ export const runStage = async (
       openGraph,
       loadBlockScript,
       workspaceDir,
+      changedFiles,
       env,
       spawnFn,
       store,
@@ -2395,9 +2408,6 @@ export const runStage = async (
     sectionIndex,
     state: 'SUCCEEDED',
   });
-  const changedFiles = [
-    ...new Set(gitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
-  ].toSorted();
   const commitSha =
     gitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ?? null;
   return {

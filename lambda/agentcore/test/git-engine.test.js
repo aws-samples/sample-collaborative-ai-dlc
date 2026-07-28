@@ -12,6 +12,8 @@ import {
   remoteBranchExists,
   commitAndPushAll,
   seedInitialCommit,
+  parsePorcelainZ,
+  toWorkspaceRelative,
 } from '../git-engine.js';
 
 // Real git spawns (~10 per test) can be slow on busy CI machines.
@@ -90,6 +92,40 @@ describe('scrubRemote', () => {
   });
 });
 
+describe('parsePorcelainZ', () => {
+  it('returns unquoted paths for names with spaces and non-ASCII', () => {
+    // Plain --porcelain C-quotes these ("\"src/a b.ts\""), which would never
+    // match the raw paths listFiles reports to the sensors.
+    const out = parsePorcelainZ(' M src/a b.ts\0?? src/caf\u00e9.ts\0');
+    expect(out).toEqual(['src/a b.ts', 'src/café.ts']);
+  });
+
+  it('keeps the destination of a rename and drops the origin field', () => {
+    // R entries are followed by a SEPARATE NUL-terminated origin path.
+    expect(parsePorcelainZ('R  new.ts\0old.ts\0 M other.ts\0')).toEqual(['new.ts', 'other.ts']);
+  });
+
+  it('tolerates empty output', () => {
+    expect(parsePorcelainZ('')).toEqual([]);
+  });
+});
+
+describe('toWorkspaceRelative', () => {
+  it('prefixes with the repo on a multi-repo checkout', () => {
+    // Two repos can both contain src/index.ts; the sensors glob relative to the
+    // workspace, so only the prefixed form identifies a file unambiguously.
+    expect(toWorkspaceRelative(['src/index.ts'], { url: 'acme/shop', multi: true })).toEqual([
+      'acme/shop/src/index.ts',
+    ]);
+  });
+
+  it('leaves paths alone for a single repo, whose dir IS the workspace', () => {
+    expect(toWorkspaceRelative(['src/index.ts'], { url: 'acme/shop', multi: false })).toEqual([
+      'src/index.ts',
+    ]);
+  });
+});
+
 describe('commitAll', () => {
   it('commits the whole tree with the engine identity and returns the sha', async () => {
     const { work } = await initRemoteAndClone();
@@ -141,6 +177,20 @@ describe('commitAll', () => {
         else process.env[k] = v;
       }
     }
+  });
+
+  it('captures filenames with spaces and non-ASCII verbatim', async () => {
+    // The sensors match these paths against listFiles output, so any C-quoting
+    // from plain --porcelain would silently prevent a match.
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'a file.ts'), 'x\n');
+    await writeFile(path.join(work, 'café.ts'), 'y\n');
+
+    const res = await commitAll({ dir: work, message: 'aidlc(x): e1' });
+
+    expect(res.committed).toBe(true);
+    expect(res.files).toContain('a file.ts');
+    expect(res.files).toContain('café.ts');
   });
 
   it('captures untracked, modified AND deleted files (add -A semantics)', async () => {
