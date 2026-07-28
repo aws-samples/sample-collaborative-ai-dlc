@@ -342,6 +342,7 @@ module "agentcore" {
   aidlc_repo_ref              = var.aidlc_repo_ref
   bedrock_model               = var.bedrock_model
   kiro_model                  = "claude-opus-4.6"
+  codex_model                 = var.codex_model
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.

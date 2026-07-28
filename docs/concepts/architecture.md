@@ -143,7 +143,7 @@ flowchart TB
 
 **Pull requests.** When an execution succeeds, the orchestrator opens pull requests in-process through the shared git-provider layer (GitHub / GitLab), from the intent branch onto the base branch.
 
-**Auth.** At container startup the runtime reads the agent CLI credentials from SSM Parameter Store — a Bedrock bearer token for Claude Code / OpenCode, or a Kiro API key — as configured in **Admin → Agents**. The runtime's IAM role deliberately has no Bedrock model-invocation permissions; token auth is the only path. Git pushes use the starting user's provider token, injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. None of these auth lookups appear in the diagram.
+**Auth.** At container startup the runtime reads the agent CLI credentials from SSM Parameter Store — a Bedrock bearer token for Claude Code / OpenCode / Codex, or a Kiro API key — as configured in **Admin → Agents**. The runtime's IAM role deliberately has no Bedrock model-invocation permissions; token auth is the only path. Git pushes use the starting user's provider token, injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. None of these auth lookups appear in the diagram.
 
 **Realtime.** Every relevant process write is persisted to DynamoDB and then broadcast **directly** to the intent's WebSocket channel (`intent:<intentId>`): both the container and the orchestrator fan out through the shared connection registry. DynamoDB is the source of truth; the broadcast is best-effort and never blocks a stage. There is no event bus in this path, which is why the application WebSocket fabric exists separately from the Yjs one.
 

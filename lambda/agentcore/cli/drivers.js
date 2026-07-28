@@ -7,6 +7,9 @@
 // code.
 //
 // Each driver exposes a SMALL surface:
+//   contextKey — the kwarg name its materialized MCP context travels under
+//     (mcpConfigPath / agentName / opencodeConfigContent / codexHome); callers
+//     pick the right materializer output generically instead of per-CLI ternaries
 //   buildInvocation({ prompt, mcpConfigPath, model, allowedTools }) ->
 //     { command, args, env, promptViaStdin }
 //   envForAuth(env) -> { ...auth env vars }   (Bedrock bearer / Kiro key)
@@ -30,6 +33,7 @@ export const MCP_SERVER_NAME = 'aidlc';
 // "text", unaffected by the stream-json OUTPUT format.
 const claudeDriver = {
   name: 'claude',
+  contextKey: 'mcpConfigPath',
   buildInvocation({ prompt, mcpConfigPath, model, allowedTools = [], sessionId = null }) {
     const args = ['-p'];
     // MCP config is optional: a plain one-shot prompt (e.g. derive-time
@@ -90,6 +94,7 @@ const claudeDriver = {
 // pipes it in (see cli/spawn.js).
 const kiroDriver = {
   name: 'kiro',
+  contextKey: 'agentName',
   buildInvocation({ prompt, agentName, model }) {
     const args = ['chat', '--no-interactive', '--trust-all-tools'];
     if (agentName) args.push('--agent', agentName);
@@ -123,6 +128,7 @@ const openCodeModel = (model) => {
 
 const opencodeDriver = {
   name: 'opencode',
+  contextKey: 'opencodeConfigContent',
   buildInvocation({ prompt, model, opencodeConfigContent = null }) {
     const args = ['run', '--format', 'json', '--auto'];
     const resolvedModel = openCodeModel(model);
@@ -156,6 +162,71 @@ const opencodeDriver = {
     if (env.AWS_BEARER_TOKEN_BEDROCK) {
       out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
     }
+    return out;
+  },
+};
+
+// ── Codex CLI (headless, Bedrock) ──
+// `codex exec --json -` emits JSONL on stdout (progress on stderr) and reads
+// the prompt from stdin (the `-` sentinel — same ARG_MAX reason as the other
+// drivers). All behavioral config (model_provider = "amazon-bedrock",
+// approval_policy, sandbox_mode, MCP servers) lives in the materialized
+// per-stage CODEX_HOME/config.toml (see stage-materializer), so argv stays
+// minimal. Codex chooses the session id; the runtime captures the first
+// `thread.started` event and resumes with `codex exec resume <id>`.
+//
+// Model namespace: Bedrock's OpenAI-compatible endpoint takes EXACT ids like
+// "openai.gpt-5.5" — no geo prefix, no provider prefix. The resolver passes
+// configured values through verbatim (codex is NOT in BEDROCK_CLIS).
+// Argv config overrides pinned on EVERY codex invocation, materialized home or
+// not: a one-shot (no CODEX_HOME) must still hit Bedrock — codex's built-in
+// default provider is the OpenAI-hosted API, which this deployment has no
+// credentials for — and headless exec must never wait on an approval prompt.
+// With a materialized home these duplicate config.toml with the same values.
+const CODEX_BASE_OVERRIDES = [
+  '-c',
+  'model_provider="amazon-bedrock"',
+  '-c',
+  'approval_policy="never"',
+];
+
+const codexDriver = {
+  name: 'codex',
+  contextKey: 'codexHome',
+  buildInvocation({ prompt, model, codexHome = null }) {
+    const args = ['exec', '--json', '--skip-git-repo-check', ...CODEX_BASE_OVERRIDES];
+    if (model) args.push('-m', model);
+    args.push('-');
+    return {
+      command: 'codex',
+      args,
+      env: codexHome ? { CODEX_HOME: codexHome } : {},
+      prompt,
+      promptViaStdin: true,
+    };
+  },
+  buildResumeInvocation({ sessionId, answerMessage, model, codexHome = null }) {
+    const args = [
+      'exec',
+      'resume',
+      sessionId,
+      '--json',
+      '--skip-git-repo-check',
+      ...CODEX_BASE_OVERRIDES,
+    ];
+    if (model) args.push('-m', model);
+    args.push('-');
+    return {
+      command: 'codex',
+      args,
+      env: codexHome ? { CODEX_HOME: codexHome } : {},
+      prompt: answerMessage,
+      promptViaStdin: true,
+    };
+  },
+  envForAuth(env) {
+    const out = { AWS_REGION: env.BEDROCK_REGION || env.AWS_REGION || 'us-east-1' };
+    if (env.AWS_BEARER_TOKEN_BEDROCK) out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
     return out;
   },
 };
@@ -250,10 +321,15 @@ export const parseLatestKiroSession = (stdout, cwd) => {
   return newest?.sessionId ?? null;
 };
 
-export const DRIVERS = { claude: claudeDriver, kiro: kiroDriver, opencode: opencodeDriver };
+export const DRIVERS = {
+  claude: claudeDriver,
+  kiro: kiroDriver,
+  opencode: opencodeDriver,
+  codex: codexDriver,
+};
 
 // CLIs the runtime can drive, in stable preference order.
-export const SUPPORTED_CLIS = ['claude', 'kiro', 'opencode'];
+export const SUPPORTED_CLIS = ['claude', 'kiro', 'opencode', 'codex'];
 
 export const getDriver = (cli) => {
   const d = DRIVERS[cli];
@@ -274,4 +350,4 @@ export const selectCli = ({ requested, availableClis = [] } = {}) => {
   return null;
 };
 
-export { claudeDriver, kiroDriver, opencodeDriver };
+export { claudeDriver, kiroDriver, opencodeDriver, codexDriver };

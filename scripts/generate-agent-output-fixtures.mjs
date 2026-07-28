@@ -12,11 +12,13 @@ const cliFiles = {
   claude: 'claude.jsonl',
   kiro: 'kiro.txt',
   opencode: 'opencode.jsonl',
+  codex: 'codex.jsonl',
 };
 const cliLabels = {
   claude: 'Claude Code',
   kiro: 'Kiro CLI',
   opencode: 'OpenCode',
+  codex: 'Codex',
 };
 
 const reportsFlag = process.argv.indexOf('--reports');

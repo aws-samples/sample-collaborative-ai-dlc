@@ -560,7 +560,7 @@ describe('PUT /projects/:id', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body)).toEqual({
-      error: 'Invalid agentCli value. Must be one of: kiro, claude, opencode',
+      error: 'Invalid agentCli value. Must be one of: kiro, claude, opencode, codex',
     });
   });
 
@@ -613,7 +613,7 @@ describe('PUT /projects/:id', () => {
       issues: [
         {
           path: 'cursor',
-          message: 'Unknown model key "cursor". Allowed: kiro, claude, opencode.',
+          message: 'Unknown model key "cursor". Allowed: kiro, claude, opencode, codex.',
         },
       ],
     });

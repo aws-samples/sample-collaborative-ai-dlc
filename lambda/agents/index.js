@@ -33,7 +33,7 @@ import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
-import { listClaudeModels } from '../shared/bedrock-models.js';
+import { listClaudeModels, CODEX_BEDROCK_MODELS } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
 import {
   authorizeLegacyProjectRead,
@@ -58,6 +58,7 @@ const RUNTIME_MODEL_OVERRIDE = {
   kiro: true,
   claude: true,
   opencode: true,
+  codex: true,
 };
 // The v2 AgentCore runtime ARN — the models endpoint invokes its `capabilities`
 // command (the only source of Kiro's model list, which is CLI-native, not
@@ -757,6 +758,9 @@ export const handler = async (event) => {
           claude: claudeModels,
           opencode: opencodeModels,
           kiro: kiroModels,
+          // Codex on Bedrock: curated static list — the OpenAI models are not
+          // surfaced by ListInferenceProfiles (see shared/bedrock-models.js).
+          codex: CODEX_BEDROCK_MODELS,
         },
       });
     }

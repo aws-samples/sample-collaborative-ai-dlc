@@ -1,4 +1,5 @@
 import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
+import { createCodexJsonlParser } from './cli/codex-parser.js';
 
 const TOOL_DISPLAY_TYPES = new Set([
   'message',
@@ -453,6 +454,68 @@ export const createCliOutputSink = ({
           type: 'raw',
           level: 'error',
           title: 'OpenCode error',
+          summary: content.trim(),
+          details: content.trim(),
+        });
+      },
+      onDiagnostic(line) {
+        const content = stripTerminalControls(`${line}\n`);
+        emitEvent(emit, content, {
+          type: 'raw',
+          level: 'info',
+          summary: content.trim(),
+          hiddenByDefault: true,
+        });
+      },
+    });
+    return {
+      state: parser.state,
+      write(chunk) {
+        parser.write(chunk);
+      },
+      flush() {
+        return parser.flush();
+      },
+    };
+  }
+
+  if (cli === 'codex') {
+    const parser = createCodexJsonlParser({
+      onSession,
+      onUsage,
+      onText(text) {
+        const content = stripTerminalControls(text);
+        emitEvent(emit, content, displayForMessage(content));
+      },
+      onTool(toolEvent) {
+        // Codex reports MCP tools with the bare tool name (server carried
+        // separately) — no prefix stripping needed.
+        const name = String(toolEvent.name ?? 'tool');
+        // send_output already persists its canonical output through MCP.
+        if (name === 'send_output') return;
+        const rawLines = [
+          `Running tool ${name}\n`,
+          `${JSON.stringify(toolEvent.input ?? {})}\n`,
+          ...(toolEvent.output ? [`${String(toolEvent.output)}\n`] : []),
+          ...(toolEvent.error ? [`${String(toolEvent.error?.message ?? toolEvent.error)}\n`] : []),
+        ];
+        const event = displayForTool({
+          name,
+          rawLines,
+          ...(Array.isArray(toolEvent.targets) && toolEvent.targets.length
+            ? { targets: toolEvent.targets }
+            : {}),
+          completion: { ok: toolEvent.status === 'completed', duration: null },
+        });
+        emitEvent(emit, event.content, event.display);
+      },
+      onError(message, event) {
+        handleError(message, event);
+        const content = stripTerminalControls(`${message}\n`);
+        emitEvent(emit, content, {
+          type: 'raw',
+          level: 'error',
+          title: 'Codex error',
           summary: content.trim(),
           details: content.trim(),
         });

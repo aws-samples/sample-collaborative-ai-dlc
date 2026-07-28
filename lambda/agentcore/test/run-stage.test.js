@@ -184,6 +184,7 @@ const baseDeps = (overrides = {}) => ({
   materializeMcpConfig: async () => '/ws/.aidlc/mcp.json',
   materializeKiroAgent: async () => 'aidlc',
   materializeOpenCodeConfig: async () => '{"share":"disabled"}',
+  materializeCodexHome: async () => '/ws/.aidlc/codex-home',
   renderRulesDoc,
   mcpEntry: '/opt/agentcore/mcp/index.js',
   availableClis: ['claude'],
@@ -1762,6 +1763,90 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'opencode' });
     const argv = seen.find((value) => value.args);
     expect(argv.args[argv.args.indexOf('--session') + 1]).toBe('ses_old');
+    expect(seen.find((value) => value.prompt)?.prompt).toContain('Proceed');
+  });
+
+  it('persists the first observed Codex thread id before marking a parked stage waiting', async () => {
+    const codexSpawn =
+      ({ emitSession = true, capture } = {}) =>
+      (command, args) => {
+        capture?.({ command, args });
+        const child = new EventEmitter();
+        child.stdin = { end: (prompt) => capture?.({ prompt }) };
+        child.stdout = new EventEmitter();
+        setImmediate(() => {
+          if (emitSession) {
+            child.stdout.emit(
+              'data',
+              Buffer.from(`${JSON.stringify({ type: 'thread.started', thread_id: 'thread_7' })}\n`),
+            );
+          }
+          child.stdout.emit(
+            'data',
+            Buffer.from(
+              `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } })}\n`,
+            ),
+          );
+          child.emit('close', 0);
+        });
+        return child;
+      };
+
+    const store = spyStore(pendingGateSeed('q-codex', { createdAt: '2026-07-15T00:00:00Z' }));
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'codex' },
+      baseDeps({
+        store,
+        availableClis: ['codex'],
+        spawnFn: codexSpawn(),
+      }),
+    );
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      cli: 'codex',
+      cliSessionId: 'thread_7',
+    });
+    const sessionWrite = store.calls.find(
+      (call) => call[0] === 'updateStageState' && call[1].cliSessionId === 'thread_7',
+    );
+    const waitingWrite = store.calls.find(
+      (call) => call[0] === 'updateStageState' && call[1].state === 'WAITING_FOR_HUMAN',
+    );
+    expect(store.calls.indexOf(sessionWrite)).toBeLessThan(store.calls.indexOf(waitingWrite));
+
+    // A parked Codex run that emitted NO thread id fails explicitly.
+    const store2 = spyStore(pendingGateSeed('q-codex'));
+    const res2 = await runStage(
+      { ...baseArgs, requestedCli: 'codex' },
+      baseDeps({
+        store: store2,
+        availableClis: ['codex'],
+        spawnFn: codexSpawn({ emitSession: false }),
+      }),
+    );
+    expect(res2).toMatchObject({ ok: false, reason: 'codex_session_missing' });
+
+    // The answered gate resumes the SAME thread via `codex exec resume`.
+    const seen = [];
+    const res3 = await runStage(
+      { ...baseArgs, requestedCli: 'codex', resumeFrom: 'q-codex' },
+      baseDeps({
+        availableClis: ['codex'],
+        store: spyStore({
+          humanTask: {
+            humanTaskId: 'q-codex',
+            status: 'answered',
+            answer: { freeText: 'Proceed' },
+          },
+          stage: { cli: 'codex', cliSessionId: 'thread_old' },
+        }),
+        spawnFn: codexSpawn({ emitSession: false, capture: (value) => seen.push(value) }),
+      }),
+    );
+    expect(res3).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'codex' });
+    const argv = seen.find((value) => value.args);
+    expect(argv.args.slice(0, 3)).toEqual(['exec', 'resume', 'thread_old']);
     expect(seen.find((value) => value.prompt)?.prompt).toContain('Proceed');
   });
 

@@ -422,7 +422,8 @@ resource "aws_ssm_parameter" "cli_models" {
     var.kiro_model != "" ? { kiro = var.kiro_model } : {},
     var.bedrock_model != "" ? {
       opencode = can(regex("^amazon-bedrock/", var.bedrock_model)) ? var.bedrock_model : "amazon-bedrock/${var.bedrock_model}"
-    } : {}
+    } : {},
+    var.codex_model != "" ? { codex = var.codex_model } : {}
   ))
 
   lifecycle {

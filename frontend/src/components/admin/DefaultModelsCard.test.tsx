@@ -25,7 +25,7 @@ const defaultSettings = (over: Record<string, unknown> = {}) => ({
 });
 
 const defaultCapabilities = (over: Record<string, unknown> = {}) => ({
-  available: ['kiro', 'claude', 'opencode'],
+  available: ['kiro', 'claude', 'opencode', 'codex'],
   models: {
     kiro: [{ id: 'kiro-model-1', name: 'Kiro Model 1' }],
     claude: [
@@ -33,6 +33,7 @@ const defaultCapabilities = (over: Record<string, unknown> = {}) => ({
       { id: 'us.anthropic.claude-opus-4-6', name: 'Claude Opus 4.6' },
     ],
     opencode: [{ id: 'amazon-bedrock/us.anthropic.claude-sonnet-4-6', name: 'Claude Sonnet 4.6' }],
+    codex: [{ id: 'openai.gpt-5.5', name: 'GPT-5.5' }],
   },
   ...over,
 });
@@ -63,6 +64,7 @@ describe('DefaultModelsCard', () => {
     });
     expect(screen.getByTestId('default-model-select-claude')).toBeInTheDocument();
     expect(screen.getByTestId('default-model-select-opencode')).toBeInTheDocument();
+    expect(screen.getByTestId('default-model-select-codex')).toBeInTheDocument();
   });
 
   it('disables dropdowns while models are loading', async () => {

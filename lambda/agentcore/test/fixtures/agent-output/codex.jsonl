@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"thread_fixture"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Reviewing the current settings implementation."}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat templates/settings.html","aggregated_output":"existing settings markup","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"file_change","status":"completed","changes":[{"kind":"update","path":"templates/settings.html"}]}}
+{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"aidlc","tool":"create_artifact","status":"completed","arguments":{"artifactType":"design","id":"settings-mobile-pairing"},"result":"created"}}
+{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"cat static/missing.css","aggregated_output":"cat: static/missing.css: No such file or directory","exit_code":1,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_5","type":"reasoning","text":"The missing stylesheet is optional; proceeding with verification."}}
+{"type":"item.completed","item":{"id":"item_6","type":"agent_message","text":"Settings output verified across desktop and mobile layouts."}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":300,"output_tokens":260,"reasoning_output_tokens":40}}
