@@ -11,6 +11,8 @@ TF_DIR="$SCRIPT_DIR/../terraform"
 ENVIRONMENT="dev"
 PHASE="all"
 PLAN_FILE="$TF_DIR/tfplan"
+TF_VAR_ARGS=()
+USAGE="Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path] [--var KEY=VALUE]..."
 
 if [[ $# -gt 0 && "$1" != --* ]]; then
     ENVIRONMENT="$1"
@@ -26,14 +28,32 @@ while [[ $# -gt 0 ]]; do
             PLAN_FILE="${2:?--plan-file requires a path}"
             shift 2
             ;;
+        --var)
+            # Overrides a value from the tfvars file. Terraform gives -var higher
+            # precedence than -var-file, which TF_VAR_* env vars do not get: those
+            # lose to any key present in the var-file and are silently ignored.
+            if [[ "${2:?--var requires KEY=VALUE}" != *=* ]]; then
+                echo "Error: --var expects KEY=VALUE, got '$2'" >&2
+                exit 2
+            fi
+            TF_VAR_ARGS+=(-var "$2")
+            shift 2
+            ;;
         *)
-            echo "Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path]" >&2
+            echo "$USAGE" >&2
             exit 2
             ;;
     esac
 done
 if [[ "$PHASE" != "plan" && "$PHASE" != "apply" && "$PHASE" != "all" ]]; then
     echo "Error: --phase must be plan, apply, or all" >&2
+    exit 2
+fi
+# A saved plan already has its variables resolved, and terraform rejects -var
+# when applying one. Fail here rather than letting the override look accepted.
+if [[ "$PHASE" == "apply" && ${#TF_VAR_ARGS[@]} -gt 0 ]]; then
+    echo "Error: --var applies at plan time; a saved plan already contains its variables." >&2
+    echo "Pass --var with --phase plan (or --phase all)." >&2
     exit 2
 fi
 
@@ -121,6 +141,8 @@ stop_retired_agent_tasks() {
     local tfvars_file="$1"
     local env_name project_name region cluster_name cluster_arn tasks services
 
+    # Reads the tfvars directly, so --var overrides of environment, project_name
+    # or aws_region are not reflected here. Those three belong in the tfvars.
     env_name=$(tfvar_string environment "$tfvars_file")
     project_name=$(tfvar_string project_name "$tfvars_file")
     region=$(tfvar_string aws_region "$tfvars_file")
@@ -162,7 +184,7 @@ if [[ -z "${AVAILABLE_ENVS// }" ]]; then
 fi
 
 if ! echo " $AVAILABLE_ENVS " | grep -q " $ENVIRONMENT "; then
-    echo "Usage: $0 <environment> [--phase plan|apply|all] [--plan-file path]"
+    echo "$USAGE"
     echo "Available environments: $AVAILABLE_ENVS"
     exit 1
 fi
@@ -190,7 +212,7 @@ if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
 
     mkdir -p "$(dirname "$PLAN_FILE")"
     echo "Planning deployment..."
-    terraform plan -var-file="$TFVARS_FILE" -out="$PLAN_FILE"
+    terraform plan -var-file="$TFVARS_FILE" ${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"} -out="$PLAN_FILE"
     inspect_plan "$PLAN_FILE"
     if [[ "$PHASE" == "plan" ]]; then
         echo "Terraform plan ready: $PLAN_FILE"

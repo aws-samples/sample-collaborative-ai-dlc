@@ -166,6 +166,189 @@ fi
   assert.match(deployed.stdout, /Next step:.*deploy-frontend\.sh summary/);
 });
 
+// Mocked terraform + aws for standalone deploy runs. Records every terraform
+// invocation so argument passthrough can be asserted, and answers the outputs
+// the deployment summary reads.
+const standaloneDeployEnv = (dir, { customDomain = false } = {}) => {
+  const bin = join(dir, 'bin');
+  const config = join(dir, 'config/environments');
+  const terraformLog = join(dir, 'terraform.log');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(config, { recursive: true });
+  writeFileSync(
+    join(config, 'summary.tfvars'),
+    [
+      'environment = "summary"',
+      'project_name = "aidlc"',
+      'aws_region = "eu-west-1"',
+      'app_domain = ""',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(join(config, 'summary.s3.tfbackend'), 'bucket = "state"\nkey = "state"\n');
+  writeFileSync(
+    join(bin, 'terraform'),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$AIDLC_TERRAFORM_LOG"
+case "$*" in
+  *"plan "*)
+    for arg in "$@"; do
+      [[ "$arg" == -out=* ]] && : > "\${arg#-out=}"
+    done
+    ;;
+  *"show -json "*) printf '{"resource_changes":[]}\\n' ;;
+  *" output -json application_aliases"*)
+    printf '%s\\n' "\${AIDLC_FAKE_ALIASES:-[]}"
+    ;;
+  *" output -raw application_url"*) printf '%s\\n' "\${AIDLC_FAKE_APP_URL:-https://app.example.invalid}" ;;
+  *" output -raw application_domain"*) printf '%s\\n' "\${AIDLC_FAKE_APP_DOMAIN:-app.example.invalid}" ;;
+  *" output -raw custom_domain_enabled"*) printf '%s\\n' "\${AIDLC_FAKE_CUSTOM_DOMAIN:-false}" ;;
+  *" output -raw dns_managed_by_terraform"*) printf '%s\\n' "\${AIDLC_FAKE_DNS_MANAGED:-false}" ;;
+  *" output -raw dns_target"*) printf '%s\\n' "\${AIDLC_FAKE_DNS_TARGET:-d111111abcdef8.cloudfront.net}" ;;
+  *" output -raw aws_region"*) printf 'eu-west-1\\n' ;;
+  *" output -raw environment"*) printf 'summary\\n' ;;
+  *" output -raw seed_blocks_lambda_name"*) printf 'seed-summary\\n' ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    join(bin, 'aws'),
+    `#!/usr/bin/env bash
+if [[ "$*" == *"ecs describe-clusters"* ]]; then
+  printf 'None\\n'
+  exit 0
+fi
+if [[ "$*" == *"lambda invoke"* ]]; then
+  for arg in "$@"; do
+    [[ "$arg" == */aidlc-seed.* ]] && printf '{}\\n' > "$arg"
+  done
+  printf 'None\\n'
+fi
+`,
+    { mode: 0o755 },
+  );
+
+  return {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      AIDLC_CONFIG_DIR: join(dir, 'config'),
+      AIDLC_SKIP_NPM_CI: '1',
+      AIDLC_TERRAFORM_LOG: terraformLog,
+      ...(customDomain
+        ? {
+            AIDLC_FAKE_CUSTOM_DOMAIN: 'true',
+            AIDLC_FAKE_APP_DOMAIN: 'aidlc.example.com',
+            AIDLC_FAKE_APP_URL: 'https://aidlc.example.com',
+            AIDLC_FAKE_ALIASES: '["aidlc.example.com","www.aidlc.example.com"]',
+          }
+        : {}),
+    },
+    terraformLog,
+    planFile: join(dir, 'summary.tfplan'),
+  };
+};
+
+test('standalone deployment forwards --var overrides to terraform plan', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-var-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+
+  const deployed = run(
+    'bash',
+    [
+      deployTerraform,
+      'summary',
+      '--plan-file',
+      planFile,
+      '--var',
+      'app_domain=aidlc.example.com',
+      '--var',
+      'route53_zone_id=Z1234567890ABC',
+    ],
+    { env },
+  );
+  assert.equal(deployed.status, 0, deployed.stderr);
+
+  // -var must reach the plan; terraform ranks it above -var-file, which is why
+  // it can override a key the tfvars already sets.
+  const planLine = readFileSync(terraformLog, 'utf8')
+    .split('\n')
+    .find((line) => line.startsWith('plan '));
+  assert.ok(planLine, 'expected a terraform plan invocation');
+  assert.match(planLine, /-var-file=\S+summary\.tfvars/);
+  assert.match(planLine, /-var app_domain=aidlc\.example\.com/);
+  assert.match(planLine, /-var route53_zone_id=Z1234567890ABC/);
+});
+
+test('standalone deployment omits --var entirely when none are given', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-novar-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+
+  const deployed = run('bash', [deployTerraform, 'summary', '--plan-file', planFile], { env });
+  assert.equal(deployed.status, 0, deployed.stderr);
+
+  const planLine = readFileSync(terraformLog, 'utf8')
+    .split('\n')
+    .find((line) => line.startsWith('plan '));
+  assert.doesNotMatch(planLine, /-var /);
+});
+
+test('standalone deployment rejects malformed and misplaced --var', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-badvar-'));
+  const { env, planFile } = standaloneDeployEnv(dir);
+
+  const malformed = run('bash', [deployTerraform, 'summary', '--var', 'notakeyvalue'], { env });
+  assert.equal(malformed.status, 2);
+  assert.match(malformed.stderr, /--var expects KEY=VALUE/);
+
+  // A saved plan already has its variables baked in; terraform refuses -var there.
+  const onApply = run(
+    'bash',
+    [
+      deployTerraform,
+      'summary',
+      '--phase',
+      'apply',
+      '--plan-file',
+      planFile,
+      '--var',
+      'app_domain=x',
+    ],
+    { env },
+  );
+  assert.equal(onApply.status, 2);
+  assert.match(onApply.stderr, /--var applies at plan time/);
+});
+
+test('standalone deployment summary reports the custom domain and external DNS records', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-domain-'));
+  const { env, planFile } = standaloneDeployEnv(dir, { customDomain: true });
+
+  const deployed = run('bash', [deployTerraform, 'summary', '--plan-file', planFile], { env });
+  assert.equal(deployed.status, 0, deployed.stderr);
+  assert.match(deployed.stdout, /Application URL:\s+https:\/\/aidlc\.example\.com/);
+  assert.match(deployed.stdout, /Custom domain:\s+aidlc\.example\.com/);
+  assert.match(deployed.stdout, /DNS is managed outside this deployment/);
+  assert.match(deployed.stdout, /aidlc\.example\.com\s+A\s+-> d111111abcdef8\.cloudfront\.net/);
+  assert.match(deployed.stdout, /aidlc\.example\.com\s+AAAA\s+-> d111111abcdef8\.cloudfront\.net/);
+  assert.match(
+    deployed.stdout,
+    /www\.aidlc\.example\.com\s+A\s+-> d111111abcdef8\.cloudfront\.net/,
+  );
+});
+
+test('standalone deployment summary stays quiet about DNS when Terraform manages it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-domain-r53-'));
+  const { env, planFile } = standaloneDeployEnv(dir, { customDomain: true });
+
+  const deployed = run('bash', [deployTerraform, 'summary', '--plan-file', planFile], {
+    env: { ...env, AIDLC_FAKE_DNS_MANAGED: 'true' },
+  });
+  assert.equal(deployed.status, 0, deployed.stderr);
+  assert.match(deployed.stdout, /Custom domain:\s+aidlc\.example\.com/);
+  assert.doesNotMatch(deployed.stdout, /DNS is managed outside/);
+});
+
 test('standalone destroy supports custom local environments and backs up state', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-'));
   const bin = join(dir, 'bin');

@@ -129,6 +129,30 @@ Then apply and rebuild the frontend, **in that order**:
 
 Both steps are required. Terraform updates the distribution, the OAuth redirect URIs and the CORS allowlists; the frontend then has to be rebuilt because its endpoint URLs are inlined into the bundle at build time. `deploy-terraform.sh` prints the DNS records to create when `route53_zone_id` is empty.
 
+To override without editing the file — useful for CI, throwaway environments, or trying a hostname before committing to it — pass `--var`, repeated per variable:
+
+```bash
+./scripts/deploy-terraform.sh dev \
+  --var app_domain=aidlc.example.com \
+  --var route53_zone_id=Z1234567890ABC
+```
+
+!!! warning "`TF_VAR_*` environment variables do not work here"
+
+    Terraform ranks `-var-file` **above** `TF_VAR_*`, so any key present in your tfvars silently wins over the environment variable. Since `dev.tfvars.example` ships `app_domain = ""`, a copied tfvars always contains it — `TF_VAR_app_domain=…` would be ignored with no warning. `--var` is passed as `-var`, which does outrank the file.
+
+`--var` applies at plan time only; a saved plan already has its variables resolved, so combining it with `--phase apply` is rejected rather than silently ignored. With `--phase plan` the override is baked into the plan file and carried through to the apply:
+
+```bash
+./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan \
+  --var app_domain=aidlc.example.com --var route53_zone_id=Z1234567890ABC
+./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
+```
+
+Keep `environment`, `project_name` and `aws_region` in the tfvars. The retired-v1-runtime cleanup step reads those three from the file directly and would not see a `--var` override.
+
+Note that `deploy-frontend.sh` takes no `--var`: it reads Terraform outputs, so it always reflects whatever was actually applied.
+
 !!! warning "The installer's preflight checks do not run on this path"
 
     Terraform verifies that the variable combination is coherent and that the certificate ARN is in `us-east-1`, but it cannot check the certificate's status, what hostnames it covers, or whether another CloudFront distribution already claims your hostname. Those failures surface several minutes into the apply — or, for a certificate still pending validation, never fail and simply never work.
@@ -159,7 +183,15 @@ To review the plan before applying — worth doing when adding or removing a dom
 ./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
 ```
 
-Removing a domain is the same edit in reverse: clear all four values back to `""` / `[]`, then run both scripts again.
+Removing a domain is the same edit in reverse: clear all four values back to `""` / `[]`, then run both scripts again. All four have to go together — a leftover certificate ARN or zone ID with an empty `app_domain` is rejected at plan time, on the assumption that it is a half-finished edit rather than an intent to configure a certificate for nothing. Via `--var` that means:
+
+```bash
+./scripts/deploy-terraform.sh dev \
+  --var app_domain= \
+  --var 'app_domain_aliases=[]' \
+  --var acm_certificate_arn= \
+  --var route53_zone_id=
+```
 
 #### External DNS
 

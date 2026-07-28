@@ -147,6 +147,16 @@ cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 ./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
 ```
 
+Individual variables can be overridden without editing the file, repeating `--var` per variable:
+
+```bash
+./scripts/deploy-terraform.sh dev \
+  --var app_domain=aidlc.example.com \
+  --var route53_zone_id=Z1234567890ABC
+```
+
+`TF_VAR_*` environment variables will _not_ work for this: Terraform ranks `-var-file` above them, so any key already present in the tfvars silently wins. `--var` is passed as `-var`, which does outrank the file. It applies at plan time, so combining it with `--phase apply` is rejected — a saved plan already has its variables resolved.
+
 Both deploy scripts are needed after a custom-domain change: Terraform updates the distribution and the OAuth redirect URIs, then the frontend has to be rebuilt because its endpoint URLs are inlined into the bundle at build time. `deploy-terraform.sh` prints the DNS records to create when `route53_zone_id` is empty.
 
 Note that the installer's custom-domain preflight checks do not run on this path. Terraform cannot verify a certificate's status, which hostnames it covers, or whether another distribution already claims your hostname — see [Setup → Custom domain → Without the installer](https://aidlc.dev/getting-started/setup/#without-the-installer) for the commands to check by hand.
