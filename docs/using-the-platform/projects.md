@@ -52,6 +52,11 @@ The first platform admin is bootstrapped via the CLI during [setup](../getting-s
 ### Members
 
 Add or remove members and assign their project role (owner / admin / member).
+The picker includes enabled, confirmed Cognito accounts and enabled enterprise
+identities that pass their provider's access gate. An enterprise user appears
+after their first successful sign-in, when Cognito creates the broker identity.
+Entries are labeled **Cognito account** or with the enterprise provider name so
+separate identities that share an email address remain distinguishable.
 
 ### Agent
 

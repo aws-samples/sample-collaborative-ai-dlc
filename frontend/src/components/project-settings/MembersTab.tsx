@@ -26,11 +26,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, Trash2, Users, X, XCircle } from 'lucide-react';
+import { Building2, Plus, Trash2, UserRound, Users, X, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   projectsService,
-  type CognitoUser,
+  type AssignableUser,
   type Member,
   type ProjectRole,
 } from '@/services/projects';
@@ -63,6 +63,9 @@ const initials = (m: { email?: string; userId: string }) => {
   return ((parts[0]?.[0] ?? '?') + (parts[1]?.[0] ?? '')).toUpperCase();
 };
 
+const identityLabel = (user: AssignableUser) =>
+  user.identitySource === 'sso' ? user.identityProvider || 'Enterprise SSO' : 'Cognito account';
+
 interface Props {
   projectId: string;
   userRole: ProjectRole | undefined;
@@ -79,10 +82,10 @@ export function MembersTab({ projectId, userRole }: Props) {
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberRole, setNewMemberRole] = useState<ProjectRole>('member');
   const [addingMember, setAddingMember] = useState(false);
-  const [cognitoUsers, setCognitoUsers] = useState<CognitoUser[]>([]);
+  const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [userSearch, setUserSearch] = useState('');
-  const [selectedUser, setSelectedUser] = useState<CognitoUser | null>(null);
+  const [selectedUser, setSelectedUser] = useState<AssignableUser | null>(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const userDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -118,15 +121,14 @@ export function MembersTab({ projectId, userRole }: Props) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const loadCognitoUsers = async () => {
+  const loadAssignableUsers = async () => {
     setLoadingUsers(true);
     try {
-      const users = await projectsService.listCognitoUsers();
-      // Filter out users who are already members
+      const users = await projectsService.listAssignableUsers();
+      // The backend has already applied local confirmation and federated
+      // admission rules. The picker only removes existing project members.
       const memberIds = new Set(members.map((m) => m.userId));
-      setCognitoUsers(
-        users.filter((u) => u.enabled && u.status === 'CONFIRMED' && !memberIds.has(u.userId)),
-      );
+      setAssignableUsers(users.filter((u) => !memberIds.has(u.userId)));
     } catch (err) {
       console.error('Failed to load users:', err);
     } finally {
@@ -139,10 +141,10 @@ export function MembersTab({ projectId, userRole }: Props) {
     setSelectedUser(null);
     setUserSearch('');
     setNewMemberRole('member');
-    loadCognitoUsers();
+    loadAssignableUsers();
   };
 
-  const filteredUsers = cognitoUsers.filter((u) => {
+  const filteredUsers = assignableUsers.filter((u) => {
     if (!userSearch) return true;
     const q = userSearch.toLowerCase();
     return u.email.toLowerCase().includes(q) || u.displayName.toLowerCase().includes(q);
@@ -333,7 +335,7 @@ export function MembersTab({ projectId, userRole }: Props) {
             <DialogHeader>
               <DialogTitle>Add Member</DialogTitle>
               <DialogDescription>
-                Pick a confirmed Cognito user and assign them a role on this space.
+                Pick an available identity and assign them a role on this space.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -347,11 +349,18 @@ export function MembersTab({ projectId, userRole }: Props) {
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium">{selectedUser.email}</p>
-                        {selectedUser.displayName && (
-                          <p className="truncate text-xs text-muted-foreground">
-                            {selectedUser.displayName}
-                          </p>
-                        )}
+                        <p className="flex items-center gap-1 truncate text-xs text-muted-foreground">
+                          {selectedUser.identitySource === 'sso' ? (
+                            <Building2 className="h-3 w-3 shrink-0" />
+                          ) : (
+                            <UserRound className="h-3 w-3 shrink-0" />
+                          )}
+                          <span className="truncate">
+                            {selectedUser.displayName
+                              ? `${selectedUser.displayName} · ${identityLabel(selectedUser)}`
+                              : identityLabel(selectedUser)}
+                          </span>
+                        </p>
                       </div>
                     </div>
                     <Button
@@ -384,7 +393,9 @@ export function MembersTab({ projectId, userRole }: Props) {
                       <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md">
                         {filteredUsers.length === 0 ? (
                           <div className="px-3 py-2 text-sm text-muted-foreground">
-                            {cognitoUsers.length === 0 ? 'No users available' : 'No matching users'}
+                            {assignableUsers.length === 0
+                              ? 'No users available'
+                              : 'No matching users'}
                           </div>
                         ) : (
                           filteredUsers.map((u) => (
@@ -403,11 +414,18 @@ export function MembersTab({ projectId, userRole }: Props) {
                               </div>
                               <div className="min-w-0">
                                 <p className="truncate text-sm">{u.email}</p>
-                                {u.displayName && (
-                                  <p className="truncate text-xs text-muted-foreground">
-                                    {u.displayName}
-                                  </p>
-                                )}
+                                <p className="flex items-center gap-1 truncate text-xs text-muted-foreground">
+                                  {u.identitySource === 'sso' ? (
+                                    <Building2 className="h-3 w-3 shrink-0" />
+                                  ) : (
+                                    <UserRound className="h-3 w-3 shrink-0" />
+                                  )}
+                                  <span className="truncate">
+                                    {u.displayName
+                                      ? `${u.displayName} · ${identityLabel(u)}`
+                                      : identityLabel(u)}
+                                  </span>
+                                </p>
                               </div>
                             </button>
                           ))

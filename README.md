@@ -99,6 +99,25 @@ The certificate must be in `us-east-1` regardless of the deployment region — C
 
 See [Setup → Custom domain](https://aidlc.dev/getting-started/setup/#custom-domain) for the external-DNS records, and for what to update when adding a domain to a running deployment.
 
+### Enterprise SSO (optional)
+
+Enterprise deployments can federate one or more OIDC or SAML providers through
+the Cognito User Pool in `hybrid` or `sso-only` mode. Cognito remains the JWT
+issuer; external role claims are authoritative for federated users.
+
+Install the platform in local mode first, register the callback URLs reported by
+the installer with the identity provider, then update the managed installation:
+
+```bash
+bash /tmp/aidlc-install.sh update \
+  --version <current-version> \
+  --auth-mode hybrid \
+  --sso-config /path/to/providers.json
+```
+
+See [Enterprise SSO](https://aidlc.dev/getting-started/enterprise-sso/) for
+Microsoft Entra ID, Okta, generic SAML, installer usage, and role mapping.
+
 ### Versions, Adoption, and Updates
 
 All tagged releases, including previews such as `v2.0.0-preview0`, are shown by default. With no explicit version, install and update select the highest tag by SemVer precedence. A stable `v2.0.0` therefore supersedes `v2.0.0-preview0`:
@@ -198,7 +217,11 @@ Note that the installer's custom-domain preflight checks do not run on this path
 
 ### Post-install Configuration
 
-The installer creates the first Cognito user and grants `platform-admin` for v2 (`owner` for v1.1.0). Additional users and administrators are managed in **Admin → User Management**.
+In local/hybrid mode, the installer creates the first Cognito user and grants
+`platform-admin` for v2 (`owner` for v1.1.0). In `sso-only` mode, administrator
+access comes from an external role mapping. Additional local users and
+administrators are managed in **Admin → User Management**; federated roles are
+shown there as externally managed and read-only.
 
 Configure agent authentication in **Admin → Agent Settings**: enter a Bedrock bearer token for Claude Code/OpenCode or a Kiro API key. Agent credentials are separate from the Cognito login created during installation.
 
@@ -357,7 +380,7 @@ npm run typecheck:frontend  # tsc -b on the frontend package
 
 A pre-commit hook (managed by Husky + lint-staged) runs these checks plus Terraform formatting/linting and the affected unit tests before each commit. It is installed automatically by `npm install`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
-AgentCore contributors should also see the [internal testing guide](docs/development/testing.md). It covers the deterministic AgentCore test project and the credentialed local Claude/Kiro/OpenCode lifecycle E2E:
+Contributors should also see the [internal testing guide](docs/development/testing.md). It covers the disposable OIDC identity provider used to test enterprise SSO without a vendor tenant, the deterministic AgentCore test project, and the credentialed local Claude/Kiro/OpenCode lifecycle E2E:
 
 ```bash
 npx vitest run --project=agentcore

@@ -39,6 +39,18 @@ REGION=$(terraform output -raw aws_region 2>/dev/null || echo "")
 USER_POOL_ID=$(terraform output -raw user_pool_id 2>/dev/null || echo "")
 USER_POOL_CLIENT_ID=$(terraform output -raw user_pool_client_id 2>/dev/null || echo "")
 APP_ORIGIN=$(terraform output -raw application_url 2>/dev/null || echo "")
+AUTH_MODE=$(terraform output -raw auth_mode 2>/dev/null || echo "local")
+COGNITO_HOSTED_UI_DOMAIN=$(terraform output -raw cognito_hosted_ui_domain 2>/dev/null || echo "")
+AUTH_CALLBACK_URL=$(terraform output -raw auth_callback_url 2>/dev/null || echo "")
+SSO_PROVIDERS=$(terraform output -json sso_providers 2>/dev/null || echo "[]")
+SSO_PROVIDERS_ENCODED="$(
+    printf '%s' "$SSO_PROVIDERS" | node -e '
+      let input = "";
+      process.stdin.on("data", (chunk) => (input += chunk)).on("end", () => {
+        process.stdout.write(`uri:${encodeURIComponent(input)}`);
+      });
+    '
+)"
 
 # The canonical hostname: the custom domain when one is configured, otherwise
 # the CloudFront domain. Falling back to cloudfront_domain_name keeps this script
@@ -76,6 +88,10 @@ cat > "$SCRIPT_DIR/../frontend/.env" << EOF
 VITE_AWS_REGION=$REGION
 VITE_AWS_USER_POOL_ID=$USER_POOL_ID
 VITE_AWS_USER_POOL_CLIENT_ID=$USER_POOL_CLIENT_ID
+VITE_AUTH_MODE=$AUTH_MODE
+VITE_COGNITO_HOSTED_UI_DOMAIN="$COGNITO_HOSTED_UI_DOMAIN"
+VITE_AUTH_CALLBACK_URL="$AUTH_CALLBACK_URL"
+VITE_SSO_PROVIDERS=$SSO_PROVIDERS_ENCODED
 VITE_APP_ORIGIN="$APP_ORIGIN"
 VITE_API_BASE_URL="$API_URL"
 VITE_WEBSOCKET_URL=$WEBSOCKET_URL

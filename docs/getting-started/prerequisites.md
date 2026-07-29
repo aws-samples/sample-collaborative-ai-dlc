@@ -58,6 +58,7 @@ The following are optional. Set them up to enable additional features.
 | **AWS credentials**     | Required for large language model (LLM) features through [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html)                   |
 | **Provider OAuth apps** | GitHub / GitLab / Jira Cloud OAuth apps enable code-host and tracker integration — see [Setup → Configure provider OAuth apps](setup.md#configure-provider-oauth-apps) |
 | **Custom domain**       | An ACM certificate in `us-east-1` covering the hostname, or a Route53 hosted zone for Terraform to request one — see [Setup → Custom domain](setup.md#custom-domain)   |
+| **Enterprise SSO**      | An OIDC/SAML application in the external IdP and, for OIDC, a Secrets Manager client secret — see [Enterprise SSO](enterprise-sso.md)                                  |
 
 ## Agent authentication
 

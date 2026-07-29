@@ -9,6 +9,47 @@ output "user_pool_client_id" {
   value       = module.auth.user_pool_client_id
 }
 
+output "auth_mode" {
+  description = "Configured login mode"
+  value       = var.auth_mode
+}
+
+output "cognito_hosted_ui_domain" {
+  description = "Cognito managed-login origin used for enterprise federation"
+  value       = module.auth.hosted_ui_domain
+}
+
+output "oidc_idp_callback_url" {
+  description = "Callback URL to register with upstream OIDC providers"
+  value       = module.auth.oidc_idp_callback_url
+}
+
+output "saml_acs_url" {
+  description = "Assertion consumer service URL for upstream SAML providers"
+  value       = module.auth.saml_acs_url
+}
+
+output "saml_entity_id" {
+  description = "SAML service-provider entity ID"
+  value       = module.auth.saml_entity_id
+}
+
+output "sso_providers" {
+  description = "Configured SSO provider names and public labels"
+  # The source provider object is sensitive because it contains secret ARNs.
+  # This module output is an allowlisted public projection, but nested
+  # sensitivity marks survive module boundaries unless they are removed through
+  # a scalar representation first.
+  value = jsondecode(nonsensitive(jsonencode(
+    module.auth.public_sso_providers
+  )))
+}
+
+output "auth_callback_url" {
+  description = "Application callback URL used after Cognito federation"
+  value       = "${local.app_url}/auth/callback"
+}
+
 # Frontend
 output "cloudfront_distribution_id" {
   description = "CloudFront distribution ID"

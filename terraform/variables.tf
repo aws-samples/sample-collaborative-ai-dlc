@@ -42,13 +42,67 @@ variable "docker_build_args" {
 }
 
 # ---------------------------------------------------------------------------
+# Authentication and enterprise federation
+# ---------------------------------------------------------------------------
+
+variable "auth_mode" {
+  description = "Login methods exposed by the deployment: local Cognito credentials, local plus enterprise SSO, or SSO only."
+  type        = string
+  default     = "local"
+
+  validation {
+    condition     = contains(["local", "hybrid", "sso-only"], var.auth_mode)
+    error_message = "auth_mode must be one of: local, hybrid, sso-only."
+  }
+}
+
+variable "sso_providers" {
+  description = "Named OIDC or SAML identity providers federated through the Cognito User Pool."
+  type = map(object({
+    display_name          = string
+    type                  = string
+    issuer_url            = optional(string, "")
+    client_id             = optional(string, "")
+    client_secret_arn     = optional(string, "")
+    scopes                = optional(list(string), ["openid", "email", "profile"])
+    metadata_url          = optional(string, "")
+    metadata_xml          = optional(string, "")
+    email_claim           = string
+    name_claim            = optional(string, "")
+    role_claim            = optional(string, "")
+    role_mappings         = optional(map(list(string)), {})
+    required_claim_values = optional(list(string), [])
+  }))
+  default   = {}
+  sensitive = true
+
+  validation {
+    condition = alltrue([
+      for name, provider in var.sso_providers :
+      can(regex("^[A-Za-z][A-Za-z0-9_-]{0,31}$", name)) && upper(name) != "COGNITO"
+    ])
+    error_message = "Every SSO provider name must be 1-32 alphanumeric, underscore, or hyphen characters, start with a letter, and not be COGNITO."
+  }
+
+  validation {
+    condition = alltrue([
+      for provider in values(var.sso_providers) :
+      contains(["oidc", "saml"], lower(provider.type))
+    ])
+    error_message = "Every SSO provider type must be oidc or saml."
+  }
+
+}
+
+# ---------------------------------------------------------------------------
 # Custom domain (optional)
 #
 # Every public request path — the SPA, /api/*, /ws and /yjs/* — is served by a
 # single CloudFront distribution, so a custom domain needs exactly one
-# certificate and one distribution change. No API Gateway custom domain, no
-# Cognito hosted-UI domain (the app uses SRP only) and no ALB certificate are
+# certificate and one distribution change. No API Gateway custom domain is
 # involved.
+# Enterprise SSO uses a separate Cognito managed-login domain for redirects;
+# it does not serve the application. No ALB certificate is involved.
 #
 # Leaving app_domain empty keeps the deployment on the CloudFront-assigned
 # *.cloudfront.net domain and creates no additional resources.

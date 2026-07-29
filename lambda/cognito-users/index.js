@@ -17,11 +17,13 @@ import {
   CognitoIdentityProviderClient,
   ListUsersCommand,
   ListUsersInGroupCommand,
+  AdminGetUserCommand,
   AdminAddUserToGroupCommand,
   AdminRemoveUserFromGroupCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin, PLATFORM_ADMIN_GROUP } from '../shared/authz.js';
+import { evaluateSsoRoles, parseRoleConfig } from '../shared/sso-roles.js';
 
 const client = new CognitoIdentityProviderClient({});
 
@@ -30,6 +32,22 @@ const attrsToMap = (attributes = []) => {
   for (const a of attributes) attrs[a.Name] = a.Value;
   return attrs;
 };
+
+const identityDetails = (attrs) => {
+  const result = evaluateSsoRoles(attrs, parseRoleConfig());
+  return {
+    identitySource: result.federated ? 'sso' : 'cognito',
+    identityProvider: result.identity?.providerName || null,
+    mappedRoles: result.federated ? result.roles : [],
+    roleManagedExternally: result.federated,
+    accessGranted: result.admitted,
+  };
+};
+
+const isAssignableDirectoryUser = (user) =>
+  user.enabled &&
+  user.accessGranted &&
+  (user.identitySource === 'sso' || user.status === 'CONFIRMED');
 
 const listAllUsers = async (userPoolId) => {
   const users = [];
@@ -47,6 +65,7 @@ const listAllUsers = async (userPoolId) => {
         displayName: attrs['custom:display_name'] || '',
         enabled: u.Enabled,
         status: u.UserStatus,
+        ...identityDetails(attrs),
       });
     }
     paginationToken = result.PaginationToken;
@@ -108,7 +127,12 @@ export const handler = async (event) => {
         ]);
         return response(
           200,
-          users.map((u) => ({ ...u, platformAdmin: adminUsernames.has(u.username) })),
+          users.map((u) => ({
+            ...u,
+            platformAdmin: u.roleManagedExternally
+              ? u.accessGranted && u.mappedRoles.includes(PLATFORM_ADMIN_GROUP)
+              : adminUsernames.has(u.username),
+          })),
         );
       }
 
@@ -125,6 +149,24 @@ export const handler = async (event) => {
         }
         if (typeof data.isAdmin !== 'boolean') {
           return response(400, { error: 'isAdmin (boolean) is required' });
+        }
+
+        let target;
+        try {
+          target = await client.send(
+            new AdminGetUserCommand({ UserPoolId: userPoolId, Username: username }),
+          );
+        } catch (err) {
+          if (err?.name === 'UserNotFoundException') {
+            return response(404, { error: `User "${username}" not found` });
+          }
+          throw err;
+        }
+        if (identityDetails(attrsToMap(target.UserAttributes)).roleManagedExternally) {
+          return response(409, {
+            error: 'This role is managed by the user’s enterprise identity provider',
+            code: 'EXTERNALLY_MANAGED_ROLE',
+          });
         }
 
         // Self-demotion guard: the last admin must not be able to lock the
@@ -169,11 +211,25 @@ export const handler = async (event) => {
       return response(405, { error: 'Method not allowed' });
     }
     const users = await listAllUsers(userPoolId);
-    // Preserve the original wire shape (no username — the directory is for
-    // member pickers, which key on the sub).
+    // This endpoint is the assignable identity directory, not a raw user-pool
+    // listing. Keep Cognito usernames private and key membership on sub. Local
+    // users must be confirmed; federated users use Cognito's provider-neutral
+    // admission result instead of a provider-specific status check.
     return response(
       200,
-      users.map(({ username: _username, ...u }) => u),
+      users
+        .filter(isAssignableDirectoryUser)
+        .map(
+          ({ userId, email, displayName, enabled, status, identitySource, identityProvider }) => ({
+            userId,
+            email,
+            displayName,
+            enabled,
+            status,
+            identitySource,
+            identityProvider,
+          }),
+        ),
     );
   } catch (err) {
     console.error('Error handling users request:', err);

@@ -167,8 +167,8 @@ export function DiscussionProvider({
   }, [projectId]);
 
   const role = useMemo(
-    () => members.find((m) => m.userId === user?.username)?.role ?? null,
-    [members, user?.username],
+    () => members.find((m) => m.userId === user?.userId)?.role ?? null,
+    [members, user?.userId],
   );
 
   // ── Mention toasts ──

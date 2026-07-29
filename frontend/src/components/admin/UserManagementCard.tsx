@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { CheckCircle2, XCircle, Loader2, Users, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Users, ShieldCheck, Building2 } from 'lucide-react';
 import { adminUsersService, type AdminUser } from '@/services/adminUsers';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiError } from '@/services/api';
@@ -101,7 +101,7 @@ export function UserManagementCard() {
           </span>
         )
       }
-      description="Grant or revoke the platform-admin role — changes apply at the user's next sign-in."
+      description="Manage Cognito roles and review roles supplied by enterprise identity providers."
     >
       <div className="space-y-3">
         {loading ? (
@@ -147,35 +147,54 @@ export function UserManagementCard() {
                             disabled
                           </span>
                         )}
+                        {u.accessGranted === false && (
+                          <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+                            access denied
+                          </span>
+                        )}
                       </p>
-                      <p className="text-[11px] text-muted-foreground truncate">{u.email}</p>
+                      <div className="min-w-0 space-y-0.5 text-[11px] text-muted-foreground">
+                        <p className="truncate">{u.email}</p>
+                        {u.roleManagedExternally && (
+                          <p className="flex min-w-0 items-center gap-1">
+                            <Building2 className="h-3 w-3 shrink-0" />
+                            <span className="truncate">
+                              Managed by {u.identityProvider || 'enterprise SSO'}
+                            </span>
+                          </p>
+                        )}
+                      </div>
                     </div>
                     {u.platformAdmin && (
                       <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-agent-success/10 px-2 py-0.5 text-[10px] font-medium text-agent-success">
                         <ShieldCheck className="h-3 w-3" /> Admin
                       </span>
                     )}
-                    <Button
-                      size="sm"
-                      variant={u.platformAdmin ? 'outline' : 'default'}
-                      className="gap-1.5 shrink-0 h-7 text-xs"
-                      disabled={togglingUsername !== null || (u.platformAdmin && isSelf(u))}
-                      title={
-                        u.platformAdmin && isSelf(u)
-                          ? 'You cannot remove your own platform-admin role'
-                          : undefined
-                      }
-                      onClick={() => toggleAdmin(u)}
-                    >
-                      {togglingUsername === u.username ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : u.platformAdmin ? (
-                        <XCircle className="h-3.5 w-3.5" />
-                      ) : (
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                      )}
-                      {u.platformAdmin ? 'Revoke admin' : 'Make admin'}
-                    </Button>
+                    {u.roleManagedExternally ? (
+                      <span className="shrink-0 text-[11px] text-muted-foreground">Read only</span>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant={u.platformAdmin ? 'outline' : 'default'}
+                        className="gap-1.5 shrink-0 h-7 text-xs"
+                        disabled={togglingUsername !== null || (u.platformAdmin && isSelf(u))}
+                        title={
+                          u.platformAdmin && isSelf(u)
+                            ? 'You cannot remove your own platform-admin role'
+                            : undefined
+                        }
+                        onClick={() => toggleAdmin(u)}
+                      >
+                        {togglingUsername === u.username ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : u.platformAdmin ? (
+                          <XCircle className="h-3.5 w-3.5" />
+                        ) : (
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                        )}
+                        {u.platformAdmin ? 'Revoke admin' : 'Make admin'}
+                      </Button>
+                    )}
                   </div>
                 ))
               )}

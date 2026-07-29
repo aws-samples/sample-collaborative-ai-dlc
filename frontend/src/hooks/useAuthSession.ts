@@ -7,6 +7,7 @@ export const useAuthSession = () => {
     user,
     isAuthenticated,
     isLoading,
+    userId: user?.userId,
     username: user?.username,
     displayName: user?.displayName,
     avatarUrl: user?.avatarUrl,

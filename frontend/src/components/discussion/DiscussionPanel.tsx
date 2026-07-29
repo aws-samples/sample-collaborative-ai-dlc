@@ -61,7 +61,7 @@ export function DiscussionPanel() {
   const scope = ctx?.scope ?? null;
   const { user } = useAuth();
   const currentUser = {
-    id: user?.username || '',
+    id: user?.userId || '',
     name: user?.displayName || user?.email || '',
   };
 

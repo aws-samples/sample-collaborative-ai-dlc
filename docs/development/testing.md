@@ -1,7 +1,215 @@
 # Internal testing
 
-This guide covers contributor-facing tests for the AgentCore runtime. There are
-two separate test layers:
+This guide covers contributor-facing integration tests that are intentionally
+separate from the managed installation documentation.
+
+## Enterprise SSO integration test
+
+The repository includes a disposable Cognito User Pool that behaves as an
+upstream OIDC provider. Contributors can use it to validate the browser
+redirect, claim mapping, access gate, authoritative role behavior, and
+`sso-only` UI without an Entra or Okta tenant.
+
+This workflow intentionally uses `deploy-terraform.sh` and
+`deploy-frontend.sh` against a contributor test deployment. Product
+installations should use `install.sh` as documented in the
+[Enterprise SSO guide](../getting-started/enterprise-sso.md).
+
+The main stack and disposable identity provider create billable AWS resources.
+Use a non-production environment, keep both Terraform states, and complete the
+cleanup step.
+
+### 1. Deploy the test stack in local mode
+
+Start from a repository checkout with a direct deployment already configured:
+
+- AWS credentials select the test account.
+- `terraform/environments/<environment>.tfvars` and the matching
+  `.s3.tfbackend` file exist.
+- The tfvars region matches the account and environment being tested.
+
+The commands below use `dev`; substitute the configured test environment
+consistently:
+
+```bash
+./scripts/deploy-terraform.sh dev --auth-mode local
+./scripts/deploy-frontend.sh dev
+
+export AIDLC_OIDC_CALLBACK="$(
+  terraform -chdir=terraform output -raw oidc_idp_callback_url
+)"
+export AIDLC_TEST_REGION="$(
+  terraform -chdir=terraform output -raw aws_region
+)"
+```
+
+### 2. Deploy the disposable identity provider
+
+Use the same AWS profile and region as the main deployment:
+
+```bash
+terraform -chdir=test/fixtures/oidc-idp init
+terraform -chdir=test/fixtures/oidc-idp apply \
+  -var "aws_region=$AIDLC_TEST_REGION" \
+  -var "downstream_callback_url=$AIDLC_OIDC_CALLBACK"
+
+terraform -chdir=test/fixtures/oidc-idp output -json provider_config \
+  > /tmp/aidlc-test-idp.json
+
+export TEST_IDP_POOL="$(
+  terraform -chdir=test/fixtures/oidc-idp output -raw user_pool_id
+)"
+```
+
+The fixture state contains a generated OIDC client secret. Treat that state as
+sensitive and destroy the fixture after testing.
+
+### 3. Create test identities
+
+Create three users with separate email addresses and strong disposable
+passwords. The following commands create the member:
+
+```bash
+aws cognito-idp admin-create-user \
+  --region "$AIDLC_TEST_REGION" \
+  --user-pool-id "$TEST_IDP_POOL" \
+  --username member@example.com \
+  --message-action SUPPRESS \
+  --user-attributes \
+    Name=email,Value=member@example.com \
+    Name=email_verified,Value=true \
+    Name=name,Value="Test Member"
+
+aws cognito-idp admin-set-user-password \
+  --region "$AIDLC_TEST_REGION" \
+  --user-pool-id "$TEST_IDP_POOL" \
+  --username member@example.com \
+  --password '<disposable-strong-password>' \
+  --permanent
+```
+
+Repeat both commands for `admin@example.com` and `denied@example.com`, changing
+the email, username, display name, and password. Assign the member and
+administrator groups:
+
+```bash
+aws cognito-idp admin-add-user-to-group \
+  --region "$AIDLC_TEST_REGION" \
+  --user-pool-id "$TEST_IDP_POOL" \
+  --username member@example.com \
+  --group-name aidlc-user
+
+aws cognito-idp admin-add-user-to-group \
+  --region "$AIDLC_TEST_REGION" \
+  --user-pool-id "$TEST_IDP_POOL" \
+  --username admin@example.com \
+  --group-name aidlc-user
+aws cognito-idp admin-add-user-to-group \
+  --region "$AIDLC_TEST_REGION" \
+  --user-pool-id "$TEST_IDP_POOL" \
+  --username admin@example.com \
+  --group-name aidlc-admin
+```
+
+Leave `denied@example.com` out of `aidlc-user`.
+
+### 4. Verify hybrid login and role mapping
+
+```bash
+./scripts/deploy-terraform.sh dev \
+  --auth-mode hybrid \
+  --sso-config /tmp/aidlc-test-idp.json
+./scripts/deploy-frontend.sh dev
+```
+
+Create a separate browser profile or isolated browser context for the local
+administrator, test member, test administrator, and denied user before signing
+in. Different tabs and additional private windows in the same browser can
+share the upstream IdP cookie and are not isolated. Separate browser profiles,
+different browsers, Firefox containers, or separate Playwright browser
+contexts are suitable.
+
+This isolation is intentional. AI-DLC logout clears the application and
+federation-broker session, but an application cannot portably terminate both
+OIDC and SAML IdP sessions. The disposable IdP therefore reuses the identity
+already authenticated in a browser context. It receives no fixture-specific
+account-switch behavior; this is the same upstream-session boundary used for
+every configured identity provider.
+
+Verify each path in its assigned context:
+
+| User                 | Expected result                                    |
+| -------------------- | -------------------------------------------------- |
+| Existing local admin | Cognito account form still works                   |
+| Test member          | Can sign in; cannot see platform Admin             |
+| Test admin           | Can sign in; sees platform Admin                   |
+| Denied user          | Sees **Access denied**; no platform session exists |
+
+In **Admin -> Users**, both admitted federated users should say
+**Managed by DisposableCognito** and have no role-edit button. The denied
+identity also remains in this administrative directory because Cognito creates
+its user record before the access gate runs. It must be marked **access denied**,
+must not have an effective Admin badge, and must not appear in a space's
+**Add member** user list.
+
+As a space owner, open **Project Settings -> Members** and verify:
+
+1. Both admitted federated users appear as **DisposableCognito** identities.
+2. The local administrator appears separately as a **Cognito account**.
+3. The denied user does not appear.
+4. Adding the test member allows that identity to open the space after sign-in.
+5. The assigned project role is reflected in the available settings and
+   discussion controls.
+6. A discussion message posted by the test member is rendered as that user's
+   own message, not as another member's message.
+
+In the test administrator's browser context, remove `aidlc-admin`, log out of
+AI-DLC, and sign in again. Reusing that context for the same identity is
+expected here. The Admin entry must disappear:
+
+```bash
+aws cognito-idp admin-remove-user-from-group \
+  --region "$AIDLC_TEST_REGION" \
+  --user-pool-id "$TEST_IDP_POOL" \
+  --username admin@example.com \
+  --group-name aidlc-admin
+```
+
+Add the group back before testing `sso-only`. To verify that external roles are
+authoritative, manually add the downstream federated username to its Cognito
+`platform-admin` group. After a fresh SSO login, the token must still contain
+only roles mapped from the upstream claim.
+
+### 5. Verify SSO-only and clean up
+
+After the SSO administrator works:
+
+```bash
+./scripts/deploy-terraform.sh dev \
+  --auth-mode sso-only \
+  --sso-config /tmp/aidlc-test-idp.json
+./scripts/deploy-frontend.sh dev
+```
+
+The Cognito account form must be absent. Restore local mode before deleting the
+fixture because the main Terraform configuration still reads its client
+secret:
+
+```bash
+./scripts/deploy-terraform.sh dev --auth-mode local
+./scripts/deploy-frontend.sh dev
+
+terraform -chdir=test/fixtures/oidc-idp destroy \
+  -var "aws_region=$AIDLC_TEST_REGION" \
+  -var "downstream_callback_url=$AIDLC_OIDC_CALLBACK"
+
+rm -f /tmp/aidlc-test-idp.json
+unset AIDLC_OIDC_CALLBACK AIDLC_TEST_REGION TEST_IDP_POOL
+```
+
+## AgentCore tests
+
+AgentCore has two separate test layers:
 
 1. The deterministic AgentCore test project, which uses local test containers
    and does not call a model.
@@ -10,7 +218,7 @@ two separate test layers:
 
 Neither test requires a deployed AI-DLC stack.
 
-## Deterministic AgentCore tests
+### Deterministic AgentCore tests
 
 Run the AgentCore project from the repository root:
 
@@ -32,7 +240,7 @@ npm run secretlint
 npx vitest run --project=agentcore
 ```
 
-## Local multi-CLI E2E
+### Local multi-CLI E2E
 
 [`scripts/agent-e2e-testing.sh`](https://github.com/aws-samples/sample-collaborative-ai-dlc/blob/main/scripts/agent-e2e-testing.sh)
 is the only user-facing runtime E2E command. It builds and runs the production
@@ -43,7 +251,7 @@ The E2E makes real model calls and can incur usage charges. Claude, Kiro,
 OpenCode, and Codex run sequentially to limit spend and avoid shared
 conversation-store races.
 
-### Prerequisites
+#### Prerequisites
 
 - Docker with Buildx
 - Native ARM64 execution or working `linux/arm64` emulation
@@ -74,7 +282,7 @@ containers. No proxy flags or container variables are added when none are set.
 The Docker daemon still needs its own proxy configuration to pull base and test
 images.
 
-### Run all CLIs
+#### Run all CLIs
 
 To avoid placing credentials directly in shell history, enter them in a Bash
 session without echo:
@@ -97,7 +305,7 @@ BEDROCK_API_KEY=... KIRO_API_KEY=... ./scripts/agent-e2e-testing.sh
 
 `AWS_BEARER_TOKEN_BEDROCK` is accepted when `BEDROCK_API_KEY` is absent.
 
-### Run selected CLIs
+#### Run selected CLIs
 
 `E2E_CLIS` is a comma-separated list. Only credentials needed by the selected
 CLIs are required:
@@ -115,7 +323,7 @@ E2E_CLIS=codex ./scripts/agent-e2e-testing.sh
 
 The examples assume the corresponding key was already exported.
 
-### Configuration
+#### Configuration
 
 | Variable                   | Default                                              | Purpose                                            |
 | -------------------------- | ---------------------------------------------------- | -------------------------------------------------- |
@@ -147,7 +355,7 @@ docker buildx build \
 AGENTCORE_IMAGE=aidlc-agentcore:e2e ./scripts/agent-e2e-testing.sh
 ```
 
-### What the E2E verifies
+#### What the E2E verifies
 
 For each selected CLI, the harness:
 
@@ -184,7 +392,7 @@ refreshes the standalone frontend fixture at
 npm run dev:agent-output
 ```
 
-### Credentials and cleanup
+#### Credentials and cleanup
 
 Keys are written to a mode-`0600` temporary file, mounted read-only into local
 test containers, and deleted by the exit trap. Key values are not passed through
@@ -220,7 +428,7 @@ rm -rf '<log-directory>'
 
 The temporary credential file is deleted even when `KEEP_E2E=1`.
 
-## Deployed-stack diagnostics
+### Deployed-stack diagnostics
 
 [`scripts/phaseb.sh`](https://github.com/aws-samples/sample-collaborative-ai-dlc/blob/main/scripts/phaseb.sh)
 remains a diagnostic tool for an already deployed AgentCore stack. It reads

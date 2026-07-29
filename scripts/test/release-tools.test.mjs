@@ -279,6 +279,11 @@ case "$*" in
   *" output -raw custom_domain_enabled"*) printf '%s\\n' "\${AIDLC_FAKE_CUSTOM_DOMAIN:-false}" ;;
   *" output -raw dns_managed_by_terraform"*) printf '%s\\n' "\${AIDLC_FAKE_DNS_MANAGED:-false}" ;;
   *" output -raw dns_target"*) printf '%s\\n' "\${AIDLC_FAKE_DNS_TARGET:-d111111abcdef8.cloudfront.net}" ;;
+  *" output -raw auth_mode"*) printf '%s\\n' "\${AIDLC_FAKE_AUTH_MODE:-local}" ;;
+  *" output -json sso_providers"*) printf '%s\\n' "\${AIDLC_FAKE_SSO_PROVIDERS:-[]}" ;;
+  *" output -raw oidc_idp_callback_url"*) printf 'https://broker.example.invalid/oauth2/idpresponse\\n' ;;
+  *" output -raw saml_acs_url"*) printf 'https://broker.example.invalid/saml2/idpresponse\\n' ;;
+  *" output -raw saml_entity_id"*) printf 'urn:amazon:cognito:sp:eu-west-1_pool\\n' ;;
   *" output -raw aws_region"*) printf 'eu-west-1\\n' ;;
   *" output -raw environment"*) printf 'summary\\n' ;;
   *" output -raw seed_blocks_lambda_name"*) printf 'seed-summary\\n' ;;
@@ -394,6 +399,155 @@ test('standalone deployment rejects malformed and misplaced --var', () => {
   assert.match(onApply.stderr, /--var applies at plan time/);
 });
 
+test('standalone deployment accepts SSO flags and embeds normalized providers in the plan', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-sso-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+  const ssoConfig = join(dir, 'sso.json');
+  writeJson(ssoConfig, {
+    providers: [
+      {
+        name: 'CorporateOIDC',
+        displayName: 'Corporate identity',
+        type: 'oidc',
+        issuerUrl: 'https://idp.example.com',
+        clientId: 'client-id',
+        clientSecretArn: 'arn:aws:secretsmanager:eu-west-1:111122223333:secret:aidlc/oidc-AbCdEf',
+        claims: { email: 'email', name: 'name', roles: 'groups' },
+        roleMappings: { 'platform-admin': ['aidlc-admin'] },
+        requiredClaimValues: ['aidlc-user'],
+      },
+    ],
+  });
+
+  const deployed = run(
+    'bash',
+    [
+      deployTerraform,
+      'summary',
+      '--plan-file',
+      planFile,
+      '--auth-mode',
+      'hybrid',
+      '--sso-config',
+      ssoConfig,
+    ],
+    {
+      env: {
+        ...env,
+        AIDLC_FAKE_AUTH_MODE: 'hybrid',
+        AIDLC_FAKE_SSO_PROVIDERS:
+          '[{"name":"CorporateOIDC","displayName":"Corporate identity","type":"oidc"}]',
+      },
+    },
+  );
+  assert.equal(deployed.status, 0, deployed.stderr);
+
+  const planLine = readFileSync(terraformLog, 'utf8')
+    .split('\n')
+    .find((line) => line.startsWith('plan '));
+  assert.match(planLine, /-var auth_mode=hybrid/);
+  assert.match(planLine, /-var sso_providers=.*CorporateOIDC/);
+  assert.match(planLine, /role_mappings.*platform-admin/);
+  assert.match(deployed.stdout, /Authentication:\s+hybrid/);
+  assert.match(deployed.stdout, /SSO providers:\s+Corporate identity/);
+  assert.match(deployed.stdout, /OIDC callback:\s+https:\/\/broker\.example\.invalid/);
+  assert.match(deployed.stdout, /SAML entity ID:\s+urn:amazon:cognito:sp:eu-west-1_pool/);
+});
+
+test('standalone deployment reads managed SSO tfvars and rejects SSO flags on saved-plan apply', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-sso-tfvars-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+  writeJson(join(dir, 'config/environments/summary.sso.tfvars.json'), {
+    auth_mode: 'hybrid',
+    sso_providers: {},
+  });
+
+  const planned = run(
+    'bash',
+    [deployTerraform, 'summary', '--phase', 'plan', '--plan-file', planFile],
+    { env },
+  );
+  assert.equal(planned.status, 0, planned.stderr);
+  const planLine = readFileSync(terraformLog, 'utf8')
+    .split('\n')
+    .find((line) => line.startsWith('plan '));
+  assert.match(planLine, /-var-file=\S+summary\.sso\.tfvars\.json/);
+
+  const rejected = run(
+    'bash',
+    [
+      deployTerraform,
+      'summary',
+      '--phase',
+      'apply',
+      '--plan-file',
+      planFile,
+      '--auth-mode',
+      'local',
+    ],
+    { env },
+  );
+  assert.equal(rejected.status, 2);
+  assert.match(rejected.stderr, /apply at plan time/);
+});
+
+test('frontend environment generation preserves enterprise provider labels', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-generate-env-sso-'));
+  const bin = join(dir, 'bin');
+  const scripts = join(dir, 'scripts');
+  const config = join(dir, 'config/environments');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(config, { recursive: true });
+  mkdirSync(join(dir, 'terraform'));
+  mkdirSync(join(dir, 'frontend'));
+  cpSync(generateEnv, join(scripts, 'generate-env.sh'));
+  writeFileSync(join(config, 'summary.tfvars'), 'environment = "summary"\n');
+  writeFileSync(
+    join(bin, 'terraform'),
+    `#!/usr/bin/env bash
+case "$*" in
+  *"output -raw environment"*) printf 'summary\\n' ;;
+  *"output -raw aws_region"*) printf 'eu-west-1\\n' ;;
+  *"output -raw user_pool_id"*) printf 'eu-west-1_pool\\n' ;;
+  *"output -raw user_pool_client_id"*) printf 'client-id\\n' ;;
+  *"output -raw auth_mode"*) printf 'hybrid\\n' ;;
+  *"output -raw cognito_hosted_ui_domain"*) printf 'https://broker.example.invalid\\n' ;;
+  *"output -raw auth_callback_url"*) printf 'https://app.example.invalid/auth/callback\\n' ;;
+  *"output -json sso_providers"*) printf '%s\\n' "$AIDLC_FAKE_SSO_PROVIDERS" ;;
+  *"output -raw application_domain"*) printf 'app.example.invalid\\n' ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  const providers = [
+    {
+      name: 'CorporateOIDC',
+      displayName: "Company's identity",
+      type: 'oidc',
+    },
+  ];
+
+  const generated = run('bash', [join(scripts, 'generate-env.sh'), 'summary'], {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      AIDLC_CONFIG_DIR: join(dir, 'config'),
+      AIDLC_FAKE_SSO_PROVIDERS: JSON.stringify(providers),
+    },
+  });
+  assert.equal(generated.status, 0, generated.stderr);
+
+  const envText = readFileSync(join(dir, 'frontend/.env'), 'utf8');
+  const encoded = envText.match(/^VITE_SSO_PROVIDERS=(.+)$/m)?.[1];
+  assert.ok(encoded?.startsWith('uri:'));
+  assert.deepEqual(JSON.parse(decodeURIComponent(encoded.slice(4))), providers);
+  assert.match(envText, /^VITE_AUTH_MODE=hybrid$/m);
+  assert.match(
+    envText,
+    /^VITE_AUTH_CALLBACK_URL="https:\/\/app\.example\.invalid\/auth\/callback"$/m,
+  );
+});
+
 test('standalone deployment summary reports the custom domain and external DNS records', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-domain-'));
   const { env, planFile } = standaloneDeployEnv(dir, { customDomain: true });
@@ -502,7 +656,10 @@ const createReleaseRepository = () => {
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repository });
   mkdirSync(join(repository, 'terraform/environments'), { recursive: true });
   mkdirSync(join(repository, 'scripts'), { recursive: true });
+  mkdirSync(join(repository, 'config'), { recursive: true });
   mkdirSync(join(repository, 'frontend'), { recursive: true });
+  cpSync(join(root, 'scripts/sso-config.mjs'), join(repository, 'scripts/sso-config.mjs'));
+  cpSync(join(root, 'config/platform-roles.json'), join(repository, 'config/platform-roles.json'));
   writeJson(join(repository, 'frontend/package.json'), { name: 'frontend', private: true });
   writeFileSync(
     join(repository, 'terraform/environments/dev.tfvars.example'),
@@ -694,6 +851,9 @@ case "$*" in
   *" output -raw cloudfront_distribution_id"*) printf 'distribution-1\\n' ;;
   *" output -raw application_domain"*) printf 'example.invalid\\n' ;;
   *" output -raw dns_target"*) printf 'd111111abcdef8.cloudfront.net\\n' ;;
+  *" output -raw oidc_idp_callback_url"*) printf 'https://broker.example.invalid/oauth2/idpresponse\\n' ;;
+  *" output -raw saml_acs_url"*) printf 'https://broker.example.invalid/saml2/idpresponse\\n' ;;
+  *" output -raw saml_entity_id"*) printf 'urn:amazon:cognito:sp:eu-central-1_pool-1\\n' ;;
 esac
 `,
     { mode: 0o755 },
@@ -824,6 +984,84 @@ const tfvarsOf = (env, environment = 'dev') =>
 
 const configOf = (env) =>
   readFileSync(join(env.XDG_CONFIG_HOME, 'collaborative-ai-dlc/install.conf'), 'utf8');
+
+const ssoTfvarsOf = (env, environment = 'dev') =>
+  JSON.parse(
+    readFileSync(
+      join(
+        env.XDG_CONFIG_HOME,
+        `collaborative-ai-dlc/terraform/environments/${environment}.sso.tfvars.json`,
+      ),
+      'utf8',
+    ),
+  );
+
+test('installer supports SSO-only and can create a local admin when reconfigured', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-installer-sso-'));
+  const env = mockedCommandEnv(dir, repository);
+  const ssoConfig = join(dir, 'sso.json');
+  writeJson(ssoConfig, {
+    providers: [
+      {
+        name: 'CorporateOIDC',
+        displayName: 'Corporate identity',
+        type: 'oidc',
+        issuerUrl: 'https://idp.example.com',
+        clientId: 'client-id',
+        clientSecretArn:
+          'arn:aws:secretsmanager:eu-central-1:111122223333:secret:aidlc/oidc-AbCdEf',
+        claims: { email: 'email', name: 'name', roles: 'groups' },
+        roleMappings: { 'platform-admin': ['aidlc-admin'] },
+        requiredClaimValues: ['aidlc-user'],
+      },
+    ],
+  });
+
+  const installed = run(
+    'bash',
+    [
+      installer,
+      'install',
+      '--version',
+      '2.0.0',
+      '--auth-mode',
+      'sso-only',
+      '--sso-config',
+      ssoConfig,
+    ],
+    { env },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.match(installed.stdout, /Authentication:\s+sso-only/);
+  assert.match(installed.stdout, /SSO providers:\s+Corporate identity/);
+  assert.match(installed.stdout, /OIDC callback:\s+https:\/\/broker\.example\.invalid/);
+  assert.match(installed.stdout, /SAML entity ID:\s+urn:amazon:cognito:sp:eu-central-1_pool-1/);
+
+  const authVars = ssoTfvarsOf(env);
+  assert.equal(authVars.auth_mode, 'sso-only');
+  assert.equal(authVars.sso_providers.CorporateOIDC.display_name, 'Corporate identity');
+  assert.match(authVars.sso_providers.CorporateOIDC.client_secret_arn, /:secretsmanager:/);
+  const initialAws = existsSync(env.AIDLC_AWS_LOG) ? readFileSync(env.AIDLC_AWS_LOG, 'utf8') : '';
+  assert.doesNotMatch(initialAws, /admin-create-user|admin-add-user-to-group/);
+  assert.doesNotMatch(configOf(env), /NotStored123/);
+
+  const status = run('bash', [installer, 'status'], { env });
+  assert.equal(status.status, 0, status.stderr);
+  assert.match(status.stdout, /Auth:\s+sso-only/);
+  assert.match(status.stdout, /SSO:\s+Corporate identity/);
+  assert.match(status.stdout, /OIDC callback:\s+https:\/\/broker\.example\.invalid/);
+
+  if (existsSync(env.AIDLC_AWS_LOG)) writeFileSync(env.AIDLC_AWS_LOG, '');
+  const local = run('bash', [installer, 'update', '--version', '2.0.0', '--no-sso'], { env });
+  assert.equal(local.status, 0, local.stderr);
+  assert.equal(ssoTfvarsOf(env).auth_mode, 'local');
+  assert.deepEqual(ssoTfvarsOf(env).sso_providers, {});
+  const updateAws = readFileSync(env.AIDLC_AWS_LOG, 'utf8');
+  assert.match(updateAws, /admin-create-user/);
+  assert.match(updateAws, /admin-set-user-password.*--permanent/);
+  assert.match(updateAws, /admin-add-user-to-group.*--group-name platform-admin/);
+});
 
 test('installer leaves the custom domain unset by default', () => {
   const repository = createReleaseRepository();

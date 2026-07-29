@@ -1,4 +1,6 @@
 import { Amplify } from 'aws-amplify';
+import 'aws-amplify/auth/enable-oauth-listener';
+import { Hub } from 'aws-amplify/utils';
 import {
   signIn,
   signOut,
@@ -6,27 +8,102 @@ import {
   fetchAuthSession,
   fetchUserAttributes,
   confirmSignIn,
+  signInWithRedirect,
   updateUserAttributes,
 } from 'aws-amplify/auth';
+import { cognitoUserPoolsTokenProvider } from 'aws-amplify/auth/cognito';
 import { clearPersistedCache } from '@/lib/persistentCache';
+import { normalizeSsoLoginError } from './authErrors';
 
-// Configure Amplify
+export type AuthMode = 'local' | 'hybrid' | 'sso-only';
+
+export interface SsoProvider {
+  name: string;
+  displayName: string;
+  type: 'oidc' | 'saml';
+}
+
+export const parseSsoProviders = (raw: string): SsoProvider[] => {
+  try {
+    const serialized = raw.startsWith('uri:') ? decodeURIComponent(raw.slice(4)) : raw;
+    const parsed = JSON.parse(serialized || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    console.error('Invalid VITE_SSO_PROVIDERS configuration');
+    return [];
+  }
+};
+
+export const authConfiguration = {
+  mode: (import.meta.env.VITE_AUTH_MODE || 'local') as AuthMode,
+  providers: parseSsoProviders(import.meta.env.VITE_SSO_PROVIDERS || '[]'),
+};
+
+export const cognitoOauthScopes = [
+  'openid',
+  'email',
+  'profile',
+  // Required by Cognito GetUser and UpdateUserAttributes, not an app admin role.
+  'aws.cognito.signin.user.admin',
+] as const;
+
+const hostedUiOrigin = import.meta.env.VITE_COGNITO_HOSTED_UI_DOMAIN || '';
+const callbackUrl =
+  import.meta.env.VITE_AUTH_CALLBACK_URL ||
+  `${import.meta.env.VITE_APP_ORIGIN || window.location.origin}/auth/callback`;
+const logoutUrl = `${import.meta.env.VITE_APP_ORIGIN || window.location.origin}/login`;
+let completedReturnTo: string | null = null;
+let ssoRedirectFailure: unknown;
+
+const clearStoredBrokerSession = () =>
+  cognitoUserPoolsTokenProvider.tokenOrchestrator.clearTokens();
+
+// Amplify completes the OAuth code exchange during configure(), before React
+// mounts the callback page. Preserve the result so the page does not lose the
+// broker's real failure and replace it with a later unauthenticated error.
+Hub.listen('auth', ({ payload }) => {
+  if (payload.event === 'signInWithRedirect_failure') {
+    ssoRedirectFailure =
+      payload.data?.error || new Error('Enterprise sign-in redirect failed without an error');
+  } else if (payload.event === 'signInWithRedirect') {
+    ssoRedirectFailure = undefined;
+  }
+});
+
+const cognitoConfig: Record<string, unknown> = {
+  userPoolId: import.meta.env.VITE_AWS_USER_POOL_ID,
+  userPoolClientId: import.meta.env.VITE_AWS_USER_POOL_CLIENT_ID,
+};
+if (authConfiguration.mode !== 'local' && hostedUiOrigin) {
+  cognitoConfig.loginWith = {
+    oauth: {
+      domain: hostedUiOrigin.replace(/^https?:\/\//, '').replace(/\/$/, ''),
+      scopes: [...cognitoOauthScopes],
+      redirectSignIn: [callbackUrl],
+      redirectSignOut: [logoutUrl],
+      responseType: 'code',
+    },
+  };
+}
+
 Amplify.configure({
   Auth: {
-    Cognito: {
-      userPoolId: import.meta.env.VITE_AWS_USER_POOL_ID,
-      userPoolClientId: import.meta.env.VITE_AWS_USER_POOL_CLIENT_ID,
-    },
+    Cognito: cognitoConfig as any,
   },
 });
 
 export interface User {
+  /** Stable Cognito subject used by backend authorization and application data. */
+  userId: string;
+  /** Cognito username used for credential login and user-pool administration. */
   username: string;
   email?: string;
   displayName?: string;
   avatarUrl?: string;
   /** Cognito groups from the ID token (e.g. 'platform-admin'). */
   groups: string[];
+  identitySource: 'cognito' | 'sso';
+  identityProvider?: string;
 }
 
 export interface AuthSession {
@@ -43,11 +120,16 @@ export interface AuthResult {
 export const authService = {
   async login(username: string, password: string): Promise<AuthResult> {
     try {
-      // Clear any existing session first
-      try {
-        await signOut();
-      } catch {
-        // Ignore - user might not be signed in
+      // In hybrid mode signOut redirects through the hosted UI. Clear only the
+      // local token store so credential login can replace a partial SSO session.
+      if (authConfiguration.mode === 'local') {
+        try {
+          await signOut();
+        } catch {
+          // There may be no active session.
+        }
+      } else {
+        await clearStoredBrokerSession();
       }
 
       const result = await signIn({ username, password });
@@ -81,6 +163,51 @@ export const authService = {
       }
       throw error;
     }
+  },
+
+  async loginWithSso(providerName: string, returnTo: string): Promise<void> {
+    if (!authConfiguration.providers.some((provider) => provider.name === providerName)) {
+      throw new Error('Unknown enterprise identity provider');
+    }
+    sessionStorage.setItem('aidlc-auth-return-to', returnTo);
+    completedReturnTo = null;
+    ssoRedirectFailure = undefined;
+    clearPersistedCache();
+    await signInWithRedirect({ provider: { custom: providerName } });
+  },
+
+  async completeSsoLogin(): Promise<User> {
+    // Amplify's OAuth listener completes the code exchange asynchronously when
+    // the auth module loads. Wait briefly for the token store to become ready.
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (ssoRedirectFailure !== undefined) {
+        lastError = normalizeSsoLoginError(ssoRedirectFailure);
+        break;
+      }
+      try {
+        return await this.getCurrentUser();
+      } catch (error) {
+        lastError =
+          ssoRedirectFailure === undefined ? error : normalizeSsoLoginError(ssoRedirectFailure);
+        if (ssoRedirectFailure !== undefined) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    try {
+      await clearStoredBrokerSession();
+    } catch (error) {
+      console.error('Failed to clear incomplete enterprise session:', error);
+    }
+    throw normalizeSsoLoginError(lastError || new Error('Enterprise sign-in did not complete'));
+  },
+
+  consumeReturnTo(): string {
+    if (completedReturnTo) return completedReturnTo;
+    const path = sessionStorage.getItem('aidlc-auth-return-to') || '/dashboard';
+    sessionStorage.removeItem('aidlc-auth-return-to');
+    completedReturnTo = path.startsWith('/') && !path.startsWith('//') ? path : '/dashboard';
+    return completedReturnTo;
   },
 
   async completeNewPassword(newPassword: string): Promise<User> {
@@ -122,14 +249,23 @@ export const authService = {
         fetchAuthSession().catch(() => null),
       ]);
       let groups: string[] = [];
-      const raw = sessionResult?.tokens?.idToken?.payload?.['cognito:groups'];
+      const payload = sessionResult?.tokens?.idToken?.payload;
+      const raw = payload?.['cognito:groups'];
       if (Array.isArray(raw)) groups = raw.map(String);
+      const identityProvider =
+        typeof payload?.['custom:identity_provider'] === 'string'
+          ? payload['custom:identity_provider']
+          : undefined;
       return {
+        userId: user.userId,
         username: user.username,
         email: attributes.email,
-        displayName: attributes['custom:display_name'] || attributes.email?.split('@')[0],
+        displayName:
+          attributes['custom:display_name'] || attributes.name || attributes.email?.split('@')[0],
         avatarUrl: attributes['custom:avatar_url'],
         groups,
+        identitySource: identityProvider ? 'sso' : 'cognito',
+        identityProvider,
       };
     } catch (error) {
       console.error('Get current user error:', error);

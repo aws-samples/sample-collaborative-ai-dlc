@@ -5,12 +5,15 @@
 // Both endpoints are platform-admin gated on the backend.
 
 import { api } from './api';
-import type { CognitoUser } from './projects';
+import type { UserPoolIdentity } from './projects';
 
-export interface AdminUser extends CognitoUser {
+export interface AdminUser extends UserPoolIdentity {
   // Cognito username — the key for group operations (distinct from the sub).
   username: string;
   platformAdmin: boolean;
+  mappedRoles: string[];
+  roleManagedExternally: boolean;
+  accessGranted: boolean;
 }
 
 export const adminUsersService = {

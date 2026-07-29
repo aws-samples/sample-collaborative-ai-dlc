@@ -12,7 +12,9 @@ ENVIRONMENT="dev"
 PHASE="all"
 PLAN_FILE="$TF_DIR/tfplan"
 TF_VAR_ARGS=()
-USAGE="Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path] [--var KEY=VALUE]..."
+AUTH_MODE_OVERRIDE=""
+SSO_CONFIG_FILE=""
+USAGE="Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path] [--auth-mode local|hybrid|sso-only] [--sso-config path] [--var KEY=VALUE]..."
 
 if [[ $# -gt 0 && "$1" != --* ]]; then
     ENVIRONMENT="$1"
@@ -39,6 +41,14 @@ while [[ $# -gt 0 ]]; do
             TF_VAR_ARGS+=(-var "$2")
             shift 2
             ;;
+        --auth-mode)
+            AUTH_MODE_OVERRIDE="${2:?--auth-mode requires local, hybrid, or sso-only}"
+            shift 2
+            ;;
+        --sso-config)
+            SSO_CONFIG_FILE="${2:?--sso-config requires a JSON file}"
+            shift 2
+            ;;
         *)
             echo "$USAGE" >&2
             exit 2
@@ -56,9 +66,14 @@ if [[ "$PHASE" == "apply" && ${#TF_VAR_ARGS[@]} -gt 0 ]]; then
     echo "Pass --var with --phase plan (or --phase all)." >&2
     exit 2
 fi
+if [[ "$PHASE" == "apply" && ( -n "$AUTH_MODE_OVERRIDE" || -n "$SSO_CONFIG_FILE" ) ]]; then
+    echo "Error: --auth-mode and --sso-config apply at plan time; a saved plan already contains their values." >&2
+    exit 2
+fi
 
 CONFIG_TF_DIR="${AIDLC_CONFIG_DIR:-$TF_DIR}"
 TFVARS_FILE="${AIDLC_TFVARS_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.tfvars}"
+SSO_TFVARS_FILE="${AIDLC_SSO_TFVARS_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.sso.tfvars.json}"
 BACKEND_FILE="${AIDLC_BACKEND_FILE:-$CONFIG_TF_DIR/environments/${ENVIRONMENT}.s3.tfbackend}"
 if [[ "$PLAN_FILE" != /* ]]; then
     PLAN_FILE="$(pwd)/$PLAN_FILE"
@@ -100,11 +115,13 @@ tf_output() {
 }
 
 print_deployment_summary() {
-    local application_url region deployed_environment custom_domain aliases
+    local application_url region deployed_environment custom_domain aliases auth_mode providers
+    local oidc_callback saml_acs saml_entity_id
     application_url="$(tf_output application_url)"
     region="$(tf_output aws_region)"
     deployed_environment="$(tf_output environment)"
     custom_domain="$(tf_output custom_domain_enabled)"
+    auth_mode="$(tf_output auth_mode)"
 
     echo ""
     echo "Infrastructure deployment complete"
@@ -120,6 +137,26 @@ print_deployment_summary() {
         aliases="$(terraform -chdir="$TF_DIR" output -json application_aliases 2>/dev/null || true)"
         print_dns_instructions "$aliases"
     fi
+    printf '  Authentication:  %s\n' "${auth_mode:-local}"
+    if [[ "$auth_mode" != "local" ]]; then
+        providers="$(terraform -chdir="$TF_DIR" output -json sso_providers 2>/dev/null || printf '[]')"
+        printf '  SSO providers:   %s\n' "$(printf '%s' "$providers" | node -e '
+          let s = "";
+          process.stdin.on("data", (d) => (s += d)).on("end", () => {
+            try {
+              process.stdout.write(JSON.parse(s).map((p) => p.displayName).join(", "));
+            } catch {
+              process.stdout.write("unavailable");
+            }
+          });
+        ')"
+    fi
+    oidc_callback="$(tf_output oidc_idp_callback_url)"
+    saml_acs="$(tf_output saml_acs_url)"
+    saml_entity_id="$(tf_output saml_entity_id)"
+    [[ -n "$oidc_callback" ]] && printf '  OIDC callback:   %s\n' "$oidc_callback"
+    [[ -n "$saml_acs" ]] && printf '  SAML ACS:        %s\n' "$saml_acs"
+    [[ -n "$saml_entity_id" ]] && printf '  SAML entity ID:  %s\n' "$saml_entity_id"
     printf '  Next step:       %s/deploy-frontend.sh %s\n' "$SCRIPT_DIR" "$ENVIRONMENT"
 }
 
@@ -213,6 +250,31 @@ if [[ ! -f "$BACKEND_FILE" ]]; then
     exit 1
 fi
 
+if [[ -n "$AUTH_MODE_OVERRIDE" && "$AUTH_MODE_OVERRIDE" != "local" && "$AUTH_MODE_OVERRIDE" != "hybrid" && "$AUTH_MODE_OVERRIDE" != "sso-only" ]]; then
+    echo "Error: --auth-mode must be local, hybrid, or sso-only." >&2
+    exit 2
+fi
+
+# SSO is first-class Terraform configuration. These flags are ergonomic
+# plan-time overrides for standalone deployments and use the same validator as
+# install.sh. The resulting values are embedded in the saved plan.
+if [[ -n "$SSO_CONFIG_FILE" ]]; then
+    [[ -f "$SSO_CONFIG_FILE" ]] || {
+        echo "Error: SSO configuration file not found: $SSO_CONFIG_FILE" >&2
+        exit 2
+    }
+    effective_auth_mode="${AUTH_MODE_OVERRIDE:-$(tfvar_string auth_mode "$TFVARS_FILE")}"
+    effective_auth_mode="${effective_auth_mode:-hybrid}"
+    normalized_sso="$(node "$SCRIPT_DIR/sso-config.mjs" "$SSO_CONFIG_FILE" "$effective_auth_mode")"
+    TF_VAR_ARGS+=(-var "sso_providers=$normalized_sso")
+fi
+if [[ -n "$AUTH_MODE_OVERRIDE" ]]; then
+    TF_VAR_ARGS+=(-var "auth_mode=$AUTH_MODE_OVERRIDE")
+    if [[ "$AUTH_MODE_OVERRIDE" == "local" && -z "$SSO_CONFIG_FILE" ]]; then
+        TF_VAR_ARGS+=(-var "sso_providers={}")
+    fi
+fi
+
 echo "Deploying environment: $ENVIRONMENT ($PHASE)"
 
 if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
@@ -229,7 +291,9 @@ if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
 
     mkdir -p "$(dirname "$PLAN_FILE")"
     echo "Planning deployment..."
-    terraform plan -var-file="$TFVARS_FILE" ${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"} -out="$PLAN_FILE"
+    TF_VAR_FILE_ARGS=(-var-file="$TFVARS_FILE")
+    [[ -f "$SSO_TFVARS_FILE" ]] && TF_VAR_FILE_ARGS+=(-var-file="$SSO_TFVARS_FILE")
+    terraform plan "${TF_VAR_FILE_ARGS[@]}" ${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"} -out="$PLAN_FILE"
     inspect_plan "$PLAN_FILE"
     if [[ "$PHASE" == "plan" ]]; then
         echo "Terraform plan ready: $PLAN_FILE"

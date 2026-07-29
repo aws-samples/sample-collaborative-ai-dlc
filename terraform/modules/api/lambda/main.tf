@@ -344,6 +344,7 @@ resource "aws_iam_role_policy" "cognito_reader" {
         Action = [
           "cognito-idp:ListUsers",
           "cognito-idp:ListUsersInGroup",
+          "cognito-idp:AdminGetUser",
           "cognito-idp:AdminAddUserToGroup",
           "cognito-idp:AdminRemoveUserFromGroup",
         ]
@@ -1671,6 +1672,7 @@ module "cognito_users_lambda" {
     COGNITO_USER_POOL_ID = var.cognito_user_pool_id
     ENVIRONMENT          = var.environment
     CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    SSO_ROLE_CONFIG      = var.sso_role_config
   }
 }
 

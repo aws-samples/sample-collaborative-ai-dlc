@@ -38,3 +38,9 @@ app_domain          = ""
 app_domain_aliases  = []
 acm_certificate_arn = ""
 route53_zone_id     = ""
+
+# Authentication defaults to the existing Cognito email/password flow.
+# For enterprise federation set auth_mode to "hybrid" or "sso-only" and add
+# providers here, or pass --auth-mode and --sso-config to deploy-terraform.sh.
+auth_mode     = "local"
+sso_providers = {}
