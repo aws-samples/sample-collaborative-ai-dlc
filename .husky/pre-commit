@@ -17,7 +17,7 @@ fi
 # SCA on production deps. Root deps come with `npm install`, so this always
 # runs. Frontend has its own package.json outside workspaces — skip silently
 # if its node_modules don't exist.
-# Audit failures are advisory here; CI remains the enforcement layer.
+# Audit failures are advisory in this local hook; findings remain visible.
 if ! npm audit --omit=dev --audit-level=high; then
   echo "npm audit reported high-severity findings; continuing commit."
 fi
