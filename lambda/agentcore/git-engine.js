@@ -128,6 +128,34 @@ const sanitizedGitEnv = (overrides = {}) => {
 // argv-based git runner: captures stdout/stderr, resolves { exitCode, stdout,
 // stderr }, never rejects (spawn errors → exitCode null). Mirrors
 // cli/spawn.js#captureChild but is git-scoped and dependency-free.
+// Engine-owned git invocations must NEVER execute the cloned repository's hooks.
+//
+// Two reasons, both observed in production:
+//
+//  1. CORRECTNESS. A repo using husky + lint-staged installs hooks that shell
+//     out to npm/npx. The runtime deliberately never installs the checkout's
+//     dependencies (see the inode-budget notes in workspace.js), so the hook
+//     exits non-zero and the commit fails — losing a stage's completed work for
+//     a reason unrelated to that work. Seen as a `git_commit_failed` whose only
+//     detail was npm's "Unknown project config" warnings.
+//
+//  2. SECURITY. Repo hooks are arbitrary, untrusted code. They would run inside
+//     the agent runtime, and pushes carry a short-lived credential in the
+//     environment — a `pre-push` hook could read it, abort the push, and surface
+//     the value in the error detail. Running customer hooks is an attack
+//     surface, not a safeguard.
+//
+// `--no-verify` is NOT sufficient: it covers `pre-commit` and `commit-msg` only,
+// leaving `prepare-commit-msg` able to abort a commit and `pre-push` able to run
+// on every push. Setting `core.hooksPath` to a directory with no hooks disables
+// EVERY hook for the invocation, uniformly, and without mutating the
+// repository's own configuration (unlike `git config core.hooksPath`).
+//
+// Applied here, in the single choke point every engine git call passes through,
+// so operations added later inherit the policy automatically.
+export const NO_HOOKS_PATH = '/dev/null';
+const hooksDisabledArgs = () => ['-c', `core.hooksPath=${NO_HOOKS_PATH}`];
+
 export const runGit = (args, { cwd, env = {}, spawnFn = spawn } = {}) =>
   new Promise((resolve) => {
     let settled = false;
@@ -137,7 +165,7 @@ export const runGit = (args, { cwd, env = {}, spawnFn = spawn } = {}) =>
         resolve(v);
       }
     };
-    const child = spawnFn('git', args, {
+    const child = spawnFn('git', [...hooksDisabledArgs(), ...args], {
       cwd,
       shell: false,
       env: sanitizedGitEnv(env),
