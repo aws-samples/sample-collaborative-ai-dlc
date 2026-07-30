@@ -45,7 +45,7 @@ variable "validation_record_ttl" {
 }
 
 variable "certificate_release_delay" {
-  description = "How long to wait after CloudFront stops using a Terraform-managed certificate before deleting it. CloudFront releases certificates asynchronously, so deleting immediately fails with ResourceInUseException. Only applies when Terraform owns the certificate, and only on the way out — removing or renaming a domain takes this much longer. Set to 0s to disable and delete immediately."
+  description = "Internal safety delay after CloudFront stops using a Terraform-managed certificate. The root deployment uses the 5m default because CloudFront releases certificates asynchronously and deleting immediately can fail with ResourceInUseException. Only applies when Terraform owns the certificate, and only on the way out — removing or renaming a domain takes this much longer."
   type        = string
   default     = "5m"
 }

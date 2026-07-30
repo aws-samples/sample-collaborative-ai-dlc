@@ -38,6 +38,8 @@ APP_DOMAIN_EXPLICIT="${AIDLC_APP_DOMAIN+x}"
 APP_DOMAIN_ALIASES_EXPLICIT="${AIDLC_APP_DOMAIN_ALIASES+x}"
 ACM_CERTIFICATE_ARN_EXPLICIT="${AIDLC_ACM_CERTIFICATE_ARN+x}"
 ROUTE53_ZONE_ID_EXPLICIT="${AIDLC_ROUTE53_ZONE_ID+x}"
+DOMAIN_OPTION_EXPLICIT=0
+NO_DOMAIN_EXPLICIT=0
 SOURCE=""
 ASSUME_YES="${AIDLC_YES:-0}"
 ALLOW_DOWNGRADE="${AIDLC_ALLOW_DOWNGRADE:-0}"
@@ -90,18 +92,20 @@ while [[ $# -gt 0 ]]; do
         --admin) ADMIN_USERNAME="${2:?--admin requires a value}"; ADMIN_EXPLICIT=1; shift 2 ;;
         --repo-url) REPOSITORY_URL="${2:?--repo-url requires a value}"; REPOSITORY_EXPLICIT=1; shift 2 ;;
         --source) SOURCE="${2:?--source requires a path}"; shift 2 ;;
-        --domain) APP_DOMAIN="${2:?--domain requires a hostname}"; APP_DOMAIN_EXPLICIT=1; shift 2 ;;
+        --domain) APP_DOMAIN="${2:?--domain requires a hostname}"; APP_DOMAIN_EXPLICIT=1; DOMAIN_OPTION_EXPLICIT=1; shift 2 ;;
         --domain-alias)
             APP_DOMAIN_ALIASES="${APP_DOMAIN_ALIASES:+$APP_DOMAIN_ALIASES,}${2:?--domain-alias requires a hostname}"
             APP_DOMAIN_ALIASES_EXPLICIT=1
+            DOMAIN_OPTION_EXPLICIT=1
             shift 2
             ;;
-        --certificate-arn) ACM_CERTIFICATE_ARN="${2:?--certificate-arn requires an ACM ARN}"; ACM_CERTIFICATE_ARN_EXPLICIT=1; shift 2 ;;
-        --hosted-zone-id) ROUTE53_ZONE_ID="${2:?--hosted-zone-id requires a Route53 zone ID}"; ROUTE53_ZONE_ID_EXPLICIT=1; shift 2 ;;
+        --certificate-arn) ACM_CERTIFICATE_ARN="${2:?--certificate-arn requires an ACM ARN}"; ACM_CERTIFICATE_ARN_EXPLICIT=1; DOMAIN_OPTION_EXPLICIT=1; shift 2 ;;
+        --hosted-zone-id) ROUTE53_ZONE_ID="${2:?--hosted-zone-id requires a Route53 zone ID}"; ROUTE53_ZONE_ID_EXPLICIT=1; DOMAIN_OPTION_EXPLICIT=1; shift 2 ;;
         --no-domain)
             APP_DOMAIN=""; APP_DOMAIN_ALIASES=""; ACM_CERTIFICATE_ARN=""; ROUTE53_ZONE_ID=""
             APP_DOMAIN_EXPLICIT=1; APP_DOMAIN_ALIASES_EXPLICIT=1
             ACM_CERTIFICATE_ARN_EXPLICIT=1; ROUTE53_ZONE_ID_EXPLICIT=1
+            NO_DOMAIN_EXPLICIT=1
             shift
             ;;
         --yes) ASSUME_YES=1; shift ;;
@@ -111,6 +115,10 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+if [[ "$NO_DOMAIN_EXPLICIT" == 1 && "$DOMAIN_OPTION_EXPLICIT" == 1 ]]; then
+    echo "--no-domain cannot be combined with --domain, --domain-alias, --certificate-arn, or --hosted-zone-id." >&2
+    exit 2
+fi
 if [[ -n "$VERSION" && -n "$REF" ]]; then
     echo "--version and --ref are mutually exclusive." >&2
     exit 2
@@ -483,6 +491,35 @@ validate_alias_availability() {
     done
 }
 
+require_terraform_version() {
+    local version
+    if ! version="$(terraform version -json 2>/dev/null | node -e '
+      let input = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { input += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const version = JSON.parse(input).terraform_version;
+          if (typeof version !== "string") process.exit(1);
+          process.stdout.write(version);
+        } catch {
+          process.exit(1);
+        }
+      });
+    ')"; then
+        echo "Could not determine the Terraform version; Terraform 1.4 or later is required." >&2
+        return 1
+    fi
+    if ! is_semver "$version"; then
+        echo "Could not parse Terraform version '$version'; Terraform 1.4 or later is required." >&2
+        return 1
+    fi
+    if [[ "$(version_cmp "$version" "1.4.0")" -lt 0 ]]; then
+        echo "Terraform 1.4 or later is required; found $version." >&2
+        return 1
+    fi
+}
+
 require_commands() {
     local missing=0 command
     local commands="git node npm terraform aws docker"
@@ -493,7 +530,8 @@ require_commands() {
             missing=1
         fi
     done
-    [[ "$missing" == 0 ]]
+    [[ "$missing" == 0 ]] || return 1
+    [[ "${AIDLC_TEST_MODE:-0}" == 1 ]] || require_terraform_version
 }
 
 require_destroy_commands() {
@@ -658,16 +696,29 @@ target_description() {
     fi
 }
 
+# Renders a string in the JSON-compatible quoted syntax accepted by HCL.
+hcl_string() {
+    node -e 'process.stdout.write(JSON.stringify(process.argv[1]));' "$1"
+}
+
 # Sets a single HCL assignment in a tfvars file: rewrites the value in place if
 # the key is present, appends the assignment otherwise. sed alone cannot insert,
 # and the file is no longer written only once, so both paths are needed for
 # installations whose tfvars predate a variable.
 tfvars_upsert() {
-    local file="$1" key="$2" value="$3"
+    local file="$1" key="$2" value="$3" warn_on_change="${4:-0}" escaped_value existing
+    if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+        echo "Refusing to write a multiline value for '$key' to $file." >&2
+        return 1
+    fi
     if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
-        # A literal newline in the replacement would break sed, and values here
-        # are hostnames, ARNs, zone IDs and short HCL lists.
-        sed -i.bak -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${value}|" "$file"
+        existing="$(grep -m 1 -E "^[[:space:]]*${key}[[:space:]]*=" "$file")"
+        if [[ "$warn_on_change" == 1 && "$existing" != "$key = $value" ]]; then
+            echo "Warning: managed installer is updating '$key' in $file to match installer configuration." >&2
+        fi
+        # Backslash, ampersand and the delimiter are special in a sed replacement.
+        escaped_value="$(printf '%s' "$value" | sed 's/[\\&|]/\\&/g')"
+        sed -i.bak -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${escaped_value}|" "$file"
         rm -f "$file.bak"
     else
         printf '%s = %s\n' "$key" "$value" >> "$file"
@@ -675,25 +726,26 @@ tfvars_upsert() {
 }
 
 configure_environment() {
-    local checkout="$1"
+    local checkout="$1" tfvars backend tfvars_existed=1
     mkdir -p "$CONFIG_ROOT/terraform/environments" "$DATA_ROOT/backups" "$DATA_ROOT/plans"
-    local tfvars="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.tfvars"
-    local backend="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.s3.tfbackend"
+    tfvars="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.tfvars"
+    backend="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.s3.tfbackend"
     if [[ ! -f "$tfvars" ]]; then
         cp "$checkout/terraform/environments/dev.tfvars.example" "$tfvars"
+        tfvars_existed=0
     fi
-    tfvars_upsert "$tfvars" environment "\"$ENVIRONMENT\""
-    tfvars_upsert "$tfvars" aws_region "\"$REGION\""
+    tfvars_upsert "$tfvars" environment "$(hcl_string "$ENVIRONMENT")" "$tfvars_existed"
+    tfvars_upsert "$tfvars" aws_region "$(hcl_string "$REGION")" "$tfvars_existed"
 
     normalize_domain_config
     # Written whenever a domain is configured, and whenever the keys are already
     # present so an update can change or clear them. Skipped otherwise, which
     # keeps the tfvars of releases predating these variables clean.
     if domain_configured || grep -qE '^[[:space:]]*app_domain[[:space:]]*=' "$tfvars"; then
-        tfvars_upsert "$tfvars" app_domain "\"$APP_DOMAIN\""
-        tfvars_upsert "$tfvars" app_domain_aliases "$(domain_aliases_hcl)"
-        tfvars_upsert "$tfvars" acm_certificate_arn "\"$ACM_CERTIFICATE_ARN\""
-        tfvars_upsert "$tfvars" route53_zone_id "\"$ROUTE53_ZONE_ID\""
+        tfvars_upsert "$tfvars" app_domain "$(hcl_string "$APP_DOMAIN")" "$tfvars_existed"
+        tfvars_upsert "$tfvars" app_domain_aliases "$(domain_aliases_hcl)" "$tfvars_existed"
+        tfvars_upsert "$tfvars" acm_certificate_arn "$(hcl_string "$ACM_CERTIFICATE_ARN")" "$tfvars_existed"
+        tfvars_upsert "$tfvars" route53_zone_id "$(hcl_string "$ROUTE53_ZONE_ID")" "$tfvars_existed"
     fi
 
     if [[ ! -f "$backend" ]]; then

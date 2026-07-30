@@ -25,7 +25,7 @@ AI-DLC is a platform where humans and AI agents collaborate on software developm
 | Tool      | Version       |
 | --------- | ------------- |
 | Node.js   | 22+           |
-| Terraform | 1.0+          |
+| Terraform | 1.4+          |
 | AWS CLI   | v2            |
 | Docker    | Recent stable |
 
@@ -33,7 +33,7 @@ You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Ga
 
 ## Getting Started
 
-The managed installer is the primary deployment path. It keeps tagged source checkouts under `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc`, persistent Terraform configuration under `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc`, and switches the `current` link only after a deployment succeeds.
+The managed installer is the primary deployment path. It keeps tagged source checkouts under `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc`, persistent Terraform configuration under `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc`, and switches the `current` link only after a deployment succeeds. Its `install.conf` is authoritative for the environment, region, and custom-domain settings: every install or update synchronizes those values into the managed `tfvars` and warns before replacing a differing existing assignment.
 
 Download and inspect the installer, then run it:
 
@@ -140,7 +140,7 @@ cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 ./scripts/deploy-frontend.sh dev
 ```
 
-`bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. Nothing rewrites the tfvars on this path — it is yours to edit. For an approval boundary between planning and applying:
+`bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. On this advanced manual path, nothing rewrites the tfvars; it is yours to edit. The managed installer described above instead keeps its own tfvars synchronized with `install.conf`. For an approval boundary between planning and applying:
 
 ```bash
 ./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan

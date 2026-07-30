@@ -1,8 +1,8 @@
 // Canonical origin of this deployment.
 //
 // VITE_APP_ORIGIN is baked in at build time from the Terraform
-// `application_domain` output, which is the custom domain when one is
-// configured and the CloudFront domain otherwise. It is the same value the
+// `application_url` output. Its hostname is the custom domain when one is
+// configured and the CloudFront domain otherwise. It is the same origin the
 // backend uses to build the OAuth redirect URIs.
 //
 // window.location.origin is only a fallback for local development. It must not

@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The OAuth callback URL shown in the Admin UI is now built from the deployment's canonical origin instead of the browsing origin. A deployment answers on the CloudFront domain and on every alias, so an admin could previously be shown a callback URL that did not match the redirect URI the backend sends, which providers reject at sign-in time.
 - The application hostname is now derived once and reused by the OAuth redirect URIs, the CORS allowlists, the artifacts bucket CORS rules, the `application_url` output and the frontend build, replacing seven separate recomputations. The CloudFront domain stays in the CORS allowlists alongside any custom hostname, so enabling a custom domain does not break already-loaded bundles.
 - The installer now updates the environment `tfvars` on every run instead of only writing it once, so deployment settings can be changed or removed by an update rather than requiring a hand edit.
-- Terraform now requires 1.4 or later.
+- **Breaking:** Terraform now requires 1.4 or later (up from 1.0).
 
 ### Notes
 

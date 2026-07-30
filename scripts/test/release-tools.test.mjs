@@ -21,21 +21,44 @@ const installer = join(root, 'scripts/install.sh');
 const inspector = join(root, 'scripts/inspect-terraform-plan.mjs');
 const deployTerraform = join(root, 'scripts/deploy-terraform.sh');
 const destroyTerraform = join(root, 'scripts/destroy.sh');
+const generateEnv = join(root, 'scripts/generate-env.sh');
 
 const run = (file, args, options = {}) =>
   spawnSync(file, args, {
-    cwd: root,
+    cwd: options.cwd ?? root,
     encoding: 'utf8',
     env: { ...process.env, ...options.env },
   });
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 
+test('current release metadata is internally consistent', () => {
+  const version = JSON.parse(readFileSync(join(root, 'package.json'))).version;
+  const checked = run('node', ['scripts/release.mjs', 'check', version]);
+  assert.equal(checked.status, 0, checked.stderr);
+});
+
 test('release check accepts prerelease metadata but final mode requires a date', () => {
-  const prepared = run('node', ['scripts/release.mjs', 'check', '2.0.0-preview0']);
+  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-release-check-'));
+  const version = '2.0.0-preview0';
+  mkdirSync(join(fixture, 'scripts'));
+  cpSync(join(root, 'scripts/release.mjs'), join(fixture, 'scripts/release.mjs'));
+  writeJson(join(fixture, 'package.json'), { name: 'aidlc', version, private: true });
+  writeJson(join(fixture, 'package-lock.json'), {
+    name: 'aidlc',
+    version,
+    lockfileVersion: 3,
+    packages: { '': { name: 'aidlc', version } },
+  });
+  writeFileSync(
+    join(fixture, 'CHANGELOG.md'),
+    `# Changelog\n\n## [Unreleased]\n\n## [${version}] - TBD\n`,
+  );
+
+  const prepared = run('node', ['scripts/release.mjs', 'check', version], { cwd: fixture });
   assert.equal(prepared.status, 0, prepared.stderr);
 
-  const final = run('node', ['scripts/release.mjs', 'check', '2.0.0-preview0', '--final']);
+  const final = run('node', ['scripts/release.mjs', 'check', version, '--final'], { cwd: fixture });
   assert.equal(final.status, 1);
   assert.match(final.stderr, /still has a TBD date/);
 });
@@ -66,6 +89,57 @@ test('release preparation promotes preview metadata without losing changelog not
   const changelog = readFileSync(join(fixture, 'CHANGELOG.md'), 'utf8');
   assert.match(changelog, /## \[2\.0\.0\] - TBD\n\n- Preview notes\./);
   assert.doesNotMatch(changelog, /2\.0\.0-preview0/);
+});
+
+test('frontend env generation requires a domain and uses application_url', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-generate-env-'));
+  const bin = join(fixture, 'bin');
+  const script = join(fixture, 'scripts/generate-env.sh');
+  const config = join(fixture, 'config');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(fixture, 'scripts'), { recursive: true });
+  mkdirSync(join(fixture, 'terraform'), { recursive: true });
+  mkdirSync(join(fixture, 'frontend'), { recursive: true });
+  mkdirSync(join(config, 'environments'), { recursive: true });
+  cpSync(generateEnv, script);
+  writeFileSync(join(config, 'environments/dev.tfvars'), 'environment = "dev"\n');
+  writeFileSync(
+    join(bin, 'terraform'),
+    `#!/usr/bin/env bash
+case "$*" in
+  "output -raw environment") printf 'dev\\n' ;;
+  "output -raw aws_region") printf 'eu-central-1\\n' ;;
+  "output -raw user_pool_id") printf 'eu-central-1_pool-1\\n' ;;
+  "output -raw user_pool_client_id") printf 'client-1\\n' ;;
+  "output -raw application_url") printf '%s\\n' "\${AIDLC_FAKE_APP_URL:-}" ;;
+  "output -raw application_domain") printf '%s\\n' "\${AIDLC_FAKE_APP_DOMAIN:-}" ;;
+  "output -raw cloudfront_domain_name") printf '%s\\n' "\${AIDLC_FAKE_CLOUDFRONT_DOMAIN:-}" ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  const env = {
+    PATH: `${bin}:${process.env.PATH}`,
+    AIDLC_CONFIG_DIR: config,
+  };
+
+  const missing = run('bash', [script, 'dev'], { cwd: fixture, env });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /Terraform application domain not available/);
+  assert.equal(existsSync(join(fixture, 'frontend/.env')), false);
+
+  const generated = run('bash', [script, 'dev'], {
+    cwd: fixture,
+    env: {
+      ...env,
+      AIDLC_FAKE_APP_DOMAIN: 'app.example.com',
+      AIDLC_FAKE_APP_URL: 'https://canonical.example.com',
+    },
+  });
+  assert.equal(generated.status, 0, generated.stderr);
+  const contents = readFileSync(join(fixture, 'frontend/.env'), 'utf8');
+  assert.match(contents, /^VITE_APP_ORIGIN="https:\/\/canonical\.example\.com"$/m);
+  assert.match(contents, /^VITE_WEBSOCKET_URL=wss:\/\/app\.example\.com\/ws$/m);
 });
 
 test('Terraform plan inspection rejects protected deletion and allows the retired agent pool', () => {
@@ -407,6 +481,20 @@ test('installer lists prereleases by default in SemVer order', () => {
   assert.equal(compatibilityFlag.stdout, listed.stdout);
 });
 
+test('installer rejects --no-domain combined with domain configuration flags', () => {
+  const certificate = 'arn:aws:acm:us-east-1:111122223333:certificate/abc-123';
+  const conflicts = [
+    ['--no-domain', '--certificate-arn', certificate],
+    ['--domain', 'aidlc.example.com', '--hosted-zone-id', 'Z1', '--no-domain'],
+  ];
+
+  for (const args of conflicts) {
+    const result = run('bash', [installer, 'install', ...args]);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /--no-domain cannot be combined/);
+  }
+});
+
 const createReleaseRepository = () => {
   const repository = mkdtempSync(join(tmpdir(), 'aidlc-releases-'));
   execFileSync('git', ['init', '-q'], { cwd: repository });
@@ -594,6 +682,7 @@ const mockedCommandEnv = (dir, repository) => {
     join(bin, 'terraform'),
     `#!/usr/bin/env bash
 case "$*" in
+  "version -json") printf '{"terraform_version":"%s"}\\n' "\${AIDLC_FAKE_TERRAFORM_VERSION:-1.14.0}" ;;
   *" show -json "*) printf '{"resource_changes":[]}\\n' ;;
   *" state pull"*) printf '{}\\n' ;;
   *" output -raw application_url"*) printf 'https://example.invalid\\n' ;;
@@ -641,6 +730,19 @@ exit 0
     AIDLC_TEST_MODE: '',
   };
 };
+
+test('installer rejects Terraform older than 1.4 during preflight', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-old-terraform-'));
+  const env = mockedCommandEnv(dir, repository);
+  const installed = run('bash', [installer, 'install', '--version', '2.0.0'], {
+    env: { ...env, AIDLC_FAKE_TERRAFORM_VERSION: '1.3.9' },
+  });
+
+  assert.equal(installed.status, 1);
+  assert.match(installed.stderr, /Terraform 1\.4 or later is required; found 1\.3\.9/);
+  assert.equal(existsSync(join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current')), false);
+});
 
 test('installer creates permanent administrators with v1 and v2 roles', () => {
   const repository = createReleaseRepository();
@@ -882,6 +984,32 @@ test('installer rewrites existing custom domain assignments in place', () => {
   assert.doesNotMatch(tfvars, /old\.example\.com|stale\.example\.com|ZOLD/);
   // Substituted rather than appended, so each key appears exactly once.
   assert.equal(tfvars.match(/^app_domain = /gm).length, 1);
+});
+
+test('installer safely rewrites sed-sensitive managed tfvars values', () => {
+  const repository = createReleaseRepository();
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-tfvars-escaping-'));
+  const env = managedEnv(dir, repository);
+  const environment = String.raw`dev&blue\west`;
+  const region = String.raw`us-east-1&edge\test|blue`;
+  const environmentsDir = join(env.XDG_CONFIG_HOME, 'collaborative-ai-dlc/terraform/environments');
+  const tfvarsPath = join(environmentsDir, `${environment}.tfvars`);
+  writeFileSync(tfvarsPath, 'environment = "old"\naws_region = "old"\n');
+  writeFileSync(join(environmentsDir, `${environment}.s3.tfbackend`), 'bucket = "test"\n');
+
+  const installed = run(
+    'bash',
+    [installer, 'install', '--version', '2.0.0', '--environment', environment, '--region', region],
+    { env },
+  );
+  assert.equal(installed.status, 0, installed.stderr);
+
+  const tfvars = readFileSync(tfvarsPath, 'utf8');
+  assert.ok(tfvars.includes(`environment = ${JSON.stringify(environment)}`));
+  assert.ok(tfvars.includes(`aws_region = ${JSON.stringify(region)}`));
+  assert.match(installed.stderr, /updating 'environment'.*to match installer configuration/);
+  assert.match(installed.stderr, /updating 'aws_region'.*to match installer configuration/);
+  assert.equal(existsSync(`${tfvarsPath}.bak`), false);
 });
 
 test('installer carries the custom domain across an update and can remove it', () => {
