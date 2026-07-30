@@ -14,7 +14,6 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
-  ScanCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -35,6 +34,10 @@ import {
   projectPk,
   projectStatusIndex,
   executionTypeStateIndex,
+  activeExecutionIndex,
+  unitPrWaitIndex,
+  ACTIVE_EXECUTIONS_INDEX_PK,
+  PR_WAITS_INDEX_PK,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -57,6 +60,7 @@ import {
   QUORUM_EDIT_STATES,
   COMPOSE_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
+  ACTIVE_EXECUTION_STATUSES,
 } from './v2-process-keys.js';
 
 const bySk = (a, b) => a.sk.localeCompare(b.sk);
@@ -71,17 +75,6 @@ const queryAll = async (ddb, input) => {
   let ExclusiveStartKey;
   do {
     const page = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
-    items.push(...(page.Items ?? []));
-    ExclusiveStartKey = page.LastEvaluatedKey;
-  } while (ExclusiveStartKey);
-  return items;
-};
-
-const scanAll = async (ddb, input) => {
-  const items = [];
-  let ExclusiveStartKey;
-  do {
-    const page = await ddb.send(new ScanCommand({ ...input, ExclusiveStartKey }));
     items.push(...(page.Items ?? []));
     ExclusiveStartKey = page.LastEvaluatedKey;
   } while (ExclusiveStartKey);
@@ -164,6 +157,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
+    const removes = [];
     const names = {};
     const values = { ':ts': ts };
     if (status !== undefined) {
@@ -196,6 +190,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         state: status,
         id: META,
       }).GSI2SK;
+      if (ACTIVE_EXECUTION_STATUSES.includes(status)) {
+        const maintenance = activeExecutionIndex({ executionId });
+        sets.push('GSI3PK = :g3pk', 'GSI3SK = :g3sk');
+        values[':g3pk'] = maintenance.GSI3PK;
+        values[':g3sk'] = maintenance.GSI3SK;
+      } else {
+        removes.push('GSI3PK', 'GSI3SK');
+      }
     }
     if (currentPhase !== undefined) {
       sets.push('currentPhase = :cp');
@@ -340,7 +342,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     const params = {
       TableName: table(),
       Key: executionMetaKey(executionId),
-      UpdateExpression: `SET ${sets.join(', ')}`,
+      UpdateExpression: `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.join(', ')}` : ''}`,
       ExpressionAttributeValues: values,
       ReturnValues: 'ALL_NEW',
     };
@@ -1137,6 +1139,26 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return items;
   };
 
+  const listActiveExecutions = async ({ limit = 100 } = {}) => {
+    const items = [];
+    let ExclusiveStartKey;
+    do {
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: table(),
+          IndexName: 'GSI3',
+          KeyConditionExpression: 'GSI3PK = :pk',
+          ExpressionAttributeValues: { ':pk': ACTIVE_EXECUTIONS_INDEX_PK },
+          Limit: limit - items.length,
+          ExclusiveStartKey,
+        }),
+      );
+      items.push(...(page.Items ?? []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey && items.length < limit);
+    return items;
+  };
+
   const listStaleActiveExecutions = async ({
     statuses = ['WAITING', 'RUNNING'],
     nowIso,
@@ -1150,11 +1172,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         ? new Date(nowMs - timeoutMs).toISOString()
         : null;
     const statusSet = new Set(statuses);
-    const rows = await scanAll(ddb, {
-      TableName: table(),
-      FilterExpression: 'sk = :meta',
-      ExpressionAttributeValues: { ':meta': META },
-    });
+    const rows = await listActiveExecutions({ limit });
     return rows
       .filter((row) => statusSet.has(row.status))
       .filter((row) => {
@@ -1366,6 +1384,20 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (!UNIT_STATES.includes(state)) throw new Error(`invalid unit state: ${state}`);
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk'];
+    const removes =
+      state === 'PR_READY'
+        ? []
+        : [
+            'prWaitCallbackId',
+            'prWaitRunId',
+            'prWaitSnapshot',
+            'prWaitBoundAt',
+            'prWaitWakeClaimId',
+            'prWaitWakeClaimedAt',
+            'prWaitWakeClaimExpiresAt',
+            'GSI3PK',
+            'GSI3SK',
+          ];
     const names = { '#state': 'state' };
     const values = {
       ':state': state,
@@ -1385,7 +1417,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     const params = {
       TableName: table(),
       Key: unitKey(executionId, sectionIndex, slug),
-      UpdateExpression: `SET ${sets.join(', ')}`,
+      UpdateExpression: `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.join(', ')}` : ''}`,
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
       ReturnValues: 'ALL_NEW',
@@ -1519,6 +1551,208 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     } catch (e) {
       if (e?.name === 'ConditionalCheckFailedException') return null;
       throw e;
+    }
+  };
+
+  const bindUnitPrWait = async ({
+    executionId,
+    sectionIndex,
+    slug,
+    callbackId,
+    runId,
+    snapshot,
+  }) => {
+    const ts = now();
+    const projection = unitPrWaitIndex({ executionId, sectionIndex, slug });
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: unitKey(executionId, sectionIndex, slug),
+          UpdateExpression:
+            'SET prWaitCallbackId = :callbackId, prWaitRunId = :runId, prWaitSnapshot = :snapshot, prWaitBoundAt = :ts, updatedAt = :ts, GSI3PK = :g3pk, GSI3SK = :g3sk REMOVE prWaitWakeClaimId, prWaitWakeClaimedAt, prWaitWakeClaimExpiresAt',
+          ConditionExpression:
+            'attribute_exists(pk) AND #state = :ready AND (attribute_not_exists(prWaitCallbackId) OR prWaitCallbackId = :callbackId) AND (attribute_not_exists(prWaitRunId) OR prWaitRunId = :runId)',
+          ExpressionAttributeNames: { '#state': 'state' },
+          ExpressionAttributeValues: {
+            ':callbackId': callbackId,
+            ':runId': runId,
+            ':snapshot': snapshot,
+            ':ts': ts,
+            ':ready': 'PR_READY',
+            ':g3pk': projection.GSI3PK,
+            ':g3sk': projection.GSI3SK,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  const listUnitPrWaits = async ({ limit = 100 } = {}) => {
+    const items = [];
+    let ExclusiveStartKey;
+    do {
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: table(),
+          IndexName: 'GSI3',
+          KeyConditionExpression: 'GSI3PK = :pk',
+          ExpressionAttributeValues: { ':pk': PR_WAITS_INDEX_PK },
+          Limit: limit - items.length,
+          ExclusiveStartKey,
+        }),
+      );
+      items.push(...(page.Items ?? []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey && items.length < limit);
+    return items;
+  };
+
+  const claimUnitPrWait = async ({
+    executionId,
+    sectionIndex,
+    slug,
+    callbackId,
+    runId,
+    claimId,
+    claimExpiresAt,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: unitKey(executionId, sectionIndex, slug),
+          UpdateExpression:
+            'SET prWaitWakeClaimId = :claimId, prWaitWakeClaimedAt = :ts, prWaitWakeClaimExpiresAt = :claimExpiresAt, updatedAt = :ts',
+          ConditionExpression:
+            '#state = :ready AND prWaitCallbackId = :callbackId AND prWaitRunId = :runId AND (attribute_not_exists(prWaitWakeClaimId) OR prWaitWakeClaimExpiresAt < :ts)',
+          ExpressionAttributeNames: { '#state': 'state' },
+          ExpressionAttributeValues: {
+            ':ready': 'PR_READY',
+            ':callbackId': callbackId,
+            ':runId': runId,
+            ':claimId': claimId,
+            ':claimExpiresAt': claimExpiresAt,
+            ':ts': ts,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  const completeUnitPrWait = async ({
+    executionId,
+    sectionIndex,
+    slug,
+    callbackId,
+    runId,
+    claimId,
+    reason,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: unitKey(executionId, sectionIndex, slug),
+          UpdateExpression:
+            'SET prWaitLastWakeReason = :reason, prWaitLastWokenAt = :ts, updatedAt = :ts REMOVE prWaitCallbackId, prWaitRunId, prWaitSnapshot, prWaitBoundAt, prWaitWakeClaimId, prWaitWakeClaimedAt, prWaitWakeClaimExpiresAt, GSI3PK, GSI3SK',
+          ConditionExpression:
+            'prWaitCallbackId = :callbackId AND prWaitRunId = :runId AND prWaitWakeClaimId = :claimId',
+          ExpressionAttributeValues: {
+            ':callbackId': callbackId,
+            ':runId': runId,
+            ':claimId': claimId,
+            ':reason': reason,
+            ':ts': ts,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  const releaseUnitPrWaitClaim = async ({
+    executionId,
+    sectionIndex,
+    slug,
+    callbackId,
+    runId,
+    claimId,
+  }) => {
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: unitKey(executionId, sectionIndex, slug),
+          UpdateExpression:
+            'SET updatedAt = :ts REMOVE prWaitWakeClaimId, prWaitWakeClaimedAt, prWaitWakeClaimExpiresAt',
+          ConditionExpression:
+            'prWaitCallbackId = :callbackId AND prWaitRunId = :runId AND prWaitWakeClaimId = :claimId',
+          ExpressionAttributeValues: {
+            ':callbackId': callbackId,
+            ':runId': runId,
+            ':claimId': claimId,
+            ':ts': now(),
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  const clearUnitPrWait = async ({
+    executionId,
+    sectionIndex,
+    slug,
+    callbackId = null,
+    runId = null,
+  }) => {
+    const values = { ':ts': now() };
+    const conditions = ['attribute_exists(pk)'];
+    if (callbackId) {
+      conditions.push('prWaitCallbackId = :callbackId');
+      values[':callbackId'] = callbackId;
+    }
+    if (runId) {
+      conditions.push('prWaitRunId = :runId');
+      values[':runId'] = runId;
+    }
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: unitKey(executionId, sectionIndex, slug),
+          UpdateExpression:
+            'SET updatedAt = :ts REMOVE prWaitCallbackId, prWaitRunId, prWaitSnapshot, prWaitBoundAt, prWaitWakeClaimId, prWaitWakeClaimedAt, prWaitWakeClaimExpiresAt, GSI3PK, GSI3SK',
+          ConditionExpression: conditions.join(' AND '),
+          ExpressionAttributeValues: values,
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
     }
   };
 
@@ -1970,6 +2204,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     appendOutput,
     getOutputs,
     listProjectExecutions,
+    listActiveExecutions,
     listStaleActiveExecutions,
     patchExecutionConfig,
     putUnitPlan,
@@ -1982,6 +2217,12 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getUnitPr,
     listUnitPrs,
     updateUnitPr,
+    bindUnitPrWait,
+    listUnitPrWaits,
+    claimUnitPrWait,
+    completeUnitPrWait,
+    releaseUnitPrWaitClaim,
+    clearUnitPrWait,
     createFeedbackBatch,
     listFeedbackBatches,
     updateFeedbackBatch,
