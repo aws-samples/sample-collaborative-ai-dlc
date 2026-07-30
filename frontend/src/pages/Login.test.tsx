@@ -2,15 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import type { AuthMode, SsoProvider } from '@/services/auth';
 
 const mocks = vi.hoisted(() => ({
   configuration: {
-    mode: 'local' as 'local' | 'hybrid' | 'sso-only',
-    providers: [] as Array<{
-      name: string;
-      displayName: string;
-      type: 'oidc' | 'saml';
-    }>,
+    mode: 'local' as AuthMode,
+    providers: [] as SsoProvider[],
   },
   login: vi.fn(),
   loginWithSso: vi.fn(),
@@ -36,7 +33,7 @@ vi.mock('@/contexts/AuthContext', () => ({
 
 import Login from './Login';
 
-const setMode = (mode: 'local' | 'hybrid' | 'sso-only') => {
+const setMode = (mode: AuthMode) => {
   mocks.configuration.mode = mode;
   mocks.configuration.providers.splice(
     0,
@@ -71,6 +68,7 @@ describe('Login authentication modes', () => {
     renderLogin();
     expect(screen.getByText('Enterprise SSO')).toBeInTheDocument();
     expect(screen.getByText('Cognito account')).toBeInTheDocument();
+    expect(screen.getByText('Collaborative AI-Driven Development')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Continue with Corporate identity' })).toBeVisible();
     expect(screen.getByLabelText('Username')).toBeVisible();
   });
@@ -91,5 +89,20 @@ describe('Login authentication modes', () => {
     await user.click(screen.getByRole('button', { name: 'Continue with Corporate identity' }));
 
     expect(mocks.loginWithSso).toHaveBeenCalledWith('CorporateOIDC', '/admin');
+  });
+
+  it('re-enables provider actions when the redirect cannot be started', async () => {
+    setMode('hybrid');
+    mocks.loginWithSso.mockRejectedValueOnce(new Error('Redirect could not be started'));
+    const user = userEvent.setup();
+    renderLogin();
+
+    const providerButton = screen.getByRole('button', {
+      name: 'Continue with Corporate identity',
+    });
+    await user.click(providerButton);
+
+    expect(await screen.findByText('Redirect could not be started')).toBeInTheDocument();
+    expect(providerButton).toBeEnabled();
   });
 });

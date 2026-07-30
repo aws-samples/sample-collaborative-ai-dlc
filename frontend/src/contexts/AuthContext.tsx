@@ -96,9 +96,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setIsLoading(true);
     try {
       await authService.loginWithSso(providerName, returnTo);
-    } catch (error) {
+    } finally {
       setIsLoading(false);
-      throw error;
     }
   }, []);
 

@@ -59,6 +59,7 @@ export default function Login() {
       await loginWithSso(providerName, from);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Enterprise sign-in failed');
+    } finally {
       setIsSubmitting(false);
     }
   };
@@ -217,9 +218,7 @@ export default function Login() {
             </div>
           </div>
           <CardTitle>Sign in to AI-DLC</CardTitle>
-          <CardDescription>
-            {ssoEnabled ? 'Use your organization account' : 'Collaborative AI-Driven Development'}
-          </CardDescription>
+          <CardDescription>Collaborative AI-Driven Development</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
           {errorBanner}

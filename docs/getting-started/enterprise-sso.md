@@ -156,22 +156,26 @@ contain at most 32 letters/numbers/underscores/hyphens, and not be `COGNITO`.
 `displayName` is shown on the login button. Provider names must remain stable:
 renaming one creates distinct federated Cognito usernames.
 
-Store the OIDC client secret itself, not a JSON wrapper, in Secrets Manager:
+Create one Secrets Manager secret per OIDC provider in the same AWS account and
+Region as the AI-DLC deployment. The secret name is your choice; the examples use
+`aidlc/<environment>/<provider-name>`. Store the raw OIDC client secret itself,
+not a JSON wrapper:
 
 ```bash
 printf '%s' '<oidc-client-secret>' > /tmp/aidlc-oidc-secret
 chmod 600 /tmp/aidlc-oidc-secret
 
 aws secretsmanager create-secret \
-  --name aidlc/dev/corporate-oidc \
+  --name "aidlc/<environment>/<provider-name>" \
   --secret-string file:///tmp/aidlc-oidc-secret \
   --profile <aws-profile> \
   --region <aws-region> \
   --query ARN --output text
 ```
 
-Remove the temporary file after the command. The AWS principal used by the
-installer needs `secretsmanager:GetSecretValue` for that ARN.
+Copy the returned ARN into that provider's `clientSecretArn` field, then remove
+the temporary file. The installer does not require or look up a fixed secret
+name. Its AWS principal needs `secretsmanager:GetSecretValue` for the ARN.
 
 Terraform must send the secret value to the Cognito identity-provider API, so
 the value can be present in Terraform state even though configuration files
@@ -188,7 +192,10 @@ application-specific values.
    **OIDC callback** shown by `bash /tmp/aidlc-install.sh status`.
 
 3. Under **Certificates & secrets**, create a client secret. Store its **Value**
-   immediately in Secrets Manager; the Secret ID is not the client secret.
+   immediately as the raw value of a Secrets Manager secret in the deployment
+   account and Region, for example `aidlc/<environment>/entra`. The Secret ID is
+   not the client secret. Set `clientSecretArn` below to the ARN returned by
+   Secrets Manager.
 4. Under **App roles**, create roles with values `AI-DLC.User` and
    `AI-DLC.Admin`. Allow users/groups, then assign users or groups through the
    corresponding Enterprise application. Administrators need both roles.
@@ -253,7 +260,9 @@ the complete group list.
    `user.getGroups({"group.profile.name":"aidlc-","operator":"STARTS_WITH"}).![name]`.
    The claim name must match `claims.roles`; `aidlc-*` is not wildcard syntax in
    this expression.
-6. Copy the client ID and secret, and store the raw secret in Secrets Manager.
+6. Copy the client ID and secret. Store the raw secret in the deployment account
+   and Region, for example as `aidlc/<environment>/okta`, and set
+   `clientSecretArn` below to the ARN returned by Secrets Manager.
 7. Copy the exact issuer shown by Okta. For the default custom authorization
    server it normally ends in `/oauth2/default`.
 
