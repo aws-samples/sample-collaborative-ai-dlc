@@ -349,6 +349,34 @@ describe('buildExecutionPlan — plan shape', () => {
     expect(plan.stages[0].sensors[0].scriptRef).toBeNull();
   });
 
+  // Regression: verdictMode, scope, and projectConfig must survive plan
+  // resolution so a custom sensor declaring stdout-json mode is evaluated
+  // correctly, and project-scoped sensors widen to the affected project.
+  it('threads verdictMode, scope, and projectConfig through to the plan', () => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a', { sensors: ['custom-checker'] }) },
+      sensorsById: {
+        'custom-checker': {
+          command: 'custom-checker.ts',
+          severity: 'advisory',
+          runtime: 'bun',
+          verdictMode: 'stdout-json',
+          scope: 'project',
+          projectConfig: 'pyproject.toml',
+        },
+      },
+    });
+    const { plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+    const resolved = plan.stages[0].sensors[0];
+    expect(resolved.verdictMode).toBe('stdout-json');
+    expect(resolved.scope).toBe('project');
+    expect(resolved.projectConfig).toBe('pyproject.toml');
+  });
+
   it('flags agent-team as not implemented without crashing', () => {
     const lib = baseLibrary({ stagesById: { a: stage('a', { mode: 'agent-team' }) } });
     const { plan } = buildExecutionPlan({

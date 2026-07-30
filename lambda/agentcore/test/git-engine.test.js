@@ -8,6 +8,7 @@ import {
   scrubRemote,
   commitAll,
   isAheadOfRemote,
+  aheadFiles,
   pushBranch,
   remoteBranchExists,
   commitAndPushAll,
@@ -1425,5 +1426,55 @@ describe('runtime excludes', () => {
     await ensureRuntimeExcludes({ dir: work });
     const again = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
     expect(again.match(/runtime excludes v3/g)).toHaveLength(1);
+  });
+});
+
+describe('aheadFiles', () => {
+  it('returns files changed between remote tracking branch and HEAD', async () => {
+    const { work } = await initRemoteAndClone();
+    // Commit a new file but do NOT push — HEAD is ahead.
+    await mkdir(path.join(work, 'src'), { recursive: true });
+    await writeFile(path.join(work, 'src', 'new.ts'), 'export const x = 1;');
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'add new'], work);
+
+    const files = await aheadFiles({ dir: work, branch: 'main' });
+    expect(files).toContain('src/new.ts');
+  });
+
+  it('returns empty when HEAD matches the remote', async () => {
+    const { work } = await initRemoteAndClone();
+    const files = await aheadFiles({ dir: work, branch: 'main' });
+    expect(files).toEqual([]);
+  });
+});
+
+describe('commitAndPushAll — retry carries files from ahead commit', () => {
+  it('derives file list from remote-to-HEAD diff on a clean retry', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    // Stage 1: commit succeeds, push fails (simulate by making remote refuse).
+    await mkdir(path.join(work, 'src'), { recursive: true });
+    await writeFile(path.join(work, 'src', 'index.ts'), 'export const a = 1;');
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'stage work'], work);
+    // HEAD is now ahead of remote.
+
+    // Stage 2: retry — no new edits, tree is clean. commitAndPushAll should
+    // still report the files from the ahead commit.
+    const remoteUrl = `file://${remote}`;
+    const result = await commitAndPushAll({
+      repos: [remoteUrl],
+      workspaceDir: work,
+      branch: 'main',
+      gitProvider: 'github',
+      projectId: 'test',
+      executionId: 'ex1',
+      message: 'retry',
+      urlsFor: () => ({ clean: remoteUrl, auth: remoteUrl }),
+    });
+    expect(result.ok).toBe(true);
+    // The result should carry the files from the ahead commit.
+    const files = result.results.flatMap((r) => r.files ?? []);
+    expect(files.some((f) => f.endsWith('src/index.ts'))).toBe(true);
   });
 });

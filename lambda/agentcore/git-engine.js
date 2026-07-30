@@ -458,6 +458,17 @@ export const isAheadOfRemote = async ({ dir, branch, git = runGit }) => {
   return remoteRef.stdout.trim() !== head.stdout.trim();
 };
 
+// List the files changed between the remote tracking branch and HEAD. Used on a
+// clean retry: the working tree has no changes but the local HEAD is ahead of
+// the remote (a previous run committed but failed to push). Returns the
+// repo-relative paths that the ahead commit(s) touched, or [] on failure.
+export const aheadFiles = async ({ dir, branch, git = runGit }) => {
+  const remoteRef = `refs/remotes/origin/${branch}`;
+  const diff = await git(['diff', '--name-only', '-z', remoteRef, 'HEAD'], { cwd: dir });
+  if (diff.exitCode !== 0) return [];
+  return diff.stdout.split('\0').filter((p) => p.length > 0);
+};
+
 // Push HEAD to the branch with v1 pushBranchWithRetry semantics. Returns:
 //   { pushed: 'empty' }               — no commits at all (new/empty repo)
 //   { pushed: true, sha, verified }   — on the remote (verified: ls-remote head
@@ -1214,6 +1225,16 @@ export const commitAndPushAll = async ({
       if (!commit.committed && !(await isAheadOfRemote({ dir, branch, git }))) {
         results.push({ repo: url, ...commit, pushed: 'up_to_date' });
         continue;
+      }
+      // On a clean retry (no new commit but HEAD is ahead), derive the changed
+      // file list from the remote-to-HEAD diff so sensors can still inspect the
+      // never-checked commit. Without this, `files` would be undefined and
+      // sensors would skip the commit entirely.
+      if (!commit.committed && !commit.files) {
+        commit.files = await aheadFiles({ dir, branch, git });
+      }
+      if (Array.isArray(commit.files)) {
+        commit.files = toWorkspaceRelative(commit.files, { url, multi });
       }
       const push = await pushBranch({
         dir,

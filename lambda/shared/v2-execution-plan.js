@@ -215,6 +215,9 @@ const resolveSensors = (stage, stageId, sensorsById, errors) =>
         category: sensor.category ?? null,
         matches: sensor.matches ?? null,
         scriptRef: sensor.scriptRef ?? null,
+        verdictMode: sensor.verdictMode ?? null,
+        scope: sensor.scope ?? null,
+        projectConfig: sensor.projectConfig ?? null,
       };
     })
     .filter(Boolean);

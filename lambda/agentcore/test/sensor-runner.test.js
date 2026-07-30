@@ -732,3 +732,75 @@ describe('runStageSensors — script kind', () => {
     expect(verdicts[0].detail.error).toBe('sensor has no script');
   });
 });
+
+describe('expandToAffectedProjects — deleted/renamed files', () => {
+  const allFiles = [
+    'packages/api/tsconfig.json',
+    'packages/api/src/consumer.ts',
+    'packages/web/tsconfig.json',
+    'packages/web/src/page.ts',
+  ];
+  const globbed = ['packages/api/src/consumer.ts', 'packages/web/src/page.ts'];
+
+  it('marks the owning project as affected when a source file is deleted', () => {
+    // `packages/api/src/provider.ts` was deleted — not in allFiles/globbed.
+    // Removing a provider can break the untouched consumer; must inspect api/.
+    const r = expandToAffectedProjects({
+      globbed,
+      changed: ['packages/api/src/provider.ts'],
+      allFiles,
+      configFile: 'tsconfig.json',
+    });
+    expect(r).toContain('packages/api/src/consumer.ts');
+    expect(r).not.toContain('packages/web/src/page.ts');
+  });
+
+  it('marks project as affected when its tsconfig.json is deleted', () => {
+    // The config deletion means the project's compilation shifts to a parent —
+    // all its files may now error. Config not in allFiles/globbed (deleted).
+    const r = expandToAffectedProjects({
+      globbed,
+      changed: ['packages/api/tsconfig.json'],
+      allFiles: allFiles.filter((f) => f !== 'packages/api/tsconfig.json'),
+      configFile: 'tsconfig.json',
+    });
+    expect(r).toContain('packages/api/src/consumer.ts');
+  });
+
+  it('handles a cross-project rename (old path outside destination project)', () => {
+    // File moved from packages/api/ to packages/web/. The OLD path (deleted from
+    // api) should mark api as affected; the NEW path marks web as affected.
+    const r = expandToAffectedProjects({
+      globbed,
+      changed: ['packages/api/src/moved.ts', 'packages/web/src/page.ts'],
+      allFiles,
+      configFile: 'tsconfig.json',
+    });
+    expect(r).toContain('packages/api/src/consumer.ts'); // api affected via deleted file
+    expect(r).toContain('packages/web/src/page.ts'); // web affected via existing file
+  });
+});
+
+describe('summarizeFileResults — harnessFailures budget', () => {
+  it('trims distinct harness failures to stay within budget', () => {
+    // 1000 failures with distinct stderr (includes path), each ~ 600 bytes.
+    // Without the budget this exceeds 600KB — well past the DynamoDB 400KiB limit.
+    const entries = Array.from({ length: 1000 }, (_, i) => ({
+      file: `packages/api/src/deeply/nested/path/file-number-${i}.ts`,
+      result: 'INCONCLUSIVE',
+      timedOut: false,
+      detail: {
+        reason: 'script-error',
+        exitCode: 1,
+        stderr: `Error in file-number-${i}.ts: ${'x'.repeat(400)}`,
+      },
+    }));
+    const d = summarizeFileResults(entries);
+    const bytes = Buffer.byteLength(JSON.stringify(d), 'utf8');
+    expect(bytes).toBeLessThanOrEqual(120_000);
+    expect(d.filesOmitted).toBeGreaterThan(0);
+    expect(d.omissionReason).toBe('detail size budget');
+    // Must still have SOME harness failures preserved for diagnostics.
+    expect(d.harnessFailures.length).toBeGreaterThan(0);
+  });
+});

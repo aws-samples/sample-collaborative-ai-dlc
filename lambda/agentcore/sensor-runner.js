@@ -170,13 +170,36 @@ const expandToAffectedProjects = ({ globbed, changed, allFiles, configFile }) =>
   const projectRoots = allFiles.filter(isConfig).map(rootOfConfig);
   const globbedSet = new Set(globbed);
 
+  // Derive the set of project roots that also covers DELETED files: a deleted
+  // path is absent from `allFiles` (hence absent from `projectRoots` if it was
+  // the config), but its parent project may still exist. Walk up each changed
+  // path to find the deepest project root it belonged to. Config deletions are
+  // handled explicitly: a deleted config means the project root it defined is
+  // affected (its source may still compile under a parent config, which would
+  // surface new errors only if we inspect it).
+  const allRoots = new Set(projectRoots);
+
   const affected = new Set();
   for (const c of changed) {
-    if (isConfig(c)) affected.add(rootOfConfig(c));
-    else if (globbedSet.has(c)) affected.add(projectRootOf(c, projectRoots));
+    if (isConfig(c)) {
+      // A config that EXISTS is a live project root; one that is DELETED means
+      // its enclosing project is affected (compilation may shift to a parent).
+      // Add the root to allRoots so files under it can match via projectRootOf.
+      const root = rootOfConfig(c);
+      allRoots.add(root);
+      affected.add(root);
+    } else if (globbedSet.has(c)) {
+      affected.add(projectRootOf(c, [...allRoots]));
+    } else {
+      // Deleted/renamed source: not in the glob but its owning project is
+      // affected because removing a provider can break untouched consumers.
+      // Derive the root from the known roots (if the path once belonged to a
+      // project, the root itself may still exist even after the file is gone).
+      affected.add(projectRootOf(c, [...allRoots]));
+    }
   }
   if (affected.size === 0) return [];
-  return globbed.filter((f) => affected.has(projectRootOf(f, projectRoots)));
+  return globbed.filter((f) => affected.has(projectRootOf(f, [...allRoots])));
 };
 
 const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) =>
@@ -281,7 +304,19 @@ const summarizeFileResults = (fileResults) => {
   if (groups.size > 0) detail.harnessFailures = [...groups.values()];
   if (kept.length > 0) detail.files = kept;
 
+  // Budget BOTH arrays under the total size ceiling. When stderr differs per
+  // file (e.g. includes the path), every failure becomes its own group and the
+  // harnessFailures array is never deduped — we must trim it to stay under the
+  // DynamoDB item limit. Trim harnessFailures first (least information lost per
+  // byte saved), then files.
   let dropped = 0;
+  while (
+    detail.harnessFailures?.length > 1 &&
+    Buffer.byteLength(JSON.stringify(detail), 'utf8') > DETAIL_BUDGET_BYTES
+  ) {
+    detail.harnessFailures.pop();
+    dropped += 1;
+  }
   while (
     detail.files?.length &&
     Buffer.byteLength(JSON.stringify(detail), 'utf8') > DETAIL_BUDGET_BYTES
