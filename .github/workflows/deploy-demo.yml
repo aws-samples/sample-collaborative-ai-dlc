@@ -1,0 +1,190 @@
+name: Deploy Demo
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Immutable release tag to deploy
+        required: true
+        type: string
+      apply:
+        description: Apply the Terraform plan and deploy the frontend
+        required: false
+        default: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Existing release tag to plan or deploy (for example, v2.0.0)
+        required: true
+        type: string
+      apply:
+        description: Apply the plan and deploy the frontend
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment:
+      name: demo
+      url: ${{ steps.deployment.outputs.url }}
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      BEDROCK_MODEL: ${{ vars.BEDROCK_MODEL }}
+      DEPLOY_REF: ${{ inputs.ref }}
+      TF_ENVIRONMENT: prod
+      TF_INPUT: 'false'
+      TF_IN_AUTOMATION: 'true'
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+      TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Verify release tag
+        run: |
+          if [[ ! "$DEPLOY_REF" =~ ^v[0-9] ]]; then
+            echo "Deployment ref must be a version tag beginning with v: $DEPLOY_REF" >&2
+            exit 1
+          fi
+          git show-ref --verify --quiet "refs/tags/$DEPLOY_REF"
+          git rev-parse "$DEPLOY_REF^{tag}" >/dev/null
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: '1.15.0'
+
+      - name: Validate deployment configuration
+        run: |
+          required=(
+            AWS_ACCOUNT_ID
+            AWS_REGION
+            AWS_ROLE_ARN
+            BEDROCK_MODEL
+            TF_STATE_BUCKET
+            TF_STATE_KEY
+            TF_STATE_REGION
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "GitHub Environment variable $name is required." >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "AWS_ACCOUNT_ID must contain 12 digits." >&2
+            exit 1
+          fi
+          if [[ "$AWS_ROLE_ARN" != "arn:aws:iam::$AWS_ACCOUNT_ID:role/"* ]]; then
+            echo "AWS_ROLE_ARN must be an IAM role in AWS_ACCOUNT_ID." >&2
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+          role-duration-seconds: 10800
+          role-session-name: aidlc-demo-${{ github.run_id }}-${{ github.run_attempt }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Create Terraform environment files
+        run: |
+          set -euo pipefail
+          umask 077
+
+          config_dir="$RUNNER_TEMP/aidlc-config"
+          plan_file="$RUNNER_TEMP/aidlc-$TF_ENVIRONMENT.tfplan"
+          mkdir -p "$config_dir/environments"
+
+          hcl_string() {
+            node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"
+          }
+
+          {
+            printf 'environment   = %s\n' "$(hcl_string "$TF_ENVIRONMENT")"
+            printf 'aws_region    = %s\n' "$(hcl_string "$AWS_REGION")"
+            printf 'bedrock_model = %s\n' "$(hcl_string "$BEDROCK_MODEL")"
+          } > "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+
+          {
+            printf 'bucket       = %s\n' "$(hcl_string "$TF_STATE_BUCKET")"
+            printf 'key          = %s\n' "$(hcl_string "$TF_STATE_KEY")"
+            printf 'region       = %s\n' "$(hcl_string "$TF_STATE_REGION")"
+            printf 'use_lockfile = true\n'
+            printf 'encrypt      = true\n'
+          } > "$config_dir/environments/$TF_ENVIRONMENT.s3.tfbackend"
+
+          echo "AIDLC_CONFIG_DIR=$config_dir" >> "$GITHUB_ENV"
+          echo "AIDLC_PLAN_FILE=$plan_file" >> "$GITHUB_ENV"
+
+      - name: Plan infrastructure
+        run: |
+          ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" \
+            --phase plan \
+            --plan-file "$AIDLC_PLAN_FILE"
+
+      - name: Apply infrastructure
+        if: ${{ inputs.apply }}
+        run: |
+          ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" \
+            --phase apply \
+            --plan-file "$AIDLC_PLAN_FILE"
+
+      - name: Deploy frontend
+        if: ${{ inputs.apply }}
+        run: ./scripts/deploy-frontend.sh "$TF_ENVIRONMENT"
+
+      - name: Verify deployment
+        id: deployment
+        if: ${{ inputs.apply }}
+        run: |
+          app_url="$(terraform -chdir=terraform output -raw application_url)"
+          curl --fail --silent --show-error --location \
+            --retry 12 --retry-delay 10 --retry-all-errors \
+            "$app_url" >/dev/null
+          echo "url=$app_url" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Demo deployment"
+            echo
+            echo "- Release: \`$DEPLOY_REF\`"
+            echo "- Terraform environment: \`$TF_ENVIRONMENT\`"
+            echo "- URL: $app_url"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record plan-only result
+        if: ${{ ! inputs.apply }}
+        run: |
+          {
+            echo "### Demo plan complete"
+            echo
+            echo "- Release: \`$DEPLOY_REF\`"
+            echo "- Terraform environment: \`$TF_ENVIRONMENT\`"
+            echo "- No changes were applied."
+          } >> "$GITHUB_STEP_SUMMARY"
