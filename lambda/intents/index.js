@@ -4622,6 +4622,9 @@ const runPrWaitReconciler = async ({ waits: injectedWaits = null } = {}) => {
             operation: 'pr-status',
             args: { number: pr.number },
           });
+          if (!status?.state) {
+            throw new Error(`PR status unavailable for ${pr.repository}#${pr.number}`);
+          }
           const observation = normalizePrSnapshot(pr, status);
           observations.push(observation);
           reason ??= providerTransitionFor(prior.get(pr.repository), observation);

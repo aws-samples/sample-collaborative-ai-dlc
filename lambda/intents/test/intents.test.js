@@ -3267,6 +3267,35 @@ describe('scheduled unit PR reconciliation', () => {
     expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
   });
 
+  it('reports an unavailable PR status without waking or clearing the wait', async () => {
+    const { wait } = seedWait({ executionId: 'exec-status-unavailable' });
+    sourceControlOperationHandler = () => null;
+
+    const out = await handler({
+      action: 'reconcile-provider-state',
+      waits: [{ ...wait }],
+      candidates: [],
+    });
+
+    expect(out.prWaits).toMatchObject({
+      checked: 1,
+      woken: 0,
+      unchanged: 0,
+      errors: [
+        {
+          executionId: 'exec-status-unavailable',
+          unitSlug: 'views',
+          error: 'PR status unavailable for owner/web#12',
+        },
+      ],
+    });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+    expect(procStore.get(keyOf(wait.pk, wait.sk))).toMatchObject({
+      prWaitCallbackId: wait.prWaitCallbackId,
+      prWaitRunId: wait.prWaitRunId,
+    });
+  });
+
   it('wakes one multi-repository wait when a GitLab target branch moves', async () => {
     const repos = [
       { repository: 'owner/api', provider: 'github', number: 21 },
