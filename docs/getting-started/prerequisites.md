@@ -26,14 +26,14 @@ To deploy AIDLC Collaborative to AWS, install the following additional tools. Fo
 
 | Tool                                                                                                                  | Version        | Purpose                                         |
 | --------------------------------------------------------------------------------------------------------------------- | -------------- | ----------------------------------------------- |
-| [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.0 or later   | Infrastructure provisioning                     |
+| [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.4 or later   | Infrastructure provisioning                     |
 | [AWS Command Line Interface (AWS CLI)](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | v2             | AWS resource management and credential handling |
 | [Docker](https://docs.docker.com/get-docker/)                                                                         | 20.10 or later | Lambda packaging and container builds           |
 
 Run the following commands to confirm your deployment tools are installed.
 
 ```bash
-terraform --version  # Expected output: v1.0 or later
+terraform --version  # Expected output: v1.4 or later
 aws --version        # Expected output: aws-cli/2.x
 docker --version     # Expected output: Docker version 20.10 or later
 ```
@@ -57,6 +57,7 @@ The following are optional. Set them up to enable additional features.
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **AWS credentials**     | Required for large language model (LLM) features through [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html)                   |
 | **Provider OAuth apps** | GitHub / GitLab / Jira Cloud OAuth apps enable code-host and tracker integration — see [Setup → Configure provider OAuth apps](setup.md#configure-provider-oauth-apps) |
+| **Custom domain**       | An ACM certificate in `us-east-1` covering the hostname, or a Route53 hosted zone for Terraform to request one — see [Setup → Custom domain](setup.md#custom-domain)   |
 
 ## Agent authentication
 

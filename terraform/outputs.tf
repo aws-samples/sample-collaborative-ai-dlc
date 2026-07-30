@@ -21,8 +21,43 @@ output "cloudfront_domain_name" {
 }
 
 output "application_url" {
-  description = "Public URL of the AI-DLC application"
-  value       = "https://${module.frontend.cloudfront_domain_name}"
+  description = "Public URL of the AI-DLC application. Uses the custom domain when one is configured."
+  value       = local.app_url
+}
+
+output "application_domain" {
+  description = "Canonical hostname of the AI-DLC application. The custom domain when configured, otherwise the CloudFront domain. This is the value the frontend build and the OAuth redirect URIs are derived from."
+  value       = local.app_domain
+}
+
+output "application_aliases" {
+  description = "Every hostname CloudFront answers on. Empty when no custom domain is configured."
+  value       = local.app_aliases
+}
+
+output "custom_domain_enabled" {
+  description = "Whether a custom domain is configured for this deployment."
+  value       = local.custom_domain_enabled
+}
+
+output "acm_certificate_arn" {
+  description = "ARN of the us-east-1 certificate serving the custom domain. Empty when no custom domain is configured."
+  value       = module.domain.certificate_arn
+}
+
+output "dns_managed_by_terraform" {
+  description = "Whether Terraform manages the DNS records for the custom domain. False means the records must be created in an external DNS provider using dns_target."
+  value       = local.custom_domain_enabled && var.route53_zone_id != ""
+}
+
+output "dns_target" {
+  description = "Value the custom domain's A/AAAA alias (or CNAME) records must point at. Needed only when DNS is managed outside this Terraform state."
+  value       = module.frontend.cloudfront_domain_name
+}
+
+output "dns_target_hosted_zone_id" {
+  description = "Hosted zone ID of the CloudFront alias target, for Route53 alias records created outside this Terraform state."
+  value       = module.frontend.cloudfront_hosted_zone_id
 }
 
 output "s3_bucket_name" {

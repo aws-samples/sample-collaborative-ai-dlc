@@ -11,6 +11,8 @@ TF_DIR="$SCRIPT_DIR/../terraform"
 ENVIRONMENT="dev"
 PHASE="all"
 PLAN_FILE="$TF_DIR/tfplan"
+TF_VAR_ARGS=()
+USAGE="Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path] [--var KEY=VALUE]..."
 
 if [[ $# -gt 0 && "$1" != --* ]]; then
     ENVIRONMENT="$1"
@@ -26,14 +28,32 @@ while [[ $# -gt 0 ]]; do
             PLAN_FILE="${2:?--plan-file requires a path}"
             shift 2
             ;;
+        --var)
+            # Overrides a value from the tfvars file. Terraform gives -var higher
+            # precedence than -var-file, which TF_VAR_* env vars do not get: those
+            # lose to any key present in the var-file and are silently ignored.
+            if [[ "${2:?--var requires KEY=VALUE}" != *=* ]]; then
+                echo "Error: --var expects KEY=VALUE, got '$2'" >&2
+                exit 2
+            fi
+            TF_VAR_ARGS+=(-var "$2")
+            shift 2
+            ;;
         *)
-            echo "Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path]" >&2
+            echo "$USAGE" >&2
             exit 2
             ;;
     esac
 done
 if [[ "$PHASE" != "plan" && "$PHASE" != "apply" && "$PHASE" != "all" ]]; then
     echo "Error: --phase must be plan, apply, or all" >&2
+    exit 2
+fi
+# A saved plan already has its variables resolved, and terraform rejects -var
+# when applying one. Fail here rather than letting the override look accepted.
+if [[ "$PHASE" == "apply" && ${#TF_VAR_ARGS[@]} -gt 0 ]]; then
+    echo "Error: --var applies at plan time; a saved plan already contains its variables." >&2
+    echo "Pass --var with --phase plan (or --phase all)." >&2
     exit 2
 fi
 
@@ -65,10 +85,11 @@ tf_output() {
 }
 
 print_deployment_summary() {
-    local application_url region deployed_environment
+    local application_url region deployed_environment custom_domain aliases
     application_url="$(tf_output application_url)"
     region="$(tf_output aws_region)"
     deployed_environment="$(tf_output environment)"
+    custom_domain="$(tf_output custom_domain_enabled)"
 
     echo ""
     echo "Infrastructure deployment complete"
@@ -79,13 +100,49 @@ print_deployment_summary() {
     else
         echo "  Application URL: unavailable (run 'terraform -chdir=terraform output -raw application_url')"
     fi
+    if [[ "$custom_domain" == "true" ]]; then
+        printf '  Custom domain:   %s\n' "$(tf_output application_domain)"
+        aliases="$(terraform -chdir="$TF_DIR" output -json application_aliases 2>/dev/null || true)"
+        print_dns_instructions "$aliases"
+    fi
     printf '  Next step:       %s/deploy-frontend.sh %s\n' "$SCRIPT_DIR" "$ENVIRONMENT"
+}
+
+# Without a Route53 zone in this account nothing resolves to the distribution
+# until the operator publishes the records, so print exactly what is needed.
+print_dns_instructions() {
+    local aliases_json="$1" target host
+    [[ "$(tf_output dns_managed_by_terraform)" == "true" ]] && return 0
+    target="$(tf_output dns_target)"
+    [[ -z "$target" ]] && return 0
+
+    echo ""
+    echo "  DNS is managed outside this deployment. Create these records:"
+    while IFS= read -r host; do
+        [[ -z "$host" ]] && continue
+        printf '    %s  A     -> %s\n' "$host" "$target"
+        printf '    %s  AAAA  -> %s\n' "$host" "$target"
+    done < <(printf '%s' "$aliases_json" | node -e '
+      let s = "";
+      process.stdin.on("data", (d) => (s += d)).on("end", () => {
+        try {
+          for (const host of JSON.parse(s)) console.log(host);
+        } catch {
+          // No aliases output available; the records cannot be listed.
+        }
+      });
+    ')
+    echo "    Use an alias/ANAME record where your provider supports it, otherwise a"
+    echo "    CNAME. Apex domains require alias records; a CNAME is not valid there."
+    echo ""
 }
 
 stop_retired_agent_tasks() {
     local tfvars_file="$1"
     local env_name project_name region cluster_name cluster_arn tasks services
 
+    # Reads the tfvars directly, so --var overrides of environment, project_name
+    # or aws_region are not reflected here. Those three belong in the tfvars.
     env_name=$(tfvar_string environment "$tfvars_file")
     project_name=$(tfvar_string project_name "$tfvars_file")
     region=$(tfvar_string aws_region "$tfvars_file")
@@ -127,7 +184,7 @@ if [[ -z "${AVAILABLE_ENVS// }" ]]; then
 fi
 
 if ! echo " $AVAILABLE_ENVS " | grep -q " $ENVIRONMENT "; then
-    echo "Usage: $0 <environment> [--phase plan|apply|all] [--plan-file path]"
+    echo "$USAGE"
     echo "Available environments: $AVAILABLE_ENVS"
     exit 1
 fi
@@ -155,7 +212,7 @@ if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
 
     mkdir -p "$(dirname "$PLAN_FILE")"
     echo "Planning deployment..."
-    terraform plan -var-file="$TFVARS_FILE" -out="$PLAN_FILE"
+    terraform plan -var-file="$TFVARS_FILE" ${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"} -out="$PLAN_FILE"
     inspect_plan "$PLAN_FILE"
     if [[ "$PHASE" == "plan" ]]; then
         echo "Terraform plan ready: $PLAN_FILE"
