@@ -167,6 +167,11 @@ cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 
 `bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. On this advanced manual path, nothing rewrites the tfvars; it is yours to edit. The managed installer described above instead keeps its own tfvars synchronized with `install.conf`. For an approval boundary between planning and applying:
 
+Export proxy variables before running `--phase plan`. Terraform resolves
+`TF_VAR_docker_build_args` while planning and stores the value in the saved
+plan, so exporting or changing proxy variables before `--phase apply` has no
+effect.
+
 ```bash
 ./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
 ./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
