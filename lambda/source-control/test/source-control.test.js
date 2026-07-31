@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   bindingStatusForProject,
   executeSourceControlOperation,
+  isSupportedProvider,
   normalizeProviderSelections,
 } from '../index.js';
 

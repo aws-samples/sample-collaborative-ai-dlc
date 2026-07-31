@@ -109,6 +109,12 @@ const sameRepository = (a, b) => {
   }
 };
 
+// A provider is bindable iff the binding contract knows an auth type for it
+// (AUTH_TYPE_PROVIDER). Derived, never hard-coded, so a newly added provider
+// (e.g. bitbucket) can't be silently rejected here while being wired
+// everywhere else. Exported for direct test coverage.
+const isSupportedProvider = (provider) => Object.values(AUTH_TYPE_PROVIDER).includes(provider);
+
 const normalizeProviderSelections = (data = {}) => {
   if (data.providers && typeof data.providers === 'object' && !Array.isArray(data.providers)) {
     return Object.fromEntries(
@@ -480,7 +486,7 @@ export const handler = async (event) => {
         return response(400, { error: 'Projects may bind at most 50 repositories' });
       }
       for (const [provider, selection] of Object.entries(selections)) {
-        if (!['github', 'gitlab'].includes(provider) || !selection?.authType) {
+        if (!isSupportedProvider(provider) || !selection?.authType) {
           return response(400, { error: `Invalid source-control selection for ${provider}` });
         }
         if (AUTH_TYPE_PROVIDER[selection.authType] !== provider) {
@@ -607,6 +613,7 @@ export {
   fetchProjectRepositories,
   fetchMembershipRole,
   normalizeProviderSelections,
+  isSupportedProvider,
   bindingStatusForProject,
   validateProjectBindings,
   executeSourceControlOperation,

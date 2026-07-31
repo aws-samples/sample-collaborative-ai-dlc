@@ -2139,31 +2139,6 @@ resource "aws_iam_role_policy" "intents" {
         Effect   = "Allow"
         Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
         Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
-      },
-      {
-        # Authenticated unit-review feedback: refresh the starter's provider
-        # credential before refetching selected PR/MR comments.
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"]
-        Resource = compact([
-          var.git_connections_table_arn,
-          var.git_provider_connections_table_arn,
-        ])
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
-        Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
-        Resource = compact([var.github_app_config_param_arn])
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = compact([var.github_app_private_key_secret_arn, var.gitlab_oauth_secret_arn, var.bitbucket_oauth_secret_arn])
       }
     ]
   })
