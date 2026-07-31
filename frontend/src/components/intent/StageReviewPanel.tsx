@@ -6,6 +6,7 @@ import { useIntentGraph } from '@/hooks/useIntentGraph';
 import { useYjsDocument } from '@/hooks/useYjsDocument';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ArtifactViewer } from '@/components/intent/ArtifactViewer';
+import { DerivedItemRow } from '@/components/intent/DerivedItemRow';
 import { scrollAndFlash } from '@/components/intent/workProductsFocus';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -200,27 +201,13 @@ export function StageReviewPanel({
   onBack,
 }: StageReviewPanelProps) {
   const [submitting, setSubmitting] = useState(false);
-  const { stageNameOf } = useIntent();
+  const { stageNameOf, openItemPreview } = useIntent();
   // Gate-time "skip to stage X" (stage-skip.js): the backend computed the
   // valid forward targets (every intermediate is CONDITIONAL); '' = none.
   // Rides the approve answer as { decision: 'approve', skipTo } and is
   // re-validated server-side.
   const [skipTo, setSkipTo] = useState('');
   const skipTargets = gate.skipTargets ?? [];
-  // Gate-time recompose delta: arbitrary LATER CONDITIONAL stages to drop,
-  // decided right here where the results are reviewed — rides the approve
-  // answer as { recompose: { skip: [...] } }, applied in place (no relaunch),
-  // re-validated server-side. The offer list was computed by the same
-  // validator that judges the answer.
-  const [reshapeSkips, setReshapeSkips] = useState<Set<string>>(new Set());
-  const recomposeTargets = gate.recomposeTargets ?? [];
-  const toggleReshapeSkip = (stageId: string) =>
-    setReshapeSkips((prev) => {
-      const next = new Set(prev);
-      if (next.has(stageId)) next.delete(stageId);
-      else next.add(stageId);
-      return next;
-    });
   const graph = useIntentGraph(projectId, intentId);
   const stage = detail.stages.find((s) => s.stageInstanceId === gate.stageInstanceId) ?? null;
   const artifacts = detail.artifacts.filter(
@@ -272,7 +259,6 @@ export function StageReviewPanel({
             ? {
                 decision,
                 ...(skipTo ? { skipTo } : {}),
-                ...(reshapeSkips.size ? { recompose: { skip: [...reshapeSkips] } } : {}),
               }
             : { decision, feedback: currentFeedback },
       });
@@ -479,17 +465,15 @@ export function StageReviewPanel({
                       {reviewItemGroupLabel(type)}
                       <span className="ml-1.5 font-normal">({items.length})</span>
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="space-y-0.5">
                       {items.map((item) => (
-                        <Badge
+                        <DerivedItemRow
                           key={item.id}
-                          variant="outline"
-                          className="max-w-full truncate"
-                          title={item.slug ? `${item.slug}: ${item.label}` : item.label}
-                        >
-                          {item.slug ? `${item.slug}: ` : ''}
-                          {item.label}
-                        </Badge>
+                          item={item}
+                          getNeighbors={graph.getNeighbors}
+                          onPreview={() => openItemPreview(item.id)}
+                          showGraph={false}
+                        />
                       ))}
                     </div>
                   </div>
@@ -543,91 +527,46 @@ export function StageReviewPanel({
               {gate.answeredAt ? ` at ${new Date(gate.answeredAt).toLocaleString()}` : ''}.
             </div>
           )}
-          {pending && recomposeTargets.length > 0 && (
-            <details className="rounded-md border bg-background/60 px-3 py-2">
-              <summary
-                className="cursor-pointer list-none text-xs font-medium"
-                data-testid="review-reshape-toggle"
+          {pending && skipTargets.length > 0 && (
+            <div>
+              <Label htmlFor="skip-to-select" className="sr-only">
+                After approval
+              </Label>
+              <Select
+                value={skipTo || 'next'}
+                onValueChange={(v) => setSkipTo(v === 'next' ? '' : v)}
+                disabled={submitting}
               >
-                Reshape upcoming stages
-                <span className="ml-1.5 font-normal text-muted-foreground">
-                  {reshapeSkips.size
-                    ? `— dropping ${reshapeSkips.size} with this approval`
-                    : '— optionally drop later optional stages based on what you just reviewed'}
-                </span>
-              </summary>
-              <div className="mt-2 space-y-2">
-                <p className="text-[11px] text-muted-foreground">
-                  Checked stages are skipped when you approve — applied in place, the run keeps
-                  going. Downstream stages treat their outputs as absent by design; rewind to a
-                  skipped stage to bring it back. For bigger reshapes (adding stages back, a whole
-                  new grid), use <em>Reshape remaining stages</em> on the intent page.
-                </p>
-                <div className="grid gap-1.5 sm:grid-cols-2">
-                  {recomposeTargets.map((t) => (
-                    <label
-                      key={t}
-                      className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm cursor-pointer hover:bg-muted/50"
-                      data-testid={`review-reshape-${t}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={reshapeSkips.has(t)}
-                        onChange={() => toggleReshapeSkip(t)}
-                        disabled={submitting}
-                        className="h-3.5 w-3.5"
-                      />
-                      <span
-                        className={reshapeSkips.has(t) ? 'line-through text-muted-foreground' : ''}
-                      >
-                        {t}
-                      </span>
-                    </label>
+                <SelectTrigger id="skip-to-select" className="h-9 w-full text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {/* Name the COMPUTED next stage verbatim (upstream
+                      2.2.6) — "Complete workflow" when this is the last
+                      stage; the generic label only on legacy gates that
+                      never carried the field. */}
+                  <SelectItem value="next">
+                    {gate.nextStageId !== undefined
+                      ? gate.nextStageId
+                        ? `Continue to ${gate.nextStageId}`
+                        : 'Complete workflow'
+                      : 'Continue to the next stage'}
+                  </SelectItem>
+                  {skipTargets.map((t) => (
+                    <SelectItem key={t} value={t}>
+                      Skip ahead to {t}
+                    </SelectItem>
                   ))}
-                </div>
-              </div>
-            </details>
+                </SelectContent>
+              </Select>
+            </div>
           )}
-          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2 pt-1">
             <Button variant="outline" className="mr-auto" onClick={onBack}>
               Back to intent
             </Button>
             {pending && (
               <>
-                {skipTargets.length > 0 && (
-                  <div className="flex items-center gap-2">
-                    <Label htmlFor="skip-to-select" className="text-xs text-muted-foreground">
-                      After approval
-                    </Label>
-                    <Select
-                      value={skipTo || 'next'}
-                      onValueChange={(v) => setSkipTo(v === 'next' ? '' : v)}
-                      disabled={submitting}
-                    >
-                      <SelectTrigger id="skip-to-select" className="h-8 w-56 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {/* Name the COMPUTED next stage verbatim (upstream
-                            2.2.6) — "Complete workflow" when this is the last
-                            stage; the generic label only on legacy gates that
-                            never carried the field. */}
-                        <SelectItem value="next">
-                          {gate.nextStageId !== undefined
-                            ? gate.nextStageId
-                              ? `Continue to ${gate.nextStageId}`
-                              : 'Complete workflow'
-                            : 'Continue to the next stage'}
-                        </SelectItem>
-                        {skipTargets.map((t) => (
-                          <SelectItem key={t} value={t}>
-                            Skip ahead to {t}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
                 <Button
                   variant="outline"
                   disabled={submitting || !synced || !feedback.trim()}
@@ -638,13 +577,11 @@ export function StageReviewPanel({
                 <Button disabled={submitting} onClick={() => submit('approve')}>
                   {skipTo
                     ? `Approve & skip to ${skipTo}`
-                    : reshapeSkips.size
-                      ? `Approve & drop ${reshapeSkips.size} stage${reshapeSkips.size === 1 ? '' : 's'}`
-                      : gate.nextStageId !== undefined
-                        ? gate.nextStageId
-                          ? `Approve — continue to ${gate.nextStageId}`
-                          : 'Approve — complete workflow'
-                        : 'Approve stage'}
+                    : gate.nextStageId !== undefined
+                      ? gate.nextStageId
+                        ? `Approve — continue to ${gate.nextStageId}`
+                        : 'Approve — complete workflow'
+                      : 'Approve stage'}
                 </Button>
               </>
             )}

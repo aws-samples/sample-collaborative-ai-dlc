@@ -17,7 +17,7 @@ An intent is created as a draft, reviewed, and started. On start, the platform c
 Agents run on **Amazon Bedrock AgentCore** — a serverless runtime that gives each session a dedicated microVM and filesystem. There is no agent server fleet to operate: sessions are created on demand, park at zero compute while waiting for humans, and expire when idle.
 
 - Each intent gets one runtime session; parallel construction lanes get their own sessions.
-- Each stage spawns a **headless agent CLI** (Kiro, Claude Code, or OpenCode — selected per project) inside the session.
+- Each stage spawns a **headless agent CLI** (Kiro, Claude Code, OpenCode, or Codex — selected per project) inside the session.
 - The CLI's only interface to the platform is a stdio **MCP server**. Business reads and writes go to the graph as typed, provenance-stamped artifacts; questions, outputs, and metrics go to the process store and stream live to the browser.
 - Stages run as background jobs with durable callbacks, so a stage can run for hours while the orchestrator is suspended at zero compute.
 - Session storage persists across park/resume, so a stage that asked a question continues its conversation with full context when you answer — even days later.

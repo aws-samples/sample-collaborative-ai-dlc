@@ -43,8 +43,12 @@ const FALLBACK_PRICES = {
 //   global.anthropic.claude-haiku-4-5-20251001-v1:0 → claude-haiku-4-5
 //   amazon-bedrock/us.anthropic.claude-...    → claude-...
 //   claude-opus-4.6 (Kiro), auto              → (no family — stays as-is / null)
+//   openai.gpt-5.5 (Codex)                    → (no family — stays as-is)
 // Dots in a Kiro version (4.6) are intentionally NOT converted to dashes, so a
 // Kiro id never collides with a Bedrock family and gets token-priced.
+// Codex ids ("openai.*") likewise resolve to no family and report UNPRICED —
+// tokens are still recorded; add openai families here once Bedrock's OpenAI
+// token prices are confirmed, rather than guessing a rate.
 const modelFamily = (modelId) => {
   if (!modelId) return null;
   let id = String(modelId).trim().toLowerCase();

@@ -1,5 +1,6 @@
 // Test helper: create/destroy the v2 process table in DynamoDB Local, matching
-// the production schema (PK/SK + GSI1 project-status + GSI2 type/state).
+// the production schema (PK/SK + GSI1 project-status + GSI2 type/state +
+// sparse GSI3 maintenance work).
 
 import {
   DynamoDBClient,
@@ -30,6 +31,8 @@ export const createV2Table = async (client, tableName) => {
         { AttributeName: 'GSI1SK', AttributeType: 'S' },
         { AttributeName: 'GSI2PK', AttributeType: 'S' },
         { AttributeName: 'GSI2SK', AttributeType: 'S' },
+        { AttributeName: 'GSI3PK', AttributeType: 'S' },
+        { AttributeName: 'GSI3SK', AttributeType: 'S' },
       ],
       KeySchema: [
         { AttributeName: 'pk', KeyType: 'HASH' },
@@ -49,6 +52,14 @@ export const createV2Table = async (client, tableName) => {
           KeySchema: [
             { AttributeName: 'GSI2PK', KeyType: 'HASH' },
             { AttributeName: 'GSI2SK', KeyType: 'RANGE' },
+          ],
+          Projection: { ProjectionType: 'ALL' },
+        },
+        {
+          IndexName: 'GSI3',
+          KeySchema: [
+            { AttributeName: 'GSI3PK', KeyType: 'HASH' },
+            { AttributeName: 'GSI3SK', KeyType: 'RANGE' },
           ],
           Projection: { ProjectionType: 'ALL' },
         },

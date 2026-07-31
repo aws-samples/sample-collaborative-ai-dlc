@@ -6,6 +6,7 @@ import { trackersService, type TrackerIssue } from '@/services/trackers';
 import type { TrackerBinding } from '@/services/projects';
 import { sourceControlService } from '@/services/sourceControl';
 import { buildSprintDescription } from '@/lib/buildSprintDescription';
+import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
 import { IntentSourcePicker } from '@/components/IntentSourcePicker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,17 +22,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react';
-
-// Human-readable label for the imported-source badge. GitHub/GitLab expose
-// numeric issue numbers, so we render "Issue #2" (their own convention). Jira
-// keys (e.g. TAS-01) already encode the project and never use '#', so we
-// show the provider subtype instead (e.g. "Task TAS-01").
-function sourceLabel(binding: TrackerBinding, issue: TrackerIssue): string {
-  if (binding.provider === 'jira-cloud') {
-    return issue.entityType ? `${issue.entityType} ${issue.resourceId}` : issue.resourceId;
-  }
-  return `Issue #${issue.resourceId}`;
-}
 
 // Step one of intent creation: capture the seed (title/prompt/tracker import/
 // base branch) and create the intent as a DRAFT immediately. Everything else —
@@ -230,10 +220,18 @@ export default function NewIntentPage() {
                     rel="noopener noreferrer"
                     className="hover:underline"
                   >
-                    {sourceLabel(source.binding, source.issue)}
+                    {formatTrackerSourceLabel({
+                      provider: source.binding.provider,
+                      resourceId: source.issue.resourceId,
+                      entityType: source.issue.entityType,
+                    })}
                   </a>
                 ) : (
-                  sourceLabel(source.binding, source.issue)
+                  formatTrackerSourceLabel({
+                    provider: source.binding.provider,
+                    resourceId: source.issue.resourceId,
+                    entityType: source.issue.entityType,
+                  })
                 )}
                 <button
                   type="button"

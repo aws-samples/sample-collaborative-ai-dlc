@@ -4,6 +4,10 @@ The **Admin** page holds all platform-wide settings: users, agents, source contr
 
 The page is organized into four tabs.
 
+A read-only **Deployment** strip sits above the tabs, showing the canonical application URL, environment, and region. The hostname it reports is the one the backend puts in its OAuth redirect URIs, so it is what every provider's callback URL must match. If you are browsing a hostname other than the canonical one — a deployment with a custom domain still answers on the CloudFront domain and on every alias — the strip says so, because the callback URLs shown further down deliberately use the canonical hostname rather than the one in the address bar.
+
+The hostname itself is not editable here. It is set by the `app_domain` Terraform variable, and changing it needs a certificate, a CloudFront update, and a frontend rebuild. See [Setup → Custom domain](../getting-started/setup.md#custom-domain).
+
 ## Users
 
 **User Management** — grant or revoke the platform-admin role for any Cognito user. Changes apply at the user's next sign-in. Self-demotion is blocked, so an installation can never lock itself out of administration.
@@ -14,8 +18,8 @@ Day-to-day project access is _not_ managed here — it lives in each project's [
 
 Everything the agent runtime needs to run:
 
-- **Agent Credentials** — the **Bedrock Bearer Token** (used by Claude Code and OpenCode) and the **Kiro API Key**. Both are stored as SecureString parameters in SSM; the AgentCore runtime reads them at container startup. The card reports which credentials are set and which CLIs are therefore available to projects. See [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
-- **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Projects can override these per-CLI in [Project Settings → Agent](projects.md#agent).
+- **Agent Credentials** — the **Bedrock Bearer Token** (used by Claude Code, OpenCode, and Codex) and the **Kiro API Key**. Both are stored as SecureString parameters in SSM; the AgentCore runtime reads them at container startup. The card reports which credentials are set and which CLIs are therefore available to projects. See [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
+- **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. Projects can override these per-CLI in [Project Settings → Agent](projects.md#agent).
 - **Graph Enrichment** — a switch controlling whether the platform adds LLM-generated summaries to derived artifacts in the knowledge graph (`llm` or `off`). The setting takes effect for the _next_ intent, never mid-run; enrichment spend is metered and surfaced on each intent's Audit page.
 
 ## Source Control
@@ -41,4 +45,4 @@ Until a provider shows **Configured** here, its **Connect** buttons across the p
 Not everything operator-facing lives on the Admin page:
 
 - **Workflow and block authoring** — the [Workflows](workflows.md) area, also gated on `platform-admin`.
-- **Infrastructure-level settings** — the upstream methodology pin (`aidlc_repo_ref`) and deployment configuration live in Terraform; see [Setup](../getting-started/setup.md).
+- **Infrastructure-level settings** — the upstream methodology pin (`aidlc_repo_ref`), the custom domain (`app_domain`), and the rest of the deployment configuration live in Terraform; see [Setup](../getting-started/setup.md).

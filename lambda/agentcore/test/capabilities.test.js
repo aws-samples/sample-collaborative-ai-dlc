@@ -48,16 +48,17 @@ describe('capabilities command', () => {
     expect(res.kiroModels.models.map((m) => m.id)).toContain('claude-sonnet-4.6');
   });
 
-  it('uses the same Bedrock bearer token as Claude for OpenCode auth', async () => {
+  it('uses the same Bedrock bearer token as Claude for OpenCode and Codex auth', async () => {
     const res = await capabilities(
       {},
       {
-        discoverInstalledClis: async () => ['opencode'],
+        discoverInstalledClis: async () => ['opencode', 'codex'],
         env: { AWS_BEARER_TOKEN_BEDROCK: 'token' },
       },
     );
     const byCli = Object.fromEntries(res.clis.map((c) => [c.cli, c]));
     expect(byCli.opencode).toMatchObject({ installed: true, authed: true, available: true });
+    expect(byCli.codex).toMatchObject({ installed: true, authed: true, available: true });
   });
 
   it('does not probe kiro models when kiro is not installed', async () => {

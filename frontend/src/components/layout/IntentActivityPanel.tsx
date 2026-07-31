@@ -512,6 +512,10 @@ function PreviewTab() {
       <ScrollArea className="flex-1">
         <ArtifactPreviewContent
           artifact={artifact}
+          artifacts={detail?.artifacts ?? []}
+          derivedItems={derivedItems}
+          onOpenArtifact={openArtifactPreview}
+          onOpenItem={openItemPreview}
           editing={editing}
           onDoneEditing={() => setEditingId(null)}
           onStartEdit={() => setEditingId(artifact.id)}
@@ -532,6 +536,10 @@ function PreviewTab() {
           <ScrollArea className="min-h-0">
             <ArtifactPreviewContent
               artifact={artifact}
+              artifacts={detail?.artifacts ?? []}
+              derivedItems={derivedItems}
+              onOpenArtifact={openArtifactPreview}
+              onOpenItem={openItemPreview}
               editing={editing}
               onDoneEditing={() => setEditingId(null)}
               onStartEdit={() => setEditingId(artifact.id)}
@@ -548,6 +556,10 @@ function PreviewTab() {
 
 function ArtifactPreviewContent({
   artifact,
+  artifacts,
+  derivedItems,
+  onOpenArtifact,
+  onOpenItem,
   editing,
   onDoneEditing,
   onStartEdit,
@@ -557,6 +569,10 @@ function ArtifactPreviewContent({
   contentClassName,
 }: {
   artifact: IntentArtifact;
+  artifacts: IntentArtifact[];
+  derivedItems: ReturnType<typeof useIntentGraph>['derivedItems'];
+  onOpenArtifact: (artifactId: string) => void;
+  onOpenItem: (itemId: string) => void;
   editing: boolean;
   onDoneEditing: () => void;
   onStartEdit: () => void;
@@ -617,7 +633,13 @@ function ArtifactPreviewContent({
       ) : (
         artifact.content && (
           <div className={cn('prose prose-sm dark:prose-invert max-w-none', contentClassName)}>
-            <ArtifactMarkdown content={artifact.content} />
+            <ArtifactMarkdown
+              content={artifact.content}
+              artifacts={artifacts}
+              derivedItems={derivedItems}
+              onOpenArtifact={onOpenArtifact}
+              onOpenItem={onOpenItem}
+            />
           </div>
         )
       )}

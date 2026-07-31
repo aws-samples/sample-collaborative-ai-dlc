@@ -25,7 +25,7 @@ AI-DLC is a platform where humans and AI agents collaborate on software developm
 | Tool      | Version       |
 | --------- | ------------- |
 | Node.js   | 22+           |
-| Terraform | 1.0+          |
+| Terraform | 1.4+          |
 | AWS CLI   | v2            |
 | Docker    | Recent stable |
 
@@ -33,7 +33,7 @@ You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Ga
 
 ## Getting Started
 
-The managed installer is the primary deployment path. It keeps tagged source checkouts under `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc`, persistent Terraform configuration under `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc`, and switches the `current` link only after a deployment succeeds.
+The managed installer is the primary deployment path. It keeps tagged source checkouts under `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc`, persistent Terraform configuration under `${XDG_CONFIG_HOME:-~/.config}/collaborative-ai-dlc`, and switches the `current` link only after a deployment succeeds. Its `install.conf` is authoritative for the environment, region, and custom-domain settings: every install or update synchronizes those values into the managed `tfvars` and warns before replacing a differing existing assignment.
 
 Download and inspect the installer, then run it:
 
@@ -53,6 +53,26 @@ The password prompt is silent. The permanent Cognito password is sent directly t
 ```bash
 bash /tmp/aidlc-install.sh status
 ```
+
+### Custom Domain (optional)
+
+By default the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS. To use your own hostname, add either an existing certificate or a Route53 hosted zone:
+
+```bash
+# Bring your own certificate; manage DNS wherever you like.
+bash /tmp/aidlc-install.sh install ... \
+  --domain aidlc.example.com \
+  --certificate-arn arn:aws:acm:us-east-1:111122223333:certificate/<id>
+
+# Or let Terraform request the certificate and create the records.
+bash /tmp/aidlc-install.sh install ... \
+  --domain aidlc.example.com \
+  --hosted-zone-id Z1234567890ABC
+```
+
+The certificate must be in `us-east-1` regardless of the deployment region — CloudFront accepts no other region. Add `--domain-alias` (repeatable) for additional hostnames, and `--no-domain` on `update` to remove a configured domain. The installer validates the certificate, hosted zone, and hostname availability before touching AWS.
+
+See [Setup → Custom domain](https://aidlc.dev/getting-started/setup/#custom-domain) for the external-DNS records, and for what to update when adding a domain to a running deployment.
 
 ### Versions, Adoption, and Updates
 
@@ -113,17 +133,35 @@ export AWS_REGION=<aws-region>
 ./scripts/bootstrap.sh dev
 cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 # Set aws_region = "<aws-region>" in terraform/environments/dev.tfvars.
+# For a custom domain, set app_domain plus either acm_certificate_arn or
+# route53_zone_id in the same file — the commented block there explains both.
 
 ./scripts/deploy-terraform.sh dev
 ./scripts/deploy-frontend.sh dev
 ```
 
-`bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. For an approval boundary between planning and applying:
+`bootstrap.sh` writes `terraform/environments/dev.s3.tfbackend`. Infrastructure deployment reads that backend file and `terraform/environments/dev.tfvars`, regardless of the AWS profile name. On this advanced manual path, nothing rewrites the tfvars; it is yours to edit. The managed installer described above instead keeps its own tfvars synchronized with `install.conf`. For an approval boundary between planning and applying:
 
 ```bash
 ./scripts/deploy-terraform.sh dev --phase plan --plan-file /tmp/aidlc-dev.tfplan
 ./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
 ```
+
+Individual variables can be overridden without editing the file, repeating `--var` per variable:
+
+```bash
+./scripts/deploy-terraform.sh dev \
+  --var app_domain=aidlc.example.com \
+  --var route53_zone_id=Z1234567890ABC
+```
+
+`TF_VAR_*` environment variables will _not_ work for this: Terraform ranks `-var-file` above them, so any key already present in the tfvars silently wins. `--var` is passed as `-var`, which does outrank the file. It applies at plan time, so combining it with `--phase apply` is rejected — a saved plan already has its variables resolved.
+
+Both deploy scripts are needed after a custom-domain change: Terraform updates the distribution and the OAuth redirect URIs, then the frontend has to be rebuilt because its endpoint URLs are inlined into the bundle at build time. `deploy-terraform.sh` prints the DNS records to create when `route53_zone_id` is empty.
+
+Note that the installer's custom-domain preflight checks do not run on this path. Terraform cannot verify a certificate's status, which hostnames it covers, or whether another distribution already claims your hostname — see [Setup → Custom domain → Without the installer](https://aidlc.dev/getting-started/setup/#without-the-installer) for the commands to check by hand.
+
+`AIDLC_SKIP_NPM_CI=1` skips the root `npm ci` before planning, which speeds up repeat runs.
 
 ### Post-install Configuration
 
@@ -139,6 +177,8 @@ For GitHub, GitLab and Bitbucket a single OAuth app serves both the code host an
 
 All providers are optional. Skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI will stay disabled.
 
+`<your-app-domain>` is the deployment's canonical hostname — the custom domain when one is configured, otherwise the CloudFront domain. The Admin page shows it, and each provider's setup guide shows the exact callback URL to copy. To read it directly: `terraform -chdir=terraform output -raw application_domain`.
+
 #### GitHub (code host + GitHub Issues)
 
 GitHub supports two platform-wide authentication modes, switchable at runtime in **Admin → GitHub Integration**:
@@ -151,8 +191,8 @@ For **OAuth mode**:
 1. Open [GitHub Developer Settings → OAuth Apps → New OAuth App](https://github.com/settings/developers).
    (Choose an **OAuth App**, _not_ a GitHub App — this mode expects OAuth App semantics.)
 2. Use:
-   - **Homepage URL**: `https://<your-cloudfront-domain>`
-   - **Authorization callback URL**: `https://<your-cloudfront-domain>/github/callback`
+   - **Homepage URL**: `https://<your-app-domain>`
+   - **Authorization callback URL**: `https://<your-app-domain>/github/callback`
 3. Copy the **Client ID** and generate a **Client Secret**.
 4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → GitHub Issues**. Paste both values and click **Save**.
 
@@ -169,7 +209,7 @@ For **GitHub App mode**:
 
 1. Open [GitLab → User Settings → Applications](https://gitlab.com/-/user_settings/applications) → **Add new application**.
 2. Use:
-   - **Redirect URI**: `https://<your-cloudfront-domain>/gitlab/callback`
+   - **Redirect URI**: `https://<your-app-domain>/gitlab/callback`
    - **Scopes**: `api` and `read_user`
    - Leave **Confidential** enabled.
 3. Save, then copy the **Application ID** (Client ID) and **Secret**.
@@ -196,7 +236,7 @@ Bitbucket OAuth scopes are the singular scope names (`account`, `repository`, `r
    - `read:jira-work`
    - `read:jira-user`
    - `offline_access` (required so refresh tokens are issued — don’t skip this)
-3. Under **Authorization**, set the callback URL to `https://<your-cloudfront-domain>/trackers/callback/jira-cloud`.
+3. Under **Authorization**, set the callback URL to `https://<your-app-domain>/trackers/callback/jira-cloud`.
 4. Open the **Settings** tab of your app and copy the **Client ID** and **Client Secret**.
 5. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Jira Cloud**. Paste both values and click **Save**.
 
@@ -250,7 +290,13 @@ Group membership is read from the ID token — users need to sign out and back i
 ./scripts/deploy-frontend.sh dev
 ```
 
-The application is available at the CloudFront domain:
+This regenerates `frontend/.env` from Terraform outputs, builds, uploads to S3, and invalidates the CloudFront cache. To regenerate `.env` without building — before `npm --prefix frontend run dev`, for instance:
+
+```bash
+./scripts/generate-env.sh dev
+```
+
+The application is available at its canonical URL — the custom domain when one is configured, otherwise the CloudFront domain:
 
 ```bash
 terraform -chdir=terraform output -raw application_url

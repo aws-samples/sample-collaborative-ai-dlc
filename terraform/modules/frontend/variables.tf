@@ -46,3 +46,15 @@ variable "websocket_domain_name" {
   type        = string
   default     = ""
 }
+
+variable "aliases" {
+  description = "Custom hostnames this distribution answers on. Empty (the default) serves only on the CloudFront-assigned domain. Every entry must be covered by acm_certificate_arn."
+  type        = list(string)
+  default     = []
+}
+
+variable "acm_certificate_arn" {
+  description = "ARN of a us-east-1 ACM certificate covering every entry in aliases. Empty uses the default CloudFront certificate, which requires aliases to be empty as well."
+  type        = string
+  default     = ""
+}

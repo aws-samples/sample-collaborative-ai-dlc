@@ -3,3 +3,38 @@ aws_region  = "us-east-1"
 
 # Bedrock model pinning (for claude and opencode drivers)
 bedrock_model = "us.anthropic.claude-sonnet-4-6"
+
+# ---------------------------------------------------------------------------
+# Custom domain (optional)
+#
+# Leave app_domain empty to serve on the CloudFront-assigned *.cloudfront.net
+# domain. That is the default and requires no certificate, no DNS and no
+# additional resources.
+#
+# All four values can also be supplied by the installer:
+#   install.sh install --domain aidlc.example.com --certificate-arn arn:...
+#   install.sh install --domain aidlc.example.com --hosted-zone-id Z1234567890ABC
+#
+# Bring your own certificate (central certificate management, imported
+# certificates, wildcards, private CA) and manage DNS wherever you like. Point
+# the hostname's A/AAAA alias (or CNAME) at the `dns_target` output afterwards:
+#
+#   app_domain          = "aidlc.example.com"
+#   acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/..."
+#
+# Or let Terraform request and DNS-validate the certificate and create the
+# records, which requires the hosted zone to live in this account:
+#
+#   app_domain      = "aidlc.example.com"
+#   route53_zone_id = "Z1234567890ABC"
+#
+# app_domain is canonical: it drives the OAuth redirect URIs and the frontend
+# build, so it must be a single hostname. app_domain_aliases adds extra names
+# to the same distribution (e.g. ["www.aidlc.example.com"]).
+#
+# The certificate must be in us-east-1 — CloudFront accepts no other region.
+# ---------------------------------------------------------------------------
+app_domain          = ""
+app_domain_aliases  = []
+acm_certificate_arn = ""
+route53_zone_id     = ""

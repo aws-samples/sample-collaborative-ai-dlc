@@ -35,3 +35,6 @@ jobs:
 
       - name: Run unit tests
         run: npm test
+
+      - name: Run release tooling tests
+        run: npm run test:release

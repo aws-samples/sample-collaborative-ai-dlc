@@ -67,6 +67,11 @@ export const resolveModelId = (raw, { env = process.env } = {}) => {
 // BEDROCK_MODEL/AGENT_MODEL env defaults all apply. Kiro is deliberately absent:
 // it has its OWN model namespace (e.g. "auto", "claude-sonnet-4.6"), so a Bedrock
 // id like "us.anthropic.claude-sonnet-4-6" is rejected by the kiro CLI.
+// Codex is deliberately absent too: Bedrock's OpenAI-compatible endpoint takes
+// EXACT ids like "openai.gpt-5.5" (no geo prefix), and the Claude-shaped alias
+// table / BEDROCK_MODEL env default must not leak into it — configured codex
+// selections pass through verbatim, and when unset the driver omits -m so the
+// materialized config (model_provider=amazon-bedrock) picks codex's default.
 const BEDROCK_CLIS = new Set(['claude', 'opencode']);
 
 // The agent tiers a tier-model row can be keyed by. Kept in sync with the

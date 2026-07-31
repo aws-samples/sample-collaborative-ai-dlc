@@ -1,6 +1,131 @@
-import { isValidElement, useEffect, useId, useRef, useState } from 'react';
+import {
+  isValidElement,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentPropsWithoutRef,
+} from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { PluggableList } from 'unified';
+
+export interface MarkdownArtifactLink {
+  id: string;
+  title: string | null;
+}
+
+export interface MarkdownDerivedItemLink {
+  id: string;
+  slug?: string | null;
+  label: string;
+}
+
+type MdastNode = {
+  type: string;
+  value?: string;
+  children?: MdastNode[];
+  url?: string;
+};
+
+const WIKI_LINK_RE = /\[\[([^\]\r\n]+)\]\]/g;
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function remarkPreviewLinks(
+  artifacts: MarkdownArtifactLink[],
+  derivedItems: MarkdownDerivedItemLink[],
+) {
+  const artifactsById = new Map(artifacts.map((artifact) => [artifact.id.toLowerCase(), artifact]));
+  const itemsBySlug = new Map(
+    derivedItems.flatMap((item) =>
+      [item.slug, item.id].filter(Boolean).map((key) => [key!.toLowerCase(), item] as const),
+    ),
+  );
+  const derivedPattern =
+    itemsBySlug.size > 0
+      ? new RegExp(
+          `(?<![A-Za-z0-9_-])(${[...itemsBySlug.keys()]
+            .toSorted((a, b) => b.length - a.length)
+            .map(escapeRegex)
+            .join('|')})(?![A-Za-z0-9_-])`,
+          'gi',
+        )
+      : null;
+
+  const expandDerivedItems = (value: string): MdastNode[] => {
+    if (!derivedPattern) return [{ type: 'text', value }];
+
+    const nodes: MdastNode[] = [];
+    let lastIndex = 0;
+    for (const match of value.matchAll(derivedPattern)) {
+      const start = match.index ?? 0;
+      if (start > lastIndex) nodes.push({ type: 'text', value: value.slice(lastIndex, start) });
+
+      const item = itemsBySlug.get(match[1].toLowerCase());
+      if (item) {
+        nodes.push({
+          type: 'link',
+          url: `#item-${encodeURIComponent(item.id)}`,
+          children: [{ type: 'text', value: item.label || item.slug || item.id }],
+        });
+      }
+      lastIndex = start + match[0].length;
+    }
+
+    if (lastIndex === 0) return [{ type: 'text', value }];
+    if (lastIndex < value.length) nodes.push({ type: 'text', value: value.slice(lastIndex) });
+    return nodes;
+  };
+
+  const expandText = (value: string): MdastNode[] => {
+    const nodes: MdastNode[] = [];
+    let lastIndex = 0;
+
+    for (const match of value.matchAll(WIKI_LINK_RE)) {
+      const start = match.index ?? 0;
+      if (start > lastIndex) nodes.push(...expandDerivedItems(value.slice(lastIndex, start)));
+
+      const artifact = artifactsById.get(match[1].trim().toLowerCase());
+      nodes.push(
+        artifact
+          ? {
+              type: 'link',
+              url: `#artifact-${encodeURIComponent(artifact.id)}`,
+              children: [{ type: 'text', value: artifact.title || artifact.id }],
+            }
+          : { type: 'text', value: match[0] },
+      );
+      lastIndex = start + match[0].length;
+    }
+
+    if (lastIndex === 0) return expandDerivedItems(value);
+    if (lastIndex < value.length) nodes.push(...expandDerivedItems(value.slice(lastIndex)));
+    return nodes;
+  };
+
+  return (tree: MdastNode) => {
+    const visit = (node: MdastNode) => {
+      if (node.type === 'code' || node.type === 'inlineCode' || node.type === 'link') return;
+      if (!node.children) return;
+
+      const children: MdastNode[] = [];
+      for (const child of node.children) {
+        if (child.type === 'text' && child.value) {
+          children.push(...expandText(child.value));
+        } else {
+          children.push(child);
+          visit(child);
+        }
+      }
+      node.children = children;
+    };
+    visit(tree);
+  };
+}
 
 type MermaidState =
   | { status: 'idle' | 'loading'; svg?: undefined; error?: undefined }
@@ -36,9 +161,74 @@ const markdownComponents: Components = {
   },
 };
 
-export function ArtifactMarkdown({ content }: { content: string }) {
+type MarkdownLinkProps = ComponentPropsWithoutRef<'a'> & { node?: MdastNode };
+
+function makePreviewLinkComponent(
+  onOpenArtifact?: (artifactId: string) => void,
+  onOpenItem?: (itemId: string) => void,
+): NonNullable<Components['a']> {
+  return function PreviewLink({ href, children, ...props }: MarkdownLinkProps) {
+    const artifactId = href?.startsWith('#artifact-')
+      ? decodeURIComponent(href.slice('#artifact-'.length))
+      : null;
+    const itemId = href?.startsWith('#item-')
+      ? decodeURIComponent(href.slice('#item-'.length))
+      : null;
+
+    return (
+      <a
+        {...props}
+        href={href}
+        onClick={(event) => {
+          if (artifactId && onOpenArtifact) {
+            event.preventDefault();
+            onOpenArtifact(artifactId);
+          } else if (itemId && onOpenItem) {
+            event.preventDefault();
+            onOpenItem(itemId);
+          }
+        }}
+      >
+        {children}
+      </a>
+    );
+  };
+}
+
+export function ArtifactMarkdown({
+  content,
+  artifacts = [],
+  derivedItems = [],
+  onOpenArtifact,
+  onOpenItem,
+}: {
+  content: string;
+  artifacts?: MarkdownArtifactLink[];
+  derivedItems?: MarkdownDerivedItemLink[];
+  onOpenArtifact?: (artifactId: string) => void;
+  onOpenItem?: (itemId: string) => void;
+}) {
+  const remarkPlugins = useMemo<PluggableList>(
+    () => [
+      remarkGfm,
+      [remarkPreviewLinks, artifacts, derivedItems] as [
+        typeof remarkPreviewLinks,
+        MarkdownArtifactLink[],
+        MarkdownDerivedItemLink[],
+      ],
+    ],
+    [artifacts, derivedItems],
+  );
+  const components = useMemo(
+    () => ({
+      ...markdownComponents,
+      a: makePreviewLinkComponent(onOpenArtifact, onOpenItem),
+    }),
+    [onOpenArtifact, onOpenItem],
+  );
+
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+    <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
       {content}
     </ReactMarkdown>
   );

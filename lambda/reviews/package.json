@@ -10,7 +10,7 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@aws-sdk/credential-providers": "^3.1089.0",
+    "@aws-sdk/credential-providers": "^3.1092.0",
     "gremlin": "^3.8.1",
     "gremlin-aws-sigv4": "^3.6.1"
   }

@@ -31,6 +31,7 @@ The default intent view is the **workbench** — the working surface for humans:
 
 The **Observability** button opens the intent's execution dashboard:
 
+- **Initial prompt** — the final user-authored draft that started the intent, preserved read-only with a copy action.
 - **Usage & activity** — aggregated token usage, a context-window gauge, and cost for the whole intent. Costs are computed per stage from live model pricing; Kiro runs show estimated cost derived from credits.
 - **Execution progress** — the stage pipeline in three switchable views (your choice is remembered):
   - **Diagram** — a phase-grouped flow diagram with per-phase progress.

@@ -71,6 +71,10 @@ flowchart TB
 
 **CloudFront.** A single distribution multiplexes all client traffic over one domain. The default behavior serves the SPA from a private S3 bucket via Origin Access Control. `/api/*` routes to the REST API Gateway. `/ws` routes to the WebSocket API Gateway. `/yjs/*` routes through a CloudFront VPC Origin to an internal ALB sitting in front of the Yjs collaboration server. Routing through one distribution lets every backend share a single domain and a single TLS certificate, and keeps the SPA's API and WebSocket calls same-origin.
 
+**Custom domain (optional).** Because that one distribution is the only public entry point, serving the platform on a custom hostname requires one ACM certificate in `us-east-1` and one distribution change — nothing else. There is no API Gateway custom domain (browsers never address it directly), no Cognito hosted-UI domain (sign-in is SRP through Amplify, so Cognito has no callback URLs at all), and no certificate on the internal ALB (HTTP-only behind the VPC Origin).
+
+Whichever hostname is canonical becomes the single source for the OAuth redirect URIs, the CORS allowlists and the frontend's endpoint URLs. Those last ones are inlined into the bundle at build time, which is why changing the domain needs a frontend redeploy and not just an apply. The CloudFront domain stays in the CORS allowlist alongside any custom hostname, so enabling a domain does not break bundles that are already loaded. See [Setup](../getting-started/setup.md#custom-domain).
+
 **Cognito User Pool.** Admin-only sign-up, optional TOTP MFA, and user groups — most importantly **`platform-admin`**, which gates the Admin page, workflow/block authoring, and user management (the legacy `member`, `approver`, `owner` groups remain for existing installs; day-to-day project access is governed by per-project membership roles). The pool issues JWTs that every backend independently verifies — the REST API Gateway uses a built-in Cognito authorizer, the WebSocket API Gateway uses a custom Lambda authorizer (because built-in Cognito authorizers don't support WebSocket APIs), and the Yjs server verifies the same token in-process on WebSocket upgrade. Cognito is not shown in the diagram to keep it readable.
 
 **API Gateway REST.** Fronts the platform's CRUD and orchestration endpoints. Resources mirror the graph model: projects, intents, workflows, sprints, requirements, user stories, tasks, code files, reviews, questions, timeline events, plus integration endpoints for GitHub OAuth, trackers, and the agent control plane. CORS headers are injected on gateway-level 4xx/5xx responses so the SPA always sees them.
@@ -117,6 +121,7 @@ flowchart TB
   SPA["Browser SPA"]
 
   INT -->|async Invoke on start| ORCH
+  INT -->|scheduled unit-PR reconciliation| GITP
   ORCH -->|dispatch stage<br/>as background job| AC
   AC -.->|durable callback:<br/>stage verdict| ORCH
   INT -.->|durable callback:<br/>gate answered| ORCH
@@ -141,9 +146,9 @@ flowchart TB
 
 **Human gates.** When an agent calls the `ask_question` MCP tool — or the orchestrator opens an engine gate (walking-skeleton review, batch review, halt-and-ask) — the run parks on a durable callback. The question renders in the UI; the user's answer flows through the `intents` Lambda, which completes the callback and resumes the run exactly where it parked. No polling, no queue.
 
-**Pull requests.** When an execution succeeds, the orchestrator opens pull requests in-process through the shared git-provider layer (GitHub / GitLab), from the intent branch onto the base branch.
+**Pull requests.** For PR-per-unit delivery, the orchestrator persists one durable callback when a unit is ready for review. A scheduled `intents` maintenance pass checks GitHub or GitLab while the durable execution remains suspended, waking it only when the PR merges or closes, a reviewed branch moves, or authenticated feedback is queued. The sparse process-table maintenance index also lets the same pass detect terminal durable executions before their local expiry. After every unit and shared stage succeeds, the orchestrator opens the final intent-to-base pull request through the same provider layer.
 
-**Auth.** At container startup the runtime reads the agent CLI credentials from SSM Parameter Store — a Bedrock bearer token for Claude Code / OpenCode, or a Kiro API key — as configured in **Admin → Agents**. The runtime's IAM role deliberately has no Bedrock model-invocation permissions; token auth is the only path. Git pushes use the starting user's provider token, injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. None of these auth lookups appear in the diagram.
+**Auth.** At container startup the runtime reads the agent CLI credentials from SSM Parameter Store — a Bedrock bearer token for Claude Code / OpenCode / Codex, or a Kiro API key — as configured in **Admin → Agents**. The runtime's IAM role deliberately has no Bedrock model-invocation permissions; token auth is the only path. Git pushes use the starting user's provider token, injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. None of these auth lookups appear in the diagram.
 
 **Realtime.** Every relevant process write is persisted to DynamoDB and then broadcast **directly** to the intent's WebSocket channel (`intent:<intentId>`): both the container and the orchestrator fan out through the shared connection registry. DynamoDB is the source of truth; the broadcast is best-effort and never blocks a stage. There is no event bus in this path, which is why the application WebSocket fabric exists separately from the Yjs one.
 

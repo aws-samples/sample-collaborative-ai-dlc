@@ -23,9 +23,14 @@ output "cloudfront_domain_name" {
   value       = aws_cloudfront_distribution.frontend.domain_name
 }
 
-output "website_url" {
-  description = "URL of the frontend website"
-  value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
+output "cloudfront_hosted_zone_id" {
+  description = "CloudFront's fixed hosted zone ID, used as the alias target zone for Route53 A/AAAA records pointing at this distribution."
+  value       = aws_cloudfront_distribution.frontend.hosted_zone_id
+}
+
+output "application_domain" {
+  description = "Canonical hostname the application is reachable on: the first configured alias when a custom domain is in use, otherwise the CloudFront-assigned domain."
+  value       = length(var.aliases) > 0 ? var.aliases[0] : aws_cloudfront_distribution.frontend.domain_name
 }
 
 output "cloudfront_origin_secret" {

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { IntentDetail, IntentGate } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useIntentGraph } from '@/hooks/useIntentGraph';
@@ -6,7 +6,11 @@ import { buildCodeItems } from '@/components/intent/CodeSection';
 import { ProvenanceTree } from '@/components/intent/ProvenanceTree';
 import { HistorySection } from '@/components/intent/HistorySection';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Info } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { isDocumentArtifact } from '@/components/intent/documentHelpers';
+import { getDocumentOrder, setDocumentOrder } from '@/lib/workProductsPreference';
+import { ArrowDownUp, Info } from 'lucide-react';
 
 export interface WorkProductsSectionProps {
   detail: IntentDetail;
@@ -20,6 +24,14 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
 
   const questionGates = useMemo(() => gates.filter((g) => g.kind === 'question'), [gates]);
   const steering = detail.steering ?? [];
+  const [documentOrder, setDocumentOrderState] = useState(getDocumentOrder);
+  const newestFirst = documentOrder === 'newest-first';
+  const documentCount = useMemo(
+    () =>
+      detail.artifacts.filter((artifact) => !artifact.supersededAt && isDocumentArtifact(artifact))
+        .length,
+    [detail.artifacts],
+  );
 
   const influencedArtifactsByQuestion = useMemo(
     () =>
@@ -61,7 +73,39 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm">Work products</CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-sm">Work products</CardTitle>
+          {documentCount > 1 && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label={
+                      newestFirst
+                        ? 'Sort work products by oldest first'
+                        : 'Sort work products by newest first'
+                    }
+                    onClick={() => {
+                      const nextOrder = newestFirst ? 'oldest-first' : 'newest-first';
+                      setDocumentOrderState(nextOrder);
+                      setDocumentOrder(nextOrder);
+                    }}
+                  >
+                    <ArrowDownUp className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {newestFirst
+                    ? 'Show oldest work products first'
+                    : 'Show newest work products first'}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+        </div>
         {detail.intent.planWarnings &&
           detail.intent.planWarnings.length > 0 &&
           detail.intent.status !== 'SUCCEEDED' && (
@@ -92,6 +136,7 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
           codeItems={codeItems}
           openArtifactPreview={openArtifactPreview}
           openItemPreview={openItemPreview}
+          documentOrder={documentOrder}
         />
 
         <HistorySection

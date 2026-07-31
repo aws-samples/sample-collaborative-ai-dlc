@@ -32,12 +32,17 @@
 //     (list a project's executions by status, newest first)
 //   GSI2PK = EXEC#<executionId>       GSI2SK = TYPE#<type>#STATE#<state>#<id>
 //     (query one execution's records by record type + state)
+//   GSI3PK = ACTIVE_EXECUTIONS | PR_WAITS
+//     GSI3SK = EXEC#<executionId>[#UNIT#S<section>#<slug>]
+//     (sparse maintenance index: only live executions and parked unit PR waits)
 
 const META = 'META';
 
 // ── Partition keys ──
 const executionPk = (executionId) => `EXEC#${executionId}`;
 const projectPk = (projectId) => `PROJECT#${projectId}`;
+const ACTIVE_EXECUTIONS_INDEX_PK = 'ACTIVE_EXECUTIONS';
+const PR_WAITS_INDEX_PK = 'PR_WAITS';
 
 // ── Item keys ──
 const executionMetaKey = (executionId) => ({ pk: executionPk(executionId), sk: META });
@@ -149,6 +154,14 @@ const executionTypeStateIndex = ({ executionId, type, state, id }) => ({
   GSI2PK: executionPk(executionId),
   GSI2SK: `TYPE#${type}#STATE#${state}#${id}`,
 });
+const activeExecutionIndex = ({ executionId }) => ({
+  GSI3PK: ACTIVE_EXECUTIONS_INDEX_PK,
+  GSI3SK: `EXEC#${executionId}`,
+});
+const unitPrWaitIndex = ({ executionId, sectionIndex, slug }) => ({
+  GSI3PK: PR_WAITS_INDEX_PK,
+  GSI3SK: `EXEC#${executionId}#UNIT#${unitLaneId(sectionIndex, slug)}`,
+});
 
 // ── Vocabularies ──
 // Execution-level status (the run as a whole). DRAFT is the pre-Start state:
@@ -164,6 +177,7 @@ const EXECUTION_STATUS = [
   'FAILED',
   'CANCELLED',
 ];
+const ACTIVE_EXECUTION_STATUSES = ['CREATED', 'RUNNING', 'WAITING'];
 // Per-stage runtime status. The container drives a stage RUNNING → terminal; a
 // stage that opens a human gate parks on WAITING_FOR_HUMAN.
 const STAGE_STATE = ['PENDING', 'RUNNING', 'WAITING_FOR_HUMAN', 'SUCCEEDED', 'FAILED', 'SKIPPED'];
@@ -387,6 +401,7 @@ const buildExecutionMeta = ({
   ...executionMetaKey(executionId),
   ...projectStatusIndex({ projectId, status, startedAt, executionId }),
   ...executionTypeStateIndex({ executionId, type: 'EXECUTION', state: status, id: META }),
+  ...(ACTIVE_EXECUTION_STATUSES.includes(status) ? activeExecutionIndex({ executionId }) : {}),
   type: 'Execution',
   executionId,
   projectId,
@@ -1062,7 +1077,12 @@ export {
   composeKey,
   projectStatusIndex,
   executionTypeStateIndex,
+  activeExecutionIndex,
+  unitPrWaitIndex,
+  ACTIVE_EXECUTIONS_INDEX_PK,
+  PR_WAITS_INDEX_PK,
   EXECUTION_STATUS,
+  ACTIVE_EXECUTION_STATUSES,
   STAGE_STATE,
   HUMAN_TASK_KINDS,
   HUMAN_TASK_STATUSES,
@@ -1117,7 +1137,12 @@ export default {
   composeKey,
   projectStatusIndex,
   executionTypeStateIndex,
+  activeExecutionIndex,
+  unitPrWaitIndex,
+  ACTIVE_EXECUTIONS_INDEX_PK,
+  PR_WAITS_INDEX_PK,
   EXECUTION_STATUS,
+  ACTIVE_EXECUTION_STATUSES,
   STAGE_STATE,
   HUMAN_TASK_KINDS,
   HUMAN_TASK_STATUSES,

@@ -114,6 +114,49 @@ describe('resolveStageModel — Kiro uses its OWN model namespace (not Bedrock)'
   });
 });
 
+describe('resolveStageModel — Codex uses its OWN model namespace (openai.*)', () => {
+  // BEDROCK_MODEL is a Claude-shaped inference profile the Bedrock OpenAI
+  // endpoint rejects; it must not leak into a codex run.
+  const env = { AWS_REGION: 'eu-central-1', BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' };
+
+  it('passes an openai.* id through verbatim (no alias/geo resolution)', () => {
+    expect(resolveStageModel({ cliModels: { codex: 'openai.gpt-5.5' }, cli: 'codex', env })).toBe(
+      'openai.gpt-5.5',
+    );
+  });
+
+  it('returns undefined when no codex model is selected (driver omits -m → codex default)', () => {
+    expect(
+      resolveStageModel({
+        cliModels: {},
+        agentBlock: { modelOverride: 'opus' },
+        cli: 'codex',
+        env,
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveStageModel({
+        cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
+        cli: 'codex',
+        env,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('applies an explicit configured codex tier/fallback row', () => {
+    const tierModels = {
+      judgment: { codex: 'openai.gpt-5.6-sol' },
+      fallback: { codex: 'openai.gpt-5.4' },
+    };
+    expect(
+      resolveStageModel({ tierModels, agentBlock: { tier: 'judgment' }, cli: 'codex', env }),
+    ).toBe('openai.gpt-5.6-sol');
+    expect(resolveStageModel({ tierModels, agentBlock: null, cli: 'codex', env })).toBe(
+      'openai.gpt-5.4',
+    );
+  });
+});
+
 describe('resolveStageModel — agent tiers', () => {
   const env = { AWS_REGION: 'us-east-1', BEDROCK_MODEL: 'us.anthropic.claude-haiku-4-5-20251001' };
   const tierModels = {

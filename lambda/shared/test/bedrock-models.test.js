@@ -79,3 +79,16 @@ describe('listClaudeModels', () => {
     expect(models).toEqual([]);
   });
 });
+
+describe('CODEX_BEDROCK_MODELS (curated static list)', () => {
+  it('offers only exact openai.* ids — no geo or provider prefixes', () => {
+    const { CODEX_BEDROCK_MODELS } = bedrockModels;
+    expect(CODEX_BEDROCK_MODELS.length).toBeGreaterThan(0);
+    for (const m of CODEX_BEDROCK_MODELS) {
+      expect(m.id).toMatch(/^openai\./);
+      expect(m.id).not.toMatch(/^(us|eu|apac|global)\./);
+      expect(m.id).not.toContain('amazon-bedrock/');
+      expect(m.name).toBeTruthy();
+    }
+  });
+});

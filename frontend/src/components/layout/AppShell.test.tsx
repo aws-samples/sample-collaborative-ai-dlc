@@ -18,6 +18,10 @@ describe('shouldDefaultOpen', () => {
     expect(shouldDefaultOpen('/space/p1/intent/i1/review/ht-1')).toBe(true);
   });
 
+  it('returns false for new intent creation', () => {
+    expect(shouldDefaultOpen('/space/p1/intent/new')).toBe(false);
+  });
+
   it('returns false for intent graph', () => {
     expect(shouldDefaultOpen('/space/p1/intent/i1/graph')).toBe(false);
   });
