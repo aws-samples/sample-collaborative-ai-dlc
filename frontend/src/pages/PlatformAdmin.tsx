@@ -14,7 +14,7 @@
 // setting: it is shown on every tab because the canonical hostname it reports
 // is what the OAuth callback URLs on two of them are built from.
 
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router';
 import { Bot, ClipboardList, GitBranch, Users } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';

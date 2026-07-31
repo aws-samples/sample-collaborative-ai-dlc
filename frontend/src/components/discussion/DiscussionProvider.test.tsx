@@ -4,8 +4,8 @@ import { render, screen } from '@testing-library/react';
 const listMembers = vi.hoisted(() => vi.fn());
 const listDiscussions = vi.hoisted(() => vi.fn());
 
-vi.mock('react-router-dom', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('react-router-dom')>();
+vi.mock('react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router')>();
   return {
     ...actual,
     useParams: () => ({ projectId: 'project-1', intentId: 'intent-1' }),

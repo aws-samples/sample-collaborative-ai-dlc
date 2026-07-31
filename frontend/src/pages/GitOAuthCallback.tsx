@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router';
 import { OAuthCallbackShell } from '@/components/OAuthCallbackShell';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 

@@ -7,7 +7,7 @@ import {
   Navigate,
   useLocation,
   useParams,
-} from 'react-router-dom';
+} from 'react-router';
 import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './components/theme/ThemeProvider';
 import { ProtectedRoute } from './components/ProtectedRoute';

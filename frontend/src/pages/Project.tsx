@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import { cn } from '@/lib/utils';
 import { getTimeAgo } from '@/lib/timeAgo';
 import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';

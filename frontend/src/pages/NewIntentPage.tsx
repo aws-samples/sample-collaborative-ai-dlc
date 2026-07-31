@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { intentsService } from '@/services/intents';
 import { trackersService, type TrackerIssue } from '@/services/trackers';

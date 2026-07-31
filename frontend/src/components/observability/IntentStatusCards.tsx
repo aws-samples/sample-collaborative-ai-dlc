@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, MessageCircleQuestion, CheckCircle2, XCircle } from 'lucide-react';

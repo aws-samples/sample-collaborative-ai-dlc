@@ -8,7 +8,7 @@
 // from IntentContext, the audit DTO fetched lazily with a tiny module cache.
 
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useIntent } from '@/contexts/IntentContext';
 import { intentsService, type IntentAudit } from '@/services/intents';
 import { useProjectCache } from '@/hooks/useProjectsCache';

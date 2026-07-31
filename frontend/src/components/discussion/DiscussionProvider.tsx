@@ -8,7 +8,7 @@ import {
   useState,
 } from 'react';
 import type { ReactNode } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import { discussionsService } from '@/services/discussions';
 import type { Discussion, DiscussionEntityType, DiscussionScope } from '@/services/discussions';
 import { projectsService } from '@/services/projects';
