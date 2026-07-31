@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { SsoAccessDeniedError, SSO_ACCESS_DENIED_MESSAGE } from '@/services/authErrors';
+import {
+  SsoAccessDeniedError,
+  SsoLoginTimeoutError,
+  SSO_ACCESS_DENIED_MESSAGE,
+} from '@/services/authErrors';
 
 const completeSsoLogin = vi.fn();
 
@@ -17,6 +22,7 @@ const renderCallback = (entry = '/auth/callback') =>
       <Routes>
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route path="/admin" element={<div>Admin destination</div>} />
+        <Route path="/login" element={<div>Sign-in page</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -48,10 +54,23 @@ describe('AuthCallback', () => {
   });
 
   it('shows a specific access-denied result when the broker rejects token issuance', async () => {
-    completeSsoLogin.mockRejectedValue(new SsoAccessDeniedError(new Error('invalid_grant')));
+    completeSsoLogin.mockRejectedValue(new SsoAccessDeniedError(new Error('SSO_ACCESS_DENIED')));
     renderCallback();
 
     expect(await screen.findByRole('heading', { name: 'Access denied' })).toBeInTheDocument();
     expect(screen.getByText(SSO_ACCESS_DENIED_MESSAGE)).toBeInTheDocument();
+  });
+
+  it('offers a retry after the code exchange times out', async () => {
+    completeSsoLogin.mockRejectedValue(new SsoLoginTimeoutError());
+    renderCallback();
+
+    expect(await screen.findByRole('heading', { name: 'Sign-in timed out' })).toBeInTheDocument();
+    expect(
+      screen.getByText('Enterprise sign-in did not complete in time. Try signing in again.'),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(screen.getByText('Sign-in page')).toBeInTheDocument();
   });
 });

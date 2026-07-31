@@ -1,6 +1,8 @@
 export const SSO_ACCESS_DENIED_CODE = 'SSO_ACCESS_DENIED';
 export const SSO_ACCESS_DENIED_MESSAGE =
   'Your enterprise account is not authorized to access AI-DLC. Ask your identity provider administrator to grant the required access and try again.';
+export const SSO_LOGIN_TIMEOUT_MESSAGE =
+  'Enterprise sign-in did not complete in time. Try signing in again.';
 
 export class SsoAccessDeniedError extends Error {
   readonly code = SSO_ACCESS_DENIED_CODE;
@@ -8,6 +10,13 @@ export class SsoAccessDeniedError extends Error {
   constructor(cause?: unknown) {
     super(SSO_ACCESS_DENIED_MESSAGE, cause === undefined ? undefined : { cause });
     this.name = 'SsoAccessDeniedError';
+  }
+}
+
+export class SsoLoginTimeoutError extends Error {
+  constructor(cause?: unknown) {
+    super(SSO_LOGIN_TIMEOUT_MESSAGE, cause === undefined ? undefined : { cause });
+    this.name = 'SsoLoginTimeoutError';
   }
 }
 
@@ -47,14 +56,7 @@ export const isSsoAccessDeniedError = (error: unknown): boolean => {
   }
 
   const details = errorText(error);
-  return (
-    /\bSSO_ACCESS_DENIED\b/i.test(details) ||
-    /\baccess_denied\b/i.test(details) ||
-    // Cognito reduces pre-token Lambda rejections to this OAuth error at its
-    // hosted token endpoint instead of returning the Lambda's error marker.
-    /\binvalid_grant\b/i.test(details) ||
-    /pre[- ]?token(?: generation)?.*(?:denied|failed|rejected)/i.test(details)
-  );
+  return /\bSSO_ACCESS_DENIED\b/i.test(details) || /\baccess_denied\b/i.test(details);
 };
 
 export const normalizeSsoLoginError = (error: unknown): Error => {

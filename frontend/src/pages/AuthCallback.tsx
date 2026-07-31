@@ -1,8 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
+import { Loader2, RotateCcw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
-import { isSsoAccessDeniedError, SSO_ACCESS_DENIED_MESSAGE } from '@/services/authErrors';
+import {
+  isSsoAccessDeniedError,
+  SsoLoginTimeoutError,
+  SSO_ACCESS_DENIED_MESSAGE,
+  SSO_LOGIN_TIMEOUT_MESSAGE,
+} from '@/services/authErrors';
 
 interface CallbackFailure {
   title: string;
@@ -12,6 +18,10 @@ interface CallbackFailure {
 const accessDeniedFailure: CallbackFailure = {
   title: 'Access denied',
   message: SSO_ACCESS_DENIED_MESSAGE,
+};
+const timeoutFailure: CallbackFailure = {
+  title: 'Sign-in timed out',
+  message: SSO_LOGIN_TIMEOUT_MESSAGE,
 };
 
 export default function AuthCallback() {
@@ -47,10 +57,13 @@ export default function AuthCallback() {
           setFailure(
             isSsoAccessDeniedError(reason)
               ? accessDeniedFailure
-              : {
-                  title: 'Sign-in failed',
-                  message: 'Enterprise sign-in could not be completed.',
-                },
+              : reason instanceof SsoLoginTimeoutError
+                ? timeoutFailure
+                : {
+                    title: 'Sign-in failed',
+                    message:
+                      'Enterprise sign-in could not be completed. The request may have expired.',
+                  },
           );
         }
       });
@@ -65,13 +78,14 @@ export default function AuthCallback() {
         <div className="w-full max-w-sm border rounded-md p-6 text-center space-y-4">
           <h1 className="text-base font-semibold">{failure.title}</h1>
           <p className="break-words text-sm text-muted-foreground">{failure.message}</p>
-          <button
+          <Button
             type="button"
-            className="text-sm text-primary underline underline-offset-4"
+            variant="outline"
             onClick={() => navigate('/login', { replace: true })}
           >
-            Return to sign in
-          </button>
+            <RotateCcw className="h-4 w-4" />
+            Try again
+          </Button>
         </div>
       </main>
     );

@@ -44,10 +44,13 @@ describe('claim normalization', () => {
 });
 
 describe('SSO role evaluation', () => {
-  it('leaves local users outside SSO role evaluation', () => {
-    expect(evaluateSsoRoles({ email: 'local@example.com' }, config)).toMatchObject({
+  it('ignores role attribute values on local users', () => {
+    expect(
+      evaluateSsoRoles({ email: 'local@example.com', 'custom:sso_roles': 'aidlc-admin' }, config),
+    ).toMatchObject({
       federated: false,
       admitted: true,
+      roles: [],
     });
   });
 

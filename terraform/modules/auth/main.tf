@@ -17,6 +17,12 @@ locals {
       }
     }
   }
+  app_client_write_attributes = distinct(concat(
+    ["custom:avatar_url", "custom:display_name"],
+    local.sso_enabled ? ["email"] : [],
+    anytrue([for provider in values(var.sso_providers) : provider.name_claim != ""]) ? ["name"] : [],
+    anytrue([for provider in values(var.sso_providers) : provider.role_claim != ""]) ? ["custom:sso_roles"] : [],
+  ))
   shared_dir = "${path.module}/../../../lambda/shared"
   sso_sources_hash = sha256(join("", concat(
     [
@@ -210,16 +216,20 @@ resource "aws_cognito_user_pool_client" "main" {
 
   allowed_oauth_flows_user_pool_client = local.sso_enabled
   allowed_oauth_flows                  = local.sso_enabled ? ["code"] : []
-  # The Cognito self-service scope authorizes GetUser/UpdateUserAttributes. It
-  # does not grant application or user-pool administration privileges.
+  # Hosted SSO tokens deliberately omit aws.cognito.signin.user.admin so a
+  # federated user cannot call GetUser or UpdateUserAttributes.
   allowed_oauth_scopes = local.sso_enabled ? [
     "openid",
     "email",
     "profile",
-    "aws.cognito.signin.user.admin",
   ] : []
-  callback_urls = local.sso_enabled ? ["${var.app_url}/auth/callback"] : []
-  logout_urls   = local.sso_enabled ? ["${var.app_url}/login"] : []
+  # Cognito only maps IdP claims into app-client-writable attributes. The
+  # hosted tokens above cannot exercise these write permissions. Local users
+  # can update profile attributes, but cannot write the Cognito-owned
+  # `identities` attribute that makes the role mapper treat a user as federated.
+  write_attributes = local.app_client_write_attributes
+  callback_urls    = local.sso_enabled ? ["${var.app_url}/auth/callback"] : []
+  logout_urls      = local.sso_enabled ? ["${var.app_url}/login"] : []
   supported_identity_providers = local.sso_enabled ? concat(
     local.local_enabled ? ["COGNITO"] : [],
     sort(keys(var.sso_providers)),

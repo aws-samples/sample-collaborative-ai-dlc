@@ -54,6 +54,9 @@ For a federated user:
 - The external claim is authoritative on every fresh federated sign-in.
 - Cognito group membership is replaced in the issued token by the mapped roles.
   Manually adding a federated user to `platform-admin` does not grant that role.
+- Cognito requires mapped claims to use app-client-writable attributes. Hosted
+  SSO sessions omit Cognito's self-service scope, so federated users cannot
+  modify the stored role claim through `UpdateUserAttributes`.
 - `requiredClaimValues` is an optional, independent access gate. When configured,
   every user, including an administrator, must have at least one required value.
 - Role and access changes at the IdP take effect after platform logout and a new

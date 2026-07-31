@@ -143,7 +143,13 @@ Verify each path in its assigned context:
 | Existing local admin | Cognito account form still works                   |
 | Test member          | Can sign in; cannot see platform Admin             |
 | Test admin           | Can sign in; sees platform Admin                   |
-| Denied user          | Sees **Access denied**; no platform session exists |
+| Denied user          | Sees a sign-in failure; no platform session exists |
+
+Cognito can reduce a pre-token access-gate rejection to a bare `invalid_grant`,
+the same error used for expired or replayed authorization codes. The callback
+only shows **Access denied** when Cognito or the upstream provider preserves an
+explicit `SSO_ACCESS_DENIED` or `access_denied` marker; otherwise it offers a
+generic retry.
 
 In **Admin -> Users**, both admitted federated users should say
 **Managed by DisposableCognito** and have no role-edit button. The denied

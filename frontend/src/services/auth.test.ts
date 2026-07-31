@@ -49,6 +49,7 @@ vi.mock('aws-amplify/auth/cognito', () => ({
 }));
 
 import { cognitoOauthScopes, parseSsoProviders } from './auth';
+import { isSsoAccessDeniedError } from './authErrors';
 
 describe('SSO frontend configuration', () => {
   const providers = [
@@ -60,6 +61,7 @@ describe('SSO frontend configuration', () => {
   ];
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     hubMocks.listeners.length = 0;
@@ -74,9 +76,16 @@ describe('SSO frontend configuration', () => {
     expect(parseSsoProviders(JSON.stringify(providers))).toEqual(providers);
   });
 
-  it('requests the Cognito self-service scope used to load user attributes', () => {
-    expect(cognitoOauthScopes).toContain('aws.cognito.signin.user.admin');
+  it('does not grant hosted SSO tokens Cognito self-service write access', () => {
+    expect(cognitoOauthScopes).not.toContain('aws.cognito.signin.user.admin');
   });
+
+  it.each(['invalid_grant', 'Pre token generation failed'])(
+    'keeps ambiguous OAuth failure "%s" out of the access-denied path',
+    (message) => {
+      expect(isSsoAccessDeniedError(new Error(message))).toBe(false);
+    },
+  );
 
   it('clears a partial SSO session before local credential login in hybrid mode', async () => {
     vi.resetModules();
@@ -117,7 +126,11 @@ describe('SSO frontend configuration', () => {
     authMocks.fetchAuthSession.mockResolvedValue({
       tokens: {
         idToken: {
-          payload: { 'custom:identity_provider': 'CorporateOIDC' },
+          payload: {
+            'custom:identity_provider': 'CorporateOIDC',
+            email: 'user@example.com',
+            name: 'Enterprise User',
+          },
         },
       },
     });
@@ -129,7 +142,10 @@ describe('SSO frontend configuration', () => {
       username: 'CorporateOIDC_external-user',
       identitySource: 'sso',
       identityProvider: 'CorporateOIDC',
+      email: 'user@example.com',
+      displayName: 'Enterprise User',
     });
+    expect(authMocks.fetchUserAttributes).not.toHaveBeenCalled();
   });
 
   it('uses the same broker redirect contract for OIDC and SAML providers', async () => {
@@ -158,7 +174,7 @@ describe('SSO frontend configuration', () => {
     ]);
   });
 
-  it('preserves an OAuth access-gate failure and clears the partial session', async () => {
+  it('preserves an explicit OAuth access-gate failure and clears the partial session', async () => {
     vi.resetModules();
     vi.stubEnv('VITE_AUTH_MODE', 'hybrid');
     authMocks.clearTokens.mockResolvedValue(undefined);
@@ -170,7 +186,7 @@ describe('SSO frontend configuration', () => {
     listener?.({
       payload: {
         event: 'signInWithRedirect_failure',
-        data: { error: new Error('invalid_grant') },
+        data: { error: new Error('invalid_grant: SSO_ACCESS_DENIED') },
       },
     });
 
@@ -179,6 +195,25 @@ describe('SSO frontend configuration', () => {
       code: 'SSO_ACCESS_DENIED',
     });
     expect(getCurrentUser).not.toHaveBeenCalled();
+    expect(authMocks.clearTokens).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a bare invalid_grant failure generic because the code may have expired', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_AUTH_MODE', 'hybrid');
+    authMocks.clearTokens.mockResolvedValue(undefined);
+    const redirectError = new Error('invalid_grant');
+
+    const { authService } = await import('./auth');
+    const listener = hubMocks.listeners.at(-1);
+    listener?.({
+      payload: {
+        event: 'signInWithRedirect_failure',
+        data: { error: redirectError },
+      },
+    });
+
+    await expect(authService.completeSsoLogin()).rejects.toBe(redirectError);
     expect(authMocks.clearTokens).toHaveBeenCalledOnce();
   });
 
@@ -198,6 +233,28 @@ describe('SSO frontend configuration', () => {
     });
 
     await expect(authService.completeSsoLogin()).rejects.toBe(redirectError);
+    expect(authMocks.clearTokens).toHaveBeenCalledOnce();
+  });
+
+  it('times out an incomplete code exchange and clears the partial session', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    vi.stubEnv('VITE_AUTH_MODE', 'hybrid');
+    authMocks.clearTokens.mockResolvedValue(undefined);
+
+    const { authService } = await import('./auth');
+    const getCurrentUser = vi
+      .spyOn(authService, 'getCurrentUser')
+      .mockRejectedValue(new Error('No current user'));
+    const completion = authService.completeSsoLogin();
+    const rejection = expect(completion).rejects.toMatchObject({
+      name: 'SsoLoginTimeoutError',
+      message: 'Enterprise sign-in did not complete in time. Try signing in again.',
+    });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejection;
+    expect(getCurrentUser).toHaveBeenCalledTimes(40);
     expect(authMocks.clearTokens).toHaveBeenCalledOnce();
   });
 });
