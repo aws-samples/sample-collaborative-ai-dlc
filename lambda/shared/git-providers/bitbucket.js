@@ -124,7 +124,11 @@ const oauth = {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       tokenType: data.token_type,
-      scope: data.scope,
+      // Bitbucket returns granted scopes as `scopes` (plural), unlike GitHub/GitLab
+      // (`scope`). Read plural first, fall back to singular — otherwise the stored
+      // scope is empty and missingScopes() flags every required scope, invalidating
+      // the connection as "reauthorization required".
+      scope: data.scopes ?? data.scope,
       expiresIn: data.expires_in,
     };
   },
@@ -156,7 +160,11 @@ const oauth = {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       tokenType: data.token_type,
-      scope: data.scope,
+      // Bitbucket returns granted scopes as `scopes` (plural), unlike GitHub/GitLab
+      // (`scope`). Read plural first, fall back to singular — otherwise the stored
+      // scope is empty and missingScopes() flags every required scope, invalidating
+      // the connection as "reauthorization required".
+      scope: data.scopes ?? data.scope,
       expiresIn: data.expires_in,
     };
   },

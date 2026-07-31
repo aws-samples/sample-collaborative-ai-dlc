@@ -171,9 +171,9 @@ Configure agent authentication in **Admin → Agent Settings**: enter a Bedrock 
 
 ### Configure Provider OAuth Apps
 
-The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket) and **issue trackers** (GitHub Issues, GitLab Issues, Bitbucket Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app with it, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
+The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud) so a sprint can be started from a tracker issue. For each provider you want to enable, register an OAuth app with it, then paste the credentials into the **Admin → Tracker OAuth Apps** panel in the deployed app.
 
-For GitHub, GitLab and Bitbucket a single OAuth app serves both the code host and that provider's issue tracker — you register it once. Jira Cloud is a tracker only.
+For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker — you register it once. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only.
 
 All providers are optional. Skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI will stay disabled.
 
@@ -217,17 +217,17 @@ For **GitHub App mode**:
 
 GitLab's `api` scope includes repository writes, including changes to `.gitlab-ci.yml`; there is no separate workflow-file scope. Connections missing `api` are reported as requiring reauthorization.
 
-#### Bitbucket (code host + Bitbucket Issues)
+#### Bitbucket (code host)
 
 1. Open **Bitbucket → Workspace settings → OAuth consumers → Add consumer**.
 2. Use:
    - **Callback URL**: `https://<your-cloudfront-domain>/bitbucket/callback`
-   - **Permissions**: Account (Read), Repositories (Read & Write), Pull requests (Read & Write).
+   - **Permissions**: Account (Read, Email), Repositories (Read & Write), Pull requests (Read & Write).
    - Leave **This is a private consumer** enabled.
 3. Save, then copy the **Key** (Client ID) and **Secret**.
-4. In the deployed app, sign in and open **Admin → Tracker OAuth Apps → Bitbucket Issues**. Paste both values and click **Save**.
+4. In the deployed app, sign in and open **Admin → Source Control → Bitbucket**. Paste both values and click **Save**.
 
-Bitbucket OAuth scopes are the singular scope names (`account`, `repository`, `repository:write`, `pullrequest`, `pullrequest:write`) — the platform requests these automatically. Bitbucket access tokens are short-lived (~2h); the engine refreshes them just-in-time using the stored refresh token, so long-running construction jobs keep a valid token.
+Bitbucket OAuth scopes are the singular scope names (`account`, `email`, `repository`, `repository:write`, `pullrequest`, `pullrequest:write`) — the platform requests these automatically. The `email` scope is required for commit attribution — enable the **Email** permission on the consumer, otherwise the connection is reported as needing reauthorization. Bitbucket access tokens are short-lived (~2h); the engine refreshes them just-in-time using the stored refresh token, so long-running construction jobs keep a valid token.
 
 #### Jira Cloud
 

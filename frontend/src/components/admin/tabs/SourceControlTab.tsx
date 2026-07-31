@@ -60,7 +60,7 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
         icon={<BitbucketIcon />}
         title="Bitbucket"
         badge={<ConfigStatusBadge ok={bitbucketConfigured} notOkTone="warning" />}
-        description="One OAuth app covers repo access (PRs) and the Bitbucket Issues tracker."
+        description="OAuth app for Bitbucket repository access (clone, branches, pull requests)."
       >
         <OAuthAppConfigForm
           providerId="bitbucket-issues"

@@ -114,10 +114,14 @@ export const TRACKER_PROVIDERS: Record<string, TrackerProviderMeta> = {
   'bitbucket-issues': {
     id: 'bitbucket-issues',
     instance: 'public',
-    displayName: 'Bitbucket Issues',
+    // NOTE: this registry entry is the Bitbucket OAuth-app config carrier (its
+    // callbackPath backs the git Connect flow, shared like GitHub/GitLab's
+    // OAuth app). Bitbucket Issues as a tracker is not implemented, so the
+    // display strings describe repository access, not an issue tracker.
+    displayName: 'Bitbucket',
     tabLabel: 'Bitbucket',
-    panelTitle: 'Start a sprint from a Bitbucket issue',
-    resourceLabel: 'Bitbucket issue',
+    panelTitle: 'Bitbucket',
+    resourceLabel: 'Bitbucket repository',
     callbackPath: '/bitbucket/callback',
     icon: BitbucketIcon,
     registration: {

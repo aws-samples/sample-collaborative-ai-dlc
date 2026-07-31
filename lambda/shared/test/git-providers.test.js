@@ -1257,4 +1257,34 @@ describe('OAuth metadata', () => {
     expect(capturedBody.redirect_uri).toBe('https://app.example.com/gitlab/callback');
     expect(out.accessToken).toBe('new-at');
   });
+
+  it('bitbucket reads granted scopes from the plural `scopes` field (not `scope`)', async () => {
+    // Bitbucket's token response returns `scopes` (plural), unlike GitHub/GitLab.
+    // Reading `scope` would leave the stored scope empty and make missingScopes()
+    // flag every required scope, invalidating the connection.
+    const fetchImpl = async () => ({
+      json: async () => ({
+        access_token: 'bb-at',
+        refresh_token: 'bb-rt',
+        token_type: 'bearer',
+        expires_in: 7200,
+        scopes: 'account email repository pullrequest',
+      }),
+    });
+    const exchanged = await getProvider('bitbucket').oauth.exchangeCode({
+      clientId: 'cid',
+      clientSecret: 'sec',
+      code: 'c1',
+      redirectUri: 'https://app.example.com/bitbucket/callback',
+      fetchImpl,
+    });
+    expect(exchanged.scope).toBe('account email repository pullrequest');
+    const refreshed = await getProvider('bitbucket').oauth.refreshAccessToken({
+      clientId: 'cid',
+      clientSecret: 'sec',
+      refreshToken: 'r1',
+      fetchImpl,
+    });
+    expect(refreshed.scope).toBe('account email repository pullrequest');
+  });
 });

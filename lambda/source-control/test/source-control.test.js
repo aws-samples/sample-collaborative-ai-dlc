@@ -59,6 +59,16 @@ describe('source-control project contract', () => {
     expect(bindingStatusForProject([], [])).toEqual({ ready: true, repositories: [] });
   });
 
+  it('accepts every provider the binding contract knows (github, gitlab, bitbucket)', () => {
+    // Guards the PUT /projects/{id}/source-control allowlist: a provider wired
+    // into AUTH_TYPE_PROVIDER must not be rejected here. Regression cover for
+    // Bitbucket, which was 400'd by a stale ['github','gitlab'] list.
+    expect(isSupportedProvider('github')).toBe(true);
+    expect(isSupportedProvider('gitlab')).toBe(true);
+    expect(isSupportedProvider('bitbucket')).toBe(true);
+    expect(isSupportedProvider('subversion')).toBe(false);
+  });
+
   it('rejects a repository operation outside the project before credential resolution', async () => {
     await expect(
       executeSourceControlOperation({
