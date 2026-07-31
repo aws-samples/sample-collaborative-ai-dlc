@@ -2,8 +2,8 @@
 
 The release workflow deploys every published release to the AWS demo account.
 It calls the reusable **Deploy Demo** workflow after creating the immutable
-release tag and GitHub Release. The reusable workflow can also run manually in
-plan-only mode before the first automated deployment.
+release tag and GitHub Release. The reusable workflow can also deploy an
+existing release tag manually.
 
 The GitHub deployment environment is named `demo`. The existing Terraform
 logical environment remains `prod`; changing it would rename or replace
@@ -11,9 +11,21 @@ resources already recorded in the remote state.
 
 ## Configure the GitHub environment
 
-In the repository, open **Settings → Environments**, create an environment
-named `demo`, and restrict deployment branches to `main`. Add required
-reviewers if releases should wait for a human deployment approval.
+In the repository, open **Settings → Environments** and create an environment
+named `demo`. Configure all of these protection settings before granting the
+deployment role access to the AWS account:
+
+1. Under **Deployment protection rules**, add the `collaborative-ai-dlc` team
+   (or at least two maintainers) as required reviewers.
+2. Enable **Prevent self-review** so the person who starts a release cannot
+   approve its deployment.
+3. Disable administrator bypass for the protection rules.
+4. Under **Deployment branches and tags**, choose **Selected branches and
+   tags**, add `main`, and save the rule.
+
+Both release-triggered and manually triggered deployments wait for this
+approval. The workflow then verifies that the requested annotated release tag
+resolves to a commit reachable from `main` before requesting AWS credentials.
 
 Add these **environment variables**:
 
@@ -36,6 +48,17 @@ Systems Manager Parameter Store.
 The workflow generates `prod.tfvars` and `prod.s3.tfbackend` in the runner's
 temporary directory. It never runs `bootstrap.sh` and therefore never creates
 or selects a new state bucket.
+
+## Protect release tags
+
+Open **Settings → Rules → Rulesets**, create a tag ruleset for `v*`, and set
+its enforcement status to **Active**. Enable rules that restrict updates and
+deletions and block force pushes. Leave tag creation unrestricted so the
+release workflow's `GITHUB_TOKEN` can create each new version tag.
+
+This makes existing release tags immutable. The separate reachability check in
+the deployment workflow ensures that even a newly created release tag can only
+deploy code that has passed through `main`.
 
 ## Create the AWS OIDC provider
 
@@ -166,26 +189,18 @@ and policy management, `iam:PassRole`, Lambda, API Gateway, Cognito, EC2,
 Elastic Load Balancing, ECS, ECR, S3, DynamoDB, Neptune, CloudFront, CloudWatch,
 EventBridge, SQS, Secrets Manager, Systems Manager, and Bedrock AgentCore.
 
-For a dedicated demo account, `AdministratorAccess` can be used temporarily to
-bootstrap the pipeline, but it gives any workflow approved for the `demo`
-environment control of the account. Replace it with a customer-managed policy
-after capturing the required actions from CloudTrail or IAM Access Analyzer.
-
-```bash
-aws iam attach-role-policy \
-  --role-name "$ROLE_NAME" \
-  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
-```
+Do not attach `AdministratorAccess` as a bootstrap policy. Keep deployment
+disabled until a reviewed customer-managed policy is available; an approval
+mistake must not grant the workflow unrestricted control of the account.
 
 ## Verify before enabling automatic deployment
 
-After this workflow reaches the default branch:
+Before publishing the first release, confirm that the `demo` environment has
+the required reviewers, self-review prevention, administrator bypass disabled,
+and the `main` deployment branch rule. Also confirm that the `v*` tag ruleset
+is active and the deployment role has the reviewed customer-managed policy.
 
-1. Open **Actions → Deploy Demo → Run workflow**.
-2. Enter an existing immutable release tag.
-3. Leave **Apply the plan and deploy the frontend** unchecked.
-4. Review the Terraform plan and confirm it uses the existing state.
-5. Run it again with apply enabled, or create the next release.
-
-Plans stay on the runner and are not uploaded as artifacts because Terraform
-plans can contain sensitive values.
+Every published release then waits for an independent approval, creates a
+Terraform plan, applies that exact saved plan, deploys the frontend, and
+verifies the application URL. Plans stay on the runner and are not uploaded as
+artifacts because Terraform plans can contain sensitive values.

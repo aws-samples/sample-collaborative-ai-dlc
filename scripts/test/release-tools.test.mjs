@@ -19,6 +19,7 @@ import test from 'node:test';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const installer = join(root, 'scripts/install.sh');
 const inspector = join(root, 'scripts/inspect-terraform-plan.mjs');
+const deployFrontend = join(root, 'scripts/deploy-frontend.sh');
 const deployTerraform = join(root, 'scripts/deploy-terraform.sh');
 const destroyTerraform = join(root, 'scripts/destroy.sh');
 const generateEnv = join(root, 'scripts/generate-env.sh');
@@ -46,7 +47,7 @@ test('release deployment uses the protected demo environment and GitHub OIDC', (
 
   assert.match(release, /uses: \.\/\.github\/workflows\/deploy-demo\.yml/);
   assert.match(release, /ref: v\$\{\{ inputs\.version \}\}/);
-  assert.match(release, /apply: true/);
+  assert.doesNotMatch(release, /apply:/);
 
   assert.match(deployment, /name: demo/);
   assert.match(deployment, /id-token: write/);
@@ -55,7 +56,23 @@ test('release deployment uses the protected demo environment and GitHub OIDC', (
   assert.match(deployment, /TF_STATE_BUCKET: \$\{\{ vars\.TF_STATE_BUCKET \}\}/);
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);
+  assert.match(deployment, /git merge-base --is-ancestor "\$tag_commit" "\$main_commit"/);
+  assert.doesNotMatch(deployment, /inputs\.apply|plan-only/);
   assert.doesNotMatch(deployment, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
+  assert.ok(
+    deployment.indexOf('git merge-base --is-ancestor') <
+      deployment.indexOf('aws-actions/configure-aws-credentials'),
+    'release ancestry must be verified before AWS credentials are configured',
+  );
+});
+
+test('deployment scripts enforce locked dependencies without install hooks', () => {
+  const terraformDeployment = readFileSync(deployTerraform, 'utf8');
+  const frontendDeployment = readFileSync(deployFrontend, 'utf8');
+
+  assert.match(terraformDeployment, /npm ci --ignore-scripts/);
+  assert.match(terraformDeployment, /terraform init -lockfile=readonly/);
+  assert.match(frontendDeployment, /npm ci --ignore-scripts/);
 });
 
 test('release check accepts prerelease metadata but final mode requires a date', () => {

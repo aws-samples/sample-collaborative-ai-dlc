@@ -70,4 +70,3 @@ jobs:
     uses: ./.github/workflows/deploy-demo.yml
     with:
       ref: v${{ inputs.version }}
-      apply: true

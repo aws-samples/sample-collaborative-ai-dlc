@@ -203,12 +203,12 @@ echo "Deploying environment: $ENVIRONMENT ($PHASE)"
 if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
     if [[ "${AIDLC_SKIP_NPM_CI:-0}" != "1" ]]; then
         echo "Installing root npm dependencies..."
-        (cd "$SCRIPT_DIR/.." && npm ci)
+        (cd "$SCRIPT_DIR/.." && npm ci --ignore-scripts)
     fi
 
     cd "$TF_DIR"
     echo "Initializing Terraform..."
-    terraform init -reconfigure -backend-config="$BACKEND_FILE"
+    terraform init -lockfile=readonly -reconfigure -backend-config="$BACKEND_FILE"
 
     mkdir -p "$(dirname "$PLAN_FILE")"
     echo "Planning deployment..."

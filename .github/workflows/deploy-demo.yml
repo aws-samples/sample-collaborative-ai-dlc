@@ -7,22 +7,12 @@ on:
         description: Immutable release tag to deploy
         required: true
         type: string
-      apply:
-        description: Apply the Terraform plan and deploy the frontend
-        required: false
-        default: true
-        type: boolean
   workflow_dispatch:
     inputs:
       ref:
-        description: Existing release tag to plan or deploy (for example, v2.0.0)
+        description: Existing release tag to deploy (for example, v2.0.0)
         required: true
         type: string
-      apply:
-        description: Apply the plan and deploy the frontend
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -59,12 +49,30 @@ jobs:
 
       - name: Verify release tag
         run: |
+          set -euo pipefail
           if [[ ! "$DEPLOY_REF" =~ ^v[0-9] ]]; then
             echo "Deployment ref must be a version tag beginning with v: $DEPLOY_REF" >&2
             exit 1
           fi
-          git show-ref --verify --quiet "refs/tags/$DEPLOY_REF"
-          git rev-parse "$DEPLOY_REF^{tag}" >/dev/null
+          tag_ref="refs/tags/$DEPLOY_REF"
+          if ! git show-ref --verify --quiet "$tag_ref"; then
+            echo "Deployment tag does not exist: $DEPLOY_REF" >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify "$tag_ref^{tag}" >/dev/null; then
+            echo "Deployment tag must be annotated: $DEPLOY_REF" >&2
+            exit 1
+          fi
+
+          tag_commit="$(git rev-parse --verify "$tag_ref^{commit}")"
+          main_commit="$(git rev-parse --verify "refs/remotes/origin/main^{commit}")"
+          if ! git merge-base --is-ancestor "$tag_commit" "$main_commit"; then
+            echo "Deployment tag $DEPLOY_REF ($tag_commit) is not reachable from main." >&2
+            exit 1
+          fi
+
+          echo "Verified $DEPLOY_REF resolves to main commit $tag_commit."
+          echo "DEPLOY_COMMIT=$tag_commit" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -151,19 +159,16 @@ jobs:
             --plan-file "$AIDLC_PLAN_FILE"
 
       - name: Apply infrastructure
-        if: ${{ inputs.apply }}
         run: |
           ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" \
             --phase apply \
             --plan-file "$AIDLC_PLAN_FILE"
 
       - name: Deploy frontend
-        if: ${{ inputs.apply }}
         run: ./scripts/deploy-frontend.sh "$TF_ENVIRONMENT"
 
       - name: Verify deployment
         id: deployment
-        if: ${{ inputs.apply }}
         run: |
           app_url="$(terraform -chdir=terraform output -raw application_url)"
           curl --fail --silent --show-error --location \
@@ -174,17 +179,7 @@ jobs:
             echo "### Demo deployment"
             echo
             echo "- Release: \`$DEPLOY_REF\`"
+            echo "- Commit: \`$DEPLOY_COMMIT\`"
             echo "- Terraform environment: \`$TF_ENVIRONMENT\`"
             echo "- URL: $app_url"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Record plan-only result
-        if: ${{ ! inputs.apply }}
-        run: |
-          {
-            echo "### Demo plan complete"
-            echo
-            echo "- Release: \`$DEPLOY_REF\`"
-            echo "- Terraform environment: \`$TF_ENVIRONMENT\`"
-            echo "- No changes were applied."
           } >> "$GITHUB_STEP_SUMMARY"
