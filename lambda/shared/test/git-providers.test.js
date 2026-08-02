@@ -1181,7 +1181,10 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
 
   it('getRepositoryAccess reports write access from the permissions probe', async () => {
     const fetchImpl = makeFetch([
-      ['/user/permissions/repositories', { json: { values: [{ permission: 'write' }] } }],
+      [
+        '/workspaces/ws/permissions/repositories/repo',
+        { json: { values: [{ permission: 'write' }] } },
+      ],
       [
         '/repositories/ws/repo',
         { json: { uuid: '{u}', is_private: true, mainbranch: { name: 'main' } } },
@@ -1199,7 +1202,7 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
 
   it('getRepositoryAccess degrades to read-only when the permissions probe fails', async () => {
     const fetchImpl = makeFetch([
-      ['/user/permissions/repositories', { status: 500, json: {} }],
+      ['/workspaces/ws/permissions/repositories/repo', { status: 500, json: {} }],
       [
         '/repositories/ws/repo',
         { json: { uuid: '{u}', is_private: false, mainbranch: { name: 'dev' } } },

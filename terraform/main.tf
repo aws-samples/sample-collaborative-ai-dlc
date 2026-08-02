@@ -459,8 +459,12 @@ module "agentcore" {
   websocket_execution_arn     = module.realtime.websocket_execution_arn
   aidlc_repo_ref              = var.aidlc_repo_ref
   bedrock_model               = var.bedrock_model
-  kiro_model                  = "claude-opus-4.6"
-  codex_model                 = var.codex_model
+  # The kiro-cli build shipped in the agentcore image only accepts the "auto"
+  # model selector; a concrete model id (e.g. "claude-opus-4.6") is rejected at
+  # spawn with `error: Model '...' does not exist. Available models: auto`,
+  # failing every stage with cli_nonzero_exit. Let kiro resolve the model.
+  kiro_model  = "auto"
+  codex_model = var.codex_model
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.

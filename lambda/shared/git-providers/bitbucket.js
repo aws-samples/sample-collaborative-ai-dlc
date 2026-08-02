@@ -318,7 +318,12 @@ const getAuthenticatedUser = async (ctx) => {
 
 // Caller's access to a repo, used by binding verification. The repository
 // object carries default branch + visibility; the caller's permission level
-// comes from /user/permissions/repositories (values: admin | write | read).
+// comes from the workspace-scoped repository permission endpoint (values:
+// admin | write | read). The former cross-workspace
+// /user/permissions/repositories endpoint was deprecated and removed by
+// Atlassian (CHANGE-2770) — it now returns a deprecation error instead of the
+// permission, which made every bind fall through to read-only.
+// https://developer.atlassian.com/cloud/bitbucket/changelog#CHANGE-2770
 const getRepositoryAccess = async (ctx, repoId) => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
   const res = await bbFetch(ctx, `${API_BASE}/repositories/${workspace}/${repoSlug}`);
@@ -330,16 +335,18 @@ const getRepositoryAccess = async (ctx, repoId) => {
     );
   }
 
-  // Permission probe — scoped to this repo by uuid. Best-effort: if it fails we
-  // assume read-only (canRead true, canWrite false) rather than throwing, so a
-  // transient permissions-endpoint hiccup doesn't fail an otherwise valid bind.
+  // Permission probe — workspace-scoped endpoint (replaces the deprecated
+  // cross-workspace /user/permissions/repositories, CHANGE-2770, which now
+  // returns a deprecation error instead of the permission). Filtered by the
+  // authenticated user's token, so values[0] is the caller's own grant.
+  // Best-effort: if it fails we assume read-only (canRead true, canWrite
+  // false) rather than throwing, so a transient permissions-endpoint hiccup
+  // doesn't fail an otherwise valid bind.
   let permission = null;
   try {
     const permRes = await bbFetch(
       ctx,
-      `${API_BASE}/user/permissions/repositories?q=${encodeURIComponent(
-        `repository.uuid="${data.uuid}"`,
-      )}`,
+      `${API_BASE}/workspaces/${workspace}/permissions/repositories/${repoSlug}`,
     );
     if (permRes.ok) {
       const permData = await permRes.json().catch(() => ({}));
