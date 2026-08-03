@@ -182,6 +182,8 @@ describe('resolveMcpSecrets — reserved-name guard (fail closed)', () => {
       'AWS_SECRET_ACCESS_KEY',
       'AWS_SESSION_TOKEN',
       'DYNAMODB_LOCAL_ENDPOINT',
+      'V2_CODEX_HOME_ROOT',
+      'V2_CODEX_STORE_DIR',
       'PATH',
     ]) {
       await expect(

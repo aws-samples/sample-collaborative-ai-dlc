@@ -114,6 +114,7 @@ const spyStore = (seed = {}) => {
     updateExecution: rec('updateExecution'),
     updateStageState: rec('updateStageState'),
     resumeStageRow: rec('resumeStageRow'),
+    supersedeHumanTask: rec('supersedeHumanTask'),
     appendEvent: rec('appendEvent'),
     async appendOutput(args) {
       calls.push(['appendOutput', args]);
@@ -1275,6 +1276,59 @@ describe('runStage — LLM reviewer axis', () => {
     // One builder invocation plus two clean-room reviewer invocations.
     expect(spawnFn).toHaveBeenCalledTimes(3);
   });
+
+  it('keeps Codex reviewer sessions ephemeral and persists only the author rollout', async () => {
+    const persistCodexRollout = vi.fn(async () => ({ ok: true, status: 'persisted' }));
+    const cleanupCodexHome = vi.fn(async () => true);
+    let invocation = 0;
+    const spawnFn = vi.fn(() => {
+      invocation += 1;
+      const child = new EventEmitter();
+      child.stdin = { end() {} };
+      child.stdout = new EventEmitter();
+      setImmediate(() => {
+        if (invocation === 1) {
+          child.stdout.emit(
+            'data',
+            Buffer.from(
+              `${JSON.stringify({ type: 'thread.started', thread_id: 'author-thread' })}\n`,
+            ),
+          );
+        }
+        child.emit('close', 0);
+      });
+      return child;
+    });
+    const result = await runStage(
+      { ...baseArgs, requestedCli: 'codex' },
+      baseDeps({
+        store: storeWithVerdict('READY', 'ready'),
+        availableClis: ['codex'],
+        env: {
+          BEDROCK_MODEL: 'openai.gpt-5.5',
+          V2_CODEX_HOME_ROOT: '/home/node/.codex-runs',
+          V2_CODEX_STORE_DIR: '/mnt/workspace/.aidlc/codex-home',
+        },
+        spawnFn,
+        persistCodexRollout,
+        cleanupCodexHome,
+        materializeCodexHome: async ({ scope }) =>
+          `/home/node/.codex-runs/${scope.role}-${scope.reviewerAgent ?? 'stage'}`,
+        loadLibrary: async () => ({
+          workflow: workflow(),
+          library: libWithReviewer({ humanValidation: 'none' }),
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'codex' });
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+    expect(persistCodexRollout).toHaveBeenCalledTimes(1);
+    expect(persistCodexRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'author-thread' }),
+    );
+    expect(cleanupCodexHome).toHaveBeenCalledTimes(2);
+  });
 });
 
 // Reviewer prompt contract (upstream stage-protocol §12a, 2.2.16 + 2.2.4):
@@ -1672,6 +1726,12 @@ describe('runStage — resume mode', () => {
 });
 
 describe('runStage — OpenCode park/resume lifecycle', () => {
+  const codexStoreEnv = {
+    BEDROCK_MODEL: 'openai.gpt-5.5',
+    V2_CODEX_HOME_ROOT: '/home/node/.codex-runs',
+    V2_CODEX_STORE_DIR: '/mnt/workspace/.aidlc/codex-home',
+  };
+
   const openCodeSpawn =
     ({ sessionId = 'ses_open_1', emitSession = true, capture } = {}) =>
     (command, args) => {
@@ -1693,6 +1753,31 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
           );
         }
         child.emit('close', 0);
+      });
+      return child;
+    };
+
+  const codexSpawn =
+    ({ threadId = 'thread_7', emitSession = true, capture, exitCode = 0 } = {}) =>
+    (command, args) => {
+      capture?.({ command, args });
+      const child = new EventEmitter();
+      child.stdin = { end: (prompt) => capture?.({ prompt }) };
+      child.stdout = new EventEmitter();
+      setImmediate(() => {
+        if (emitSession) {
+          child.stdout.emit(
+            'data',
+            Buffer.from(`${JSON.stringify({ type: 'thread.started', thread_id: threadId })}\n`),
+          );
+        }
+        child.stdout.emit(
+          'data',
+          Buffer.from(
+            `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } })}\n`,
+          ),
+        );
+        child.emit('close', exitCode);
       });
       return child;
     };
@@ -1767,31 +1852,6 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
   });
 
   it('persists the first observed Codex thread id before marking a parked stage waiting', async () => {
-    const codexSpawn =
-      ({ emitSession = true, capture } = {}) =>
-      (command, args) => {
-        capture?.({ command, args });
-        const child = new EventEmitter();
-        child.stdin = { end: (prompt) => capture?.({ prompt }) };
-        child.stdout = new EventEmitter();
-        setImmediate(() => {
-          if (emitSession) {
-            child.stdout.emit(
-              'data',
-              Buffer.from(`${JSON.stringify({ type: 'thread.started', thread_id: 'thread_7' })}\n`),
-            );
-          }
-          child.stdout.emit(
-            'data',
-            Buffer.from(
-              `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } })}\n`,
-            ),
-          );
-          child.emit('close', 0);
-        });
-        return child;
-      };
-
     const store = spyStore(pendingGateSeed('q-codex', { createdAt: '2026-07-15T00:00:00Z' }));
     const res = await runStage(
       { ...baseArgs, requestedCli: 'codex' },
@@ -1848,6 +1908,208 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     const argv = seen.find((value) => value.args);
     expect(argv.args.slice(0, 3)).toEqual(['exec', 'resume', 'thread_old']);
     expect(seen.find((value) => value.prompt)?.prompt).toContain('Proceed');
+  });
+
+  it('restores a Codex rollout before a true resume and persists it after exit', async () => {
+    const order = [];
+    const store = spyStore({
+      humanTask: {
+        humanTaskId: 'q-codex',
+        status: 'answered',
+        answer: { freeText: 'Proceed' },
+      },
+      stage: { cli: 'codex', cliSessionId: 'thread-old' },
+    });
+    const originalResume = store.resumeStageRow;
+    store.resumeStageRow = async (args) => {
+      order.push('resume-row');
+      return originalResume(args);
+    };
+    const restoreCodexRollout = vi.fn(async () => {
+      order.push('restore');
+      return { ok: true, status: 'restored' };
+    });
+    const persistCodexRollout = vi.fn(async () => {
+      order.push('persist');
+      return { ok: true, status: 'persisted' };
+    });
+    const materializeCodexHome = vi.fn(async ({ reset }) => {
+      order.push(`materialize:${reset}`);
+      return '/home/node/.codex-runs/test';
+    });
+
+    const result = await runStage(
+      { ...baseArgs, requestedCli: 'codex', resumeFrom: 'q-codex' },
+      baseDeps({
+        store,
+        env: codexStoreEnv,
+        availableClis: ['codex'],
+        restoreCodexRollout,
+        persistCodexRollout,
+        materializeCodexHome,
+        cleanupCodexHome: vi.fn(async () => true),
+        spawnFn: codexSpawn({
+          emitSession: false,
+          capture: ({ args }) => {
+            if (args) order.push('spawn');
+          },
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'codex' });
+    expect(restoreCodexRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-old' }),
+    );
+    expect(materializeCodexHome).toHaveBeenCalledWith(expect.objectContaining({ reset: false }));
+    expect(persistCodexRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-old' }),
+    );
+    expect(order.indexOf('restore')).toBeLessThan(order.indexOf('resume-row'));
+    expect(order.indexOf('restore')).toBeLessThan(order.indexOf('spawn'));
+    expect(order.indexOf('persist')).toBeGreaterThan(order.indexOf('spawn'));
+  });
+
+  it('demotes a Codex resume when its durable rollout is missing', async () => {
+    const seen = [];
+    const store = spyStore({
+      humanTask: {
+        humanTaskId: 'q-codex',
+        status: 'answered',
+        answer: { freeText: 'Proceed with blue' },
+      },
+      stage: { cli: 'codex', cliSessionId: 'thread-old' },
+    });
+    const result = await runStage(
+      { ...baseArgs, requestedCli: 'codex', resumeFrom: 'q-codex' },
+      baseDeps({
+        store,
+        env: codexStoreEnv,
+        availableClis: ['codex'],
+        restoreCodexRollout: async () => ({ ok: false, status: 'missing' }),
+        persistCodexRollout: async () => ({ ok: true, status: 'persisted' }),
+        cleanupCodexHome: async () => true,
+        spawnFn: codexSpawn({
+          threadId: 'thread-new',
+          capture: (value) => seen.push(value),
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'codex' });
+    expect(seen.find((value) => value.args).args.slice(0, 2)).toEqual(['exec', '--json']);
+    expect(seen.find((value) => value.prompt)?.prompt).toContain('Proceed with blue');
+    expect(store.calls.some((call) => call[0] === 'putStage')).toBe(true);
+    expect(store.calls.some((call) => call[0] === 'resumeStageRow')).toBe(false);
+    expect(
+      store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.codex.store_restore_failed',
+      ),
+    ).toBe(true);
+  });
+
+  it('retires a parked Codex gate when rollout persistence fails', async () => {
+    const store = spyStore(
+      pendingGateSeed('q-codex', {
+        createdAt: '2026-08-01T00:00:00Z',
+      }),
+    );
+    const result = await runStage(
+      { ...baseArgs, requestedCli: 'codex' },
+      baseDeps({
+        store,
+        env: codexStoreEnv,
+        availableClis: ['codex'],
+        spawnFn: codexSpawn(),
+        persistCodexRollout: async () => ({
+          ok: false,
+          status: 'persist_failed',
+          attempts: 5,
+          error: { code: 'ENOSPC', message: 'waiting to be backed up' },
+        }),
+        cleanupCodexHome: async () => true,
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'codex_store_persist_failed' });
+    expect(
+      store.calls.some(
+        (call) =>
+          call[0] === 'supersedeHumanTask' &&
+          call[1].humanTaskId === 'q-codex' &&
+          call[1].supersededBy === 'codex_store_persist_failed',
+      ),
+    ).toBe(true);
+    expect(
+      store.calls.some((call) => call[0] === 'appendEvent' && call[1].type === 'v2.stage.parked'),
+    ).toBe(false);
+    expect(
+      store.calls.some(
+        (call) =>
+          call[0] === 'updateStageState' &&
+          call[1].state === 'FAILED' &&
+          call[1].pendingHumanTaskId === null,
+      ),
+    ).toBe(true);
+  });
+
+  it('warns but allows a successful non-parked Codex run when persistence fails', async () => {
+    const store = spyStore();
+    const result = await runStage(
+      { ...baseArgs, requestedCli: 'codex' },
+      baseDeps({
+        store,
+        env: codexStoreEnv,
+        availableClis: ['codex'],
+        spawnFn: codexSpawn(),
+        persistCodexRollout: async () => ({
+          ok: false,
+          status: 'persist_failed',
+          error: { code: 'ENOSPC' },
+        }),
+        cleanupCodexHome: async () => true,
+      }),
+    );
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(
+      store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.codex.store_persist_failed',
+      ),
+    ).toBe(true);
+    expect(
+      store.calls.find(
+        (call) => call[0] === 'updateStageState' && call[1].state === 'SUCCEEDED',
+      )?.[1].cliSessionId,
+    ).toBeNull();
+  });
+
+  it('persists a known Codex thread when the child spawn throws', async () => {
+    const persistCodexRollout = vi.fn(async () => ({ ok: true, status: 'persisted' }));
+    const result = await runStage(
+      { ...baseArgs, requestedCli: 'codex', resumeFrom: 'q-codex' },
+      baseDeps({
+        env: codexStoreEnv,
+        availableClis: ['codex'],
+        store: spyStore({
+          humanTask: {
+            humanTaskId: 'q-codex',
+            status: 'answered',
+            answer: { freeText: 'Proceed' },
+          },
+          stage: { cli: 'codex', cliSessionId: 'thread-old' },
+        }),
+        restoreCodexRollout: async () => ({ ok: true, status: 'restored' }),
+        persistCodexRollout,
+        cleanupCodexHome: async () => true,
+        spawnFn: () => {
+          throw new Error('spawn exploded');
+        },
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'cli_error' });
+    expect(persistCodexRollout).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-old' }),
+    );
   });
 
   it('demotes a recent resume to a fresh OpenCode session when the durable store is lost', async () => {

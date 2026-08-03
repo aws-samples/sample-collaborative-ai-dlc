@@ -47,6 +47,7 @@ import {
   persistKiroStore as defaultPersistKiroStore,
 } from '../cli/kiro-store.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from '../cli/opencode-store.js';
+import { cleanupCodexHome as defaultCleanupCodexHome } from '../cli/codex-store.js';
 import { repoUrl, repoProvider } from '../../shared/repo-provider.js';
 
 // The focused prompt. PURE — exported for tests. Hard boundaries: the agent
@@ -115,6 +116,7 @@ export const resolveConflict = async (
     materializeKiroAgent = defaultMaterializeKiroAgent,
     materializeOpenCodeConfig = defaultMaterializeOpenCodeConfig,
     materializeCodexHome = defaultMaterializeCodexHome,
+    cleanupCodexHome = defaultCleanupCodexHome,
     restoreKiroStore = defaultRestoreKiroStore,
     persistKiroStore = defaultPersistKiroStore,
     withOpenCodeStore = defaultWithOpenCodeStore,
@@ -214,6 +216,7 @@ export const resolveConflict = async (
       conflictedByRepo: conflictedByRepo.filter((r) => r.conflicts.length > 0),
     });
     let invocation;
+    let codexHome = null;
     if (cli === 'kiro') {
       // Kiro keeps ALL conversations in one SQLite store — restore before /
       // persist after so this one-shot run can't clobber sibling stages'.
@@ -229,7 +232,7 @@ export const resolveConflict = async (
       });
       invocation = driver.buildInvocation({ prompt, model, opencodeConfigContent });
     } else if (cli === 'codex') {
-      const codexHome = await materializeCodexHome({ workspaceDir, mcpEntry, scope, env });
+      codexHome = await materializeCodexHome({ workspaceDir, mcpEntry, scope, env });
       invocation = driver.buildInvocation({ prompt, model, codexHome });
     } else {
       const mcpConfigPath = await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env });
@@ -258,6 +261,9 @@ export const resolveConflict = async (
       return { ok: false, reason: 'cli_error', detail: e.message };
     } finally {
       if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
+      if (cli === 'codex') {
+        await cleanupCodexHome({ codexHome, env }).catch(() => false);
+      }
     }
     if ((result?.exitCode ?? 0) !== 0) {
       await abortAll(conflictedByRepo, dirFor);

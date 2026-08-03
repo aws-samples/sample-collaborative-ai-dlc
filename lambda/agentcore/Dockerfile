@@ -79,8 +79,8 @@ RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 # /mnt/workspace is the AgentCore managed-session-storage mount (present only at
 # invocation time). Create a fallback dir for local/non-AgentCore runs; chown so
 # the node user can write the checkout + CLI stores when the mount is absent.
-RUN mkdir -p /mnt/workspace /home/node/.codex-state \
-    && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/opencode /opt/bun /opt/uv /home/node/.codex-state
+RUN mkdir -p /mnt/workspace /home/node/.codex-state /home/node/.codex-runs \
+    && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/opencode /opt/bun /opt/uv /home/node/.codex-state /home/node/.codex-runs
 
 WORKDIR /mnt/workspace
 USER node
@@ -95,10 +95,10 @@ USER node
 #    recalls the conversation. See cli/kiro-store.js.
 #  - OpenCode: SQLite — the same copy protocol, but its XDG override is applied
 #    only to OpenCode children so Kiro's global XDG placement is unchanged.
-#  - Codex: plain JSONL rollouts — CODEX_HOME is materialized per stage UNDER
-#    the persistent mount (<ws>/.aidlc/codex-home), so sessions survive reaps
-#    like Claude's; only its SQLite state DB is redirected to ephemeral local
-#    disk (config sqlite_home → /home/node/.codex-state, created above).
+#  - Codex: CODEX_HOME stays on EPHEMERAL local disk. run-stage restores and
+#    atomically persists only the active thread's rollout JSONL under
+#    V2_CODEX_STORE_DIR; config, SQLite state, and non-resumable sessions never
+#    touch the managed mount. See cli/codex-store.js.
 ENV HOME=/home/node \
     PATH=/opt/kiro/bin:/opt/opencode/bin:/opt/bun/bin:/opt/uv/bin:/usr/local/bin:/usr/bin:/bin \
     V2_WORKSPACE_DIR=/mnt/workspace \
@@ -108,6 +108,8 @@ ENV HOME=/home/node \
     OPENCODE_XDG_DATA_HOME=/home/node/.opencode-data \
     V2_OPENCODE_STORE_DIR=/mnt/workspace/.opencode-data \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
+    V2_CODEX_HOME_ROOT=/home/node/.codex-runs \
+    V2_CODEX_STORE_DIR=/mnt/workspace/.aidlc/codex-home \
     V2_MCP_ENTRY=/opt/agentcore/mcp/index.js
 
 # The AgentCore managed-session-storage mount (/mnt/workspace) is owned by a uid

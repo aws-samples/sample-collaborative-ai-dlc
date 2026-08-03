@@ -119,4 +119,11 @@ describe('local E2E shell safety contract', () => {
     expect(harness).toContain('numbered patch line leaked through as a message event');
     expect(harness).toContain('async report()');
   });
+
+  it('cold-resumes Codex from one durable rollout and no local home state', () => {
+    expect(script).toContain('for action in setup fresh answer resume verify');
+    expect(harness).toContain('Codex resume container did not start with an empty local home');
+    expect(harness).toContain('Codex durable store must contain only its rollout');
+    expect(harness).toContain("durableFiles[0].startsWith('sessions/')");
+  });
 });

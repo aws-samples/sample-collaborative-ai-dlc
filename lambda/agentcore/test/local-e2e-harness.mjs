@@ -3,7 +3,7 @@
 // against DynamoDB Local + Gremlin Server and exercises the real runStage/MCP
 // lifecycle. The shell script is the supported entrypoint.
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
@@ -265,6 +265,26 @@ const snapshotKey = (executionId) => ({
   sk: 'E2E#SESSION_SNAPSHOT',
 });
 
+const listFiles = async (root) => {
+  const files = [];
+  const visit = async (dir) => {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const target = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) await visit(target);
+      else if (entry.isFile()) files.push(target.slice(root.length + 1));
+    }
+  };
+  await visit(root);
+  return files.toSorted();
+};
+
 const handlers = {
   async bootstrap() {
     await ensureTable();
@@ -374,6 +394,14 @@ const handlers = {
     const ids = idsFor(cli);
     const gate = await latestGate(ids.executionId, 'answered');
     if (!gate) throw new Error(`no answered ${cli} gate to resume`);
+    if (cli === 'codex') {
+      const localFiles = await listFiles(
+        process.env.V2_CODEX_HOME_ROOT || '/home/node/.codex-runs',
+      );
+      if (localFiles.length > 0) {
+        throw new Error(`Codex resume container did not start with an empty local home`);
+      }
+    }
     const result = await runLifecycleLeg({
       selectedCli: cli,
       resumeFrom: gate.humanTaskId,
@@ -445,6 +473,21 @@ const handlers = {
       await closeGraphSource(g);
     }
     if (!anchored) throw new Error(`${cli} artifact is not anchored to the Intent`);
+
+    if (cli === 'codex') {
+      const durableFiles = await listFiles(
+        process.env.V2_CODEX_STORE_DIR || `${workspaceDir}/.aidlc/codex-home`,
+      );
+      if (
+        durableFiles.length !== 1 ||
+        !durableFiles[0].startsWith('sessions/') ||
+        !durableFiles[0].endsWith(`-${stage.cliSessionId}.jsonl`)
+      ) {
+        throw new Error(
+          `Codex durable store must contain only its rollout: ${durableFiles.join(', ')}`,
+        );
+      }
+    }
 
     const { stdout } = await git([
       'ls-files',

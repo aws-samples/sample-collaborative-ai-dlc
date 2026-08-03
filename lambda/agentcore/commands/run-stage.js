@@ -43,6 +43,7 @@ import {
   materializeKiroAgent as defaultMaterializeKiroAgent,
   materializeOpenCodeConfig as defaultMaterializeOpenCodeConfig,
   materializeCodexHome as defaultMaterializeCodexHome,
+  resolveCodexHome,
 } from '../stage-materializer.js';
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
 import { materializeAttachments } from '../attachments.js';
@@ -64,6 +65,12 @@ import {
   resolveOpenCodeStore,
   withOpenCodeStore as defaultWithOpenCodeStore,
 } from '../cli/opencode-store.js';
+import {
+  cleanupCodexHome as defaultCleanupCodexHome,
+  persistCodexRollout as defaultPersistCodexRollout,
+  resolveCodexStore,
+  restoreCodexRollout as defaultRestoreCodexRollout,
+} from '../cli/codex-store.js';
 import {
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
   redirectHeavyDirs as defaultRedirectHeavyDirs,
@@ -359,6 +366,7 @@ const runReviewer = async ({
   materializeKiroAgent,
   materializeOpenCodeConfig,
   materializeCodexHome,
+  cleanupCodexHome,
   store,
   executionId,
   projectId,
@@ -442,10 +450,16 @@ const runReviewer = async ({
       promptViaStdin: invocation.promptViaStdin,
       spawnFn,
     });
-  if (cli === 'opencode') {
-    await defaultWithOpenCodeStore({ env, operation: execute });
-  } else {
-    await execute();
+  try {
+    if (cli === 'opencode') {
+      await defaultWithOpenCodeStore({ env, operation: execute });
+    } else {
+      await execute();
+    }
+  } finally {
+    if (cli === 'codex') {
+      await cleanupCodexHome({ codexHome: mcpKwargs.codexHome, env }).catch(() => false);
+    }
   }
   const verdict = await latestReviewerVerdict({
     store,
@@ -969,6 +983,9 @@ export const runStage = async (
     restoreOpenCodeStore = defaultRestoreOpenCodeStore,
     persistOpenCodeStore = defaultPersistOpenCodeStore,
     withOpenCodeStore = defaultWithOpenCodeStore,
+    restoreCodexRollout = defaultRestoreCodexRollout,
+    persistCodexRollout = defaultPersistCodexRollout,
+    cleanupCodexHome = defaultCleanupCodexHome,
     // Re-clone a wiped source checkout before the CLI spawns. Injected for tests.
     ensureWorkspaceSource = defaultEnsureWorkspaceSource,
     // Keep node_modules off the session mount via engine-owned symlinks to
@@ -1030,7 +1047,7 @@ export const runStage = async (
     await publish(livePayload);
   };
 
-  const fail = async (stageInstanceId, reason, detail) => {
+  const fail = async (stageInstanceId, reason, detail, { clearPending = false } = {}) => {
     if (stageInstanceId) {
       await store
         .updateStageState({
@@ -1039,6 +1056,7 @@ export const runStage = async (
           state: 'FAILED',
           runtimeError: reason,
           completedAt: true,
+          ...(clearPending ? { pendingHumanTaskId: null } : {}),
         })
         .catch(() => {});
     }
@@ -1311,10 +1329,36 @@ export const runStage = async (
   let cli;
   let cliSessionId = null;
   let resumeAnswer = null;
+  let resumeGate = null;
   // A resume we had to demote to a fresh run because the parked conversation was
   // lost with the wiped mount (D2 recoverable path): re-runs fresh with the human's
   // answer injected into the prompt so the agent does not re-ask.
   let demotedResume = false;
+  const recoverLostConversation = async () => {
+    const age = resumeGate ? gateAgeMs(resumeGate, now()) : null;
+    if (!reviewFeedback && age !== null && age >= FOURTEEN_DAYS_MS) {
+      return fail(
+        stageInstanceId,
+        'resume_store_expired',
+        'the parked conversation was lost (managed session storage expired) and the ' +
+          'question is over 14 days old — the run cannot be resumed',
+      );
+    }
+    demotedResume = true;
+    cliSessionId = cli === 'claude' ? ids() : null;
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.stage.recovered',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: `Parked conversation unavailable; re-running ${stageLabel} fresh with the answer injected`,
+      })
+      .catch(() => {});
+    return null;
+  };
   if (resumeFrom || reviewFeedback) {
     await emitLifecycleEvent({
       type: reviewFeedback ? 'v2.feedback.stage_resuming' : 'v2.stage.resuming',
@@ -1323,11 +1367,11 @@ export const runStage = async (
         : 'Resuming agent session...',
       stageInstanceId,
     });
-    const gate = resumeFrom
+    resumeGate = resumeFrom
       ? await store.getHumanTask(executionId, resumeFrom).catch(() => null)
       : null;
-    if (resumeFrom && !gate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
-    if (resumeFrom && gate.status === 'pending')
+    if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
+    if (resumeFrom && resumeGate.status === 'pending')
       return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
     const row = await store.getStage(executionId, stageInstanceId).catch(() => null);
     cli = row?.cli ?? null;
@@ -1340,7 +1384,7 @@ export const runStage = async (
         return fail(stageInstanceId, 'no_cli', `resume CLI "${cli}" not installed`);
       cli = null;
     }
-    resumeAnswer = reviewFeedbackPrompt || formatResumeAnswer(gate);
+    resumeAnswer = reviewFeedbackPrompt || formatResumeAnswer(resumeGate);
     if (!cli || !priorSessionId) {
       demotedResume = true;
       cli = selectCli({ requested: requestedCli, availableClis });
@@ -1361,7 +1405,9 @@ export const runStage = async (
     // V2_KIRO_STORE_DIR), so a re-cloned source means the conversation is gone too.
     // Kiro additionally copies its store mount→local each run; a failed restore is
     // the same signal even if the source happened to survive.
-    let conversationLost = !demotedResume && sourceRestored;
+    // Codex is restored from its dedicated rollout store after its scoped local
+    // home is resolved below. Checkout restoration is not a loss signal for it.
+    let conversationLost = !demotedResume && cli !== 'codex' && sourceRestored;
     if (!demotedResume && cli === 'kiro') {
       const kiroRestored = await restoreKiroStore({ env }).catch(() => false);
       if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
@@ -1373,33 +1419,8 @@ export const runStage = async (
     }
 
     if (conversationLost) {
-      // D2 (docs/v2-resume.md): a lost parked conversation is recoverable only
-      // inside managed session storage's 14-day window. Past it, hard-fail so the
-      // UI can flag a stale project. Inside it — a routine redeploy wipe — re-run
-      // the stage FRESH with the answered Q&A injected, so no work is stranded and
-      // the agent does not re-ask. (Was a blind resume_store_lost hard-fail before.)
-      const age = gate ? gateAgeMs(gate, now()) : null;
-      if (!reviewFeedback && age !== null && age >= FOURTEEN_DAYS_MS) {
-        return fail(
-          stageInstanceId,
-          'resume_store_expired',
-          'the parked conversation was lost (managed session storage expired) and the ' +
-            'question is over 14 days old — the run cannot be resumed',
-        );
-      }
-      demotedResume = true;
-      cliSessionId = cli === 'claude' ? ids() : null;
-      await store
-        .appendEvent({
-          executionId,
-          type: 'v2.stage.recovered',
-          stageInstanceId,
-          unitSlug,
-          sectionIndex,
-          actor: 'agentcore',
-          summary: `Parked conversation lost with the wiped workspace; re-running ${stageLabel} fresh with the answer injected`,
-        })
-        .catch(() => {});
+      const recoveryFailure = await recoverLostConversation();
+      if (recoveryFailure) return recoveryFailure;
     }
   } else {
     cli = selectCli({ requested: requestedCli, availableClis });
@@ -1414,9 +1435,6 @@ export const runStage = async (
     }
     if (cli === 'claude') cliSessionId = ids();
   }
-
-  // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
-  const freshRun = (!resumeFrom && !reviewFeedback) || demotedResume;
 
   // Resolve the model now that `cli` is known: the agent's tier row (tier-models
   // config) wins, then the flat project/global default model, then the agent
@@ -1437,6 +1455,58 @@ export const runStage = async (
     role: 'author',
     model,
   };
+
+  let codexHome = null;
+  let codexHomePrepared = false;
+  if ((resumeFrom || reviewFeedback) && !demotedResume && cli === 'codex') {
+    codexHome = resolveCodexHome({ scope: stageScope, env });
+    let restored;
+    try {
+      restored = await restoreCodexRollout({
+        threadId: cliSessionId,
+        codexHome,
+        env,
+      });
+    } catch (error) {
+      restored = {
+        ok: false,
+        status: 'io_error',
+        error: { code: error?.code ?? null, message: error?.message ?? String(error) },
+      };
+    }
+    const restoredOk = restored === true || restored?.ok === true;
+    const restoreStatus = restored === false ? 'restore_failed' : restored?.status;
+    const storeConfigured =
+      Boolean(resolveCodexStore({ env, codexHome })) && restoreStatus !== 'unconfigured';
+    if (restoredOk) {
+      codexHomePrepared = true;
+    } else if (storeConfigured) {
+      const detail = `${restoreStatus ?? 'restore_failed'}${
+        restored?.error?.code ? ` (${restored.error.code})` : ''
+      }`;
+      console.error(
+        `[run-stage] codex rollout not restored stage=${stageInstanceId} thread=${cliSessionId} status=${detail}`,
+      );
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.codex.store_restore_failed',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Codex rollout restore failed (${detail}); recovering with a fresh conversation`,
+        })
+        .catch(() => {});
+      const recoveryFailure = await recoverLostConversation();
+      if (recoveryFailure) return recoveryFailure;
+    } else if (!restoredOk) {
+      console.error(`[run-stage] codex rollout store not configured for resume ${stageInstanceId}`);
+    }
+  }
+
+  // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
+  const freshRun = (!resumeFrom && !reviewFeedback) || demotedResume;
 
   // Mark RUNNING + advance the execution pointer + persist the conversation
   // handle. A true resume PATCHES the parked row (WAITING_FOR_HUMAN) back to
@@ -1611,7 +1681,7 @@ export const runStage = async (
       return { opencodeConfigContent };
     }
     if (cli === 'codex') {
-      const codexHome = await materializeCodexHome({
+      codexHome = await materializeCodexHome({
         workspaceDir,
         mcpEntry,
         scope: stageScope,
@@ -1621,7 +1691,10 @@ export const runStage = async (
         // SSM-resolved secret env; full-value refs are forwarded by NAME via
         // codex's env_vars/env_http_headers and expand from the child env.
         secretEnv: mcpSecretEnv,
+        // A true resume already restored the selected rollout into this home.
+        reset: !codexHomePrepared,
       });
+      codexHomePrepared = true;
       return { codexHome };
     }
     const mcpConfigPath = await materializeMcpConfig({
@@ -1752,6 +1825,10 @@ export const runStage = async (
     const mcpKwargs = materialized[driver.contextKey]
       ? { [driver.contextKey]: materialized[driver.contextKey] }
       : await materializeCliMcp();
+    if (cli === 'codex' && materialized.codexHome) {
+      codexHome = materialized.codexHome;
+      codexHomePrepared = true;
+    }
     invocation = driver.buildInvocation({
       prompt,
       model,
@@ -1896,6 +1973,7 @@ export const runStage = async (
       onStdout: (chunk) => cliOutput.write(chunk),
       spawnFn,
     });
+  let spawnError = null;
   try {
     result =
       cli === 'opencode'
@@ -1906,22 +1984,85 @@ export const runStage = async (
             persist: persistOpenCodeStore,
           })
         : await spawnCli();
-    cliOutput.flush();
-    await outputQueue;
-    await sessionUpdateQueue;
   } catch (e) {
-    cliOutput.flush();
-    await outputQueue;
-    await sessionUpdateQueue;
+    spawnError = e;
+  }
+  cliOutput.flush();
+  await outputQueue;
+  await sessionUpdateQueue;
+
+  // Codex runs entirely against local disk. Once stdout has been drained (and
+  // therefore the thread id captured), persist only that thread's rollout.
+  // This also runs after a thrown spawn so an already-started/resumed thread is
+  // not lost merely because the child failed while shutting down.
+  let codexPersistResult = null;
+  let codexStoreConfigured = false;
+  if (cli === 'codex') {
+    codexHome = codexHome ?? invocation.env?.CODEX_HOME ?? null;
+    if (cliSessionId && codexHome) {
+      try {
+        const persisted = await persistCodexRollout({
+          threadId: cliSessionId,
+          codexHome,
+          env,
+        });
+        codexPersistResult =
+          persisted === true
+            ? { ok: true, status: 'persisted' }
+            : persisted === false
+              ? { ok: false, status: 'persist_failed' }
+              : persisted;
+      } catch (error) {
+        codexPersistResult = {
+          ok: false,
+          status: 'persist_failed',
+          error: { code: error?.code ?? null, message: error?.message ?? String(error) },
+        };
+      }
+    } else {
+      codexPersistResult = {
+        ok: false,
+        status: cliSessionId ? 'home_missing' : 'session_missing',
+      };
+    }
+
+    codexStoreConfigured = Boolean(resolveCodexStore({ env, codexHome }));
+    if (
+      codexStoreConfigured &&
+      !codexPersistResult?.ok &&
+      codexPersistResult?.status !== 'unconfigured'
+    ) {
+      const detail = `${codexPersistResult?.status ?? 'persist_failed'}${
+        codexPersistResult?.error?.code ? ` (${codexPersistResult.error.code})` : ''
+      }`;
+      console.error(
+        `[run-stage] codex rollout not persisted stage=${stageInstanceId} thread=${cliSessionId ?? '-'} status=${detail}`,
+      );
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.codex.store_persist_failed',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Codex rollout persistence failed (${detail})`,
+        })
+        .catch(() => {});
+    }
+    await cleanupCodexHome({ codexHome, env }).catch(() => false);
+  }
+
+  if (spawnError) {
     // Log the failure at the catch point — fail() only records it to DynamoDB
     // (the UI's cli_error), never to the container log. This makes the E2BIG (or
     // any spawn failure) visible + attributable to THIS stage/cli.
     console.error(
       `[run-stage] cli_error cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
-        `code=${e?.code ?? '-'} msg=${e?.message}`,
+        `code=${spawnError?.code ?? '-'} msg=${spawnError?.message}`,
     );
-    if (e?.stack) console.error(e.stack);
-    return fail(stageInstanceId, 'cli_error', e.message);
+    if (spawnError?.stack) console.error(spawnError.stack);
+    return fail(stageInstanceId, 'cli_error', spawnError.message);
   }
 
   const exitCode = result?.exitCode ?? 0;
@@ -2137,6 +2278,29 @@ export const runStage = async (
       `${cli === 'codex' ? 'Codex' : 'OpenCode'} parked the stage without emitting a session id; the conversation cannot be resumed`,
     );
   }
+  if (parked && cli === 'codex' && codexStoreConfigured && !codexPersistResult?.ok) {
+    await (
+      store.supersedeHumanTask?.({
+        executionId,
+        humanTaskId: parked.humanTaskId,
+        supersededBy: 'codex_store_persist_failed',
+      }) ?? Promise.resolve()
+    ).catch(() => {});
+    if (!unitSlug) {
+      await store
+        .updateExecution({
+          executionId,
+          pendingHumanTaskId: null,
+        })
+        .catch(() => {});
+    }
+    return fail(
+      stageInstanceId,
+      'codex_store_persist_failed',
+      'Codex parked the stage, but its rollout could not be written to durable storage',
+      { clearPending: true },
+    );
+  }
   if (!parked && exitCode !== 0) {
     // Kiro's benign empty-final-completion crash: the turn's work completed, the
     // agent just ended without closing text and kiro-cli's ACP rejected the empty
@@ -2204,6 +2368,13 @@ export const runStage = async (
       cliSessionId,
       cli,
     };
+  }
+
+  // A previous durable rollout may still exist after an atomic replace fails.
+  // Clear the handle on an otherwise successful leg so later review feedback
+  // demotes to fresh instead of resuming that stale transcript.
+  if (cli === 'codex' && codexStoreConfigured && !codexPersistResult?.ok) {
+    cliSessionId = null;
   }
 
   // WP2 policy (extended after the 2026-07 "no changes" incident): a git
@@ -2310,6 +2481,7 @@ export const runStage = async (
         materializeKiroAgent,
         materializeOpenCodeConfig,
         materializeCodexHome,
+        cleanupCodexHome,
         store,
         executionId,
         projectId,
