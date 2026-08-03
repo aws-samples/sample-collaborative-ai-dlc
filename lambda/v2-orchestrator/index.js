@@ -694,6 +694,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         stage,
         unitSlug,
         sectionIndex,
+        stageInstanceId: unitSlug
+          ? planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex)
+          : (stage.stageInstanceId ??
+            planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex)),
+        store,
         suffix,
         ids: { projectId, intentId, executionId },
         workflowId,
@@ -1442,6 +1447,11 @@ const runStage = async (
     cloneInputs,
     resumeFrom,
     reviewFeedback = null,
+    // Expected process-row identity for this attempt. The orchestrator already
+    // has the resolved plan, so it can reconcile a dead worker even when no
+    // callback result arrives to report the id.
+    stageInstanceId,
+    store,
   },
 ) => {
   // The attempt key names every durable identity for this stage attempt. It
@@ -1458,6 +1468,19 @@ const runStage = async (
     timeout: STAGE_CALLBACK_TIMEOUT,
     heartbeatTimeout: STAGE_CALLBACK_HEARTBEAT_TIMEOUT,
   });
+
+  const reconcileFailure = async (result) => {
+    if (result?.state !== 'FAILED' || !stageInstanceId) return result;
+    await ctx.step(`reconcile-stage-${attemptKey}`, () =>
+      store.failRunningStageAttempt({
+        executionId: ids.executionId,
+        stageInstanceId,
+        stageCallbackId,
+        runtimeError: result.reason ?? 'stage_failed',
+      }),
+    );
+    return result;
+  };
 
   const dispatch = await ctx.step(`run-${attemptKey}`, async () =>
     invokeRuntime(
@@ -1505,12 +1528,12 @@ const runStage = async (
   // an old container, duplicate job, missing fields) fails the stage HERE; the
   // verdict for an accepted job always travels through the callback.
   if (!dispatch || dispatch.ok === false || dispatch.error) {
-    return {
+    return reconcileFailure({
       ok: false,
       state: 'FAILED',
       reason: dispatch?.reason ?? 'stage_dispatch_failed',
       detail: dispatch?.detail ?? dispatch?.error ?? null,
-    };
+    });
   }
 
   try {
@@ -1521,25 +1544,29 @@ const runStage = async (
     const raw = await stageDone;
     const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (!result || typeof result !== 'object') {
-      return { ok: false, state: 'FAILED', reason: 'stage_bad_callback_result' };
+      return reconcileFailure({
+        ok: false,
+        state: 'FAILED',
+        reason: 'stage_bad_callback_result',
+      });
     }
-    return result;
+    return reconcileFailure(result);
   } catch (err) {
     if (err instanceof SyntaxError) {
-      return {
+      return reconcileFailure({
         ok: false,
         state: 'FAILED',
         reason: 'stage_bad_callback_result',
         detail: err.message,
-      };
+      });
     }
     // Callback timeout / heartbeat expiry (dead container) / explicit failure.
-    return {
+    return reconcileFailure({
       ok: false,
       state: 'FAILED',
       reason: 'stage_callback_failed',
       detail: err?.message ?? String(err),
-    };
+    });
   }
 };
 

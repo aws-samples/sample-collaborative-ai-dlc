@@ -115,6 +115,7 @@ beforeEach(() => {
       // Default: gate is answered (not pending) by the time we re-read it.
       getHumanTask: vi.fn(async () => ({ status: 'answered' })),
       appendEvent: vi.fn(async () => ({})),
+      failRunningStageAttempt: vi.fn(async () => null),
       listUnits: vi.fn(async () => []),
       getUnit: vi.fn(async () => null),
     },
@@ -522,9 +523,12 @@ describe('orchestrator durable handler', () => {
   });
 
   it('fails the execution when a stage fails (verdict via callback)', async () => {
-    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
+    });
     deps.invokeRuntime = makeRuntime(ctx, (payload, n) =>
-      n === 1 ? { ok: true } : { ok: false, state: 'FAILED', reason: 'sensor_blocked' },
+      n === 1 ? { ok: true } : { ok: false, state: 'FAILED', reason: 'stage_job_crashed' },
     );
     const res = await __durableHandler(
       { action: 'start', intentId: 'i1', executionId: 'i1' },
@@ -534,6 +538,12 @@ describe('orchestrator durable handler', () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('stage_failed');
     expect(deps.store.updateExecution.mock.calls.map((c) => c[0].status)).toContain('FAILED');
+    expect(deps.store.failRunningStageAttempt).toHaveBeenCalledWith({
+      executionId: 'i1',
+      stageInstanceId: 'si-a',
+      stageCallbackId: 'cb-stage-cb-a',
+      runtimeError: 'stage_job_crashed',
+    });
   });
 
   it('fails the stage when the container REFUSES the dispatch (accept-time failure)', async () => {
@@ -602,7 +612,10 @@ describe('orchestrator durable handler', () => {
 
   it('fails the stage (not the whole run silently) when the stage callback rejects', async () => {
     // Callback timeout / heartbeat expiry: the container died mid-stage.
-    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
+    });
     const dead = makeCtx({
       createCallback: async (name) => {
         if (String(name).startsWith('stage-cb-')) {
@@ -625,6 +638,12 @@ describe('orchestrator durable handler', () => {
     expect(res.reason).toBe('stage_failed');
     const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
     expect(failCall[0].failureReason).toContain('stage_callback_failed');
+    expect(deps.store.failRunningStageAttempt).toHaveBeenCalledWith({
+      executionId: 'i1',
+      stageInstanceId: 'si-a',
+      stageCallbackId: 'cb-stage-cb-a',
+      runtimeError: 'stage_callback_failed',
+    });
   });
 
   it('emits workspace lifecycle events so init-ws is visible in the feed', async () => {
