@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
 const projectCacheMock = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'admin' | 'member' }));

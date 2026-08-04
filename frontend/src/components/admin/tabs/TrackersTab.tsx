@@ -4,7 +4,7 @@
 // pointing at the Source Control tab. Tracker data migration lives at the
 // bottom.
 
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowRight, Link2 } from 'lucide-react';
 import { getTrackerProvider } from '@/lib/trackerProviders';

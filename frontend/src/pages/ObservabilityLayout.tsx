@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useMemo, useEffect, useCallback } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router';
 import { useObservability } from '@/hooks/useObservability';
 import { IterationDetailView } from '@/components/observability/IterationDetailView';
 import ObservabilityDashboard from './ObservabilityDashboard';

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useIntent, stageRowKey, type IntentStageRow } from '@/contexts/IntentContext';
 import type { StageState } from '@/services/intents';
 import type { CompiledWorkflow } from '@/services/workflows';

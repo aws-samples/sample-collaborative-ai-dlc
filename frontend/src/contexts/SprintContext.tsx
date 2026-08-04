@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import type { Sprint } from '@/services/sprints';
 import type { Requirement } from '@/services/requirements';
 import type { UserStory } from '@/services/userStories';

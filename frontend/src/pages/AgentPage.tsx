@@ -9,7 +9,7 @@ import { AgentStatusBadge } from '@/components/domain/AgentStatusBadge';
 import { AgentStreamPanel } from '@/components/AgentStreamPanel';
 import { TimelinePanel } from '@/components/TimelinePanel';
 import { Bot, ArrowLeft, MessageCircleQuestion } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';

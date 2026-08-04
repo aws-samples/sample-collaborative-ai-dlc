@@ -5,7 +5,7 @@
 // between tabs.
 
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router';
 import { projectsService, type Project } from '@/services/projects';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';

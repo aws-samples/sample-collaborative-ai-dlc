@@ -1,4 +1,4 @@
-import { useNavigate, useLocation, useParams } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router';
 import { useEffect, useState, useCallback } from 'react';
 import {
   ArrowLeft,

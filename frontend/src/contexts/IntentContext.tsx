@@ -8,7 +8,7 @@ import {
   useState,
 } from 'react';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import {
   intentsService,
   type GateAnswer,
