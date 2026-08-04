@@ -7,6 +7,7 @@ import {
   CognitoIdentityProviderClient,
   ListUsersCommand,
   ListUsersInGroupCommand,
+  AdminGetUserCommand,
   AdminAddUserToGroupCommand,
   AdminRemoveUserFromGroupCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
@@ -27,6 +28,19 @@ const cognitoUser = (username, sub, email, extra = {}) => ({
   ],
   ...extra,
 });
+
+const federatedUser = (providerName, providerType, username, sub, email, claimValues) =>
+  cognitoUser(username, sub, email, {
+    UserStatus: 'EXTERNAL_PROVIDER',
+    Attributes: [
+      ...cognitoUser(username, sub, email).Attributes,
+      {
+        Name: 'identities',
+        Value: JSON.stringify([{ providerName, providerType, userId: sub }]),
+      },
+      { Name: 'custom:sso_roles', Value: claimValues },
+    ],
+  });
 
 const makeEvent = (
   httpMethod,
@@ -60,6 +74,10 @@ beforeEach(() => {
   cognitoMock.on(ListUsersInGroupCommand).resolves({
     Users: [cognitoUser('alice', 'sub-alice', 'alice@x')],
   });
+  cognitoMock.on(AdminGetUserCommand).resolves({
+    Username: 'bob',
+    UserAttributes: cognitoUser('bob', 'sub-bob', 'bob@x').Attributes,
+  });
   cognitoMock.on(AdminAddUserToGroupCommand).resolves({});
   cognitoMock.on(AdminRemoveUserFromGroupCommand).resolves({});
 });
@@ -69,7 +87,7 @@ afterEach(() => {
 });
 
 describe('GET /users (directory)', () => {
-  it('lists users without exposing usernames (legacy wire shape)', async () => {
+  it('lists assignable users without exposing Cognito usernames', async () => {
     const res = await handler(makeEvent('GET', '/users'));
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -80,8 +98,18 @@ describe('GET /users (directory)', () => {
         displayName: '',
         enabled: true,
         status: 'CONFIRMED',
+        identitySource: 'cognito',
+        identityProvider: null,
       },
-      { userId: 'sub-bob', email: 'bob@x', displayName: '', enabled: true, status: 'CONFIRMED' },
+      {
+        userId: 'sub-bob',
+        email: 'bob@x',
+        displayName: '',
+        enabled: true,
+        status: 'CONFIRMED',
+        identitySource: 'cognito',
+        identityProvider: null,
+      },
     ]);
   });
 
@@ -103,6 +131,97 @@ describe('GET /users (directory)', () => {
     const res = await handler(makeEvent('GET', '/users'));
     expect(JSON.parse(res.body)).toHaveLength(2);
   });
+
+  it.each(['OIDC', 'SAML'])(
+    'includes admitted %s identities without relying on CONFIRMED status',
+    async (providerType) => {
+      const providerName = `Test${providerType}`;
+      vi.stubEnv(
+        'SSO_ROLE_CONFIG',
+        JSON.stringify({
+          providers: {
+            [providerName]: {
+              roleMappings: { 'platform-admin': ['aidlc-admin'] },
+              requiredClaimValues: ['aidlc-user'],
+            },
+          },
+        }),
+      );
+      cognitoMock.on(ListUsersCommand).resolves({
+        Users: [
+          cognitoUser('local', 'sub-local', 'local@x'),
+          federatedUser(
+            providerName,
+            providerType,
+            `${providerName}_member`,
+            'sub-member',
+            'member@x',
+            '[aidlc-user]',
+          ),
+          federatedUser(
+            providerName,
+            providerType,
+            `${providerName}_denied`,
+            'sub-denied',
+            'denied@x',
+            '[other-group]',
+          ),
+        ],
+      });
+
+      const res = await handler(makeEvent('GET', '/users'));
+
+      expect(JSON.parse(res.body)).toEqual([
+        expect.objectContaining({
+          userId: 'sub-local',
+          identitySource: 'cognito',
+          status: 'CONFIRMED',
+        }),
+        expect.objectContaining({
+          userId: 'sub-member',
+          identitySource: 'sso',
+          identityProvider: providerName,
+          status: 'EXTERNAL_PROVIDER',
+        }),
+      ]);
+    },
+  );
+
+  it('excludes disabled and unconfirmed local users', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [
+        cognitoUser('confirmed', 'sub-confirmed', 'confirmed@x'),
+        cognitoUser('unconfirmed', 'sub-unconfirmed', 'unconfirmed@x', {
+          UserStatus: 'UNCONFIRMED',
+        }),
+        cognitoUser('disabled', 'sub-disabled', 'disabled@x', { Enabled: false }),
+      ],
+    });
+
+    const res = await handler(makeEvent('GET', '/users'));
+
+    expect(JSON.parse(res.body).map((user) => user.userId)).toEqual(['sub-confirmed']);
+  });
+
+  it('excludes federated identities whose provider is no longer configured', async () => {
+    vi.stubEnv('SSO_ROLE_CONFIG', JSON.stringify({ providers: {} }));
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [
+        federatedUser(
+          'RemovedProvider',
+          'OIDC',
+          'RemovedProvider_user',
+          'sub-removed',
+          'removed@x',
+          '[aidlc-user]',
+        ),
+      ],
+    });
+
+    const res = await handler(makeEvent('GET', '/users'));
+
+    expect(JSON.parse(res.body)).toEqual([]);
+  });
 });
 
 describe('GET /admin/users', () => {
@@ -117,9 +236,93 @@ describe('GET /admin/users', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body).toEqual([
-      expect.objectContaining({ username: 'alice', userId: 'sub-alice', platformAdmin: true }),
-      expect.objectContaining({ username: 'bob', userId: 'sub-bob', platformAdmin: false }),
+      expect.objectContaining({
+        username: 'alice',
+        userId: 'sub-alice',
+        platformAdmin: true,
+        identitySource: 'cognito',
+        roleManagedExternally: false,
+      }),
+      expect.objectContaining({
+        username: 'bob',
+        userId: 'sub-bob',
+        platformAdmin: false,
+        identitySource: 'cognito',
+        roleManagedExternally: false,
+      }),
     ]);
+  });
+
+  it('reports federated roles from the authoritative IdP mapping', async () => {
+    vi.stubEnv(
+      'SSO_ROLE_CONFIG',
+      JSON.stringify({
+        providers: {
+          TestOIDC: {
+            roleMappings: { 'platform-admin': ['aidlc-admin'] },
+            requiredClaimValues: [],
+          },
+        },
+      }),
+    );
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [
+        cognitoUser('TestOIDC_alice', 'sub-sso', 'alice@x', {
+          Attributes: [
+            ...cognitoUser('TestOIDC_alice', 'sub-sso', 'alice@x').Attributes,
+            {
+              Name: 'identities',
+              Value: JSON.stringify([{ providerName: 'TestOIDC', providerType: 'OIDC' }]),
+            },
+            { Name: 'custom:sso_roles', Value: '[aidlc-admin]' },
+          ],
+        }),
+      ],
+    });
+    const res = await handler(makeEvent('GET', '/admin/users', { admin: true }));
+    expect(JSON.parse(res.body)[0]).toMatchObject({
+      identitySource: 'sso',
+      identityProvider: 'TestOIDC',
+      mappedRoles: ['platform-admin'],
+      roleManagedExternally: true,
+      accessGranted: true,
+      platformAdmin: true,
+    });
+  });
+
+  it('retains denied identities for administrators without granting mapped roles', async () => {
+    vi.stubEnv(
+      'SSO_ROLE_CONFIG',
+      JSON.stringify({
+        providers: {
+          TestOIDC: {
+            roleMappings: { 'platform-admin': ['aidlc-admin'] },
+            requiredClaimValues: ['aidlc-user'],
+          },
+        },
+      }),
+    );
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [
+        federatedUser(
+          'TestOIDC',
+          'OIDC',
+          'TestOIDC_denied',
+          'sub-denied',
+          'denied@x',
+          '[aidlc-admin]',
+        ),
+      ],
+    });
+
+    const res = await handler(makeEvent('GET', '/admin/users', { admin: true }));
+
+    expect(JSON.parse(res.body)[0]).toMatchObject({
+      identitySource: 'sso',
+      accessGranted: false,
+      mappedRoles: ['platform-admin'],
+      platformAdmin: false,
+    });
   });
 });
 
@@ -182,9 +385,26 @@ describe('PUT /admin/users/{username}/platform-admin', () => {
   it('returns 404 for an unknown user', async () => {
     const err = new Error('User does not exist.');
     err.name = 'UserNotFoundException';
-    cognitoMock.on(AdminAddUserToGroupCommand).rejects(err);
+    cognitoMock.on(AdminGetUserCommand).rejects(err);
     const res = await put('ghost', { isAdmin: true });
     expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects role changes for federated users', async () => {
+    cognitoMock.on(AdminGetUserCommand).resolves({
+      Username: 'TestOIDC_bob',
+      UserAttributes: [
+        ...cognitoUser('TestOIDC_bob', 'sub-sso', 'bob@x').Attributes,
+        {
+          Name: 'identities',
+          Value: JSON.stringify([{ providerName: 'TestOIDC', providerType: 'OIDC' }]),
+        },
+      ],
+    });
+    const res = await put('TestOIDC_bob', { isAdmin: true });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('EXTERNALLY_MANAGED_ROLE');
+    expect(cognitoMock.commandCalls(AdminAddUserToGroupCommand)).toHaveLength(0);
   });
 
   it('validates the body', async () => {

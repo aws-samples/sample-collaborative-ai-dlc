@@ -16,6 +16,7 @@
     "lambda/gitlab",
     "lambda/migrate-tracker-fields",
     "lambda/seed-blocks",
+    "lambda/sso-token",
     "lambda/source-control",
     "lambda/projects",
     "lambda/purge-neptune",

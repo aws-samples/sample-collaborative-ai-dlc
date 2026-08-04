@@ -20,6 +20,7 @@ import { TRACKER_PROVIDERS } from './lib/trackerProviders';
 // heavy page-specific deps — graph rendering, syntax highlighting, editors).
 // Login stays static so the auth entry point renders without a second fetch.
 import Login from './pages/Login';
+import AuthCallback from './pages/AuthCallback';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Project = lazy(() => import('./pages/Project'));
@@ -70,6 +71,7 @@ function App() {
               <Routes>
                 {/* Public routes (no shell) */}
                 <Route path="/login" element={<Login />} />
+                <Route path="/auth/callback" element={<AuthCallback />} />
                 {/* Git provider OAuth callbacks (GitHub, GitLab) — same shape,
                   driven from the tracker registry. Jira differs (auth-gated +
                   its own component) so it stays a separate route below. */}

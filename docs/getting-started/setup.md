@@ -79,7 +79,7 @@ This is a non-release mode. The installer resolves the branch to an immutable co
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
 
-Every public path — the SPA, `/api/*`, `/ws` and `/yjs/*` — is served by a single CloudFront distribution, so a custom domain needs exactly one certificate and one distribution change. There is no API Gateway custom domain, no Cognito hosted-UI domain and no load balancer certificate to configure.
+Every public path — the SPA, `/api/*`, `/ws` and `/yjs/*` — is served by a single CloudFront distribution, so a custom domain needs exactly one certificate and one distribution change. There is no API Gateway custom domain or load balancer certificate to configure. Enterprise SSO uses a separate Cognito managed-login domain for federation; it does not serve the application.
 
 The certificate **must be in `us-east-1`** regardless of the deployment region, because CloudFront accepts viewer certificates from no other region.
 
@@ -242,6 +242,13 @@ Setting the domain at initial install avoids all of the following. On an existin
 
 `update --no-domain` reverses the change. The CloudFront domain never changes, so it remains a working entry point throughout.
 
+### Enterprise SSO
+
+OIDC and SAML federation, including Microsoft Entra ID and Okta, is configured
+at deployment time rather than in the Admin UI. See [Enterprise SSO](enterprise-sso.md)
+for the installer bootstrap sequence, provider files, and authoritative role
+mapping.
+
 ### Adopt an existing v1 deployment
 
 The existing checkout must contain its environment's `.tfvars` and `.s3.tfbackend` files:
@@ -314,7 +321,7 @@ These environment variables are useful when iterating:
 
 ### Bootstrap the first platform administrator
 
-The **Admin** page (user management, agent settings and default models, provider OAuth/App configuration, migrations) and workflow/building-block authoring require membership in the Cognito **`platform-admin`** group. Bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional admins can be granted or revoked in the UI under **Admin → Users**:
+The **Admin** page (user management, agent settings and default models, provider OAuth/App configuration, migrations) and workflow/building-block authoring require the **`platform-admin`** role. For local Cognito users, bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional local admins can be granted or revoked in the UI under **Admin → Users**:
 
 ```bash
 aws cognito-idp admin-add-user-to-group \
@@ -322,6 +329,10 @@ aws cognito-idp admin-add-user-to-group \
   --username <username> \
   --group-name platform-admin
 ```
+
+Federated roles are mapped from the external IdP and cannot be changed in this
+UI or with downstream Cognito group membership. See
+[Enterprise SSO → Role and access mapping](enterprise-sso.md#role-and-access-mapping).
 
 ### Configure provider OAuth apps
 

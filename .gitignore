@@ -47,6 +47,7 @@ mise.toml
 
 lambda/dist
 lambda/*/.build/
+test/fixtures/oidc-idp/.role-claim.zip
 
 # Documentation build output
 site/

@@ -1,5 +1,5 @@
 terraform {
-  # terraform_data (used for the custom domain plan-time guards) requires 1.4.
+  # terraform_data (used for plan-time configuration guards) requires 1.4.
   required_version = ">= 1.4"
   required_providers {
     aws = {
@@ -85,6 +85,82 @@ locals {
     ["http://localhost:5173"],
   ))
   cors_allowed_origins = join(",", local.cors_origin_list)
+
+  sso_enabled = var.auth_mode != "local"
+
+  sso_role_config = {
+    providers = {
+      for name, provider in var.sso_providers : name => {
+        roleMappings        = provider.role_mappings
+        requiredClaimValues = provider.required_claim_values
+      }
+    }
+  }
+}
+
+resource "terraform_data" "sso_preconditions" {
+  input = nonsensitive(var.sso_providers)
+
+  lifecycle {
+    precondition {
+      condition     = local.sso_enabled == (length(var.sso_providers) > 0)
+      error_message = "local auth_mode requires no SSO providers; hybrid and sso-only require at least one."
+    }
+
+    precondition {
+      condition = var.auth_mode != "sso-only" || anytrue([
+        for provider in values(var.sso_providers) :
+        length(lookup(provider.role_mappings, "platform-admin", [])) > 0
+      ])
+      error_message = "sso-only auth_mode requires at least one platform-admin role mapping."
+    }
+
+    precondition {
+      condition = alltrue([
+        for provider in values(var.sso_providers) :
+        lower(provider.type) != "oidc" || (
+          provider.issuer_url != "" &&
+          provider.client_id != "" &&
+          provider.client_secret_arn != "" &&
+          contains(provider.scopes, "openid")
+        )
+      ])
+      error_message = "OIDC providers require issuer_url, client_id, client_secret_arn, and the openid scope."
+    }
+
+    precondition {
+      condition = alltrue([
+        for provider in values(var.sso_providers) :
+        lower(provider.type) != "saml" ||
+        ((provider.metadata_url != "") != (provider.metadata_xml != ""))
+      ])
+      error_message = "SAML providers require exactly one of metadata_url or metadata_xml."
+    }
+
+    precondition {
+      condition = alltrue([
+        for provider in values(var.sso_providers) :
+        (length(provider.role_mappings) == 0 && length(provider.required_claim_values) == 0) ||
+        provider.role_claim != ""
+      ])
+      error_message = "Providers with role mappings or access gates require role_claim."
+    }
+
+    precondition {
+      condition = alltrue(flatten([
+        for provider in values(var.sso_providers) : [
+          for role in keys(provider.role_mappings) :
+          contains(jsondecode(file("${path.module}/../config/platform-roles.json")), role)
+        ]
+      ]))
+      error_message = "SSO role mappings may only target roles implemented by this release."
+    }
+
+    precondition {
+      condition     = length(jsonencode(local.sso_role_config)) <= 3500
+      error_message = "The normalized SSO role configuration exceeds the Lambda environment limit. Reduce provider mappings."
+    }
+  }
 }
 
 # Fails the plan on custom domain configurations that would otherwise surface as
@@ -169,8 +245,11 @@ module "networking" {
 module "auth" {
   source = "./modules/auth"
 
-  project_name = var.project_name
-  environment  = var.environment
+  project_name  = var.project_name
+  environment   = var.environment
+  app_url       = local.app_url
+  auth_mode     = var.auth_mode
+  sso_providers = var.sso_providers
 }
 
 # Frontend (S3 + CloudFront)
@@ -317,6 +396,7 @@ module "lambda" {
   jira_redirect_uri                   = "${local.app_url}/trackers/callback/jira-cloud"
   cognito_user_pool_id                = module.auth.user_pool_id
   cognito_user_pool_arn               = module.auth.user_pool_arn
+  sso_role_config                     = jsonencode(local.sso_role_config)
   cors_allowed_origins                = local.cors_allowed_origins
   realtime_doc_secret_param_arn       = module.realtime.realtime_doc_secret_param_arn
   realtime_doc_secret_param_name      = module.realtime.realtime_doc_secret_param_name

@@ -11,6 +11,7 @@ nav = [
     "getting-started/methodology-map.md",
     "getting-started/prerequisites.md",
     "getting-started/setup.md",
+    "getting-started/enterprise-sso.md",
     "getting-started/first-intent.md",
   ] },
   { "How it works" = [

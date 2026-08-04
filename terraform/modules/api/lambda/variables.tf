@@ -198,6 +198,12 @@ variable "cognito_user_pool_arn" {
   type        = string
 }
 
+variable "sso_role_config" {
+  description = "Normalized non-secret provider role mappings for the Cognito user directory"
+  type        = string
+  default     = "{\"providers\":{}}"
+}
+
 variable "cors_allowed_origins" {
   description = "Comma-separated list of allowed CORS origins (e.g. https://d3c2j...cloudfront.net,http://localhost:5173)"
   type        = string

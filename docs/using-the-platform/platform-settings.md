@@ -10,7 +10,12 @@ The hostname itself is not editable here. It is set by the `app_domain` Terrafor
 
 ## Users
 
-**User Management** — grant or revoke the platform-admin role for any Cognito user. Changes apply at the user's next sign-in. Self-demotion is blocked, so an installation can never lock itself out of administration.
+**User Management** — grant or revoke the platform-admin role for local Cognito
+users. Changes apply at the user's next sign-in. Self-demotion is blocked, so
+an installation cannot remove its current local administrator by accident.
+Federated users show their identity provider and effective mapped roles, but
+their role control is read-only because the external IdP is authoritative. See
+[Enterprise SSO](../getting-started/enterprise-sso.md#role-and-access-mapping).
 
 Day-to-day project access is _not_ managed here — it lives in each project's [Members tab](projects.md#members).
 

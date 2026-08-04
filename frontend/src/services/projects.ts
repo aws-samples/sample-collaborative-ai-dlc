@@ -152,13 +152,17 @@ export interface AddMemberInput {
   role: ProjectRole;
 }
 
-export interface CognitoUser {
+export interface UserPoolIdentity {
   userId: string;
   email: string;
   displayName: string;
   enabled: boolean;
   status: string;
+  identitySource: 'cognito' | 'sso';
+  identityProvider: string | null;
 }
+
+export type AssignableUser = UserPoolIdentity;
 
 // A project custom agent rule (user-uploaded .md reference doc). `s3Key` is the
 // artifacts-bucket key; `downloadUrl`/`uploadUrl` are presigned per request.
@@ -192,8 +196,8 @@ export const projectsService = {
   removeMember: (projectId: string, userId: string) =>
     api.delete(`/projects/${projectId}/members/${userId}`),
 
-  // Cognito users
-  listCognitoUsers: () => api.get<CognitoUser[]>('/users'),
+  // Identities currently eligible for project assignment
+  listAssignableUsers: () => api.get<AssignableUser[]>('/users'),
 
   // Tracker abstraction migration (#194 Phase 1). Owner/admin only. Idempotent.
   migrateTracker: (projectId: string, dryRun = false) =>

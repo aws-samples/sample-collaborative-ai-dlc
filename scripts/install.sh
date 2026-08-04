@@ -27,6 +27,10 @@ APP_DOMAIN="${AIDLC_APP_DOMAIN:-}"
 APP_DOMAIN_ALIASES="${AIDLC_APP_DOMAIN_ALIASES:-}"
 ACM_CERTIFICATE_ARN="${AIDLC_ACM_CERTIFICATE_ARN:-}"
 ROUTE53_ZONE_ID="${AIDLC_ROUTE53_ZONE_ID:-}"
+AUTH_MODE="${AIDLC_AUTH_MODE:-local}"
+SSO_CONFIG_FILE="${AIDLC_SSO_CONFIG_FILE:-}"
+SSO_PROVIDERS_JSON="${AIDLC_SSO_PROVIDERS_JSON:-}"
+[[ -n "$SSO_PROVIDERS_JSON" ]] || SSO_PROVIDERS_JSON="{}"
 ENVIRONMENT_EXPLICIT="${AIDLC_ENVIRONMENT+x}"
 REGION_EXPLICIT="${AIDLC_REGION+x}"
 PROFILE_EXPLICIT="${AIDLC_AWS_PROFILE+x}"
@@ -40,6 +44,9 @@ ACM_CERTIFICATE_ARN_EXPLICIT="${AIDLC_ACM_CERTIFICATE_ARN+x}"
 ROUTE53_ZONE_ID_EXPLICIT="${AIDLC_ROUTE53_ZONE_ID+x}"
 DOMAIN_OPTION_EXPLICIT=0
 NO_DOMAIN_EXPLICIT=0
+AUTH_MODE_EXPLICIT="${AIDLC_AUTH_MODE+x}"
+SSO_CONFIG_EXPLICIT="${AIDLC_SSO_CONFIG_FILE+x}"
+PERSISTED_AUTH_MODE="local"
 SOURCE=""
 ASSUME_YES="${AIDLC_YES:-0}"
 ALLOW_DOWNGRADE="${AIDLC_ALLOW_DOWNGRADE:-0}"
@@ -69,6 +76,11 @@ Options:
   --allow-downgrade            Permit an explicit downgrade
   --yes                        Accept non-secret prompts
 
+Authentication:
+  --auth-mode MODE             local, hybrid, or sso-only (default: local)
+  --sso-config FILE            OIDC/SAML provider configuration JSON
+  --no-sso                     Set local mode and remove configured providers
+
 Custom domain (all optional; omit every flag to serve on the CloudFront domain):
   --domain HOST                Canonical hostname, e.g. aidlc.example.com
   --domain-alias HOST          Additional hostname; repeat for more than one
@@ -92,6 +104,13 @@ while [[ $# -gt 0 ]]; do
         --admin) ADMIN_USERNAME="${2:?--admin requires a value}"; ADMIN_EXPLICIT=1; shift 2 ;;
         --repo-url) REPOSITORY_URL="${2:?--repo-url requires a value}"; REPOSITORY_EXPLICIT=1; shift 2 ;;
         --source) SOURCE="${2:?--source requires a path}"; shift 2 ;;
+        --auth-mode) AUTH_MODE="${2:?--auth-mode requires a value}"; AUTH_MODE_EXPLICIT=1; shift 2 ;;
+        --sso-config) SSO_CONFIG_FILE="${2:?--sso-config requires a file}"; SSO_CONFIG_EXPLICIT=1; shift 2 ;;
+        --no-sso)
+            AUTH_MODE="local"; SSO_CONFIG_FILE=""; SSO_PROVIDERS_JSON="{}"
+            AUTH_MODE_EXPLICIT=1; SSO_CONFIG_EXPLICIT=1
+            shift
+            ;;
         --domain) APP_DOMAIN="${2:?--domain requires a hostname}"; APP_DOMAIN_EXPLICIT=1; DOMAIN_OPTION_EXPLICIT=1; shift 2 ;;
         --domain-alias)
             APP_DOMAIN_ALIASES="${APP_DOMAIN_ALIASES:+$APP_DOMAIN_ALIASES,}${2:?--domain-alias requires a hostname}"
@@ -225,9 +244,13 @@ load_config() {
         local requested_app_domain_aliases="$APP_DOMAIN_ALIASES"
         local requested_certificate_arn="$ACM_CERTIFICATE_ARN"
         local requested_zone_id="$ROUTE53_ZONE_ID"
+        local requested_auth_mode="$AUTH_MODE"
+        local requested_sso_config="$SSO_CONFIG_FILE"
+        local requested_sso_providers="$SSO_PROVIDERS_JSON"
         # The file is written by write_config using shell-escaped values.
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
+        PERSISTED_AUTH_MODE="${AIDLC_AUTH_MODE:-local}"
         ENVIRONMENT="${AIDLC_ENVIRONMENT:-$requested_environment}"
         REGION="${AIDLC_REGION:-$requested_region}"
         PROFILE="${AIDLC_AWS_PROFILE:-$requested_profile}"
@@ -238,6 +261,9 @@ load_config() {
         APP_DOMAIN_ALIASES="${AIDLC_APP_DOMAIN_ALIASES:-$requested_app_domain_aliases}"
         ACM_CERTIFICATE_ARN="${AIDLC_ACM_CERTIFICATE_ARN:-$requested_certificate_arn}"
         ROUTE53_ZONE_ID="${AIDLC_ROUTE53_ZONE_ID:-$requested_zone_id}"
+        AUTH_MODE="${AIDLC_AUTH_MODE:-$requested_auth_mode}"
+        SSO_PROVIDERS_JSON="${AIDLC_SSO_PROVIDERS_JSON:-$requested_sso_providers}"
+        SSO_CONFIG_FILE="$requested_sso_config"
         [[ -n "$ENVIRONMENT_EXPLICIT" ]] && ENVIRONMENT="$requested_environment"
         [[ -n "$REGION_EXPLICIT" ]] && REGION="$requested_region"
         [[ -n "$PROFILE_EXPLICIT" ]] && PROFILE="$requested_profile"
@@ -248,6 +274,11 @@ load_config() {
         [[ -n "$APP_DOMAIN_ALIASES_EXPLICIT" ]] && APP_DOMAIN_ALIASES="$requested_app_domain_aliases"
         [[ -n "$ACM_CERTIFICATE_ARN_EXPLICIT" ]] && ACM_CERTIFICATE_ARN="$requested_certificate_arn"
         [[ -n "$ROUTE53_ZONE_ID_EXPLICIT" ]] && ROUTE53_ZONE_ID="$requested_zone_id"
+        [[ -n "$AUTH_MODE_EXPLICIT" ]] && AUTH_MODE="$requested_auth_mode"
+        if [[ -n "$SSO_CONFIG_EXPLICIT" ]]; then
+            SSO_CONFIG_FILE="$requested_sso_config"
+            [[ -z "$requested_sso_config" ]] && SSO_PROVIDERS_JSON="$requested_sso_providers"
+        fi
         if [[ -n "$VERSION_EXPLICIT" && -z "$REF_EXPLICIT" ]]; then
             REF=""
         fi
@@ -267,8 +298,41 @@ write_config() {
         printf 'AIDLC_APP_DOMAIN_ALIASES=%q\n' "$APP_DOMAIN_ALIASES"
         printf 'AIDLC_ACM_CERTIFICATE_ARN=%q\n' "$ACM_CERTIFICATE_ARN"
         printf 'AIDLC_ROUTE53_ZONE_ID=%q\n' "$ROUTE53_ZONE_ID"
+        printf 'AIDLC_AUTH_MODE=%q\n' "$AUTH_MODE"
+        printf 'AIDLC_SSO_PROVIDERS_JSON=%q\n' "$SSO_PROVIDERS_JSON"
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
+}
+
+validate_sso_config() {
+    local checkout="${1:-}" validator="$SCRIPT_DIR/sso-config.mjs"
+    if [[ "$AUTH_MODE" != "local" && "$AUTH_MODE" != "hybrid" && "$AUTH_MODE" != "sso-only" ]]; then
+        echo "Invalid auth mode '$AUTH_MODE'. Use local, hybrid, or sso-only." >&2
+        exit 2
+    fi
+    if [[ "${VERSION%%.*}" -lt 2 && ( "$AUTH_MODE" != "local" || "$SSO_PROVIDERS_JSON" != "{}" || -n "$SSO_CONFIG_FILE" ) ]]; then
+        echo "Enterprise SSO requires AI-DLC v2 or newer; the selected release is v$VERSION." >&2
+        exit 2
+    fi
+    if [[ -n "$SSO_CONFIG_FILE" ]]; then
+        [[ -f "$SSO_CONFIG_FILE" ]] || {
+            echo "SSO configuration file not found: $SSO_CONFIG_FILE" >&2
+            exit 2
+        }
+        if [[ -n "$checkout" && -f "$checkout/scripts/sso-config.mjs" ]]; then
+            validator="$checkout/scripts/sso-config.mjs"
+        fi
+        [[ -f "$validator" ]] || {
+            echo "The selected release does not contain the SSO configuration validator." >&2
+            exit 2
+        }
+        SSO_PROVIDERS_JSON="$(node "$validator" "$SSO_CONFIG_FILE" "$AUTH_MODE")"
+    elif [[ "$AUTH_MODE" == "local" ]]; then
+        SSO_PROVIDERS_JSON="{}"
+    elif [[ "$SSO_PROVIDERS_JSON" == "{}" || -z "$SSO_PROVIDERS_JSON" ]]; then
+        echo "$AUTH_MODE authentication requires --sso-config or persisted provider configuration." >&2
+        exit 2
+    fi
 }
 
 # Canonical hostname followed by any aliases. Bash 3.2 has no namerefs, so a
@@ -726,9 +790,10 @@ tfvars_upsert() {
 }
 
 configure_environment() {
-    local checkout="$1" tfvars backend tfvars_existed=1
+    local checkout="$1" tfvars sso_tfvars backend tfvars_existed=1
     mkdir -p "$CONFIG_ROOT/terraform/environments" "$DATA_ROOT/backups" "$DATA_ROOT/plans"
     tfvars="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.tfvars"
+    sso_tfvars="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.sso.tfvars.json"
     backend="$CONFIG_ROOT/terraform/environments/$ENVIRONMENT.s3.tfbackend"
     if [[ ! -f "$tfvars" ]]; then
         cp "$checkout/terraform/environments/dev.tfvars.example" "$tfvars"
@@ -736,6 +801,14 @@ configure_environment() {
     fi
     tfvars_upsert "$tfvars" environment "$(hcl_string "$ENVIRONMENT")" "$tfvars_existed"
     tfvars_upsert "$tfvars" aws_region "$(hcl_string "$REGION")" "$tfvars_existed"
+    node -e '
+      const [mode, providers] = process.argv.slice(1);
+      process.stdout.write(JSON.stringify({
+        auth_mode: mode,
+        sso_providers: JSON.parse(providers),
+      }, null, 2) + "\n");
+    ' "$AUTH_MODE" "$SSO_PROVIDERS_JSON" > "$sso_tfvars"
+    chmod 600 "$sso_tfvars"
 
     normalize_domain_config
     # Written whenever a domain is configured, and whenever the keys are already
@@ -912,9 +985,14 @@ application_url() {
 }
 
 print_managed_summary() {
-    local operation="$1" checkout="$2" url=""
+    local operation="$1" checkout="$2" url="" oidc_callback="" saml_acs="" saml_entity_id=""
     if [[ "${AIDLC_TEST_MODE:-0}" != 1 ]]; then
         url="$(application_url "$checkout")"
+        if [[ "${VERSION%%.*}" -ge 2 ]]; then
+            oidc_callback="$(terraform -chdir="$checkout/terraform" output -raw oidc_idp_callback_url 2>/dev/null || true)"
+            saml_acs="$(terraform -chdir="$checkout/terraform" output -raw saml_acs_url 2>/dev/null || true)"
+            saml_entity_id="$(terraform -chdir="$checkout/terraform" output -raw saml_entity_id 2>/dev/null || true)"
+        fi
     fi
 
     echo ""
@@ -932,6 +1010,18 @@ print_managed_summary() {
         [[ -n "$APP_DOMAIN_ALIASES" ]] && printf '  Also serving:    %s\n' "${APP_DOMAIN_ALIASES//,/, }"
         print_dns_instructions "$checkout"
     fi
+    printf '  Authentication:  %s\n' "$AUTH_MODE"
+    if [[ "$AUTH_MODE" != "local" ]]; then
+        printf '  SSO providers:   %s\n' "$(printf '%s' "$SSO_PROVIDERS_JSON" | node -e '
+          let s = "";
+          process.stdin.on("data", (d) => (s += d)).on("end", () => {
+            process.stdout.write(Object.values(JSON.parse(s)).map((p) => p.display_name).join(", "));
+          });
+        ')"
+    fi
+    [[ -n "$oidc_callback" ]] && printf '  OIDC callback:   %s\n' "$oidc_callback"
+    [[ -n "$saml_acs" ]] && printf '  SAML ACS:        %s\n' "$saml_acs"
+    [[ -n "$saml_entity_id" ]] && printf '  SAML entity ID:  %s\n' "$saml_entity_id"
     printf '  Status:          bash %q status\n' "$SCRIPT_DIR/install.sh"
 }
 
@@ -962,7 +1052,6 @@ install_command() {
         echo "A managed installation already exists. Use update instead." >&2
         exit 1
     }
-    prompt_admin
     aws_environment
     local checkout plan role plan_id
     select_checkout
@@ -971,8 +1060,10 @@ install_command() {
         echo "Warning: --ref tracks mutable branch '$REF'; this is a non-release test deployment."
     fi
     validate_domain_config
+    validate_sso_config "$checkout"
+    [[ "$AUTH_MODE" == "sso-only" ]] || prompt_admin
     confirm "Install $(target_description) into AWS environment $ENVIRONMENT?" || exit 1
-    prompt_password
+    [[ "$AUTH_MODE" == "sso-only" ]] || prompt_password
     configure_environment "$checkout"
     plan_id="v$VERSION"
     [[ -n "$REF" ]] && plan_id="${REF//\//-}-${RESOLVED_COMMIT:0:12}"
@@ -981,7 +1072,7 @@ install_command() {
         if [[ "${VERSION%%.*}" -ge 2 ]]; then deploy_v2 "$checkout" "$plan"; else deploy_v1 "$checkout" "$plan"; fi
         role="owner"
         [[ "${VERSION%%.*}" -ge 2 ]] && role="platform-admin"
-        configure_administrator "$checkout" "$role" 1
+        [[ "$AUTH_MODE" == "sso-only" ]] || configure_administrator "$checkout" "$role" 1
         deploy_frontend "$checkout"
     fi
     write_config
@@ -1030,7 +1121,7 @@ update_command() {
     require_commands
     load_config
     aws_environment
-    local old_checkout old_version old_commit checkout plan cmp plan_id
+    local old_checkout old_version old_commit checkout plan cmp plan_id create_local_admin=0
     old_checkout="$(current_checkout)"
     [[ -n "$old_checkout" ]] || { echo "No managed installation. Run install or adopt first." >&2; exit 1; }
     old_version="$(current_version)"
@@ -1048,9 +1139,20 @@ update_command() {
             exit 0
         }
     else
-        [[ "$VERSION" != "$old_version" ]] || { echo "Already on AI-DLC v$VERSION."; exit 0; }
+        if [[ "$VERSION" == "$old_version" &&
+              -z "$AUTH_MODE_EXPLICIT$SSO_CONFIG_EXPLICIT$APP_DOMAIN_EXPLICIT$APP_DOMAIN_ALIASES_EXPLICIT$ACM_CERTIFICATE_ARN_EXPLICIT$ROUTE53_ZONE_ID_EXPLICIT" ]]; then
+            echo "Already on AI-DLC v$VERSION."
+            exit 0
+        fi
     fi
-    prompt_admin
+    validate_sso_config "$checkout"
+    if [[ "$AUTH_MODE" != "sso-only" ]]; then
+        prompt_admin
+        if [[ "$PERSISTED_AUTH_MODE" == "sso-only" ]]; then
+            prompt_password
+            create_local_admin=1
+        fi
+    fi
     if [[ -n "$REF" ]]; then
         echo "Warning: update is following mutable branch '$REF'."
     fi
@@ -1065,7 +1167,7 @@ update_command() {
         if [[ "${VERSION%%.*}" -ge 2 ]]; then deploy_v2 "$checkout" "$plan"; else deploy_v1 "$checkout" "$plan"; fi
         local role="owner"
         [[ "${VERSION%%.*}" -ge 2 ]] && role="platform-admin"
-        configure_administrator "$checkout" "$role" 0
+        [[ "$AUTH_MODE" == "sso-only" ]] || configure_administrator "$checkout" "$role" "$create_local_admin"
         deploy_frontend "$checkout"
     fi
     write_config
@@ -1114,7 +1216,7 @@ destroy_command() {
 
 status_command() {
     load_config
-    local checkout version url="" commit
+    local checkout version url="" commit oidc_callback="" saml_acs="" saml_entity_id=""
     checkout="$(current_checkout)"
     if [[ -z "$checkout" ]]; then
         echo "AI-DLC is not managed on this machine."
@@ -1123,12 +1225,30 @@ status_command() {
     version="$(current_version)"
     if command -v terraform >/dev/null 2>&1; then
         url="$(application_url "$checkout")"
+        if [[ "${version%%.*}" -ge 2 ]]; then
+            oidc_callback="$(terraform -chdir="$checkout/terraform" output -raw oidc_idp_callback_url 2>/dev/null || true)"
+            saml_acs="$(terraform -chdir="$checkout/terraform" output -raw saml_acs_url 2>/dev/null || true)"
+            saml_entity_id="$(terraform -chdir="$checkout/terraform" output -raw saml_entity_id 2>/dev/null || true)"
+        fi
     fi
     echo "Version:     $version"
     echo "Environment: $ENVIRONMENT"
     echo "Region:      $REGION"
     echo "Checkout:    $checkout"
     echo "Config:      $CONFIG_ROOT"
+    echo "Auth:        $AUTH_MODE"
+    if [[ "$AUTH_MODE" != "local" ]]; then
+        echo "SSO:         $(printf '%s' "$SSO_PROVIDERS_JSON" | node -e '
+          let s = "";
+          process.stdin.on("data", (d) => (s += d)).on("end", () => {
+            try {
+              process.stdout.write(Object.values(JSON.parse(s)).map((p) => p.display_name).join(", "));
+            } catch {
+              process.stdout.write("invalid configuration");
+            }
+          });
+        ')"
+    fi
     if [[ -n "$REF" ]]; then
         commit="$(git -C "$checkout" rev-parse --short=12 HEAD)"
         echo "Source:      $REF@$commit (non-release)"
@@ -1147,6 +1267,9 @@ status_command() {
         echo "Domain:      CloudFront default (no custom domain)"
     fi
     [[ -n "$url" ]] && echo "URL:         $url"
+    [[ -n "$oidc_callback" ]] && echo "OIDC callback: $oidc_callback"
+    [[ -n "$saml_acs" ]] && echo "SAML ACS:      $saml_acs"
+    [[ -n "$saml_entity_id" ]] && echo "SAML entity:   $saml_entity_id"
     return 0
 }
 

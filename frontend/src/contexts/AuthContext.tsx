@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { authService } from '../services/auth';
 import type { User } from '../services/auth';
@@ -13,6 +13,8 @@ interface AuthContextType {
   needsNewPassword: boolean;
   needsDisplayName: boolean;
   login: (username: string, password: string) => Promise<void>;
+  loginWithSso: (providerName: string, returnTo: string) => Promise<void>;
+  completeSsoLogin: () => Promise<string>;
   completeNewPassword: (newPassword: string) => Promise<void>;
   setDisplayName: (name: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -38,11 +40,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [needsNewPassword, setNeedsNewPassword] = useState(false);
   const [needsDisplayName, setNeedsDisplayName] = useState(false);
 
-  useEffect(() => {
-    checkAuthState();
-  }, []);
-
-  const checkAuthState = async () => {
+  const checkAuthState = useCallback(async () => {
     try {
       const isAuth = await authService.isAuthenticated();
       if (isAuth) {
@@ -55,9 +53,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const login = async (username: string, password: string) => {
+  useEffect(() => {
+    void checkAuthState();
+  }, [checkAuthState]);
+
+  const login = useCallback(async (username: string, password: string) => {
     setIsLoading(true);
     try {
       const result = await authService.login(username, password);
@@ -73,9 +75,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const completeNewPassword = async (newPassword: string) => {
+  const completeNewPassword = useCallback(async (newPassword: string) => {
     setIsLoading(true);
     try {
       const authedUser = await authService.completeNewPassword(newPassword);
@@ -88,9 +90,30 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const setDisplayName = async (name: string) => {
+  const loginWithSso = useCallback(async (providerName: string, returnTo: string) => {
+    setIsLoading(true);
+    try {
+      await authService.loginWithSso(providerName, returnTo);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const completeSsoLogin = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const authedUser = await authService.completeSsoLogin();
+      setUser(authedUser);
+      setNeedsDisplayName(!authedUser.displayName);
+      return authService.consumeReturnTo();
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const setDisplayName = useCallback(async (name: string) => {
     setIsLoading(true);
     try {
       await authService.updateProfile(name);
@@ -103,9 +126,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     setIsLoading(true);
     try {
       await authService.logout();
@@ -118,20 +141,36 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const value: AuthContextType = {
-    user,
-    isLoading,
-    isAuthenticated: !!user,
-    isPlatformAdmin: !!user?.groups?.includes('platform-admin'),
-    needsNewPassword,
-    needsDisplayName,
-    login,
-    completeNewPassword,
-    setDisplayName,
-    logout,
-  };
+  const value = useMemo<AuthContextType>(
+    () => ({
+      user,
+      isLoading,
+      isAuthenticated: !!user,
+      isPlatformAdmin: !!user?.groups?.includes('platform-admin'),
+      needsNewPassword,
+      needsDisplayName,
+      login,
+      loginWithSso,
+      completeSsoLogin,
+      completeNewPassword,
+      setDisplayName,
+      logout,
+    }),
+    [
+      completeNewPassword,
+      completeSsoLogin,
+      isLoading,
+      login,
+      loginWithSso,
+      logout,
+      needsDisplayName,
+      needsNewPassword,
+      setDisplayName,
+      user,
+    ],
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
