@@ -43,11 +43,7 @@ describe('TrackersTab — git tracker CTA', () => {
   // Guard against a regression that re-adds Bitbucket to the CTA.
   it('does NOT offer an "Add" git-tracker CTA for a Bitbucket project', async () => {
     render(
-      <TrackersTab
-        project={makeProject({ gitProvider: 'bitbucket' })}
-        canEdit
-        reload={vi.fn()}
-      />,
+      <TrackersTab project={makeProject({ gitProvider: 'bitbucket' })} canEdit reload={vi.fn()} />,
     );
 
     // Let the mount effect (listConnections) settle.
@@ -60,11 +56,7 @@ describe('TrackersTab — git tracker CTA', () => {
   // must still render for a GitHub project.
   it('offers the "Add GitHub Issues" CTA for a GitHub project', async () => {
     render(
-      <TrackersTab
-        project={makeProject({ gitProvider: 'github' })}
-        canEdit
-        reload={vi.fn()}
-      />,
+      <TrackersTab project={makeProject({ gitProvider: 'github' })} canEdit reload={vi.fn()} />,
     );
 
     expect(await screen.findByText('Trackers')).toBeInTheDocument();
