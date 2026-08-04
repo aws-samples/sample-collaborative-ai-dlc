@@ -5,7 +5,7 @@ import type { Project } from '@/services/projects';
 // The tab reads tracker connections + operator OAuth-app config on mount. Stub
 // both to empty so the component renders without network access — this test is
 // only about whether the "Add <git tracker>" CTA appears for a given provider.
-const listConnections = vi.hoisted(() => vi.fn(() => Promise.resolve([])));
+const listConnections = vi.hoisted(() => vi.fn());
 vi.mock('@/services/trackers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/trackers')>();
   return {
@@ -34,7 +34,7 @@ const makeProject = (overrides: Partial<Project>): Project =>
   }) as Project;
 
 beforeEach(() => {
-  listConnections.mockReset().mockImplementation(() => Promise.resolve([]));
+  listConnections.mockReset().mockResolvedValue([]);
 });
 
 describe('TrackersTab — git tracker CTA', () => {
