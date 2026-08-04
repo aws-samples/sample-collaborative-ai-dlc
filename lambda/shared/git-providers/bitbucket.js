@@ -206,40 +206,57 @@ const listRepos = async (ctx) => {
     throw new ProviderError(400, 'Failed to fetch workspaces');
   }
 
-  // Aggregate repositories from all workspaces
-  const allRepos = [];
-  for (const workspace of workspacesData.values) {
-    try {
-      // GET /2.0/user/workspaces returns membership objects that nest the
-      // workspace under a `.workspace` sub-object (slug lives at
-      // item.workspace.slug), NOT at the top level. Read the nested slug but
-      // fall back to the top-level one so we also work against the plain
-      // /2.0/workspaces shape (slug at top level).
-      const workspaceSlug = workspace.workspace?.slug || workspace.slug;
-      if (!workspaceSlug) continue;
+  // Aggregate the full workspace list, following pagination — a member of
+  // >100 workspaces would otherwise be silently truncated.
+  const workspaces = [...workspacesData.values];
+  let wsNext = workspacesData.next || null;
+  while (wsNext) {
+    const res = await bbFetch(ctx, wsNext);
+    if (!res.ok) break;
+    const data = await res.json().catch(() => ({}));
+    if (!Array.isArray(data.values)) break;
+    workspaces.push(...data.values);
+    wsNext = data.next || null;
+  }
 
-      const reposRes = await bbFetch(
-        ctx,
-        `${API_BASE}/repositories/${workspaceSlug}?role=member&pagelen=100`,
-      );
-      if (reposRes.ok) {
-        const reposData = await reposRes.json();
-        if (Array.isArray(reposData.values)) {
-          allRepos.push(...reposData.values.map(mapRepo));
+  // Aggregate repositories from all workspaces.
+  const allRepos = [];
+  for (const workspace of workspaces) {
+    // GET /2.0/user/workspaces returns membership objects that nest the
+    // workspace under a `.workspace` sub-object (slug lives at
+    // item.workspace.slug), NOT at the top level. Read the nested slug but
+    // fall back to the top-level one so we also work against the plain
+    // /2.0/workspaces shape (slug at top level).
+    const workspaceSlug = workspace.workspace?.slug || workspace.slug;
+    if (!workspaceSlug) continue;
+
+    // Follow `next` so a workspace with >100 repos isn't truncated in the
+    // picker. bbFetch resolves HTTP errors to a response (it doesn't throw),
+    // so inspect the status directly rather than relying on a try/catch.
+    let repoUrl = `${API_BASE}/repositories/${workspaceSlug}?role=member&pagelen=100`;
+    while (repoUrl) {
+      const reposRes = await bbFetch(ctx, repoUrl);
+      if (!reposRes.ok) {
+        // Auth/permission failures signal a bad token — every subsequent call
+        // will fail too, so surface them instead of returning a partial list.
+        if ([401, 403].includes(reposRes.status)) {
+          const data = await reposRes.json().catch(() => ({}));
+          throw new ProviderError(
+            reposRes.status,
+            data.error?.message || 'Not authorized to list repositories for this workspace',
+          );
         }
+        // Otherwise this one workspace is flaky/forbidden — skip it, keep the rest.
+        console.warn(
+          `[bitbucket:listRepos] Failed to fetch repos for workspace ${workspaceSlug}: HTTP ${reposRes.status}`,
+        );
+        break;
       }
-    } catch (err) {
-      // Auth/permission failures are not "this one workspace is flaky" — they
-      // signal the token is bad and every subsequent call will fail too, so
-      // surface them instead of silently returning a partial/empty repo list.
-      if (err instanceof ProviderError && [401, 403].includes(err.status)) {
-        throw err;
+      const reposData = await reposRes.json().catch(() => ({}));
+      if (Array.isArray(reposData.values)) {
+        allRepos.push(...reposData.values.map(mapRepo));
       }
-      // Otherwise continue: one workspace failing shouldn't drop the rest.
-      console.warn(
-        `[bitbucket:listRepos] Failed to fetch repos for workspace ${workspace.slug}:`,
-        err.message,
-      );
+      repoUrl = reposData.next || null;
     }
   }
 

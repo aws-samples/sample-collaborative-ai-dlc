@@ -180,7 +180,9 @@ describe('ensureFreshGitToken', () => {
         // Bitbucket commonly omits a rotated refresh_token — response has none.
         token_type: 'bearer',
         expires_in: 7200,
-        scope: 'account repository pullrequest',
+        // Bitbucket returns granted scopes as `scopes` (plural), unlike
+        // GitHub/GitLab's `scope` — the refresh path must read the plural form.
+        scopes: 'account repository pullrequest',
       }),
     }));
 
@@ -213,6 +215,9 @@ describe('ensureFreshGitToken', () => {
     expect(persisted.refreshToken).toBe('bb-r1');
     const ddbPut = ddbMock.commandCalls(PutCommand)[0].args[0].input;
     expect(ddbPut.Item.providerInstance).toBe('bitbucket#public');
+    // The persisted scope must come from the plural `scopes` field Bitbucket
+    // actually sends — a regression here silently blanks connection metadata.
+    expect(ddbPut.Item.scope).toBe('account repository pullrequest');
   });
 
   it('does not refresh a Bitbucket token that is well within expiry', async () => {

@@ -202,7 +202,7 @@ const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
     try {
       await putGitConnection(ddb, {
         ...item,
-        scope: data.scope,
+        scope: data.scopes ?? data.scope ?? item.scope,
         updatedAt: new Date().toISOString(),
       });
     } catch (e) {
