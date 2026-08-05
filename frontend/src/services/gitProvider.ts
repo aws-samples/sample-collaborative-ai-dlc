@@ -7,17 +7,18 @@ import { api } from './api';
 // The set of supported git providers. Kept as a string-literal union (not a TS
 // enum) because the values are wire strings sent to/from the API and stored in
 // the DB — a union assigns directly from those strings with zero runtime cost.
-export type GitProvider = 'github' | 'gitlab';
+export type GitProvider = 'github' | 'gitlab' | 'bitbucket';
 
 // A git provider and its issue-tracker share one OAuth app/connection, so each
 // git provider maps to exactly one tracker-provider id. Centralized here so the
 // association lives in one place instead of being re-derived with inline
 // ternaries at every call site.
-export type GitTrackerProviderId = 'github-issues' | 'gitlab-issues';
+export type GitTrackerProviderId = 'github-issues' | 'gitlab-issues' | 'bitbucket-issues';
 
 const GIT_PROVIDER_TRACKER_ID: Record<GitProvider, GitTrackerProviderId> = {
   github: 'github-issues',
   gitlab: 'gitlab-issues',
+  bitbucket: 'bitbucket-issues',
 };
 
 export const trackerIdForGitProvider = (provider: GitProvider): GitTrackerProviderId =>
@@ -135,11 +136,27 @@ export const gitlabService: GitProviderService = {
 };
 
 // =============================================================================
+// Bitbucket service implementation — Bitbucket Cloud addresses repositories by
+// a two-segment "workspace/repo_slug" path, the same shape as GitHub's
+// "owner/repo", so it splits the repoId into two path segments exactly like
+// the GitHub service (not GitLab's ?project= query string).
+// =============================================================================
+
+export const bitbucketService: GitProviderService = {
+  getAuthUrl: () => api.get<{ url: string }>('/bitbucket/auth'),
+  getStatus: () => api.get<GitProviderStatus>('/bitbucket/status'),
+  listRepos: () => api.get<GitRepo[]>('/bitbucket/repos'),
+  disconnect: () => api.delete('/bitbucket/disconnect'),
+};
+
+// =============================================================================
 // Provider lookup — given a `gitProvider` field, return the matching service.
 // =============================================================================
 
 export const getGitProviderService = (provider: GitProvider): GitProviderService => {
-  return provider === 'gitlab' ? gitlabService : githubService;
+  if (provider === 'gitlab') return gitlabService;
+  if (provider === 'bitbucket') return bitbucketService;
+  return githubService;
 };
 
 // =============================================================================
@@ -159,6 +176,7 @@ export interface GitProviderTerminology {
 const GIT_PROVIDER_TERMINOLOGY: Record<GitProvider, GitProviderTerminology> = {
   github: { label: 'GitHub', changeRequest: 'Pull Request', changeRequestShort: 'PR' },
   gitlab: { label: 'GitLab', changeRequest: 'Merge Request', changeRequestShort: 'MR' },
+  bitbucket: { label: 'Bitbucket', changeRequest: 'Pull Request', changeRequestShort: 'PR' },
 };
 
 export const gitProviderTerminology = (provider: GitProvider): GitProviderTerminology =>

@@ -30,9 +30,10 @@
 
 import github from './git-providers/github.js';
 import gitlab from './git-providers/gitlab.js';
+import bitbucket from './git-providers/bitbucket.js';
 import { ProviderError } from './git-providers/errors.js';
 
-const REGISTRY = { github, gitlab };
+const REGISTRY = { github, gitlab, bitbucket };
 
 const DEFAULT_PROVIDER = 'github';
 

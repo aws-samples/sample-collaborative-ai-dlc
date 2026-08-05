@@ -114,7 +114,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (searchParams.get('reopenCreateSpace') === '1') {
       const provider = searchParams.get('gitProvider');
-      if (provider === 'gitlab' || provider === 'github') {
+      if (provider === 'gitlab' || provider === 'github' || provider === 'bitbucket') {
         setCreateInitialProvider(provider);
       }
       setShowCreateModal(true);

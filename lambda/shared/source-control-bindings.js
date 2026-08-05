@@ -10,11 +10,12 @@ import {
 const CREDENTIAL_REF_INDEX = 'CredentialRefIndex';
 const ACTIVE = 'active';
 const INVALID = 'invalid';
-const AUTH_TYPES = Object.freeze(['github-oauth', 'github-app', 'gitlab-oauth']);
+const AUTH_TYPES = Object.freeze(['github-oauth', 'github-app', 'gitlab-oauth', 'bitbucket-oauth']);
 const AUTH_TYPE_PROVIDER = Object.freeze({
   'github-oauth': 'github',
   'github-app': 'github',
   'gitlab-oauth': 'gitlab',
+  'bitbucket-oauth': 'bitbucket',
 });
 
 const tableName = () => process.env.SOURCE_CONTROL_BINDINGS_TABLE;
@@ -30,7 +31,7 @@ const trimSlashes = (value) => {
 };
 
 const canonicalRepo = (provider, value) => {
-  if (!['github', 'gitlab'].includes(provider)) {
+  if (!['github', 'gitlab', 'bitbucket'].includes(provider)) {
     throw new Error(`Unsupported source-control provider: ${provider}`);
   }
   const raw = trimSlashes(

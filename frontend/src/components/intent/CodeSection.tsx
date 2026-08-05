@@ -23,6 +23,7 @@ const branchWebUrl = (
   const enc = branch.split('/').map(encodeURIComponent).join('/');
   if (provider === 'gitlab') return `https://gitlab.com/${repo}/-/tree/${enc}`;
   if (provider === 'github') return `https://github.com/${repo}/tree/${enc}`;
+  if (provider === 'bitbucket') return `https://bitbucket.org/${repo}/src/${enc}`;
   return null;
 };
 

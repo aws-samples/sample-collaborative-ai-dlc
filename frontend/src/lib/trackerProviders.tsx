@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { GitHubIcon, GitLabIcon } from '@/components/icons/git-providers';
+import { GitHubIcon, GitLabIcon, BitbucketIcon } from '@/components/icons/git-providers';
 
 // Single source of truth for tracker-provider metadata on the frontend.
 // Replaces hardcoded `'github-issues'` / `'jira-cloud:cloud'` / callback-path
@@ -109,6 +109,32 @@ export const TRACKER_PROVIDERS: Record<string, TrackerProviderMeta> = {
       ],
       scopeNote:
         'GitLab issues reuse your GitLab connection — connecting GitLab also enables issues.',
+    },
+  },
+  'bitbucket-issues': {
+    id: 'bitbucket-issues',
+    instance: 'public',
+    // NOTE: this registry entry is the Bitbucket OAuth-app config carrier (its
+    // callbackPath backs the git Connect flow, shared like GitHub/GitLab's
+    // OAuth app). Bitbucket Issues as a tracker is not implemented, so the
+    // display strings describe repository access, not an issue tracker.
+    displayName: 'Bitbucket',
+    tabLabel: 'Bitbucket',
+    panelTitle: 'Bitbucket',
+    resourceLabel: 'Bitbucket repository',
+    callbackPath: '/bitbucket/callback',
+    icon: BitbucketIcon,
+    registration: {
+      url: 'https://bitbucket.org',
+      label: 'Workspace settings → OAuth consumers',
+      steps: [
+        'Open Bitbucket → Workspace settings → OAuth consumers → Add consumer.',
+        'Set the Callback URL to the value shown below.',
+        'Grant the account, repository, repository:write, pullrequest and pullrequest:write scopes.',
+        'Save, then copy the Key (Client ID) and Secret, and paste both above.',
+      ],
+      scopeNote:
+        'Bitbucket issues reuse your Bitbucket connection — connecting Bitbucket also enables issues.',
     },
   },
 };

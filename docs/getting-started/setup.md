@@ -336,7 +336,7 @@ UI or with downstream Cognito group membership. See
 
 ### Configure provider OAuth apps
 
-The platform integrates with external providers as code hosts (GitHub, GitLab) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** in the deployed app.
+The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** in the deployed app.
 
 For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
 
@@ -385,6 +385,18 @@ Existing projects must be explicitly bound by an owner/admin before intents can 
 
 GitLab's `api` scope includes repository writes, including changes to `.gitlab-ci.yml`; there is no separate workflow-file scope. Connections missing `api` are reported as requiring reauthorization.
 
+#### Bitbucket (code host)
+
+1. Open **Bitbucket → Workspace settings → OAuth consumers → Add consumer**.
+2. Set:
+   - **Callback URL**: `https://<your-cloudfront-domain>/bitbucket/callback`
+   - **Permissions**: Account (Read, Email), Repositories (Read & Write), Pull requests (Read & Write).
+   - Leave **This is a private consumer** enabled.
+3. Save, then copy the **Key** (Client ID) and **Secret**.
+4. In the deployed app, sign in and open **Admin → Source Control → Bitbucket**. Paste both values and click **Save**.
+
+Bitbucket OAuth scopes are the singular scope names (`account`, `email`, `repository`, `repository:write`, `pullrequest`, `pullrequest:write`), requested automatically by the platform. The `email` scope is required for commit attribution — enable the **Email** permission on the consumer, otherwise the connection is reported as needing reauthorization. Bitbucket access tokens are short-lived (~2h); the engine refreshes them just-in-time from the stored refresh token, so long-running construction jobs keep a valid token and users don't need to reconnect periodically.
+
 #### Jira Cloud
 
 1. Open the [Atlassian Developer Console](https://developer.atlassian.com/console/myapps) and create an **OAuth 2.0 integration**.
@@ -409,6 +421,10 @@ Rotating credentials later is the same flow — paste new values and **Save** ov
 
     aws secretsmanager put-secret-value \
       --secret-id $(terraform -chdir=terraform output -raw gitlab_oauth_secret_name) \
+      --secret-string '{"client_id":"...","client_secret":"..."}'
+
+    aws secretsmanager put-secret-value \
+      --secret-id $(terraform -chdir=terraform output -raw bitbucket_oauth_secret_name) \
       --secret-string '{"client_id":"...","client_secret":"..."}'
 
     aws secretsmanager put-secret-value \

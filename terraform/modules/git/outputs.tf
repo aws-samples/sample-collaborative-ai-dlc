@@ -14,6 +14,14 @@ output "gitlab_oauth_secret_name" {
   value = aws_secretsmanager_secret.gitlab_oauth.name
 }
 
+output "bitbucket_oauth_secret_arn" {
+  value = aws_secretsmanager_secret.bitbucket_oauth.arn
+}
+
+output "bitbucket_oauth_secret_name" {
+  value = aws_secretsmanager_secret.bitbucket_oauth.name
+}
+
 output "jira_oauth_secret_arn" {
   value = aws_secretsmanager_secret.jira_oauth.arn
 }

@@ -51,11 +51,18 @@ vi.mock('../services/gitProvider', async (importOriginal) => {
     },
   };
 });
-vi.mock('../services/sourceControl', () => ({
-  sourceControlService: {
-    bind: vi.fn().mockResolvedValue({ ready: true, repositories: [] }),
-  },
-}));
+vi.mock('../services/sourceControl', async (importOriginal) => {
+  // Keep the real auth-option metadata (SOURCE_CONTROL_AUTH_OPTIONS +
+  // defaultAuthTypeFor — pure data, no side effects) that CreateProjectModal
+  // reads on mount; mock only the network service.
+  const actual = await importOriginal<typeof import('../services/sourceControl')>();
+  return {
+    ...actual,
+    sourceControlService: {
+      bind: vi.fn().mockResolvedValue({ ready: true, repositories: [] }),
+    },
+  };
+});
 
 import { CreateProjectModal } from './CreateProjectModal';
 import { projectsService } from '../services/projects';

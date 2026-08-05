@@ -160,6 +160,9 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
   // has issues support and isn't already bound for this repo.
   const gitTrackerCta = (() => {
     if (!canEdit || !project.gitRepo) return null;
+    // Bitbucket is code-host-only (no bitbucket-issues tracker provider), so
+    // it must not offer the "Add tracker" CTA here — clicking would 400 with
+    // "Unknown or missing provider". github/gitlab have real issue trackers.
     if (project.gitProvider !== 'github' && project.gitProvider !== 'gitlab') return null;
     const trackerId = trackerIdForGitProvider(project.gitProvider);
     const meta = TRACKER_PROVIDERS[trackerId];

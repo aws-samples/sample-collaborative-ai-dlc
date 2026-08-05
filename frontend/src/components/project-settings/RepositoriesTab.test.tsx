@@ -22,13 +22,20 @@ const sourceStatus = vi.hoisted(() => ({
 }));
 
 const getStatus = vi.hoisted(() => vi.fn());
-vi.mock('@/services/sourceControl', () => ({
-  sourceControlService: {
-    getStatus: (...args: unknown[]) => getStatus(...args),
-    bind: vi.fn(),
-    unbind: vi.fn(),
-  },
-}));
+vi.mock('@/services/sourceControl', async (importOriginal) => {
+  // Keep the real auth-option metadata (SOURCE_CONTROL_AUTH_OPTIONS +
+  // defaultAuthTypeFor — pure data, no side effects) that
+  // SourceControlBindingSection consumes; mock only the network service.
+  const actual = await importOriginal<typeof import('@/services/sourceControl')>();
+  return {
+    ...actual,
+    sourceControlService: {
+      getStatus: (...args: unknown[]) => getStatus(...args),
+      bind: vi.fn(),
+      unbind: vi.fn(),
+    },
+  };
+});
 
 vi.mock('@/hooks/useGitProviderStatus', () => ({
   useGitProviderStatus: () => ({
