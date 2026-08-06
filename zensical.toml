@@ -31,6 +31,7 @@ nav = [
     "using-the-platform/git-integration.md",
   ] },
   { "Development" = [
+    "development/demo-deployment.md",
     "development/testing.md",
   ] },
   { "Roadmap" = "roadmap/index.md" },

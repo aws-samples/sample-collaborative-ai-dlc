@@ -56,7 +56,7 @@ jobs:
       # every module, variable wiring, and provider argument (e.g. the v2 lambdas'
       # durable_config + the intent API Gateway routes).
       - name: Terraform init (no backend)
-        run: terraform init -backend=false
+        run: terraform init -backend=false -lockfile=readonly
 
       - name: Terraform validate
         run: terraform validate

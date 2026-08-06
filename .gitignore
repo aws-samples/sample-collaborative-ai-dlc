@@ -1,6 +1,8 @@
 # Terraform
 .terraform/
 .terraform.lock.hcl
+# The root lock file makes CI and release deployments reproducible.
+!terraform/.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 *.tfplan

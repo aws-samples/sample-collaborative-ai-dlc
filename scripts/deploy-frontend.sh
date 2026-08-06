@@ -57,7 +57,7 @@ fi
 # Build frontend
 cd "$SCRIPT_DIR/../frontend"
 echo "Building frontend..."
-npm ci
+npm ci --ignore-scripts
 npm run build
 
 # Upload to S3

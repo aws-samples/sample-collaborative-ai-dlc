@@ -9,7 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
@@ -18,6 +18,8 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -58,3 +60,13 @@ jobs:
             args+=(--prerelease)
           fi
           gh release create "${args[@]}"
+
+  deploy-demo:
+    name: Deploy release to demo
+    needs: release
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy-demo.yml
+    with:
+      ref: v${{ inputs.version }}
