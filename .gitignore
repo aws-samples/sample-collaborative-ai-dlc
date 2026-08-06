@@ -44,6 +44,8 @@ coverage/
 
 # Dev screenshots and scratch files
 *.png
+# Curated public README screenshots
+!docs/assets/readme/*.png
 ideas.txt
 mise.toml
 
