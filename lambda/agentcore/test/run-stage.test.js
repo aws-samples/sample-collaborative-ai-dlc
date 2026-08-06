@@ -2053,6 +2053,56 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     ).toBe(true);
   });
 
+  it('keeps a parked Codex gate retryable when retirement fails', async () => {
+    const store = spyStore(
+      pendingGateSeed('q-codex', {
+        createdAt: '2026-08-01T00:00:00Z',
+      }),
+    );
+    const retirementError = new Error('gate retirement unavailable');
+    store.supersedeHumanTask = vi.fn(async () => {
+      throw retirementError;
+    });
+
+    await expect(
+      runStage(
+        { ...baseArgs, requestedCli: 'codex' },
+        baseDeps({
+          store,
+          env: codexStoreEnv,
+          availableClis: ['codex'],
+          spawnFn: codexSpawn(),
+          persistCodexRollout: async () => ({
+            ok: false,
+            status: 'persist_failed',
+            attempts: 5,
+            error: { code: 'ENOSPC', message: 'waiting to be backed up' },
+          }),
+          cleanupCodexHome: async () => true,
+        }),
+      ),
+    ).rejects.toBe(retirementError);
+
+    expect(store.supersedeHumanTask).toHaveBeenCalledWith({
+      executionId: 'e1',
+      humanTaskId: 'q-codex',
+      supersededBy: 'codex_store_persist_failed',
+    });
+    expect(
+      store.calls.some(
+        (call) => call[0] === 'updateExecution' && call[1].pendingHumanTaskId === null,
+      ),
+    ).toBe(false);
+    expect(
+      store.calls.some(
+        (call) =>
+          call[0] === 'updateStageState' &&
+          call[1].state === 'FAILED' &&
+          call[1].pendingHumanTaskId === null,
+      ),
+    ).toBe(false);
+  });
+
   it('warns but allows a successful non-parked Codex run when persistence fails', async () => {
     const store = spyStore();
     const result = await runStage(

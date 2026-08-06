@@ -2279,13 +2279,11 @@ export const runStage = async (
     );
   }
   if (parked && cli === 'codex' && codexStoreConfigured && !codexPersistResult?.ok) {
-    await (
-      store.supersedeHumanTask?.({
-        executionId,
-        humanTaskId: parked.humanTaskId,
-        supersededBy: 'codex_store_persist_failed',
-      }) ?? Promise.resolve()
-    ).catch(() => {});
+    await (store.supersedeHumanTask?.({
+      executionId,
+      humanTaskId: parked.humanTaskId,
+      supersededBy: 'codex_store_persist_failed',
+    }) ?? Promise.resolve());
     if (!unitSlug) {
       await store
         .updateExecution({

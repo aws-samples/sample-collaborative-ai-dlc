@@ -184,14 +184,50 @@ describe('Codex rollout store', () => {
     expect(files).toEqual([]);
   });
 
-  it('does not overwrite a durable rollout with corrupt local JSONL', async () => {
+  it('persists valid rollout records before a truncated final JSONL line', async () => {
+    const { codexHome, durableHome, env } = await world();
+    const validBody = rolloutBody('thread-tail', [
+      { type: 'response_item', payload: { text: 'preserve me' } },
+    ]);
+    await putRollout({
+      home: codexHome,
+      threadId: 'thread-tail',
+      body: `${validBody}{"type":`,
+    });
+
+    const result = await persistCodexRollout({
+      codexHome,
+      env,
+      threadId: 'thread-tail',
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'persisted' });
+    const durable = path.join(durableHome, 'sessions', result.relativePath);
+    expect(await readFile(durable, 'utf8')).toBe(validBody);
+  });
+
+  it('rejects a truncated rollout without a valid session header', async () => {
+    const { codexHome } = await world();
+    await putRollout({
+      home: codexHome,
+      threadId: 'thread-empty',
+      body: '{"type":',
+    });
+
+    expect(await findCodexRollout({ homeDir: codexHome, threadId: 'thread-empty' })).toEqual({
+      ok: false,
+      status: 'corrupt',
+    });
+  });
+
+  it('does not overwrite a durable rollout with malformed middle JSONL', async () => {
     const { codexHome, durableHome, env } = await world();
     const durable = await putRollout({ home: durableHome, threadId: 'thread-safe' });
     const original = await readFile(durable, 'utf8');
     await putRollout({
       home: codexHome,
       threadId: 'thread-safe',
-      body: `${rolloutBody('thread-safe')}{"type":`,
+      body: `${rolloutBody('thread-safe')}{"type":\n${JSON.stringify({ type: 'event' })}\n`,
     });
 
     const result = await persistCodexRollout({

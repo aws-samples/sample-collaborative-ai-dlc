@@ -7,10 +7,9 @@
 // only the selected thread's validated rollout is copied to durable storage
 // after the process exits.
 
-import { copyFile, mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rename, rm, truncate } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { createInterface } from 'node:readline';
 import path from 'node:path';
 
 export const DEFAULT_CODEX_HOME_ROOT = '/home/node/.codex-runs';
@@ -21,7 +20,7 @@ const RETRY_DELAYS_MS = [250, 500, 1000, 2000];
 const SAFE_THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const RETRYABLE_CODES = new Set(['ENOSPC', 'EDQUOT', 'EAGAIN', 'EBUSY', 'ETIMEDOUT']);
 
-const DEFAULT_FS = { copyFile, mkdir, readdir, rename, rm };
+const DEFAULT_FS = { copyFile, mkdir, readdir, rename, rm, truncate };
 
 const errorInfo = (error) => ({
   code: error?.code ?? null,
@@ -85,27 +84,54 @@ const collectRolloutCandidates = async ({ sessionsRoot, threadId, fs }) => {
 const rolloutThreadId = (event) =>
   event?.payload?.id ?? event?.payload?.thread_id ?? event?.thread_id ?? event?.session_id ?? null;
 
-// Validate the entire JSONL file before it can replace a known-good durable
-// copy. This catches an ENOSPC-truncated final record, not just a bad header.
+// Validate every complete JSONL record before it can replace a known-good
+// durable copy. A malformed unterminated EOF fragment is recoverable only
+// after a valid session header; callers use validBytes to omit that fragment.
 const validateRollout = async ({ filename, threadId, createReadStreamFn }) => {
   let firstEvent = null;
   let lineCount = 0;
+  let pending = Buffer.alloc(0);
+  let completeBytes = 0;
+  let validBytes = 0;
+  let truncated = false;
+
+  const consume = (raw) => {
+    const line = raw.toString('utf8').trim();
+    if (!line) return true;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    firstEvent ??= event;
+    lineCount += 1;
+    return true;
+  };
+
   try {
-    const lines = createInterface({
-      input: createReadStreamFn(filename, { encoding: 'utf8' }),
-      crlfDelay: Infinity,
-    });
-    for await (const raw of lines) {
-      const line = raw.trim();
-      if (!line) continue;
-      let event;
-      try {
-        event = JSON.parse(line);
-      } catch {
+    for await (const chunk of createReadStreamFn(filename)) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      pending = pending.length === 0 ? bytes : Buffer.concat([pending, bytes]);
+      let newlineIndex = pending.indexOf(0x0a);
+      while (newlineIndex !== -1) {
+        const line = pending.subarray(0, newlineIndex);
+        pending = pending.subarray(newlineIndex + 1);
+        completeBytes += newlineIndex + 1;
+        if (!consume(line)) return { ok: false, status: 'corrupt' };
+        validBytes = completeBytes;
+        newlineIndex = pending.indexOf(0x0a);
+      }
+    }
+
+    if (pending.length > 0) {
+      if (consume(pending)) {
+        validBytes = completeBytes + pending.length;
+      } else if (lineCount > 0) {
+        truncated = true;
+      } else {
         return { ok: false, status: 'corrupt' };
       }
-      firstEvent ??= event;
-      lineCount += 1;
     }
   } catch (error) {
     return { ok: false, status: 'io_error', error: errorInfo(error) };
@@ -118,7 +144,7 @@ const validateRollout = async ({ filename, threadId, createReadStreamFn }) => {
   ) {
     return { ok: false, status: 'corrupt' };
   }
-  return { ok: true };
+  return { ok: true, validBytes, truncated };
 };
 
 export const findCodexRollout = async ({
@@ -144,7 +170,7 @@ export const findCodexRollout = async ({
   let validationFailure = null;
   for (const filename of candidates) {
     const result = await validateRollout({ filename, threadId, createReadStreamFn });
-    if (result.ok) valid.push(filename);
+    if (result.ok) valid.push({ filename, ...result });
     else if (result.status === 'io_error') validationFailure = result;
   }
   if (valid.length > 1) return { ok: false, status: 'ambiguous' };
@@ -152,7 +178,8 @@ export const findCodexRollout = async ({
     return validationFailure ?? { ok: false, status: 'corrupt' };
   }
 
-  const relativePath = path.relative(sessionsRoot, valid[0]);
+  const selected = valid[0];
+  const relativePath = path.relative(sessionsRoot, selected.filename);
   if (
     !relativePath ||
     relativePath.startsWith(`..${path.sep}`) ||
@@ -161,7 +188,14 @@ export const findCodexRollout = async ({
   ) {
     return { ok: false, status: 'invalid_path' };
   }
-  return { ok: true, status: 'found', filename: valid[0], relativePath };
+  return {
+    ok: true,
+    status: 'found',
+    filename: selected.filename,
+    relativePath,
+    validBytes: selected.validBytes,
+    truncated: selected.truncated,
+  };
 };
 
 export const restoreCodexRollout = async ({
@@ -191,6 +225,7 @@ export const restoreCodexRollout = async ({
     await fs.rm(localSessions, { recursive: true, force: true });
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.copyFile(found.filename, destination);
+    if (found.truncated) await fs.truncate(destination, found.validBytes);
     return {
       ok: true,
       status: 'restored',
@@ -240,6 +275,7 @@ export const persistCodexRollout = async ({
       await fs.mkdir(path.dirname(destination), { recursive: true });
       await fs.rm(temporary, { force: true });
       await fs.copyFile(found.filename, temporary);
+      if (found.truncated) await fs.truncate(temporary, found.validBytes);
       await fs.rename(temporary, destination);
       return {
         ok: true,
