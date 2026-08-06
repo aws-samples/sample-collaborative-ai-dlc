@@ -401,6 +401,8 @@ export const createDiscussionAssistStart = ({
           projectId,
           stageInstanceId: null,
           role: 'reader',
+          discussionId,
+          messageId,
         };
         const cli = selectCli({ requested: requestedCli, availableClis });
         const cliContext = cli

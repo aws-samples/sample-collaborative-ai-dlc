@@ -10,13 +10,15 @@
 // The PROMPT ASSEMBLY is a pure function (no fs/network) so it is unit-tested in
 // isolation; the workspace write is the thin effectful shell.
 
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { attachmentPromptManifest } from './attachments.js';
 import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
 import { MCP_SERVER_NAME } from './cli/drivers.js';
+import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 
 // The MCP execution annex — the harness binding that redirects the upstream
 // stage prose (which is written for a filesystem + `bun` harness) onto our MCP
@@ -396,15 +398,12 @@ export const materializeOpenCodeConfig = async ({
 
 // ── Codex config (per-stage CODEX_HOME) ──
 //
-// Codex reads all behavioral config from $CODEX_HOME/config.toml. We materialize
-// a PRIVATE home under the workspace (.aidlc/codex-home) per stage so:
-//   - repo files (AGENTS.md, .codex/) stay untouched,
-//   - session rollout files ($CODEX_HOME/sessions, plain JSONL) land on the
-//     persistent mount and survive microVM reaps — mount-direct like Claude's
-//     CLAUDE_CONFIG_DIR, no copy protocol needed,
-//   - the SQLite state DB is redirected to EPHEMERAL local disk (sqlite_home):
-//     the managed mount lacks the fcntl locking SQLite needs (same constraint
-//     that forced the kiro/opencode store copy protocol).
+// Codex reads all behavioral config from $CODEX_HOME/config.toml. Every
+// invocation gets a PRIVATE home on ephemeral local disk so its continuously
+// appended rollout JSONL never touches AgentCore's managed-session mount. The
+// stage runner copies only the selected rollout to/from durable storage around
+// resumable author runs (cli/codex-store.js). Config, global guidance, reviewer
+// sessions, and SQLite state always remain local.
 
 // TOML value emitters — config values here are flat strings/arrays/maps, so a
 // tiny local emitter beats a dependency. Strings are emitted as TOML basic
@@ -584,18 +583,38 @@ const CODEX_GLOBAL_AGENTS_MD = [
   '',
 ].join('\n');
 
-// Effectful: write <workspaceDir>/.aidlc/codex-home/{config.toml,AGENTS.md}
-// and return the home dir to pass via CODEX_HOME. Factored out like
-// materializeMcpConfig so the resume branch reuses it.
+// A deterministic private home keeps concurrent stages/reviewers isolated while
+// allowing run-stage to resolve the destination before it restores a rollout.
+export const resolveCodexHome = ({ scope = {}, env = process.env } = {}) => {
+  const identity = {
+    executionId: scope.executionId ?? null,
+    intentId: scope.intentId ?? null,
+    projectId: scope.projectId ?? null,
+    stageInstanceId: scope.stageInstanceId ?? null,
+    unitSlug: scope.unitSlug ?? null,
+    sectionIndex: scope.sectionIndex ?? null,
+    stageAttempt: scope.stageAttempt ?? null,
+    role: scope.role ?? null,
+    reviewerAgent: scope.reviewerAgent ?? null,
+    discussionId: scope.discussionId ?? null,
+    messageId: scope.messageId ?? null,
+  };
+  const digest = createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0, 24);
+  return path.join(path.resolve(env.V2_CODEX_HOME_ROOT || DEFAULT_CODEX_HOME_ROOT), digest);
+};
+
+// Effectful: recreate the scoped local home and write config.toml + AGENTS.md.
+// A resume passes reset=false after codex-store restored its sessions subtree.
 export const materializeCodexHome = async ({
-  workspaceDir,
   mcpEntry,
   scope,
   env = process.env,
   customServers = {},
   secretEnv = {},
+  reset = true,
 }) => {
-  const homeDir = path.join(workspaceDir, '.aidlc', 'codex-home');
+  const homeDir = resolveCodexHome({ scope, env });
+  if (reset) await rm(homeDir, { recursive: true, force: true });
   await mkdir(homeDir, { recursive: true });
   const toml = buildCodexConfigToml({ mcpEntry, scope, env, customServers, secretEnv });
   await writeFile(path.join(homeDir, 'config.toml'), toml, 'utf8');

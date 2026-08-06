@@ -27,6 +27,7 @@ import {
 import { parseOpenCodeJsonl } from './opencode-parser.js';
 import { parseCodexJsonl } from './codex-parser.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
+import { cleanupCodexHome as defaultCleanupCodexHome } from './codex-store.js';
 
 // Extract the assistant text + token usage from Claude's `--output-format
 // stream-json` stdout (one JSON event per line). Per the headless CLI docs the
@@ -114,6 +115,7 @@ export const runOneShotPrompt = async ({
   restoreKiroStore = defaultRestoreKiroStore,
   persistKiroStore = defaultPersistKiroStore,
   withOpenCodeStore = defaultWithOpenCodeStore,
+  cleanupCodexHome = defaultCleanupCodexHome,
 } = {}) => {
   const cli = selectCli({ requested: requestedCli, availableClis });
   if (!cli) return { ok: false, reason: 'no_cli', text: '', cli: null, model: null, metrics: null };
@@ -153,6 +155,7 @@ export const runOneShotPrompt = async ({
       cli === 'opencode' ? await withOpenCodeStore({ env, operation: execute }) : await execute();
   } finally {
     if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
+    if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
   }
   const { exitCode, stdout, stderr, timedOut } = capture;
 

@@ -178,6 +178,26 @@ describe('resolveConflict', () => {
     );
   });
 
+  it('runs Codex conflict resolution in an ephemeral home and cleans it afterward', async () => {
+    const { remote, ws } = await conflictWorld();
+    const codexHome = path.join(root, 'codex-runs', 'conflict');
+    const cleanupCodexHome = vi.fn(async () => true);
+    const spawnFn = fakeCliSpawn(async (cwd) => {
+      await writeFile(path.join(cwd, 'shared.txt'), 'intent version + unit version\n');
+    });
+    const res = await resolveConflict(basePayload(ws, { requestedCli: 'codex' }), {
+      ...baseDeps(remote, spyStore(), spawnFn),
+      availableClis: ['codex'],
+      materializeCodexHome: async () => codexHome,
+      cleanupCodexHome,
+    });
+    expect(res.ok).toBe(true);
+    expect(cleanupCodexHome).toHaveBeenCalledWith({
+      codexHome,
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+    });
+  });
+
   it('REFUSES a lazy agent (markers remain): aborts to a pristine tree and fails as a value', async () => {
     const { remote, ws } = await conflictWorld();
     const store = spyStore();

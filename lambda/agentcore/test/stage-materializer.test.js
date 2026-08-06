@@ -17,6 +17,7 @@ import {
   buildOpenCodeConfig,
   buildCodexConfigToml,
   toCodexMcpToml,
+  resolveCodexHome,
   materializeCliContext,
   OPENCODE_INSTRUCTIONS,
   renderRulesDoc,
@@ -556,7 +557,7 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
       { LOCAL_KEY: 'k-123' },
     );
     // `Bearer ${VAR}` cannot be forwarded by name — falls back to the resolved
-    // literal (config.toml lives in the runtime-owned .aidlc dir).
+    // literal (config.toml lives in the runtime-owned local Codex home).
     expect(toml).toContain('"API_KEY" = "Bearer k-123"');
     expect(toml).not.toContain('${');
   });
@@ -599,15 +600,22 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
     expect(toml.slice(aidlcIdx)).not.toContain('"evil"');
   });
 
-  it('materializes CODEX_HOME under .aidlc with config.toml + AGENTS.md, repo files untouched', async () => {
+  it('materializes CODEX_HOME on scoped local storage with repo files untouched', async () => {
     const ws = await mkdtemp(path.join(tmpdir(), 'aidlc-codex-'));
+    const localRoot = path.join(ws, 'ephemeral', 'codex-runs');
+    const scope = { executionId: 'e', intentId: 'i', stageInstanceId: 's', role: 'author' };
     const context = await materializeCliContext({
       cli: 'codex',
       workspaceDir: ws,
       mcpEntry: '/opt/agentcore/mcp/index.js',
-      scope: { executionId: 'e', intentId: 'i' },
+      scope,
+      env: { V2_CODEX_HOME_ROOT: localRoot },
     });
-    expect(context.codexHome).toBe(path.join(ws, '.aidlc', 'codex-home'));
+    expect(context.codexHome).toBe(
+      resolveCodexHome({ scope, env: { V2_CODEX_HOME_ROOT: localRoot } }),
+    );
+    expect(context.codexHome.startsWith(`${localRoot}${path.sep}`)).toBe(true);
+    expect(context.codexHome).not.toContain(path.join('.aidlc', 'codex-home'));
     const toml = await readFile(path.join(context.codexHome, 'config.toml'), 'utf8');
     expect(toml).toContain('model_provider = "amazon-bedrock"');
     const agentsMd = await readFile(path.join(context.codexHome, 'AGENTS.md'), 'utf8');
@@ -616,6 +624,24 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
     // Repo-level files stay untouched.
     await expect(readFile(path.join(ws, 'AGENTS.md'), 'utf8')).rejects.toThrow();
     await expect(readFile(path.join(ws, '.codex', 'config.toml'), 'utf8')).rejects.toThrow();
+  });
+
+  it('isolates Codex homes by stage, unit, and role', async () => {
+    const env = { V2_CODEX_HOME_ROOT: '/tmp/codex-runs' };
+    const base = {
+      executionId: 'e',
+      intentId: 'i',
+      stageInstanceId: 's',
+      unitSlug: 'checkout',
+      role: 'author',
+    };
+    expect(resolveCodexHome({ scope: base, env })).toBe(resolveCodexHome({ scope: base, env }));
+    expect(resolveCodexHome({ scope: base, env })).not.toBe(
+      resolveCodexHome({ scope: { ...base, unitSlug: 'billing' }, env }),
+    );
+    expect(resolveCodexHome({ scope: base, env })).not.toBe(
+      resolveCodexHome({ scope: { ...base, role: 'reviewer' }, env }),
+    );
   });
 
   it('writes custom rules to .aidlc/codex-instructions for the codex driver', async () => {

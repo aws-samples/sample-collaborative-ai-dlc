@@ -218,6 +218,7 @@ describe('runOneShotPrompt', () => {
   it('runs Codex with CODEX_HOME, Bedrock bearer auth, and turn usage', async () => {
     let argv;
     let childEnv;
+    const cleanupCodexHome = vi.fn(async () => true);
     const spawnFn = vi.fn((command, args, options) => {
       argv = { command, args };
       childEnv = options.env;
@@ -242,6 +243,7 @@ describe('runOneShotPrompt', () => {
       codexHome: '/ws/.aidlc/codex-home',
       env: { AWS_REGION: 'us-east-1', AWS_BEARER_TOKEN_BEDROCK: 'secret' },
       spawnFn,
+      cleanupCodexHome,
     });
     expect(out).toMatchObject({
       ok: true,
@@ -253,6 +255,10 @@ describe('runOneShotPrompt', () => {
     expect(argv.args).toContain('openai.gpt-5.5');
     expect(childEnv.CODEX_HOME).toBe('/ws/.aidlc/codex-home');
     expect(childEnv.AWS_BEARER_TOKEN_BEDROCK).toBe('secret');
+    expect(cleanupCodexHome).toHaveBeenCalledWith({
+      codexHome: '/ws/.aidlc/codex-home',
+      env: { AWS_REGION: 'us-east-1', AWS_BEARER_TOKEN_BEDROCK: 'secret' },
+    });
   });
 
   it('claude one-shots never touch the kiro store', async () => {
