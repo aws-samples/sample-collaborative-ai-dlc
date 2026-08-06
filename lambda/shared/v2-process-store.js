@@ -447,6 +447,52 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Attributes;
   };
 
+  // Reconcile a detached stage job that the orchestrator has declared failed.
+  // The callback id is the attempt ownership token: a delayed callback timeout
+  // from an older attempt must never overwrite a retry/resume that has already
+  // refreshed the row. Returning null means the row was absent, terminal, or
+  // owned by a different callback.
+  const failRunningStageAttempt = async ({
+    executionId,
+    stageInstanceId,
+    stageCallbackId,
+    runtimeError = 'stage_failed',
+  }) => {
+    if (!stageCallbackId) throw new Error('failRunningStageAttempt requires stageCallbackId');
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          ConditionExpression:
+            'attribute_exists(pk) AND #state = :running AND stageCallbackId = :callbackId',
+          UpdateExpression:
+            'SET #state = :failed, updatedAt = :ts, completedAt = :ts, GSI2SK = :g2sk, runtimeError = :err',
+          ExpressionAttributeNames: { '#state': 'state' },
+          ExpressionAttributeValues: {
+            ':running': 'RUNNING',
+            ':failed': 'FAILED',
+            ':callbackId': stageCallbackId,
+            ':ts': ts,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'STAGE',
+              state: 'FAILED',
+              id: stageInstanceId,
+            }).GSI2SK,
+            ':err': runtimeError,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
   // Flip a parked stage (WAITING_FOR_HUMAN) back to RUNNING on resume WITHOUT
   // rebuilding the row: startedAt and attempt are preserved (the wall-clock
   // duration spans the whole stage including waits), the open park window
@@ -2182,6 +2228,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     putStage,
     getStage,
     updateStageState,
+    failRunningStageAttempt,
     resumeStageRow,
     appendEvent,
     listEvents,

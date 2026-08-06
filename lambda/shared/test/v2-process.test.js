@@ -226,6 +226,45 @@ describe('createProcessStore', () => {
     expect(input.UpdateExpression).not.toContain('parkedAt');
   });
 
+  it('failRunningStageAttempt conditionally fails only its callback-owned RUNNING row', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { state: 'FAILED' } });
+    const result = await store.failRunningStageAttempt({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      stageCallbackId: 'cb-1',
+      runtimeError: 'stage_callback_failed',
+    });
+    expect(result).toEqual({ state: 'FAILED' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      'attribute_exists(pk) AND #state = :running AND stageCallbackId = :callbackId',
+    );
+    expect(input.ExpressionAttributeValues).toMatchObject({
+      ':running': 'RUNNING',
+      ':failed': 'FAILED',
+      ':callbackId': 'cb-1',
+      ':ts': 'T',
+      ':err': 'stage_callback_failed',
+    });
+    expect(input.ExpressionAttributeValues[':g2sk']).toBe(
+      executionTypeStateIndex({ executionId: 'e1', type: 'STAGE', state: 'FAILED', id: 'si-1' })
+        .GSI2SK,
+    );
+  });
+
+  it('failRunningStageAttempt returns null when a retry or terminal state wins the race', async () => {
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    await expect(
+      store.failRunningStageAttempt({
+        executionId: 'e1',
+        stageInstanceId: 'si-1',
+        stageCallbackId: 'stale-callback',
+      }),
+    ).resolves.toBeNull();
+  });
+
   it('resumeStageRow folds the open park window into waitMs, clears parkedAt, preserves startedAt/attempt', async () => {
     // A resume PATCHES the parked row — rebuilding it (putStage) was the
     // "stage duration resets when a question is answered" bug.

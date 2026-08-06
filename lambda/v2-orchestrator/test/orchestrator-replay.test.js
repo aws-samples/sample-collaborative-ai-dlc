@@ -69,6 +69,7 @@ const makeWorld = ({ stages = [{ stageId: 'a' }, { stageId: 'b' }] } = {}) => {
     invokes: [],
     events: [],
     statusWrites: [],
+    failedStageAttempts: [],
   };
   world.deps = {
     store: {
@@ -86,6 +87,10 @@ const makeWorld = ({ stages = [{ stageId: 'a' }, { stageId: 'b' }] } = {}) => {
       appendEvent: async (e) => {
         world.events.push(e.type);
         return {};
+      },
+      failRunningStageAttempt: async (input) => {
+        world.failedStageAttempts.push(input);
+        return null;
       },
     },
     loadPlan: async () => ({ valid: true, plan: { stages } }),
@@ -178,7 +183,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
   });
 
   it('a stage verdict of FAILED delivered through the callback fails the run after replay', async () => {
-    const world = makeWorld({ stages: [{ stageId: 'a' }] });
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
     const runner = new LocalDurableTestRunner({ handlerFunction: handler });
 
@@ -199,6 +204,15 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
     expect(world.events).toContain('v2.execution.failed');
     // Only one dispatch — the failure verdict was not retried implicitly.
     expect(world.invokes.filter((p) => p.command === 'run-stage-start')).toHaveLength(1);
+    // The callback-owned reconciliation is checkpointed exactly once across replay.
+    expect(world.failedStageAttempts).toEqual([
+      {
+        executionId: 'i1',
+        stageInstanceId: 'si-a',
+        stageCallbackId: expect.any(String),
+        runtimeError: 'sensor_blocked',
+      },
+    ]);
   });
 
   it('a cancel sentinel on the gate callback retires the run without terminal writes', async () => {
