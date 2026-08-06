@@ -1,6 +1,6 @@
 site_name = "AIDLC Collaborative Documentation"
 site_description = "AIDLC Collaborative Workflow"
-site_url = "https://aidlc.dev/"
+site_url = "https://aws-samples.github.io/sample-collaborative-ai-dlc/"
 repo_url = "https://github.com/aws-samples/sample-collaborative-ai-dlc"
 repo_name = "aws-samples/sample-collaborative-ai-dlc"
 
