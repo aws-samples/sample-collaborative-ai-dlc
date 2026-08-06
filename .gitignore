@@ -44,6 +44,11 @@ coverage/
 
 # Dev screenshots and scratch files
 *.png
+# Curated public README screenshots
+!docs/assets/readme/human-gate-card.png
+!docs/assets/readme/cost-observability-card.png
+!docs/assets/readme/live-collaboration-card.png
+!docs/assets/readme/traceability-graph.png
 ideas.txt
 mise.toml
 
