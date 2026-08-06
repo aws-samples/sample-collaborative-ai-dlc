@@ -1,19 +1,21 @@
 <div align="center">
 
+<h1 align="center">
 <a href="https://aws-samples.github.io/sample-collaborative-ai-dlc/">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/hero-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/hero-light.svg" />
-    <img src="docs/assets/readme/hero-light.svg" alt="Collaborative AI-DLC — several people working on the same intent at the same time" width="560" />
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/hero-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/hero-light.png" />
+    <img src="docs/assets/readme/hero-light.png" alt="Collaborative AI-DLC — several people working on the same intent at the same time" width="560" />
   </picture>
 </a>
+</h1>
 
 <h3>The shared lifecycle for Kiro, Claude Code, OpenCode, and Codex—with a human gate at every decision.</h3>
 
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT--0-EAB308.svg" alt="MIT-0 license" /></a>
   <a href="https://aws-samples.github.io/sample-collaborative-ai-dlc/"><img src="https://img.shields.io/badge/Docs-GitHub%20Pages-2563EB.svg" alt="Documentation" /></a>
-  <a href="https://github.com/aws-samples/sample-collaborative-ai-dlc/releases"><img src="https://img.shields.io/badge/Status-Early%20Preview-F59E0B.svg" alt="Early preview releases" /></a>
+  <a href="https://github.com/aws-samples/sample-collaborative-ai-dlc/releases"><img src="https://img.shields.io/github/v/release/aws-samples/sample-collaborative-ai-dlc?include_prereleases&label=release&color=F59E0B" alt="Latest release" /></a>
 </p>
 
 <p>
@@ -25,13 +27,7 @@
 
 </div>
 
----
-
-**Documentation**: [aws-samples.github.io/sample-collaborative-ai-dlc](https://aws-samples.github.io/sample-collaborative-ai-dlc/) · **Deploy**: [Quickstart](#quickstart) · **Status**: early preview
-
----
-
-You deploy Collaborative AI-DLC into **your own AWS account**. It drives the coding agents you already use — Kiro, Claude Code, OpenCode, Codex — through a governed lifecycle: requirements, human approval gates, parallel implementation, pull request, and a traceability graph the whole team can read.
+Collaborative AI-DLC is an early-preview AWS sample that you deploy into **your own AWS account**. It drives the coding agents you already use — Kiro, Claude Code, OpenCode, Codex — through a governed lifecycle: requirements, human approval gates, parallel implementation, pull request, and a traceability graph the whole team can read.
 
 > [!NOTE]
 > **[AI-DLC](https://github.com/awslabs/aidlc-workflows)** is the AI-Driven Development Life Cycle methodology: phases, stages, artifacts, agent personas, and human validation gates. **Collaborative AI-DLC** is this platform: a shared orchestration and governance layer over those existing coding agents, not another coding assistant.
@@ -47,6 +43,12 @@ When an agent session ends, the reasoning goes with it. Requirements sit in one 
 | [**Requirement-to-code traceability**](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/)                             | Typed graph relationships link requirements, questions, decisions, artifacts, and the code structure they produced.                            |
 | [**Cost and execution visibility**](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/intent-observability/) | Stage duration, sensor verdicts, token usage, and cost per stage, intent, and project — computed from live model pricing.                      |
 
+<p align="center">
+  <img src="docs/assets/readme/traceability-graph.png" alt="The intent graph: requirements, questions, decisions, and code structure linked by typed relationships around one intent" width="100%" />
+  <br /><strong>Every requirement leads back to code.</strong>
+  Typed relationships link requirements, questions, decisions, and the code structure they produced — one navigable graph per intent.
+</p>
+
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
@@ -55,36 +57,27 @@ When an agent session ends, the reasoning goes with it. Requirements sit in one 
       <br />Ambiguity becomes a structured question. Execution stays parked until a person decides.
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/assets/readme/cost-observability-card.png" alt="Usage and activity panel showing token usage and cost aggregated for one intent" width="100%" />
-      <br /><strong>Every run has a visible cost.</strong>
-      <br />Cost is computed per stage from live model pricing, then aggregated for the whole intent.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center" valign="top">
       <img src="docs/assets/readme/live-collaboration-card.png" alt="A team member's session showing a colleague's message in the shared intent discussion" width="100%" />
       <br /><strong>Your whole team, one intent.</strong>
       <br />However many people join, presence, discussions, and selections stay in sync — and land in the intent graph.
     </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/assets/readme/traceability-graph.png" alt="A requirement linked to the code structure it produced" width="100%" />
-      <br /><strong>Every requirement leads back to code.</strong>
-      <br />Typed relationships preserve the path from intent and decisions to concrete code structure.
-    </td>
   </tr>
 </table>
 
-> “The work on Collaborative AI-DLC and AI-DLC in general is outstanding. Thank you for doing this work and sharing with the broader community.”
->
-> — **Principal Solutions Architect at AWS**
+<p align="center">
+  <img src="docs/assets/readme/cost-observability-card.png" alt="Usage and activity panel: input tokens, output tokens, total tokens, and cost for one intent" width="100%" />
+  <br /><sub>Cost is computed per stage from live model pricing, then aggregated for the whole intent.</sub>
+</p>
 
 <details>
 <summary><strong>Watch the 15-second run</strong> — intent, human gate, plan approval, pull request, traceability graph</summary>
 
 <p align="center">
-  <a href="https://aws-samples.github.io/sample-collaborative-ai-dlc/">
-    <img src="docs/assets/readme/demo.gif" alt="Fifteen-second run: intent dashboard, human gate question, plan approval, generated pull request, traceability drawer" width="720" />
+  <a href="docs/assets/readme/demo.gif">
+    <img src="docs/assets/readme/demo-poster.png" alt="Preview of the fifteen-second demo: the generated pull request with intent, changes, and traceability sections" width="720" />
   </a>
+  <br />
+  <sub>Click the preview to play the capture (2.4 MB GIF).</sub>
 </p>
 
 </details>
@@ -323,7 +316,7 @@ In local/hybrid mode, the installer creates the first Cognito user and grants `p
 
 The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud), so an intent can be started from a tracker issue. All providers are optional; skip any you don't need and the corresponding **Connect** buttons in the UI stay disabled.
 
-For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only, and the Jira Cloud and GitLab Issues tracker integrations are read-only.
+For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only, and the Jira Cloud and GitLab Issues tracker integrations are read-only.
 
 `<your-app-domain>` is the deployment's canonical hostname: the custom domain when one is configured, otherwise the CloudFront domain. The Admin page shows it, and each provider's setup guide shows the exact callback URL to copy. To read it directly: `terraform -chdir=terraform output -raw application_domain`.
 
