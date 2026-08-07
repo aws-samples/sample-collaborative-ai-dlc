@@ -10,7 +10,7 @@
 </a>
 </h1>
 
-<h3>The shared lifecycle for Kiro, Claude Code, OpenCode, and Codex—with a human gate at every decision.</h3>
+<h3>Your whole team and their coding agents, building in one live workspace.</h3>
 
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT--0-EAB308.svg" alt="MIT-0 license" /></a>
@@ -27,7 +27,7 @@
 
 </div>
 
-Collaborative AI-DLC is an early-preview AWS sample that you deploy into **your own AWS account**. It drives the coding agents you already use — Kiro, Claude Code, OpenCode, Codex — through a governed lifecycle: requirements, human approval gates, parallel implementation, pull request, and a traceability graph the whole team can read.
+Collaborative AI-DLC is where a team of humans collaborates in real time with multiple remote coding agents, following the structured AI-DLC methodology. It is an early-preview AWS sample you deploy into **your own AWS account**: it runs the agents you already use — Kiro, Claude Code, OpenCode, Codex — in isolated cloud sessions and walks every intent through a governed lifecycle — requirements, human approval gates, parallel implementation, pull request, and a traceability graph the whole team can read.
 
 > [!NOTE]
 > **[AI-DLC](https://github.com/awslabs/aidlc-workflows)** is the AI-Driven Development Life Cycle methodology: phases, stages, artifacts, agent personas, and human validation gates. **Collaborative AI-DLC** is this platform: a shared orchestration and governance layer over those existing coding agents, not another coding assistant.
@@ -38,8 +38,8 @@ When an agent session ends, the reasoning goes with it. Requirements sit in one 
 
 |                                                                                                                                         |                                                                                                                                                |
 | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| [**Human approval gates**](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/execution/)                               | An ambiguous decision parks the run. The agent resumes only after a person answers in the UI — execution state is preserved, not restarted.    |
-| [**Real-time collaboration**](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/projects/)                   | Any number of teammates can edit, discuss, and resolve the same intent at the same time. Presence and selections sync over Yjs and WebSockets. |
+| [**Human approval gates**](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/execution/#human-gates-park-and-resume)   | An ambiguous decision parks the run. The agent resumes only after a person answers in the UI — execution state is preserved, not restarted.    |
+| [**Real-time collaboration**](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/real-time-collaboration/)    | Any number of teammates can edit, discuss, and resolve the same intent at the same time. Presence and selections sync over Yjs and WebSockets. |
 | [**Requirement-to-code traceability**](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/)                             | Typed graph relationships link requirements, questions, decisions, artifacts, and the code structure they produced.                            |
 | [**Cost and execution visibility**](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/intent-observability/) | Stage duration, sensor verdicts, token usage, and cost per stage, intent, and project — computed from live model pricing.                      |
 
