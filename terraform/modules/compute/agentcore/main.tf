@@ -131,7 +131,7 @@ locals {
 
 resource "aws_ecr_repository" "agentcore" {
   name                 = "${var.project_name}-agentcore-${var.environment}"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = var.environment == "dev"
 
   image_scanning_configuration {
@@ -267,7 +267,19 @@ resource "aws_dynamodb_table" "v2_executions" {
     }
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
   tags = var.tags
+}
+
+resource "aws_kms_key" "dynamodb" {
+  description             = "KMS key for DynamoDB table encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+  tags                    = var.tags
 }
 
 # ---------------------------------------------------------------------------
