@@ -163,6 +163,26 @@ describe('resolveBindingCredential app-binding permission scoping', () => {
     getInstallationToken.mockResolvedValue('ghs_token');
   });
 
+  it('requests issue and pull-request permissions for read operations', async () => {
+    await resolveBindingCredential({
+      ddb: {},
+      ssm: {},
+      secrets: {},
+      binding: { ...base, capabilities: { repositoryWrite: true, workflows: 'none' } },
+      requiredAccess: 'read',
+    });
+    expect(getInstallationToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permissions: {
+          contents: 'read',
+          metadata: 'read',
+          issues: 'read',
+          pull_requests: 'read',
+        },
+      }),
+    );
+  });
+
   it('omits workflows:write for a binding verified without it', async () => {
     await resolveBindingCredential({
       ddb: {},

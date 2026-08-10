@@ -214,7 +214,12 @@ const resolveBindingCredential = async ({
       repositories: [binding.repo],
       permissions:
         requiredAccess === 'read'
-          ? { contents: 'read', metadata: 'read' }
+          ? {
+              contents: 'read',
+              metadata: 'read',
+              issues: 'read',
+              pull_requests: 'read',
+            }
           : {
               contents: 'write',
               pull_requests: 'write',
