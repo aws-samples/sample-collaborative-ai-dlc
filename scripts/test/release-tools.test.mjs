@@ -54,6 +54,8 @@ test('release deployment uses the protected demo environment and GitHub OIDC', (
   assert.match(deployment, /TF_ENVIRONMENT: prod/);
   assert.match(deployment, /role-to-assume: \$\{\{ vars\.AWS_ROLE_ARN \}\}/);
   assert.match(deployment, /TF_STATE_BUCKET: \$\{\{ vars\.TF_STATE_BUCKET \}\}/);
+  assert.match(deployment, /docker\/setup-qemu-action@[0-9a-f]{40}/);
+  assert.match(deployment, /platforms: arm64/);
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /git merge-base --is-ancestor "\$tag_commit" "\$main_commit"/);
@@ -63,6 +65,11 @@ test('release deployment uses the protected demo environment and GitHub OIDC', (
     deployment.indexOf('git merge-base --is-ancestor') <
       deployment.indexOf('aws-actions/configure-aws-credentials'),
     'release ancestry must be verified before AWS credentials are configured',
+  );
+  assert.ok(
+    deployment.indexOf('docker/setup-qemu-action') <
+      deployment.indexOf('deploy-terraform.sh "$TF_ENVIRONMENT"'),
+    'ARM64 emulation must be configured before Terraform builds the AgentCore image',
   );
 });
 
