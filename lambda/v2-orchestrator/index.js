@@ -58,6 +58,7 @@ const defaultStore = createProcessStore({ ddb });
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
+const APPLICATION_URL = () => process.env.APPLICATION_URL;
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
@@ -197,6 +198,7 @@ const defaultDeps = () => ({
       operation: 'compare',
       args: { base, head },
     }),
+  applicationUrl: APPLICATION_URL(),
   unitPrProvider: {
     compare: ({ projectId, gitProvider, repoId, base, head }) =>
       defaultSourceControlOperation({
@@ -287,6 +289,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     openPr,
     comparePrBranches,
     unitPrProvider,
+    applicationUrl,
   } = deps;
   const { intentId, executionId } = event;
   // Quorum-supported artifact edit (post-hoc document editing): its own small
@@ -1355,6 +1358,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         meta,
         executionId,
         gitProvider,
+        applicationUrl,
         log: (m) => ctx.logger?.info?.(m, { intentId }),
       }),
     );
@@ -1641,6 +1645,7 @@ const openIntentPrs = async ({
   meta,
   executionId,
   gitProvider,
+  applicationUrl,
   log,
 }) => {
   const repos = meta.repos ?? [];
@@ -1697,11 +1702,14 @@ const openIntentPrs = async ({
   }
 
   const title = meta.title || `AI-DLC: ${branch}`;
+  const intentUrl = applicationUrl
+    ? `${applicationUrl.replace(/\/+$/, '')}/space/${encodeURIComponent(
+        meta.projectId,
+      )}/intent/${encodeURIComponent(meta.intentId ?? executionId)}`
+    : null;
+  const aidlcAttribution = intentUrl ? `[AI-DLC](${intentUrl})` : 'AI-DLC';
   const body = [
-    `Automated ${gitProvider === 'gitlab' ? 'MR' : 'PR'} created by AI-DLC (strategy: ${strategy})`,
-    '',
-    `Execution ID: ${executionId}`,
-    `Project: ${meta.projectId}`,
+    `Automated ${gitProvider === 'gitlab' ? 'MR' : 'PR'} created by ${aidlcAttribution} (strategy: ${strategy})`,
     ...unitLines,
   ].join('\n');
 

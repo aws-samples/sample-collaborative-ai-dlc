@@ -2367,6 +2367,7 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
       { slug: 'auth', state: 'MERGED' },
       { slug: 'billing', state: 'MERGED' },
     ]);
+    deps.applicationUrl = 'https://aidlc.example.test/';
     deps.openPr = vi.fn(async ({ repoId }) => ({
       prUrl: `https://github.com/${repoId}/pull/7`,
       prNumber: 7,
@@ -2383,7 +2384,9 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
       baseBranch: 'main',
       title: 'Bookstore API',
     });
-    expect(deps.openPr.mock.calls[0][0].body).toContain('Execution ID: i1');
+    expect(deps.openPr.mock.calls[0][0].body).toContain(
+      'created by [AI-DLC](https://aidlc.example.test/space/p1/intent/i1)',
+    );
     expect(deps.openPr.mock.calls[0][0].body).toContain('strategy: intent-pr');
     expect(deps.openPr.mock.calls[0][0].body).toContain('2 total, 2 merged');
     const opened = events().filter((e) => e.type === 'v2.pr.opened');
