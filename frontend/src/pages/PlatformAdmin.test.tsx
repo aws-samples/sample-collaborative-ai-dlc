@@ -16,6 +16,9 @@ vi.mock('@/components/admin/AgentCredentialsCard', () => ({
 vi.mock('@/components/admin/DefaultModelsCard', () => ({
   DefaultModelsCard: () => <div data-testid="default-models-card" />,
 }));
+vi.mock('@/components/admin/tabs/EnvironmentsTab', () => ({
+  EnvironmentsTab: () => <div data-testid="environments-tab" />,
+}));
 vi.mock('@/components/admin/GitHubSourceControlCard', () => ({
   GitHubSourceControlCard: ({ oauthConfigured }: { oauthConfigured: boolean }) => (
     <div data-testid="github-card" data-oauth-configured={String(oauthConfigured)} />
@@ -56,11 +59,12 @@ beforeEach(() => {
 });
 
 describe('PlatformAdmin', () => {
-  it('renders the header and all four tabs', async () => {
+  it('renders the header and all five tabs', async () => {
     renderAt();
     expect(screen.getByRole('heading', { name: 'Platform Admin' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Users' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Agents' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Environments' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Source Control' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Trackers' })).toBeInTheDocument();
     // Let the async provider load settle inside act().
@@ -78,6 +82,11 @@ describe('PlatformAdmin', () => {
     expect(await screen.findByTestId('agent-credentials-card')).toBeInTheDocument();
     expect(screen.getByTestId('default-models-card')).toBeInTheDocument();
     expect(screen.queryByTestId('user-management-card')).not.toBeInTheDocument();
+  });
+
+  it('opens managed environments from the query parameter', async () => {
+    renderAt('/admin?tab=environments');
+    expect(await screen.findByTestId('environments-tab')).toBeInTheDocument();
   });
 
   it('falls back to Users for an unknown ?tab= value', async () => {

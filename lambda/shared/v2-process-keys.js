@@ -329,6 +329,9 @@ const buildExecutionMeta = ({
   // from the project; the orchestrator forwards it to run-stage which fetches
   // each .md from S3 and injects it into the agent context. null = none.
   customRules = null,
+  // Immutable environment identity, image, runtime, endpoint, compatibility,
+  // and verification data used for the full intent lifetime.
+  environment = null,
   // Derive-time graph enrichment mode ('off'|'llm') snapshotted from the Admin
   // SSM setting at create; the orchestrator forwards it in the derive-artifacts
   // payload. Snapshotting keeps a run's behaviour stable even if the Admin
@@ -431,6 +434,7 @@ const buildExecutionMeta = ({
   mcpServersByTier,
   customMcpServers,
   customRules,
+  environment,
   deriveEnrichment,
   parkReleaseSeconds,
   maxParallelUnits,

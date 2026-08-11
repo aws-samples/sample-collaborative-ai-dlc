@@ -129,6 +129,16 @@ variable "intents_lambda_name" {
   type        = string
 }
 
+variable "environments_lambda_invoke_arn" {
+  description = "Invoke ARN of the managed environment control Lambda"
+  type        = string
+}
+
+variable "environments_lambda_name" {
+  description = "Name of the managed environment control Lambda"
+  type        = string
+}
+
 variable "agent_questions_table_name" {
   description = "Name of the agent questions DynamoDB table"
   type        = string

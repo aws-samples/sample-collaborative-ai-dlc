@@ -373,6 +373,11 @@ module "lambda" {
   yjs_documents_table_name            = module.dynamodb.yjs_documents_table_name
   yjs_documents_table_arn             = module.dynamodb.yjs_documents_table_arn
   agentcore_runtime_arn               = module.agentcore.runtime_arn
+  environment_registry_table_name     = module.dynamodb.environment_registry_table_name
+  environment_registry_table_arn      = module.dynamodb.environment_registry_table_arn
+  core_image_digest                   = module.agentcore.image_digest
+  core_runtime_version                = module.agentcore.runtime_version
+  runtime_compatibility_version       = module.agentcore.runtime_compatibility_version
   github_oauth_secret_name            = module.git.github_oauth_secret_name
   github_oauth_secret_arn             = module.git.github_oauth_secret_arn
   github_app_private_key_secret_name  = module.git.github_app_private_key_secret_name
@@ -454,6 +459,8 @@ module "api" {
   workflows_lambda_name             = module.lambda.workflows_lambda_name
   intents_lambda_invoke_arn         = module.lambda.intents_lambda_invoke_arn
   intents_lambda_name               = module.lambda.intents_lambda_name
+  environments_lambda_invoke_arn    = module.managed_environments.control_lambda_invoke_arn
+  environments_lambda_name          = module.managed_environments.control_lambda_name
   github_lambda_invoke_arn          = module.lambda.github_lambda_invoke_arn
   github_lambda_name                = module.lambda.github_lambda_name
   gitlab_lambda_invoke_arn          = module.lambda.gitlab_lambda_invoke_arn
@@ -553,6 +560,35 @@ module "agentcore" {
   vpc_id                  = module.networking.vpc_id
   vpc_cidr                = module.networking.vpc_cidr_block
   private_route_table_ids = module.networking.private_route_table_ids
+
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+module "managed_environments" {
+  source = "./modules/compute/managed-environments"
+
+  project_name                  = var.project_name
+  environment                   = var.environment
+  registry_table_name           = module.dynamodb.environment_registry_table_name
+  registry_table_arn            = module.dynamodb.environment_registry_table_arn
+  core_image_uri                = module.agentcore.ecr_repository_url
+  core_image_digest             = module.agentcore.image_digest
+  core_runtime_arn              = module.agentcore.runtime_arn
+  core_runtime_version          = module.agentcore.runtime_version
+  runtime_compatibility_version = module.agentcore.runtime_compatibility_version
+  runtime_role_arn              = module.agentcore.role_arn
+  runtime_network_mode          = module.agentcore.network_mode
+  runtime_subnet_ids            = module.agentcore.runtime_subnet_ids
+  runtime_security_group_ids    = module.agentcore.runtime_security_group_ids
+  runtime_environment_variables = module.agentcore.runtime_environment_variables
+  core_repository_arn           = module.agentcore.ecr_repository_arn
+  environment_repository_name   = module.agentcore.managed_environment_repository_name
+  environment_repository_url    = module.agentcore.managed_environment_repository_url
+  environment_repository_arn    = module.agentcore.managed_environment_repository_arn
+  cors_allowed_origins          = local.cors_allowed_origins
 
   tags = {
     Environment = var.environment

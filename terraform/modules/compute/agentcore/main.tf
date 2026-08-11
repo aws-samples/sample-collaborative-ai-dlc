@@ -141,6 +141,22 @@ resource "aws_ecr_repository" "agentcore" {
   tags = var.tags
 }
 
+resource "aws_ecr_repository" "managed_environments" {
+  name                 = "${var.project_name}-managed-environments-${var.environment}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = var.environment != "prod"
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = var.tags
+}
+
 resource "aws_ecr_lifecycle_policy" "agentcore" {
   repository = aws_ecr_repository.agentcore.name
   policy = jsonencode({
@@ -173,6 +189,13 @@ module "agentcore_docker_build" {
   triggers = {
     dir_sha = local.agentcore_files_sha
   }
+}
+
+data "aws_ecr_image" "agentcore" {
+  repository_name = aws_ecr_repository.agentcore.name
+  image_tag       = local.agentcore_image_tag
+
+  depends_on = [module.agentcore_docker_build]
 }
 
 # ---------------------------------------------------------------------------
@@ -302,9 +325,12 @@ resource "aws_iam_role_policy" "agentcore" {
       [
         {
           # Pull the container image.
-          Effect   = "Allow"
-          Action   = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
-          Resource = aws_ecr_repository.agentcore.arn
+          Effect = "Allow"
+          Action = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
+          Resource = [
+            aws_ecr_repository.agentcore.arn,
+            aws_ecr_repository.managed_environments.arn,
+          ]
         },
         {
           Effect   = "Allow"
@@ -612,6 +638,27 @@ resource "aws_security_group" "agentcore" {
 # The AgentCore Runtime (awscc → AWS::BedrockAgentCore::Runtime)
 # ---------------------------------------------------------------------------
 
+locals {
+  runtime_environment_variables = {
+    V2_WORKSPACE_DIR              = "/mnt/workspace"
+    V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
+    BLOCKS_TABLE                  = var.blocks_table_name
+    ARTIFACTS_BUCKET              = var.artifacts_bucket_name
+    NEPTUNE_ENDPOINT              = var.neptune_endpoint
+    CONNECTIONS_TABLE             = var.connections_table_name
+    WEBSOCKET_ENDPOINT            = var.websocket_endpoint
+    AIDLC_REPO_REF                = var.aidlc_repo_ref
+    BEDROCK_MODEL                 = var.bedrock_model
+    AWS_REGION                    = var.aws_region
+    CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
+    SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
+    BEDROCK_BEARER_TOKEN_SSM_PATH = aws_ssm_parameter.bedrock_bearer_token.name
+    KIRO_API_KEY_SSM_PATH         = aws_ssm_parameter.kiro_api_key.name
+    MCP_SECRETS_SSM_PREFIX        = "/${var.project_name}/${var.environment}"
+    RUNTIME_COMPATIBILITY_VERSION = "1"
+  }
+}
+
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn
@@ -620,7 +667,7 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
 
   agent_runtime_artifact = {
     container_configuration = {
-      container_uri = module.agentcore_docker_build.image_uri
+      container_uri = "${aws_ecr_repository.agentcore.repository_url}@${data.aws_ecr_image.agentcore.image_digest}"
     }
   }
 
@@ -655,25 +702,7 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   # mid-park is now recoverable from the persistent mount. idle must be <= max.
   lifecycle_configuration = { idle_runtime_session_timeout = 900, max_lifetime = 28800 }
 
-  environment_variables = {
-    V2_WORKSPACE_DIR              = "/mnt/workspace"
-    V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
-    BLOCKS_TABLE                  = var.blocks_table_name
-    ARTIFACTS_BUCKET              = var.artifacts_bucket_name
-    NEPTUNE_ENDPOINT              = var.neptune_endpoint
-    CONNECTIONS_TABLE             = var.connections_table_name
-    WEBSOCKET_ENDPOINT            = var.websocket_endpoint
-    AIDLC_REPO_REF                = var.aidlc_repo_ref
-    BEDROCK_MODEL                 = var.bedrock_model
-    AWS_REGION                    = var.aws_region
-    CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
-    SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
-    BEDROCK_BEARER_TOKEN_SSM_PATH = aws_ssm_parameter.bedrock_bearer_token.name
-    KIRO_API_KEY_SSM_PATH         = aws_ssm_parameter.kiro_api_key.name
-    # Base SSM prefix for MCP secret resolution ({prefix}/mcp-secrets/<VAR> and
-    # {prefix}/projects/<id>/mcp-secrets/<VAR>).
-    MCP_SECRETS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-  }
+  environment_variables = local.runtime_environment_variables
 
   tags = var.tags
 }

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { LambdaClient } from '@aws-sdk/client-lambda';
@@ -35,6 +35,7 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
+import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { isSafeRepo } from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
@@ -175,6 +176,7 @@ const readV2Settings = (v) => {
       normalizeProjectPrStrategy(getVal(v, 'pr_strategy'), { legacyDefault: true }) ||
       DEFAULT_PR_STRATEGY,
     stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
+    environmentId: getVal(v, 'environment_id') || 'standard',
   };
 };
 
@@ -958,6 +960,102 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
   return response(405, { error: 'Method not allowed' });
 };
 
+const environmentKey = (environmentId) => ({ pk: `ENV#${environmentId}`, sk: 'META' });
+const environmentRevisionKey = (environmentId, revisionId) => ({
+  pk: `ENV#${environmentId}`,
+  sk: `REV#${revisionId}`,
+});
+
+const readPublishedEnvironment = async (environmentId) => {
+  const tableName = process.env.ENVIRONMENT_REGISTRY_TABLE;
+  if (!tableName) {
+    if (environmentId === 'standard') {
+      return {
+        environment: {
+          environmentId: 'standard',
+          name: 'Standard Node/Python',
+          status: 'PUBLISHED',
+          publishedRevisionId: 'legacy',
+        },
+        revision: null,
+      };
+    }
+    return null;
+  }
+  const { Item: environment } = await ddb.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: environmentKey(environmentId),
+      ConsistentRead: true,
+    }),
+  );
+  if (!environment?.publishedRevisionId || environment.status === 'RETIRED') {
+    return null;
+  }
+  const { Item: revision } = await ddb.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: environmentRevisionKey(environmentId, environment.publishedRevisionId),
+      ConsistentRead: true,
+    }),
+  );
+  if (!revision || !['PUBLISHED', 'SUPERSEDED'].includes(revision.status)) return null;
+  return { environment, revision };
+};
+
+const handleProjectEnvironment = async (g, response, httpMethod, projectId, userId, body) => {
+  if (!userId) return response(401, { error: 'Unauthorized' });
+  const role = await fetchMembershipRole(g, projectId, userId);
+  if (!role) return response(403, { error: 'Access denied' });
+
+  if (httpMethod === 'GET') {
+    const result = await g.V().has('Project', 'id', projectId).valueMap('environment_id').next();
+    if (result.done) return response(404, { error: 'Project not found' });
+    const environmentId = getVal(result.value, 'environment_id') || 'standard';
+    const published = await readPublishedEnvironment(environmentId);
+    return response(200, {
+      environmentId,
+      environment: published?.environment ?? null,
+      revision: published?.revision ?? null,
+    });
+  }
+
+  if (httpMethod === 'PUT') {
+    if (role !== 'owner' && role !== 'admin') {
+      return response(403, {
+        error: 'Only project owners and admins can assign environments',
+      });
+    }
+    let data;
+    try {
+      data = JSON.parse(body || '{}');
+    } catch {
+      return response(400, { error: 'Invalid JSON body' });
+    }
+    const environmentId = String(data.environmentId || '').trim();
+    if (!environmentId) return response(400, { error: 'environmentId is required' });
+    const published = await readPublishedEnvironment(environmentId);
+    if (!published) {
+      return response(409, { error: 'Environment is not published' });
+    }
+    const updatedAt = new Date().toISOString();
+    await g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(cardinality.single, 'environment_id', environmentId)
+      .property(cardinality.single, 'updated_at', updatedAt)
+      .next();
+    return response(200, {
+      environmentId,
+      environment: published.environment,
+      revision: published.revision,
+      updatedAt,
+    });
+  }
+
+  return response(405, { error: 'Method not allowed' });
+};
+
 // ---------------------------------------------------------------------------
 // Route: /projects/{projectId}/repos
 // ---------------------------------------------------------------------------
@@ -1249,6 +1347,9 @@ export const handler = async (event) => {
     if (projectId && /\/custom-rules(\/|$)/.test(requestPath)) {
       return await handleProjectCustomRules(g, response, httpMethod, projectId, userId, body);
     }
+    if (projectId && /\/environment\/?$/.test(requestPath)) {
+      return await handleProjectEnvironment(g, response, httpMethod, projectId, userId, body);
+    }
 
     switch (httpMethod) {
       case 'GET':
@@ -1479,7 +1580,8 @@ export const handler = async (event) => {
           .property('park_release_seconds', String(v2Settings.parkReleaseSeconds))
           .property('max_parallel_units', String(v2Settings.maxParallelUnits))
           .property('pr_strategy', v2Settings.prStrategy)
-          .property('stage_skipping', v2Settings.stageSkipping);
+          .property('stage_skipping', v2Settings.stageSkipping)
+          .property('environment_id', 'standard');
         await createV.next();
 
         // Create Repository vertices and HAS_REPO edges. Normalize so at most
@@ -1546,6 +1648,7 @@ export const handler = async (event) => {
           createdAt,
           updatedAt: createdAt,
           repos: reposOut,
+          environmentId: 'standard',
           ...v2Settings,
         });
       }
@@ -1792,7 +1895,10 @@ export const handler = async (event) => {
                 intentId,
                 meta: execMeta,
                 yjsTable: process.env.YJS_DOCUMENTS_TABLE,
-                agentcoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN || '',
+                agentcoreRuntimeTarget: runtimeTargetInput(
+                  execMeta,
+                  process.env.AGENTCORE_RUNTIME_ARN || '',
+                ),
                 artifactsBucket: process.env.ARTIFACTS_BUCKET || '',
                 actor,
                 force: true,

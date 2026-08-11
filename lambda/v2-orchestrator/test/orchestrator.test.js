@@ -78,6 +78,11 @@ const makeRuntime = (ctx, script) => {
 const okScript = (payload) =>
   payload.command === 'init-ws' ? { ok: true } : { ok: true, state: 'SUCCEEDED' };
 
+const MANAGED_RUNTIME_TARGET = {
+  agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+  qualifier: 'revision_r_1',
+};
+
 const META = {
   executionId: 'i1',
   intentId: 'i1',
@@ -95,6 +100,10 @@ const META = {
   agentCli: 'kiro',
   cliModels: { claude: 'us.anthropic.claude-opus-4-8' },
   parkReleaseSeconds: 300,
+  environment: {
+    runtimeArn: MANAGED_RUNTIME_TARGET.agentRuntimeArn,
+    runtimeEndpoint: MANAGED_RUNTIME_TARGET.qualifier,
+  },
 };
 
 let deps;
@@ -161,6 +170,11 @@ describe('orchestrator durable handler', () => {
       repos: ['owner/repo'],
     });
     expect(initWs).not.toHaveProperty('gitToken');
+    expect(deps.invokeRuntime.mock.calls.map(([, , target]) => target)).toEqual([
+      MANAGED_RUNTIME_TARGET,
+      MANAGED_RUNTIME_TARGET,
+      MANAGED_RUNTIME_TARGET,
+    ]);
     const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status);
     expect(statuses).toContain('RUNNING');
     expect(statuses).toContain('SUCCEEDED');
@@ -426,7 +440,10 @@ describe('orchestrator durable handler', () => {
       deps,
     );
     expect(res.ok).toBe(true);
-    expect(deps.stopSession).toHaveBeenCalledWith(expect.stringContaining('aidlc-intent-i1'));
+    expect(deps.stopSession).toHaveBeenCalledWith(
+      expect.stringContaining('aidlc-intent-i1'),
+      MANAGED_RUNTIME_TARGET,
+    );
   });
 
   it('resumes IMMEDIATELY when the answer landed before the callback was bound (no release-timer stall)', async () => {
@@ -1564,7 +1581,13 @@ describe('PR per unit delivery', () => {
     expect(unitStates.map((row) => row.state)).toEqual(
       expect.arrayContaining(['PR_DRAFT', 'RECONCILING', 'PR_READY', 'MERGED']),
     );
-    expect(deps.stopSession).toHaveBeenCalledWith('aidlc-intent-i1-s1-auth'.padEnd(33, '0'));
+    expect(deps.stopSession).toHaveBeenCalledWith(
+      'aidlc-intent-i1-s1-auth'.padEnd(33, '0'),
+      MANAGED_RUNTIME_TARGET,
+    );
+    expect(deps.invokeRuntime.mock.calls.map(([, , target]) => target)).toEqual(
+      expect.arrayContaining([MANAGED_RUNTIME_TARGET]),
+    );
   });
 
   it('parks one callback for a long unchanged PR wait without growing durable operations', async () => {

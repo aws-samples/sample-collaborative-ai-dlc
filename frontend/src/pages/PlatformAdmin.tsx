@@ -15,7 +15,7 @@
 // is what the OAuth callback URLs on two of them are built from.
 
 import { useSearchParams } from 'react-router';
-import { Bot, ClipboardList, GitBranch, Users } from 'lucide-react';
+import { Bot, Boxes, ClipboardList, GitBranch, Users } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 import { DeploymentInfoCard } from '@/components/admin/DeploymentInfoCard';
@@ -28,8 +28,9 @@ import { StageSkippingCard } from '@/components/admin/StageSkippingCard';
 import { ComposerCard } from '@/components/admin/ComposerCard';
 import { SourceControlTab } from '@/components/admin/tabs/SourceControlTab';
 import { TrackersTab } from '@/components/admin/tabs/TrackersTab';
+import { EnvironmentsTab } from '@/components/admin/tabs/EnvironmentsTab';
 
-const TAB_IDS = ['users', 'agents', 'source-control', 'trackers'] as const;
+const TAB_IDS = ['users', 'agents', 'environments', 'source-control', 'trackers'] as const;
 type TabId = (typeof TAB_IDS)[number];
 const DEFAULT_TAB: TabId = 'users';
 
@@ -69,12 +70,15 @@ export default function PlatformAdmin() {
         <DeploymentInfoCard />
 
         <Tabs value={activeTab} onValueChange={selectTab}>
-          <TabsList className="h-10 gap-1 bg-muted/60 p-1">
+          <TabsList className="h-10 max-w-full gap-1 overflow-x-auto bg-muted/60 p-1">
             <TabsTrigger value="users" className="gap-1.5 px-3.5">
               <Users className="h-3.5 w-3.5" /> Users
             </TabsTrigger>
             <TabsTrigger value="agents" className="gap-1.5 px-3.5">
               <Bot className="h-3.5 w-3.5" /> Agents
+            </TabsTrigger>
+            <TabsTrigger value="environments" className="gap-1.5 px-3.5">
+              <Boxes className="h-3.5 w-3.5" /> Environments
             </TabsTrigger>
             <TabsTrigger value="source-control" className="gap-1.5 px-3.5">
               <GitBranch className="h-3.5 w-3.5" /> Source Control
@@ -95,6 +99,10 @@ export default function PlatformAdmin() {
             <GraphEnrichmentCard />
             <StageSkippingCard />
             <ComposerCard />
+          </TabsContent>
+
+          <TabsContent value="environments" className="mt-5">
+            <EnvironmentsTab />
           </TabsContent>
 
           <TabsContent value="source-control" className="mt-5">

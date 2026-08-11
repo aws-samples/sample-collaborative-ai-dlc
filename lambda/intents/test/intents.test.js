@@ -64,6 +64,17 @@ const s3Mock = mockClient(S3Client);
 let attachmentUpdateConflict = null;
 let sourceControlOperationHandler = null;
 
+const MANAGED_ENVIRONMENT_SNAPSHOT = {
+  environmentId: 'polyglot',
+  revisionId: 'r-7',
+  runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+  runtimeEndpoint: 'revision_r_7',
+  imageDigest: `sha256:${'a'.repeat(64)}`,
+  runtimeVersion: '7',
+  compatibilityVersion: '1',
+  verification: { status: 'PASSED' },
+};
+
 // In-memory single-table fake for the v2 process table + blocks table.
 const procStore = new Map();
 // Separate fake for the yjs-documents table (hash key `documentId` only).
@@ -3576,11 +3587,18 @@ describe('POST /cancel', () => {
       const sub = `u-${randomUUID()}`;
       const projectId = await seedV2Project(sub);
       const intent = JSON.parse((await createIntent(sub, projectId)).body);
-      setStatus(intent.id, { status: 'WAITING' });
+      setStatus(intent.id, {
+        status: 'WAITING',
+        environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+      });
       const res = await cancel(sub, projectId, intent.id);
       expect(res.statusCode).toBe(200);
       const stops = agentcoreMock.commandCalls(StopRuntimeSessionCommand);
       expect(stops).toHaveLength(1);
+      expect(stops[0].args[0].input).toMatchObject({
+        agentRuntimeArn: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn,
+        qualifier: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+      });
       expect(stops[0].args[0].input.runtimeSessionId.startsWith(`aidlc-intent-${intent.id}`)).toBe(
         true,
       );
@@ -3882,6 +3900,7 @@ describe('POST /derive — manual graph-projection backfill', () => {
       deriveEnrichment: 'llm',
       agentCli: 'claude',
       cliModels: { claude: 'us.anthropic.claude-haiku-4-5' },
+      environment: MANAGED_ENVIRONMENT_SNAPSHOT,
     });
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: {
@@ -3905,6 +3924,10 @@ describe('POST /derive — manual graph-projection backfill', () => {
       enriched: 1,
     });
     const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    expect(call).toMatchObject({
+      agentRuntimeArn: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn,
+      qualifier: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+    });
     expect(call.runtimeSessionId.startsWith('aidlc-intent-i-done')).toBe(true);
     expect(call.runtimeSessionId.length).toBeGreaterThanOrEqual(33);
     expect(JSON.parse(Buffer.from(call.payload).toString('utf8'))).toMatchObject({
@@ -4257,12 +4280,19 @@ describe('POST /rewind', () => {
       const projectId = await seedV2Project(sub);
       seedPlan();
       const intent = JSON.parse((await createIntent(sub, projectId)).body);
-      setStatus(intent.id, { status: 'FAILED' });
+      setStatus(intent.id, {
+        status: 'FAILED',
+        environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+      });
       seedStageRow(intent.id, 'implement', 'FAILED');
       const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
       expect(res.statusCode).toBe(202);
       const stops = agentcoreMock.commandCalls(StopRuntimeSessionCommand);
       expect(stops).toHaveLength(1);
+      expect(stops[0].args[0].input).toMatchObject({
+        agentRuntimeArn: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn,
+        qualifier: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+      });
       expect(stops[0].args[0].input.runtimeSessionId.startsWith(`aidlc-intent-${intent.id}`)).toBe(
         true,
       );
@@ -4984,7 +5014,10 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       const projectId = await seedV2Project(sub);
       seedSectionPlan();
       const intent = JSON.parse((await createIntent(sub, projectId)).body);
-      setStatus(intent.id, { status: 'FAILED' });
+      setStatus(intent.id, {
+        status: 'FAILED',
+        environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+      });
       seedStageRow(intent.id, 'units-gen');
       seedStageRow(intent.id, 'cg', 'auth', 'SUCCEEDED', 1);
       seedStageRow(intent.id, 'cg', 'billing', 'FAILED', 1);
@@ -5008,7 +5041,15 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       });
 
       expect(res.statusCode).toBe(202);
-      expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(3);
+      const stops = agentcoreMock.commandCalls(StopRuntimeSessionCommand);
+      expect(stops).toHaveLength(3);
+      expect(
+        stops.every(
+          (call) =>
+            call.args[0].input.agentRuntimeArn === MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn &&
+            call.args[0].input.qualifier === MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+        ),
+      ).toBe(true);
       expect(maxInFlight).toBeGreaterThan(1);
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;

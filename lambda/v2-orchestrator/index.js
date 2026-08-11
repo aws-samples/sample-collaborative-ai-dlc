@@ -40,6 +40,7 @@ import {
 } from '../shared/v2-execution-plan.js';
 import { resolveSkipTo, skipTargetsFrom, resolveRecomposeSkips } from '../shared/stage-skip.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
+import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import {
   awaitEngineGate,
   parseChoice,
@@ -69,10 +70,14 @@ const sessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
 
 // One AgentCore /invocations call. Returns the parsed JSON body the command
 // handler returned (init-ws / run-stage). Throws on a non-2xx transport.
-const defaultInvokeRuntime = async (payload, sessionId) => {
+const defaultInvokeRuntime = async (
+  payload,
+  sessionId,
+  target = { agentRuntimeArn: RUNTIME_ARN() },
+) => {
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
-      agentRuntimeArn: RUNTIME_ARN(),
+      ...target,
       runtimeSessionId: sessionId,
       contentType: 'application/json',
       accept: 'application/json',
@@ -86,12 +91,12 @@ const defaultInvokeRuntime = async (payload, sessionId) => {
 // Free a parked stage's warm microVM compute (D1 release-on-park). Resume
 // re-mounts the persistent session storage, so the parked CLI conversation is
 // not lost. Best-effort: a failed/already-stopped session must not break resume.
-const stopRuntimeSession = async (sessionId) => {
+const stopRuntimeSession = async (sessionId, target = { agentRuntimeArn: RUNTIME_ARN() }) => {
   try {
     await agentcore.send(
       new StopRuntimeSessionCommand({
         runtimeSessionId: sessionId,
-        agentRuntimeArn: RUNTIME_ARN(),
+        ...target,
       }),
     );
     return { stopped: true };
@@ -304,6 +309,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
   const meta = await ctx.step('load-meta', () => store.getExecution(executionId));
   if (!meta) return { ok: false, reason: 'execution_not_found' };
+  const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
+  const invokeIntentRuntime = (payload, sessionId) =>
+    invokeRuntime(payload, sessionId, runtimeTarget);
+  const stopIntentSession = (sessionId) => stopSession(sessionId, runtimeTarget);
 
   const { projectId, workflowId, workflowVersion, scope } = meta;
   const gitProvider = meta.gitProvider || 'github';
@@ -425,7 +434,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       `Initializing workspace (${(meta.repos ?? []).length} repo(s))…`,
     );
     const initResult = await ctx.step('init-ws', () =>
-      invokeRuntime(
+      invokeIntentRuntime(
         {
           command: 'init-ws',
           projectId,
@@ -716,7 +725,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         cloneInputs: stageCloneInputs,
         reviewFeedback,
       };
-      let result = await runStage(ctxArg, invokeRuntime, {
+      let result = await runStage(ctxArg, invokeIntentRuntime, {
         ...stageOpts,
         resumeFrom: initialResumeFrom,
       });
@@ -817,7 +826,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               return gate?.status === 'pending';
             });
             if (stillPending) {
-              await ctxArg.step(`release-${humanTaskId}`, () => stopSession(stageSessionId));
+              await ctxArg.step(`release-${humanTaskId}`, () => stopIntentSession(stageSessionId));
               await callbackPromise; // keep waiting; resume re-mounts persistent storage
             }
           } else {
@@ -860,7 +869,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           };
         }
 
-        result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: humanTaskId });
+        result = await runStage(ctxArg, invokeIntentRuntime, {
+          ...stageOpts,
+          resumeFrom: humanTaskId,
+        });
       }
 
       if (result?.state === 'FAILED')
@@ -875,8 +887,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     const sectionToolkit = {
       ctx,
       store,
-      invokeRuntime,
-      stopSession,
+      invokeRuntime: invokeIntentRuntime,
+      stopSession: stopIntentSession,
       broadcast,
       emitEvent,
       fail,
@@ -965,7 +977,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
           if (outputArtifactTypes.length > 0) {
             const derived = await ctx.step(`derive-artifacts-${stage.stageId}${suffix}`, () =>
-              invokeRuntime(
+              invokeIntentRuntime(
                 {
                   command: 'derive-artifacts',
                   projectId,
@@ -1006,7 +1018,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           let unitPlanForGate = null;
           if (producesUnitDag) {
             const promotion = await ctx.step(`promote-units-${stage.stageId}${suffix}`, () =>
-              invokeRuntime(
+              invokeIntentRuntime(
                 {
                   command: 'promote-units',
                   projectId,
@@ -1369,7 +1381,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     if (openedPrs.length > 0) {
       const recordResult = await ctx.step('record-pr', async () => {
         try {
-          return await invokeRuntime(
+          return await invokeIntentRuntime(
             { command: 'record-pr', projectId, intentId, executionId, prs: openedPrs },
             sessionId,
           );

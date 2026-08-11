@@ -10,6 +10,7 @@
     "lambda/credential-broker",
     "lambda/cognito-users",
     "lambda/discussions",
+    "lambda/environments",
     "lambda/general-info",
     "lambda/github",
     "lambda/intents",

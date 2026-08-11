@@ -16,7 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
-import { ArrowLeft, Sparkles } from 'lucide-react';
+import { ArrowLeft, Boxes, Sparkles } from 'lucide-react';
 
 const AUDIT_CACHE_MAX = 20;
 const auditCache = new Map<string, IntentAudit>();
@@ -103,6 +103,10 @@ export default function IntentAuditPage() {
 
   const { summary, graphReads, enrichment, derivation, promptContext, units, sensors, advisories } =
     audit;
+  const environmentVerification =
+    typeof audit.environment?.verification?.status === 'string'
+      ? audit.environment.verification.status
+      : 'UNKNOWN';
   const sharePct =
     enrichment.reads.compactShare != null ? Math.round(enrichment.reads.compactShare * 100) : null;
   const compliancePct =
@@ -134,6 +138,50 @@ export default function IntentAuditPage() {
             </Badge>
           </div>
         </div>
+
+        {audit.environment && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-1.5 text-sm">
+                <Boxes className="h-3.5 w-3.5" />
+                Environment
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-4 text-xs sm:grid-cols-2 lg:grid-cols-5">
+              <div>
+                <div className="text-[11px] text-muted-foreground">Name</div>
+                <div className="mt-0.5 font-medium">{audit.environment.name}</div>
+              </div>
+              <div>
+                <div className="text-[11px] text-muted-foreground">Revision</div>
+                <div className="mt-0.5 break-all font-mono">{audit.environment.revisionId}</div>
+              </div>
+              <div>
+                <div className="text-[11px] text-muted-foreground">Image digest</div>
+                <div className="mt-0.5 break-all font-mono">
+                  {audit.environment.imageDigest ?? 'Unavailable'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-muted-foreground">Endpoint</div>
+                <div className="mt-0.5 break-all font-mono">
+                  {audit.environment.runtimeEndpoint ?? 'Default'}
+                </div>
+              </div>
+              <div className="flex flex-wrap content-start gap-1.5">
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  runtime {audit.environment.runtimeVersion ?? 'legacy'}
+                </Badge>
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  compatibility {audit.environment.compatibilityVersion}
+                </Badge>
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  verification {environmentVerification}
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* ── SUMMARY ────────────────────────────────────────────────── */}
         <Card>

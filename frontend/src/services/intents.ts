@@ -34,6 +34,18 @@ export interface IntentSource {
   resourceUrl: string | null;
 }
 
+export interface IntentEnvironmentSnapshot {
+  environmentId: string;
+  name: string;
+  revisionId: string;
+  imageDigest: string | null;
+  runtimeVersion: string | null;
+  runtimeArn: string | null;
+  runtimeEndpoint: string | null;
+  compatibilityVersion: string;
+  verification: Record<string, unknown> | null;
+}
+
 export interface Intent {
   id: string;
   executionId: string;
@@ -61,6 +73,7 @@ export interface Intent {
   // Set when the run was relaunched from a mid-plan stage (steering rewind).
   rewindFromStageId?: string | null;
   cliModels: Record<string, string> | null;
+  environment: IntentEnvironmentSnapshot | null;
   parkReleaseSeconds: number | null;
   // WP5 (docs/v2-parallel.md): lane concurrency cap snapshotted at create
   // (0/null = unbounded) and the human's autonomy-ladder decision.
@@ -846,6 +859,7 @@ export interface IntentAuditPromptContext {
 }
 
 export interface IntentAudit {
+  environment: IntentEnvironmentSnapshot | null;
   summary: {
     stageCount: number;
     eventCount: number;

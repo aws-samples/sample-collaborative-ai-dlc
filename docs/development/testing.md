@@ -3,6 +3,99 @@
 This guide covers contributor-facing integration tests that are intentionally
 separate from the managed installation documentation.
 
+## Managed build environment deployed-stack test
+
+Use a disposable AWS account or logical environment for this test. Managed
+environment image builds use CodeBuild, ECR scanning, S3, DynamoDB, Lambda,
+EventBridge, and Bedrock AgentCore resources that incur charges until they are
+removed.
+
+Start from a checkout with AWS credentials for the test account. Create the
+backend and variable files if this logical environment does not already exist.
+The example below uses `managed-env-demo`; substitute your configured name
+consistently:
+
+```bash
+export AIDLC_TEST_ENV=managed-env-demo
+./scripts/bootstrap.sh "$AIDLC_TEST_ENV"
+cp terraform/environments/dev.tfvars.example \
+  "terraform/environments/$AIDLC_TEST_ENV.tfvars"
+```
+
+Set `environment` and `aws_region` in the new tfvars file, then deploy the
+infrastructure and frontend:
+
+```bash
+./scripts/deploy-terraform.sh "$AIDLC_TEST_ENV"
+./scripts/deploy-frontend.sh "$AIDLC_TEST_ENV"
+```
+
+The following outputs identify the managed environment resources used during
+diagnosis:
+
+```bash
+terraform -chdir=terraform output -raw environment_registry_table_name
+terraform -chdir=terraform output -raw managed_environment_repository_name
+terraform -chdir=terraform output -raw managed_environment_codebuild_project_name
+terraform -chdir=terraform output -raw managed_environment_control_lambda_name
+terraform -chdir=terraform output -raw managed_environment_status_lambda_name
+terraform -chdir=terraform output -raw managed_environment_build_context_bucket_name
+```
+
+Sign in as a platform administrator and open **Platform Settings -> Environments**. The
+first request seeds Standard Node/Python, JVM, Go, Rust, and Polyglot.
+Standard is published from the protected core runtime. For JVM, Go, Rust, and
+Polyglot:
+
+1. Confirm the recipe shows exact versions, archive checksums, and a
+   digest-pinned generated Dockerfile.
+2. Start the image build and follow its CodeBuild log.
+3. Confirm the revision passes image inspection, ECR scanning, container
+   validation, representative tool builds, and AgentCore endpoint validation.
+4. Publish the READY revision.
+
+Create a project with a small repository that exercises the selected
+toolchain. In **Project Settings -> Environment**, assign each published system
+environment in turn and start a new intent. Confirm the intent detail and audit
+views show the exact environment revision, image digest, runtime version,
+endpoint, compatibility version, and passed verification result.
+
+To verify immutable intent targeting:
+
+1. Start an intent and record its environment revision and runtime endpoint.
+2. Change the project's environment assignment.
+3. Resume, rewind, cancel, and stop the original intent.
+4. Confirm its detail and audit views retain the original revision and
+   endpoint, while a newly created intent uses the new assignment.
+
+To verify base updates, create and publish an environment based on JVM. Create
+and publish another JVM revision, then confirm the dependent environment shows
+an update warning while its published revision and project assignments remain
+unchanged. Run **Rebuild on latest base**, confirm only the pinned base revision
+changes, and publish the READY replacement after review.
+
+Inspect failures through the UI or the resource outputs above. Critical scan
+findings must fail a revision. High findings must stop at security review until
+acknowledged. Image build, container validation, and AgentCore endpoint
+failures must leave the previous published revision and project assignments
+unchanged.
+
+When testing is complete, delete the test intents and retire the test
+environments in the UI. Environment images are retained while the stack exists;
+the non-production repository is force-deleted with the stack. Managed
+AgentCore runtimes and endpoints are created by the control plane rather than
+Terraform, so delete those test endpoints and runtimes in the AgentCore console
+before destroying the logical deployment. Use the revision details in
+**Platform Settings -> Environments** to identify the runtime ID, version, and endpoint. The
+resources are also tagged with `ManagedEnvironment` and `ManagedEnvironmentRevision`.
+
+After those resources are removed, destroy the logical deployment:
+
+```bash
+./scripts/destroy.sh "$AIDLC_TEST_ENV"
+unset AIDLC_TEST_ENV
+```
+
 ## Enterprise SSO integration test
 
 The repository includes a disposable Cognito User Pool that behaves as an

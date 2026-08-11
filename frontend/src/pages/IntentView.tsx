@@ -40,6 +40,7 @@ import {
 import {
   Loader2,
   MoreHorizontal,
+  Boxes,
   Play,
   Trash2,
   TriangleAlert,
@@ -180,6 +181,10 @@ export default function IntentView() {
   }
 
   const intent = detail.intent;
+  const environmentVerification =
+    typeof intent.environment?.verification?.status === 'string'
+      ? intent.environment.verification.status
+      : 'UNKNOWN';
   const laneWaits = deriveLaneWaits(detail.stages, gates);
   const recoveryWaits = Object.values(laneWaits).filter((wait) => wait.kind === 'recovery');
   const needsLaneRepair =
@@ -283,6 +288,42 @@ export default function IntentView() {
           )}
         </div>
       </div>
+
+      {intent.environment && (
+        <div className="grid gap-3 border-y py-3 text-[11px] sm:grid-cols-2 lg:grid-cols-[auto_1fr_1fr_1fr_auto] lg:items-center">
+          <div className="flex items-center gap-1.5 font-medium">
+            <Boxes className="h-3.5 w-3.5" />
+            {intent.environment.name}
+          </div>
+          <div>
+            <span className="text-muted-foreground">Revision </span>
+            <span className="break-all font-mono">{intent.environment.revisionId}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Image </span>
+            <span className="break-all font-mono">
+              {intent.environment.imageDigest ?? 'Unavailable'}
+            </span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Endpoint </span>
+            <span className="break-all font-mono">
+              {intent.environment.runtimeEndpoint ?? 'Default'}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 lg:justify-end">
+            <Badge variant="outline" className="font-mono text-[10px]">
+              runtime {intent.environment.runtimeVersion ?? 'legacy'}
+            </Badge>
+            <Badge variant="outline" className="font-mono text-[10px]">
+              compatibility {intent.environment.compatibilityVersion}
+            </Badge>
+            <Badge variant="outline" className="font-mono text-[10px]">
+              verification {environmentVerification}
+            </Badge>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">

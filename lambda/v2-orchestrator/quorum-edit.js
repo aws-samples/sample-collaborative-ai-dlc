@@ -23,6 +23,8 @@
 // as index.js. Callback names carry the editId so two edits are distinct
 // durable identities.
 
+import { resolveRuntimeTarget } from '../shared/runtime-target.js';
+
 const nowIso = () => new Date().toISOString();
 
 // The plan phase is one bounded LLM call over a small artifact set; the apply
@@ -56,6 +58,9 @@ export const runQuorumEdit = async (event, ctx, deps) => {
 
   const meta = await ctx.step('qe-load-meta', () => store.getExecution(executionId));
   if (!meta) return { ok: false, reason: 'execution_not_found' };
+  const runtimeTarget = resolveRuntimeTarget(meta, process.env.AGENTCORE_RUNTIME_ARN);
+  const invokeIntentRuntime = (payload, session) => invokeRuntime(payload, session, runtimeTarget);
+  const stopIntentSession = (session) => stopSession?.(session, runtimeTarget);
   const edit = await ctx.step('qe-load-edit', () => store.getQuorumEdit(executionId, editId));
   if (!edit) return { ok: false, reason: 'quorum_edit_not_found' };
   const { projectId } = meta;
@@ -107,7 +112,7 @@ export const runQuorumEdit = async (event, ctx, deps) => {
       heartbeatTimeout: CALLBACK_HEARTBEAT_TIMEOUT,
     });
     const planDispatch = await ctx.step(`qe-plan-dispatch-${editId}`, () =>
-      invokeRuntime(
+      invokeIntentRuntime(
         {
           command: 'quorum-edit-plan-start',
           projectId,
@@ -219,7 +224,7 @@ export const runQuorumEdit = async (event, ctx, deps) => {
       heartbeatTimeout: CALLBACK_HEARTBEAT_TIMEOUT,
     });
     const applyDispatch = await ctx.step(`qe-apply-dispatch-${editId}`, () =>
-      invokeRuntime(
+      invokeIntentRuntime(
         {
           command: 'quorum-edit-apply-start',
           projectId,
@@ -313,7 +318,7 @@ export const runQuorumEdit = async (event, ctx, deps) => {
     );
     // Free the dedicated microVM — the session's work is done.
     await ctx.step(`qe-stop-session-${editId}`, () =>
-      stopSession ? stopSession(sessionId) : { stopped: false },
+      stopSession ? stopIntentSession(sessionId) : { stopped: false },
     );
     return { ok: succeeded, editId };
   } catch (err) {

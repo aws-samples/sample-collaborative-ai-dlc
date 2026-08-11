@@ -111,6 +111,7 @@ export const dispatchInvocation = async ({
     'repair-structure': handlers.repairStructure,
     inspect: handlers.inspect,
     capabilities: handlers.capabilities,
+    'managed-runtime-check': handlers.managedRuntimeCheck,
     'verify-mcp': handlers.verifyMcp,
   }[command];
   if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
@@ -204,6 +205,7 @@ const main = async () => {
   const { resolveConflict } = await import('./commands/resolve-conflict.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
+  const { managedRuntimeCheck } = await import('./commands/managed-runtime-check.js');
   const { verifyMcp } = await import('./commands/verify-mcp.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
@@ -250,6 +252,7 @@ const main = async () => {
       ),
     inspect: (p) => inspect(p, { openGraph }),
     capabilities: (p) => capabilities(p, { env: process.env }),
+    managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),
     verifyMcp: (p) => verifyMcp(p),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage

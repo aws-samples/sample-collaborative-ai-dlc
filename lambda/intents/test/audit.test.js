@@ -81,6 +81,21 @@ describe('buildIntentAudit', () => {
     expect(audit.enrichment.reads.compactShare).toBeNull();
   });
 
+  it('returns the immutable environment verification snapshot', () => {
+    const environment = {
+      environmentId: 'polyglot',
+      revisionId: 'r-7',
+      imageDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/polyglot',
+      runtimeEndpoint: 'revision_r_7',
+      compatibilityVersion: '1',
+      verification: { status: 'PASSED' },
+    };
+    expect(buildIntentAudit({ records: { meta: { environment } } }).environment).toEqual(
+      environment,
+    );
+  });
+
   it('flags enrichment spend that no compact read ever consumed', () => {
     const audit = buildIntentAudit({
       records: {

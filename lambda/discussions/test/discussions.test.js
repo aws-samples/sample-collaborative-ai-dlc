@@ -28,6 +28,7 @@ const SECRET = 'test-doc-secret';
 const LOCKS_TABLE = 'discussion-locks-test';
 const CONNECTIONS_TABLE = 'connections-test';
 const READ_STATE_TABLE = 'discussion-read-state-test';
+const EXECUTIONS_TABLE = 'v2-executions-test';
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
@@ -44,6 +45,7 @@ const agentcoreMock = mockClient(BedrockAgentCoreClient);
 // DynamoDB container. Connections-table queries are mocked separately.
 const lockStore = new Map();
 const readStateStore = new Map();
+const executionStore = new Map();
 let connectionItems = [];
 
 const condFail = () => {
@@ -76,6 +78,10 @@ const installDdbFake = () => {
     return {};
   });
   ddbMock.on(GetCommand).callsFake(async (input) => {
+    if (input.TableName === EXECUTIONS_TABLE) {
+      const item = executionStore.get(input.Key.pk);
+      return item ? { Item: { ...item } } : {};
+    }
     if (input.TableName !== LOCKS_TABLE) return {};
     const item = lockStore.get(input.Key.lockId);
     return item ? { Item: { ...item } } : {};
@@ -151,6 +157,7 @@ beforeEach(async () => {
   agentcoreMock.reset();
   lockStore.clear();
   readStateStore.clear();
+  executionStore.clear();
   connectionItems = [];
   installDdbFake();
   apiMock.on(PostToConnectionCommand).resolves({});
@@ -1612,6 +1619,15 @@ describe('intent-scoped discussions', () => {
       response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
     });
     const { projectId, intentId } = await seedIntent();
+    vi.stubEnv('V2_PROCESS_TABLE', EXECUTIONS_TABLE);
+    executionStore.set(`EXEC#${intentId}`, {
+      pk: `EXEC#${intentId}`,
+      sk: 'META',
+      environment: {
+        runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+        runtimeEndpoint: 'revision_r_1',
+      },
+    });
     const created = json(
       await call('POST', intentPath('/discussions'), {
         pathParameters: { projectId, intentId },
@@ -1641,6 +1657,10 @@ describe('intent-scoped discussions', () => {
     });
 
     const invoke = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    expect(invoke).toMatchObject({
+      agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+      qualifier: 'revision_r_1',
+    });
     expect(invoke.runtimeSessionId.startsWith(`aidlc-discuss-${intentId}-${created.id}`)).toBe(
       true,
     );

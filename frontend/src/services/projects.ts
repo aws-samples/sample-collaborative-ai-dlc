@@ -1,5 +1,6 @@
 import { api } from './api';
 import type { GitProvider } from './gitProvider';
+import type { ProjectEnvironmentAssignment } from './environments';
 
 export type ProjectRole = 'owner' | 'admin' | 'member';
 export type AgentCli = 'kiro' | 'claude' | 'opencode' | 'codex';
@@ -80,6 +81,7 @@ export interface Project {
   // Per-project stage-skipping override: 'default' inherits the platform
   // Admin setting; enabled/disabled override it for this project's intents.
   stageSkipping?: StageSkippingOverride;
+  environmentId?: string;
 }
 
 export type PrStrategy = 'default' | 'intent-pr' | 'pr-per-unit';
@@ -179,6 +181,10 @@ export const projectsService = {
   create: (input: CreateProjectInput) => api.post<Project>('/projects', input),
   update: (id: string, input: UpdateProjectInput) => api.put<Project>(`/projects/${id}`, input),
   delete: (id: string) => api.delete(`/projects/${id}`),
+  getEnvironment: (id: string) =>
+    api.get<ProjectEnvironmentAssignment>(`/projects/${id}/environment`),
+  assignEnvironment: (id: string, environmentId: string) =>
+    api.put<ProjectEnvironmentAssignment>(`/projects/${id}/environment`, { environmentId }),
 
   // Repos
   listRepos: (projectId: string) => api.get<ProjectRepo[]>(`/projects/${projectId}/repos`),

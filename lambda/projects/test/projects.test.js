@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  QueryCommand,
+  BatchWriteCommand,
+  GetCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
 import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
@@ -29,6 +34,7 @@ const lambdaMock = mockClient(LambdaClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
 let projectExecs = new Map(); // projectId -> [{ intentId, executionId, status, projectId }]
 let batchWrites = [];
+let environmentRegistryItems = new Map();
 
 const installProcessTableFakes = () => {
   ddbMock.reset();
@@ -47,6 +53,10 @@ const installProcessTableFakes = () => {
   ddbMock.on(BatchWriteCommand).callsFake((input) => {
     batchWrites.push(input);
     return {};
+  });
+  ddbMock.on(GetCommand).callsFake((input) => {
+    const item = environmentRegistryItems.get(`${input.Key?.pk}|${input.Key?.sk}`);
+    return item ? { Item: item } : {};
   });
   lambdaMock.reset();
   agentcoreMock.reset();
@@ -159,6 +169,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   projectExecs = new Map();
+  environmentRegistryItems = new Map();
   installProcessTableFakes();
 
   // S3 mock: HeadObject resolves only for keys we've marked as "uploaded";
@@ -236,6 +247,7 @@ describe('POST /projects', () => {
       gitRepo: '',
       gitProvider: 'github',
       agentCli: 'kiro',
+      environmentId: 'standard',
       cliModels: {},
       tierModels: {},
       issueIntegrationEnabled: false,
@@ -271,6 +283,7 @@ describe('POST /projects', () => {
       gitRepo: 'git@x:y.git',
       gitProvider: 'github',
       agentCli: 'kiro',
+      environmentId: 'standard',
       cliModels: {},
       tierModels: {},
       issueIntegrationEnabled: false,
@@ -717,6 +730,87 @@ describe('PUT /projects/:id', () => {
     });
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+  });
+});
+
+describe('GET/PUT /projects/:id/environment', () => {
+  const installPublishedEnvironment = (environmentId = 'polyglot') => {
+    const revisionId = 'r-7';
+    environmentRegistryItems.set(`ENV#${environmentId}|META`, {
+      pk: `ENV#${environmentId}`,
+      sk: 'META',
+      environmentId,
+      name: 'Polyglot',
+      status: 'PUBLISHED',
+      publishedRevisionId: revisionId,
+    });
+    environmentRegistryItems.set(`ENV#${environmentId}|REV#${revisionId}`, {
+      pk: `ENV#${environmentId}`,
+      sk: `REV#${revisionId}`,
+      environmentId,
+      revisionId,
+      status: 'PUBLISHED',
+      imageDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/polyglot',
+      runtimeEndpoint: 'revision_r_7',
+      runtimeCompatibilityVersion: '1',
+      verification: { status: 'PASSED' },
+    });
+  };
+
+  const event = (method, projectId, sub, body) => ({
+    httpMethod: method,
+    path: `/projects/${projectId}/environment`,
+    pathParameters: { projectId },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    ...claims(sub),
+  });
+
+  it('lets an owner assign a published environment and read it back', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    installPublishedEnvironment();
+    const previousTable = process.env.ENVIRONMENT_REGISTRY_TABLE;
+    process.env.ENVIRONMENT_REGISTRY_TABLE = 'environment-registry-test';
+    try {
+      const updated = await handler(event('PUT', id, ownerSub, { environmentId: 'polyglot' }));
+      expect(updated.statusCode).toBe(200);
+      expect(JSON.parse(updated.body)).toMatchObject({
+        environmentId: 'polyglot',
+        environment: { name: 'Polyglot' },
+        revision: { revisionId: 'r-7' },
+      });
+
+      const fetched = await handler(event('GET', id, ownerSub));
+      expect(fetched.statusCode).toBe(200);
+      expect(JSON.parse(fetched.body)).toMatchObject({
+        environmentId: 'polyglot',
+        revision: { revisionId: 'r-7' },
+      });
+    } finally {
+      if (previousTable === undefined) delete process.env.ENVIRONMENT_REGISTRY_TABLE;
+      else process.env.ENVIRONMENT_REGISTRY_TABLE = previousTable;
+    }
+  });
+
+  it('rejects assignment by a plain member', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const memberSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    await addMember(id, memberSub, 'member');
+    installPublishedEnvironment();
+    const previousTable = process.env.ENVIRONMENT_REGISTRY_TABLE;
+    process.env.ENVIRONMENT_REGISTRY_TABLE = 'environment-registry-test';
+    try {
+      const response = await handler(event('PUT', id, memberSub, { environmentId: 'polyglot' }));
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body)).toEqual({
+        error: 'Only project owners and admins can assign environments',
+      });
+    } finally {
+      if (previousTable === undefined) delete process.env.ENVIRONMENT_REGISTRY_TABLE;
+      else process.env.ENVIRONMENT_REGISTRY_TABLE = previousTable;
+    }
   });
 });
 

@@ -5,10 +5,11 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { InvokeAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore';
 import { isTokenLive } from '../shared/realtime-token.js';
+import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { agentcore, ddb, ssm, query } from './clients.js';
 import { fetchProjectIdForSprint, fetchProjectIdForIntent } from './data-access.js';
@@ -129,11 +130,24 @@ const discussionSessionIdFor = (intentId, discussionId) =>
   `aidlc-discuss-${intentId}-${discussionId}`.padEnd(33, '0');
 
 export const invokeDiscussionAssist = async ({ intentId, payload }) => {
-  const runtimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
-  if (!runtimeArn) throw new Error('AGENTCORE_RUNTIME_ARN is not configured');
+  const fallbackRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
+  const processTable = process.env.V2_PROCESS_TABLE;
+  let target = runtimeTargetInput(null, fallbackRuntimeArn);
+  if (processTable) {
+    const { Item: meta } = await ddb.send(
+      new GetCommand({
+        TableName: processTable,
+        Key: { pk: `EXEC#${intentId}`, sk: 'META' },
+        ConsistentRead: true,
+      }),
+    );
+    if (!meta) throw new Error('Intent execution snapshot was not found');
+    target = runtimeTargetInput(meta, fallbackRuntimeArn);
+  }
+  if (!target.agentRuntimeArn) throw new Error('AGENTCORE_RUNTIME_ARN is not configured');
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
-      agentRuntimeArn: runtimeArn,
+      ...target,
       runtimeSessionId: discussionSessionIdFor(intentId, payload.discussionId),
       contentType: 'application/json',
       accept: 'application/json',

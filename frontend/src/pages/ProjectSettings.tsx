@@ -11,15 +11,32 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, Bot, ClipboardList, GitBranch, Settings2, Users, XCircle } from 'lucide-react';
+import {
+  ArrowLeft,
+  Bot,
+  Boxes,
+  ClipboardList,
+  GitBranch,
+  Settings2,
+  Users,
+  XCircle,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { GeneralTab } from '@/components/project-settings/GeneralTab';
 import { MembersTab } from '@/components/project-settings/MembersTab';
 import { AgentTab } from '@/components/project-settings/AgentTab';
 import { RepositoriesTab } from '@/components/project-settings/RepositoriesTab';
 import { TrackersTab } from '@/components/project-settings/TrackersTab';
+import { EnvironmentTab } from '@/components/project-settings/EnvironmentTab';
 
-const TAB_IDS = ['general', 'members', 'agent', 'source-control', 'trackers'] as const;
+const TAB_IDS = [
+  'general',
+  'members',
+  'agent',
+  'environment',
+  'source-control',
+  'trackers',
+] as const;
 type TabId = (typeof TAB_IDS)[number];
 const DEFAULT_TAB: TabId = 'general';
 
@@ -152,7 +169,7 @@ export default function ProjectSettings() {
           </div>
         ) : project ? (
           <Tabs value={activeTab} onValueChange={selectTab}>
-            <TabsList className="h-10 gap-1 bg-muted/60 p-1">
+            <TabsList className="h-10 max-w-full gap-1 overflow-x-auto bg-muted/60 p-1">
               <TabsTrigger value="general" className="gap-1.5 px-3.5">
                 <Settings2 className="h-3.5 w-3.5" /> General
               </TabsTrigger>
@@ -161,6 +178,9 @@ export default function ProjectSettings() {
               </TabsTrigger>
               <TabsTrigger value="agent" className="gap-1.5 px-3.5">
                 <Bot className="h-3.5 w-3.5" /> Agent
+              </TabsTrigger>
+              <TabsTrigger value="environment" className="gap-1.5 px-3.5">
+                <Boxes className="h-3.5 w-3.5" /> Environment
               </TabsTrigger>
               <TabsTrigger value="source-control" className="gap-1.5 px-3.5">
                 <GitBranch className="h-3.5 w-3.5" /> Source Control
@@ -184,6 +204,14 @@ export default function ProjectSettings() {
 
             <TabsContent value="agent" className="mt-5">
               <AgentTab
+                project={project}
+                canEdit={canEdit}
+                onProjectUpdated={applyProjectUpdates}
+              />
+            </TabsContent>
+
+            <TabsContent value="environment" className="mt-5">
+              <EnvironmentTab
                 project={project}
                 canEdit={canEdit}
                 onProjectUpdated={applyProjectUpdates}
