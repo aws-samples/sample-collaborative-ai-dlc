@@ -52,6 +52,7 @@ test('release deployment uses the protected demo environment and GitHub OIDC', (
   assert.match(deployment, /name: demo/);
   assert.match(deployment, /id-token: write/);
   assert.match(deployment, /TF_ENVIRONMENT: prod/);
+  assert.match(deployment, /TF_RECREATE_MISSING_LAMBDA_PACKAGE: 'false'/);
   assert.match(deployment, /role-to-assume: \$\{\{ vars\.AWS_ROLE_ARN \}\}/);
   assert.match(deployment, /TF_STATE_BUCKET: \$\{\{ vars\.TF_STATE_BUCKET \}\}/);
   assert.match(deployment, /docker\/setup-qemu-action@[0-9a-f]{40}/);
