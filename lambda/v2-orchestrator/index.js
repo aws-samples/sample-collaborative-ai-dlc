@@ -1359,7 +1359,6 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         store,
         meta,
         executionId,
-        gitProvider,
         applicationUrl,
         log: (m) => ctx.logger?.info?.(m, { intentId }),
       }),
@@ -1373,6 +1372,39 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // un-succeeds a run whose PR already exists on the remote.
     const openedPrs = prResults.map((r) => r.pr).filter(Boolean);
     if (openedPrs.length > 0) {
+      if (meta.source?.bindingId && meta.source?.resourceId) {
+        const published = await ctx.step('publish-tracker-sync', async () => {
+          try {
+            await store.putTrackerSync({
+              executionId,
+              projectId,
+              intentId,
+              source: meta.source,
+              pullRequests: openedPrs,
+              intentTitle: meta.title ?? null,
+              workflowId,
+              workflowVersion,
+              scope,
+              branch: meta.branch ?? null,
+            });
+            return true;
+          } catch (error) {
+            ctx.logger?.error?.('tracker sync publication failed', {
+              intentId,
+              error: error?.message,
+            });
+            return false;
+          }
+        });
+        if (!published) {
+          await emitEvent(
+            ctx,
+            'tracker-sync-publish-failed',
+            'v2.tracker.failed',
+            'Tracker synchronization could not be scheduled',
+          );
+        }
+      }
       const recordResult = await ctx.step('record-pr', async () => {
         try {
           return await invokeRuntime(
@@ -1646,7 +1678,6 @@ const openIntentPrs = async ({
   store,
   meta,
   executionId,
-  gitProvider,
   applicationUrl,
   log,
 }) => {
@@ -1709,16 +1740,57 @@ const openIntentPrs = async ({
     projectId: meta.projectId,
     intentId: meta.intentId ?? executionId,
   });
-  const body = [
-    `Automated ${gitProvider === 'gitlab' ? 'MR' : 'PR'} created by ${aidlcAttribution} (strategy: ${strategy})`,
-    ...unitLines,
-  ].join('\n');
+  const trackerRepository = (() => {
+    try {
+      const pathname = decodeURIComponent(new URL(meta.source?.resourceUrl).pathname);
+      if (meta.source?.provider === 'github-issues') {
+        const parts = pathname.split('/').filter(Boolean);
+        return parts.length >= 4 && parts[2] === 'issues' ? parts.slice(0, 2).join('/') : null;
+      }
+      if (meta.source?.provider === 'gitlab-issues') {
+        const marker = '/-/issues/';
+        const markerIndex = pathname.indexOf(marker);
+        return markerIndex > 0 ? pathname.slice(1, markerIndex) : null;
+      }
+    } catch {
+      // A missing or malformed source URL only omits the PR tracker reference.
+    }
+    return null;
+  })();
+  const trackerReferenceFor = (provider, repoId) => {
+    const resourceId = String(meta.source?.resourceId || '').trim();
+    if (!resourceId) return null;
+    const matchingTracker =
+      (meta.source?.provider === 'github-issues' && provider === 'github') ||
+      (meta.source?.provider === 'gitlab-issues' && provider === 'gitlab');
+    if (matchingTracker && trackerRepository) {
+      const issueRef =
+        trackerRepository.toLowerCase() === repoId.toLowerCase()
+          ? `#${resourceId}`
+          : `${trackerRepository}#${resourceId}`;
+      return `Closes ${issueRef}`;
+    }
+    if (meta.source?.provider === 'jira-cloud') {
+      return meta.source.resourceUrl
+        ? `Related task: [${resourceId}](${meta.source.resourceUrl})`
+        : `Related task: ${resourceId}`;
+    }
+    return meta.source?.resourceUrl
+      ? `Related issue: [#${resourceId}](${meta.source.resourceUrl})`
+      : null;
+  };
 
   const results = [];
   for (const repo of repos) {
     const repoId = typeof repo === 'string' ? repo : repo.url;
     const provider = repoProvider(meta, repoId);
     try {
+      const trackerReference = trackerReferenceFor(provider, repoId);
+      const body = [
+        `Automated ${provider === 'gitlab' ? 'MR' : 'PR'} created by ${aidlcAttribution} (strategy: ${strategy})`,
+        ...unitLines,
+        ...(trackerReference ? ['', trackerReference] : []),
+      ].join('\n');
       const activity = repoGitActivity(repoId);
       // Pre-check: does the intent branch exist remotely with commits ahead of
       // base? 'unknown' (comparison unavailable) falls through to the PR call
@@ -1780,6 +1852,7 @@ const openIntentPrs = async ({
           // VPC-attached runtime; the orchestrator has no Neptune access).
           pr: {
             repoId,
+            provider,
             prUrl: res.prUrl,
             prNumber: res.prNumber ?? null,
             branch,

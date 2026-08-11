@@ -365,6 +365,20 @@ const addIssueComment = async (ctx, repoId, issueNumber, body) => {
   return mapIssueDiscussionComment(data);
 };
 
+const closeIssue = async (ctx, repoId, issueNumber) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state: 'closed' }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data?.pull_request) {
+    throw new ProviderError(res.status || 404, data?.message || 'Failed to close issue');
+  }
+  return mapIssue(data);
+};
+
 // ---------------------------------------------------------------------------
 // PR comments
 // ---------------------------------------------------------------------------
@@ -938,6 +952,7 @@ export {
   getIssue,
   listIssueComments,
   addIssueComment,
+  closeIssue,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
@@ -976,6 +991,7 @@ export default {
   getIssue,
   listIssueComments,
   addIssueComment,
+  closeIssue,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,

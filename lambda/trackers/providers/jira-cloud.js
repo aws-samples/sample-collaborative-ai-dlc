@@ -14,6 +14,7 @@ export { ProviderError };
 const JIRA_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+$/;
 const PROVIDER_INSTANCE = 'jira-cloud#cloud';
 const REFRESH_SAFETY_MARGIN_MS = 60_000;
+const JIRA_OAUTH_SCOPE = 'read:jira-work read:jira-user write:jira-work offline_access';
 
 const requireEnv = (name) => {
   const v = process.env[name];
@@ -31,7 +32,7 @@ export const buildAuthorizeUrl = ({ clientId, redirectUri, state }) => {
   const params = new URLSearchParams({
     audience: 'api.atlassian.com',
     client_id: clientId,
-    scope: 'read:jira-work read:jira-user offline_access',
+    scope: JIRA_OAUTH_SCOPE,
     redirect_uri: redirectUri,
     state,
     response_type: 'code',
@@ -150,7 +151,7 @@ export const persistConnection = async ({ ddb, ssm, userId, resource, tokens, sc
         baseUrl: `https://api.atlassian.com/ex/jira/${resource.cloudId}`,
         siteHost: resource.host || '',
         siteName: resource.name || '',
-        scope: scope || 'read:jira-work read:jira-user offline_access',
+        scope: scope || JIRA_OAUTH_SCOPE,
         createdAt: new Date().toISOString(),
         expiresAt,
       },
@@ -359,6 +360,89 @@ const mapCommentToTrackerComment = (c) => ({
   updatedAt: c.updated || '',
 });
 
+// Jira comment writes require Atlassian Document Format (ADF), so convert the
+// small Markdown subset used by delivery comments: links, inline code, and
+// one-level nested bullet lists.
+// https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/
+const markdownLineToAdf = (line) => {
+  const content = [];
+  const tokenPattern = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)|`([^`]+)`|(https?:\/\/\S+)/g;
+  let cursor = 0;
+  for (const match of line.matchAll(tokenPattern)) {
+    if (match.index > cursor) content.push({ type: 'text', text: line.slice(cursor, match.index) });
+    if (match[1]) {
+      const text =
+        match[1].startsWith('`') && match[1].endsWith('`') ? match[1].slice(1, -1) : match[1];
+      content.push({
+        type: 'text',
+        text,
+        marks: [{ type: 'link', attrs: { href: match[2] } }],
+      });
+    } else if (match[3]) {
+      content.push({
+        type: 'text',
+        text: match[3],
+        marks: [{ type: 'code' }],
+      });
+    } else {
+      content.push({
+        type: 'text',
+        text: match[4],
+        marks: [{ type: 'link', attrs: { href: match[4] } }],
+      });
+    }
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < line.length) content.push({ type: 'text', text: line.slice(cursor) });
+  return content.length ? { type: 'paragraph', content } : { type: 'paragraph' };
+};
+
+const markdownListItemToAdf = (line) => ({
+  type: 'listItem',
+  content: [markdownLineToAdf(line)],
+});
+
+const markdownToAdf = (body) => {
+  const content = [];
+  let bulletList = null;
+  let lastListItem = null;
+
+  const flushBulletList = () => {
+    if (bulletList) content.push(bulletList);
+    bulletList = null;
+    lastListItem = null;
+  };
+
+  for (const line of String(body).split('\n')) {
+    if (line.startsWith('  - ')) {
+      bulletList ??= { type: 'bulletList', content: [] };
+      if (!lastListItem) {
+        lastListItem = markdownListItemToAdf(line.slice(4));
+        bulletList.content.push(lastListItem);
+        continue;
+      }
+      let nested = lastListItem.content.find((node) => node.type === 'bulletList');
+      if (!nested) {
+        nested = { type: 'bulletList', content: [] };
+        lastListItem.content.push(nested);
+      }
+      nested.content.push(markdownListItemToAdf(line.slice(4)));
+      continue;
+    }
+    if (line.startsWith('- ')) {
+      bulletList ??= { type: 'bulletList', content: [] };
+      lastListItem = markdownListItemToAdf(line.slice(2));
+      bulletList.content.push(lastListItem);
+      continue;
+    }
+    flushBulletList();
+    content.push(markdownLineToAdf(line));
+  }
+  flushBulletList();
+
+  return { version: 1, type: 'doc', content };
+};
+
 // ---------------------------------------------------------------------------
 // JQL helpers
 // ---------------------------------------------------------------------------
@@ -473,10 +557,26 @@ const getIssueDiscussion = async ({ ddb, ssm, secrets, userId }, projectKey, res
   return comments.map(mapCommentToTrackerComment);
 };
 
+const addIssueComment = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId, body) => {
+  if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
+  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(resourceId)}/comment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body: markdownToAdf(body) }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to add Jira comment');
+  }
+  return mapCommentToTrackerComment(data);
+};
+
 export const provider = {
   id: 'jira-cloud',
   listExternalProjects,
   listIssues,
   getIssue,
   getIssueDiscussion,
+  addIssueComment,
 };

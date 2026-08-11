@@ -29,7 +29,10 @@ import {
   invalidateBindingsByCredentialRef,
   oauthCredentialRef,
 } from '../shared/source-control-bindings.js';
+import { createProcessStore } from '../shared/v2-process-store.js';
+import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { getProvider, KNOWN_PROVIDERS, ProviderError } from './providers/index.js';
+import { createDeliverySynchronizer } from './delivery-sync.js';
 import {
   buildAuthorizeUrl,
   exchangeCode,
@@ -44,19 +47,12 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
 const lambda = new LambdaClient({});
+const processStore = createProcessStore({ ddb });
 
 const trackerGitProvider = (provider) =>
   provider === 'github-issues' ? 'github' : provider === 'gitlab-issues' ? 'gitlab' : null;
 
-const invokeProjectSourceControl = async ({
-  projectId,
-  trackerProvider,
-  repository,
-  operation,
-  args = {},
-}) => {
-  const provider = trackerGitProvider(trackerProvider);
-  if (!provider) throw new ProviderError(400, 'Tracker is not backed by source control');
+const invokeSourceControl = async ({ projectId, provider, repository, operation, args = {} }) => {
   const functionName = process.env.SOURCE_CONTROL_FUNCTION;
   if (!functionName) throw new ProviderError(503, 'Project source control is not configured');
   const result = await lambda.send(
@@ -91,6 +87,18 @@ const invokeProjectSourceControl = async ({
     });
   }
   return payload.result;
+};
+
+const invokeProjectSourceControl = ({
+  projectId,
+  trackerProvider,
+  repository,
+  operation,
+  args = {},
+}) => {
+  const provider = trackerGitProvider(trackerProvider);
+  if (!provider) throw new ProviderError(400, 'Tracker is not backed by source control');
+  return invokeSourceControl({ projectId, provider, repository, operation, args });
 };
 
 // HMAC-signed envelope for the OAuth `state` parameter and the multi-site
@@ -319,6 +327,70 @@ const listBindingsForProject = async (g, projectId) => {
   return bindings;
 };
 
+const graphTraversal = (conn) => {
+  let g = traversal().withRemote(conn);
+  if (process.env.GREMLIN_PARTITION) {
+    g = g.withStrategies(
+      new PartitionStrategy({
+        partitionKey: '_partition',
+        writePartition: process.env.GREMLIN_PARTITION,
+        readPartitions: [process.env.GREMLIN_PARTITION],
+      }),
+    );
+  }
+  return g;
+};
+
+const runTrackerDeliveryMaintenance = async (event = {}) => {
+  const conn = await getConnection();
+  try {
+    const g = graphTraversal(conn);
+    const synchronizer = createDeliverySynchronizer({
+      store: processStore,
+      resolveBinding: (projectId, bindingId) => fetchBinding(g, projectId, bindingId),
+      getTrackerProvider: getProvider,
+      trackerContext: (projectId, binding) => {
+        const gitProvider = trackerGitProvider(binding.provider);
+        return {
+          ddb,
+          ssm,
+          secrets,
+          userId: binding.createdBy,
+          ...(gitProvider
+            ? {
+                sourceControl: ({ repository, operation, args }) =>
+                  invokeProjectSourceControl({
+                    projectId,
+                    trackerProvider: binding.provider,
+                    repository,
+                    operation,
+                    args,
+                  }),
+              }
+            : {}),
+        };
+      },
+      getPullRequestStatus: ({ projectId, provider, repository, number }) => {
+        if (!provider || !repository || number === null || number === undefined) {
+          throw new ProviderError(400, 'Final pull request identity is incomplete');
+        }
+        return invokeSourceControl({
+          projectId,
+          provider,
+          repository,
+          operation: 'pr-status',
+          args: { number },
+        });
+      },
+      applicationUrl: process.env.APPLICATION_URL,
+      broadcast: broadcastToIntentChannel,
+    });
+    return synchronizer.runScheduled({ limit: Number(event.limit) || 25 });
+  } finally {
+    await conn.close().catch(() => {});
+  }
+};
+
 const handleProviderError = (response, err) => {
   if (err instanceof ProviderError) {
     if (err.status === 429) return response(429, err.extra);
@@ -447,6 +519,9 @@ const disconnectTracker = async (response, userId, provider, instance) => {
 };
 
 export const handler = async (event) => {
+  if (event?.action === 'reconcile-tracker-deliveries') {
+    return runTrackerDeliveryMaintenance(event);
+  }
   const response = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return response(200, {});
 
@@ -522,7 +597,6 @@ export const handler = async (event) => {
             userId: statePayload.userId,
             resource: resources[0],
             tokens,
-            scope: 'read:jira-work read:jira-user offline_access',
           });
           return response(200, { success: true });
         }
@@ -600,7 +674,6 @@ export const handler = async (event) => {
           refreshToken: ticketPayload.refreshToken,
           expiresIn: ticketPayload.expiresIn,
         },
-        scope: 'read:jira-work read:jira-user offline_access',
       });
       return response(200, { success: true });
     } catch (err) {
@@ -735,16 +808,7 @@ export const handler = async (event) => {
   let conn;
   try {
     conn = await getConnection();
-    let g = traversal().withRemote(conn);
-    if (process.env.GREMLIN_PARTITION) {
-      g = g.withStrategies(
-        new PartitionStrategy({
-          partitionKey: '_partition',
-          writePartition: process.env.GREMLIN_PARTITION,
-          readPartitions: [process.env.GREMLIN_PARTITION],
-        }),
-      );
-    }
+    const g = graphTraversal(conn);
 
     const bindingId = pathParameters.bindingId;
 
@@ -927,7 +991,7 @@ export const handler = async (event) => {
 
       // POST /projects/{id}/trackers/{bid}/issues/{rid}/comments
       if (httpMethod === 'POST' && resourceId && path.endsWith('/comments')) {
-        if (!gitProvider)
+        if (typeof provider.addIssueComment !== 'function')
           return response(405, { error: 'Comments are read-only for this tracker' });
         const data = body ? JSON.parse(body) : {};
         if (!String(data.body || '').trim()) {

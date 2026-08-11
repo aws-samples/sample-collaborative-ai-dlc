@@ -31,16 +31,18 @@ describe('GitHub Issues project binding adapter', () => {
     expect(JSON.stringify(sourceControl.mock.calls)).not.toContain('must-not-be-used');
   });
 
-  it('delegates detail, discussion, and comment writes', async () => {
+  it('delegates detail, discussion, comment, and close operations', async () => {
     const sourceControl = vi.fn().mockResolvedValue({});
     const ctx = { sourceControl };
     await githubIssuesProvider.getIssue(ctx, 'acme/widgets', '42');
     await githubIssuesProvider.getIssueDiscussion(ctx, 'acme/widgets', '42');
     await githubIssuesProvider.addIssueComment(ctx, 'acme/widgets', '42', 'Ship it');
+    await githubIssuesProvider.closeIssue(ctx, 'acme/widgets', '42');
     expect(sourceControl.mock.calls.map(([request]) => request.operation)).toEqual([
       'get-issue',
       'list-issue-comments',
       'add-issue-comment',
+      'close-issue',
     ]);
   });
 

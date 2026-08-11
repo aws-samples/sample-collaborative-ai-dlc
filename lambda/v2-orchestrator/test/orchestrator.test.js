@@ -115,6 +115,7 @@ beforeEach(() => {
       // Default: gate is answered (not pending) by the time we re-read it.
       getHumanTask: vi.fn(async () => ({ status: 'answered' })),
       appendEvent: vi.fn(async () => ({})),
+      putTrackerSync: vi.fn(async (args) => args),
       failRunningStageAttempt: vi.fn(async () => null),
       listUnits: vi.fn(async () => []),
       getUnit: vi.fn(async () => null),
@@ -2416,11 +2417,94 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(recordCall.prs).toHaveLength(2);
     expect(recordCall.prs[0]).toMatchObject({
       repoId: 'o/r',
+      provider: 'github',
       prUrl: 'https://github.com/o/r/pull/7',
       prNumber: 7,
       branch: 'aidlc/i1',
       baseBranch: 'main',
     });
+  });
+
+  it('publishes final PR delivery for tracker-originated intents', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      title: 'Bookstore API',
+      source: {
+        bindingId: 'tb1',
+        provider: 'github-issues',
+        instance: 'public',
+        resourceId: '42',
+        resourceUrl: 'https://github.com/o/r/issues/42',
+      },
+    }));
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    expect(deps.store.putTrackerSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionId: 'i1',
+        projectId: 'p1',
+        intentId: 'i1',
+        intentTitle: 'Bookstore API',
+        source: expect.objectContaining({ bindingId: 'tb1', resourceId: '42' }),
+        pullRequests: [
+          expect.objectContaining({
+            provider: 'github',
+            repoId: 'owner/repo',
+            prNumber: 7,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('adds a native closing reference to final PRs from a repository issue', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      source: {
+        bindingId: 'tb1',
+        provider: 'github-issues',
+        instance: 'public',
+        resourceId: '42',
+        resourceUrl: 'https://github.com/owner/repo/issues/42',
+      },
+    }));
+    deps.openPr = vi.fn(async () => ({
+      prUrl: 'https://github.com/owner/repo/pull/7',
+      prNumber: 7,
+    }));
+
+    await start();
+
+    expect(deps.openPr.mock.calls[0][0].body.trim().endsWith('Closes #42')).toBe(true);
+  });
+
+  it('links Jira tasks without claiming the PR will close them', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      source: {
+        bindingId: 'tb-jira',
+        provider: 'jira-cloud',
+        instance: 'cloud-1',
+        resourceId: 'PROJ-42',
+        resourceUrl: 'https://acme.atlassian.net/browse/PROJ-42',
+      },
+    }));
+    deps.openPr = vi.fn(async () => ({
+      prUrl: 'https://github.com/owner/repo/pull/7',
+      prNumber: 7,
+    }));
+
+    await start();
+
+    const body = deps.openPr.mock.calls[0][0].body;
+    expect(body).toContain('Related task: [PROJ-42](https://acme.atlassian.net/browse/PROJ-42)');
+    expect(body).not.toContain('Closes PROJ-42');
   });
 
   it('emits v2.pr.recorded after a successful record-pr (so the UI refetches live)', async () => {

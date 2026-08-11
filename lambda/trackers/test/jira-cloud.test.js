@@ -128,7 +128,9 @@ describe('jira-cloud — OAuth helpers', () => {
     expect(url).toContain('https://auth.atlassian.com/authorize');
     expect(url).toContain('client_id=cid');
     expect(url).toContain('audience=api.atlassian.com');
-    expect(url).toContain('scope=read%3Ajira-work+read%3Ajira-user+offline_access');
+    expect(url).toContain(
+      'scope=read%3Ajira-work+read%3Ajira-user+write%3Ajira-work+offline_access',
+    );
     expect(url).toContain('redirect_uri=https%3A%2F%2Fapp%2Fcb');
     expect(url).toContain('state=abc');
     expect(url).toContain('prompt=consent');
@@ -479,6 +481,87 @@ describe('jira-cloud — provider methods', () => {
       fetchMock.mockResolvedValueOnce(errResponse(404, { errorMessages: ['Not found'] }));
       const comments = await jiraProvider.getIssueDiscussion(ctx(), 'PROJ', 'PROJ-99');
       expect(comments).toEqual([]);
+    });
+  });
+
+  describe('addIssueComment', () => {
+    it('posts an ADF comment and maps the response', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okResponse({
+          id: '1002',
+          author: { displayName: 'AI-DLC' },
+          body: adfDoc('AI-DLC completed the workflow for this task.'),
+          created: '2026-08-10T00:00:00.000+0000',
+          updated: '2026-08-10T00:00:00.000+0000',
+        }),
+      );
+
+      const comment = await jiraProvider.addIssueComment(
+        ctx(),
+        'PROJ',
+        'PROJ-42',
+        [
+          'AI-DLC completed the workflow for this task.',
+          '',
+          '- Intent: [Login](https://aidlc.example/space/p1/intent/i1)',
+          '- Branch: [`feat/login`](https://github.com/acme/app/tree/feat%2Flogin)',
+          '- Pull requests:',
+          '  - `acme/app`: https://github.com/acme/app/pull/7',
+        ].join('\n'),
+      );
+
+      expect(comment).toMatchObject({ id: '1002', author: { handle: 'AI-DLC' } });
+      const [, init] = fetchMock.mock.calls[0];
+      expect(init.method).toBe('POST');
+      const payload = JSON.parse(init.body);
+      expect(payload.body).toMatchObject({ type: 'doc', version: 1 });
+      expect(payload.body.content[1]).toEqual({ type: 'paragraph' });
+      const bulletList = payload.body.content.find((node) => node.type === 'bulletList');
+      expect(bulletList.content).toHaveLength(3);
+      expect(bulletList.content[0]).toMatchObject({
+        type: 'listItem',
+        content: [
+          {
+            type: 'paragraph',
+            content: expect.arrayContaining([
+              expect.objectContaining({
+                text: 'Login',
+                marks: [
+                  {
+                    type: 'link',
+                    attrs: { href: 'https://aidlc.example/space/p1/intent/i1' },
+                  },
+                ],
+              }),
+            ]),
+          },
+        ],
+      });
+      expect(bulletList.content[1].content[0].content).toContainEqual({
+        type: 'text',
+        text: 'feat/login',
+        marks: [
+          {
+            type: 'link',
+            attrs: { href: 'https://github.com/acme/app/tree/feat%2Flogin' },
+          },
+        ],
+      });
+      const nested = bulletList.content[2].content.find((node) => node.type === 'bulletList');
+      expect(nested.content[0].content[0].content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ text: 'acme/app', marks: [{ type: 'code' }] }),
+          expect.objectContaining({
+            text: 'https://github.com/acme/app/pull/7',
+            marks: [
+              {
+                type: 'link',
+                attrs: { href: 'https://github.com/acme/app/pull/7' },
+              },
+            ],
+          }),
+        ]),
+      );
     });
   });
 

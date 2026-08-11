@@ -32,9 +32,10 @@
 //     (list a project's executions by status, newest first)
 //   GSI2PK = EXEC#<executionId>       GSI2SK = TYPE#<type>#STATE#<state>#<id>
 //     (query one execution's records by record type + state)
-//   GSI3PK = ACTIVE_EXECUTIONS | PR_WAITS
-//     GSI3SK = EXEC#<executionId>[#UNIT#S<section>#<slug>]
-//     (sparse maintenance index: only live executions and parked unit PR waits)
+//   GSI3PK = ACTIVE_EXECUTIONS   GSI3SK = EXEC#<executionId>
+//   GSI3PK = PR_WAITS            GSI3SK = EXEC#<executionId>#UNIT#<unitLaneId>
+//   GSI3PK = TRACKER_SYNCS       GSI3SK = CHECK#<timestamp>#EXEC#<executionId>
+//     (sparse maintenance index for live execution and integration work)
 
 const META = 'META';
 
@@ -43,6 +44,7 @@ const executionPk = (executionId) => `EXEC#${executionId}`;
 const projectPk = (projectId) => `PROJECT#${projectId}`;
 const ACTIVE_EXECUTIONS_INDEX_PK = 'ACTIVE_EXECUTIONS';
 const PR_WAITS_INDEX_PK = 'PR_WAITS';
+const TRACKER_SYNCS_INDEX_PK = 'TRACKER_SYNCS';
 
 // ── Item keys ──
 const executionMetaKey = (executionId) => ({ pk: executionPk(executionId), sk: META });
@@ -141,6 +143,10 @@ const composeKey = (executionId, composeId) => ({
   pk: executionPk(executionId),
   sk: `COMPOSE#${composeId}`,
 });
+const trackerSyncKey = (executionId) => ({
+  pk: executionPk(executionId),
+  sk: 'TRACKERSYNC',
+});
 
 // ── Index projections ──
 // GSI1: a project's executions by status, newest first (status board / resume).
@@ -161,6 +167,10 @@ const activeExecutionIndex = ({ executionId }) => ({
 const unitPrWaitIndex = ({ executionId, sectionIndex, slug }) => ({
   GSI3PK: PR_WAITS_INDEX_PK,
   GSI3SK: `EXEC#${executionId}#UNIT#${unitLaneId(sectionIndex, slug)}`,
+});
+const trackerSyncIndex = ({ executionId, scheduledAt }) => ({
+  GSI3PK: TRACKER_SYNCS_INDEX_PK,
+  GSI3SK: `CHECK#${scheduledAt}#EXEC#${executionId}`,
 });
 
 // ── Vocabularies ──
@@ -261,6 +271,14 @@ const QUORUM_EDIT_TERMINAL_STATES = ['SUCCEEDED', 'FAILED', 'REJECTED', 'CANCELL
 //               grid) — the row carries the structured reason, never a guess
 const COMPOSE_STATES = ['PENDING', 'COMPLETED', 'FAILED'];
 const COMPOSE_MODES = ['front', 'report', 'inflight'];
+const TRACKER_SYNC_STATES = [
+  'PR_CREATED',
+  'WAITING_FOR_MERGE',
+  'PR_MERGED',
+  'BLOCKED',
+  'COMPLETED',
+];
+const TRACKER_SYNC_TERMINAL_STATES = ['BLOCKED', 'COMPLETED'];
 
 // ── Pure record builders ──
 // Every builder takes injected `now`/ids so callers/tests stay deterministic
@@ -1053,6 +1071,43 @@ const buildComposeRow = ({
   completedAt: null,
 });
 
+const buildTrackerSyncRow = ({
+  executionId,
+  projectId,
+  intentId,
+  source,
+  pullRequests,
+  intentTitle = null,
+  workflowId = null,
+  workflowVersion = null,
+  scope = null,
+  branch = null,
+  now,
+}) => ({
+  ...trackerSyncKey(executionId),
+  ...trackerSyncIndex({ executionId, scheduledAt: now }),
+  type: 'TrackerSync',
+  executionId,
+  projectId,
+  intentId,
+  source,
+  pullRequests,
+  intentTitle,
+  workflowId,
+  workflowVersion,
+  scope,
+  branch,
+  state: 'PR_CREATED',
+  attempts: 0,
+  createdCommentedAt: null,
+  mergedCommentedAt: null,
+  closedAt: null,
+  lastCheckedAt: null,
+  lastError: null,
+  createdAt: now,
+  updatedAt: now,
+});
+
 export {
   META,
   executionPk,
@@ -1075,12 +1130,15 @@ export {
   feedbackCommentKey,
   quorumEditKey,
   composeKey,
+  trackerSyncKey,
   projectStatusIndex,
   executionTypeStateIndex,
   activeExecutionIndex,
   unitPrWaitIndex,
+  trackerSyncIndex,
   ACTIVE_EXECUTIONS_INDEX_PK,
   PR_WAITS_INDEX_PK,
+  TRACKER_SYNCS_INDEX_PK,
   EXECUTION_STATUS,
   ACTIVE_EXECUTION_STATUSES,
   STAGE_STATE,
@@ -1096,6 +1154,8 @@ export {
   QUORUM_EDIT_TERMINAL_STATES,
   COMPOSE_STATES,
   COMPOSE_MODES,
+  TRACKER_SYNC_STATES,
+  TRACKER_SYNC_TERMINAL_STATES,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -1112,6 +1172,7 @@ export {
   buildFeedbackCommentRow,
   buildQuorumEditRow,
   buildComposeRow,
+  buildTrackerSyncRow,
 };
 export default {
   META,
@@ -1135,12 +1196,15 @@ export default {
   feedbackCommentKey,
   quorumEditKey,
   composeKey,
+  trackerSyncKey,
   projectStatusIndex,
   executionTypeStateIndex,
   activeExecutionIndex,
   unitPrWaitIndex,
+  trackerSyncIndex,
   ACTIVE_EXECUTIONS_INDEX_PK,
   PR_WAITS_INDEX_PK,
+  TRACKER_SYNCS_INDEX_PK,
   EXECUTION_STATUS,
   ACTIVE_EXECUTION_STATUSES,
   STAGE_STATE,
@@ -1156,6 +1220,8 @@ export default {
   QUORUM_EDIT_TERMINAL_STATES,
   COMPOSE_STATES,
   COMPOSE_MODES,
+  TRACKER_SYNC_STATES,
+  TRACKER_SYNC_TERMINAL_STATES,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -1172,4 +1238,5 @@ export default {
   buildFeedbackCommentRow,
   buildQuorumEditRow,
   buildComposeRow,
+  buildTrackerSyncRow,
 };
