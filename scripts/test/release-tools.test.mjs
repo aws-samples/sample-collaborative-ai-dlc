@@ -57,9 +57,12 @@ test('release deployment uses the protected demo environment and GitHub OIDC', (
   assert.match(deployment, /TF_STATE_BUCKET: \$\{\{ vars\.TF_STATE_BUCKET \}\}/);
   assert.match(deployment, /docker\/setup-qemu-action@[0-9a-f]{40}/);
   assert.match(deployment, /platforms: arm64/);
+  assert.match(deployment, /python3 "\$package_script" build --timestamp 0/);
+  assert.match(deployment, /AIDLC_SKIP_NPM_CI: '1'/);
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /git merge-base --is-ancestor "\$tag_commit" "\$main_commit"/);
+  assert.equal(deployment.match(/--phase plan/g)?.length, 2);
   assert.doesNotMatch(deployment, /inputs\.apply|plan-only/);
   assert.doesNotMatch(deployment, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.ok(
@@ -71,6 +74,15 @@ test('release deployment uses the protected demo environment and GitHub OIDC', (
     deployment.indexOf('docker/setup-qemu-action') <
       deployment.indexOf('deploy-terraform.sh "$TF_ENVIRONMENT"'),
     'ARM64 emulation must be configured before Terraform builds the AgentCore image',
+  );
+  assert.ok(
+    deployment.indexOf('- name: Prepare Lambda package plans') <
+      deployment.indexOf('- name: Build Lambda packages') &&
+      deployment.indexOf('- name: Build Lambda packages') <
+        deployment.indexOf('- name: Plan infrastructure') &&
+      deployment.indexOf('- name: Plan infrastructure') <
+        deployment.indexOf('- name: Apply infrastructure'),
+    'Lambda packages must be built before the final saved plan is applied',
   );
 });
 
