@@ -414,18 +414,21 @@ const installRoot = (name, version) => `/opt/managed/tools/${name}/${version}`;
 const toolInstallLines = (name, tool) => {
   if (!tool || tool.source === 'base') return [];
   const root = installRoot(name, tool.version);
-  const install = [
-    'RUN /opt/managed/installers/install-archive.sh',
-    quote(tool.url),
-    quote(tool.checksum.algorithm),
-    quote(tool.checksum.value),
-    quote(root),
-    String(tool.stripComponents ?? 1),
-  ].join(' ');
+  const install = (destination) =>
+    [
+      'RUN /opt/managed/installers/install-archive.sh',
+      quote(tool.url),
+      quote(tool.checksum.algorithm),
+      quote(tool.checksum.value),
+      quote(destination),
+      String(tool.stripComponents ?? 1),
+    ].join(' ');
   if (name === 'rust') {
+    const staging = `/tmp/managed-rust-${tool.version}`;
     return [
-      install,
-      `RUN ${quote(`${root}/install.sh`)} --prefix=${quote(root)} --disable-ldconfig`,
+      `${install(staging)} && ${quote(`${staging}/install.sh`)} --prefix=${quote(
+        root,
+      )} --disable-ldconfig && rm -rf ${quote(staging)}`,
       `RUN ln -sf ${quote(`${root}/bin/rustc`)} /usr/local/bin/rustc && ln -sf ${quote(
         `${root}/bin/cargo`,
       )} /usr/local/bin/cargo`,
@@ -440,7 +443,7 @@ const toolInstallLines = (name, tool) => {
     gradle: ['gradle'],
   }[name];
   return [
-    install,
+    install(root),
     `RUN ${links
       .map((bin) => `ln -sf ${quote(`${root}/bin/${bin}`)} /usr/local/bin/${bin}`)
       .join(' && ')}`,

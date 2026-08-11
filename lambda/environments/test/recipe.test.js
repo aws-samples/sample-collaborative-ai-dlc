@@ -168,6 +168,19 @@ describe('managed environment recipes', () => {
     expect(dockerfile).toContain('RUN sha256sum -c /opt/managed/protected-runtime.sha256');
   });
 
+  it('stages the Rust installer outside its final prefix', () => {
+    const rust = ENVIRONMENT_TOOL_CATALOG.tools.rust.versions[0];
+    const dockerfile = generateDockerfile(recipe({ tools: { rust } }));
+
+    expect(dockerfile).toContain(
+      "'/tmp/managed-rust-1.89.0/install.sh' --prefix='/opt/managed/tools/rust/1.89.0'",
+    );
+    expect(dockerfile).toContain("rm -rf '/tmp/managed-rust-1.89.0'");
+    expect(dockerfile).not.toContain(
+      "'/opt/managed/tools/rust/1.89.0/install.sh' --prefix='/opt/managed/tools/rust/1.89.0'",
+    );
+  });
+
   it('checksums the complete build input and emits an SPDX document', () => {
     const context = generateBuildContext({
       environment: { environmentId: 'custom' },
