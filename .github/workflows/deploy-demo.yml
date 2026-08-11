@@ -38,6 +38,9 @@ jobs:
       TF_ENVIRONMENT: prod
       TF_INPUT: 'false'
       TF_IN_AUTOMATION: 'true'
+      # Clean runners do not have archives recorded in remote Terraform state.
+      # Do not turn that expected absence into timestamp-driven Lambda rebuilds.
+      TF_RECREATE_MISSING_LAMBDA_PACKAGE: 'false'
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}

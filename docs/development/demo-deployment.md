@@ -49,6 +49,13 @@ The workflow generates `prod.tfvars` and `prod.s3.tfbackend` in the runner's
 temporary directory. It never runs `bootstrap.sh` and therefore never creates
 or selects a new state bucket.
 
+The job also sets `TF_RECREATE_MISSING_LAMBDA_PACKAGE=false`. GitHub-hosted
+runners start without the Lambda archives referenced by remote Terraform state;
+the Lambda module otherwise treats every missing local archive as a
+timestamp-driven rebuild. Disabling that clean-workspace trigger keeps Lambda
+source hashes stable between the saved plan and its apply. Source changes still
+produce a new content-addressed archive and deploy normally.
+
 ## Protect release tags
 
 Open **Settings → Rules → Rulesets**, create a tag ruleset for `v*`, and set
