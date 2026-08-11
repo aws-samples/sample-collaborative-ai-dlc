@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  ENVIRONMENT_TOOL_CATALOG,
   SYSTEM_ENVIRONMENT_TEMPLATES,
   assertRevisionTransition,
   evaluateScanFindings,
@@ -39,6 +40,24 @@ describe('managed environment recipes', () => {
       'go',
       'rust',
       'polyglot',
+    ]);
+  });
+
+  it('publishes the exact tool versions and package provenance available to the editor', () => {
+    expect(ENVIRONMENT_TOOL_CATALOG.tools.node.versions).toEqual([
+      { version: '24.15.0', source: 'base' },
+    ]);
+    expect(ENVIRONMENT_TOOL_CATALOG.tools.python.versions).toEqual([
+      { version: '3.11', source: 'base' },
+    ]);
+    expect(ENVIRONMENT_TOOL_CATALOG.tools.java.versions).toEqual([
+      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'jvm').recipe.tools.java,
+    ]);
+    expect(ENVIRONMENT_TOOL_CATALOG.tools.go.versions).toEqual([
+      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'go').recipe.tools.go,
+    ]);
+    expect(ENVIRONMENT_TOOL_CATALOG.tools.rust.versions).toEqual([
+      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'rust').recipe.tools.rust,
     ]);
   });
 

@@ -5,6 +5,7 @@ import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
 import { buildResponse } from '../shared/response.js';
 import { isPlatformAdmin, requirePlatformAdmin } from '../shared/authz.js';
 import {
+  ENVIRONMENT_TOOL_CATALOG,
   generateBuildContext,
   normalizeEnvironmentId,
   orderRebuilds,
@@ -343,6 +344,10 @@ export const createHandler = ({
         return response(200, await store.listEnvironments({ publishedOnly }));
       }
 
+      if (event.httpMethod === 'GET' && tail.length === 1 && environmentId === 'catalog') {
+        return response(200, ENVIRONMENT_TOOL_CATALOG);
+      }
+
       if (event.httpMethod === 'POST' && tail.length === 0) {
         const denied = requirePlatformAdmin(event);
         if (denied)
@@ -353,6 +358,9 @@ export const createHandler = ({
         const data = parseBody(event);
         if (!data.name?.trim()) return response(400, { error: 'name is required' });
         const id = normalizeEnvironmentId(data.environmentId || data.name);
+        if (['catalog', 'rebuild'].includes(id)) {
+          return response(400, { error: 'environmentId is reserved by the platform' });
+        }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';
         await assertAcyclicBase(store, id, baseEnvironmentId);
         const prepared = await prepareRecipe(store, data.recipe, baseEnvironmentId);

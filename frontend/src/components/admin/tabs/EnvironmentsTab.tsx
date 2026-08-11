@@ -34,6 +34,8 @@ import {
   type EnvironmentRecipe,
   type EnvironmentRevision,
   type EnvironmentTool,
+  type EnvironmentToolCatalog,
+  type EnvironmentToolCatalogItem,
   type ManagedEnvironment,
 } from '@/services/environments';
 import { cn } from '@/lib/utils';
@@ -42,14 +44,37 @@ const TOOL_GROUPS = [
   {
     key: 'tools' as const,
     label: 'Languages',
-    names: ['node', 'python', 'java', 'go', 'rust'] as const,
+    names: ['node', 'python', 'java', 'go', 'rust'],
   },
   {
     key: 'buildTools' as const,
     label: 'Build tools',
-    names: ['maven', 'gradle'] as const,
+    names: ['maven', 'gradle'],
   },
-];
+] as const;
+
+type ToolGroupKey = (typeof TOOL_GROUPS)[number]['key'];
+
+const toolIdentity = (tool: EnvironmentTool) =>
+  [
+    tool.version,
+    tool.source,
+    tool.url ?? '',
+    tool.checksum?.algorithm ?? '',
+    tool.checksum?.value ?? '',
+    tool.stripComponents ?? '',
+  ].join('|');
+
+const sameTool = (left: EnvironmentTool | null, right: EnvironmentTool | null) =>
+  Boolean(left && right && toolIdentity(left) === toolIdentity(right));
+
+const cloneTool = (tool: EnvironmentTool): EnvironmentTool => structuredClone(tool);
+
+const withoutBaseExpectations = <
+  T extends EnvironmentRecipe['tools'] | EnvironmentRecipe['buildTools'],
+>(
+  tools: T,
+): T => Object.fromEntries(Object.entries(tools).filter(([, tool]) => tool.source !== 'base')) as T;
 
 const ACTIVE_REVISION_STATUSES = new Set(['QUEUED', 'BUILDING', 'SCANNING', 'VERIFYING']);
 const isActiveRevision = (revision: EnvironmentRevision) =>
@@ -89,7 +114,10 @@ const formFromRevision = (
     environmentId: environment.environmentId,
     name: environment.name,
     description: environment.description ?? '',
-    baseEnvironmentId: recipe?.base?.environmentId ?? environment.baseEnvironmentId ?? 'standard',
+    baseEnvironmentId:
+      environment.environmentId === 'standard'
+        ? ''
+        : (recipe?.base?.environmentId ?? environment.baseEnvironmentId ?? 'standard'),
     tools: structuredClone(recipe?.tools ?? {}),
     buildTools: structuredClone(recipe?.buildTools ?? {}),
     aptPackages: (recipe?.aptPackages ?? []).map((pkg) => `${pkg.name}=${pkg.version}`).join('\n'),
@@ -144,25 +172,87 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function ToolProvenance({
+  label,
+  publisher,
+  tool,
+}: {
+  label: string;
+  publisher: string;
+  tool: EnvironmentTool | null;
+}) {
+  if (tool?.source !== 'archive' || !tool.url || !tool.checksum) return null;
+  const algorithm = tool.checksum.algorithm.toUpperCase().replace('SHA', 'SHA-');
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+      <a
+        href={tool.url}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`${label} official package`}
+        className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+      >
+        {publisher} package
+        <ExternalLink className="h-3 w-3" />
+      </a>
+      <span
+        title={`The image build verifies this exact download before installation: ${tool.checksum.value}`}
+        aria-label={`${label} ${algorithm} integrity checksum ${tool.checksum.value}`}
+      >
+        Integrity check: {algorithm} {tool.checksum.value.slice(0, 12)}…
+      </span>
+    </div>
+  );
+}
+
 function RecipeEditor({
   form,
   onChange,
   baseOptions,
+  baseEnvironment,
+  baseRevision,
+  baseLoading,
+  catalog,
   disabled,
   showId,
 }: {
   form: EnvironmentForm;
   onChange: (next: EnvironmentForm) => void;
   baseOptions: ManagedEnvironment[];
+  baseEnvironment: ManagedEnvironment | null;
+  baseRevision: EnvironmentRevision | null;
+  baseLoading: boolean;
+  catalog: EnvironmentToolCatalog | null;
   disabled: boolean;
   showId: boolean;
 }) {
-  const setTool = (group: 'tools' | 'buildTools', name: string, next: EnvironmentTool | null) => {
+  const setTool = (group: ToolGroupKey, name: string, next: EnvironmentTool | null) => {
     const values = { ...form[group] } as Record<string, EnvironmentTool>;
     if (next) values[name] = next;
     else delete values[name];
     onChange({ ...form, [group]: values });
   };
+
+  const inheritedEntries = TOOL_GROUPS.flatMap((group) => {
+    const values = baseRevision?.flattenedRecipe[group.key] as
+      | Partial<Record<string, EnvironmentTool>>
+      | undefined;
+    const groupCatalog = catalog?.[group.key] as
+      | Record<string, EnvironmentToolCatalogItem>
+      | undefined;
+    return group.names.flatMap((name) => {
+      const tool = values?.[name];
+      return tool
+        ? [
+            {
+              name,
+              label: groupCatalog?.[name]?.label ?? name,
+              version: tool.version,
+            },
+          ]
+        : [];
+    });
+  });
 
   return (
     <div className="space-y-5">
@@ -194,27 +284,6 @@ function RecipeEditor({
             className="h-9 text-sm"
           />
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="environment-base" className="text-xs">
-            Base
-          </Label>
-          <Select
-            value={form.baseEnvironmentId}
-            onValueChange={(value) => onChange({ ...form, baseEnvironmentId: value })}
-            disabled={disabled}
-          >
-            <SelectTrigger id="environment-base" className="h-9 text-sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {baseOptions.map((environment) => (
-                <SelectItem key={environment.environmentId} value={environment.environmentId}>
-                  {environment.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
         <div className="space-y-1.5 sm:col-span-2">
           <Label htmlFor="environment-description" className="text-xs">
             Description
@@ -229,144 +298,212 @@ function RecipeEditor({
         </div>
       </div>
 
-      {TOOL_GROUPS.map((group) => (
-        <div key={group.key} className="space-y-2">
-          <h4 className="text-xs font-medium">{group.label}</h4>
-          <div className="divide-y rounded border">
-            {group.names.map((name) => {
-              const tool = (form[group.key] as Partial<Record<string, EnvironmentTool>>)[name];
-              return (
-                <div key={name} className="space-y-3 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-mono text-xs">{name}</span>
-                    <Switch
-                      aria-label={`Include ${name}`}
-                      checked={Boolean(tool)}
-                      disabled={disabled}
-                      onCheckedChange={(checked) =>
-                        setTool(group.key, name, checked ? { version: '', source: 'base' } : null)
-                      }
-                    />
-                  </div>
-                  {tool && (
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      <Input
-                        aria-label={`${name} version`}
-                        value={tool.version}
-                        onChange={(event) =>
-                          setTool(group.key, name, { ...tool, version: event.target.value })
-                        }
-                        placeholder="Exact version"
-                        disabled={disabled}
-                        className="h-8 font-mono text-xs"
-                      />
-                      <Select
-                        value={tool.source}
-                        disabled={disabled}
-                        onValueChange={(value) =>
-                          setTool(group.key, name, {
-                            version: tool.version,
-                            source: value as 'base' | 'archive',
-                            ...(value === 'archive'
-                              ? {
-                                  url: tool.url ?? '',
-                                  checksum: tool.checksum ?? {
-                                    algorithm: 'sha256',
-                                    value: '',
-                                  },
-                                  stripComponents: tool.stripComponents ?? 1,
-                                }
-                              : {}),
-                          })
-                        }
+      <div className="space-y-2">
+        <Label htmlFor="environment-base" className="text-xs">
+          Base environment
+        </Label>
+        <Select
+          value={form.baseEnvironmentId}
+          onValueChange={(value) =>
+            onChange({
+              ...form,
+              baseEnvironmentId: value,
+              tools: withoutBaseExpectations(form.tools),
+              buildTools: withoutBaseExpectations(form.buildTools),
+            })
+          }
+          disabled={disabled}
+        >
+          <SelectTrigger id="environment-base" className="h-9 text-sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {baseOptions.map((environment) => (
+              <SelectItem key={environment.environmentId} value={environment.environmentId}>
+                {environment.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {baseLoading ? (
+          <Skeleton className="h-12 w-full" />
+        ) : baseRevision ? (
+          <div className="border-l-2 border-primary/30 pl-3">
+            <p className="text-[11px] text-muted-foreground">
+              Published revision{' '}
+              <span className="font-mono text-foreground">{baseRevision.revisionId}</span>
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {inheritedEntries.map((entry) => (
+                <Badge key={entry.name} variant="outline" className="text-[10px]">
+                  {entry.label} {entry.version}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="text-[11px] text-destructive">Published base revision unavailable</p>
+        )}
+      </div>
+
+      {TOOL_GROUPS.map((group) => {
+        const inheritedValues = baseRevision?.flattenedRecipe[group.key] as
+          | Partial<Record<string, EnvironmentTool>>
+          | undefined;
+        const configuredValues = form[group.key] as Partial<Record<string, EnvironmentTool>>;
+        const groupCatalog = catalog?.[group.key] as
+          | Record<string, EnvironmentToolCatalogItem>
+          | undefined;
+        return (
+          <div key={group.key} className="space-y-2">
+            <h4 className="text-xs font-medium">{group.label}</h4>
+            <div className="divide-y rounded border">
+              {group.names.map((name) => {
+                const catalogItem = groupCatalog?.[name];
+                const inheritedTool = inheritedValues?.[name] ?? null;
+                const configuredTool = configuredValues[name] ?? null;
+                const configuredArchive =
+                  configuredTool?.source === 'archive' ? configuredTool : null;
+                const catalogArchives =
+                  catalogItem?.versions.filter((tool) => tool.source === 'archive') ?? [];
+                const archiveChoices =
+                  configuredArchive &&
+                  !catalogArchives.some((tool) => sameTool(tool, configuredArchive))
+                    ? [configuredArchive, ...catalogArchives]
+                    : catalogArchives;
+                const inheritedMode = Boolean(inheritedTool && !configuredArchive);
+                const selectedTool =
+                  configuredArchive ?? inheritedTool ?? configuredTool ?? archiveChoices[0] ?? null;
+                const optionalEnabled = Boolean(!inheritedTool && configuredTool);
+                const inheritedAlternatives = archiveChoices.filter(
+                  (tool) => !sameTool(tool, inheritedTool),
+                );
+                const showVersionSelect = Boolean(
+                  selectedTool &&
+                  ((inheritedTool && (configuredArchive || inheritedAlternatives.length > 0)) ||
+                    (!inheritedTool && optionalEnabled && archiveChoices.length > 1)),
+                );
+                const platformPackage = Boolean(
+                  selectedTool && catalogArchives.some((tool) => sameTool(tool, selectedTool)),
+                );
+                const sourceLabel = inheritedMode
+                  ? `Inherited from ${baseEnvironment?.name ?? 'base environment'}`
+                  : configuredArchive
+                    ? platformPackage
+                      ? 'Platform package'
+                      : 'Existing custom package'
+                    : configuredTool?.source === 'base'
+                      ? 'Not present in selected base'
+                      : archiveChoices.length
+                        ? 'Available platform package'
+                        : 'Not available';
+                const label = catalogItem?.label ?? name;
+
+                return (
+                  <div
+                    key={name}
+                    className="grid min-h-20 gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                  >
+                    <div className="min-w-0 space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium">{label}</span>
+                        {selectedTool && (
+                          <Badge variant="outline" className="font-mono text-[10px]">
+                            {selectedTool.version}
+                          </Badge>
+                        )}
+                      </div>
+                      <p
+                        className={cn(
+                          'text-[11px] text-muted-foreground',
+                          configuredTool?.source === 'base' && !inheritedTool && 'text-destructive',
+                        )}
                       >
-                        <SelectTrigger aria-label={`${name} source`} className="h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="base">From base</SelectItem>
-                          <SelectItem value="archive">Curated archive</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {tool.source === 'archive' && (
-                        <Input
-                          aria-label={`${name} strip components`}
-                          type="number"
-                          min={0}
-                          max={4}
-                          value={tool.stripComponents ?? 1}
-                          onChange={(event) =>
-                            setTool(group.key, name, {
-                              ...tool,
-                              stripComponents: Number(event.target.value),
-                            })
+                        {sourceLabel}
+                      </p>
+                      <ToolProvenance
+                        label={label}
+                        publisher={catalogItem?.publisher ?? 'Official'}
+                        tool={selectedTool}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2">
+                      {showVersionSelect && (
+                        <Select
+                          value={
+                            inheritedMode
+                              ? 'inherit'
+                              : configuredArchive
+                                ? `archive:${toolIdentity(configuredArchive)}`
+                                : undefined
                           }
                           disabled={disabled}
-                          className="h-8 font-mono text-xs"
+                          onValueChange={(value) => {
+                            if (value === 'inherit') {
+                              setTool(group.key, name, null);
+                              return;
+                            }
+                            const selected = archiveChoices.find(
+                              (tool) => `archive:${toolIdentity(tool)}` === value,
+                            );
+                            if (selected) setTool(group.key, name, cloneTool(selected));
+                          }}
+                        >
+                          <SelectTrigger
+                            aria-label={`${label} version`}
+                            className="h-8 w-[180px] text-xs"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {inheritedTool && (
+                              <SelectItem value="inherit">
+                                Base · {inheritedTool.version}
+                              </SelectItem>
+                            )}
+                            {archiveChoices.map((tool) => (
+                              <SelectItem
+                                key={toolIdentity(tool)}
+                                value={`archive:${toolIdentity(tool)}`}
+                              >
+                                {catalogArchives.some((entry) => sameTool(entry, tool))
+                                  ? 'Platform'
+                                  : 'Existing'}{' '}
+                                · {tool.version}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                      {inheritedTool ? (
+                        !showVersionSelect && (
+                          <Badge variant="secondary" className="text-[10px]">
+                            Included
+                          </Badge>
+                        )
+                      ) : (
+                        <Switch
+                          aria-label={`Include ${label}`}
+                          checked={optionalEnabled}
+                          disabled={disabled || baseLoading || archiveChoices.length === 0}
+                          onCheckedChange={(checked) =>
+                            setTool(
+                              group.key,
+                              name,
+                              checked && archiveChoices[0] ? cloneTool(archiveChoices[0]) : null,
+                            )
+                          }
                         />
                       )}
-                      {tool.source === 'archive' && (
-                        <>
-                          <Input
-                            aria-label={`${name} archive URL`}
-                            value={tool.url ?? ''}
-                            onChange={(event) =>
-                              setTool(group.key, name, { ...tool, url: event.target.value })
-                            }
-                            placeholder="HTTPS archive URL"
-                            disabled={disabled}
-                            className="h-8 font-mono text-xs sm:col-span-2"
-                          />
-                          <Select
-                            value={tool.checksum?.algorithm ?? 'sha256'}
-                            disabled={disabled}
-                            onValueChange={(value) =>
-                              setTool(group.key, name, {
-                                ...tool,
-                                checksum: {
-                                  algorithm: value as 'sha256' | 'sha512',
-                                  value: tool.checksum?.value ?? '',
-                                },
-                              })
-                            }
-                          >
-                            <SelectTrigger
-                              aria-label={`${name} checksum algorithm`}
-                              className="h-8 text-xs"
-                            >
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="sha256">SHA-256</SelectItem>
-                              <SelectItem value="sha512">SHA-512</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Input
-                            aria-label={`${name} checksum`}
-                            value={tool.checksum?.value ?? ''}
-                            onChange={(event) =>
-                              setTool(group.key, name, {
-                                ...tool,
-                                checksum: {
-                                  algorithm: tool.checksum?.algorithm ?? 'sha256',
-                                  value: event.target.value,
-                                },
-                              })
-                            }
-                            placeholder="Checksum"
-                            disabled={disabled}
-                            className="h-8 font-mono text-xs sm:col-span-3"
-                          />
-                        </>
-                      )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-1.5">
@@ -490,13 +627,16 @@ function Evidence({ revision }: { revision: EnvironmentRevision }) {
 
 export function EnvironmentsTab() {
   const [environments, setEnvironments] = useState<ManagedEnvironment[]>([]);
+  const [catalog, setCatalog] = useState<EnvironmentToolCatalog | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<EnvironmentDetail | null>(null);
+  const [baseDetail, setBaseDetail] = useState<EnvironmentDetail | null>(null);
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
   const [form, setForm] = useState<EnvironmentForm>(emptyForm);
   const [creating, setCreating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [baseLoading, setBaseLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -537,7 +677,8 @@ export function EnvironmentsTab() {
   }, []);
 
   useEffect(() => {
-    loadList()
+    Promise.all([loadList(), environmentsService.catalog()])
+      .then(([, value]) => setCatalog(value))
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load environments'))
       .finally(() => setLoading(false));
   }, [loadList]);
@@ -549,6 +690,34 @@ export function EnvironmentsTab() {
       setError(err instanceof Error ? err.message : 'Failed to load environment'),
     );
   }, [creating, loadDetail, selectedId]);
+
+  useEffect(() => {
+    const baseEnvironmentId = form.baseEnvironmentId;
+    if (!baseEnvironmentId) {
+      setBaseDetail(null);
+      setBaseLoading(false);
+      return;
+    }
+    let active = true;
+    setBaseLoading(true);
+    void environmentsService
+      .get(baseEnvironmentId)
+      .then((value) => {
+        if (active) setBaseDetail(value);
+      })
+      .catch((err) => {
+        if (active) {
+          setBaseDetail(null);
+          setError(err instanceof Error ? err.message : 'Failed to load base environment');
+        }
+      })
+      .finally(() => {
+        if (active) setBaseLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [form.baseEnvironmentId]);
 
   const selectedRevision = useMemo(
     () => detail?.revisions.find((revision) => revision.revisionId === selectedRevisionId) ?? null,
@@ -576,6 +745,18 @@ export function EnvironmentsTab() {
   const updates = environments.filter(
     (environment) => environment.updateAvailable && environment.baseEnvironmentId,
   );
+  const activeBaseDetail =
+    baseDetail?.environment.environmentId === form.baseEnvironmentId ? baseDetail : null;
+  const baseEnvironment =
+    environments.find((environment) => environment.environmentId === form.baseEnvironmentId) ??
+    activeBaseDetail?.environment ??
+    null;
+  const baseRevision =
+    activeBaseDetail?.publishedRevision ??
+    activeBaseDetail?.revisions.find(
+      (revision) => revision.revisionId === activeBaseDetail.environment.publishedRevisionId,
+    ) ??
+    null;
 
   const run = async (name: string, action: () => Promise<unknown>, preferredId = selectedId) => {
     setBusy(name);
@@ -723,13 +904,24 @@ export function EnvironmentsTab() {
                   form={form}
                   onChange={setForm}
                   baseOptions={baseOptions}
+                  baseEnvironment={baseEnvironment}
+                  baseRevision={baseRevision}
+                  baseLoading={baseLoading}
+                  catalog={catalog}
                   disabled={Boolean(busy)}
                   showId
                 />
                 <Button
                   size="sm"
                   className="gap-1.5"
-                  disabled={Boolean(busy) || !form.name.trim() || !form.baseEnvironmentId}
+                  disabled={
+                    Boolean(busy) ||
+                    baseLoading ||
+                    !catalog ||
+                    !baseRevision ||
+                    !form.name.trim() ||
+                    !form.baseEnvironmentId
+                  }
                   onClick={() => void createEnvironment()}
                 >
                   {busy === 'create' ? (
@@ -904,6 +1096,10 @@ export function EnvironmentsTab() {
                       form={form}
                       onChange={setForm}
                       baseOptions={baseOptions}
+                      baseEnvironment={baseEnvironment}
+                      baseRevision={baseRevision}
+                      baseLoading={baseLoading}
+                      catalog={catalog}
                       disabled={Boolean(busy)}
                       showId={false}
                     />
@@ -911,7 +1107,13 @@ export function EnvironmentsTab() {
                       size="sm"
                       variant="outline"
                       className="gap-1.5"
-                      disabled={Boolean(busy) || !form.name.trim()}
+                      disabled={
+                        Boolean(busy) ||
+                        baseLoading ||
+                        !catalog ||
+                        !baseRevision ||
+                        !form.name.trim()
+                      }
                       onClick={saveRevision}
                     >
                       {busy === 'save' ? (

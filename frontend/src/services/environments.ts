@@ -37,6 +37,18 @@ export interface EnvironmentTool {
   stripComponents?: number;
 }
 
+export interface EnvironmentToolCatalogItem {
+  label: string;
+  publisher: string;
+  versions: EnvironmentTool[];
+}
+
+export interface EnvironmentToolCatalog {
+  schemaVersion: 1;
+  tools: Record<'node' | 'python' | 'java' | 'go' | 'rust', EnvironmentToolCatalogItem>;
+  buildTools: Record<'maven' | 'gradle', EnvironmentToolCatalogItem>;
+}
+
 export interface EnvironmentRecipe {
   schemaVersion: 1;
   base?: {
@@ -127,6 +139,7 @@ const revisionPath = (environmentId: string, revisionId: string) =>
 export const environmentsService = {
   list: (publishedOnly = false) =>
     api.get<ManagedEnvironment[]>(`/environments${publishedOnly ? '?published=true' : ''}`),
+  catalog: () => api.get<EnvironmentToolCatalog>('/environments/catalog'),
   get: (environmentId: string) => api.get<EnvironmentDetail>(environmentPath(environmentId)),
   create: (input: {
     environmentId?: string;

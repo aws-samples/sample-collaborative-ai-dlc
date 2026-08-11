@@ -74,6 +74,8 @@ const archive = (version, url, algorithm, value, stripComponents = 1) => ({
   stripComponents,
 });
 
+const NODE = { version: '24.15.0', source: 'base' };
+const PYTHON = { version: '3.11', source: 'base' };
 const JAVA = archive(
   '21.0.8',
   'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.8_9.tar.gz',
@@ -106,6 +108,49 @@ const GRADLE = archive(
   1,
 );
 
+export const ENVIRONMENT_TOOL_CATALOG = {
+  schemaVersion: RECIPE_SCHEMA_VERSION,
+  tools: {
+    node: {
+      label: 'Node.js',
+      publisher: 'Protected runtime',
+      versions: [NODE],
+    },
+    python: {
+      label: 'Python',
+      publisher: 'Protected runtime',
+      versions: [PYTHON],
+    },
+    java: {
+      label: 'Java',
+      publisher: 'Eclipse Temurin',
+      versions: [JAVA],
+    },
+    go: {
+      label: 'Go',
+      publisher: 'The Go project',
+      versions: [GO],
+    },
+    rust: {
+      label: 'Rust',
+      publisher: 'The Rust project',
+      versions: [RUST],
+    },
+  },
+  buildTools: {
+    maven: {
+      label: 'Apache Maven',
+      publisher: 'Apache Software Foundation',
+      versions: [MAVEN],
+    },
+    gradle: {
+      label: 'Gradle',
+      publisher: 'Gradle',
+      versions: [GRADLE],
+    },
+  },
+};
+
 const baseRecipe = (tools = {}, buildTools = {}) => ({
   schemaVersion: RECIPE_SCHEMA_VERSION,
   base: null,
@@ -123,8 +168,8 @@ export const SYSTEM_ENVIRONMENT_TEMPLATES = [
     description: 'The protected runtime with Node.js and Python.',
     baseEnvironmentId: null,
     recipe: baseRecipe({
-      node: { version: '24.15.0', source: 'base' },
-      python: { version: '3.11', source: 'base' },
+      node: NODE,
+      python: PYTHON,
     }),
   },
   {
@@ -155,8 +200,8 @@ export const SYSTEM_ENVIRONMENT_TEMPLATES = [
     baseEnvironmentId: 'standard',
     recipe: baseRecipe(
       {
-        node: { version: '24.15.0', source: 'base' },
-        python: { version: '3.11', source: 'base' },
+        node: NODE,
+        python: PYTHON,
         java: JAVA,
         go: GO,
         rust: RUST,

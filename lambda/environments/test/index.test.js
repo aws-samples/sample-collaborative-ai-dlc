@@ -66,6 +66,37 @@ describe('managed environment handler', () => {
     });
   });
 
+  it('returns the platform tool catalog with exact package provenance', async () => {
+    const store = { ...storeBase() };
+    const handler = createHandler({ store });
+    const response = await handler({
+      httpMethod: 'GET',
+      path: '/environments/catalog',
+      ...claims(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      tools: {
+        node: {
+          label: 'Node.js',
+          versions: [{ version: '24.15.0', source: 'base' }],
+        },
+        java: {
+          label: 'Java',
+          publisher: 'Eclipse Temurin',
+          versions: [
+            {
+              version: '21.0.8',
+              source: 'archive',
+              checksum: { algorithm: 'sha256' },
+            },
+          ],
+        },
+      },
+    });
+  });
+
   it('rejects non-admin mutations', async () => {
     const store = { ...storeBase() };
     const handler = createHandler({ store });
@@ -79,6 +110,25 @@ describe('managed environment handler', () => {
     expect(JSON.parse(response.body)).toMatchObject({
       code: 'PLATFORM_ADMIN_REQUIRED',
     });
+  });
+
+  it('rejects environment IDs reserved by control routes', async () => {
+    const store = { ...storeBase() };
+    const handler = createHandler({ store });
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/environments',
+      body: JSON.stringify({
+        environmentId: 'catalog',
+        name: 'Catalog',
+        baseEnvironmentId: 'standard',
+        recipe: RECIPE,
+      }),
+      ...claims('platform-admin'),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error).toMatch(/reserved/);
   });
 
   it('retries a failed build with a new immutable revision tag', async () => {
