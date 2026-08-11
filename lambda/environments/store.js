@@ -295,6 +295,14 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   const updateRevision = async (environmentId, revisionId, patch, { fromStatus = null } = {}) => {
     const existing = await getRevision(environmentId, revisionId);
     if (!existing) throw new Error('Environment revision not found');
+    if (
+      existing.status !== 'DRAFT' &&
+      (Object.hasOwn(patch, 'recipe') || Object.hasOwn(patch, 'flattenedRecipe'))
+    ) {
+      throw Object.assign(new Error('Environment revision recipes are immutable after queuing'), {
+        statusCode: 409,
+      });
+    }
     if (patch.status) assertRevisionTransition(existing.status, patch.status);
     const updatedAt = now();
     const nextStatus = patch.status ?? existing.status;
@@ -307,6 +315,8 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     const sets = ['updatedAt = :updated', 'GSI1PK = :g1pk', 'GSI1SK = :g1sk'];
     const allowed = new Set([
       'status',
+      'recipe',
+      'flattenedRecipe',
       'buildId',
       'buildArn',
       'buildLogUrl',

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ENVIRONMENT_TOOL_CATALOG,
   SYSTEM_ENVIRONMENT_TEMPLATES,
+  applyToolPrerequisites,
   assertRevisionTransition,
   evaluateScanFindings,
   flattenRecipe,
@@ -59,6 +60,20 @@ describe('managed environment recipes', () => {
     expect(ENVIRONMENT_TOOL_CATALOG.tools.rust.versions).toEqual([
       SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'rust').recipe.tools.rust,
     ]);
+  });
+
+  it('adds the pinned native compiler toolchain required by Rust', () => {
+    const rust = ENVIRONMENT_TOOL_CATALOG.tools.rust.versions[0];
+
+    expect(
+      applyToolPrerequisites(recipe({ tools: { rust }, aptPackages: [] })).aptPackages,
+    ).toEqual([{ name: 'build-essential', version: '12.9' }]);
+    expect(
+      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'rust').recipe.aptPackages,
+    ).toEqual([{ name: 'build-essential', version: '12.9' }]);
+    expect(
+      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'polyglot').recipe.aptPackages,
+    ).toEqual([{ name: 'build-essential', version: '12.9' }]);
   });
 
   it('generates representative build checks for every system environment', () => {
@@ -172,6 +187,7 @@ describe('managed environment recipes', () => {
     const rust = ENVIRONMENT_TOOL_CATALOG.tools.rust.versions[0];
     const dockerfile = generateDockerfile(recipe({ tools: { rust } }));
 
+    expect(dockerfile).toContain('apt-get install -y --no-install-recommends build-essential=12.9');
     expect(dockerfile).toContain(
       "'/tmp/managed-rust-1.89.0/install.sh' --prefix='/opt/managed/tools/rust/1.89.0'",
     );

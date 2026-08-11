@@ -6,6 +6,7 @@ import { buildResponse } from '../shared/response.js';
 import { isPlatformAdmin, requirePlatformAdmin } from '../shared/authz.js';
 import {
   ENVIRONMENT_TOOL_CATALOG,
+  applyToolPrerequisites,
   generateBuildContext,
   normalizeEnvironmentId,
   orderRebuilds,
@@ -106,7 +107,7 @@ const assertAcyclicBase = async (store, environmentId, baseEnvironmentId) => {
 
 const prepareRecipe = async (store, input, baseEnvironmentId) => {
   const { revision: baseRevision } = await publishedBase(store, baseEnvironmentId);
-  const recipe = {
+  const recipe = applyToolPrerequisites({
     schemaVersion: input?.schemaVersion ?? 1,
     base: {
       environmentId: baseEnvironmentId,
@@ -119,7 +120,7 @@ const prepareRecipe = async (store, input, baseEnvironmentId) => {
     aptPackages: input?.aptPackages ?? [],
     environmentVariables: input?.environmentVariables ?? {},
     buildCommands: input?.buildCommands ?? [],
-  };
+  });
   const validation = validateRecipe(recipe);
   if (!validation.valid) {
     throw Object.assign(new Error('Invalid environment recipe'), {
@@ -129,7 +130,7 @@ const prepareRecipe = async (store, input, baseEnvironmentId) => {
   }
   return {
     recipe,
-    flattenedRecipe: flattenRecipe(recipe, baseRevision.flattenedRecipe),
+    flattenedRecipe: applyToolPrerequisites(flattenRecipe(recipe, baseRevision.flattenedRecipe)),
   };
 };
 
@@ -139,10 +140,12 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
       statusCode: 409,
     });
   }
+  const recipe = applyToolPrerequisites(revision.recipe);
+  const flattenedRecipe = applyToolPrerequisites(revision.flattenedRecipe);
   const context = generateBuildContext({
     environment,
     revision,
-    flattenedRecipe: revision.flattenedRecipe,
+    flattenedRecipe,
   });
   const prefix = `managed-environments/contexts/${environment.environmentId}/${revision.revisionId}`;
   await Promise.all(
@@ -163,6 +166,8 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
     revision.revisionId,
     {
       status: 'QUEUED',
+      recipe,
+      flattenedRecipe,
       contextPrefix: prefix,
       generatedDockerfile: context.dockerfile,
       failure: null,

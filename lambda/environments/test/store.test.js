@@ -146,6 +146,86 @@ describe('environment registry store', () => {
     expect(ddb.send.mock.calls[0][0].input.ExpressionAttributeNames).not.toHaveProperty('#name');
   });
 
+  it('persists resolved recipe prerequisites when a build is queued', async () => {
+    const recipe = {
+      schemaVersion: 1,
+      base: null,
+      tools: {},
+      buildTools: {},
+      aptPackages: [{ name: 'build-essential', version: '12.9' }],
+      environmentVariables: {},
+      buildCommands: [],
+    };
+    const ddb = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          Item: {
+            environmentId: 'rust',
+            revisionId: 'r-2',
+            status: 'DRAFT',
+          },
+        })
+        .mockResolvedValueOnce({
+          Attributes: {
+            environmentId: 'rust',
+            revisionId: 'r-2',
+            status: 'QUEUED',
+            recipe,
+            flattenedRecipe: recipe,
+          },
+        }),
+    };
+    const store = createEnvironmentStore({
+      ddb,
+      tableName: 'registry',
+      clock: () => '2026-08-10T00:00:00.000Z',
+    });
+
+    await store.updateRevision(
+      'rust',
+      'r-2',
+      {
+        status: 'QUEUED',
+        recipe,
+        flattenedRecipe: recipe,
+      },
+      { fromStatus: 'DRAFT' },
+    );
+
+    expect(ddb.send.mock.calls[1][0].input).toMatchObject({
+      ConditionExpression: '#status = :fromStatus',
+      ExpressionAttributeValues: {
+        ':status': 'QUEUED',
+        ':recipe': recipe,
+        ':flattenedRecipe': recipe,
+        ':fromStatus': 'DRAFT',
+      },
+    });
+  });
+
+  it('rejects recipe changes after a revision is queued', async () => {
+    const ddb = {
+      send: vi.fn().mockResolvedValue({
+        Item: {
+          environmentId: 'rust',
+          revisionId: 'r-2',
+          status: 'BUILDING',
+        },
+      }),
+    };
+    const store = createEnvironmentStore({ ddb, tableName: 'registry' });
+
+    await expect(
+      store.updateRevision('rust', 'r-2', {
+        recipe: { aptPackages: [{ name: 'build-essential', version: '12.9' }] },
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(ddb.send).toHaveBeenCalledTimes(1);
+  });
+
   it('moves the published pointer and base dependency in one transaction', async () => {
     const environment = {
       environmentId: 'custom',

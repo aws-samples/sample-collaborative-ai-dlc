@@ -94,6 +94,7 @@ const RUST = archive(
   'sha256',
   '26d6de84ac59da702aa8c2f903e3c344e3259da02e02ce92ad1c735916b29a4a',
 );
+const RUST_APT_PACKAGES = [{ name: 'build-essential', version: '12.9' }];
 const MAVEN = archive(
   '3.9.11',
   'https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries/apache-maven-3.9.11-bin.tar.gz',
@@ -151,12 +152,12 @@ export const ENVIRONMENT_TOOL_CATALOG = {
   },
 };
 
-const baseRecipe = (tools = {}, buildTools = {}) => ({
+const baseRecipe = (tools = {}, buildTools = {}, aptPackages = []) => ({
   schemaVersion: RECIPE_SCHEMA_VERSION,
   base: null,
   tools,
   buildTools,
-  aptPackages: [],
+  aptPackages,
   environmentVariables: {},
   buildCommands: [],
 });
@@ -191,7 +192,7 @@ export const SYSTEM_ENVIRONMENT_TEMPLATES = [
     name: 'Rust',
     description: 'Rust and Cargo on the protected runtime.',
     baseEnvironmentId: 'standard',
-    recipe: baseRecipe({ rust: RUST }),
+    recipe: baseRecipe({ rust: RUST }, {}, RUST_APT_PACKAGES),
   },
   {
     id: 'polyglot',
@@ -207,6 +208,7 @@ export const SYSTEM_ENVIRONMENT_TEMPLATES = [
         rust: RUST,
       },
       { maven: MAVEN, gradle: GRADLE },
+      RUST_APT_PACKAGES,
     ),
   },
 ];
@@ -394,6 +396,11 @@ const mergePackages = (parent = [], child = []) => {
   return [...merged.values()].toSorted((a, b) => a.name.localeCompare(b.name));
 };
 
+export const applyToolPrerequisites = (recipe) => ({
+  ...recipe,
+  aptPackages: mergePackages(recipe.aptPackages, recipe.tools?.rust ? RUST_APT_PACKAGES : []),
+});
+
 export const flattenRecipe = (recipe, parent = null) => ({
   schemaVersion: RECIPE_SCHEMA_VERSION,
   base: recipe.base ?? parent?.base ?? null,
@@ -450,7 +457,8 @@ const toolInstallLines = (name, tool) => {
   ];
 };
 
-export const generateDockerfile = (recipe) => {
+export const generateDockerfile = (inputRecipe) => {
+  const recipe = applyToolPrerequisites(inputRecipe);
   const { valid, issues } = validateRecipe(recipe);
   if (!valid) {
     throw Object.assign(new Error('Invalid environment recipe'), { issues });
@@ -646,7 +654,8 @@ export const generateBuildContext = ({
   flattenedRecipe,
   generatedAt = new Date().toISOString(),
 }) => {
-  const dockerfile = generateDockerfile(flattenedRecipe);
+  const resolvedRecipe = applyToolPrerequisites(flattenedRecipe);
+  const dockerfile = generateDockerfile(resolvedRecipe);
   const manifest = {
     schemaVersion: RECIPE_SCHEMA_VERSION,
     environmentId: environment.environmentId,
@@ -654,25 +663,25 @@ export const generateBuildContext = ({
     generatedAt,
     runtimeCompatibilityVersion:
       revision.runtimeCompatibilityVersion ?? CURRENT_RUNTIME_COMPATIBILITY_VERSION,
-    base: flattenedRecipe.base,
-    recipe: flattenedRecipe,
+    base: resolvedRecipe.base,
+    recipe: resolvedRecipe,
   };
   const packages = [
-    ...Object.entries(flattenedRecipe.tools).map(([name, spec]) => ({
+    ...Object.entries(resolvedRecipe.tools).map(([name, spec]) => ({
       SPDXID: `SPDXRef-Tool-${name}`,
       name,
       versionInfo: spec.version,
       downloadLocation: spec.url ?? 'NOASSERTION',
       filesAnalyzed: false,
     })),
-    ...Object.entries(flattenedRecipe.buildTools).map(([name, spec]) => ({
+    ...Object.entries(resolvedRecipe.buildTools).map(([name, spec]) => ({
       SPDXID: `SPDXRef-BuildTool-${name}`,
       name,
       versionInfo: spec.version,
       downloadLocation: spec.url ?? 'NOASSERTION',
       filesAnalyzed: false,
     })),
-    ...flattenedRecipe.aptPackages.map((pkg) => ({
+    ...resolvedRecipe.aptPackages.map((pkg) => ({
       SPDXID: `SPDXRef-Apt-${pkg.name.replaceAll(/[^A-Za-z0-9.-]/g, '-')}`,
       name: pkg.name,
       versionInfo: pkg.version,
@@ -697,7 +706,7 @@ export const generateBuildContext = ({
     'manifest.json': `${JSON.stringify(manifest, null, 2)}\n`,
     'sbom.spdx.json': `${JSON.stringify(sbom, null, 2)}\n`,
     'installers/install-archive.sh': INSTALL_ARCHIVE,
-    'verification.sh': generateVerificationScript(flattenedRecipe),
+    'verification.sh': generateVerificationScript(resolvedRecipe),
   };
   const checksums = Object.fromEntries(
     Object.entries(files).map(([name, body]) => [

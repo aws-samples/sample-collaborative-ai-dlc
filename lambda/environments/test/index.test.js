@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHandler } from '../index.js';
+import { ENVIRONMENT_TOOL_CATALOG } from '../recipe.js';
 
 const BASE = {
   environmentId: 'standard',
@@ -16,6 +17,11 @@ const RECIPE = {
   aptPackages: [],
   environmentVariables: {},
   buildCommands: [],
+};
+
+const RUST_RECIPE = {
+  ...RECIPE,
+  tools: { rust: ENVIRONMENT_TOOL_CATALOG.tools.rust.versions[0] },
 };
 
 const claims = (groups = 'member') => ({
@@ -143,8 +149,8 @@ describe('managed environment handler', () => {
       environmentId: 'custom',
       revisionId: 'r-old',
       status: 'FAILED',
-      recipe: RECIPE,
-      flattenedRecipe: RECIPE,
+      recipe: RUST_RECIPE,
+      flattenedRecipe: RUST_RECIPE,
     };
     const replacement = {
       ...failed,
@@ -190,9 +196,24 @@ describe('managed environment handler', () => {
     expect(store.createRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         reason: 'retry',
-        recipe: RECIPE,
-        flattenedRecipe: RECIPE,
+        recipe: RUST_RECIPE,
+        flattenedRecipe: RUST_RECIPE,
       }),
+    );
+    expect(store.updateRevision).toHaveBeenNthCalledWith(
+      1,
+      'custom',
+      'r-new',
+      expect.objectContaining({
+        status: 'QUEUED',
+        recipe: expect.objectContaining({
+          aptPackages: [{ name: 'build-essential', version: '12.9' }],
+        }),
+        flattenedRecipe: expect.objectContaining({
+          aptPackages: [{ name: 'build-essential', version: '12.9' }],
+        }),
+      }),
+      { fromStatus: 'DRAFT' },
     );
     const startInput = codebuildClient.send.mock.calls[0][0].input;
     expect(startInput.environmentVariablesOverride).toContainEqual(
