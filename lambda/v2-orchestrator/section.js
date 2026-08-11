@@ -51,6 +51,7 @@
 
 import processKeysPkg from '../shared/v2-process-keys.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
+import { buildIntentAttribution } from './pr-attribution.js';
 
 const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 
@@ -381,6 +382,7 @@ export const runParallelSection = async (segment, toolkit) => {
     tierModels = null,
     prStrategy = 'intent-pr',
     unitPrProvider = null,
+    applicationUrl,
     runId = null,
     // Derive-time enrichment mode ('off'|'llm'), snapshotted on META — rides
     // the lane derive-artifacts dispatches like the once-per-workflow hook.
@@ -502,8 +504,13 @@ export const runParallelSection = async (segment, toolkit) => {
   const ensureDraftPullRequests = async (laneCtx, slug, unitBranch, rTag) =>
     laneCtx.step(`unit-pr-drafts-${sk}-${slug}${rTag}`, async () => {
       const title = `${slug}: ${toolkit.ids.intentId}`;
+      const aidlcAttribution = buildIntentAttribution({
+        applicationUrl,
+        projectId,
+        intentId,
+      });
       const body = [
-        `AI-DLC unit review for ${slug}`,
+        `${aidlcAttribution} unit review for ${slug}`,
         '',
         `Execution: ${executionId}`,
         `Section: ${segment.index}`,

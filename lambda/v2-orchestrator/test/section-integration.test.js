@@ -286,6 +286,7 @@ const makeWorld = ({ remote, unitPlan, fileFor, beforeStage = null, conflictAgen
     resolveToken: async () => '',
     stopSession: async () => ({ stopped: true }),
     broadcast: async () => {},
+    applicationUrl: 'https://aidlc.example.test/',
   };
   return world;
 };

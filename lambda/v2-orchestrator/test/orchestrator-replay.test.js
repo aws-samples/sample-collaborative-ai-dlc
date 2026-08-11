@@ -103,6 +103,7 @@ const makeWorld = ({ stages = [{ stageId: 'a' }, { stageId: 'b' }] } = {}) => {
     resolveToken: async () => 'tok',
     stopSession: async () => ({ stopped: true }),
     broadcast: async () => {},
+    applicationUrl: 'https://aidlc.example.test/',
   };
   return world;
 };

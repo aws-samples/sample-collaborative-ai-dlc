@@ -128,6 +128,7 @@ beforeEach(() => {
     broadcast: vi.fn(async () => {}),
     openPr: vi.fn(async () => ({ skipped: true, reason: 'no_changes' })),
     comparePrBranches: vi.fn(async () => ({ status: 'unknown' })),
+    applicationUrl: 'https://aidlc.example.test/',
   };
   deps.invokeRuntime = makeRuntime(ctx, okScript);
 });
@@ -1535,6 +1536,9 @@ describe('PR per unit delivery', () => {
     const result = await start();
     expect(result.ok).toBe(true);
     expect(deps.unitPrProvider.createDraft).toHaveBeenCalledOnce();
+    expect(deps.unitPrProvider.createDraft.mock.calls[0][0].body).toContain(
+      '[AI-DLC](https://aidlc.example.test/space/p1/intent/i1) unit review for auth',
+    );
     expect(deps.unitPrProvider.setDraft).toHaveBeenCalledWith(
       expect.objectContaining({ number: 7, draft: false }),
     );
