@@ -159,7 +159,65 @@ jobs:
           echo "AIDLC_CONFIG_DIR=$config_dir" >> "$GITHUB_ENV"
           echo "AIDLC_PLAN_FILE=$plan_file" >> "$GITHUB_ENV"
 
+      - name: Prepare Lambda package plans
+        run: |
+          ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" \
+            --phase plan \
+            --plan-file "$AIDLC_PLAN_FILE"
+
+      - name: Build Lambda packages
+        run: |
+          set -euo pipefail
+
+          package_script="$(
+            find "$PWD/terraform/.terraform/modules" \
+              -type f -name package.py -print -quit
+          )"
+          if [[ -z "$package_script" ]]; then
+            echo "Lambda module package.py was not found after Terraform init." >&2
+            exit 1
+          fi
+
+          mapfile -d '' -t package_plans < <(
+            find "$PWD/terraform/builds" \
+              -maxdepth 1 -type f -name '*.plan.json' -print0
+          )
+          if (( ${#package_plans[@]} == 0 )); then
+            echo "Terraform did not generate any Lambda package plans." >&2
+            exit 1
+          fi
+
+          for package_plan in "${package_plans[@]}"; do
+            relative_plan="builds/$(basename "$package_plan")"
+            echo "Building Lambda package from $relative_plan"
+            (
+              cd terraform
+              python3 "$package_script" build --timestamp 0 "$relative_plan"
+            )
+
+            package_file="$(
+              node -e '
+                const fs = require("node:fs");
+                const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                process.stdout.write(plan.filename);
+              ' "$package_plan"
+            )"
+            if [[ ! -s "terraform/$package_file" ]]; then
+              echo "Lambda package was not created: terraform/$package_file" >&2
+              exit 1
+            fi
+          done
+
+          # The package content hash includes the source directory. Remove
+          # generated bundles so the final plan hashes the clean release source
+          # and resolves to the ZIP files built above.
+          find lambda -mindepth 2 -maxdepth 2 -type d -name .build \
+            -prune -exec rm -rf -- {} +
+          rm -f "$AIDLC_PLAN_FILE"
+
       - name: Plan infrastructure
+        env:
+          AIDLC_SKIP_NPM_CI: '1'
         run: |
           ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" \
             --phase plan \

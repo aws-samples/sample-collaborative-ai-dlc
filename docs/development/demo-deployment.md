@@ -52,9 +52,15 @@ or selects a new state bucket.
 The job also sets `TF_RECREATE_MISSING_LAMBDA_PACKAGE=false`. GitHub-hosted
 runners start without the Lambda archives referenced by remote Terraform state;
 the Lambda module otherwise treats every missing local archive as a
-timestamp-driven rebuild. Disabling that clean-workspace trigger keeps Lambda
-source hashes stable between the saved plan and its apply. Source changes still
-produce a new content-addressed archive and deploy normally.
+timestamp-driven rebuild.
+
+The workflow uses a draft plan to generate the Lambda module's package plans,
+builds every content-addressed ZIP, removes the generated `lambda/*/.build`
+directories, and then creates the final saved Terraform plan. The final plan
+therefore hashes the clean release source while the referenced ZIPs already
+exist. Apply reuses those exact packages, so neither missing files nor changed
+source hashes can invalidate the saved plan. Source changes still produce and
+deploy new content-addressed archives.
 
 ## Protect release tags
 
