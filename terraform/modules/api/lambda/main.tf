@@ -2405,6 +2405,7 @@ module "v2_orchestrator_lambda" {
 
   environment_variables = {
     ENVIRONMENT             = var.environment
+    APPLICATION_URL         = var.application_url
     V2_PROCESS_TABLE        = var.v2_executions_table_name
     BLOCKS_TABLE            = var.blocks_table_name
     AGENTCORE_RUNTIME_ARN   = var.agentcore_runtime_arn

@@ -127,6 +127,7 @@ beforeEach(() => {
     resolveToken: vi.fn(async () => 'tok'),
     stopSession: vi.fn(async () => ({ stopped: true })),
     broadcast: vi.fn(async () => {}),
+    applicationUrl: 'https://aidlc.example.test/',
   };
   deps.invokeRuntime = makeRuntime(ctx, okScript);
 });

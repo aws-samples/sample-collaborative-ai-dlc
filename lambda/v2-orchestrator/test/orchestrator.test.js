@@ -128,6 +128,7 @@ beforeEach(() => {
     broadcast: vi.fn(async () => {}),
     openPr: vi.fn(async () => ({ skipped: true, reason: 'no_changes' })),
     comparePrBranches: vi.fn(async () => ({ status: 'unknown' })),
+    applicationUrl: 'https://aidlc.example.test/',
   };
   deps.invokeRuntime = makeRuntime(ctx, okScript);
 });
@@ -1535,6 +1536,9 @@ describe('PR per unit delivery', () => {
     const result = await start();
     expect(result.ok).toBe(true);
     expect(deps.unitPrProvider.createDraft).toHaveBeenCalledOnce();
+    expect(deps.unitPrProvider.createDraft.mock.calls[0][0].body).toContain(
+      '[AI-DLC](https://aidlc.example.test/space/p1/intent/i1) unit review for auth',
+    );
     expect(deps.unitPrProvider.setDraft).toHaveBeenCalledWith(
       expect.objectContaining({ number: 7, draft: false }),
     );
@@ -2367,6 +2371,7 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
       { slug: 'auth', state: 'MERGED' },
       { slug: 'billing', state: 'MERGED' },
     ]);
+    deps.applicationUrl = 'https://aidlc.example.test/';
     deps.openPr = vi.fn(async ({ repoId }) => ({
       prUrl: `https://github.com/${repoId}/pull/7`,
       prNumber: 7,
@@ -2383,7 +2388,9 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
       baseBranch: 'main',
       title: 'Bookstore API',
     });
-    expect(deps.openPr.mock.calls[0][0].body).toContain('Execution ID: i1');
+    expect(deps.openPr.mock.calls[0][0].body).toContain(
+      'created by [AI-DLC](https://aidlc.example.test/space/p1/intent/i1)',
+    );
     expect(deps.openPr.mock.calls[0][0].body).toContain('strategy: intent-pr');
     expect(deps.openPr.mock.calls[0][0].body).toContain('2 total, 2 merged');
     const opened = events().filter((e) => e.type === 'v2.pr.opened');
