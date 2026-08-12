@@ -186,6 +186,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     flattenedRecipe = recipe,
     createdBy,
     reason = 'edited',
+    clearUpdateAvailable = false,
   }) => {
     const createdAt = now();
     const revisionId = `r-${nextId()}`;
@@ -225,13 +226,15 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
             Update: {
               TableName: table(),
               Key: environmentKey(environment.environmentId),
-              UpdateExpression:
-                'SET currentRevisionId = :revision, #status = :status, updatedAt = :updated',
+              UpdateExpression: `SET currentRevisionId = :revision, #status = :status, updatedAt = :updated${
+                clearUpdateAvailable ? ', updateAvailable = :no' : ''
+              }`,
               ExpressionAttributeNames: { '#status': 'status' },
               ExpressionAttributeValues: {
                 ':revision': revisionId,
                 ':status': 'DRAFT',
                 ':updated': createdAt,
+                ...(clearUpdateAvailable ? { ':no': false } : {}),
               },
             },
           },
@@ -478,23 +481,33 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     const environments = await listEnvironments();
     const changed = [];
     for (const environment of environments) {
-      if (
-        environment.baseEnvironmentId !== baseEnvironmentId ||
-        !environment.publishedRevisionId ||
-        environment.status === 'RETIRED'
-      ) {
+      if (environment.baseEnvironmentId !== baseEnvironmentId || environment.status === 'RETIRED') {
         continue;
       }
-      const published = await getRevision(
-        environment.environmentId,
-        environment.publishedRevisionId,
-      );
-      if (published?.recipe?.base?.revisionId === baseRevisionId) continue;
+      const referenceRevisionId = environment.publishedRevisionId ?? environment.currentRevisionId;
+      if (!referenceRevisionId) continue;
+      const referenceRevision = await getRevision(environment.environmentId, referenceRevisionId);
+      if (referenceRevision?.recipe?.base?.revisionId === baseRevisionId) continue;
       changed.push(
         await updateEnvironment(environment.environmentId, {
           updateAvailable: true,
           ...(environment.status === 'PUBLISHED' ? { status: 'UPDATE_AVAILABLE' } : {}),
         }),
+      );
+    }
+    return changed;
+  };
+
+  const reconcileBaseUpdates = async () => {
+    const environments = await listEnvironments();
+    const changed = [];
+    for (const environment of environments) {
+      if (!environment.publishedRevisionId || environment.status === 'RETIRED') continue;
+      changed.push(
+        ...(await markDependentsUpdateAvailable(
+          environment.environmentId,
+          environment.publishedRevisionId,
+        )),
       );
     }
     return changed;
@@ -742,6 +755,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     publishRevision,
     listRevisionsByStatus,
     markDependentsUpdateAvailable,
+    reconcileBaseUpdates,
     putLookup,
     getLookup,
     removeLookup,

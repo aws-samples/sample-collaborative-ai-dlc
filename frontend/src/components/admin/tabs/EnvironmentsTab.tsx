@@ -1171,7 +1171,7 @@ export function EnvironmentsTab() {
                     <RefreshCw className="h-3.5 w-3.5" />
                   </Button>
                   <div className="ml-auto flex flex-wrap gap-2">
-                    {selectedRevision?.status === 'DRAFT' && (
+                    {selectedRevision?.status === 'DRAFT' && !environment.updateAvailable && (
                       <Button
                         size="sm"
                         className="gap-1.5"
@@ -1189,7 +1189,7 @@ export function EnvironmentsTab() {
                         Build
                       </Button>
                     )}
-                    {selectedRevision?.status === 'FAILED' && (
+                    {selectedRevision?.status === 'FAILED' && !environment.updateAvailable && (
                       <Button
                         size="sm"
                         className="gap-1.5"

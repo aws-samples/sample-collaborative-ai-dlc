@@ -157,17 +157,8 @@ resource "aws_ecr_repository" "managed_environments" {
   tags = var.tags
 }
 
-resource "aws_ecr_lifecycle_policy" "agentcore" {
-  repository = aws_ecr_repository.agentcore.name
-  policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Keep only the last 3 images"
-      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 3 }
-      action       = { type = "expire" }
-    }]
-  })
-}
+# Environment revisions and active intents pin core image digests, so core
+# images remain available until registry-aware cleanup can prove they are unused.
 
 module "agentcore_docker_build" {
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"

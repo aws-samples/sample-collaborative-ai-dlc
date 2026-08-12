@@ -106,6 +106,96 @@ describe('environment registry store', () => {
     });
   });
 
+  it('marks an unpublished dependent when its current revision uses an older base', async () => {
+    const environment = {
+      environmentId: 'go',
+      status: 'FAILED',
+      baseEnvironmentId: 'standard',
+      currentRevisionId: 'seed-go-1',
+      publishedRevisionId: null,
+      updateAvailable: false,
+    };
+    const revision = {
+      environmentId: 'go',
+      revisionId: 'seed-go-1',
+      recipe: { base: { environmentId: 'standard', revisionId: 'core-old' } },
+    };
+    const ddb = {
+      send: vi.fn().mockImplementation(async (command) => {
+        if (command.constructor.name === 'QueryCommand') return { Items: [environment] };
+        if (command.constructor.name === 'GetCommand') return { Item: revision };
+        if (command.constructor.name === 'UpdateCommand') {
+          return { Attributes: { ...environment, updateAvailable: true } };
+        }
+        throw new Error(`Unsupported command ${command.constructor.name}`);
+      }),
+    };
+    const store = createEnvironmentStore({ ddb, tableName: 'registry' });
+
+    const changed = await store.markDependentsUpdateAvailable('standard', 'core-new');
+
+    expect(changed).toEqual([{ ...environment, updateAvailable: true }]);
+    const updateCall = ddb.send.mock.calls.find(
+      ([command]) => command.constructor.name === 'UpdateCommand',
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall[0].input.ExpressionAttributeValues).toMatchObject({
+      ':updateAvailable': true,
+    });
+  });
+
+  it('clears the base-update flag when a latest-base revision is created', async () => {
+    const environment = {
+      environmentId: 'go',
+      status: 'FAILED',
+      currentRevisionId: 'seed-go-1',
+      updateAvailable: true,
+    };
+    const recipe = {
+      schemaVersion: 1,
+      base: {
+        environmentId: 'standard',
+        revisionId: 'core-new',
+        imageUri: 'core-repository',
+        imageDigest: `sha256:${'c'.repeat(64)}`,
+      },
+      tools: {},
+      buildTools: {},
+      aptPackages: [],
+      environmentVariables: {},
+      buildCommands: [],
+    };
+    const ddb = {
+      send: vi.fn().mockResolvedValue({}),
+    };
+    const store = createEnvironmentStore({
+      ddb,
+      tableName: 'registry',
+      ids: () => 'new',
+      clock: () => '2026-08-12T12:00:00.000Z',
+    });
+
+    await store.createRevision({
+      environment,
+      recipe,
+      createdBy: 'admin@example.com',
+      reason: 'latest-base',
+      clearUpdateAvailable: true,
+    });
+
+    const transaction = ddb.send.mock.calls[0][0].input.TransactItems;
+    expect(transaction[1].Update).toMatchObject({
+      UpdateExpression:
+        'SET currentRevisionId = :revision, #status = :status, updatedAt = :updated, updateAvailable = :no',
+      ExpressionAttributeValues: {
+        ':revision': 'r-new',
+        ':status': 'DRAFT',
+        ':updated': '2026-08-12T12:00:00.000Z',
+        ':no': false,
+      },
+    });
+  });
+
   it('only sends expression-name aliases that an environment update uses', async () => {
     const ddb = {
       send: vi.fn().mockResolvedValue({

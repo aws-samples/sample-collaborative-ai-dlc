@@ -39,6 +39,7 @@ const claims = (groups = 'member') => ({
 const storeBase = () => ({
   seedSystemEnvironments: vi.fn(),
   stageCoreRevision: vi.fn(),
+  reconcileBaseUpdates: vi.fn(),
 });
 
 describe('managed environment handler', () => {
@@ -101,6 +102,159 @@ describe('managed environment handler', () => {
         },
       },
     });
+  });
+
+  it('rebuilds an unpublished failed environment on its latest published base', async () => {
+    const environment = {
+      environmentId: 'go',
+      status: 'FAILED',
+      baseEnvironmentId: 'standard',
+      currentRevisionId: 'seed-go-1',
+      publishedRevisionId: null,
+      updateAvailable: true,
+    };
+    const failedRevision = {
+      environmentId: 'go',
+      revisionId: 'seed-go-1',
+      status: 'FAILED',
+      recipe: {
+        ...RECIPE,
+        base: {
+          ...BASE,
+          revisionId: 'core-old',
+          imageDigest: `sha256:${'b'.repeat(64)}`,
+        },
+      },
+      flattenedRecipe: RECIPE,
+    };
+    const latestBase = {
+      environmentId: 'standard',
+      revisionId: 'core-new',
+      status: 'PUBLISHED',
+      imageUri: BASE.imageUri,
+      imageDigest: `sha256:${'c'.repeat(64)}`,
+      recipe: {
+        ...RECIPE,
+        base: {
+          environmentId: 'core',
+          revisionId: 'core-new',
+          imageUri: BASE.imageUri,
+          imageDigest: `sha256:${'c'.repeat(64)}`,
+        },
+      },
+      flattenedRecipe: RECIPE,
+    };
+    const replacement = {
+      environmentId: 'go',
+      revisionId: 'r-new',
+      status: 'DRAFT',
+      recipe: failedRevision.recipe,
+      flattenedRecipe: failedRevision.flattenedRecipe,
+    };
+    const store = {
+      ...storeBase(),
+      getEnvironment: vi.fn().mockImplementation(async (environmentId) =>
+        environmentId === 'standard'
+          ? {
+              environmentId: 'standard',
+              status: 'PUBLISHED',
+              publishedRevisionId: latestBase.revisionId,
+              currentRevisionId: latestBase.revisionId,
+            }
+          : environment,
+      ),
+      getRevision: vi.fn().mockImplementation(async (environmentId, revisionId) => {
+        if (environmentId === 'standard' && revisionId === latestBase.revisionId) {
+          return latestBase;
+        }
+        return failedRevision;
+      }),
+      createRevision: vi
+        .fn()
+        .mockImplementation(async ({ recipe: nextRecipe, flattenedRecipe }) => ({
+          ...replacement,
+          recipe: nextRecipe,
+          flattenedRecipe,
+        })),
+      updateRevision: vi.fn().mockImplementation(async (_environmentId, _revisionId, patch) => ({
+        ...replacement,
+        ...patch,
+      })),
+      updateEnvironment: vi.fn().mockResolvedValue(environment),
+    };
+    const s3Client = { send: vi.fn().mockResolvedValue({}) };
+    const codebuildClient = {
+      send: vi.fn().mockResolvedValue({
+        build: {
+          id: 'environment-build:build-1',
+          arn: 'arn:aws:codebuild:eu-west-1:111111111111:build/build-1',
+        },
+      }),
+    };
+    const handler = createHandler({ store, s3Client, codebuildClient });
+
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/environments/go/rebuild',
+      body: '{}',
+      ...claims('platform-admin'),
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(store.createRevision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment,
+        recipe: expect.objectContaining({
+          base: expect.objectContaining({
+            revisionId: 'core-new',
+            imageDigest: latestBase.imageDigest,
+          }),
+        }),
+        reason: 'latest-base',
+        clearUpdateAvailable: true,
+      }),
+    );
+    expect(codebuildClient.send).toHaveBeenCalledOnce();
+  });
+
+  it('rejects retrying a failed revision pinned to an outdated base', async () => {
+    const environment = {
+      environmentId: 'go',
+      status: 'FAILED',
+      baseEnvironmentId: 'standard',
+      currentRevisionId: 'seed-go-1',
+      publishedRevisionId: null,
+      updateAvailable: true,
+    };
+    const failedRevision = {
+      environmentId: 'go',
+      revisionId: 'seed-go-1',
+      status: 'FAILED',
+      recipe: RECIPE,
+      flattenedRecipe: RECIPE,
+    };
+    const store = {
+      ...storeBase(),
+      getEnvironment: vi.fn().mockResolvedValue(environment),
+      getRevision: vi.fn().mockResolvedValue(failedRevision),
+      createRevision: vi.fn(),
+    };
+    const codebuildClient = { send: vi.fn() };
+    const handler = createHandler({ store, codebuildClient });
+
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/environments/go/revisions/seed-go-1/retry',
+      body: '{}',
+      ...claims('platform-admin'),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({
+      code: 'BASE_UPDATE_AVAILABLE',
+    });
+    expect(store.createRevision).not.toHaveBeenCalled();
+    expect(codebuildClient.send).not.toHaveBeenCalled();
   });
 
   it('rejects non-admin mutations', async () => {

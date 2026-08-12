@@ -67,6 +67,7 @@ const ensureSeeded = async (store) => {
   }
   await store.seedSystemEnvironments(core);
   await store.stageCoreRevision(core);
+  await store.reconcileBaseUpdates();
 };
 
 const publishedBase = async (store, environmentId) => {
@@ -279,8 +280,9 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
       statusCode: 409,
     });
   }
-  if (!environment.publishedRevisionId) {
-    throw Object.assign(new Error('Environment has no published recipe to rebuild'), {
+  const sourceRevisionId = environment.publishedRevisionId ?? environment.currentRevisionId;
+  if (!sourceRevisionId) {
+    throw Object.assign(new Error('Environment has no recipe to rebuild'), {
       statusCode: 409,
     });
   }
@@ -289,13 +291,15 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
       statusCode: 409,
     });
   }
-  const published = await store.getRevision(
-    environment.environmentId,
-    environment.publishedRevisionId,
-  );
+  const sourceRevision = await store.getRevision(environment.environmentId, sourceRevisionId);
+  if (!sourceRevision?.recipe) {
+    throw Object.assign(new Error('Environment recipe is unavailable'), {
+      statusCode: 409,
+    });
+  }
   const { revision: latestBase } = await publishedBase(store, environment.baseEnvironmentId);
   const recipe = {
-    ...published.recipe,
+    ...sourceRevision.recipe,
     base: {
       environmentId: environment.baseEnvironmentId,
       revisionId: latestBase.revisionId,
@@ -310,6 +314,7 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
     flattenedRecipe,
     createdBy: actor,
     reason: 'latest-base',
+    clearUpdateAvailable: true,
   });
 };
 
@@ -528,6 +533,12 @@ export const createHandler = ({
             code: denied.code,
           });
         if (!revision) return response(404, { error: 'Revision not found' });
+        if (environment.updateAvailable) {
+          return response(409, {
+            error: 'A newer base is available; rebuild on the latest base',
+            code: 'BASE_UPDATE_AVAILABLE',
+          });
+        }
         return response(202, await startBuild({ store, environment, revision, actor, deps }));
       }
 
@@ -539,6 +550,12 @@ export const createHandler = ({
             code: denied.code,
           });
         if (!revision) return response(404, { error: 'Revision not found' });
+        if (environment.updateAvailable) {
+          return response(409, {
+            error: 'A newer base is available; rebuild on the latest base',
+            code: 'BASE_UPDATE_AVAILABLE',
+          });
+        }
         if (revision.status !== 'FAILED') {
           return response(409, {
             error: 'Only failed revisions can be retried',
