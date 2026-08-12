@@ -41,6 +41,7 @@ import {
   Loader2,
   MoreHorizontal,
   Play,
+  RotateCcw,
   Trash2,
   TriangleAlert,
   Wrench,
@@ -66,7 +67,9 @@ export default function IntentView() {
     answerGate,
     cancelIntent,
     deleteIntent,
+    rewindIntent,
     focusOutput,
+    stageRows,
     stageNameOf,
   } = useIntent();
   const navigate = useNavigate();
@@ -87,18 +90,26 @@ export default function IntentView() {
   const [repairing, setRepairing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Restart (FAILED / stranded CREATED) via the /start endpoint, which
-  // re-enters the pipeline and clears a prior failureReason. Fresh DRAFTs
-  // start from the compose page, never from here (the redirect above).
-  const handleStart = async () => {
+  // A stage failure retries from the earliest failed stage, preserving all
+  // completed upstream work. Failures before any stage row exists (init-ws,
+  // plan setup, or a stranded CREATED hand-off) still require a full start.
+  const failedStage =
+    detail?.intent.status === 'FAILED'
+      ? (stageRows.find((stage) => stage.state === 'FAILED') ?? null)
+      : null;
+  const handleRecovery = async () => {
     if (!projectId || !intentId) return;
     setStarting(true);
     setActionError(null);
     try {
-      await intentsService.start(projectId, intentId);
-      await reload();
+      if (failedStage) {
+        await rewindIntent(failedStage.stageId);
+      } else {
+        await intentsService.start(projectId, intentId);
+        await reload();
+      }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to start intent');
+      setActionError(err instanceof Error ? err.message : 'Failed to recover intent');
     } finally {
       setStarting(false);
     }
@@ -325,8 +336,8 @@ export default function IntentView() {
         </div>
       )}
 
-      {/* FAILED (or a stalled CREATED hand-off): show the reason + offer a restart
-          (re-runs init-ws + the plan; the /start endpoint accepts both states). */}
+      {/* Stage failures resume from the first failed stage. Pre-stage failures and
+          stalled CREATED hand-offs have no rewind target and restart the plan. */}
       {(isFailed || isStalled) && (
         <div className="rounded border border-agent-error/30 bg-agent-error/10 px-3 py-3 text-sm">
           <div className="flex items-start justify-between gap-3">
@@ -347,7 +358,7 @@ export default function IntentView() {
               )}
             </div>
             <Button
-              onClick={handleStart}
+              onClick={handleRecovery}
               disabled={starting}
               size="sm"
               variant="outline"
@@ -355,10 +366,18 @@ export default function IntentView() {
             >
               {starting ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : failedStage ? (
+                <RotateCcw className="h-3.5 w-3.5" />
               ) : (
                 <Play className="h-3.5 w-3.5" />
               )}
-              {starting ? 'Restarting…' : 'Restart'}
+              {starting
+                ? failedStage
+                  ? 'Retrying…'
+                  : 'Restarting…'
+                : failedStage
+                  ? `Retry ${humanizeStageId(failedStage.stageId)}`
+                  : 'Restart workflow'}
             </Button>
           </div>
         </div>

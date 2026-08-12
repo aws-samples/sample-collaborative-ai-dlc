@@ -58,6 +58,7 @@ vi.mock('@/hooks/useProjectsCache', () => ({
 
 const get = vi.fn();
 const start = vi.fn();
+const rewind = vi.fn();
 const answerGate = vi.fn();
 const repair = vi.fn();
 const graph = vi.fn();
@@ -67,6 +68,7 @@ vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
     start: (...a: unknown[]) => start(...a),
+    rewind: (...a: unknown[]) => rewind(...a),
     answerGate: (...a: unknown[]) => answerGate(...a),
     repair: (...a: unknown[]) => repair(...a),
     // Knowledge graph feeding the popovers/derived-items section — empty
@@ -147,6 +149,7 @@ describe('IntentView', () => {
     clearIntentCache();
     get.mockReset();
     start.mockReset();
+    rewind.mockReset();
     answerGate.mockReset();
     repair.mockReset();
     projectCacheMock.role = 'owner';
@@ -177,6 +180,78 @@ describe('IntentView', () => {
       </MemoryRouter>,
     );
     expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
+  });
+
+  it('retries a failed run from its earliest failed stage', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'FAILED',
+        currentStage: 'units-generation',
+        failureReason: 'stage_failed: units-generation',
+      }),
+      stages: [
+        {
+          stageInstanceId: 'si-requirements',
+          stageId: 'requirements-analysis',
+          state: 'SUCCEEDED',
+          phase: 'inception',
+        },
+        {
+          stageInstanceId: 'si-units',
+          stageId: 'units-generation',
+          state: 'FAILED',
+          phase: 'inception',
+          runtimeError: 'workspace_restore_failed',
+        },
+      ],
+    });
+    rewind.mockResolvedValue({});
+
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Retry Units Generation' }));
+    expect(rewind).toHaveBeenCalledWith('p1', 'i1', { fromStageId: 'units-generation' });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('restarts the workflow when a failed run has no failed stage row', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'FAILED',
+        failureReason: 'workspace_initialization_failed',
+      }),
+    );
+    start.mockResolvedValue({});
+
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Restart workflow' }));
+    expect(start).toHaveBeenCalledWith('p1', 'i1');
+    expect(rewind).not.toHaveBeenCalled();
+  });
+
+  it('restarts a stalled CREATED handoff even when a stale failed stage row remains', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'CREATED',
+        updatedAt: '2020-01-01T00:00:00.000Z',
+      }),
+      stages: [
+        {
+          stageInstanceId: 'si-old',
+          stageId: 'units-generation',
+          state: 'FAILED',
+          phase: 'inception',
+        },
+      ],
+    });
+    start.mockResolvedValue({});
+
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Restart workflow' }));
+    expect(start).toHaveBeenCalledWith('p1', 'i1');
+    expect(rewind).not.toHaveBeenCalled();
   });
 
   it('renders one QuestionEditor for the active gate (exclusive expansion)', async () => {
