@@ -184,6 +184,13 @@ describe('orchestrator durable handler', () => {
     deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
       if (n === 1) return { ok: true }; // init-ws
       if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      expect(deps.store.updateExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executionId: 'i1',
+          status: 'RUNNING',
+          pendingHumanTaskId: null,
+        }),
+      );
       return { ok: true, state: 'SUCCEEDED' };
     });
 

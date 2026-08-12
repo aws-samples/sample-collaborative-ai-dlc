@@ -864,6 +864,17 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           };
         }
 
+        // Credential resolution only permits active executions. Unpark META
+        // before AgentCore restores a released session's workspace, otherwise
+        // the re-clone is rejected while the execution still reads WAITING.
+        await ctxArg.step(`gate-unpark-${humanTaskId}`, () =>
+          store.updateExecution({
+            executionId,
+            status: 'RUNNING',
+            pendingHumanTaskId: null,
+          }),
+        );
+
         result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: humanTaskId });
       }
 
