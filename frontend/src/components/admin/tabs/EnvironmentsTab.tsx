@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Archive,
   Boxes,
+  CircleCheck,
   ExternalLink,
   Hammer,
   Loader2,
@@ -10,6 +11,7 @@ import {
   Rocket,
   RotateCw,
   Save,
+  ShieldAlert,
   ShieldCheck,
   TriangleAlert,
 } from 'lucide-react';
@@ -77,9 +79,13 @@ const withoutBaseExpectations = <
 ): T => Object.fromEntries(Object.entries(tools).filter(([, tool]) => tool.source !== 'base')) as T;
 
 const ACTIVE_REVISION_STATUSES = new Set(['QUEUED', 'BUILDING', 'SCANNING', 'VERIFYING']);
+const securityFindingsAcceptedAt = (revision: EnvironmentRevision) =>
+  revision.securityFindingsAcceptedAt ?? revision.highFindingsAcknowledgedAt ?? null;
+const securityFindingsAcceptedBy = (revision: EnvironmentRevision) =>
+  revision.securityFindingsAcceptedBy ?? revision.highFindingsAcknowledgedBy ?? null;
 const isActiveRevision = (revision: EnvironmentRevision) =>
   ACTIVE_REVISION_STATUSES.has(revision.status) ||
-  (revision.status === 'SECURITY_REVIEW' && Boolean(revision.highFindingsAcknowledgedAt));
+  (revision.status === 'SECURITY_REVIEW' && Boolean(securityFindingsAcceptedAt(revision)));
 
 interface EnvironmentForm {
   environmentId: string;
@@ -161,6 +167,15 @@ const statusClass = (status: string) => {
     return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300';
   if (ACTIVE_REVISION_STATUSES.has(status))
     return 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300';
+  return 'bg-muted/50 text-muted-foreground';
+};
+
+const severityClass = (severity: string) => {
+  if (severity === 'CRITICAL') return 'border-destructive/40 bg-destructive/10 text-destructive';
+  if (severity === 'HIGH')
+    return 'border-orange-500/40 bg-orange-500/10 text-orange-700 dark:text-orange-300';
+  if (severity === 'MEDIUM')
+    return 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300';
   return 'bg-muted/50 text-muted-foreground';
 };
 
@@ -551,9 +566,26 @@ function RecipeEditor({
 }
 
 function Evidence({ revision }: { revision: EnvironmentRevision }) {
+  const severityRank: Record<string, number> = {
+    CRITICAL: 0,
+    HIGH: 1,
+    MEDIUM: 2,
+    LOW: 3,
+    INFORMATIONAL: 4,
+    UNDEFINED: 5,
+  };
   const scanEntries = Object.entries(revision.scanFindings?.severityCounts ?? {}).toSorted(
-    ([a], [b]) => a.localeCompare(b),
+    ([left], [right]) =>
+      (severityRank[left] ?? 99) - (severityRank[right] ?? 99) || left.localeCompare(right),
   );
+  const findings = revision.scanFindings?.findings ?? [];
+  const acceptedAt = securityFindingsAcceptedAt(revision);
+  const acceptedBy = securityFindingsAcceptedBy(revision);
+  const critical = Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0);
+  const high = Number(revision.scanFindings?.severityCounts?.HIGH ?? 0);
+  const elevatedFindings = critical + high > 0;
+  const securityOnlyFailure =
+    revision.failure?.reason === 'critical_vulnerability_findings' && Boolean(revision.imageDigest);
   const verificationEntries = Object.entries(revision.verification ?? {}).filter(
     ([key]) => !['capabilities', 'completedAt'].includes(key),
   );
@@ -562,8 +594,23 @@ function Evidence({ revision }: { revision: EnvironmentRevision }) {
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-2">
           <h4 className="text-xs font-medium">Image</h4>
+          {revision.imageDigest ? (
+            <Badge
+              variant="outline"
+              className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+            >
+              <CircleCheck className="h-3 w-3" />
+              Build passed
+            </Badge>
+          ) : revision.failure?.reason === 'image_build_failed' ? (
+            <Badge variant="outline" className={statusClass('FAILED')}>
+              Build failed
+            </Badge>
+          ) : (
+            <span className="text-[11px] text-muted-foreground">Not built</span>
+          )}
           <p className="break-all font-mono text-[11px] text-muted-foreground">
-            {revision.imageDigest ?? 'Not built'}
+            {revision.imageDigest ?? 'No image digest'}
           </p>
           {revision.buildLogUrl && (
             <a
@@ -578,10 +625,34 @@ function Evidence({ revision }: { revision: EnvironmentRevision }) {
         </div>
         <div className="space-y-2">
           <h4 className="text-xs font-medium">Security scan</h4>
+          {revision.scanFindings ? (
+            acceptedAt ? (
+              <Badge variant="outline" className={statusClass('SECURITY_REVIEW')}>
+                Findings accepted
+              </Badge>
+            ) : elevatedFindings ? (
+              <Badge variant="outline" className={statusClass('SECURITY_REVIEW')}>
+                Review required
+              </Badge>
+            ) : (
+              <Badge
+                variant="outline"
+                className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+              >
+                Passed
+              </Badge>
+            )
+          ) : (
+            <span className="text-[11px] text-muted-foreground">Not completed</span>
+          )}
           <div className="flex flex-wrap gap-1.5">
             {scanEntries.length ? (
               scanEntries.map(([severity, count]) => (
-                <Badge key={severity} variant="outline" className="font-mono text-[10px]">
+                <Badge
+                  key={severity}
+                  variant="outline"
+                  className={cn('font-mono text-[10px]', severityClass(severity))}
+                >
                   {severity} {count}
                 </Badge>
               ))
@@ -589,6 +660,12 @@ function Evidence({ revision }: { revision: EnvironmentRevision }) {
               <span className="text-[11px] text-muted-foreground">No findings recorded</span>
             )}
           </div>
+          {acceptedAt && (
+            <p className="text-[11px] text-muted-foreground">
+              Accepted{acceptedBy ? ` by ${acceptedBy}` : ''}{' '}
+              <time dateTime={acceptedAt}>{new Date(acceptedAt).toLocaleString()}</time>
+            </p>
+          )}
         </div>
         <div className="space-y-2">
           <h4 className="text-xs font-medium">Runtime validation</h4>
@@ -605,7 +682,55 @@ function Evidence({ revision }: { revision: EnvironmentRevision }) {
           </div>
         </div>
       </div>
-      {revision.failure && (
+      {findings.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-xs font-medium">Identified security issues</h4>
+            <span className="text-[11px] text-muted-foreground">
+              {findings.length} finding{findings.length === 1 ? '' : 's'}
+              {revision.scanFindings?.findingsTruncated ? ' shown' : ''}
+            </span>
+          </div>
+          <div className="divide-y overflow-hidden rounded border">
+            {findings.map((finding, index) => (
+              <div
+                key={`${finding.id}-${finding.packageName ?? 'package'}-${index}`}
+                className="grid min-w-0 gap-2 px-3 py-2 sm:grid-cols-[90px_minmax(0,1fr)_minmax(150px,auto)] sm:items-center"
+              >
+                <Badge
+                  variant="outline"
+                  className={cn('w-fit font-mono text-[10px]', severityClass(finding.severity))}
+                >
+                  {finding.severity}
+                </Badge>
+                {finding.uri ? (
+                  <a
+                    href={finding.uri}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex min-w-0 items-center gap-1 font-mono text-[11px] text-primary hover:underline"
+                  >
+                    <span className="truncate">{finding.id}</span>
+                    <ExternalLink className="h-3 w-3 shrink-0" />
+                  </a>
+                ) : (
+                  <span className="truncate font-mono text-[11px]">{finding.id}</span>
+                )}
+                <span className="break-words font-mono text-[11px] text-muted-foreground">
+                  {finding.packageName ?? 'Unknown package'}
+                  {finding.packageVersion ? ` ${finding.packageVersion}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+          {revision.scanFindings?.findingsTruncated && (
+            <p className="text-[11px] text-muted-foreground">
+              Additional findings are available in the image registry scan.
+            </p>
+          )}
+        </div>
+      )}
+      {revision.failure && !securityOnlyFailure && (
         <div className="border-l-2 border-destructive/60 pl-3 text-xs text-destructive">
           <div className="font-medium">{revision.failure.reason ?? 'Build failed'}</div>
           {revision.failure.detail && (
@@ -811,6 +936,37 @@ export function EnvironmentsTab() {
   const currentRevision =
     detail?.revisions.find((revision) => revision.revisionId === environment?.currentRevisionId) ??
     null;
+  const selectedFindingsAcceptedAt = selectedRevision
+    ? securityFindingsAcceptedAt(selectedRevision)
+    : null;
+  const selectedLegacySecurityFailure =
+    selectedRevision?.status === 'FAILED' &&
+    selectedRevision.failure?.reason === 'critical_vulnerability_findings' &&
+    Boolean(selectedRevision.imageDigest);
+  const selectedRequiresSecurityAcceptance =
+    Boolean(selectedRevision) &&
+    !selectedFindingsAcceptedAt &&
+    (selectedRevision?.status === 'SECURITY_REVIEW' || selectedLegacySecurityFailure);
+
+  const acceptSelectedSecurityFindings = () => {
+    if (!environment || !selectedRevision || !selectedRequiresSecurityAcceptance) return;
+    const critical = Number(selectedRevision.scanFindings?.severityCounts?.CRITICAL ?? 0);
+    const high = Number(selectedRevision.scanFindings?.severityCounts?.HIGH ?? 0);
+    const findingSummary =
+      [critical > 0 ? `${critical} Critical` : null, high > 0 ? `${high} High` : null]
+        .filter(Boolean)
+        .join(' and ') || 'the recorded';
+    if (
+      !window.confirm(
+        `Accept ${findingSummary} security findings and continue to runtime validation? The findings will remain visible after publication.`,
+      )
+    ) {
+      return;
+    }
+    void run('accept-findings', () =>
+      environmentsService.acceptFindings(environment.environmentId, selectedRevision.revisionId),
+    );
+  };
 
   return (
     <SettingsCard
@@ -1051,24 +1207,27 @@ export function EnvironmentsTab() {
                         Retry
                       </Button>
                     )}
-                    {selectedRevision?.status === 'SECURITY_REVIEW' && (
+                    {selectedRequiresSecurityAcceptance && (
                       <Button
                         size="sm"
                         className="gap-1.5"
                         disabled={Boolean(busy)}
-                        onClick={() =>
-                          void run('acknowledge', () =>
-                            environmentsService.acknowledge(
-                              environment.environmentId,
-                              selectedRevision.revisionId,
-                            ),
-                          )
-                        }
+                        onClick={acceptSelectedSecurityFindings}
                       >
-                        <ShieldCheck className="h-3.5 w-3.5" />
-                        Acknowledge High Findings
+                        <ShieldAlert className="h-3.5 w-3.5" />
+                        Accept Findings &amp; Continue
                       </Button>
                     )}
+                    {selectedRevision?.status === 'SECURITY_REVIEW' &&
+                      selectedFindingsAcceptedAt && (
+                        <Badge
+                          variant="outline"
+                          className={cn('gap-1.5', statusClass('SECURITY_REVIEW'))}
+                        >
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          Accepted · validation pending
+                        </Badge>
+                      )}
                     {selectedRevision?.status === 'READY' && (
                       <Button
                         size="sm"

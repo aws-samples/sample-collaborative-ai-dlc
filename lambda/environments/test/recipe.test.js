@@ -292,17 +292,22 @@ describe('managed environment recipes', () => {
   it('enforces vulnerability gates and lifecycle transitions', () => {
     expect(evaluateScanFindings({ CRITICAL: 1, HIGH: 0 })).toMatchObject({
       allowed: false,
-      status: 'FAILED',
+      status: 'SECURITY_REVIEW',
     });
     expect(evaluateScanFindings({ HIGH: 2 })).toMatchObject({
       allowed: false,
       status: 'SECURITY_REVIEW',
+    });
+    expect(evaluateScanFindings({ CRITICAL: 1 }, true)).toMatchObject({
+      allowed: true,
+      status: 'VERIFYING',
     });
     expect(evaluateScanFindings({ HIGH: 2 }, true)).toMatchObject({
       allowed: true,
       status: 'VERIFYING',
     });
     expect(() => assertRevisionTransition('DRAFT', 'QUEUED')).not.toThrow();
+    expect(() => assertRevisionTransition('FAILED', 'SECURITY_REVIEW')).not.toThrow();
     expect(() => assertRevisionTransition('BUILDING', 'PUBLISHED')).toThrow(
       'Invalid revision status transition',
     );

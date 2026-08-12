@@ -41,7 +41,7 @@ const buildEvent = {
   },
 };
 
-const imageClient = (severityCounts) => ({
+const imageClient = (severityCounts, findings = [], nextToken = undefined) => ({
   send: vi
     .fn()
     .mockResolvedValueOnce({
@@ -49,7 +49,8 @@ const imageClient = (severityCounts) => ({
     })
     .mockResolvedValueOnce({
       imageScanStatus: { status: 'COMPLETE' },
-      imageScanFindings: { findingSeverityCounts: severityCounts },
+      imageScanFindings: { findingSeverityCounts: severityCounts, findings },
+      nextToken,
     }),
 });
 
@@ -64,17 +65,44 @@ describe('managed environment status handler', () => {
     expect(second).not.toBe(first);
   });
 
-  it('blocks images with Critical findings', async () => {
+  it('requires acceptance for Critical findings and records issue details', async () => {
     const store = mutableStore();
     const handler = createStatusHandler({
       store,
-      ecrClient: imageClient({ CRITICAL: 1 }),
+      ecrClient: imageClient(
+        { CRITICAL: 1 },
+        [
+          {
+            name: 'CVE-2026-42010',
+            severity: 'CRITICAL',
+            uri: 'https://example.test/CVE-2026-42010',
+            attributes: [
+              { key: 'package_name', value: 'gnutls28' },
+              { key: 'package_version', value: '3.7.9-2+deb12u6' },
+            ],
+          },
+        ],
+        'more-findings',
+      ),
       controlClient: { send: vi.fn() },
       runtimeClient: { send: vi.fn() },
     });
     const result = await handler(buildEvent);
-    expect(result.revision.status).toBe('FAILED');
-    expect(result.revision.failure.reason).toBe('critical_vulnerability_findings');
+    expect(result.revision).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      failure: null,
+      scanFindings: {
+        findingsTruncated: true,
+        findings: [
+          {
+            id: 'CVE-2026-42010',
+            severity: 'CRITICAL',
+            packageName: 'gnutls28',
+            packageVersion: '3.7.9-2+deb12u6',
+          },
+        ],
+      },
+    });
   });
 
   it('requires acknowledgement for High findings', async () => {
@@ -202,11 +230,11 @@ describe('managed environment status handler', () => {
     expect(store.updateRevision).not.toHaveBeenCalled();
   });
 
-  it('retries runtime creation after High findings are acknowledged', async () => {
+  it('retries runtime creation after security findings are accepted', async () => {
     const acknowledged = {
       ...revision,
       status: 'SECURITY_REVIEW',
-      highFindingsAcknowledgedAt: '2026-08-10T12:00:00.000Z',
+      securityFindingsAcceptedAt: '2026-08-10T12:00:00.000Z',
       imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/environments',
       imageDigest: `sha256:${'b'.repeat(64)}`,
     };
@@ -236,6 +264,37 @@ describe('managed environment status handler', () => {
       }),
     );
     expect(controlClient.send.mock.calls[0][0].constructor.name).toBe('CreateAgentRuntimeCommand');
+  });
+
+  it('reopens legacy Critical scan failures without rebuilding the image', async () => {
+    const failed = {
+      ...revision,
+      status: 'FAILED',
+      imageDigest: `sha256:${'b'.repeat(64)}`,
+      failure: {
+        reason: 'critical_vulnerability_findings',
+        detail: '5 Critical finding(s)',
+      },
+    };
+    const store = mutableStore(failed);
+    const handler = createStatusHandler({
+      store,
+      ecrClient: imageClient({ CRITICAL: 5 }),
+      controlClient: { send: vi.fn() },
+      runtimeClient: { send: vi.fn() },
+    });
+
+    const result = await handler({ action: 'poll' });
+
+    expect(result.results).toContainEqual(
+      expect.objectContaining({
+        revision: expect.objectContaining({
+          status: 'SECURITY_REVIEW',
+          imageDigest: failed.imageDigest,
+          failure: null,
+        }),
+      }),
+    );
   });
 
   it('records image build failures without changing the built image reference', async () => {
@@ -310,6 +369,8 @@ describe('managed environment status handler', () => {
     const verifying = {
       ...revision,
       status: 'VERIFYING',
+      scanFindings: { severityCounts: { HIGH: 2 } },
+      securityFindingsAcceptedAt: '2026-08-10T12:00:00.000Z',
       runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
       runtimeId: 'runtime-1',
       runtimeVersion: '3',
@@ -350,7 +411,7 @@ describe('managed environment status handler', () => {
     expect(result.results[0].revision.status).toBe('READY');
     expect(result.results[0].revision.verification).toMatchObject({
       status: 'PASSED',
-      securityScan: 'PASSED',
+      securityScan: 'ACCEPTED',
       endpoint: 'PASSED',
       toolBuilds: 'PASSED',
     });

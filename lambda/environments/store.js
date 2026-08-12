@@ -327,6 +327,8 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'scanFindings',
       'highFindingsAcknowledgedAt',
       'highFindingsAcknowledgedBy',
+      'securityFindingsAcceptedAt',
+      'securityFindingsAcceptedBy',
       'runtimeArn',
       'runtimeId',
       'runtimeVersion',

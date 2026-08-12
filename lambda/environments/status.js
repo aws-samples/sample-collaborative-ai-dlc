@@ -73,6 +73,36 @@ const RETRYABLE_CONTROL_ERRORS = new Set([
 
 const isConditionalFailure = (error) => error?.name === 'ConditionalCheckFailedException';
 
+const securityFindingsAcceptedAt = (revision) =>
+  revision.securityFindingsAcceptedAt ?? revision.highFindingsAcknowledgedAt ?? null;
+
+const findingAttribute = (finding, key) =>
+  finding.attributes?.find((attribute) => attribute.key === key)?.value ?? null;
+
+const summarizeScanFindings = (scan) => {
+  const severityOrder = new Map([
+    ['CRITICAL', 0],
+    ['HIGH', 1],
+    ['MEDIUM', 2],
+    ['LOW', 3],
+    ['INFORMATIONAL', 4],
+    ['UNDEFINED', 5],
+  ]);
+  return (scan.imageScanFindings?.findings ?? [])
+    .map((finding) => ({
+      id: finding.name ?? 'Unknown finding',
+      severity: finding.severity ?? 'UNDEFINED',
+      packageName: findingAttribute(finding, 'package_name'),
+      packageVersion: findingAttribute(finding, 'package_version'),
+      uri: finding.uri ?? null,
+    }))
+    .toSorted(
+      (left, right) =>
+        (severityOrder.get(left.severity) ?? 99) - (severityOrder.get(right.severity) ?? 99) ||
+        left.id.localeCompare(right.id),
+    );
+};
+
 const updateEnvironmentForRevision = async (store, environmentId, revisionId, patch) => {
   try {
     return await store.updateEnvironment(environmentId, patch, {
@@ -254,7 +284,11 @@ const inspectImage = async ({
   ecrClient = ecr,
   controlClient = control,
 }) => {
-  if (!['BUILDING', 'SCANNING'].includes(revision.status)) {
+  const legacySecurityFailure =
+    revision.status === 'FAILED' &&
+    revision.failure?.reason === 'critical_vulnerability_findings' &&
+    Boolean(revision.imageDigest);
+  if (!['BUILDING', 'SCANNING'].includes(revision.status) && !legacySecurityFailure) {
     return { environment, revision, ignored: true };
   }
   try {
@@ -307,11 +341,13 @@ const inspectImage = async ({
     const severityCounts = scan.imageScanFindings?.findingSeverityCounts ?? {};
     const verdict = evaluateScanFindings(
       severityCounts,
-      Boolean(scanning.highFindingsAcknowledgedAt),
+      Boolean(securityFindingsAcceptedAt(scanning)),
     );
     const scanFindings = {
       status: scanStatus,
       severityCounts,
+      findings: summarizeScanFindings(scan),
+      findingsTruncated: Boolean(scan.nextToken),
       evaluatedAt: new Date().toISOString(),
       imageDigest: image.imageDigest,
     };
@@ -322,15 +358,7 @@ const inspectImage = async ({
         {
           status: verdict.status,
           scanFindings,
-          ...(verdict.status === 'FAILED'
-            ? {
-                failure: {
-                  reason: 'critical_vulnerability_findings',
-                  detail: `${verdict.critical} Critical finding(s)`,
-                  failedAt: new Date().toISOString(),
-                },
-              }
-            : {}),
+          failure: null,
         },
         { fromStatus: scanning.status },
       );
@@ -489,6 +517,10 @@ const verifyRuntime = async ({
       );
     }
     const completedAt = new Date().toISOString();
+    const elevatedFindings =
+      Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0) +
+        Number(revision.scanFindings?.severityCounts?.HIGH ?? 0) >
+      0;
     const ready = await store.updateRevision(
       environment.environmentId,
       revision.revisionId,
@@ -504,7 +536,8 @@ const verifyRuntime = async ({
           workspaceWritable: deterministic.workspaceWritable === true,
           protectedRuntime: deterministic.protectedRuntime === true,
           sbom: 'PASSED',
-          securityScan: 'PASSED',
+          securityScan:
+            elevatedFindings && securityFindingsAcceptedAt(revision) ? 'ACCEPTED' : 'PASSED',
           containerStartup: 'PASSED',
           containerShutdown: 'PASSED',
           toolBuilds: 'PASSED',
@@ -615,8 +648,28 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
       );
     }
   }
+  const legacySecurityFailures = await store.listRevisionsByStatus('FAILED');
+  for (const revision of legacySecurityFailures.filter(
+    (candidate) =>
+      candidate.failure?.reason === 'critical_vulnerability_findings' &&
+      Boolean(candidate.imageDigest),
+  )) {
+    const environment = await store.getEnvironment(revision.environmentId);
+    if (!environment) continue;
+    results.push(
+      await inspectImage({
+        store,
+        environment,
+        revision,
+        ecrClient,
+        controlClient,
+      }),
+    );
+  }
   const acknowledged = await store.listRevisionsByStatus('SECURITY_REVIEW');
-  for (const revision of acknowledged.filter((candidate) => candidate.highFindingsAcknowledgedAt)) {
+  for (const revision of acknowledged.filter((candidate) =>
+    securityFindingsAcceptedAt(candidate),
+  )) {
     const environment = await store.getEnvironment(revision.environmentId);
     if (!environment) continue;
     results.push(

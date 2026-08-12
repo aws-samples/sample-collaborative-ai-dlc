@@ -74,11 +74,11 @@ an update warning while its published revision and project assignments remain
 unchanged. Run **Rebuild on latest base**, confirm only the pinned base revision
 changes, and publish the READY replacement after review.
 
-Inspect failures through the UI or the resource outputs above. Critical scan
-findings must fail a revision. High findings must stop at security review until
-acknowledged. Image build, container validation, and AgentCore endpoint
-failures must leave the previous published revision and project assignments
-unchanged.
+Inspect failures through the UI or the resource outputs above. Critical and
+High findings must stop at security review until a platform administrator
+accepts them. The findings and acceptance record must remain visible after
+publication. Image build, container validation, and AgentCore endpoint failures
+must leave the previous published revision and project assignments unchanged.
 
 When testing is complete, delete the test intents and retire the test
 environments in the UI. Environment images are retained while the stack exists;

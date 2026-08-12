@@ -571,22 +571,61 @@ export const createHandler = ({
             code: denied.code,
           });
         if (!revision) return response(404, { error: 'Revision not found' });
-        if (revision.status !== 'SECURITY_REVIEW') {
+        const legacySecurityFailure =
+          revision.status === 'FAILED' &&
+          revision.failure?.reason === 'critical_vulnerability_findings' &&
+          Boolean(revision.imageDigest);
+        if (revision.status !== 'SECURITY_REVIEW' && !legacySecurityFailure) {
           return response(409, {
-            error: 'Revision is not awaiting a security acknowledgement',
+            error: 'Revision is not awaiting security findings acceptance',
           });
         }
-        const acknowledged = await store.updateRevision(
-          environmentId,
-          revision.revisionId,
-          {
-            highFindingsAcknowledgedAt: new Date().toISOString(),
-            highFindingsAcknowledgedBy: actor,
-          },
-          { fromStatus: 'SECURITY_REVIEW' },
-        );
+        const acceptedAt = new Date().toISOString();
+        const acceptance = {
+          securityFindingsAcceptedAt: acceptedAt,
+          securityFindingsAcceptedBy: actor,
+        };
+        let acknowledged;
+        try {
+          acknowledged = await store.updateRevision(
+            environmentId,
+            revision.revisionId,
+            {
+              ...(legacySecurityFailure ? { status: 'SECURITY_REVIEW', failure: null } : {}),
+              ...acceptance,
+            },
+            { fromStatus: revision.status },
+          );
+        } catch (error) {
+          if (!legacySecurityFailure || error?.name !== 'ConditionalCheckFailedException') {
+            throw error;
+          }
+          const latest = await store.getRevision(environmentId, revision.revisionId);
+          if (latest?.status !== 'SECURITY_REVIEW') throw error;
+          acknowledged = await store.updateRevision(
+            environmentId,
+            revision.revisionId,
+            acceptance,
+            { fromStatus: 'SECURITY_REVIEW' },
+          );
+        }
+        let updatedEnvironment = environment;
+        if (legacySecurityFailure && environment.currentRevisionId === revision.revisionId) {
+          try {
+            updatedEnvironment = await store.updateEnvironment(
+              environmentId,
+              { status: 'SECURITY_REVIEW' },
+              {
+                ifCurrentRevisionId: revision.revisionId,
+                unlessRetired: true,
+              },
+            );
+          } catch (error) {
+            if (error?.name !== 'ConditionalCheckFailedException') throw error;
+          }
+        }
         return response(202, {
-          environment,
+          environment: updatedEnvironment,
           revision: acknowledged,
           pending: true,
         });

@@ -321,7 +321,7 @@ describe('managed environment handler', () => {
     expect(store.publishRevision).not.toHaveBeenCalled();
   });
 
-  it('records High-finding acknowledgement for the status worker to continue', async () => {
+  it('records security findings acceptance for the status worker to continue', async () => {
     const environment = {
       environmentId: 'custom',
       status: 'SECURITY_REVIEW',
@@ -338,8 +338,8 @@ describe('managed environment handler', () => {
       getRevision: vi.fn().mockResolvedValue(revision),
       updateRevision: vi.fn().mockResolvedValue({
         ...revision,
-        highFindingsAcknowledgedAt: '2026-08-11T00:00:00.000Z',
-        highFindingsAcknowledgedBy: 'user@example.com',
+        securityFindingsAcceptedAt: '2026-08-11T00:00:00.000Z',
+        securityFindingsAcceptedBy: 'user@example.com',
       }),
     };
     const handler = createHandler({ store });
@@ -356,14 +356,130 @@ describe('managed environment handler', () => {
       pending: true,
       revision: {
         status: 'SECURITY_REVIEW',
-        highFindingsAcknowledgedBy: 'user@example.com',
+        securityFindingsAcceptedBy: 'user@example.com',
       },
     });
     expect(store.updateRevision).toHaveBeenCalledWith(
       'custom',
       'r-1',
       expect.objectContaining({
-        highFindingsAcknowledgedBy: 'user@example.com',
+        securityFindingsAcceptedBy: 'user@example.com',
+      }),
+      { fromStatus: 'SECURITY_REVIEW' },
+    );
+  });
+
+  it('accepts findings on a legacy security-only failure without rebuilding', async () => {
+    const environment = {
+      environmentId: 'custom',
+      status: 'FAILED',
+      currentRevisionId: 'r-1',
+    };
+    const revision = {
+      environmentId: 'custom',
+      revisionId: 'r-1',
+      status: 'FAILED',
+      imageDigest: `sha256:${'b'.repeat(64)}`,
+      failure: { reason: 'critical_vulnerability_findings' },
+    };
+    const store = {
+      ...storeBase(),
+      getEnvironment: vi.fn().mockResolvedValue(environment),
+      getRevision: vi.fn().mockResolvedValue(revision),
+      updateRevision: vi.fn().mockResolvedValue({
+        ...revision,
+        status: 'SECURITY_REVIEW',
+        failure: null,
+        securityFindingsAcceptedBy: 'user@example.com',
+      }),
+      updateEnvironment: vi.fn().mockResolvedValue({
+        ...environment,
+        status: 'SECURITY_REVIEW',
+      }),
+    };
+    const handler = createHandler({ store });
+
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/environments/custom/revisions/r-1/acknowledge',
+      body: '{}',
+      ...claims('platform-admin'),
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(store.updateRevision).toHaveBeenCalledWith(
+      'custom',
+      'r-1',
+      expect.objectContaining({
+        status: 'SECURITY_REVIEW',
+        failure: null,
+        securityFindingsAcceptedBy: 'user@example.com',
+      }),
+      { fromStatus: 'FAILED' },
+    );
+    expect(store.updateEnvironment).toHaveBeenCalledWith(
+      'custom',
+      { status: 'SECURITY_REVIEW' },
+      {
+        ifCurrentRevisionId: 'r-1',
+        unlessRetired: true,
+      },
+    );
+  });
+
+  it('accepts findings when the status poll concurrently reopens a legacy failure', async () => {
+    const environment = {
+      environmentId: 'custom',
+      status: 'FAILED',
+      currentRevisionId: 'r-1',
+    };
+    const failed = {
+      environmentId: 'custom',
+      revisionId: 'r-1',
+      status: 'FAILED',
+      imageDigest: `sha256:${'b'.repeat(64)}`,
+      failure: { reason: 'critical_vulnerability_findings' },
+    };
+    const reopened = {
+      ...failed,
+      status: 'SECURITY_REVIEW',
+      failure: null,
+    };
+    const conditionalFailure = Object.assign(new Error('revision advanced'), {
+      name: 'ConditionalCheckFailedException',
+    });
+    const store = {
+      ...storeBase(),
+      getEnvironment: vi.fn().mockResolvedValue(environment),
+      getRevision: vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(reopened),
+      updateRevision: vi
+        .fn()
+        .mockRejectedValueOnce(conditionalFailure)
+        .mockResolvedValueOnce({
+          ...reopened,
+          securityFindingsAcceptedBy: 'user@example.com',
+        }),
+      updateEnvironment: vi.fn().mockResolvedValue({
+        ...environment,
+        status: 'SECURITY_REVIEW',
+      }),
+    };
+    const handler = createHandler({ store });
+
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/environments/custom/revisions/r-1/acknowledge',
+      body: '{}',
+      ...claims('platform-admin'),
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(store.updateRevision).toHaveBeenNthCalledWith(
+      2,
+      'custom',
+      'r-1',
+      expect.objectContaining({
+        securityFindingsAcceptedBy: 'user@example.com',
       }),
       { fromStatus: 'SECURITY_REVIEW' },
     );

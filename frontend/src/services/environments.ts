@@ -64,6 +64,14 @@ export interface EnvironmentRecipe {
   buildCommands: string[];
 }
 
+export interface EnvironmentScanFinding {
+  id: string;
+  severity: string;
+  packageName?: string | null;
+  packageVersion?: string | null;
+  uri?: string | null;
+}
+
 export interface ManagedEnvironment {
   environmentId: string;
   name: string;
@@ -97,6 +105,8 @@ export interface EnvironmentRevision {
   scanFindings?: {
     status?: string;
     severityCounts?: Record<string, number>;
+    findings?: EnvironmentScanFinding[];
+    findingsTruncated?: boolean;
     evaluatedAt?: string;
     imageDigest?: string;
   } | null;
@@ -108,6 +118,8 @@ export interface EnvironmentRevision {
   } | null;
   highFindingsAcknowledgedAt?: string | null;
   highFindingsAcknowledgedBy?: string | null;
+  securityFindingsAcceptedAt?: string | null;
+  securityFindingsAcceptedBy?: string | null;
   createdAt: string;
   updatedAt: string;
   publishedAt?: string | null;
@@ -161,7 +173,7 @@ export const environmentsService = {
     api.post<EnvironmentMutationResult>(`${revisionPath(environmentId, revisionId)}/build`, {}),
   retry: (environmentId: string, revisionId: string) =>
     api.post<EnvironmentMutationResult>(`${revisionPath(environmentId, revisionId)}/retry`, {}),
-  acknowledge: (environmentId: string, revisionId: string) =>
+  acceptFindings: (environmentId: string, revisionId: string) =>
     api.post<EnvironmentMutationResult>(
       `${revisionPath(environmentId, revisionId)}/acknowledge`,
       {},

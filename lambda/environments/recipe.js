@@ -766,7 +766,7 @@ const TRANSITIONS = {
   READY: new Set(['PUBLISHED', 'QUEUED', 'RETIRED']),
   PUBLISHED: new Set(['SUPERSEDED', 'RETIRED']),
   SUPERSEDED: new Set(['RETIRED']),
-  FAILED: new Set(['QUEUED', 'RETIRED']),
+  FAILED: new Set(['QUEUED', 'SECURITY_REVIEW', 'RETIRED']),
   RETIRED: new Set(),
 };
 
@@ -780,11 +780,10 @@ export const assertRevisionTransition = (from, to) => {
   }
 };
 
-export const evaluateScanFindings = (severityCounts = {}, highAcknowledged = false) => {
+export const evaluateScanFindings = (severityCounts = {}, findingsAccepted = false) => {
   const critical = Number(severityCounts.CRITICAL ?? 0);
   const high = Number(severityCounts.HIGH ?? 0);
-  if (critical > 0) return { allowed: false, status: 'FAILED', critical, high };
-  if (high > 0 && !highAcknowledged) {
+  if ((critical > 0 || high > 0) && !findingsAccepted) {
     return { allowed: false, status: 'SECURITY_REVIEW', critical, high };
   }
   return { allowed: true, status: 'VERIFYING', critical, high };
