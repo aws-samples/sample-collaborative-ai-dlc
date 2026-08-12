@@ -76,11 +76,12 @@ COPY shared/ /opt/shared/
 # where they are installed. Symlink so the shared helpers see the same deps.
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 
-# /mnt/workspace is the AgentCore managed-session-storage mount (present only at
-# invocation time). Create a fallback dir for local/non-AgentCore runs; chown so
-# the node user can write the checkout + CLI stores when the mount is absent.
-RUN mkdir -p /mnt/workspace /home/node/.codex-state /home/node/.codex-runs \
-    && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/opencode /opt/bun /opt/uv /home/node/.codex-state /home/node/.codex-runs
+# Runtime code and tool installations remain root-owned and immutable to the
+# non-root process. Only session state directories are writable by the node user.
+RUN install -d -o node -g node \
+    /mnt/workspace \
+    /home/node/.codex-state \
+    /home/node/.codex-runs
 
 WORKDIR /mnt/workspace
 USER node
