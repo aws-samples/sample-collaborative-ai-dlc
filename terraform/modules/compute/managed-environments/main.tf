@@ -21,9 +21,10 @@ locals {
     filesha256("${local.shared_dir}/${f}")
   ]))
 
-  managed_runtime_arn           = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:runtime/*"
-  managed_workload_identity_arn = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default/workload-identity/*"
-  ecr_registry_host             = split("/", var.environment_repository_url)[0]
+  managed_runtime_arn                     = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:runtime/*"
+  managed_workload_identity_directory_arn = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default"
+  managed_workload_identity_arn           = "${local.managed_workload_identity_directory_arn}/workload-identity/*"
+  ecr_registry_host                       = split("/", var.environment_repository_url)[0]
 }
 
 resource "random_id" "context_bucket_suffix" {
@@ -367,9 +368,12 @@ resource "aws_iam_role_policy" "status" {
         Resource = "*"
       },
       {
-        Effect   = "Allow"
-        Action   = ["bedrock-agentcore:CreateWorkloadIdentity"]
-        Resource = local.managed_workload_identity_arn
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:CreateWorkloadIdentity"]
+        Resource = [
+          local.managed_workload_identity_directory_arn,
+          local.managed_workload_identity_arn,
+        ]
       },
       {
         Effect = "Allow"
