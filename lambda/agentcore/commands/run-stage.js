@@ -38,6 +38,7 @@ import {
   parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
+import { isCredentialFailure } from '../cli/credential-errors.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
@@ -1966,10 +1967,10 @@ export const runStage = async (
       // (promptViaStdin) — never on argv, which would overflow ARG_MAX (E2BIG).
       prompt: prompt ?? invocation.prompt,
       promptViaStdin: invocation.promptViaStdin,
-      // Kiro only: tee the stderr tail so we can recognise its benign
-      // empty-final-completion crash (see isBenignKiroEmptyCompletion). Claude
-      // needs no such inspection, so we leave its stderr purely inherited.
-      captureStderrTail: cli === 'kiro' ? 16_384 : 0,
+      // Keep a bounded stderr tail for typed failure classification. runChild
+      // still tees stderr to the container log; the captured value is never
+      // persisted verbatim.
+      captureStderrTail: 16_384,
       onStdout: (chunk) => cliOutput.write(chunk),
       spawnFn,
     });
@@ -2319,6 +2320,12 @@ export const runStage = async (
           summary: `Kiro exited ${exitCode} with an empty final message after completing work; treated as success (ACP empty-completion).`,
         })
         .catch(() => {});
+    } else if (isCredentialFailure(result?.stderrTail)) {
+      return fail(
+        stageInstanceId,
+        'credential_invalid',
+        'The pinned agent credential was rejected; rotate it at the selected credential scope',
+      );
     } else {
       return fail(stageInstanceId, 'cli_nonzero_exit', String(exitCode));
     }

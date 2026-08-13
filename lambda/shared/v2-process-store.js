@@ -141,6 +141,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     startedBy,
     starterName,
     starterEmail,
+    agentCli,
+    credentialBinding,
     constructionAutonomyMode,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
@@ -236,6 +238,23 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (starterEmail !== undefined) {
       sets.push('starterEmail = :sem');
       values[':sem'] = starterEmail;
+    }
+    if (agentCli !== undefined) {
+      if (agentCli !== null && typeof agentCli !== 'string') {
+        throw new Error('agentCli must be a string or null');
+      }
+      sets.push('agentCli = :acl');
+      values[':acl'] = agentCli;
+    }
+    if (credentialBinding !== undefined) {
+      if (
+        credentialBinding !== null &&
+        (typeof credentialBinding !== 'object' || Array.isArray(credentialBinding))
+      ) {
+        throw new Error('credentialBinding must be an object or null');
+      }
+      sets.push('credentialBinding = :acb');
+      values[':acb'] = credentialBinding;
     }
     if (orchestratorRunId !== undefined) {
       sets.push('orchestratorRunId = :orid');

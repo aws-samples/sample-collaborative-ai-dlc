@@ -362,8 +362,9 @@ resource "aws_iam_role_policy" "agentcore" {
       ] : [],
       [
         {
-          # Read agent model + bearer/api-key settings at startup (no Bedrock IAM —
-          # Claude/Kiro authenticate via the bearer token / API key, as in v1).
+          # Read agent model settings plus invocation-scoped platform, space,
+          # and user credentials (no Bedrock IAM — Claude/Kiro authenticate
+          # via the bearer token / API key).
           Effect = "Allow"
           Action = ["ssm:GetParameter", "ssm:GetParameters"]
           Resource = [
@@ -371,6 +372,8 @@ resource "aws_iam_role_policy" "agentcore" {
             aws_ssm_parameter.kiro_api_key.arn,
             aws_ssm_parameter.cli_models.arn,
             aws_ssm_parameter.tier_models.arn,
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
+            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
           ]
         },
         {
@@ -670,6 +673,7 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
     SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
     BEDROCK_BEARER_TOKEN_SSM_PATH = aws_ssm_parameter.bedrock_bearer_token.name
     KIRO_API_KEY_SSM_PATH         = aws_ssm_parameter.kiro_api_key.name
+    AGENT_SETTINGS_SSM_PREFIX     = "/${var.project_name}/${var.environment}"
     # Base SSM prefix for MCP secret resolution ({prefix}/mcp-secrets/<VAR> and
     # {prefix}/projects/<id>/mcp-secrets/<VAR>).
     MCP_SECRETS_SSM_PREFIX = "/${var.project_name}/${var.environment}"

@@ -1,6 +1,11 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  DeleteParameterCommand,
+  SSMClient,
+  GetParametersCommand,
+  PutParameterCommand,
+} from '@aws-sdk/client-ssm';
 
 const ssmMock = mockClient(SSMClient);
 let handler;
@@ -64,5 +69,54 @@ describe('platform PR strategy settings', () => {
     const response = await handler(event('PUT', { prStrategy: 'stacked' }, 'platform-admin'));
     expect(response.statusCode).toBe(400);
     expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+});
+
+describe('personal agent credentials', () => {
+  const personalEvent = (method, body) => ({
+    ...event(method, body),
+    path: '/users/me/agent-credentials',
+  });
+
+  it('returns set-state only for the authenticated user', async () => {
+    ssmMock.on(GetParametersCommand).resolves({
+      Parameters: [
+        {
+          Name: '/collab/dev/users/user-1/agent-credentials/bedrock-bearer-token',
+          Value: 'secret-value',
+        },
+        {
+          Name: '/collab/dev/users/user-1/agent-credentials/kiro-api-key',
+          Value: 'placeholder',
+        },
+      ],
+    });
+    const response = await handler(personalEvent('GET'));
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      bedrockBearerTokenSet: true,
+      kiroApiKeySet: false,
+    });
+    expect(response.body).not.toContain('secret-value');
+  });
+
+  it('writes and clears only the caller-scoped parameters', async () => {
+    ssmMock.on(PutParameterCommand).resolves({});
+    ssmMock.on(DeleteParameterCommand).resolves({});
+    const response = await handler(
+      personalEvent('PUT', {
+        bedrockBearerToken: 'new-token',
+        kiroApiKey: '',
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input).toMatchObject({
+      Name: '/collab/dev/users/user-1/agent-credentials/bedrock-bearer-token',
+      Value: 'new-token',
+      Type: 'SecureString',
+    });
+    expect(ssmMock.commandCalls(DeleteParameterCommand)[0].args[0].input).toEqual({
+      Name: '/collab/dev/users/user-1/agent-credentials/kiro-api-key',
+    });
   });
 });

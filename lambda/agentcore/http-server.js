@@ -87,6 +87,7 @@ export const dispatchInvocation = async ({
   payload,
   handlers,
   busy,
+  prepareInvocation = null,
   now = () => new Date().toISOString(),
 }) => {
   const command = payload?.command;
@@ -117,7 +118,8 @@ export const dispatchInvocation = async ({
 
   busy?.enter();
   try {
-    const result = await handler(payload);
+    const context = prepareInvocation ? await prepareInvocation(payload) : {};
+    const result = await handler(payload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception.
@@ -150,6 +152,7 @@ const readJsonBody = (req) =>
 export const createServer = ({
   handlers,
   busy = createBusyTracker(),
+  prepareInvocation = null,
   now = () => new Date().toISOString(),
 }) => {
   return http.createServer(async (req, res) => {
@@ -171,7 +174,13 @@ export const createServer = ({
       } catch (e) {
         return send(400, { error: e.message });
       }
-      const { statusCode, body } = await dispatchInvocation({ payload, handlers, busy, now });
+      const { statusCode, body } = await dispatchInvocation({
+        payload,
+        handlers,
+        busy,
+        prepareInvocation,
+        now,
+      });
       return send(statusCode, body);
     }
     return send(404, { error: 'not found' });
@@ -210,18 +219,24 @@ const main = async () => {
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
-  const { resolveAgentAuth } = await import('./auth-resolver.js');
-
-  // Load the agent CLI's Bedrock bearer token / Kiro key from SSM into env so the
-  // CLI drivers (envForAuth) forward them — without this the CLI falls back to
-  // task-role SigV4 and Bedrock returns 403. Best-effort; logs which were set.
-  const resolvedAuth = await resolveAgentAuth({ env: process.env });
-  console.error(`[agentcore] resolved agent auth: ${resolvedAuth.join(', ') || 'none'}`);
+  const { authenticatedClisForEnv, resolveInvocationAgentAuth } =
+    await import('./auth-resolver.js');
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
   const store = createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
-  const availableClis = await discoverInstalledClis();
+  const installedClis = await discoverInstalledClis();
+  const invocationContext = async (payload) => {
+    const auth = await resolveInvocationAgentAuth({
+      payload,
+      store,
+      env: process.env,
+    });
+    return {
+      ...auth,
+      availableClis: authenticatedClisForEnv({ installed: installedClis, env: auth.env }),
+    };
+  };
 
   // Publish a process-state payload on the intent's realtime channel. The
   // payload carries its own intentId (the command stamps it), so fan-out is keyed
@@ -230,7 +245,7 @@ const main = async () => {
 
   const handlers = {
     initWs: (p) => initWs(p, { store, openGraph, checkoutRepos, workspaceDir, broadcast }),
-    runStage: (p) =>
+    runStage: (p, context) =>
       runStage(
         { ...p, workspaceDir },
         {
@@ -243,20 +258,30 @@ const main = async () => {
           renderRulesDoc,
           mcpEntry,
           openGraph,
-          availableClis,
+          availableClis: context.availableClis,
           broadcast,
-          env: process.env,
+          env: context.env,
         },
       ),
     inspect: (p) => inspect(p, { openGraph }),
-    capabilities: (p) => capabilities(p, { env: process.env }),
+    capabilities: (p, context) =>
+      capabilities(p, {
+        env: context.env,
+        discoverInstalledClis: async () => installedClis,
+      }),
     verifyMcp: (p) => verifyMcp(p),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).
     promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
-    deriveArtifacts: (p) =>
-      deriveArtifacts(p, { store, openGraph, broadcast, availableClis, env: process.env }),
+    deriveArtifacts: (p, context) =>
+      deriveArtifacts(p, {
+        store,
+        openGraph,
+        broadcast,
+        availableClis: context.availableClis,
+        env: context.env,
+      }),
     // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
     // has no Neptune access, so it forwards the structured PR data here).
     recordPr: (p) => recordPr(p, { store, openGraph, broadcast }),
@@ -269,78 +294,103 @@ const main = async () => {
     refreshIntent: (p) => refreshIntentWorkspace({ ...p, workspaceDir }, {}),
     // WP6: the scoped conflict-resolution stage (lane session). The engine
     // merges/verifies/concludes; the agent CLI only edits conflicted files.
-    resolveConflict: (p) =>
+    resolveConflict: (p, context) =>
       resolveConflict(
         { ...p, workspaceDir },
-        { store, availableClis, mcpEntry, broadcast, env: process.env },
+        {
+          store,
+          availableClis: context.availableClis,
+          mcpEntry,
+          broadcast,
+          env: context.env,
+        },
       ),
   };
   // Async stage invocation (WP1): shares the sync handler's whole deps bag; the
   // background job holds the SAME busy tracker the server uses for /ping, so
   // the session stays HealthyBusy for the job's lifetime.
   const busy = createBusyTracker();
-  handlers.runStageStart = createRunStageStart({
-    runStage: (p) => handlers.runStage(p),
-    sendCallbackSuccess: sendStageCallbackSuccess,
-    sendCallbackHeartbeat: sendStageCallbackHeartbeat,
-    busy,
-  });
-  handlers.discussionAssistStart = createDiscussionAssistStart({
-    openGraph,
-    store,
-    broadcast,
-    availableClis,
-    env: process.env,
-    mcpEntry,
-    busy,
-  });
+  const stageJobs = new Map();
+  handlers.runStageStart = (p, context) =>
+    createRunStageStart({
+      runStage: (q) => handlers.runStage(q, context),
+      sendCallbackSuccess: sendStageCallbackSuccess,
+      sendCallbackHeartbeat: sendStageCallbackHeartbeat,
+      busy,
+      activeJobs: stageJobs,
+    })(p);
+  const discussionJobs = new Map();
+  handlers.discussionAssistStart = (p, context) =>
+    createDiscussionAssistStart({
+      openGraph,
+      store,
+      broadcast,
+      availableClis: context.availableClis,
+      env: context.env,
+      mcpEntry,
+      busy,
+      activeJobs: discussionJobs,
+    })(p);
   // Composer proposals (Adaptive Workflows): grounded scope/grid proposals for
   // a DRAFT intent (front/report) or a parked run (inflight). Proposal-only —
   // applying it is the intents lambda's job, never this container's.
-  handlers.composePlanStart = createComposePlanStart({
-    openGraph,
-    store,
-    broadcast,
-    availableClis,
-    env: process.env,
-    busy,
-  });
+  const composeJobs = new Map();
+  handlers.composePlanStart = (p, context) =>
+    createComposePlanStart({
+      openGraph,
+      store,
+      broadcast,
+      availableClis: context.availableClis,
+      env: context.env,
+      busy,
+      activeJobs: composeJobs,
+    })(p);
   // Quorum-supported artifact edits: plan (impact analysis) + apply (approved
   // rewrites). Same accept-then-background contract as run-stage-start; the
   // apply job re-derives through the SAME deriveArtifacts handler stages use.
-  handlers.quorumEditPlanStart = createQuorumEditPlanStart({
-    openGraph,
-    store,
-    broadcast,
-    availableClis,
-    env: process.env,
-    sendCallbackSuccess: sendStageCallbackSuccess,
-    sendCallbackHeartbeat: sendStageCallbackHeartbeat,
-    busy,
-  });
-  handlers.quorumEditApplyStart = createQuorumEditApplyStart({
-    openGraph,
-    store,
-    broadcast,
-    availableClis,
-    env: process.env,
-    deriveArtifacts: (p) => handlers.deriveArtifacts(p),
-    sendCallbackSuccess: sendStageCallbackSuccess,
-    sendCallbackHeartbeat: sendStageCallbackHeartbeat,
-    busy,
-  });
+  const quorumPlanJobs = new Map();
+  handlers.quorumEditPlanStart = (p, context) =>
+    createQuorumEditPlanStart({
+      openGraph,
+      store,
+      broadcast,
+      availableClis: context.availableClis,
+      env: context.env,
+      sendCallbackSuccess: sendStageCallbackSuccess,
+      sendCallbackHeartbeat: sendStageCallbackHeartbeat,
+      busy,
+      activeJobs: quorumPlanJobs,
+    })(p);
+  const quorumApplyJobs = new Map();
+  handlers.quorumEditApplyStart = (p, context) =>
+    createQuorumEditApplyStart({
+      openGraph,
+      store,
+      broadcast,
+      availableClis: context.availableClis,
+      env: context.env,
+      deriveArtifacts: (q) => handlers.deriveArtifacts(q, context),
+      sendCallbackSuccess: sendStageCallbackSuccess,
+      sendCallbackHeartbeat: sendStageCallbackHeartbeat,
+      busy,
+      activeJobs: quorumApplyJobs,
+    })(p);
   // Ops remediation: reconstruct lost structured blocks (see command header).
-  handlers.repairStructure = (p) =>
+  handlers.repairStructure = (p, context) =>
     repairStructure(p, {
       openGraph,
       store,
       broadcast,
-      availableClis,
-      deriveArtifacts: (q) => handlers.deriveArtifacts(q),
-      env: process.env,
+      availableClis: context.availableClis,
+      deriveArtifacts: (q) => handlers.deriveArtifacts(q, context),
+      env: context.env,
     });
 
-  const server = createServer({ handlers, busy });
+  const server = createServer({
+    handlers,
+    busy,
+    prepareInvocation: invocationContext,
+  });
   server.listen(8080, '0.0.0.0', () => console.error('[agentcore] listening on 0.0.0.0:8080'));
 };
 

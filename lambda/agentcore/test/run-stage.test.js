@@ -1535,6 +1535,31 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit', detail: '2' });
   });
 
+  it('classifies rejected credentials without persisting the CLI output', async () => {
+    const deps = baseDeps({
+      spawnFn: () => ({
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),
+        stdin: { end() {} },
+        stderr: {
+          on: (ev, cb) => {
+            if (ev === 'data') cb(Buffer.from('HTTP 401 Unauthorized: invalid API key secret'));
+          },
+        },
+      }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({
+      ok: false,
+      reason: 'credential_invalid',
+      detail:
+        'The pinned agent credential was rejected; rotate it at the selected credential scope',
+    });
+    const failedEvent = deps.store.calls.find(
+      ([operation, input]) => operation === 'appendEvent' && input.type === 'v2.stage.failed',
+    );
+    expect(failedEvent?.[1].summary).not.toContain('secret');
+  });
+
   it('treats a Kiro empty-final-completion crash as success (work already done)', async () => {
     // kiro-cli exits non-zero after the turn's work because it ended with an
     // empty final message; its ACP reports "Kiro failed to generate a response".

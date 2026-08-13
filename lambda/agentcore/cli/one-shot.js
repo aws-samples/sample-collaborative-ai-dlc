@@ -28,6 +28,7 @@ import { parseOpenCodeJsonl } from './opencode-parser.js';
 import { parseCodexJsonl } from './codex-parser.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from './codex-store.js';
+import { isCredentialFailure } from './credential-errors.js';
 
 // Extract the assistant text + token usage from Claude's `--output-format
 // stream-json` stdout (one JSON event per line). Per the headless CLI docs the
@@ -91,8 +92,8 @@ const stripAnsi = (text = '') =>
 
 // Run one prompt, capture one answer. `requestedCli`/`cliModels` carry the
 // same Admin/project selection the orchestrator forwards for stages; `env`
-// supplies auth (AWS_BEARER_TOKEN_BEDROCK / KIRO_API_KEY, resolved at
-// container boot). `cwd` defaults to /tmp so a Kiro one-shot's throwaway
+// supplies invocation-scoped auth (AWS_BEARER_TOKEN_BEDROCK / KIRO_API_KEY).
+// `cwd` defaults to /tmp so a Kiro one-shot's throwaway
 // conversation lands in its own cwd group and never collides with the
 // workspace session run-stage resumes by cwd. `timeoutMs` bounds the call —
 // a hung CLI must never wedge the derive command. Failure results carry a
@@ -171,6 +172,18 @@ export const runOneShotPrompt = async ({
     };
   }
   if (exitCode !== 0) {
+    const diagnostic = `${stdout ?? ''}\n${stderr ?? ''}`;
+    if (isCredentialFailure(diagnostic)) {
+      return {
+        ok: false,
+        reason: 'credential_invalid',
+        text: '',
+        cli,
+        model: model ?? null,
+        exitCode,
+        metrics: null,
+      };
+    }
     return {
       ok: false,
       reason: 'cli_failed',

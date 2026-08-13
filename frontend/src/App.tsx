@@ -46,6 +46,7 @@ const IntentComposePage = lazy(() => import('./pages/IntentComposePage'));
 const IntentObservabilityPage = lazy(() => import('./pages/IntentObservabilityPage'));
 const IntentGraphPage = lazy(() => import('./pages/IntentGraphPage'));
 const IntentAuditPage = lazy(() => import('./pages/IntentAuditPage'));
+const AccountSettings = lazy(() => import('./pages/AccountSettings'));
 
 // Minimal route-transition fallback — chunk loads are fast (same-origin,
 // HTTP-cached); a spinner flash would be noisier than a brief blank pane.
@@ -100,6 +101,7 @@ function App() {
                   }
                 >
                   <Route path="/dashboard" element={<Dashboard />} />
+                  <Route path="/account/settings" element={<AccountSettings />} />
                   <Route
                     path="/admin"
                     element={

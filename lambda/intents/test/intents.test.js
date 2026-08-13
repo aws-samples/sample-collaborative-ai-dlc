@@ -22,7 +22,7 @@ import {
   SendDurableExecutionCallbackSuccessCommand,
   StopDurableExecutionCommand,
 } from '@aws-sdk/client-lambda';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { SSMClient, GetParameterCommand, GetParametersCommand } from '@aws-sdk/client-ssm';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -333,7 +333,26 @@ beforeAll(async () => {
   vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
-  ({ handler } = await import('../index.js'));
+  const imported = await import('../index.js');
+  const realHandler = imported.handler;
+  // Existing lifecycle tests are not about CLI selection. Give their DRAFT
+  // Start requests an explicit selection while leaving `{}` available to the
+  // dedicated required-selection test below.
+  handler = (event) => {
+    const { __noDefaultAgentCli, ...request } = event ?? {};
+    if (!request.path?.endsWith('/start') || __noDefaultAgentCli) {
+      return realHandler(request);
+    }
+    try {
+      const parsed = request.body ? JSON.parse(request.body) : {};
+      return realHandler({
+        ...request,
+        body: JSON.stringify({ agentCli: 'kiro', ...parsed }),
+      });
+    } catch {
+      return realHandler(request);
+    }
+  };
 
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
   conn = new gremlin.driver.DriverRemoteConnection(url);
@@ -359,6 +378,14 @@ beforeEach(() => {
   sourceControlValidationResponse = { ready: true, repositories: [] };
   sourceControlOperationHandler = null;
   ssmMock.reset();
+  vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+  ssmMock.on(GetParametersCommand).callsFake((input) => ({
+    Parameters: (input.Names ?? [])
+      .filter((name) =>
+        ['/collab/dev/bedrock-bearer-token', '/collab/dev/kiro-api-key'].includes(name),
+      )
+      .map((Name) => ({ Name, Value: `${Name}-value` })),
+  }));
   agentcoreMock.reset();
   attachmentUpdateConflict = null;
   archiveArtifactsSpy.mockClear();
@@ -572,8 +599,9 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.prompt).toBe('Build X');
     expect(intent.repos).toEqual(['owner/repo']);
     expect(intent.branch).toBe('aidlc/i'); // slug of the title 'I'
-    // Project run-config snapshotted onto the intent at create.
-    expect(intent.agentCli).toBe('kiro');
+    // CLI selection is deferred until Start; model config is still pinned at create.
+    expect(intent.agentCli).toBeNull();
+    expect(intent.credentialSource).toBeNull();
     expect(intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(intent.parkReleaseSeconds).toBe(120);
     // WP5: lane concurrency cap snapshotted; the ladder decision starts unset.
@@ -1633,7 +1661,7 @@ describe('POST /compose — composer sessions', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intentId}/compose`,
       pathParameters: { projectId, intentId },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ agentCli: 'kiro', ...body }),
       ...claims(sub),
     });
 
@@ -1687,6 +1715,8 @@ describe('POST /compose — composer sessions', () => {
         mode: 'front',
         workflowId: 'aidlc-v2',
         instructions: 'be lean',
+        requestedCli: 'kiro',
+        credentialBinding: { provider: 'kiro', source: 'platform' },
       });
       expect(payload.prompt).toContain('Do something ambiguous');
     } finally {
@@ -1869,7 +1899,13 @@ describe('POST /recompose — in-flight reshape', () => {
       (await createIntent(sub, projectId, { title: 'I', prompt: 'X', scope: 'feature' })).body,
     );
     const k = keyOf(`EXEC#${intent.id}`, 'META');
-    procStore.set(k, { ...procStore.get(k), status, ...metaOver });
+    procStore.set(k, {
+      ...procStore.get(k),
+      status,
+      agentCli: 'kiro',
+      credentialBinding: { provider: 'kiro', source: 'platform' },
+      ...metaOver,
+    });
     for (const row of rows) {
       procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${row.stageInstanceId}`), {
         pk: `EXEC#${intent.id}`,
@@ -2115,6 +2151,22 @@ describe('POST /recompose — in-flight reshape', () => {
 });
 
 describe('POST /start', () => {
+  it('requires an explicit CLI for a fresh DRAFT', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: '{}',
+      __noDefaultAgentCli: true,
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('agent_cli_required');
+  });
+
   it('returns typed SOURCE_CONTROL_NOT_READY before mutating intent state', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -2174,7 +2226,15 @@ describe('POST /start', () => {
       ...claims(sub),
     });
     expect(res.statusCode).toBe(202);
-    expect(JSON.parse(res.body).status).toBe('CREATED');
+    expect(JSON.parse(res.body)).toMatchObject({
+      status: 'CREATED',
+      agentCli: 'kiro',
+      credentialSource: 'platform',
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).credentialBinding).toEqual({
+      provider: 'kiro',
+      source: 'platform',
+    });
     const calls = orchestratorInvokes();
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
@@ -2214,6 +2274,8 @@ describe('POST /start', () => {
       ).body,
     );
     expect(after.intent.status).toBe('DRAFT');
+    expect(after.intent.agentCli).toBeNull();
+    expect(after.intent.credentialSource).toBeNull();
     // Retry now succeeds (invoke mock is back to resolving).
     const retry = await handler({
       httpMethod: 'POST',
@@ -2223,6 +2285,37 @@ describe('POST /start', () => {
     });
     expect(retry.statusCode).toBe(202);
     expect(JSON.parse(retry.body).status).toBe('CREATED');
+  });
+
+  it('pins the starter personal credential over space and platform', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    ssmMock.on(GetParametersCommand).callsFake((input) => ({
+      Parameters: (input.Names ?? [])
+        .filter((name) =>
+          [
+            '/collab/dev/kiro-api-key',
+            `/collab/dev/projects/${projectId}/agent-credentials/kiro-api-key`,
+            `/collab/dev/users/${sub}/agent-credentials/kiro-api-key`,
+          ].includes(name),
+        )
+        .map((Name) => ({ Name, Value: `${Name}-value` })),
+    }));
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).credentialSource).toBe('user');
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).credentialBinding).toEqual({
+      provider: 'kiro',
+      source: 'user',
+      userId: sub,
+    });
   });
 
   const setStatus = (intentId, status) => {

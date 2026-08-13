@@ -40,6 +40,7 @@ import {
 import {
   Loader2,
   MoreHorizontal,
+  Bot,
   Play,
   Trash2,
   TriangleAlert,
@@ -52,6 +53,17 @@ import {
 // IntentActivityPanel where output/timeline/discussions render).
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
+const AGENT_CLI_LABELS = {
+  kiro: 'Kiro',
+  claude: 'Claude Code',
+  opencode: 'OpenCode',
+  codex: 'Codex',
+} as const;
+const CREDENTIAL_SOURCE_LABELS = {
+  user: 'Personal',
+  space: 'Space',
+  platform: 'Platform',
+} as const;
 
 export default function IntentView() {
   const {
@@ -224,6 +236,15 @@ export default function IntentView() {
             {intent.title || 'Intent'}
           </h1>
           {intent.scope && <ScopeBadge scope={intent.scope} className="shrink-0" />}
+          {intent.agentCli && (
+            <Badge variant="outline" className="gap-1 text-[10px] shrink-0">
+              <Bot className="h-3 w-3" />
+              {AGENT_CLI_LABELS[intent.agentCli]}
+              {intent.credentialSource
+                ? ` · ${CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                : ''}
+            </Badge>
+          )}
           {TERMINAL_STATUSES.has(intent.status) && (
             <Badge variant="outline" className="text-[10px] shrink-0">
               {intent.status}

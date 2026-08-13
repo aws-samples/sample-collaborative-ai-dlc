@@ -407,7 +407,11 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
       # key, derive enrichment mode, model pricing) via Admin UI
       {
         Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter"]
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:PutParameter",
+        ]
         Resource = [
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
@@ -429,6 +433,22 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           # Token→USD price table, refreshed from the Price List API on model
           # discovery and read by the intents lambda to compute cost.
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
+        ]
+      },
+      {
+        # User and space agent credentials. These are the only agent settings
+        # deleted when cleared; platform parameters retain their Terraform-
+        # managed path and use the existing placeholder sentinel.
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+        ]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
         ]
       },
       # GLOBAL-tier MCP secrets (one SecureString per referenced ${VAR}). The
@@ -2106,6 +2126,18 @@ resource "aws_iam_role_policy" "intents" {
           # Token→USD price table (written by the agents lambda) — read to attach
           # cost to the intent's metric samples in the detail/rollup DTOs.
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/model-pricing",
+        ]
+      },
+      {
+        # Resolve user > space > platform agent credentials for pre-start
+        # composition and bind the selected source when an intent starts.
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
         ]
       },
       {

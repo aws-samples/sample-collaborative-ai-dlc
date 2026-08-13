@@ -66,6 +66,10 @@ import {
 } from '../shared/artifact-versioning.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
+import {
+  credentialProviderForCli,
+  resolveEffectiveCredentialBindings,
+} from '../shared/agent-credentials.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
@@ -111,6 +115,40 @@ const attachmentCleanup = createAttachmentCleanupService({
 });
 const attachmentEventKey = /^intent-attachments\/staging\/([^/]+)\/([^.]+)(\.[a-z0-9]+)$/i;
 const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
+
+const resolveSelectedAgentCredential = async ({ projectId, userId, agentCli }) => {
+  const provider = credentialProviderForCli(agentCli);
+  if (!provider) {
+    return {
+      error: {
+        statusCode: 400,
+        body: {
+          error: `Unsupported agent CLI "${agentCli || ''}"`,
+          code: 'unsupported_agent_cli',
+        },
+      },
+    };
+  }
+  const bindings = await resolveEffectiveCredentialBindings(ssm, {
+    base: AGENT_SETTINGS_SSM_PREFIX(),
+    projectId,
+    userId,
+  });
+  const credentialBinding = bindings[provider];
+  if (!credentialBinding) {
+    return {
+      error: {
+        statusCode: 409,
+        body: {
+          error: `No ${provider === 'kiro' ? 'Kiro' : 'Bedrock'} credential is available for this CLI`,
+          code: 'agent_credential_required',
+          provider,
+        },
+      },
+    };
+  }
+  return { provider, credentialBinding };
+};
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
 // its DynamoDB reservation, copy the exact object version from staging to the
@@ -756,9 +794,6 @@ const fetchProjectConfig = async (g, projectId) => {
     // Per-project stage-skipping override ('default'|'enabled'|'disabled');
     // 'default' inherits the platform SSM setting (shared/stage-skip.js).
     stageSkipping: getVal(v, 'stage_skipping') || 'default',
-    // The project's selected agent CLI (defaults to kiro on the project vertex);
-    // snapshotted onto the intent so the run honours the explicit choice.
-    agentCli: getVal(v, 'agent_cli') || null,
     cliModels: Object.keys(cliModels).length ? cliModels : null,
     tierModels: Object.keys(tierModels).length ? tierModels : null,
     mcpServersByTier: hasMcpServers ? mcpServersByTier : null,
@@ -1129,6 +1164,7 @@ const mapIntent = (meta) => ({
   failureReason: meta.failureReason ?? null,
   rewindFromStageId: meta.rewindFromStageId ?? null,
   agentCli: meta.agentCli ?? null,
+  credentialSource: meta.credentialBinding?.source ?? null,
   cliModels: meta.cliModels ?? null,
   tierModels: meta.tierModels ?? null,
   parkReleaseSeconds: meta.parkReleaseSeconds ?? null,
@@ -2107,6 +2143,26 @@ export const handler = async (event) => {
       // plan below — a grid and an overlay that are individually fine can
       // still starve each other's stages.
       const startData = body ? JSON.parse(body) : {};
+      let selectedAgentCli = meta.agentCli ?? null;
+      let selectedCredentialBinding = meta.credentialBinding ?? null;
+      if (meta.status === 'DRAFT') {
+        selectedAgentCli = typeof startData.agentCli === 'string' ? startData.agentCli.trim() : '';
+        if (!selectedAgentCli) {
+          return response(400, {
+            error: 'Select an agent CLI before starting the intent',
+            code: 'agent_cli_required',
+          });
+        }
+        const resolved = await resolveSelectedAgentCredential({
+          projectId,
+          userId: sub,
+          agentCli: selectedAgentCli,
+        });
+        if (resolved.error) {
+          return response(resolved.error.statusCode, resolved.error.body);
+        }
+        selectedCredentialBinding = resolved.credentialBinding;
+      }
       let skipOverride; // undefined = untouched
       let gridOverride; // undefined = untouched
       if (startData.composedGrid !== undefined) {
@@ -2194,6 +2250,12 @@ export const handler = async (event) => {
           startedBy: starter.sub,
           starterName: starter.displayName,
           starterEmail: starter.email,
+          ...(priorStatus === 'DRAFT'
+            ? {
+                agentCli: selectedAgentCli,
+                credentialBinding: selectedCredentialBinding,
+              }
+            : {}),
           // Launch-time skip override (validated above; undefined = untouched).
           ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
           ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
@@ -2224,6 +2286,12 @@ export const handler = async (event) => {
           status: priorStatus,
           fromStatus: 'CREATED',
           startedAt: meta.startedAt,
+          ...(priorStatus === 'DRAFT'
+            ? {
+                agentCli: meta.agentCli ?? null,
+                credentialBinding: meta.credentialBinding ?? null,
+              }
+            : {}),
         });
         throw err;
       }
@@ -2474,6 +2542,8 @@ export const handler = async (event) => {
       const reportKey =
         typeof data.reportKey === 'string' && data.reportKey ? data.reportKey : null;
       const mode = data.mode === 'inflight' ? 'inflight' : reportKey ? 'report' : 'front';
+      let requestedCli = meta.agentCli ?? null;
+      let credentialBinding = meta.credentialBinding ?? null;
       if (mode === 'inflight') {
         if (!['WAITING', 'FAILED'].includes(meta.status)) {
           return response(409, {
@@ -2487,8 +2557,31 @@ export const handler = async (event) => {
             code: 'autonomous_construction',
           });
         }
+        if (!requestedCli) {
+          return response(409, {
+            error: 'This intent has no pinned agent CLI',
+            code: 'agent_cli_required',
+          });
+        }
       } else if (meta.status !== 'DRAFT') {
         return response(409, { error: `Intent is ${meta.status}, compose applies to DRAFT only` });
+      } else {
+        requestedCli = typeof data.agentCli === 'string' ? data.agentCli.trim() : '';
+        if (!requestedCli) {
+          return response(400, {
+            error: 'Select an agent CLI before composing with AI',
+            code: 'agent_cli_required',
+          });
+        }
+        const resolved = await resolveSelectedAgentCredential({
+          projectId,
+          userId: sub,
+          agentCli: requestedCli,
+        });
+        if (resolved.error) {
+          return response(resolved.error.statusCode, resolved.error.body);
+        }
+        credentialBinding = resolved.credentialBinding;
       }
       if (!meta.prompt && !meta.title) {
         return response(400, { error: 'Give the intent a prompt (or title) before composing' });
@@ -2656,6 +2749,8 @@ export const handler = async (event) => {
                 workflowId: meta.workflowId,
                 workflowVersion: meta.workflowVersion,
                 prompt: intentText,
+                requestedCli,
+                ...(credentialBinding ? { credentialBinding } : {}),
                 ...(instructions ? { instructions } : {}),
                 ...(repoSignals ? { repoSignals } : {}),
                 ...(reportExcerpt ? { reportExcerpt } : {}),
@@ -4267,7 +4362,6 @@ export const handler = async (event) => {
         repos: cfg.repos,
         repoProviders: cfg.repoProviders,
         gitProvider: cfg.gitProvider,
-        agentCli: cfg.agentCli,
         cliModels: cfg.cliModels,
         tierModels: cfg.tierModels,
         mcpServersByTier: cfg.mcpServersByTier,

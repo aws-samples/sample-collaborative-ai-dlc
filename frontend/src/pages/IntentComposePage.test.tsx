@@ -43,6 +43,13 @@ vi.mock('@/services/intents', () => ({
   },
 }));
 
+const getProjectCapabilities = vi.fn();
+vi.mock('@/services/agents', () => ({
+  agentsService: {
+    getProjectCapabilities: (...a: unknown[]) => getProjectCapabilities(...a),
+  },
+}));
+
 const compiled = vi.fn();
 const executionPreview = vi.fn();
 const validateGrid = vi.fn();
@@ -153,6 +160,27 @@ describe('IntentComposePage', () => {
     listComposes.mockReset().mockResolvedValue({ composes: [] });
     composeReportUpload.mockReset();
     attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
+    getProjectCapabilities.mockReset().mockResolvedValue({
+      available: ['kiro', 'claude'],
+      runtimeClis: [
+        {
+          cli: 'kiro',
+          installed: true,
+          authed: true,
+          available: true,
+          credentialSource: 'user',
+        },
+        {
+          cli: 'claude',
+          installed: true,
+          authed: true,
+          available: true,
+          credentialSource: 'space',
+        },
+        { cli: 'opencode', installed: true, authed: false, available: false },
+        { cli: 'codex', installed: false, authed: false, available: false },
+      ],
+    });
     flushDraft.mockReset().mockResolvedValue(undefined);
     reloadIntent.mockReset().mockResolvedValue(undefined);
     setSkipStageIds.mockReset();
@@ -299,10 +327,11 @@ describe('IntentComposePage', () => {
   it('Start flushes the shared draft first, then launches and navigates', async () => {
     const user = userEvent.setup();
     renderPage();
+    await user.click(await screen.findByTestId('agent-cli-kiro'));
     const startBtn = await screen.findByTestId('start-intent');
     await waitFor(() => expect(startBtn).toBeEnabled());
     await user.click(startBtn);
-    await waitFor(() => expect(start).toHaveBeenCalledWith('p1', 'i1'));
+    await waitFor(() => expect(start).toHaveBeenCalledWith('p1', 'i1', { agentCli: 'kiro' }));
     expect(flushDraft.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]);
     expect(start.mock.invocationCallOrder[0]).toBeLessThan(
       reloadIntent.mock.invocationCallOrder[0],
@@ -320,11 +349,22 @@ describe('IntentComposePage', () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByTestId('compose-panel');
+    await user.click(screen.getByTestId('agent-cli-kiro'));
     await user.type(screen.getByTestId('compose-instructions'), 'keep it lean');
     await user.click(screen.getByTestId('compose-start'));
     await waitFor(() =>
-      expect(compose).toHaveBeenCalledWith('p1', 'i1', { instructions: 'keep it lean' }),
+      expect(compose).toHaveBeenCalledWith('p1', 'i1', {
+        agentCli: 'kiro',
+        instructions: 'keep it lean',
+      }),
     );
+  });
+
+  it('requires an explicit CLI selection before Compose or Start', async () => {
+    renderPage();
+    expect(await screen.findByTestId('compose-start')).toBeDisabled();
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+    expect(screen.getByText('Select an agent CLI to continue')).toBeInTheDocument();
   });
 
   it('applying a matched proposal writes the scope into the shared draft and clears any grid', async () => {
