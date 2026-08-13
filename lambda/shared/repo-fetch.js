@@ -29,15 +29,16 @@ const stripTopLevel = (name) => {
 };
 
 // Streams the gzipped tarball through the extractor, collecting file entries
-// whose repo-relative path starts with `core/`. Returns a Map<path, string>.
-const extractCoreFiles = (gzBuffer) =>
+// whose repo-relative path starts with one of `prefixes`. Returns Map<path, Buffer>.
+const extractFiles = (gzBuffer, prefixes) =>
   new Promise((resolve, reject) => {
     const files = new Map();
     const extract = tar.extract();
 
     extract.on('entry', (header, stream, next) => {
       const rel = stripTopLevel(header.name);
-      const keep = header.type === 'file' && rel && rel.startsWith('core/');
+      const keep =
+        header.type === 'file' && rel && prefixes.some((prefix) => rel.startsWith(prefix));
       if (!keep) {
         stream.on('end', next);
         stream.resume();
@@ -46,7 +47,7 @@ const extractCoreFiles = (gzBuffer) =>
       const chunks = [];
       stream.on('data', (c) => chunks.push(c));
       stream.on('end', () => {
-        files.set(rel, Buffer.concat(chunks).toString('utf8'));
+        files.set(rel, Buffer.concat(chunks));
         next();
       });
       stream.on('error', reject);
@@ -61,26 +62,36 @@ const extractCoreFiles = (gzBuffer) =>
     gunzip.end(gzBuffer);
   });
 
-// Downloads + extracts the repo's core/ files at `ref`. Throws on any failure.
-const fetchCoreFiles = async (ref) => {
+const fetchRepoFiles = async (ref, { prefixes }) => {
   if (!ref || typeof ref !== 'string') {
     throw new Error('repo-fetch: a ref (commit SHA, tag, or branch) is required');
   }
+  if (!Array.isArray(prefixes) || prefixes.length === 0) {
+    throw new Error('repo-fetch: at least one path prefix is required');
+  }
   const url = tarballUrl(ref);
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'aidlc-seed-blocks', Accept: 'application/x-gzip' },
+    headers: { 'User-Agent': 'collaborative-ai-dlc', Accept: 'application/x-gzip' },
     redirect: 'follow',
   });
   if (!res.ok) {
     throw new Error(`repo-fetch: ${url} returned ${res.status} ${res.statusText}`);
   }
   const gzBuffer = Buffer.from(await res.arrayBuffer());
-  const files = await extractCoreFiles(gzBuffer);
+  const files = await extractFiles(gzBuffer, prefixes);
   if (files.size === 0) {
-    throw new Error(`repo-fetch: no core/ files found in tarball for ref ${ref}`);
+    throw new Error(
+      `repo-fetch: no files found for prefixes ${prefixes.join(', ')} in tarball for ref ${ref}`,
+    );
   }
   return files;
 };
 
-export { fetchCoreFiles, tarballUrl, REPO_OWNER, REPO_NAME };
-export default { fetchCoreFiles, tarballUrl, REPO_OWNER, REPO_NAME };
+// Downloads + extracts the repo's core/ files at `ref`. Throws on any failure.
+const fetchCoreFiles = async (ref) => {
+  const files = await fetchRepoFiles(ref, { prefixes: ['core/'] });
+  return new Map([...files].map(([path, body]) => [path, body.toString('utf8')]));
+};
+
+export { fetchCoreFiles, fetchRepoFiles, extractFiles, tarballUrl, REPO_OWNER, REPO_NAME };
+export default { fetchCoreFiles, fetchRepoFiles, extractFiles, tarballUrl, REPO_OWNER, REPO_NAME };

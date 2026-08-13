@@ -291,6 +291,9 @@ const buildExecutionMeta = ({
   status = 'CREATED',
   workflowId,
   workflowVersion,
+  // Commit-pinned native AI-DLC distribution used by this intent. Export
+  // prefers this snapshot over the deployment's current baseline ref.
+  aidlcRepoRef = null,
   scope = null,
   currentPhase = null,
   currentStage = null,
@@ -427,6 +430,7 @@ const buildExecutionMeta = ({
   status,
   workflowId,
   workflowVersion,
+  aidlcRepoRef,
   scope,
   currentPhase,
   currentStage,

@@ -1,4 +1,5 @@
 import { api } from './api';
+import type { AgentCli } from './projects';
 
 // AI-DLC v2 intents — the v2 unit of work (the v1 sprint analog). An intent
 // runs a compiled workflow's stages through dynamic phases. Process/runtime
@@ -53,11 +54,13 @@ export interface Intent {
   gitProvider?: string | null;
   workflowId: string;
   workflowVersion: number | null;
+  aidlcRepoRef?: string | null;
   scope: string | null;
   currentPhase: string | null;
   currentStage: string | null;
   pendingHumanTaskId: string | null;
   failureReason: string | null;
+  agentCli?: AgentCli | null;
   // Set when the run was relaunched from a mid-plan stage (steering rewind).
   rewindFromStageId?: string | null;
   cliModels: Record<string, string> | null;
@@ -108,6 +111,29 @@ export interface IntentAttachmentUpload {
   fields: Record<string, string>;
   expiresIn: number;
 }
+
+export interface NativeWorkflowExport {
+  exportId: string;
+  filename: string;
+  downloadUrl: string;
+  expiresAt: string;
+  warnings: string[];
+  setup: {
+    workspaceLayout: 'flat' | 'spaces';
+    mode: 'extract-only' | 'workspace-sync' | 'manual-clone';
+    harnessDir: string | null;
+    syncCommand?: string;
+    launchCommand: string | null;
+    continueCommand: string;
+    repositories: Array<{
+      name: string;
+      url: string;
+      branch: string;
+    }>;
+  };
+}
+
+export type NativeExportHarness = AgentCli | 'kiro-ide';
 
 // Shape mirrors the plan resolver's error objects (lambda/shared/v2-execution-plan.js).
 export interface PlanWarning {
@@ -999,6 +1025,11 @@ export const intentsService = {
   ) => api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
   cancel: (projectId: string, intentId: string) =>
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
+  exportWorkflow: (projectId: string, intentId: string, harness?: NativeExportHarness) =>
+    api.post<NativeWorkflowExport>(
+      `/projects/${projectId}/intents/${intentId}/export`,
+      harness ? { harness } : {},
+    ),
   // Permanent delete: removes the intent's graph data, process state and
   // realtime docs. Owner/admin only; refused (409) while RUNNING.
   delete: (projectId: string, intentId: string) =>

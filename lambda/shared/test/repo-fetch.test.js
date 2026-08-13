@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import zlib from 'node:zlib';
 import tar from 'tar-stream';
-import { fetchCoreFiles, tarballUrl } from '../repo-fetch.js';
+import { fetchCoreFiles, fetchRepoFiles, tarballUrl } from '../repo-fetch.js';
 
 // Builds a gzipped tarball whose entries are nested under a top-level
 // `<repo>-<ref>/` dir, mirroring GitHub's codeload archive layout.
@@ -67,10 +67,24 @@ describe('fetchCoreFiles', () => {
   it('hard-fails when the tarball has no core/ files', async () => {
     const tarball = await makeTarball({ 'README.md': 'only readme' });
     mockFetchReturning(tarball);
-    await expect(fetchCoreFiles('abc123')).rejects.toThrow(/no core\/ files/);
+    await expect(fetchCoreFiles('abc123')).rejects.toThrow(/no files found for prefixes core\//);
   });
 
   it('requires a ref', async () => {
     await expect(fetchCoreFiles('')).rejects.toThrow(/ref/);
+  });
+});
+
+describe('fetchRepoFiles', () => {
+  it('returns binary-safe files from all requested prefixes', async () => {
+    const tarball = await makeTarball({
+      'core/stages/a.md': '# Stage A',
+      'dist/codex/AGENTS.md': '# Codex',
+      'README.md': 'ignored',
+    });
+    mockFetchReturning(tarball);
+    const files = await fetchRepoFiles('abc123', { prefixes: ['core/', 'dist/codex/'] });
+    expect(Buffer.isBuffer(files.get('core/stages/a.md'))).toBe(true);
+    expect(files.get('dist/codex/AGENTS.md').toString('utf8')).toContain('Codex');
   });
 });

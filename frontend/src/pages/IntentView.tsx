@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
-import { intentsService } from '@/services/intents';
+import {
+  intentsService,
+  type NativeExportHarness,
+  type NativeWorkflowExport,
+} from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
@@ -37,7 +41,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
+  Check,
+  ChevronDown,
+  Download,
   Loader2,
   MoreHorizontal,
   Play,
@@ -53,6 +61,22 @@ import {
 // IntentActivityPanel where output/timeline/discussions render).
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
+const EXPORTABLE_STATUSES = new Set(['DRAFT', 'WAITING', 'FAILED', 'CANCELLED', 'SUCCEEDED']);
+const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
+  { value: 'claude', label: 'Claude' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'kiro', label: 'Kiro CLI' },
+  { value: 'kiro-ide', label: 'Kiro IDE' },
+  { value: 'opencode', label: 'OpenCode' },
+];
+
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+
+const CommandBlock = ({ children }: { children: string }) => (
+  <pre className="mt-2 w-full min-w-0 max-w-full whitespace-pre-wrap break-all rounded-md bg-muted px-3 py-2 font-mono text-xs leading-relaxed">
+    <code>{children}</code>
+  </pre>
+);
 
 export default function IntentView() {
   const {
@@ -88,6 +112,12 @@ export default function IntentView() {
   const [deleting, setDeleting] = useState(false);
   const [confirmRepair, setConfirmRepair] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  const [confirmExport, setConfirmExport] = useState(false);
+  const [requestedExportHarness, setRequestedExportHarness] = useState<
+    NativeExportHarness | undefined
+  >();
+  const [exporting, setExporting] = useState(false);
+  const [constructionExport, setConstructionExport] = useState<NativeWorkflowExport | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // A stage failure retries from the earliest failed stage, preserving all
@@ -163,6 +193,40 @@ export default function IntentView() {
     }
   };
 
+  const handleExport = async (harness?: NativeExportHarness) => {
+    setConfirmExport(false);
+    setExporting(true);
+    setActionError(null);
+    try {
+      const result = await intentsService.exportWorkflow(projectId, intentId, harness);
+      const download = document.createElement('a');
+      download.href = result.downloadUrl;
+      download.download = result.filename;
+      download.rel = 'noopener';
+      document.body.append(download);
+      download.click();
+      download.remove();
+      const currentPhase = detail?.intent.currentPhase?.toLowerCase();
+      const hasActiveConstruction = detail?.stages.some(
+        (stage) =>
+          stage.phase?.toLowerCase() === 'construction' &&
+          ['RUNNING', 'WAITING_FOR_HUMAN'].includes(stage.state),
+      );
+      if (currentPhase === 'construction' || hasActiveConstruction) {
+        setConstructionExport(result);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to export workflow');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const requestExport = (harness?: NativeExportHarness) => {
+    setRequestedExportHarness(harness);
+    setConfirmExport(true);
+  };
+
   if (!projectId || !intentId) return <div className="p-6">Intent not found</div>;
   if (loading && !detail) {
     return (
@@ -208,6 +272,18 @@ export default function IntentView() {
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Deletable (destructive): owner/admin, any status except mid-RUNNING.
   const isDeletable = canDelete && intent.status !== 'RUNNING';
+  const isExportable = EXPORTABLE_STATUSES.has(intent.status);
+  const exportUnavailableReason =
+    intent.status === 'RUNNING'
+      ? 'Not available while workflow is running'
+      : intent.status === 'CREATED'
+        ? 'Not available while workflow is starting'
+        : 'Not available for this workflow status';
+  const exportDisabled = exporting || !isExportable;
+  const defaultExportHarness = intent.agentCli ?? undefined;
+  const exportCli =
+    EXPORT_HARNESSES.find((option) => option.value === defaultExportHarness)?.label ??
+    'native AI-DLC';
   // Pre-stage progress: before any stage row exists, init-ws lifecycle events
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
@@ -225,6 +301,21 @@ export default function IntentView() {
     intent.status === 'CREATED' &&
     !!lastTouch &&
     Date.now() - new Date(lastTouch).getTime() > 120_000;
+  const constructionSetup = constructionExport?.setup ?? null;
+  const exportDirectory = constructionExport?.filename.replace(/\.zip$/i, '') ?? 'aidlc-workspace';
+  const downloadedZip = constructionExport
+    ? `"$HOME/Downloads/${constructionExport.filename}"`
+    : '"$HOME/Downloads/aidlc-workspace.zip"';
+  const extractCommands = [
+    `mkdir ${shellQuote(exportDirectory)}`,
+    `cd ${shellQuote(exportDirectory)}`,
+    `unzip ${downloadedZip} -d .`,
+  ].join('\n');
+  const launchCommands = constructionSetup?.launchCommand
+    ? `${constructionSetup.launchCommand}\n# Then run inside the agent session:\n${constructionSetup.continueCommand}`
+    : constructionSetup
+      ? `# Open this directory in Kiro IDE, then run:\n${constructionSetup.continueCommand}`
+      : '';
 
   return (
     <div className="space-y-6">
@@ -247,6 +338,78 @@ export default function IntentView() {
             />
           )}
           <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
+          <div className="inline-flex h-7 shrink-0 overflow-hidden rounded-md border border-border/60">
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex" data-testid="workspace-export-harness">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-7 w-5 rounded-none border-r border-border/60 px-0"
+                          disabled={exportDisabled}
+                          aria-label="Choose workspace harness"
+                        >
+                          <ChevronDown className="h-3 w-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        {EXPORT_HARNESSES.map((option) => (
+                          <DropdownMenuItem
+                            key={option.value}
+                            disabled={exporting}
+                            onClick={() => requestExport(option.value)}
+                          >
+                            <span>{option.label}</span>
+                            {option.value === defaultExportHarness && (
+                              <Check className="ml-auto h-4 w-4" aria-label="Current harness" />
+                            )}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {exporting
+                    ? 'Preparing workspace…'
+                    : isExportable
+                      ? 'Choose workspace harness'
+                      : exportUnavailableReason}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex" data-testid="workspace-export-download">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 rounded-none"
+                      disabled={exportDisabled}
+                      onClick={() => requestExport()}
+                      aria-label={`Download ${exportCli} workspace`}
+                    >
+                      {exporting ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {exporting
+                    ? 'Preparing workspace…'
+                    : isExportable
+                      ? `Download ${exportCli} workspace`
+                      : exportUnavailableReason}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {intent.source && (
@@ -478,6 +641,140 @@ export default function IntentView() {
           <WorkProductsSection detail={detail} gates={gates} />
         </>
       )}
+
+      <AlertDialog
+        open={confirmExport}
+        onOpenChange={(open) => {
+          if (exporting) return;
+          setConfirmExport(open);
+          if (!open) setRequestedExportHarness(undefined);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Continue outside Collaborative AI-DLC?</AlertDialogTitle>
+            <AlertDialogDescription className="break-words">
+              This download creates a point-in-time workspace. Work completed locally, including
+              decisions, approvals, artifacts, and code changes, will not be synchronized back to
+              this intent or included in its traceability history.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={exporting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={exporting}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleExport(requestedExportHarness);
+              }}
+            >
+              {exporting ? 'Preparing workspace…' : 'Download workspace'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={constructionExport !== null}
+        onOpenChange={(open) => {
+          if (!open) setConstructionExport(null);
+        }}
+      >
+        <AlertDialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-x-hidden overflow-y-auto [&>*]:min-w-0">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Set up your local workspace</AlertDialogTitle>
+            <AlertDialogDescription>
+              The workspace download is in progress. Source code should be retrieved separately from
+              Git using your own credentials.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {constructionSetup?.mode === 'workspace-sync' && (
+            <ol className="list-decimal space-y-4 pl-5 text-sm">
+              <li>
+                Create an empty workspace directory and extract the downloaded ZIP:
+                <CommandBlock>{extractCommands}</CommandBlock>
+              </li>
+              <li>
+                Clone the repositories declared by the export:
+                <CommandBlock>{constructionSetup.syncCommand ?? ''}</CommandBlock>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  This reads <code>repos.json</code> and clones{' '}
+                  {constructionSetup.repositories.length === 1
+                    ? 'the repository'
+                    : `all ${constructionSetup.repositories.length} repositories`}
+                  {' on their declared intent branches.'}
+                </p>
+              </li>
+              <li>
+                Start the selected harness and continue AI-DLC:
+                <CommandBlock>{launchCommands}</CommandBlock>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Open this directory in your IDE. VS Code users may open{' '}
+                  <code>aidlc.code-workspace</code>.
+                </p>
+              </li>
+            </ol>
+          )}
+
+          {constructionSetup?.mode === 'manual-clone' && (
+            <ol className="list-decimal space-y-4 pl-5 text-sm">
+              <li>
+                Retrieve the source repository and its intent branch:
+                {constructionSetup.repositories.map((repository) => (
+                  <div key={repository.name} className="mt-3 space-y-3">
+                    <div>
+                      <p className="text-xs font-medium">Fresh clone</p>
+                      <CommandBlock>
+                        {[
+                          `git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.name)}`,
+                          `cd ${shellQuote(repository.name)}`,
+                        ].join('\n')}
+                      </CommandBlock>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium">Existing clone</p>
+                      <CommandBlock>
+                        {[
+                          `cd ${shellQuote(`/path/to/${repository.name}`)}`,
+                          'git fetch origin',
+                          `git switch ${shellQuote(repository.branch)}`,
+                          'git pull --ff-only',
+                        ].join('\n')}
+                      </CommandBlock>
+                    </div>
+                  </div>
+                ))}
+              </li>
+              <li>
+                From the repository root, extract the downloaded workspace:
+                <CommandBlock>{`unzip ${downloadedZip} -d .`}</CommandBlock>
+              </li>
+              <li>
+                Start the selected harness and continue AI-DLC:
+                <CommandBlock>{launchCommands}</CommandBlock>
+              </li>
+            </ol>
+          )}
+
+          {constructionSetup?.mode === 'extract-only' && (
+            <ol className="list-decimal space-y-4 pl-5 text-sm">
+              <li>
+                Create a project directory and extract the downloaded workspace:
+                <CommandBlock>{extractCommands}</CommandBlock>
+              </li>
+              <li>
+                Start the selected harness and continue AI-DLC:
+                <CommandBlock>{launchCommands}</CommandBlock>
+              </li>
+            </ol>
+          )}
+
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setConstructionExport(null)}>Done</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete confirmation */}
       <AlertDialog

@@ -304,6 +304,13 @@ Useful environment variables when iterating:
 | `AIDLC_BACKEND_FILE`  | Path to an alternative `.s3.tfbackend`                                              |
 | `AIDLC_CONFIG_DIR`    | Directory holding `environments/`, for Terraform configuration outside the checkout |
 
+Use `--skip-seed` when applying infrastructure-only changes that do not modify
+the upstream AI-DLC pin, baseline blocks, or default workflow:
+
+```bash
+./scripts/deploy-terraform.sh dev --skip-seed
+```
+
 </details>
 
 ## Post-install configuration
