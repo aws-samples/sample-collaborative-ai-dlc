@@ -798,6 +798,14 @@ resource "aws_iam_role_policy" "tool_status" {
       },
       {
         Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = aws_s3_bucket.build_context.arn
+        Condition = {
+          StringLike = { "s3:prefix" = ["managed-tools/contexts/*"] }
+        }
+      },
+      {
+        Effect   = "Allow"
         Action   = ["s3:GetObject"]
         Resource = "${aws_s3_bucket.build_context.arn}/managed-tools/contexts/*"
       },

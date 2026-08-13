@@ -534,7 +534,8 @@ export const executeReset = async ({
         .has('environment_id')
         .has('environment_id', P.neq('standard'))
         .property(cardinality.single, 'environment_id', 'standard')
-        .iterate();
+        .count()
+        .next();
     }
     for (const meta of activeIntents) {
       await cancelIntent({ meta, process, lambdaClient, runtimeClient, actor });

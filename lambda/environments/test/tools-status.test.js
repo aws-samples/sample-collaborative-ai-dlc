@@ -202,4 +202,22 @@ describe('managed tool build status', () => {
       failure: { reason: 'tool_build_failed' },
     });
   });
+
+  it('keeps a successful build pending until its result object is visible', async () => {
+    const store = mutableStore();
+    const missing = Object.assign(new Error('The specified key does not exist'), {
+      name: 'NoSuchKey',
+    });
+    const handler = createToolsStatusHandler({
+      store,
+      ecrClient: { send: vi.fn() },
+      s3Client: { send: vi.fn().mockRejectedValue(missing) },
+    });
+
+    const result = await handler(buildEvent);
+
+    expect(result).toMatchObject({ pending: true });
+    expect(store.current.status).toBe('BUILDING');
+    expect(store.updateVersion).not.toHaveBeenCalled();
+  });
 });

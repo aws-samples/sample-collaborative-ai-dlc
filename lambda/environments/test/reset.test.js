@@ -15,6 +15,8 @@ const graph = (projects = []) => {
     project: vi.fn(() => chain),
     by: vi.fn(() => chain),
     property: vi.fn(() => chain),
+    count: vi.fn(() => chain),
+    next: vi.fn().mockResolvedValue({ value: projects.length }),
     toList: vi.fn().mockResolvedValue(
       projects.map(
         ({ projectId, environmentId }) =>
@@ -24,7 +26,6 @@ const graph = (projects = []) => {
           ]),
       ),
     ),
-    iterate: vi.fn().mockResolvedValue(undefined),
   };
   return chain;
 };
@@ -161,6 +162,8 @@ describe('managed environment reset', () => {
       imagesDeleted: 1,
     });
     expect(g.property).toHaveBeenCalledWith(expect.anything(), 'environment_id', 'standard');
+    expect(g.count).toHaveBeenCalledOnce();
+    expect(g.next).toHaveBeenCalledOnce();
     expect(runtimeClient.send).toHaveBeenCalledTimes(2);
     expect(processStore.updateExecution).toHaveBeenCalledWith(
       expect.objectContaining({

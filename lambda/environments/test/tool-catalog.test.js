@@ -109,6 +109,9 @@ describe('managed tool catalog', () => {
     expect(context.files['build-tool.sh']).toContain('--security-opt no-new-privileges');
     expect(context.files['build-tool.sh']).toContain('--sysctl net.ipv6.conf.all.disable_ipv6=1');
     expect(context.files['build-tool.sh']).toContain('--network none');
+    expect(context.files['build-tool.sh']).toContain('dns_args+=(--dns "$resolver")');
+    expect(context.files['build-tool.sh']).toContain('-p udp -d "$resolver" --dport 53 -j ACCEPT');
+    expect(context.files['build-tool.sh']).toContain('-p tcp -d "$resolver" --dport 53 -j ACCEPT');
     expect(context.files['build-tool.sh']).not.toContain('--env AWS_ACCESS_KEY_ID');
     expect(context.files['build-tool.sh']).toContain('--user 65534:65534');
     expect(context.files['build-tool.sh']).toContain('"$core_ref" /workspace/fetch-source.mjs');

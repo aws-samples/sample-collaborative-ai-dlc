@@ -1004,8 +1004,24 @@ tool_ref="\${TOOL_REPOSITORY_URI}:\${TOOL_IMAGE_TAG}"
 validation_ref="managed-tool-validation:\${TOOL_IMAGE_TAG}"
 
 iptables -I DOCKER-USER 1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+readarray -t dns_resolvers < <(
+  awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ && $2 !~ /^127\\./ { print $2 }' /etc/resolv.conf
+)
+if (( \${#dns_resolvers[@]} == 0 )); then
+  dns_resolvers=(1.1.1.1 8.8.8.8)
+fi
+rule_position=2
+dns_args=()
+for resolver in "\${dns_resolvers[@]}"; do
+  iptables -I DOCKER-USER "$rule_position" -p udp -d "$resolver" --dport 53 -j ACCEPT
+  rule_position=$((rule_position + 1))
+  iptables -I DOCKER-USER "$rule_position" -p tcp -d "$resolver" --dport 53 -j ACCEPT
+  rule_position=$((rule_position + 1))
+  dns_args+=(--dns "$resolver")
+done
 for cidr in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4; do
-  iptables -I DOCKER-USER 2 -d "$cidr" -j REJECT
+  iptables -I DOCKER-USER "$rule_position" -d "$cidr" -j REJECT
+  rule_position=$((rule_position + 1))
 done
 
 retained_sha="$(jq -r '.retainedSource.sha256 // empty' manifest.json)"
@@ -1028,6 +1044,7 @@ else
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
     --read-only \
     --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+    "\${dns_args[@]}" \
     --env AWS_EC2_METADATA_DISABLED=true \
     --mount "type=bind,src=$context_dir/fetch-source.mjs,dst=/workspace/fetch-source.mjs,readonly" \
     --mount "type=bind,src=$context_dir/source-fetch,dst=/output" \
