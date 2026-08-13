@@ -183,6 +183,14 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':g3pk']).toBe('ACTIVE_EXECUTIONS');
   });
 
+  it('persists a validated workspace classification', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { projectType: 'greenfield' } });
+    await store.updateExecution({ executionId: 'e1', projectType: 'greenfield' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':pt']).toBe('greenfield');
+    expect(input.UpdateExpression).toContain('projectType = :pt');
+  });
+
   it('removes the sparse active projection on a terminal execution state', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'FAILED' } });
     await store.updateExecution({

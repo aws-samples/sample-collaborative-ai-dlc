@@ -52,6 +52,18 @@ export const OUTPUT_CONTRACT = [
   '- Do exactly THIS stage. Do not start other stages or invent status.',
 ].join('\n');
 
+const renderWorkspaceDetectionContract = (stageId) => {
+  if (stageId !== 'workspace-detection') return '';
+  return [
+    '## Workspace classification contract',
+    '',
+    'After scanning the workspace and deciding its project type, call',
+    '`record_project_type` exactly once with `greenfield` or `brownfield`.',
+    'Do this before `send_output`; the structured value is required by later',
+    'workflow stages and native workspace exports.',
+  ].join('\n');
+};
+
 // Render the resolved input artifacts as a prompt section. An `expectedAbsent`
 // input (its producer exists in the workflow but is out of the selected scope —
 // the plan resolver's scope-shortcut classification) is called out explicitly:
@@ -176,6 +188,8 @@ export const buildStagePrompt = ({
   // worded once-per-workflow) so the agent reads its lane boundary first.
   const unitScope = renderUnitScope(unit);
   if (unitScope) sections.push('', unitScope);
+  const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId);
+  if (workspaceDetectionContract) sections.push('', workspaceDetectionContract);
   sections.push(
     '',
     '## Stage instructions',
@@ -225,6 +239,7 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         V2_EXECUTION_ID: scope.executionId,
         V2_INTENT_ID: scope.intentId,
         V2_PROJECT_ID: scope.projectId ?? '',
+        V2_STAGE_ID: scope.stageId ?? '',
         V2_STAGE_INSTANCE_ID: scope.stageInstanceId ?? '',
         V2_SECTION_INDEX:
           scope.sectionIndex === undefined || scope.sectionIndex === null
