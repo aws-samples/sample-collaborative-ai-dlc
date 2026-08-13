@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import zlib from 'node:zlib';
 import tar from 'tar-stream';
-import { fetchCoreFiles, fetchRepoFiles, tarballUrl } from '../repo-fetch.js';
+import {
+  extractFiles,
+  fetchCoreFiles,
+  fetchRepoFiles,
+  responseToBuffer,
+  tarballUrl,
+} from '../repo-fetch.js';
 
 // Builds a gzipped tarball whose entries are nested under a top-level
 // `<repo>-<ref>/` dir, mirroring GitHub's codeload archive layout.
@@ -86,5 +92,51 @@ describe('fetchRepoFiles', () => {
     const files = await fetchRepoFiles('abc123', { prefixes: ['core/', 'dist/codex/'] });
     expect(Buffer.isBuffer(files.get('core/stages/a.md'))).toBe(true);
     expect(files.get('dist/codex/AGENTS.md').toString('utf8')).toContain('Codex');
+  });
+
+  it('rejects a response whose declared size exceeds the download limit', async () => {
+    await expect(
+      responseToBuffer(
+        {
+          headers: { get: () => '11' },
+          arrayBuffer: async () => Buffer.alloc(0),
+        },
+        10,
+      ),
+    ).rejects.toThrow(/tarball exceeds 10 bytes/);
+  });
+
+  it('rejects a streamed response that exceeds the download limit', async () => {
+    await expect(
+      responseToBuffer(
+        {
+          headers: { get: () => null },
+          body: {
+            async *[Symbol.asyncIterator]() {
+              yield Buffer.alloc(6);
+              yield Buffer.alloc(5);
+            },
+          },
+        },
+        10,
+      ),
+    ).rejects.toThrow(/tarball exceeds 10 bytes/);
+  });
+
+  it('bounds matching files while extracting the tarball', async () => {
+    const tarball = await makeTarball({
+      'dist/codex/a.txt': '123456',
+      'dist/codex/b.txt': '123456',
+    });
+    await expect(extractFiles(tarball, ['dist/codex/'], { maxRetainedBytes: 10 })).rejects.toThrow(
+      /matching files exceed 10 bytes/,
+    );
+  });
+
+  it('bounds the total expanded tarball size', async () => {
+    const tarball = await makeTarball({ 'README.md': 'x'.repeat(10_000) });
+    await expect(extractFiles(tarball, ['core/'], { maxUncompressedBytes: 1_000 })).rejects.toThrow(
+      /tarball expands beyond 1000 bytes/,
+    );
   });
 });
