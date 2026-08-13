@@ -283,6 +283,29 @@ const resolveRulesDir = ({ distributionFiles, harness }) => {
   return `${harnessDir}/${rulesSubdir}`;
 };
 
+const detectConstructionCapabilities = ({ distributionFiles, harness }) => {
+  const { harnessDir } = loadHarnessMetadata({ distributionFiles, harness });
+  const orchestrator = distributionFiles.get(`${harnessDir}/tools/aidlc-orchestrate.ts`);
+  const source = orchestrator?.toString('utf8') ?? '';
+  return {
+    perUnitIteration: source.includes('emitPerUnitRunStage'),
+  };
+};
+
+const shouldShowWorkspaceSetup = (stages = []) => {
+  const activeIndex = stages.findIndex((stage) => stage.marker === '-');
+  if (activeIndex < 0) {
+    return stages.some((stage) => stage.phase === 'construction' && stage.marker !== 'S');
+  }
+  const active = stages[activeIndex];
+  if (['construction', 'operation'].includes(active.phase)) return true;
+  if (active.phase !== 'inception') return false;
+  const nextExecutable = stages
+    .slice(activeIndex + 1)
+    .find((stage) => !['x', 'S'].includes(stage.marker));
+  return nextExecutable?.phase === 'construction';
+};
+
 const loadCustomRules = async ({ s3, bucket, harness, distributionFiles, customRules = [] }) => {
   const files = new Map();
   if (customRules.length === 0) return files;
@@ -459,6 +482,7 @@ const alignProjectionToDistribution = ({ projection, distributionFiles, harness 
         cloudStage?.outputArtifacts?.map((artifact) => artifact.artifact) ??
         nativeStage.produces ??
         [],
+      forEach: cloudStage?.forEach ?? nativeStage.for_each ?? null,
       ...cloudStage,
       excluded: cloudStage?.excluded ?? !cloudStage,
     };
@@ -523,6 +547,10 @@ const createNativeExport = async ({
     scope: alignedProjection.nativeScope,
   });
   const distributionFiles = registeredScope.files;
+  const constructionCapabilities = detectConstructionCapabilities({
+    distributionFiles,
+    harness,
+  });
   const customRuleFiles = await loadCustomRules({
     s3,
     bucket,
@@ -537,6 +565,15 @@ const createNativeExport = async ({
     workspaceLayout: distribution.workspaceLayout,
     now,
   });
+  const nextUnit = projected.manifest.construction?.nextUnit ?? null;
+  const effectiveWarnings = [...warnings];
+  if (nextUnit && !constructionCapabilities.perUnitIteration) {
+    effectiveWarnings.push(
+      `This pinned AI-DLC runtime predates deterministic per-unit Construction iteration. ` +
+        `The complete Bolt DAG is included; explicitly ask AI-DLC to continue Construction ` +
+        `with unit "${nextUnit}" when resuming.`,
+    );
+  }
   const files = new Map(distributionFiles);
   for (const [path, body] of customRuleFiles) files.set(path, body);
   for (const [path, body] of projected.files) files.set(path, Buffer.from(body));
@@ -547,7 +584,7 @@ const createNativeExport = async ({
       ...projected.manifest.native,
       scopeRegistered: registeredScope.registered,
     },
-    warnings,
+    warnings: effectiveWarnings,
     files: [...files]
       .filter(([path]) => path !== 'export-manifest.json')
       .map(([path, body]) => ({
@@ -596,13 +633,24 @@ const createNativeExport = async ({
     filename: `${projected.recordDir}-${harness}.zip`,
     downloadUrl,
     expiresAt: new Date(Date.parse(now) + DOWNLOAD_TTL_SECONDS * 1000).toISOString(),
-    warnings,
+    warnings: effectiveWarnings,
     setup: {
       workspaceLayout: distribution.workspaceLayout,
       mode: setupMode,
       harnessDir: harnessRootDir(harness),
       ...HARNESS_SESSION_COMMANDS[harness],
+      showWorkspaceSetup: shouldShowWorkspaceSetup(projected.stages),
       repositories: projected.manifest.repositories,
+      ...(projected.manifest.construction
+        ? {
+            construction: {
+              nextUnit,
+              completedUnits: projected.manifest.construction.completedUnits,
+              readyUnits: projected.manifest.construction.readyUnits,
+              perUnitIteration: constructionCapabilities.perUnitIteration,
+            },
+          }
+        : {}),
       ...(setupMode === 'workspace-sync' && harnessRootDir(harness)
         ? { syncCommand: `bun ${harnessRootDir(harness)}/tools/aidlc-workspace-sync.ts` }
         : {}),
@@ -617,6 +665,7 @@ export {
   alignProjectionToDistribution,
   buildZip,
   createNativeExport,
+  detectConstructionCapabilities,
   detectWorkspaceLayout,
   fetchAndCacheDistribution,
   loadDistribution,
@@ -624,6 +673,7 @@ export {
   registerNativeScope,
   resolveRulesDir,
   safeArchivePath,
+  shouldShowWorkspaceSetup,
 };
 
 export default { createNativeExport };
