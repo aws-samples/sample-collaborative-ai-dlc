@@ -124,6 +124,7 @@ beforeEach(() => {
       // Default: gate is answered (not pending) by the time we re-read it.
       getHumanTask: vi.fn(async () => ({ status: 'answered' })),
       appendEvent: vi.fn(async () => ({})),
+      putTrackerSync: vi.fn(async (args) => args),
       failRunningStageAttempt: vi.fn(async () => null),
       listUnits: vi.fn(async () => []),
       getUnit: vi.fn(async () => null),
@@ -137,6 +138,7 @@ beforeEach(() => {
     broadcast: vi.fn(async () => {}),
     openPr: vi.fn(async () => ({ skipped: true, reason: 'no_changes' })),
     comparePrBranches: vi.fn(async () => ({ status: 'unknown' })),
+    applicationUrl: 'https://aidlc.example.test/',
   };
   deps.invokeRuntime = makeRuntime(ctx, okScript);
 });
@@ -197,6 +199,13 @@ describe('orchestrator durable handler', () => {
     deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
       if (n === 1) return { ok: true }; // init-ws
       if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      expect(deps.store.updateExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executionId: 'i1',
+          status: 'RUNNING',
+          pendingHumanTaskId: null,
+        }),
+      );
       return { ok: true, state: 'SUCCEEDED' };
     });
 
@@ -518,6 +527,40 @@ describe('orchestrator durable handler', () => {
     // …and wrote no terminal status over the new run's META.
     const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status).filter(Boolean);
     expect(statuses).not.toContain('FAILED');
+  });
+
+  it('exits retired when cancel or rewind wins the unpark CAS', async () => {
+    const cas = Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' });
+    deps.store.updateExecution = vi.fn(async (input) => {
+      if (input.fromStatus === 'WAITING') throw cas;
+      return { orchestratorRunId: input.orchestratorRunId ?? null };
+    });
+    deps.store.getExecution
+      .mockResolvedValueOnce(META)
+      .mockResolvedValue({ ...META, status: 'WAITING' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.store.getHumanTask = vi.fn(async () => ({ status: 'answered' }));
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: false, reason: 'retired', humanTaskId: 'h1' });
+    expect(invokes.filter((p) => p.resumeFrom === 'h1')).toHaveLength(0);
+    expect(deps.store.updateExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'RUNNING',
+        fromStatus: 'WAITING',
+        ifOrchestratorRunId: expect.stringMatching(/^run-/),
+      }),
+    );
   });
 
   it('skips release when parkReleaseSeconds is null', async () => {
@@ -1552,6 +1595,9 @@ describe('PR per unit delivery', () => {
     const result = await start();
     expect(result.ok).toBe(true);
     expect(deps.unitPrProvider.createDraft).toHaveBeenCalledOnce();
+    expect(deps.unitPrProvider.createDraft.mock.calls[0][0].body).toContain(
+      '[AI-DLC](https://aidlc.example.test/space/p1/intent/i1) unit review for auth',
+    );
     expect(deps.unitPrProvider.setDraft).toHaveBeenCalledWith(
       expect.objectContaining({ number: 7, draft: false }),
     );
@@ -2390,6 +2436,7 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
       { slug: 'auth', state: 'MERGED' },
       { slug: 'billing', state: 'MERGED' },
     ]);
+    deps.applicationUrl = 'https://aidlc.example.test/';
     deps.openPr = vi.fn(async ({ repoId }) => ({
       prUrl: `https://github.com/${repoId}/pull/7`,
       prNumber: 7,
@@ -2406,7 +2453,9 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
       baseBranch: 'main',
       title: 'Bookstore API',
     });
-    expect(deps.openPr.mock.calls[0][0].body).toContain('Execution ID: i1');
+    expect(deps.openPr.mock.calls[0][0].body).toContain(
+      'created by [AI-DLC](https://aidlc.example.test/space/p1/intent/i1)',
+    );
     expect(deps.openPr.mock.calls[0][0].body).toContain('strategy: intent-pr');
     expect(deps.openPr.mock.calls[0][0].body).toContain('2 total, 2 merged');
     const opened = events().filter((e) => e.type === 'v2.pr.opened');
@@ -2432,11 +2481,94 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(recordCall.prs).toHaveLength(2);
     expect(recordCall.prs[0]).toMatchObject({
       repoId: 'o/r',
+      provider: 'github',
       prUrl: 'https://github.com/o/r/pull/7',
       prNumber: 7,
       branch: 'aidlc/i1',
       baseBranch: 'main',
     });
+  });
+
+  it('publishes final PR delivery for tracker-originated intents', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      title: 'Bookstore API',
+      source: {
+        bindingId: 'tb1',
+        provider: 'github-issues',
+        instance: 'public',
+        resourceId: '42',
+        resourceUrl: 'https://github.com/o/r/issues/42',
+      },
+    }));
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    expect(deps.store.putTrackerSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionId: 'i1',
+        projectId: 'p1',
+        intentId: 'i1',
+        intentTitle: 'Bookstore API',
+        source: expect.objectContaining({ bindingId: 'tb1', resourceId: '42' }),
+        pullRequests: [
+          expect.objectContaining({
+            provider: 'github',
+            repoId: 'owner/repo',
+            prNumber: 7,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('adds a native closing reference to final PRs from a repository issue', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      source: {
+        bindingId: 'tb1',
+        provider: 'github-issues',
+        instance: 'public',
+        resourceId: '42',
+        resourceUrl: 'https://github.com/owner/repo/issues/42',
+      },
+    }));
+    deps.openPr = vi.fn(async () => ({
+      prUrl: 'https://github.com/owner/repo/pull/7',
+      prNumber: 7,
+    }));
+
+    await start();
+
+    expect(deps.openPr.mock.calls[0][0].body.trim().endsWith('Closes #42')).toBe(true);
+  });
+
+  it('links Jira tasks without claiming the PR will close them', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      source: {
+        bindingId: 'tb-jira',
+        provider: 'jira-cloud',
+        instance: 'cloud-1',
+        resourceId: 'PROJ-42',
+        resourceUrl: 'https://acme.atlassian.net/browse/PROJ-42',
+      },
+    }));
+    deps.openPr = vi.fn(async () => ({
+      prUrl: 'https://github.com/owner/repo/pull/7',
+      prNumber: 7,
+    }));
+
+    await start();
+
+    const body = deps.openPr.mock.calls[0][0].body;
+    expect(body).toContain('Related task: [PROJ-42](https://acme.atlassian.net/browse/PROJ-42)');
+    expect(body).not.toContain('Closes PROJ-42');
   });
 
   it('emits v2.pr.recorded after a successful record-pr (so the UI refetches live)', async () => {

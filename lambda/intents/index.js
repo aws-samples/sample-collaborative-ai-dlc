@@ -67,6 +67,7 @@ import {
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
+import { mapWithConcurrency } from '../shared/concurrency.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
@@ -235,20 +236,6 @@ const ingestAttachmentUpload = async (event) => {
       );
     return;
   }
-};
-const mapWithConcurrency = async (items, limit, worker) => {
-  const results = Array.from({ length: items.length });
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
-    for (;;) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= items.length) return;
-      results[index] = await worker(items[index], index);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 };
 const composeReportPrefix = (intentId) => `compose-reports/${intentId}/`;
 const runtimeSessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');

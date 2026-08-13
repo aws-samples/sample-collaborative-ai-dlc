@@ -8,6 +8,11 @@ variable "environment" {
   type        = string
 }
 
+variable "application_url" {
+  description = "Canonical public URL for links back to the application"
+  type        = string
+}
+
 variable "vpc_id" {
   description = "VPC ID for Lambda functions"
   type        = string

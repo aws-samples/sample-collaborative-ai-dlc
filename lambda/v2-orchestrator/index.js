@@ -50,6 +50,7 @@ import {
   fanoutGateAddendum,
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
+import { buildIntentAttribution } from './pr-attribution.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const lambda = new LambdaClient({});
@@ -59,6 +60,7 @@ const defaultStore = createProcessStore({ ddb });
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
+const APPLICATION_URL = () => process.env.APPLICATION_URL;
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
@@ -202,6 +204,7 @@ const defaultDeps = () => ({
       operation: 'compare',
       args: { base, head },
     }),
+  applicationUrl: APPLICATION_URL(),
   unitPrProvider: {
     compare: ({ projectId, gitProvider, repoId, base, head }) =>
       defaultSourceControlOperation({
@@ -292,6 +295,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     openPr,
     comparePrBranches,
     unitPrProvider,
+    applicationUrl,
   } = deps;
   const { intentId, executionId } = event;
   // Quorum-supported artifact edit (post-hoc document editing): its own small
@@ -869,6 +873,32 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           };
         }
 
+        // Credential resolution only permits active executions. Unpark META
+        // before AgentCore restores a released session's workspace, otherwise
+        // the re-clone is rejected while the execution still reads WAITING.
+        const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, async () => {
+          try {
+            await store.updateExecution({
+              executionId,
+              status: 'RUNNING',
+              pendingHumanTaskId: null,
+              fromStatus: 'WAITING',
+              ifOrchestratorRunId: runId,
+            });
+            return true;
+          } catch (e) {
+            if (e?.name === 'ConditionalCheckFailedException') return false;
+            throw e;
+          }
+        });
+        if (!ownedUnpark) {
+          ctx.logger?.info?.('run retired while unparking gate', { intentId, humanTaskId });
+          return {
+            state: 'TERMINAL',
+            value: { ok: false, reason: 'retired', intentId, humanTaskId },
+          };
+        }
+
         result = await runStage(ctxArg, invokeIntentRuntime, {
           ...stageOpts,
           resumeFrom: humanTaskId,
@@ -913,6 +943,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       deriveEnrichment,
       prStrategy: meta.prStrategy ?? 'intent-pr',
       unitPrProvider,
+      applicationUrl,
       stageInstanceIdFor: (stageId, slug, sectionIndex = null) =>
         planStageInstanceId(namespace, stageId, slug, sectionIndex),
     };
@@ -1366,7 +1397,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         store,
         meta,
         executionId,
-        gitProvider,
+        applicationUrl,
         log: (m) => ctx.logger?.info?.(m, { intentId }),
       }),
     );
@@ -1379,6 +1410,39 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // un-succeeds a run whose PR already exists on the remote.
     const openedPrs = prResults.map((r) => r.pr).filter(Boolean);
     if (openedPrs.length > 0) {
+      if (meta.source?.bindingId && meta.source?.resourceId) {
+        const published = await ctx.step('publish-tracker-sync', async () => {
+          try {
+            await store.putTrackerSync({
+              executionId,
+              projectId,
+              intentId,
+              source: meta.source,
+              pullRequests: openedPrs,
+              intentTitle: meta.title ?? null,
+              workflowId,
+              workflowVersion,
+              scope,
+              branch: meta.branch ?? null,
+            });
+            return true;
+          } catch (error) {
+            ctx.logger?.error?.('tracker sync publication failed', {
+              intentId,
+              error: error?.message,
+            });
+            return false;
+          }
+        });
+        if (!published) {
+          await emitEvent(
+            ctx,
+            'tracker-sync-publish-failed',
+            'v2.tracker.failed',
+            'Tracker synchronization could not be scheduled',
+          );
+        }
+      }
       const recordResult = await ctx.step('record-pr', async () => {
         try {
           return await invokeIntentRuntime(
@@ -1639,20 +1703,20 @@ const validationPrompt = (
 };
 
 // ── WP6: open the fan-in PR(s) (intent-pr strategy) ─────────────────────────
-// One PR per repo from the intent branch onto the base branch. NEVER throws —
-// every outcome (opened / already-open / no-changes / guard-conflict / error)
-// becomes a timeline event the caller records. The PR body carries
-// the execution id and an HONEST unit summary: lanes that were skipped after
-// failure are named, so the reviewer knows what the increment does NOT
-// contain (the human explicitly chose to continue without them — the fan-in
-// gate is the decision record, the PR body is its mirror).
+// One PR per repo from the intent branch onto the base branch. Provider outcomes
+// (opened / already-open / no-changes / guard-conflict / error) become timeline
+// events the caller records. The PR body links back to the intent and carries
+// an HONEST unit summary: lanes that were skipped after failure are named, so
+// the reviewer knows what the increment does NOT contain (the human explicitly
+// chose to continue without them — the fan-in gate is the decision record, the
+// PR body is its mirror).
 const openIntentPrs = async ({
   openPr,
   comparePrBranches = null,
   store,
   meta,
   executionId,
-  gitProvider,
+  applicationUrl,
   log,
 }) => {
   const repos = meta.repos ?? [];
@@ -1709,19 +1773,62 @@ const openIntentPrs = async ({
   }
 
   const title = meta.title || `AI-DLC: ${branch}`;
-  const body = [
-    `Automated ${gitProvider === 'gitlab' ? 'MR' : 'PR'} created by AI-DLC (strategy: ${strategy})`,
-    '',
-    `Execution ID: ${executionId}`,
-    `Project: ${meta.projectId}`,
-    ...unitLines,
-  ].join('\n');
+  const aidlcAttribution = buildIntentAttribution({
+    applicationUrl,
+    projectId: meta.projectId,
+    intentId: meta.intentId ?? executionId,
+  });
+  const trackerRepository = (() => {
+    try {
+      const pathname = decodeURIComponent(new URL(meta.source?.resourceUrl).pathname);
+      if (meta.source?.provider === 'github-issues') {
+        const parts = pathname.split('/').filter(Boolean);
+        return parts.length >= 4 && parts[2] === 'issues' ? parts.slice(0, 2).join('/') : null;
+      }
+      if (meta.source?.provider === 'gitlab-issues') {
+        const marker = '/-/issues/';
+        const markerIndex = pathname.indexOf(marker);
+        return markerIndex > 0 ? pathname.slice(1, markerIndex) : null;
+      }
+    } catch {
+      // A missing or malformed source URL only omits the PR tracker reference.
+    }
+    return null;
+  })();
+  const trackerReferenceFor = (provider, repoId) => {
+    const resourceId = String(meta.source?.resourceId || '').trim();
+    if (!resourceId) return null;
+    const matchingTracker =
+      (meta.source?.provider === 'github-issues' && provider === 'github') ||
+      (meta.source?.provider === 'gitlab-issues' && provider === 'gitlab');
+    if (matchingTracker && trackerRepository) {
+      const issueRef =
+        trackerRepository.toLowerCase() === repoId.toLowerCase()
+          ? `#${resourceId}`
+          : `${trackerRepository}#${resourceId}`;
+      return `Closes ${issueRef}`;
+    }
+    if (meta.source?.provider === 'jira-cloud') {
+      return meta.source.resourceUrl
+        ? `Related task: [${resourceId}](${meta.source.resourceUrl})`
+        : `Related task: ${resourceId}`;
+    }
+    return meta.source?.resourceUrl
+      ? `Related issue: [#${resourceId}](${meta.source.resourceUrl})`
+      : null;
+  };
 
   const results = [];
   for (const repo of repos) {
     const repoId = typeof repo === 'string' ? repo : repo.url;
     const provider = repoProvider(meta, repoId);
     try {
+      const trackerReference = trackerReferenceFor(provider, repoId);
+      const body = [
+        `Automated ${provider === 'gitlab' ? 'MR' : 'PR'} created by ${aidlcAttribution} (strategy: ${strategy})`,
+        ...unitLines,
+        ...(trackerReference ? ['', trackerReference] : []),
+      ].join('\n');
       const activity = repoGitActivity(repoId);
       // Pre-check: does the intent branch exist remotely with commits ahead of
       // base? 'unknown' (comparison unavailable) falls through to the PR call
@@ -1783,6 +1890,7 @@ const openIntentPrs = async ({
           // VPC-attached runtime; the orchestrator has no Neptune access).
           pr: {
             repoId,
+            provider,
             prUrl: res.prUrl,
             prNumber: res.prNumber ?? null,
             branch,

@@ -353,6 +353,7 @@ module "lambda" {
 
   project_name                = var.project_name
   environment                 = var.environment
+  application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
   neptune_endpoint            = module.neptune.cluster_endpoint

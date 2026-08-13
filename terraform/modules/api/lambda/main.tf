@@ -268,6 +268,8 @@ resource "aws_iam_role_policy" "trackers" {
             var.tracker_connections_table_arn,
             var.source_control_bindings_table_arn,
             "${var.source_control_bindings_table_arn}/index/*",
+            var.v2_executions_table_arn,
+            "${var.v2_executions_table_arn}/index/*",
           ])
         },
         {
@@ -1578,7 +1580,7 @@ module "trackers_lambda" {
   function_name = "${var.project_name}-trackers-${var.environment}"
   handler       = "index.handler"
   runtime       = "nodejs24.x"
-  timeout       = 30
+  timeout       = 60
 
   source_path = [
     {
@@ -1612,11 +1614,36 @@ module "trackers_lambda" {
     GITLAB_REDIRECT_URI            = var.gitlab_redirect_uri
     SOURCE_CONTROL_FUNCTION        = module.source_control_lambda.lambda_function_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
+    V2_PROCESS_TABLE               = var.v2_executions_table_name
+    APPLICATION_URL                = var.application_url
+    CONNECTIONS_TABLE              = var.connections_table_name
+    WEBSOCKET_ENDPOINT             = var.websocket_api_endpoint_https
     BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
     BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
+}
+
+resource "aws_cloudwatch_event_rule" "tracker_delivery_reconciler" {
+  name                = "${var.project_name}-tracker-delivery-reconciler-${var.environment}"
+  description         = "Reconcile final pull request delivery with originating tracker items"
+  schedule_expression = "rate(1 minute)"
+}
+
+resource "aws_cloudwatch_event_target" "tracker_delivery_reconciler" {
+  rule      = aws_cloudwatch_event_rule.tracker_delivery_reconciler.name
+  target_id = "tracker-delivery-reconciler"
+  arn       = module.trackers_lambda.lambda_function_arn
+  input     = jsonencode({ action = "reconcile-tracker-deliveries" })
+}
+
+resource "aws_lambda_permission" "tracker_delivery_reconciler" {
+  statement_id  = "AllowExecutionFromTrackerDeliveryReconciler"
+  action        = "lambda:InvokeFunction"
+  function_name = module.trackers_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.tracker_delivery_reconciler.arn
 }
 
 # Timeline Events Lambda
@@ -1983,6 +2010,7 @@ resource "aws_iam_role_policy" "realtime_fanout" {
     agents_orchestrator = aws_iam_role.agents_orchestrator.id
     v2_orchestrator     = aws_iam_role.v2_orchestrator.id # durable orchestrator live fan-out
     intents             = aws_iam_role.intents.id         # artifact edit / quorum-edit reload hints
+    trackers            = aws_iam_role.trackers.id        # tracker delivery timeline reload hints
   }
   name = "realtime-fanout"
   role = each.value
@@ -2444,6 +2472,7 @@ module "v2_orchestrator_lambda" {
 
   environment_variables = {
     ENVIRONMENT             = var.environment
+    APPLICATION_URL         = var.application_url
     V2_PROCESS_TABLE        = var.v2_executions_table_name
     BLOCKS_TABLE            = var.blocks_table_name
     AGENTCORE_RUNTIME_ARN   = var.agentcore_runtime_arn

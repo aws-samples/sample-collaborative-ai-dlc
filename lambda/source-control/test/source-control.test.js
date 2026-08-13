@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  SOURCE_CONTROL_OPERATIONS,
   bindingStatusForProject,
   executeSourceControlOperation,
   isSupportedProvider,
@@ -7,6 +8,10 @@ import {
 } from '../index.js';
 
 describe('source-control project contract', () => {
+  it('classifies tracker closure as a project-bound write operation', () => {
+    expect(SOURCE_CONTROL_OPERATIONS['close-issue']).toBe('write');
+  });
+
   it('requires one authentication type per provider', () => {
     expect(
       normalizeProviderSelections({

@@ -19,6 +19,7 @@ import {
   unitPrKey,
   feedbackBatchKey,
   quorumEditKey,
+  trackerSyncKey,
   buildExecutionMeta,
   buildStageRow,
   buildEventRow,
@@ -32,6 +33,7 @@ import {
   buildUnitPrRow,
   buildFeedbackBatchRow,
   buildQuorumEditRow,
+  buildTrackerSyncRow,
   executionTypeStateIndex,
   HUMAN_TASK_STATUSES,
   STEERING_KINDS,
@@ -40,6 +42,7 @@ import {
   CONSTRUCTION_AUTONOMY_MODES,
   QUORUM_EDIT_STATES,
   QUORUM_EDIT_TERMINAL_STATES,
+  TRACKER_SYNC_STATES,
 } from '../v2-process-keys.js';
 import { createProcessStore } from '../v2-process-store.js';
 
@@ -48,6 +51,7 @@ describe('v2-process-keys', () => {
     expect(executionMetaKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'META' });
     expect(stageKey('e1', 'si-1')).toEqual({ pk: 'EXEC#e1', sk: 'STAGE#si-1' });
     expect(humanTaskKey('e1', 'h1')).toEqual({ pk: 'EXEC#e1', sk: 'HUMAN#h1' });
+    expect(trackerSyncKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'TRACKERSYNC' });
   });
 
   it('projects GSI1 for project-status browse and GSI2 for type/state', () => {
@@ -112,6 +116,25 @@ describe('v2-process-keys', () => {
       questions: '[{"text":"?"}]',
     });
     expect(row.GSI2SK).toBe('TYPE#HUMAN#STATE#pending#h1');
+  });
+
+  it('builds a pending tracker sync projected into maintenance', () => {
+    const row = buildTrackerSyncRow({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      source: { bindingId: 'tb1', resourceId: '42' },
+      pullRequests: [{ provider: 'github', repoId: 'o/r', prNumber: 7 }],
+      now: 'T',
+    });
+    expect(row).toMatchObject({
+      sk: 'TRACKERSYNC',
+      state: 'PR_CREATED',
+      attempts: 0,
+      GSI3PK: 'TRACKER_SYNCS',
+      GSI3SK: 'CHECK#T#EXEC#e1',
+    });
+    expect(TRACKER_SYNC_STATES).toContain('COMPLETED');
   });
 });
 
@@ -1238,6 +1261,75 @@ describe('unit store methods', () => {
       IndexName: 'GSI3',
       ExpressionAttributeValues: { ':pk': 'PR_WAITS' },
     });
+  });
+
+  it('publishes and queries tracker synchronization through GSI3', async () => {
+    ddb.on(PutCommand).resolves({});
+    ddb.on(QueryCommand).resolves({ Items: [] });
+
+    await store.putTrackerSync({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      source: { bindingId: 'tb1', resourceId: '42' },
+      pullRequests: [{ provider: 'github', repoId: 'o/r', prNumber: 7 }],
+    });
+    await store.listTrackerSyncs({ limit: 10 });
+
+    const put = ddb.commandCalls(PutCommand)[0].args[0].input;
+    expect(put.Item).toMatchObject({
+      sk: 'TRACKERSYNC',
+      state: 'PR_CREATED',
+      GSI3PK: 'TRACKER_SYNCS',
+    });
+    const query = ddb.commandCalls(QueryCommand)[0].args[0].input;
+    expect(query).toMatchObject({
+      IndexName: 'GSI3',
+      Limit: 10,
+      ExpressionAttributeValues: { ':pk': 'TRACKER_SYNCS' },
+    });
+  });
+
+  it('paginates tracker synchronization queries up to the requested limit', async () => {
+    const cursor = { pk: 'EXEC#e1', sk: 'TRACKERSYNC', GSI3PK: 'TRACKER_SYNCS', GSI3SK: 'CHECK#T' };
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({ Items: [{ executionId: 'e1' }], LastEvaluatedKey: cursor })
+      .resolvesOnce({ Items: [{ executionId: 'e2' }] });
+
+    await expect(store.listTrackerSyncs({ limit: 3 })).resolves.toEqual([
+      { executionId: 'e1' },
+      { executionId: 'e2' },
+    ]);
+
+    const [first, second] = ddb.commandCalls(QueryCommand).map((call) => call.args[0].input);
+    expect(first).toMatchObject({ Limit: 3 });
+    expect(first.ExclusiveStartKey).toBeUndefined();
+    expect(second).toMatchObject({ Limit: 2, ExclusiveStartKey: cursor });
+  });
+
+  it('claims tracker synchronization and removes maintenance projection when terminal', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+
+    await store.claimTrackerSync({
+      executionId: 'e1',
+      claimId: 'claim-1',
+      claimExpiresAt: 'T2',
+      now: 'T1',
+    });
+    await store.updateTrackerSync({
+      executionId: 'e1',
+      claimId: 'claim-1',
+      state: 'COMPLETED',
+      fields: { attempts: 0 },
+    });
+
+    const claim = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(claim.ConditionExpression).toContain('trackerSyncClaimExpiresAt < :now');
+    const complete = ddb.commandCalls(UpdateCommand)[1].args[0].input;
+    expect(complete.ConditionExpression).toBe('trackerSyncClaimId = :claimId');
+    expect(complete.UpdateExpression).toContain('REMOVE trackerSyncClaimId');
+    expect(complete.UpdateExpression).toContain('GSI3PK, GSI3SK');
   });
 
   it('syncUnitRows creates missing lanes, refreshes PENDING/READY, preserves active, reports orphans', async () => {

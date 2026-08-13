@@ -30,12 +30,15 @@ import {
   unitLaneId,
   quorumEditKey,
   composeKey,
+  trackerSyncKey,
   executionPk,
   projectPk,
   projectStatusIndex,
   executionTypeStateIndex,
   activeExecutionIndex,
   unitPrWaitIndex,
+  trackerSyncIndex,
+  TRACKER_SYNCS_INDEX_PK,
   ACTIVE_EXECUTIONS_INDEX_PK,
   PR_WAITS_INDEX_PK,
   buildExecutionMeta,
@@ -54,11 +57,14 @@ import {
   buildFeedbackCommentRow,
   buildQuorumEditRow,
   buildComposeRow,
+  buildTrackerSyncRow,
   UNIT_STATES,
   UNIT_PR_STATES,
   FEEDBACK_STATES,
   QUORUM_EDIT_STATES,
   COMPOSE_STATES,
+  TRACKER_SYNC_STATES,
+  TRACKER_SYNC_TERMINAL_STATES,
   CONSTRUCTION_AUTONOMY_MODES,
   ACTIVE_EXECUTION_STATUSES,
 } from './v2-process-keys.js';
@@ -2132,6 +2138,120 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return items.toSorted((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   };
 
+  const putTrackerSync = async (input) => {
+    const item = buildTrackerSyncRow({ ...input, now: input.now ?? now() });
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: table(),
+          Item: item,
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        }),
+      );
+      return item;
+    } catch (error) {
+      if (error?.name !== 'ConditionalCheckFailedException') throw error;
+      return getTrackerSync(input.executionId);
+    }
+  };
+
+  const getTrackerSync = async (executionId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: trackerSyncKey(executionId) }),
+    );
+    return Item ?? null;
+  };
+
+  const listTrackerSyncs = async ({ limit = 25 } = {}) => {
+    const items = [];
+    let ExclusiveStartKey;
+    do {
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: table(),
+          IndexName: 'GSI3',
+          KeyConditionExpression: 'GSI3PK = :pk',
+          ExpressionAttributeValues: { ':pk': TRACKER_SYNCS_INDEX_PK },
+          Limit: limit - items.length,
+          ExclusiveStartKey,
+        }),
+      );
+      items.push(...(page.Items ?? []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey && items.length < limit);
+    return items;
+  };
+
+  const claimTrackerSync = async ({
+    executionId,
+    claimId,
+    claimExpiresAt,
+    now: claimNow = now(),
+  }) => {
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: trackerSyncKey(executionId),
+          UpdateExpression:
+            'SET trackerSyncClaimId = :claimId, trackerSyncClaimExpiresAt = :expires, updatedAt = :now',
+          ConditionExpression:
+            'attribute_exists(pk) AND attribute_exists(GSI3PK) AND (attribute_not_exists(trackerSyncClaimId) OR trackerSyncClaimExpiresAt < :now)',
+          ExpressionAttributeValues: {
+            ':claimId': claimId,
+            ':expires': claimExpiresAt,
+            ':now': claimNow,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes ?? null;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  const updateTrackerSync = async ({ executionId, claimId, state, fields = {} }) => {
+    if (!TRACKER_SYNC_STATES.includes(state)) {
+      throw new Error(`invalid tracker sync state: ${state}`);
+    }
+    const ts = now();
+    const sets = ['#state = :state', 'updatedAt = :updatedAt'];
+    const removes = ['trackerSyncClaimId', 'trackerSyncClaimExpiresAt'];
+    const names = { '#state': 'state' };
+    const values = {
+      ':state': state,
+      ':updatedAt': ts,
+      ':claimId': claimId,
+    };
+    for (const [key, value] of Object.entries(fields)) {
+      names[`#field_${key}`] = key;
+      values[`:field_${key}`] = value;
+      sets.push(`#field_${key} = :field_${key}`);
+    }
+    if (TRACKER_SYNC_TERMINAL_STATES.includes(state)) {
+      removes.push('GSI3PK', 'GSI3SK');
+    } else {
+      const projection = trackerSyncIndex({ executionId, scheduledAt: ts });
+      sets.push('GSI3PK = :g3pk', 'GSI3SK = :g3sk');
+      values[':g3pk'] = projection.GSI3PK;
+      values[':g3sk'] = projection.GSI3SK;
+    }
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: trackerSyncKey(executionId),
+        UpdateExpression: `SET ${sets.join(', ')} REMOVE ${removes.join(', ')}`,
+        ConditionExpression: 'trackerSyncClaimId = :claimId',
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return Attributes ?? null;
+  };
+
   // Read every record for an execution, grouped by type (for the resume lambda /
   // admin / restore-on-reload). Fully paginated — see queryAll.
   //
@@ -2177,6 +2297,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       feedbackBatches: records.filter((r) => r.sk.startsWith('FEEDBACK#')),
       quorumEdits: records.filter((r) => r.sk.startsWith('QEDIT#')),
       composes: records.filter((r) => r.sk.startsWith('COMPOSE#')),
+      trackerSync: records.find((r) => r.sk === 'TRACKERSYNC') ?? null,
     };
   };
 
@@ -2282,6 +2403,11 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getCompose,
     updateCompose,
     listComposes,
+    putTrackerSync,
+    getTrackerSync,
+    listTrackerSyncs,
+    claimTrackerSync,
+    updateTrackerSync,
     getExecutionRecords,
   };
 };

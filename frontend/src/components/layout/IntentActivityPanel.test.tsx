@@ -9,7 +9,41 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/contexts/IntentContext', () => ({
   INTENT_OUTPUT_KEY: 'intent',
   useIntent: () => ({
-    detail: { intent: { id: 'i1' }, events: [] },
+    detail: {
+      intent: { id: 'i1' },
+      events: [
+        {
+          eventId: 'tracker-closed',
+          type: 'v2.tracker.closed',
+          summary: 'Closed Issue #42',
+          timestamp: '2026-08-11T10:00:00Z',
+        },
+        {
+          eventId: 'tracker-commented',
+          type: 'v2.tracker.commented',
+          summary: 'Added tracker delivery comment',
+          timestamp: '2026-08-11T09:59:00Z',
+        },
+        {
+          eventId: 'tracker-merged-commented',
+          type: 'v2.tracker.merged_commented',
+          summary: 'Added merged delivery comment',
+          timestamp: '2026-08-11T09:58:00Z',
+        },
+        {
+          eventId: 'tracker-failed',
+          type: 'v2.tracker.failed',
+          summary: 'Tracker write attempt failed',
+          timestamp: '2026-08-11T09:57:00Z',
+        },
+        {
+          eventId: 'tracker-blocked',
+          type: 'v2.tracker.blocked',
+          summary: 'Tracker synchronization stopped',
+          timestamp: '2026-08-11T09:56:00Z',
+        },
+      ],
+    },
     stageRows: [
       {
         stageId: 'requirements-analysis',
@@ -173,6 +207,27 @@ describe('IntentActivityPanel Agent tab', () => {
     expect(screen.getByText(/"mode": "full"/)).toBeInTheDocument();
     expect(screen.getByText(/No enforcement/)).toBeInTheDocument();
     expect(screen.getByText(/Running tool get_artifact/)).toBeInTheDocument();
+  });
+});
+
+describe('IntentActivityPanel Timeline tab', () => {
+  it('renders tracker events with semantic status colors', () => {
+    render(<IntentActivityPanel onClose={() => {}} />);
+
+    for (const summary of [
+      'Closed Issue #42',
+      'Added tracker delivery comment',
+      'Added merged delivery comment',
+    ]) {
+      const item = screen.getByText(summary).closest('.flex.gap-3.py-2');
+      expect(item?.querySelector('.bg-agent-success')).not.toBeNull();
+    }
+
+    const failed = screen.getByText('Tracker write attempt failed').closest('.flex.gap-3.py-2');
+    expect(failed?.querySelector('.bg-agent-error')).not.toBeNull();
+
+    const blocked = screen.getByText('Tracker synchronization stopped').closest('.flex.gap-3.py-2');
+    expect(blocked?.querySelector('.bg-agent-waiting')).not.toBeNull();
   });
 });
 
