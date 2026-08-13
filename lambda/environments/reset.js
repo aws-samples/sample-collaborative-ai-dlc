@@ -17,6 +17,7 @@ import {
   DeleteAgentRuntimeEndpointCommand,
   GetAgentRuntimeCommand,
   GetAgentRuntimeEndpointCommand,
+  ListAgentRuntimeEndpointsCommand,
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import {
   BedrockAgentCoreClient,
@@ -173,6 +174,27 @@ const waitUntilMissing = async (read, { attempts = 60, intervalMs = 5000 } = {})
   throw new Error('Timed out waiting for AgentCore resource deletion');
 };
 
+const listRuntimeEndpoints = async (runtimeId, client = runtimeControl) => {
+  const endpoints = [];
+  let nextToken;
+  do {
+    try {
+      const result = await client.send(
+        new ListAgentRuntimeEndpointsCommand({
+          agentRuntimeId: runtimeId,
+          nextToken,
+        }),
+      );
+      endpoints.push(...(result.runtimeEndpoints ?? []));
+      nextToken = result.nextToken;
+    } catch (error) {
+      if (terminalRuntimeErrors.has(error?.name)) return endpoints;
+      throw error;
+    }
+  } while (nextToken);
+  return endpoints;
+};
+
 const deleteRuntimeArtifacts = async (revisions, client = runtimeControl) => {
   const resources = new Map();
   for (const revision of revisions) {
@@ -187,15 +209,24 @@ const deleteRuntimeArtifacts = async (revisions, client = runtimeControl) => {
     resources.set(revision.runtimeId, value);
   }
   for (const resource of resources.values()) {
-    for (const endpointName of resource.endpoints) {
+    const endpoints = new Map(
+      [...resource.endpoints].map((endpointName) => [endpointName, { name: endpointName }]),
+    );
+    for (const endpoint of await listRuntimeEndpoints(resource.runtimeId, client)) {
+      if (endpoint.name) endpoints.set(endpoint.name, endpoint);
+    }
+    for (const endpoint of endpoints.values()) {
+      const endpointName = endpoint.name;
       try {
-        await client.send(
-          new DeleteAgentRuntimeEndpointCommand({
-            agentRuntimeId: resource.runtimeId,
-            endpointName,
-            clientToken: randomUUID(),
-          }),
-        );
+        if (endpoint.status !== 'DELETING') {
+          await client.send(
+            new DeleteAgentRuntimeEndpointCommand({
+              agentRuntimeId: resource.runtimeId,
+              endpointName,
+              clientToken: randomUUID(),
+            }),
+          );
+        }
         await waitUntilMissing(() =>
           client.send(
             new GetAgentRuntimeEndpointCommand({

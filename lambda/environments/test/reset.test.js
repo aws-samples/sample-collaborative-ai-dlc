@@ -101,6 +101,9 @@ describe('managed environment reset', () => {
           type: 'EnvironmentRevision',
           environmentId: 'legacy-rust',
           revisionId: 'r-1',
+          runtimeId: 'runtime-1',
+          runtimeVersion: '1',
+          runtimeEndpoint: 'revision_r_1',
         },
         {
           pk: `IMAGE#sha256:${'a'.repeat(64)}`,
@@ -139,6 +142,39 @@ describe('managed environment reset', () => {
       }),
     };
     const runtimeClient = { send: vi.fn().mockResolvedValue({}) };
+    const controlClient = {
+      send: vi.fn().mockImplementation(async (command) => {
+        if (command.constructor.name === 'ListAgentRuntimeEndpointsCommand') {
+          return {
+            runtimeEndpoints: [
+              {
+                name: 'DEFAULT',
+                liveVersion: '1',
+                status: 'READY',
+              },
+            ],
+          };
+        }
+        if (
+          command.constructor.name === 'DeleteAgentRuntimeEndpointCommand' &&
+          command.input.endpointName === 'revision_r_1'
+        ) {
+          throw Object.assign(new Error('Endpoint not found'), {
+            name: 'ResourceNotFoundException',
+          });
+        }
+        if (
+          ['GetAgentRuntimeEndpointCommand', 'GetAgentRuntimeCommand'].includes(
+            command.constructor.name,
+          )
+        ) {
+          throw Object.assign(new Error('Resource not found'), {
+            name: 'ResourceNotFoundException',
+          });
+        }
+        return {};
+      }),
+    };
     const ddb = documentClient();
 
     const result = await executeReset({
@@ -148,7 +184,7 @@ describe('managed environment reset', () => {
       process: processStore,
       documentClient: ddb,
       ecrClient,
-      controlClient: { send: vi.fn() },
+      controlClient,
       runtimeClient,
       lambdaClient: { send: vi.fn() },
     });
@@ -158,13 +194,26 @@ describe('managed environment reset', () => {
       intentsCancelled: 1,
       environmentsDeleted: 1,
       revisionsDeleted: 1,
-      runtimesDeleted: 0,
+      runtimesDeleted: 1,
       imagesDeleted: 1,
     });
     expect(g.property).toHaveBeenCalledWith(expect.anything(), 'environment_id', 'standard');
     expect(g.count).toHaveBeenCalledOnce();
     expect(g.next).toHaveBeenCalledOnce();
     expect(runtimeClient.send).toHaveBeenCalledTimes(2);
+    expect(
+      controlClient.send.mock.calls.map(([command]) => [
+        command.constructor.name,
+        command.input.endpointName ?? command.input.agentRuntimeVersion ?? null,
+      ]),
+    ).toEqual([
+      ['ListAgentRuntimeEndpointsCommand', null],
+      ['DeleteAgentRuntimeEndpointCommand', 'revision_r_1'],
+      ['DeleteAgentRuntimeEndpointCommand', 'DEFAULT'],
+      ['GetAgentRuntimeEndpointCommand', 'DEFAULT'],
+      ['DeleteAgentRuntimeCommand', '1'],
+      ['GetAgentRuntimeCommand', '1'],
+    ]);
     expect(processStore.updateExecution).toHaveBeenCalledWith(
       expect.objectContaining({
         executionId: 'intent-1',

@@ -992,6 +992,7 @@ resource "aws_iam_role_policy" "reset" {
           "bedrock-agentcore:DeleteAgentRuntimeEndpoint",
           "bedrock-agentcore:GetAgentRuntime",
           "bedrock-agentcore:GetAgentRuntimeEndpoint",
+          "bedrock-agentcore:ListAgentRuntimeEndpoints",
         ]
         Resource = "*"
       },
