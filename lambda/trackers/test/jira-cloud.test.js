@@ -91,6 +91,7 @@ const seedConnectionRow = (overrides = {}) => ({
     baseUrl: `https://api.atlassian.com/ex/jira/${CLOUD_ID}`,
     siteHost: SITE_HOST,
     siteName: 'Acme',
+    scope: 'read:jira-work read:jira-user write:jira-work offline_access',
     expiresAt: Date.now() + 60 * 60 * 1000,
     ...overrides,
   },
@@ -215,7 +216,12 @@ describe('jira-cloud — persistConnection', () => {
       ddb: DynamoDBDocumentClient.from(new DynamoDBClient({})),
       ssm: new SSMClient({}),
       userId: 'user-1',
-      resource: { cloudId: CLOUD_ID, name: 'Acme', host: SITE_HOST },
+      resource: {
+        cloudId: CLOUD_ID,
+        name: 'Acme',
+        host: SITE_HOST,
+        scopes: ['read:jira-work', 'write:jira-work', 'offline_access'],
+      },
       tokens: { accessToken: 'a', refreshToken: 'r', expiresIn: 3600 },
     });
     const ssmCall = ssmMock.commandCalls(PutParameterCommand)[0];
@@ -228,6 +234,7 @@ describe('jira-cloud — persistConnection', () => {
       cloudId: CLOUD_ID,
       siteHost: SITE_HOST,
       baseUrl: `https://api.atlassian.com/ex/jira/${CLOUD_ID}`,
+      scope: 'read:jira-work write:jira-work offline_access',
     });
   });
 });
@@ -504,7 +511,7 @@ describe('jira-cloud — provider methods', () => {
           'AI-DLC completed the workflow for this task.',
           '',
           '- Intent: [Login](https://aidlc.example/space/p1/intent/i1)',
-          '- Branch: [`feat/login`](https://github.com/acme/app/tree/feat%2Flogin)',
+          '- Branch: [`feat/login`](https://github.com/acme/app/tree/feat/login)',
           '- Pull requests:',
           '  - `acme/app`: https://github.com/acme/app/pull/7',
         ].join('\n'),
@@ -543,7 +550,7 @@ describe('jira-cloud — provider methods', () => {
         marks: [
           {
             type: 'link',
-            attrs: { href: 'https://github.com/acme/app/tree/feat%2Flogin' },
+            attrs: { href: 'https://github.com/acme/app/tree/feat/login' },
           },
         ],
       });
@@ -562,6 +569,61 @@ describe('jira-cloud — provider methods', () => {
           }),
         ]),
       );
+    });
+
+    it('keeps multi-repository branches and pull requests under separate list items', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okResponse({
+          id: '1003',
+          author: { displayName: 'AI-DLC' },
+          body: adfDoc('AI-DLC completed the workflow for this task.'),
+          created: '2026-08-10T00:00:00.000+0000',
+          updated: '2026-08-10T00:00:00.000+0000',
+        }),
+      );
+
+      await jiraProvider.addIssueComment(
+        ctx(),
+        'PROJ',
+        'PROJ-42',
+        [
+          'AI-DLC completed the workflow for this task.',
+          '',
+          '- Branches:',
+          '  - `acme/api`: [`aidlc/login`](https://github.com/acme/api/tree/aidlc/login)',
+          '  - `acme/web`: [`aidlc/login`](https://github.com/acme/web/tree/aidlc/login)',
+          '- Pull requests:',
+          '  - `acme/api`: https://github.com/acme/api/pull/7',
+          '  - `acme/web`: https://github.com/acme/web/pull/8',
+        ].join('\n'),
+      );
+
+      const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const bulletList = payload.body.content.find((node) => node.type === 'bulletList');
+      const branches = bulletList.content[0];
+      const pullRequests = bulletList.content[1];
+      expect(branches.content[0].content[0].text).toBe('Branches:');
+      expect(branches.content[1].content).toHaveLength(2);
+      expect(pullRequests.content[0].content[0].text).toBe('Pull requests:');
+      expect(pullRequests.content[1].content).toHaveLength(2);
+      expect(pullRequests.content[1].content[0].content[0].content).toContainEqual(
+        expect.objectContaining({ text: 'https://github.com/acme/api/pull/7' }),
+      );
+    });
+
+    it('requires reconnect before writing with a legacy read-only grant', async () => {
+      ddbMock
+        .on(GetCommand, { TableName: TRACKER_TABLE })
+        .resolves(seedConnectionRow({ scope: 'read:jira-work read:jira-user offline_access' }));
+
+      await expect(
+        jiraProvider.addIssueComment(ctx(), 'PROJ', 'PROJ-42', 'Delivery complete'),
+      ).rejects.toMatchObject({
+        status: 403,
+        code: 'MISSING_SCOPES',
+        extra: { reconnect: true },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

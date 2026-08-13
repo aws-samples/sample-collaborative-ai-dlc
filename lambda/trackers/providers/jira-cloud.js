@@ -14,7 +14,13 @@ export { ProviderError };
 const JIRA_TOKEN_PARAM_PATTERN = /^\/[\w-]+\/[\w-]+\/[\w-]+\/[\w-]+$/;
 const PROVIDER_INSTANCE = 'jira-cloud#cloud';
 const REFRESH_SAFETY_MARGIN_MS = 60_000;
-const JIRA_OAUTH_SCOPE = 'read:jira-work read:jira-user write:jira-work offline_access';
+const JIRA_WRITE_SCOPE = 'write:jira-work';
+const JIRA_OAUTH_SCOPES = ['read:jira-work', 'read:jira-user', JIRA_WRITE_SCOPE, 'offline_access'];
+
+const normalizeScopes = (scopes) =>
+  (Array.isArray(scopes) ? scopes : String(scopes || '').split(/[,\s]+/))
+    .map((scope) => String(scope).trim())
+    .filter(Boolean);
 
 const requireEnv = (name) => {
   const v = process.env[name];
@@ -32,7 +38,7 @@ export const buildAuthorizeUrl = ({ clientId, redirectUri, state }) => {
   const params = new URLSearchParams({
     audience: 'api.atlassian.com',
     client_id: clientId,
-    scope: JIRA_OAUTH_SCOPE,
+    scope: JIRA_OAUTH_SCOPES.join(' '),
     redirect_uri: redirectUri,
     state,
     response_type: 'code',
@@ -117,7 +123,7 @@ export const listAccessibleResources = async (accessToken) => {
 
 // Persist the connection row + SSM token. Used by both the single-resource
 // and the multi-resource finalize paths in the trackers handler.
-export const persistConnection = async ({ ddb, ssm, userId, resource, tokens, scope }) => {
+export const persistConnection = async ({ ddb, ssm, userId, resource, tokens }) => {
   const parameterName = `/${requireEnv('JIRA_TOKEN_SSM_PREFIX')}/${userId}`;
   if (!JIRA_TOKEN_PARAM_PATTERN.test(parameterName)) {
     throw new Error('Invalid SSM parameter name format');
@@ -151,7 +157,7 @@ export const persistConnection = async ({ ddb, ssm, userId, resource, tokens, sc
         baseUrl: `https://api.atlassian.com/ex/jira/${resource.cloudId}`,
         siteHost: resource.host || '',
         siteName: resource.name || '',
-        scope: scope || JIRA_OAUTH_SCOPE,
+        scope: normalizeScopes(resource.scopes).join(' '),
         createdAt: new Date().toISOString(),
         expiresAt,
       },
@@ -265,6 +271,17 @@ const buildContext = async ({ ddb, ssm, secrets, userId }) => {
     ssm,
     secrets,
   };
+};
+
+const requireWriteScope = (ctx) => {
+  if (normalizeScopes(ctx.row.scope).includes(JIRA_WRITE_SCOPE)) return;
+  const error = new ProviderError(
+    403,
+    'Jira connection is missing write:jira-work; reconnect Jira to continue',
+    { reconnect: true },
+  );
+  error.code = 'MISSING_SCOPES';
+  throw error;
 };
 
 const jiraFetch = async (ctx, path, init = {}) => {
@@ -560,6 +577,7 @@ const getIssueDiscussion = async ({ ddb, ssm, secrets, userId }, projectKey, res
 const addIssueComment = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId, body) => {
   if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
   const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  requireWriteScope(ctx);
   const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(resourceId)}/comment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

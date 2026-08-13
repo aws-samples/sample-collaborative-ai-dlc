@@ -33,6 +33,24 @@ describe('git-backed tracker close transport', () => {
     );
   });
 
+  it('does not PATCH when the issue number belongs to a pull request', async () => {
+    const fetchImpl = vi.fn(async () =>
+      response({
+        number: 42,
+        html_url: 'https://github.com/acme/app/pull/42',
+        title: 'Pull request',
+        state: 'open',
+        pull_request: { url: 'https://api.github.com/repos/acme/app/pulls/42' },
+      }),
+    );
+
+    await expect(
+      closeGithubIssue({ token: 'token', fetchImpl }, 'acme/app', 42),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0][1]?.method).toBeUndefined();
+  });
+
   it('closes a GitLab issue', async () => {
     const fetchImpl = vi.fn(async () =>
       response({

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { mapWithConcurrency } from '../shared/concurrency.js';
+import { buildIntentUrl } from '../shared/intent-url.js';
 
 const CREATED_PHRASE = 'AI-DLC completed the workflow for this issue.';
 const CREATED_TASK_PHRASE = 'AI-DLC completed the workflow for this task.';
@@ -8,12 +10,12 @@ const MAX_TRACKER_WRITE_ATTEMPTS = 10;
 const CLAIM_LEASE_MS = 90_000;
 const SCHEDULED_CONCURRENCY = 5;
 
-const trimBaseUrl = (value) => String(value || '').replace(/\/+$/, '');
-
 const intentUrlFor = (applicationUrl, sync) =>
-  `${trimBaseUrl(applicationUrl)}/space/${encodeURIComponent(
-    sync.projectId,
-  )}/intent/${encodeURIComponent(sync.intentId)}`;
+  buildIntentUrl({
+    applicationUrl,
+    projectId: sync.projectId,
+    intentId: sync.intentId,
+  });
 
 const intentLabel = (sync) => sync.intentTitle || sync.intentId;
 
@@ -30,7 +32,7 @@ const branchUrlFor = (pr, fallbackBranch) => {
   if (!branch || !pr.prUrl || !pr.repoId) return null;
   try {
     const url = new URL(pr.prUrl);
-    const encodedBranch = encodeURIComponent(branch);
+    const encodedBranch = branch.split('/').map(encodeURIComponent).join('/');
     if (pr.provider === 'github') {
       url.pathname = `/${pr.repoId}/tree/${encodedBranch}`;
     } else if (pr.provider === 'gitlab') {
@@ -115,24 +117,10 @@ const hasMergedDeliveryComment = (comments, body) => {
 const sanitizedError = (error) => ({
   code: error?.code || error?.name || 'TRACKER_SYNC_FAILED',
   message: String(error?.message || 'Tracker synchronization failed').slice(0, 500),
+  ...(error?.extra?.reconnect === true ? { reconnect: true } : {}),
 });
 
 const isPermanentTrackerWriteError = (error) => [401, 403].includes(Number(error?.status));
-
-const mapWithConcurrency = async (items, limit, worker) => {
-  const results = Array.from({ length: items.length });
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
-    for (;;) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= items.length) return;
-      results[index] = await worker(items[index], index);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-};
 
 const createDeliverySynchronizer = ({
   store,
@@ -183,6 +171,7 @@ const createDeliverySynchronizer = ({
   const trackerWriteFailed = async (sync, claimId, error) => {
     const attempts = Number(sync.attempts || 0) + 1;
     const permanent = isPermanentTrackerWriteError(error);
+    const reconnect = error?.extra?.reconnect === true;
     const blocked = permanent || attempts >= maxTrackerWriteAttempts;
     await update(sync, claimId, blocked ? 'BLOCKED' : sync.state, {
       attempts,
@@ -191,11 +180,13 @@ const createDeliverySynchronizer = ({
     await emit(
       sync,
       blocked ? 'v2.tracker.blocked' : 'v2.tracker.failed',
-      permanent
-        ? 'Tracker synchronization stopped after a non-retryable authorization failure'
-        : blocked
-          ? `Tracker synchronization stopped after ${attempts} failed write attempts`
-          : `Tracker write attempt ${attempts} failed`,
+      reconnect
+        ? 'Reconnect Jira to resume tracker synchronization'
+        : permanent
+          ? 'Tracker synchronization stopped after a non-retryable authorization failure'
+          : blocked
+            ? `Tracker synchronization stopped after ${attempts} failed write attempts`
+            : `Tracker write attempt ${attempts} failed`,
     );
     return { blocked, attempts, permanent };
   };

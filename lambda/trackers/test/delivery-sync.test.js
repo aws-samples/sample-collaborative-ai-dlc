@@ -4,6 +4,7 @@ import {
   CREATED_TASK_PHRASE,
   MERGED_PHRASE,
   MERGED_MR_PHRASE,
+  branchUrlFor,
   createDeliverySynchronizer,
 } from '../delivery-sync.js';
 
@@ -84,6 +85,36 @@ describe('tracker delivery synchronizer', () => {
     });
   });
 
+  it.each([
+    [
+      'github',
+      'https://github.com/acme/app/pull/7',
+      'https://github.com/acme/app/tree/aidlc/login',
+    ],
+    [
+      'gitlab',
+      'https://gitlab.com/acme/app/-/merge_requests/7',
+      'https://gitlab.com/acme/app/-/tree/aidlc/login',
+    ],
+    [
+      'bitbucket',
+      'https://bitbucket.org/acme/app/pull-requests/7',
+      'https://bitbucket.org/acme/app/branch/aidlc/login',
+    ],
+  ])('preserves branch path separators in %s links', (providerName, prUrl, expected) => {
+    expect(
+      branchUrlFor(
+        {
+          provider: providerName,
+          repoId: 'acme/app',
+          prUrl,
+          branch: 'aidlc/login',
+        },
+        null,
+      ),
+    ).toBe(expected);
+  });
+
   it('posts the created comment and advances to merge polling', async () => {
     await synchronizer.process(candidate);
 
@@ -91,7 +122,7 @@ describe('tracker delivery synchronizer', () => {
     const body = provider.addIssueComment.mock.calls[0][3];
     expect(body).toContain(CREATED_PHRASE);
     expect(body).toContain('https://aidlc.example/space/p1/intent/i1');
-    expect(body).toContain('[`feat/login`](https://github.com/acme/app/tree/feat%2Flogin)');
+    expect(body).toContain('[`feat/login`](https://github.com/acme/app/tree/feat/login)');
     expect(body).toContain('https://github.com/acme/app/pull/7');
     expect(store.updateTrackerSync).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -338,6 +369,45 @@ describe('tracker delivery synchronizer', () => {
       expect.objectContaining({
         state: 'BLOCKED',
         fields: expect.objectContaining({ attempts: 1 }),
+      }),
+    );
+  });
+
+  it('surfaces a reconnect instruction for stale Jira grants', async () => {
+    candidate = syncRow({
+      source: {
+        bindingId: 'tb-jira',
+        provider: 'jira-cloud',
+        instance: 'cloud',
+        resourceId: 'PROJ-42',
+      },
+    });
+    store.claimTrackerSync.mockResolvedValue(candidate);
+    provider.addIssueComment.mockRejectedValue(
+      Object.assign(new Error('Jira connection is missing write:jira-work'), {
+        status: 403,
+        code: 'MISSING_SCOPES',
+        extra: { reconnect: true },
+      }),
+    );
+
+    await synchronizer.process(candidate);
+
+    expect(store.updateTrackerSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: 'BLOCKED',
+        fields: expect.objectContaining({
+          lastError: expect.objectContaining({
+            code: 'MISSING_SCOPES',
+            reconnect: true,
+          }),
+        }),
+      }),
+    );
+    expect(store.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'v2.tracker.blocked',
+        summary: 'Reconnect Jira to resume tracker synchronization',
       }),
     );
   });

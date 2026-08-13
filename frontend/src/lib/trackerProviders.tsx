@@ -82,7 +82,7 @@ export const TRACKER_PROVIDERS: Record<string, TrackerProviderMeta> = {
       label: 'Atlassian Developer Console',
       steps: [
         'Open the Atlassian Developer Console → Create → OAuth 2.0 integration.',
-        'Under Permissions, add the Jira API and grant scopes: read:jira-work, read:jira-user, offline_access.',
+        'Under Permissions, add the Jira API and grant scopes: read:jira-work, read:jira-user, write:jira-work, offline_access.',
         'Under Authorization, set the Callback URL to the value shown below.',
         'Open the Settings tab and copy the Client ID and Client Secret, then paste both above.',
       ],
