@@ -10,8 +10,8 @@
 // Ownership shadowing matches the rest of the app: a `default` (user) block/
 // workflow shadows the `SYSTEM` baseline of the same id.
 
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { catalogGsi1Pk } from './blocks.js';
+import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { blockPk, catalogGsi1Pk, LATEST, versionSk } from './blocks.js';
 import { workflowPk, workflowVersionPrefix } from './workflows.js';
 import { DEFAULT_TENANT, SYSTEM_TENANT } from './tenant.js';
 import { buildExecutionPlan, workflowScopes } from './v2-execution-plan.js';
@@ -57,6 +57,30 @@ const listMergedBlocks = async (ddb, tableName, type) => {
   return [...byId.values()];
 };
 
+const loadPlacedStages = async (ddb, tableName, placements) => {
+  const legacyPlacements = placements.filter((placement) => !placement.stageTenant);
+  const legacyStages = legacyPlacements.length
+    ? await listMergedBlocks(ddb, tableName, 'STAGE')
+    : [];
+  const legacyById = new Map(legacyStages.map((stage) => [stage.id ?? stage.blockId, stage]));
+  const stages = await Promise.all(
+    placements.map(async (placement) => {
+      if (!placement.stageTenant) return legacyById.get(placement.stageId) ?? null;
+      const tenant = placement.stageTenant;
+      const sk =
+        placement.pinnedVersion == null ? LATEST : versionSk(Number(placement.pinnedVersion));
+      const result = await ddb.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { pk: blockPk(tenant, 'STAGE', placement.stageId), sk },
+        }),
+      );
+      return result.Item ?? null;
+    }),
+  );
+  return stages.filter(Boolean);
+};
+
 // Load the pinned workflow's version snapshot rows (default shadows SYSTEM).
 const loadWorkflowItems = async (ddb, tableName, workflowId, workflowVersion) => {
   for (const tenant of [DEFAULT_TENANT, SYSTEM_TENANT]) {
@@ -86,6 +110,8 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
     if (sk.startsWith('PLACEMENT#')) {
       placements.push({
         stageId: it.stageId,
+        stageTenant: it.stageTenant ?? null,
+        pinnedVersion: it.pinnedVersion ?? null,
         order: it.order ?? 0,
         phasePath: it.phasePath ?? null,
         scopeMembership: it.scopeMembership ?? {},
@@ -142,7 +168,7 @@ const loadExecutionPlan = async ({
   // makes EVERY agent-bearing stage fail `unresolved_agent` and rejects the plan
   // before any stage runs (the bodies still load lazily in the runtime container).
   const [stages, agents, sensors, rules, artifacts] = await Promise.all([
-    listMergedBlocks(ddb, tableName, 'STAGE'),
+    loadPlacedStages(ddb, tableName, workflow.placements),
     listMergedBlocks(ddb, tableName, 'AGENT'),
     listMergedBlocks(ddb, tableName, 'SENSOR'),
     listMergedBlocks(ddb, tableName, 'RULE'),
@@ -169,7 +195,7 @@ const loadWorkflowScopes = async ({ ddb, tableName, workflowId, workflowVersion 
   return [...workflowScopes(workflow)];
 };
 
-const __test = { listMergedBlocks };
+const __test = { listMergedBlocks, loadPlacedStages };
 export { loadExecutionPlan, loadWorkflowScopes, assembleWorkflow, listMergedBlocks, __test };
 export default {
   loadExecutionPlan,

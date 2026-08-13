@@ -7,10 +7,10 @@
 // the same id. We read default first, fall back to SYSTEM — matching the API's
 // read semantics so the runtime honours user forks.
 
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { ddb, s3 } from './clients.js';
-import { catalogGsi1Pk } from '../shared/blocks.js';
+import { blockPk, catalogGsi1Pk, LATEST, versionSk } from '../shared/blocks.js';
 import { workflowPk, workflowVersionPrefix } from '../shared/workflows.js';
 import { DEFAULT_TENANT, SYSTEM_TENANT } from '../shared/tenant.js';
 
@@ -69,6 +69,28 @@ export const listMergedBlocks = async (type) => {
   return [...byId.values()];
 };
 
+const loadPlacedStages = async (placements) => {
+  const legacyPlacements = placements.filter((placement) => !placement.stageTenant);
+  const legacyStages = legacyPlacements.length ? await listMergedBlocks('STAGE') : [];
+  const legacyById = new Map(legacyStages.map((stage) => [stage.id ?? stage.blockId, stage]));
+  const stages = await Promise.all(
+    placements.map(async (placement) => {
+      if (!placement.stageTenant) return legacyById.get(placement.stageId) ?? null;
+      const tenant = placement.stageTenant;
+      const sk =
+        placement.pinnedVersion == null ? LATEST : versionSk(Number(placement.pinnedVersion));
+      const result = await ddb.send(
+        new GetCommand({
+          TableName: blocksTable(),
+          Key: { pk: blockPk(tenant, 'STAGE', placement.stageId), sk },
+        }),
+      );
+      return result.Item ?? null;
+    }),
+  );
+  return stages.filter(Boolean);
+};
+
 // Load the pinned workflow composition (META + phases + placements + refs) at an
 // immutable version, honouring default→SYSTEM shadowing.
 const loadWorkflow = async ({ workflowId, workflowVersion }) => {
@@ -102,6 +124,8 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
     if (sk.startsWith('PLACEMENT#')) {
       placements.push({
         stageId: it.stageId,
+        stageTenant: it.stageTenant ?? null,
+        pinnedVersion: it.pinnedVersion ?? null,
         order: it.order ?? 0,
         phasePath: it.phasePath ?? null,
         scopeMembership: it.scopeMembership ?? {},
@@ -136,7 +160,7 @@ export const loadLibrary = async ({ workflowId, workflowVersion }) => {
   const workflow = assembleWorkflow(wf.items, { workflowId, workflowVersion });
 
   const [stages, agents, sensors, rules, artifacts, knowledge] = await Promise.all([
-    listMergedBlocks('STAGE'),
+    loadPlacedStages(workflow.placements),
     listMergedBlocks('AGENT'),
     listMergedBlocks('SENSOR'),
     listMergedBlocks('RULE'),
@@ -184,4 +208,4 @@ export const loadRuntimeFile = async (ref, repoPath) =>
 export const loadConductor = async (ref) =>
   ref ? getObjectText(`aidlc-runtime/${ref}/core/aidlc-common/conductor.md`) : '';
 
-export const __test = { assembleWorkflow, keyById, streamToString };
+export const __test = { assembleWorkflow, keyById, streamToString, loadPlacedStages };
