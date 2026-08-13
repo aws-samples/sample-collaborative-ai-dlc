@@ -105,6 +105,32 @@ describe('projectNativeWorkspace', () => {
     expect(state).toContain('- **Current Stage**: requirements-analysis');
     expect(state).toContain('- **Project Type**: Unknown');
     expect(result.manifest.source.projectType).toBe('Unknown');
+    const root = 'aidlc/spaces/default/intents/260811-payment-service';
+    expect(JSON.parse(result.files.get(`${root}/runtime-graph.json`)).stages).toEqual([
+      expect.objectContaining({
+        stage_slug: 'intent-capture',
+        completed_at: expect.any(String),
+        agent: 'aidlc-product-agent',
+        outcome: 'approved',
+      }),
+      expect.objectContaining({
+        stage_slug: 'requirements-analysis',
+        completed_at: null,
+        agent: 'aidlc-product-agent',
+        outcome: 'pending',
+      }),
+    ]);
+    const audit = result.files.get(`${root}/audit/export.md`);
+    expect(audit).toContain(`**Event**: STAGE_STARTED
+**Stage**: intent-capture
+**Agent**: aidlc-product-agent`);
+    expect(audit).toContain(`**Event**: STAGE_COMPLETED
+**Stage**: intent-capture
+**Details**: Imported from Collaborative AI-DLC checkpoint`);
+    expect(audit).toContain(`**Event**: STAGE_STARTED
+**Stage**: requirements-analysis
+**Agent**: aidlc-product-agent`);
+    expect(audit).not.toContain('**Stage**: code-generation');
   });
 
   it('reads an explicit project type from canonical work products', () => {
