@@ -9,6 +9,7 @@ import {
   flattenRecipe,
   generateBuildContext,
   generateDockerfile,
+  generateVerificationScript,
   orderRebuilds,
   validateRecipe,
 } from '../recipe.js';
@@ -214,6 +215,43 @@ describe('managed environment recipes', () => {
     expect(context.files['verification.sh']).toContain(
       'diff -qr --no-dereference "$protected_dir/base-$path" "$protected_dir/built-$path"',
     );
+  });
+
+  it('writes smoke-test fixtures without shell escape processing', () => {
+    const verification = generateVerificationScript(
+      recipe({
+        tools: {
+          python: ENVIRONMENT_TOOL_CATALOG.tools.python.versions[0],
+          java: ENVIRONMENT_TOOL_CATALOG.tools.java.versions[0],
+          go: ENVIRONMENT_TOOL_CATALOG.tools.go.versions[0],
+        },
+        buildTools: {
+          maven: ENVIRONMENT_TOOL_CATALOG.buildTools.maven.versions[0],
+          gradle: ENVIRONMENT_TOOL_CATALOG.buildTools.gradle.versions[0],
+        },
+      }),
+    );
+
+    expect(verification).toContain(
+      `<<'MANAGED_GRADLE'
+tasks.register("verifyEnvironment")
+MANAGED_GRADLE`,
+    );
+    expect(verification).toContain(
+      `<<'MANAGED_GO'
+package main
+
+import "fmt"
+
+func main() {
+  fmt.Println(2)
+}
+MANAGED_GO`,
+    );
+    expect(verification).not.toContain('printf "tasks.register');
+    expect(verification).not.toContain('printf "package main');
+    expect(verification).not.toContain(String.fromCodePoint(0x0b));
+    expect(verification).not.toContain(String.fromCodePoint(0x0c));
   });
 
   it('blocks secret-like variables and protected runtime commands', () => {

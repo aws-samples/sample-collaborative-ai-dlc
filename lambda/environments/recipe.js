@@ -533,27 +533,57 @@ export const generateVerificationScript = (recipe) => {
   }
   if (recipe.tools.python) {
     realBuilds.push(
-      'docker exec "$container" sh -lc \'d=$(mktemp -d); printf "print(1 + 1)\\\\n" > "$d/main.py"; python3 -m py_compile "$d/main.py"; python3 "$d/main.py" | grep -qx 2\'',
+      `docker exec -i "$container" sh -c 'd=/tmp/managed-environment-python; rm -rf "$d"; mkdir -p "$d"; cat > "$d/main.py"' <<'MANAGED_PYTHON'
+print(1 + 1)
+MANAGED_PYTHON
+docker exec "$container" sh -lc 'd=/tmp/managed-environment-python; python3 -m py_compile "$d/main.py"; python3 "$d/main.py" | grep -qx 2'`,
     );
   }
   if (recipe.tools.java) {
     realBuilds.push(
-      'docker exec "$container" sh -lc \'d=$(mktemp -d); printf "class Main { public static void main(String[] a){ System.out.println(2); } }\\\\n" > "$d/Main.java"; javac "$d/Main.java"; java -cp "$d" Main | grep -qx 2\'',
+      `docker exec -i "$container" sh -c 'd=/tmp/managed-environment-java; rm -rf "$d"; mkdir -p "$d"; cat > "$d/Main.java"' <<'MANAGED_JAVA'
+class Main {
+  public static void main(String[] args) {
+    System.out.println(2);
+  }
+}
+MANAGED_JAVA
+docker exec "$container" sh -lc 'd=/tmp/managed-environment-java; javac "$d/Main.java"; java -cp "$d" Main | grep -qx 2'`,
     );
   }
   if (recipe.buildTools.maven) {
     realBuilds.push(
-      'docker exec "$container" sh -lc \'d=$(mktemp -d); cd "$d"; printf "<project><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>1</version></project>" > pom.xml; mvn -q -o validate\'',
+      `docker exec -i "$container" sh -c 'd=/tmp/managed-environment-maven; rm -rf "$d"; mkdir -p "$d"; cat > "$d/pom.xml"' <<'MANAGED_MAVEN'
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>managed.environment</groupId>
+  <artifactId>verification</artifactId>
+  <version>1</version>
+</project>
+MANAGED_MAVEN
+docker exec "$container" sh -lc 'cd /tmp/managed-environment-maven; mvn -q -o validate'`,
     );
   }
   if (recipe.buildTools.gradle) {
     realBuilds.push(
-      'docker exec "$container" sh -lc \'d=$(mktemp -d); cd "$d"; printf "tasks.register(\\\\"verifyEnvironment\\\\")\\\\n" > build.gradle; gradle --offline -q verifyEnvironment\'',
+      `docker exec -i "$container" sh -c 'd=/tmp/managed-environment-gradle; rm -rf "$d"; mkdir -p "$d"; cat > "$d/build.gradle"' <<'MANAGED_GRADLE'
+tasks.register("verifyEnvironment")
+MANAGED_GRADLE
+docker exec "$container" sh -lc 'cd /tmp/managed-environment-gradle; gradle --offline -q verifyEnvironment'`,
     );
   }
   if (recipe.tools.go) {
     realBuilds.push(
-      'docker exec "$container" sh -lc \'d=$(mktemp -d); cd "$d"; printf "package main\\\\nimport \\\\"fmt\\\\"\\\\nfunc main(){fmt.Println(2)}\\\\n" > main.go; go build -o app main.go; ./app | grep -qx 2\'',
+      `docker exec -i "$container" sh -c 'd=/tmp/managed-environment-go; rm -rf "$d"; mkdir -p "$d"; cat > "$d/main.go"' <<'MANAGED_GO'
+package main
+
+import "fmt"
+
+func main() {
+  fmt.Println(2)
+}
+MANAGED_GO
+docker exec "$container" sh -lc 'cd /tmp/managed-environment-go; go build -o app main.go; ./app | grep -qx 2'`,
     );
   }
   if (recipe.tools.rust) {
