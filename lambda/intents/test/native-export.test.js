@@ -7,12 +7,14 @@ import {
   alignProjectionToDistribution,
   buildZip,
   createNativeExport,
+  detectConstructionCapabilities,
   detectWorkspaceLayout,
   loadDistribution,
   loadCustomRules,
   registerNativeScope,
   resolveRulesDir,
   safeArchivePath,
+  shouldShowWorkspaceSetup,
 } from '../native-export.js';
 
 vi.mock('../../shared/repo-fetch.js', () => ({
@@ -168,6 +170,54 @@ describe('native workflow export', () => {
         files: new Map([['.codex/tools/data/stage-graph.json', graph]]),
       }),
     ).toBe('flat');
+  });
+
+  it('detects deterministic per-unit iteration from the harness implementation', () => {
+    const metadata = Buffer.from(
+      JSON.stringify({ harnessDir: '.codex', rulesSubdir: 'aidlc-rules' }),
+    );
+    expect(
+      detectConstructionCapabilities({
+        harness: 'codex',
+        distributionFiles: new Map([
+          ['.codex/tools/data/harness.json', metadata],
+          ['.codex/tools/aidlc-orchestrate.ts', Buffer.from('function emitPerUnitRunStage() {}')],
+        ]),
+      }),
+    ).toEqual({ perUnitIteration: true });
+    expect(
+      detectConstructionCapabilities({
+        harness: 'codex',
+        distributionFiles: new Map([
+          ['.codex/tools/data/harness.json', metadata],
+          ['.codex/tools/aidlc-orchestrate.ts', Buffer.from('function emitRunStage() {}')],
+        ]),
+      }),
+    ).toEqual({ perUnitIteration: false });
+  });
+
+  it('identifies the final Inception checkpoint and later workspace setup boundaries', () => {
+    expect(
+      shouldShowWorkspaceSetup([
+        { phase: 'inception', marker: '-' },
+        { phase: 'construction', marker: ' ' },
+      ]),
+    ).toBe(true);
+    expect(
+      shouldShowWorkspaceSetup([
+        { phase: 'inception', marker: '-' },
+        { phase: 'inception', marker: ' ' },
+        { phase: 'construction', marker: ' ' },
+      ]),
+    ).toBe(false);
+    expect(shouldShowWorkspaceSetup([{ phase: 'construction', marker: '-' }])).toBe(true);
+    expect(shouldShowWorkspaceSetup([{ phase: 'operation', marker: '-' }])).toBe(true);
+    expect(
+      shouldShowWorkspaceSetup([
+        { phase: 'construction', marker: 'x' },
+        { phase: 'operation', marker: 'x' },
+      ]),
+    ).toBe(true);
   });
 
   it('downloads and caches a missing harness for the exact commit', async () => {
@@ -345,10 +395,66 @@ describe('native workflow export', () => {
       harnessDir: '.codex',
       launchCommand: 'codex',
       continueCommand: '$aidlc',
+      showWorkspaceSetup: false,
       repositories: [],
     });
     expect(puts).toHaveLength(1);
     expect(puts[0].Key).toMatch(/^workflow-exports\/intent-1\/.+\.zip$/);
     expect(puts[0].Body.subarray(0, 2).toString()).toBe('PK');
+  });
+
+  it('returns the next unfinished unit and documents legacy iteration limits', async () => {
+    const { archive, manifest } = await distribution();
+    const s3 = {
+      send: vi.fn(async (command) => {
+        if (command instanceof PutObjectCommand) return {};
+        return {
+          Body: command.input.Key.endsWith('codex.manifest.json') ? manifest : archive,
+        };
+      }),
+    };
+    const result = await createNativeExport({
+      s3,
+      bucket: 'artifacts',
+      upstreamRef: REF,
+      harness: 'codex',
+      now: '2026-08-11T12:00:00.000Z',
+      presign: vi.fn().mockResolvedValue('https://download.example/export.zip'),
+      projection: {
+        intent: {
+          projectId: 'project-1',
+          intentId: 'intent-1',
+          title: 'Payment service',
+          scope: 'feature',
+          workflowId: 'aidlc-v2',
+          workflowVersion: 4,
+          createdAt: '2026-08-11T10:00:00.000Z',
+        },
+        stages: [{ stageId: 'intent-capture', phase: 'ideation' }],
+        stageRows: [],
+        artifacts: [],
+        repositories: [],
+        unitPlan: {
+          units: [
+            { slug: 'upload-image', dependsOn: [] },
+            { slug: 'identify-plant', dependsOn: ['upload-image'] },
+          ],
+          batches: [['upload-image'], ['identify-plant']],
+        },
+        unitRows: [
+          { slug: 'upload-image', state: 'MERGED' },
+          { slug: 'identify-plant', state: 'PENDING' },
+        ],
+      },
+    });
+    expect(result.setup.construction).toEqual({
+      nextUnit: 'identify-plant',
+      completedUnits: ['upload-image'],
+      readyUnits: ['identify-plant'],
+      perUnitIteration: false,
+    });
+    expect(result.warnings).toContainEqual(
+      expect.stringMatching(/predates deterministic per-unit/),
+    );
   });
 });

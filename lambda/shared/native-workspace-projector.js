@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { parseBoltDag } from './v2-sensor-contract.js';
 
 const PHASES = ['initialization', 'ideation', 'inception', 'construction', 'operation'];
 const PHASE_LABELS = {
@@ -138,7 +139,108 @@ const stageAggregate = (rows) => {
   return 'PENDING';
 };
 
-const projectStageState = ({ stages, stageRows }) => {
+const normalizedUnitPlan = (unitPlan) => {
+  if (!unitPlan || !Array.isArray(unitPlan.units) || unitPlan.units.length === 0) return null;
+  const hasRecordedAutonomyMode = ['gated', 'autonomous'].includes(unitPlan.autonomyMode);
+  const units = unitPlan.units.map((unit) => ({
+    name: assertSafeSegment(unit.slug ?? unit.name, 'unit'),
+    depends_on: (unit.dependsOn ?? unit.depends_on ?? []).map((dependency) =>
+      assertSafeSegment(dependency, 'unit dependency'),
+    ),
+  }));
+  const dagBody = renderUnitDagBlock(units);
+  const parsed = parseBoltDag(`\`\`\`yaml\n${dagBody}\n\`\`\`\n`);
+  if (!parsed.ok) {
+    throw new Error(`native-export: unit plan is invalid: ${parsed.detail}`);
+  }
+  return {
+    units: parsed.units.map((unit) => ({
+      name: unit.name,
+      depends_on: unit.depends_on,
+    })),
+    batches: parsed.batches,
+    skipMatrix: unitPlan.skipMatrix ?? {},
+    walkingSkeleton: unitPlan.walkingSkeleton ?? null,
+    autonomyMode: hasRecordedAutonomyMode ? unitPlan.autonomyMode : 'gated',
+    autonomyModeSource: hasRecordedAutonomyMode ? 'cloud' : 'export-default',
+  };
+};
+
+const normalizedUnitRows = (unitRows = []) => {
+  const rowsByUnit = new Map();
+  for (const row of unitRows) {
+    if (!row?.slug) continue;
+    const rows = rowsByUnit.get(row.slug) ?? [];
+    rows.push(row);
+    rowsByUnit.set(row.slug, rows);
+  }
+  for (const [slug, rows] of rowsByUnit) {
+    if (rows.some((row) => row.sectionIndex != null)) {
+      rowsByUnit.set(
+        slug,
+        rows.filter((row) => row.sectionIndex != null),
+      );
+    }
+  }
+  return rowsByUnit;
+};
+
+const completedUnitSlugs = ({ unitPlan, unitRows = [] }) => {
+  if (!unitPlan) return new Set();
+  const rowsByUnit = normalizedUnitRows(unitRows);
+  return new Set(
+    unitPlan.units
+      .filter((unit) => {
+        const rows = rowsByUnit.get(unit.name) ?? [];
+        return rows.length > 0 && rows.every((row) => row.state === 'MERGED');
+      })
+      .map((unit) => unit.name),
+  );
+};
+
+const dependencyReadyUnitSlugs = ({ unitPlan, completedUnits }) => {
+  if (!unitPlan) return [];
+  return unitPlan.units
+    .filter((unit) => !completedUnits.has(unit.name))
+    .filter((unit) => unit.depends_on.every((dependency) => completedUnits.has(dependency)))
+    .map((unit) => unit.name);
+};
+
+const completedUnitTimestamp = ({ unitSlug, unitRows = [], fallback }) => {
+  const timestamps = unitRows
+    .filter((row) => row?.slug === unitSlug && row.state === 'MERGED')
+    .flatMap((row) => [row.mergedAt, row.completedAt, row.updatedAt])
+    .filter(Boolean)
+    .toSorted();
+  return timestamps.at(-1) ?? fallback;
+};
+
+const unitStageAggregate = ({ stage, rows, unitPlan, completedUnits }) => {
+  if (stage.forEach !== 'unit-of-work' || stage.forEachDegraded || !unitPlan) {
+    return stageAggregate(rows);
+  }
+  const rowsByUnit = new Map();
+  for (const row of rows) {
+    if (!row.unitSlug) continue;
+    const unitRows = rowsByUnit.get(row.unitSlug) ?? [];
+    unitRows.push(row);
+    rowsByUnit.set(row.unitSlug, unitRows);
+  }
+  const unitComplete = (unit) => {
+    if (completedUnits.has(unit.name)) return true;
+    const skippedStages = unitPlan.skipMatrix?.[unit.name];
+    if (Array.isArray(skippedStages) && skippedStages.includes(stage.stageId)) return true;
+    return (rowsByUnit.get(unit.name) ?? []).some((row) =>
+      ['SUCCEEDED', 'SKIPPED'].includes(row.state),
+    );
+  };
+  if (unitPlan.units.every(unitComplete)) return 'SUCCEEDED';
+  return stageAggregate(
+    rows.filter((row) => !row.unitSlug || !unitComplete({ name: row.unitSlug })),
+  );
+};
+
+const projectStageState = ({ stages, stageRows, unitPlan = null, unitRows = [] }) => {
   const rowsByStage = new Map();
   for (const row of stageRows ?? []) {
     if (!row?.stageId) continue;
@@ -146,11 +248,19 @@ const projectStageState = ({ stages, stageRows }) => {
     list.push(row);
     rowsByStage.set(row.stageId, list);
   }
+  const completedUnits = completedUnitSlugs({ unitPlan, unitRows });
 
   const projected = stages.map((stage) => ({
     ...stage,
     phase: normalizePhase(stage.phase),
-    cloudState: stage.excluded ? 'SKIPPED' : stageAggregate(rowsByStage.get(stage.stageId) ?? []),
+    cloudState: stage.excluded
+      ? 'SKIPPED'
+      : unitStageAggregate({
+          stage,
+          rows: rowsByStage.get(stage.stageId) ?? [],
+          unitPlan,
+          completedUnits,
+        }),
   }));
   const firstUnfinished = projected.findIndex(
     (stage) => !['SUCCEEDED', 'SKIPPED'].includes(stage.cloudState),
@@ -178,7 +288,58 @@ const phaseStatus = (phase, stages) => {
   return 'Pending';
 };
 
-const renderState = ({ intent, stages, now, repositories, nativeScope }) => {
+const normalizeProjectType = (value) => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (normalized === 'greenfield') return 'Greenfield';
+  if (normalized === 'brownfield') return 'Brownfield';
+  return null;
+};
+
+const projectTypeFromArtifacts = (artifacts = []) => {
+  const detected = new Set();
+  for (const artifact of artifacts) {
+    const content = String(artifact?.content ?? '').replaceAll('*', '');
+    for (const match of content.matchAll(
+      /\b(?:project|request)\s+type\s*(?:\||:)\s*[^|\n]{0,80}\b(greenfield|brownfield)\b/gi,
+    )) {
+      detected.add(normalizeProjectType(match[1]));
+    }
+  }
+  return detected.size === 1 ? [...detected][0] : null;
+};
+
+const projectTypeFromDescription = (intent) => {
+  const content = [intent?.title, intent?.prompt].filter(Boolean).join('\n');
+  const detected = new Set(
+    [...content.matchAll(/\b(greenfield|brownfield)\b/gi)].map((match) =>
+      normalizeProjectType(match[1]),
+    ),
+  );
+  return detected.size === 1 ? [...detected][0] : null;
+};
+
+const resolveProjectType = ({ intent, artifacts = [] }) => {
+  const recorded = normalizeProjectType(intent?.projectType);
+  if (recorded) return recorded;
+
+  const artifactType = projectTypeFromArtifacts(artifacts);
+  if (artifactType) return artifactType;
+
+  return projectTypeFromDescription(intent) ?? 'Unknown';
+};
+
+const renderState = ({
+  intent,
+  stages,
+  now,
+  projectType,
+  nativeScope,
+  unitPlan,
+  completedUnits,
+  nextUnit,
+}) => {
   const activeIndex = stages.findIndex((stage) => stage.marker === '-');
   const current = activeIndex >= 0 ? stages[activeIndex] : null;
   const next =
@@ -209,12 +370,31 @@ const renderState = ({ intent, stages, now, repositories, nativeScope }) => {
   const status = current ? 'Running' : 'Completed';
   const lifecycle = current?.phase?.toUpperCase() ?? 'COMPLETED';
   const pendingArtifacts = current?.produces?.length ? current.produces.join(', ') : 'none';
+  const orderedCompletedUnits =
+    unitPlan?.batches.flat().filter((unit) => completedUnits?.has(unit)) ?? [];
+  const lastCompletedUnit = orderedCompletedUnits.at(-1) ?? null;
+  const lastCompletedUnitStage = stages
+    .filter(
+      (stage) =>
+        stage.phase === 'construction' && stage.forEach === 'unit-of-work' && stage.marker !== 'S',
+    )
+    .at(-1);
+  const constructionResume = current?.phase === 'construction' && nextUnit;
+  const resumeLastCompleted =
+    constructionResume && lastCompletedUnit && lastCompletedUnitStage
+      ? `${lastCompletedUnitStage.stageId} for unit ${lastCompletedUnit}`
+      : lastCompleted?.stageId || 'none';
+  const resumeNextAction = current
+    ? constructionResume
+      ? `Execute ${current.stageId} for unit ${nextUnit}`
+      : `Execute ${current.stageId}`
+    : 'Workflow complete';
 
   return `# AI-DLC State Tracking
 
 ## Project Information
 - **Project**: ${intent.prompt || intent.title || intent.intentId}
-- **Project Type**: ${repositories.length > 0 ? 'Brownfield' : 'Greenfield'}
+- **Project Type**: ${projectType}
 - **Scope**: ${nativeScope}
 - **Start Date**: ${intent.createdAt || now}
 - **State Version**: 7
@@ -222,6 +402,7 @@ const renderState = ({ intent, stages, now, repositories, nativeScope }) => {
 - **Worktree Path**:
 - **Bolt Refs**:
 - **Practices Affirmed Timestamp**:
+- **Construction Autonomy Mode**: ${unitPlan?.autonomyMode ?? 'unset'}
 
 ## Scope Configuration
 - **Stages to Execute**: ${execute.map((stage) => stage.number || stage.stageId).join(', ') || 'none'}
@@ -243,6 +424,7 @@ const renderState = ({ intent, stages, now, repositories, nativeScope }) => {
 
 ## Runtime State
 - **Revision Count**: 0
+${unitPlan?.walkingSkeleton ? '- **Skeleton Stance**: on' : ''}
 
 ## Phase Progress
 <!-- Status values: Pending, Active, Verified, Skipped -->
@@ -262,11 +444,125 @@ ${stageLines}
 - **Last Updated**: ${now}
 
 ## Session Resume Point
-- **Last Completed Stage**: ${lastCompleted?.stageId || 'none'}
-- **Next Action**: ${current ? `Execute ${current.stageId}` : 'Workflow complete'}
+- **Last Completed Stage**: ${resumeLastCompleted}
+- **Next Action**: ${resumeNextAction}
 - **Pending Artifacts**: ${pendingArtifacts}
 `;
 };
+
+const renderUnitDagBlock = (units) =>
+  [
+    'units:',
+    ...units.flatMap((unit) => [
+      `  - name: ${unit.name}`,
+      `    depends_on: [${unit.depends_on.join(', ')}]`,
+    ]),
+  ].join('\n');
+
+const upsertUnitDagArtifact = (content, unitPlan) => {
+  const block = `\`\`\`yaml\n${renderUnitDagBlock(unitPlan.units)}\n\`\`\``;
+  const source = String(content ?? '');
+  let replaced = false;
+  const updated = source.replace(/```ya?ml[^\n]*\n([\s\S]*?)```/g, (match, inner) => {
+    if (replaced || !/^\s*units\s*:/m.test(inner)) return match;
+    replaced = true;
+    return block;
+  });
+  if (replaced) return updated.endsWith('\n') ? updated : `${updated}\n`;
+  if (updated.trim()) {
+    return `${updated.trimEnd()}\n\n## Exported Unit DAG\n\n${block}\n`;
+  }
+  return `# Unit of Work Dependency
+
+## Unit DAG
+
+${block}
+
+## Export Context
+
+This dependency graph was reconstructed from the approved Collaborative AI-DLC unit plan.
+`;
+};
+
+const renderAuditEntry = ({ heading, timestamp, event, fields = {} }) => `## ${heading}
+**Timestamp**: ${timestamp}
+**Event**: ${event}
+${Object.entries(fields)
+  .map(([key, value]) => `**${key}**: ${value}`)
+  .join('\n')}
+
+---
+`;
+
+const renderAudit = ({
+  intent,
+  nativeScope,
+  now,
+  unitPlan = null,
+  completedUnits = new Set(),
+  unitRows = [],
+}) => {
+  const startedAt = intent.createdAt || now;
+  const entries = [
+    renderAuditEntry({
+      heading: 'Workflow Started',
+      timestamp: startedAt,
+      event: 'WORKFLOW_STARTED',
+      fields: {
+        'Workflow ID': intent.intentId,
+        Scope: nativeScope,
+        Request: 'Exported Collaborative AI-DLC checkpoint',
+      },
+    }),
+  ];
+  const orderedCompletedUnits =
+    unitPlan?.batches.flat().filter((unit) => completedUnits.has(unit)) ?? [];
+  for (const unitSlug of orderedCompletedUnits) {
+    const batchIndex = unitPlan.batches.findIndex((batch) => batch.includes(unitSlug));
+    entries.push(
+      renderAuditEntry({
+        heading: 'Bolt Completed',
+        timestamp: completedUnitTimestamp({ unitSlug, unitRows, fallback: now }),
+        event: 'BOLT_COMPLETED',
+        fields: {
+          'Bolt names': unitSlug,
+          'Batch number': batchIndex + 1,
+          'Bolt slug': unitSlug,
+        },
+      }),
+    );
+    if (
+      unitSlug === unitPlan.walkingSkeleton &&
+      ['gated', 'autonomous'].includes(unitPlan.autonomyMode)
+    ) {
+      entries.push(
+        renderAuditEntry({
+          heading: 'Autonomy Mode Set',
+          timestamp: completedUnitTimestamp({ unitSlug, unitRows, fallback: now }),
+          event: 'AUTONOMY_MODE_SET',
+          fields: { Mode: unitPlan.autonomyMode },
+        }),
+      );
+    }
+  }
+
+  return `# AI-DLC Audit Log\n\n${entries.join('\n')}`;
+};
+
+const renderRuntimeGraph = ({ intent, nativeScope, unitPlan, now }) => ({
+  workflow_id: intent.intentId,
+  scope: nativeScope,
+  started_at: intent.createdAt || now,
+  stages: [],
+  ...(unitPlan
+    ? {
+        bolt_dag: {
+          units: unitPlan.units,
+          batches: unitPlan.batches,
+        },
+      }
+    : {}),
+});
 
 const artifactPath = ({
   artifact,
@@ -305,6 +601,8 @@ const projectNativeWorkspace = ({
   artifacts = [],
   humanTasks = [],
   repositories = [],
+  unitPlan: rawUnitPlan = null,
+  unitRows = [],
   space = 'default',
   now = new Date().toISOString(),
   upstreamRef,
@@ -338,7 +636,17 @@ const projectNativeWorkspace = ({
   if (workspaceLayout === 'flat' && normalizedRepos.length > 1) {
     throw new Error('native-export: legacy flat workspaces do not support multiple repositories');
   }
-  const projectedStages = projectStageState({ stages, stageRows });
+  const unitPlan = normalizedUnitPlan(rawUnitPlan);
+  const completedUnits = completedUnitSlugs({ unitPlan, unitRows });
+  const unitOrder = unitPlan?.batches.flat() ?? [];
+  const remainingUnits = unitOrder.filter((unit) => !completedUnits.has(unit));
+  const readyUnits = dependencyReadyUnitSlugs({ unitPlan, completedUnits });
+  const nextUnit = readyUnits[0] ?? remainingUnits[0] ?? null;
+  const projectedStages = projectStageState({ stages, stageRows, unitPlan, unitRows });
+  const projectType = resolveProjectType({
+    intent,
+    artifacts,
+  });
   const stageById = new Map(projectedStages.map((stage) => [stage.stageId, stage]));
   const stageByInstance = new Map(
     stageRows
@@ -375,8 +683,26 @@ const projectNativeWorkspace = ({
       intent,
       stages: projectedStages,
       now,
-      repositories: normalizedRepos,
+      projectType,
       nativeScope,
+      unitPlan,
+      completedUnits,
+      nextUnit,
+    }),
+  );
+  const auditPath =
+    workspaceLayout === 'flat'
+      ? `${recordRoot.path}/audit.md`
+      : `${recordRoot.path}/audit/export.md`;
+  files.set(
+    auditPath,
+    renderAudit({
+      intent,
+      nativeScope,
+      now,
+      unitPlan,
+      completedUnits,
+      unitRows,
     }),
   );
   if (workspaceLayout === 'spaces' && normalizedRepos.length > 0) {
@@ -407,6 +733,14 @@ const projectNativeWorkspace = ({
     });
     if (files.has(path)) throw new Error(`native-export: duplicate output path ${path}`);
     files.set(path, String(artifact.content ?? ''));
+  }
+  if (unitPlan) {
+    const dependencyPath = `${recordRoot.path}/inception/units-generation/unit-of-work-dependency.md`;
+    files.set(dependencyPath, upsertUnitDagArtifact(files.get(dependencyPath), unitPlan));
+    files.set(
+      `${recordRoot.path}/runtime-graph.json`,
+      `${JSON.stringify(renderRuntimeGraph({ intent, nativeScope, unitPlan, now }), null, 2)}\n`,
+    );
   }
   const questionGroups = new Map();
   for (const task of humanTasks) {
@@ -464,6 +798,7 @@ const projectNativeWorkspace = ({
       workflowId: intent.workflowId,
       workflowVersion: intent.workflowVersion,
       scope: intent.scope,
+      projectType,
     },
     native: {
       upstreamRef,
@@ -473,6 +808,21 @@ const projectNativeWorkspace = ({
       ...(workspaceLayout === 'spaces' ? { space: safeSpace, recordDir } : {}),
     },
     repositories: normalizedRepos,
+    ...(unitPlan
+      ? {
+          construction: {
+            unitCount: unitPlan.units.length,
+            batches: unitPlan.batches,
+            completedUnits: unitOrder.filter((unit) => completedUnits.has(unit)),
+            remainingUnits,
+            readyUnits,
+            nextUnit,
+            walkingSkeleton: unitPlan.walkingSkeleton,
+            autonomyMode: unitPlan.autonomyMode,
+            autonomyModeSource: unitPlan.autonomyModeSource,
+          },
+        }
+      : {}),
     files: [...files]
       .map(([path, body]) => ({
         path,
@@ -491,8 +841,11 @@ export {
   projectNativeWorkspace,
   projectStageState,
   recordDate,
+  resolveProjectType,
+  renderUnitDagBlock,
   renderQuestionFile,
   slugify,
+  upsertUnitDagArtifact,
 };
 
 export default { projectNativeWorkspace };

@@ -1575,6 +1575,7 @@ export const handler = async (event) => {
               workflowVersion: meta.workflowVersion,
               createdAt: meta.startedAt,
               branch: meta.branch,
+              projectType: meta.projectType,
               customRules: meta.customRules ?? [],
             },
             stages,
@@ -1582,6 +1583,8 @@ export const handler = async (event) => {
             artifacts,
             humanTasks: records.humanTasks ?? [],
             repositories: exportRepositories(meta),
+            unitPlan: records.unitPlan,
+            unitRows: records.units ?? [],
           },
         });
         return response(201, exported);
