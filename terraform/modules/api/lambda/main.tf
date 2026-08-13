@@ -2387,6 +2387,7 @@ module "intents_lambda" {
   handler       = "index.handler"
   runtime       = "nodejs24.x"
   timeout       = 120
+  memory_size   = 512
 
   source_path = [
     {
