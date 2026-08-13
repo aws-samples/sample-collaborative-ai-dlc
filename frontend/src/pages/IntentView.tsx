@@ -95,7 +95,7 @@ export default function IntentView() {
   // plan setup, or a stranded CREATED hand-off) still require a full start.
   const failedStage =
     detail?.intent.status === 'FAILED'
-      ? (stageRows.find((stage) => stage.state === 'FAILED') ?? null)
+      ? (stageRows.find((stage) => stage.planned && stage.state === 'FAILED') ?? null)
       : null;
   const handleRecovery = async () => {
     if (!projectId || !intentId) return;

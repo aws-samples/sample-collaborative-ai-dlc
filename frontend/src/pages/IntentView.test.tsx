@@ -183,6 +183,15 @@ describe('IntentView', () => {
   });
 
   it('retries a failed run from its earliest failed stage', async () => {
+    compiled.mockResolvedValue({
+      graph: {
+        nodes: [
+          { stageId: 'requirements-analysis', phasePath: '01', order: 0 },
+          { stageId: 'units-generation', phasePath: '01', order: 1 },
+        ],
+        edges: [],
+      },
+    });
     get.mockResolvedValue({
       ...baseDetail({
         status: 'FAILED',
@@ -212,6 +221,38 @@ describe('IntentView', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Retry Units Generation' }));
     expect(rewind).toHaveBeenCalledWith('p1', 'i1', { fromStageId: 'units-generation' });
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it('restarts when the only failed stage row is no longer in the compiled plan', async () => {
+    compiled.mockResolvedValue({
+      graph: {
+        nodes: [{ stageId: 'requirements-analysis', phasePath: '01', order: 0 }],
+        edges: [],
+      },
+    });
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'FAILED',
+        currentStage: 'units-generation',
+        failureReason: 'stage_failed: units-generation',
+      }),
+      stages: [
+        {
+          stageInstanceId: 'si-units',
+          stageId: 'units-generation',
+          state: 'FAILED',
+          phase: 'inception',
+          runtimeError: 'workspace_restore_failed',
+        },
+      ],
+    });
+    start.mockResolvedValue({});
+
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Restart workflow' }));
+    expect(start).toHaveBeenCalledWith('p1', 'i1');
+    expect(rewind).not.toHaveBeenCalled();
   });
 
   it('restarts the workflow when a failed run has no failed stage row', async () => {
