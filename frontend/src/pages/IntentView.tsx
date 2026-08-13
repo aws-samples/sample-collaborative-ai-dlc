@@ -73,6 +73,20 @@ const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
 
+const workspaceDirectoryName = (value?: string | null) => {
+  const name = String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[^\p{ASCII}]/gu, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 80)
+    .replace(/[._-]+$/g, '');
+  return name || 'aidlc-workspace';
+};
+
 const CommandBlock = ({ children, label }: { children: string; label: string }) => {
   const [copied, setCopied] = useState(false);
 
@@ -324,7 +338,7 @@ export default function IntentView() {
     !!lastTouch &&
     Date.now() - new Date(lastTouch).getTime() > 120_000;
   const constructionSetup = constructionExport?.setup ?? null;
-  const exportDirectory = constructionExport?.filename.replace(/\.zip$/i, '') ?? 'aidlc-workspace';
+  const exportDirectory = workspaceDirectoryName(project?.name);
   const downloadedZip = constructionExport
     ? `"$HOME/Downloads/${constructionExport.filename}"`
     : '"$HOME/Downloads/aidlc-workspace.zip"';
@@ -712,7 +726,7 @@ export default function IntentView() {
           if (!open) setConstructionExport(null);
         }}
       >
-        <AlertDialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-x-hidden overflow-y-auto [&>*]:min-w-0">
+        <AlertDialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-x-hidden overflow-y-scroll [&>*]:min-w-0">
           <AlertDialogHeader>
             <AlertDialogTitle>Set up your local workspace</AlertDialogTitle>
             <AlertDialogDescription>
@@ -763,6 +777,58 @@ export default function IntentView() {
                   Open this directory in your IDE. VS Code users may open{' '}
                   <code>aidlc.code-workspace</code>.
                 </p>
+              </li>
+              <li>
+                Then run inside the agent session:
+                <CommandBlock label="Copy AI-DLC command">
+                  {constructionContinueCommand ?? ''}
+                </CommandBlock>
+              </li>
+            </ol>
+          )}
+
+          {constructionSetup?.mode === 'manual-workspace' && (
+            <ol className="list-decimal space-y-4 pl-5 text-sm">
+              <li>
+                Create an empty workspace directory and extract the downloaded ZIP:
+                <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
+              </li>
+              <li>
+                Clone each repository into the workspace:
+                {constructionSetup.repositories.map((repository) => (
+                  <div key={repository.name} className="mt-3 space-y-3">
+                    <div>
+                      <p className="text-xs font-medium">Fresh clone: {repository.name}</p>
+                      <CommandBlock label={`Copy fresh clone command for ${repository.name}`}>
+                        {`git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.name)}`}
+                      </CommandBlock>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium">Existing clone: {repository.name}</p>
+                      <CommandBlock label={`Copy existing clone commands for ${repository.name}`}>
+                        {[
+                          `git -C ${shellQuote(repository.name)} fetch origin`,
+                          `git -C ${shellQuote(repository.name)} switch ${shellQuote(repository.branch)}`,
+                          `git -C ${shellQuote(repository.name)} pull --ff-only`,
+                        ].join('\n')}
+                      </CommandBlock>
+                    </div>
+                  </div>
+                ))}
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Keep these repositories as immediate children of the workspace, alongside{' '}
+                  <code>aidlc/</code> and the harness directory.
+                </p>
+              </li>
+              <li>
+                Start the selected harness:
+                {launchCommand ? (
+                  <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
+                ) : (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Open this directory in Kiro IDE.
+                  </p>
+                )}
               </li>
               <li>
                 Then run inside the agent session:

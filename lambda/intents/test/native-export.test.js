@@ -15,6 +15,7 @@ import {
   resolveRulesDir,
   safeArchivePath,
   shouldShowWorkspaceSetup,
+  workspaceSyncCommand,
 } from '../native-export.js';
 
 vi.mock('../../shared/repo-fetch.js', () => ({
@@ -194,6 +195,21 @@ describe('native workflow export', () => {
         ]),
       }),
     ).toEqual({ perUnitIteration: false });
+  });
+
+  it('detects workspace sync only when the selected harness ships the tool', () => {
+    expect(
+      workspaceSyncCommand({
+        harness: 'codex',
+        distributionFiles: new Map(),
+      }),
+    ).toBeNull();
+    expect(
+      workspaceSyncCommand({
+        harness: 'codex',
+        distributionFiles: new Map([['.codex/tools/aidlc-workspace-sync.ts', Buffer.alloc(0)]]),
+      }),
+    ).toBe('bun .codex/tools/aidlc-workspace-sync.ts');
   });
 
   it('identifies the final Inception checkpoint and later workspace setup boundaries', () => {
@@ -384,19 +400,41 @@ describe('native workflow export', () => {
         stages: [{ stageId: 'intent-capture', phase: 'ideation' }],
         stageRows: [],
         artifacts: [],
-        repositories: [],
+        repositories: [
+          {
+            name: 'api',
+            url: 'git@github.com:example/api.git',
+            branch: 'aidlc/payment-service',
+          },
+          {
+            name: 'web',
+            url: 'git@github.com:example/web.git',
+            branch: 'aidlc/payment-service',
+          },
+        ],
       },
     });
     expect(result.downloadUrl).toBe('https://download.example/export.zip');
     expect(result.filename).toBe('260811-payment-service-codex.zip');
     expect(result.setup).toEqual({
       workspaceLayout: 'spaces',
-      mode: 'extract-only',
+      mode: 'manual-workspace',
       harnessDir: '.codex',
       launchCommand: 'codex',
       continueCommand: '$aidlc',
       showWorkspaceSetup: false,
-      repositories: [],
+      repositories: [
+        {
+          name: 'api',
+          url: 'git@github.com:example/api.git',
+          branch: 'aidlc/payment-service',
+        },
+        {
+          name: 'web',
+          url: 'git@github.com:example/web.git',
+          branch: 'aidlc/payment-service',
+        },
+      ],
     });
     expect(puts).toHaveLength(1);
     expect(puts[0].Key).toMatch(/^workflow-exports\/intent-1\/.+\.zip$/);
