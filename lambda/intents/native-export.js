@@ -28,6 +28,12 @@ const HARNESS_SESSION_COMMANDS = {
 };
 const harnessRootDir = (harness) =>
   HARNESS_DATA_DIRS[harness]?.replace(/\/tools\/data$/, '') ?? null;
+const workspaceSyncCommand = ({ distributionFiles, harness }) => {
+  const harnessDir = harnessRootDir(harness);
+  if (!harnessDir) return null;
+  const tool = `${harnessDir}/tools/aidlc-workspace-sync.ts`;
+  return distributionFiles.has(tool) ? `bun ${tool}` : null;
+};
 const sha256 = (body) => createHash('sha256').update(body).digest('hex');
 const isCommitSha = (value) => /^[0-9a-f]{40}$/i.test(String(value ?? ''));
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
@@ -622,12 +628,15 @@ const createNativeExport = async ({
     }),
     { expiresIn: DOWNLOAD_TTL_SECONDS },
   );
+  const syncCommand = workspaceSyncCommand({ distributionFiles, harness });
   const setupMode =
     projected.manifest.repositories.length === 0
       ? 'extract-only'
-      : distribution.workspaceLayout === 'spaces'
+      : syncCommand
         ? 'workspace-sync'
-        : 'manual-clone';
+        : distribution.workspaceLayout === 'spaces'
+          ? 'manual-workspace'
+          : 'manual-clone';
   return {
     exportId,
     filename: `${projected.recordDir}-${harness}.zip`,
@@ -651,9 +660,7 @@ const createNativeExport = async ({
             },
           }
         : {}),
-      ...(setupMode === 'workspace-sync' && harnessRootDir(harness)
-        ? { syncCommand: `bun ${harnessRootDir(harness)}/tools/aidlc-workspace-sync.ts` }
-        : {}),
+      ...(syncCommand ? { syncCommand } : {}),
     },
   };
 };
@@ -674,6 +681,7 @@ export {
   resolveRulesDir,
   safeArchivePath,
   shouldShowWorkspaceSetup,
+  workspaceSyncCommand,
 };
 
 export default { createNativeExport };
