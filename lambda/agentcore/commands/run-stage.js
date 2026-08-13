@@ -1505,6 +1505,7 @@ export const runStage = async (
     executionId,
     intentId,
     projectId,
+    stageId,
     stageInstanceId,
     unitSlug,
     sectionIndex,
