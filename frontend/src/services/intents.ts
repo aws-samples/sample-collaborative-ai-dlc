@@ -128,7 +128,7 @@ export interface NativeWorkflowExport {
   warnings: string[];
   setup: {
     workspaceLayout: 'flat' | 'spaces';
-    mode: 'extract-only' | 'workspace-sync' | 'manual-clone';
+    mode: 'extract-only' | 'workspace-sync' | 'manual-workspace' | 'manual-clone';
     harnessDir: string | null;
     syncCommand?: string;
     launchCommand: string | null;

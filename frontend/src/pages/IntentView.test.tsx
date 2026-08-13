@@ -4,7 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
-const projectCacheMock = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'admin' | 'member' }));
+const projectCacheMock = vi.hoisted(() => ({
+  role: 'owner' as 'owner' | 'admin' | 'member',
+  name: 'Bookstore Tracker',
+}));
 
 // Heavy leaf components are stubbed to simple markers — these tests exercise
 // IntentView's OWN rendering logic (DRAFT card, pipeline, gates, artifacts)
@@ -53,7 +56,9 @@ vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { displayName: 'U', email: 'u@x' } }),
 }));
 vi.mock('@/hooks/useProjectsCache', () => ({
-  useProjectCache: () => ({ project: { userRole: projectCacheMock.role } }),
+  useProjectCache: () => ({
+    project: { name: projectCacheMock.name, userRole: projectCacheMock.role },
+  }),
 }));
 
 const get = vi.fn();
@@ -164,6 +169,7 @@ describe('IntentView', () => {
     });
     writeText.mockReset().mockResolvedValue(undefined);
     projectCacheMock.role = 'owner';
+    projectCacheMock.name = 'Bookstore Tracker';
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
@@ -398,9 +404,8 @@ describe('IntentView', () => {
       warnings: [],
       setup: {
         workspaceLayout: 'spaces',
-        mode: 'workspace-sync',
+        mode: 'manual-workspace',
         harnessDir: '.codex',
-        syncCommand: 'bun .codex/tools/aidlc-workspace-sync.ts',
         launchCommand: 'codex',
         continueCommand: '$aidlc',
         showWorkspaceSetup: true,
@@ -430,11 +435,11 @@ describe('IntentView', () => {
 
     expect(downloadClick).toHaveBeenCalledOnce();
     expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
-    expect(screen.getByText(/mkdir 'workspace'/)).toBeInTheDocument();
+    expect(screen.getByText(/mkdir 'Bookstore_Tracker'/)).toBeInTheDocument();
     expect(screen.getByText(/unzip "\$HOME\/Downloads\/workspace.zip" -d \./)).toBeInTheDocument();
-    expect(screen.getByText('bun .codex/tools/aidlc-workspace-sync.ts')).toBeInTheDocument();
-    expect(screen.getByText(/all 2 repositories/)).toBeInTheDocument();
-    expect(screen.getByText('aidlc.code-workspace')).toBeInTheDocument();
+    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'api'/)).toBeInTheDocument();
+    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'web'/)).toBeInTheDocument();
+    expect(screen.queryByText(/aidlc-workspace-sync/)).not.toBeInTheDocument();
     expect(screen.getByText('Start the selected harness:')).toBeInTheDocument();
     expect(screen.getByText('codex')).toBeInTheDocument();
     expect(screen.getByText('Then run inside the agent session:')).toBeInTheDocument();
