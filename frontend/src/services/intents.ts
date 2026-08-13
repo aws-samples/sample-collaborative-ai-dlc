@@ -133,11 +133,18 @@ export interface NativeWorkflowExport {
     syncCommand?: string;
     launchCommand: string | null;
     continueCommand: string;
+    showWorkspaceSetup: boolean;
     repositories: Array<{
       name: string;
       url: string;
       branch: string;
     }>;
+    construction?: {
+      nextUnit: string | null;
+      completedUnits: string[];
+      readyUnits: string[];
+      perUnitIteration: boolean;
+    };
   };
 }
 

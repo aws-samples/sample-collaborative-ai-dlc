@@ -62,6 +62,7 @@ const rewind = vi.fn();
 const answerGate = vi.fn();
 const repair = vi.fn();
 const exportWorkflow = vi.fn();
+const writeText = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
@@ -157,6 +158,11 @@ describe('IntentView', () => {
     answerGate.mockReset();
     repair.mockReset();
     exportWorkflow.mockReset();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    writeText.mockReset().mockResolvedValue(undefined);
     projectCacheMock.role = 'owner';
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
@@ -381,7 +387,7 @@ describe('IntentView', () => {
       baseDetail({
         status: 'WAITING',
         agentCli: 'codex',
-        currentPhase: 'CONSTRUCTION',
+        currentPhase: 'INCEPTION',
       }),
     );
     exportWorkflow.mockResolvedValue({
@@ -397,10 +403,17 @@ describe('IntentView', () => {
         syncCommand: 'bun .codex/tools/aidlc-workspace-sync.ts',
         launchCommand: 'codex',
         continueCommand: '$aidlc',
+        showWorkspaceSetup: true,
         repositories: [
           { name: 'api', url: 'git@github.com:example/api.git', branch: 'aidlc/i1' },
           { name: 'web', url: 'git@github.com:example/web.git', branch: 'aidlc/i1' },
         ],
+        construction: {
+          nextUnit: 'identify-plant',
+          completedUnits: ['upload-image'],
+          readyUnits: ['identify-plant'],
+          perUnitIteration: true,
+        },
       },
     });
     const downloadClick = vi
@@ -422,7 +435,14 @@ describe('IntentView', () => {
     expect(screen.getByText('bun .codex/tools/aidlc-workspace-sync.ts')).toBeInTheDocument();
     expect(screen.getByText(/all 2 repositories/)).toBeInTheDocument();
     expect(screen.getByText('aidlc.code-workspace')).toBeInTheDocument();
-    expect(screen.getByText(/codex[\s\S]*\$aidlc/)).toBeInTheDocument();
+    expect(screen.getByText('Start the selected harness:')).toBeInTheDocument();
+    expect(screen.getByText('codex')).toBeInTheDocument();
+    expect(screen.getByText('Then run inside the agent session:')).toBeInTheDocument();
+    expect(screen.getByText('$aidlc')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy AI-DLC command' }));
+    expect(writeText).toHaveBeenCalledWith('$aidlc');
+    expect(screen.getByRole('button', { name: 'Copy AI-DLC command copied' })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Done' }));
     expect(screen.queryByText('Set up your local workspace')).not.toBeInTheDocument();
@@ -449,6 +469,7 @@ describe('IntentView', () => {
         harnessDir: '.claude',
         launchCommand: 'claude',
         continueCommand: '/aidlc',
+        showWorkspaceSetup: true,
         repositories: [
           {
             name: 'plant-finder',
@@ -456,6 +477,12 @@ describe('IntentView', () => {
             branch: 'aidlc/intent-1',
           },
         ],
+        construction: {
+          nextUnit: 'identify-plant',
+          completedUnits: ['upload-image'],
+          readyUnits: ['identify-plant'],
+          perUnitIteration: false,
+        },
       },
     });
     const downloadClick = vi
@@ -478,7 +505,13 @@ describe('IntentView', () => {
     expect(
       screen.getByText(/unzip "\$HOME\/Downloads\/legacy-claude.zip" -d \./),
     ).toBeInTheDocument();
-    expect(screen.getByText(/claude[\s\S]*\/aidlc/)).toBeInTheDocument();
+    expect(screen.getByText('claude')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '/aidlc Continue the construction phase. Completed units: upload-image. Continue with unit: identify-plant.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/older AI-DLC runtime/)).toBeInTheDocument();
     expect(screen.queryByText(/local\/aidlc-continuation/)).not.toBeInTheDocument();
     downloadClick.mockRestore();
   });
