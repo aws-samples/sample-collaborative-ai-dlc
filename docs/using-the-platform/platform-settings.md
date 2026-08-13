@@ -45,8 +45,10 @@ Only Standard is published as a system environment. Existing intents remain
 pinned to their exact environment revision when assignments, bases, or
 recommended tool versions change.
 
-See [Managed tools and environments](managed-environments.md) for source
-provenance, verification, composition, assignment, and reset behavior.
+See [Managed tools and environments](managed-environments.md) for the complete
+administrator workflow: adding a tool, source provenance, build verification,
+security review, publication and recommendation, environment composition and
+updates, project assignment, intent pinning, and legacy reset behavior.
 
 ## Source Control
 
