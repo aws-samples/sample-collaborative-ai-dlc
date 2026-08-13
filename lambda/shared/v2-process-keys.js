@@ -373,6 +373,10 @@ const buildExecutionMeta = ({
   // 'gated' (one approval gate per parallel batch). null until the ladder
   // prompt after the walking-skeleton gate is answered.
   constructionAutonomyMode = null,
+  // Structured result of the always-run workspace-detection stage. Persisted
+  // through a stage-scoped MCP tool so downstream consumers never need to
+  // infer methodology context from repository presence or agent prose.
+  projectType = null,
   // Optional tracker reference the intent was kicked off from (GitHub issue,
   // Jira artifact, …). The imported text lives in `prompt`; this is just the
   // provenance link surfaced in the UI. null when typed by hand. Mirrors the v1
@@ -463,6 +467,7 @@ const buildExecutionMeta = ({
   maxParallelUnits,
   prStrategy,
   constructionAutonomyMode,
+  projectType,
   source,
   planWarnings,
   orchestratorRunId,

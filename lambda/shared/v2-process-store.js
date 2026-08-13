@@ -149,6 +149,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     agentCli,
     credentialBinding,
     constructionAutonomyMode,
+    projectType,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
     skipStageIds,
@@ -314,6 +315,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }
       sets.push('constructionAutonomyMode = :cam');
       values[':cam'] = constructionAutonomyMode;
+    }
+    if (projectType !== undefined) {
+      if (projectType !== 'greenfield' && projectType !== 'brownfield') {
+        throw new Error(`invalid projectType: ${projectType}`);
+      }
+      sets.push('projectType = :pt');
+      values[':pt'] = projectType;
     }
     // Per-intent skip overlay (stage-skip.js): a rewind to a skipped stage
     // un-skips it. Validated shape only — the plan resolver owns the policy.

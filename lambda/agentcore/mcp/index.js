@@ -4,7 +4,8 @@
 // process store, and registers the role-appropriate tools.
 //
 // ENV (set by the container's run-stage / reviewer path, never by the agent):
-//   V2_EXECUTION_ID, V2_INTENT_ID, V2_PROJECT_ID, V2_STAGE_INSTANCE_ID
+//   V2_EXECUTION_ID, V2_INTENT_ID, V2_PROJECT_ID, V2_STAGE_ID,
+//   V2_STAGE_INSTANCE_ID
 //   V2_MCP_ROLE          author | reviewer | reader
 //   V2_PROCESS_TABLE, NEPTUNE_ENDPOINT, CONNECTIONS_TABLE, WEBSOCKET_ENDPOINT
 
@@ -22,6 +23,7 @@ const scopeFromEnv = (env = process.env) => ({
   executionId: env.V2_EXECUTION_ID,
   intentId: env.V2_INTENT_ID,
   projectId: env.V2_PROJECT_ID,
+  stageId: env.V2_STAGE_ID || null,
   stageInstanceId: env.V2_STAGE_INSTANCE_ID ?? null,
   sectionIndex:
     env.V2_SECTION_INDEX === undefined || env.V2_SECTION_INDEX === ''
@@ -65,7 +67,7 @@ export const startMcpServer = async ({ env = process.env } = {}) => {
 
   const handlers = buildToolHandlers({ graph, bridge });
   const server = new McpServer({ name: 'aidlc-v2-mcp', version: '1.0.0' });
-  const registered = registerTools({ server, handlers, role, z, env });
+  const registered = registerTools({ server, handlers, role, stageId: scope.stageId, z, env });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
