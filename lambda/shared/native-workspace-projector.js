@@ -215,6 +215,65 @@ const completedUnitTimestamp = ({ unitSlug, unitRows = [], fallback }) => {
   return timestamps.at(-1) ?? fallback;
 };
 
+const timestampMs = (value) => {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const stageTimeline = ({ intent, stages, stageRows = [], now }) => {
+  const rowsByStage = new Map();
+  for (const row of stageRows) {
+    if (!row?.stageId) continue;
+    const rows = rowsByStage.get(row.stageId) ?? [];
+    rows.push(row);
+    rowsByStage.set(row.stageId, rows);
+  }
+
+  const workflowStartedMs = timestampMs(intent.createdAt) ?? timestampMs(now) ?? 0;
+  let cursor = workflowStartedMs;
+  const timeline = [];
+
+  for (const stage of stages) {
+    if (!['x', '-'].includes(stage.marker)) continue;
+    const rows = rowsByStage.get(stage.stageId) ?? [];
+    const activeRows =
+      stage.marker === '-'
+        ? rows.filter((row) => !['SUCCEEDED', 'SKIPPED'].includes(row.state))
+        : rows;
+    const startedCandidates = activeRows
+      .flatMap((row) => [row.startedAt])
+      .map(timestampMs)
+      .filter((value) => value !== null);
+    const rawStarted = startedCandidates.length ? Math.min(...startedCandidates) : null;
+    const startedMs = Math.max(rawStarted ?? cursor + 1, cursor + 1);
+
+    let completedAt = null;
+    if (stage.marker === 'x') {
+      const completedCandidates = rows
+        .flatMap((row) => [row.completedAt, row.updatedAt])
+        .map(timestampMs)
+        .filter((value) => value !== null);
+      const rawCompleted = completedCandidates.length ? Math.max(...completedCandidates) : null;
+      const completedMs = Math.max(rawCompleted ?? startedMs + 1, startedMs + 1);
+      completedAt = new Date(completedMs).toISOString();
+      cursor = completedMs;
+    } else {
+      cursor = startedMs;
+    }
+
+    timeline.push({
+      stageId: stage.stageId,
+      phase: stage.phase,
+      agent: stage.leadAgent ?? '',
+      produces: stage.produces ?? [],
+      startedAt: new Date(startedMs).toISOString(),
+      completedAt,
+    });
+  }
+
+  return timeline;
+};
+
 const unitStageAggregate = ({ stage, rows, unitPlan, completedUnits }) => {
   if (stage.forEach !== 'unit-of-work' || stage.forEachDegraded || !unitPlan) {
     return stageAggregate(rows);
@@ -498,31 +557,71 @@ const renderAudit = ({
   intent,
   nativeScope,
   now,
+  stageTimeline: timeline = [],
   unitPlan = null,
   completedUnits = new Set(),
   unitRows = [],
 }) => {
   const startedAt = intent.createdAt || now;
+  let sequence = 0;
   const entries = [
-    renderAuditEntry({
-      heading: 'Workflow Started',
+    {
       timestamp: startedAt,
-      event: 'WORKFLOW_STARTED',
-      fields: {
-        'Workflow ID': intent.intentId,
-        Scope: nativeScope,
-        Request: 'Exported Collaborative AI-DLC checkpoint',
-      },
-    }),
+      sequence: sequence++,
+      body: renderAuditEntry({
+        heading: 'Workflow Started',
+        timestamp: startedAt,
+        event: 'WORKFLOW_STARTED',
+        fields: {
+          'Workflow ID': intent.intentId,
+          Scope: nativeScope,
+          Request: 'Exported Collaborative AI-DLC checkpoint',
+        },
+      }),
+    },
   ];
+  for (const stage of timeline) {
+    entries.push({
+      timestamp: stage.startedAt,
+      sequence: sequence++,
+      body: renderAuditEntry({
+        heading: `Stage Started: ${stage.stageId}`,
+        timestamp: stage.startedAt,
+        event: 'STAGE_STARTED',
+        fields: {
+          Stage: stage.stageId,
+          Agent: stage.agent,
+        },
+      }),
+    });
+    if (stage.completedAt) {
+      entries.push({
+        timestamp: stage.completedAt,
+        sequence: sequence++,
+        body: renderAuditEntry({
+          heading: `Stage Completed: ${stage.stageId}`,
+          timestamp: stage.completedAt,
+          event: 'STAGE_COMPLETED',
+          fields: {
+            Stage: stage.stageId,
+            Details: 'Imported from Collaborative AI-DLC checkpoint',
+            Artifacts: stage.produces.join(', ') || 'none',
+          },
+        }),
+      });
+    }
+  }
   const orderedCompletedUnits =
     unitPlan?.batches.flat().filter((unit) => completedUnits.has(unit)) ?? [];
   for (const unitSlug of orderedCompletedUnits) {
     const batchIndex = unitPlan.batches.findIndex((batch) => batch.includes(unitSlug));
-    entries.push(
-      renderAuditEntry({
+    const timestamp = completedUnitTimestamp({ unitSlug, unitRows, fallback: now });
+    entries.push({
+      timestamp,
+      sequence: sequence++,
+      body: renderAuditEntry({
         heading: 'Bolt Completed',
-        timestamp: completedUnitTimestamp({ unitSlug, unitRows, fallback: now }),
+        timestamp,
         event: 'BOLT_COMPLETED',
         fields: {
           'Bolt names': unitSlug,
@@ -530,30 +629,55 @@ const renderAudit = ({
           'Bolt slug': unitSlug,
         },
       }),
-    );
+    });
     if (
       unitSlug === unitPlan.walkingSkeleton &&
       ['gated', 'autonomous'].includes(unitPlan.autonomyMode)
     ) {
-      entries.push(
-        renderAuditEntry({
+      entries.push({
+        timestamp: completedUnitTimestamp({ unitSlug, unitRows, fallback: now }),
+        sequence: sequence++,
+        body: renderAuditEntry({
           heading: 'Autonomy Mode Set',
-          timestamp: completedUnitTimestamp({ unitSlug, unitRows, fallback: now }),
+          timestamp,
           event: 'AUTONOMY_MODE_SET',
           fields: { Mode: unitPlan.autonomyMode },
         }),
-      );
+      });
     }
   }
 
-  return `# AI-DLC Audit Log\n\n${entries.join('\n')}`;
+  entries.sort(
+    (left, right) =>
+      String(left.timestamp).localeCompare(String(right.timestamp)) ||
+      left.sequence - right.sequence,
+  );
+  return `# AI-DLC Audit Log\n\n${entries.map((entry) => entry.body).join('\n')}`;
 };
 
-const renderRuntimeGraph = ({ intent, nativeScope, unitPlan, now }) => ({
-  workflow_id: intent.intentId,
+const renderRuntimeGraph = ({
+  intent,
+  nativeScope,
+  unitPlan,
+  now,
+  stageTimeline: timeline,
+  recordRoot,
+}) => ({
+  workflow_id: intent.createdAt || now,
   scope: nativeScope,
   started_at: intent.createdAt || now,
-  stages: [],
+  stages: timeline.map((stage) => ({
+    stage_slug: stage.stageId,
+    started_at: stage.startedAt,
+    completed_at: stage.completedAt,
+    agent: stage.agent || null,
+    memory_path: `${recordRoot.path}/${stage.phase}/${stage.stageId}/memory.md`,
+    memory_entries: null,
+    memory_breakdown: null,
+    sensor_firings: [],
+    outcome: stage.completedAt ? 'approved' : 'pending',
+    learnings_captured: stage.completedAt ? { from_orchestrator: 0, from_user_addition: 0 } : null,
+  })),
   ...(unitPlan
     ? {
         bolt_dag: {
@@ -643,6 +767,12 @@ const projectNativeWorkspace = ({
   const readyUnits = dependencyReadyUnitSlugs({ unitPlan, completedUnits });
   const nextUnit = readyUnits[0] ?? remainingUnits[0] ?? null;
   const projectedStages = projectStageState({ stages, stageRows, unitPlan, unitRows });
+  const timeline = stageTimeline({
+    intent,
+    stages: projectedStages,
+    stageRows,
+    now,
+  });
   const projectType = resolveProjectType({
     intent,
     artifacts,
@@ -700,6 +830,7 @@ const projectNativeWorkspace = ({
       intent,
       nativeScope,
       now,
+      stageTimeline: timeline,
       unitPlan,
       completedUnits,
       unitRows,
@@ -737,11 +868,22 @@ const projectNativeWorkspace = ({
   if (unitPlan) {
     const dependencyPath = `${recordRoot.path}/inception/units-generation/unit-of-work-dependency.md`;
     files.set(dependencyPath, upsertUnitDagArtifact(files.get(dependencyPath), unitPlan));
-    files.set(
-      `${recordRoot.path}/runtime-graph.json`,
-      `${JSON.stringify(renderRuntimeGraph({ intent, nativeScope, unitPlan, now }), null, 2)}\n`,
-    );
   }
+  files.set(
+    `${recordRoot.path}/runtime-graph.json`,
+    `${JSON.stringify(
+      renderRuntimeGraph({
+        intent,
+        nativeScope,
+        unitPlan,
+        now,
+        stageTimeline: timeline,
+        recordRoot,
+      }),
+      null,
+      2,
+    )}\n`,
+  );
   const questionGroups = new Map();
   for (const task of humanTasks) {
     if (task?.kind !== 'question' || task.status === 'superseded') continue;
