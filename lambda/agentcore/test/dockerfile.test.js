@@ -14,4 +14,8 @@ describe('AgentCore image ownership', () => {
     expect(dockerfile).toContain('/home/node/.codex-state');
     expect(dockerfile).toContain('/home/node/.codex-runs');
   });
+
+  it('includes every archive extractor supported by managed tools', () => {
+    expect(dockerfile).toContain('unzip xz-utils');
+  });
 });

@@ -2,7 +2,7 @@
 
 The **Admin** page holds all platform-wide settings: users, agents, source control, and issue trackers. It is visible in the sidebar only to members of the Cognito **`platform-admin`** group (see [Setup](../getting-started/setup.md#bootstrap-the-first-platform-administrator) for bootstrapping the first admin); every underlying API is independently gated on the same group.
 
-The page is organized into four tabs.
+The page is organized into five tabs.
 
 A read-only **Deployment** strip sits above the tabs, showing the canonical application URL, environment, and region. The hostname it reports is the one the backend puts in its OAuth redirect URIs, so it is what every provider's callback URL must match. If you are browsing a hostname other than the canonical one — a deployment with a custom domain still answers on the CloudFront domain and on every alias — the strip says so, because the callback URLs shown further down deliberately use the canonical hostname rather than the one in the address bar.
 
@@ -26,6 +26,27 @@ Everything the agent runtime needs to run:
 - **Agent Credentials** — the **Bedrock Bearer Token** (used by Claude Code, OpenCode, and Codex) and the **Kiro API Key**. Both are stored as SecureString parameters in SSM; the AgentCore runtime reads them at container startup. The card reports which credentials are set and which CLIs are therefore available to projects. See [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
 - **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. Projects can override these per-CLI in [Project Settings → Agent](projects.md#agent).
 - **Graph Enrichment** — a switch controlling whether the platform adds LLM-generated summaries to derived artifacts in the knowledge graph (`llm` or `off`). The setting takes effect for the _next_ intent, never mid-run; enrichment spend is metered and surfaced on each intent's Audit page.
+
+## Environments
+
+The environment area contains three administrator views:
+
+- **Environments** — compose exact published tool versions over a protected
+  base, build and scan the resulting ARM64 image, validate its AgentCore
+  runtime, and publish it for project assignment.
+- **Tools** — import, verify, publish, and recommend immutable tool versions.
+  Java, Go, Rust, Maven, and Gradle are shipped as tool definitions rather than
+  predefined environments. Administrators can add other tools such as .NET.
+- **Reset** — explicitly remove legacy non-Standard environments before
+  recreating them from catalog tools. The view shows a dry-run inventory and
+  requires typed confirmation.
+
+Only Standard is published as a system environment. Existing intents remain
+pinned to their exact environment revision when assignments, bases, or
+recommended tool versions change.
+
+See [Managed tools and environments](managed-environments.md) for source
+provenance, verification, composition, assignment, and reset behavior.
 
 ## Source Control
 

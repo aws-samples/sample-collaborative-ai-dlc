@@ -29,7 +29,7 @@ export interface EnvironmentChecksum {
   value: string;
 }
 
-export interface EnvironmentTool {
+export interface LegacyEnvironmentTool {
   version: string;
   source: 'base' | 'archive';
   url?: string;
@@ -37,19 +37,7 @@ export interface EnvironmentTool {
   stripComponents?: number;
 }
 
-export interface EnvironmentToolCatalogItem {
-  label: string;
-  publisher: string;
-  versions: EnvironmentTool[];
-}
-
-export interface EnvironmentToolCatalog {
-  schemaVersion: 1;
-  tools: Record<'node' | 'python' | 'java' | 'go' | 'rust', EnvironmentToolCatalogItem>;
-  buildTools: Record<'maven' | 'gradle', EnvironmentToolCatalogItem>;
-}
-
-export interface EnvironmentRecipe {
+export interface LegacyEnvironmentRecipe {
   schemaVersion: 1;
   base?: {
     environmentId: string;
@@ -57,8 +45,57 @@ export interface EnvironmentRecipe {
     imageUri: string;
     imageDigest: string;
   } | null;
-  tools: Partial<Record<'node' | 'python' | 'java' | 'go' | 'rust', EnvironmentTool>>;
-  buildTools: Partial<Record<'maven' | 'gradle', EnvironmentTool>>;
+  tools: Partial<Record<'node' | 'python' | 'java' | 'go' | 'rust', LegacyEnvironmentTool>>;
+  buildTools: Partial<Record<'maven' | 'gradle', LegacyEnvironmentTool>>;
+  aptPackages: { name: string; version: string }[];
+  environmentVariables: Record<string, string>;
+  buildCommands: string[];
+}
+
+export interface EnvironmentToolSnapshot {
+  toolId: string;
+  name: string;
+  category: string;
+  publisher: string;
+  versionId: string;
+  version: string;
+  imageUri: string;
+  imageDigest: string;
+  imageSizeBytes?: number | null;
+  trustLevel: 'PLATFORM_PINNED' | 'PUBLISHER_VERIFIED';
+  source?: ToolSourceResult | null;
+  executables: ToolExecutable[];
+  dependencies: string[];
+  aptPackages: { name: string; version: string }[];
+  environmentVariables: Record<string, string>;
+  verification: ToolVerification;
+  scanFindings?: EnvironmentRevision['scanFindings'];
+  securityFindingsAcceptedAt?: string | null;
+  securityFindingsAcceptedBy?: string | null;
+}
+
+export interface ManagedEnvironmentRecipe {
+  schemaVersion: 2;
+  base?: {
+    environmentId: string;
+    revisionId: string;
+    imageUri: string;
+    imageDigest: string;
+    imageSizeBytes?: number | null;
+  } | null;
+  toolVersionIds: string[];
+  tools: EnvironmentToolSnapshot[];
+  resolvedTools?: EnvironmentToolSnapshot[];
+  aptPackages: { name: string; version: string }[];
+  environmentVariables: Record<string, string>;
+  buildCommands: string[];
+}
+
+export type EnvironmentRecipe = LegacyEnvironmentRecipe | ManagedEnvironmentRecipe;
+
+export interface EnvironmentRecipeInput {
+  schemaVersion: 2;
+  toolVersionIds: string[];
   aptPackages: { name: string; version: string }[];
   environmentVariables: Record<string, string>;
   buildCommands: string[];
@@ -82,6 +119,11 @@ export interface ManagedEnvironment {
   currentRevisionId: string;
   publishedRevisionId: string | null;
   updateAvailable: boolean;
+  toolUpdates?: {
+    toolId: string;
+    currentVersionId: string;
+    recommendedVersionId: string;
+  }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -96,6 +138,8 @@ export interface EnvironmentRevision {
   runtimeCompatibilityVersion: string;
   imageUri: string | null;
   imageDigest: string | null;
+  imageSizeBytes?: number | null;
+  projectedImageSizeBytes?: number | null;
   runtimeArn: string | null;
   runtimeVersion?: string | null;
   runtimeEndpoint: string | null;
@@ -136,6 +180,139 @@ export interface EnvironmentMutationResult {
   revision: EnvironmentRevision;
 }
 
+export type ToolVersionStatus =
+  | 'DRAFT'
+  | 'QUEUED'
+  | 'BUILDING'
+  | 'SCANNING'
+  | 'SECURITY_REVIEW'
+  | 'READY'
+  | 'PUBLISHED'
+  | 'FAILED';
+
+export interface ToolExecutable {
+  name: string;
+  path: string;
+}
+
+export interface ToolVerification {
+  preset: 'generic' | 'java' | 'go' | 'rust' | 'maven' | 'gradle' | 'dotnet';
+  versionCommand: {
+    argv: string[];
+    expected: string;
+  };
+  script: string;
+  files: { path: string; content: string }[];
+}
+
+export interface ToolVersionDefinition {
+  schemaVersion: 1;
+  version: string;
+  source: {
+    type: 'https';
+    url: string;
+    expectedChecksum?: {
+      algorithm: 'sha256' | 'sha512';
+      value: string;
+      evidenceUrl?: string;
+    };
+  };
+  installer: { mode: 'generated'; stripComponents: number } | { mode: 'script'; script: string };
+  executables: ToolExecutable[];
+  dependencies: string[];
+  aptPackages: { name: string; version: string }[];
+  environmentVariables: Record<string, string>;
+  verification: ToolVerification;
+}
+
+export interface ToolSourceResult {
+  requestedUrl: string;
+  resolvedUrl: string;
+  sha256: string;
+  sizeBytes: number;
+  trustLevel: 'PLATFORM_PINNED' | 'PUBLISHER_VERIFIED';
+}
+
+export interface ManagedToolVersion {
+  toolId: string;
+  versionId: string;
+  status: ToolVersionStatus;
+  definition: ToolVersionDefinition;
+  system: boolean;
+  autoBuild: boolean;
+  buildAttempt: number;
+  buildId?: string | null;
+  buildLogUrl?: string | null;
+  imageUri?: string | null;
+  imageDigest?: string | null;
+  imageSizeBytes?: number | null;
+  source?: ToolSourceResult | null;
+  scanFindings?: EnvironmentRevision['scanFindings'];
+  verification?: Record<string, unknown> | null;
+  failure?: EnvironmentRevision['failure'];
+  securityFindingsAcceptedAt?: string | null;
+  securityFindingsAcceptedBy?: string | null;
+  publishedAt?: string | null;
+  publishedBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagedTool {
+  toolId: string;
+  name: string;
+  description: string;
+  category: string;
+  publisher: string;
+  system: boolean;
+  recommendedVersionId: string | null;
+  versions: ManagedToolVersion[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ToolMutationResult {
+  tool: ManagedTool;
+  version: ManagedToolVersion;
+}
+
+export interface ManagedEnvironmentResetCounts {
+  projects: number;
+  activeIntents: number;
+  environments: number;
+  revisions: number;
+  runtimes: number;
+  images: number;
+}
+
+export interface ManagedEnvironmentResetResult {
+  projectsReassigned: number;
+  intentsCancelled: number;
+  environmentsDeleted: number;
+  revisionsDeleted: number;
+  runtimesDeleted: number;
+  imagesDeleted: number;
+}
+
+export interface ManagedEnvironmentResetMarker {
+  status: 'IN_PROGRESS' | 'FAILED' | 'COMPLETE';
+  attempt: number;
+  startedAt: string;
+  startedBy: string;
+  updatedAt: string;
+  completedAt?: string;
+  completedBy?: string;
+  failedAt?: string;
+  failure?: { message: string };
+  result?: ManagedEnvironmentResetResult;
+}
+
+export interface ManagedEnvironmentResetPreview {
+  confirmation: string;
+  marker: ManagedEnvironmentResetMarker | null;
+  counts: ManagedEnvironmentResetCounts;
+}
+
 export interface ProjectEnvironmentAssignment {
   environmentId: string;
   environment: ManagedEnvironment | null;
@@ -151,14 +328,13 @@ const revisionPath = (environmentId: string, revisionId: string) =>
 export const environmentsService = {
   list: (publishedOnly = false) =>
     api.get<ManagedEnvironment[]>(`/environments${publishedOnly ? '?published=true' : ''}`),
-  catalog: () => api.get<EnvironmentToolCatalog>('/environments/catalog'),
   get: (environmentId: string) => api.get<EnvironmentDetail>(environmentPath(environmentId)),
   create: (input: {
     environmentId?: string;
     name: string;
     description?: string;
     baseEnvironmentId: string;
-    recipe: EnvironmentRecipe;
+    recipe: EnvironmentRecipeInput;
   }) => api.post<EnvironmentMutationResult>('/environments', input),
   update: (
     environmentId: string,
@@ -166,7 +342,7 @@ export const environmentsService = {
       name?: string;
       description?: string;
       baseEnvironmentId: string;
-      recipe: EnvironmentRecipe;
+      recipe: EnvironmentRecipeInput;
     },
   ) => api.put<EnvironmentMutationResult>(environmentPath(environmentId), input),
   build: (environmentId: string, revisionId: string) =>
@@ -200,4 +376,59 @@ export const environmentsService = {
       scanFindings?: EnvironmentRevision['scanFindings'];
       verification?: EnvironmentRevision['verification'];
     }>(`${revisionPath(environmentId, revisionId)}/logs`),
+};
+
+const toolPath = (toolId: string) => `/tools/${encodeURIComponent(toolId)}`;
+const toolVersionPath = (toolId: string, versionId: string) =>
+  `${toolPath(toolId)}/versions/${encodeURIComponent(versionId)}`;
+
+export const toolsService = {
+  list: (publishedOnly = false) =>
+    api.get<ManagedTool[]>(`/tools${publishedOnly ? '?published=true' : ''}`),
+  get: (toolId: string) => api.get<ManagedTool>(toolPath(toolId)),
+  create: (input: {
+    toolId?: string;
+    name: string;
+    description?: string;
+    category?: string;
+    publisher?: string;
+  }) => api.post<ManagedTool>('/tools', input),
+  update: (
+    toolId: string,
+    input: { name?: string; description?: string; category?: string; publisher?: string },
+  ) => api.put<ManagedTool>(toolPath(toolId), input),
+  createVersion: (toolId: string, definition: ToolVersionDefinition) =>
+    api.post<ToolMutationResult>(`${toolPath(toolId)}/versions`, { definition }),
+  updateVersion: (toolId: string, versionId: string, definition: ToolVersionDefinition) =>
+    api.put<ToolMutationResult>(toolVersionPath(toolId, versionId), { definition }),
+  build: (toolId: string, versionId: string) =>
+    api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/build`, {}),
+  retry: (toolId: string, versionId: string) =>
+    api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/retry`, {}),
+  acceptFindings: (toolId: string, versionId: string) =>
+    api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/acknowledge`, {}),
+  publish: (toolId: string, versionId: string) =>
+    api.post<ToolMutationResult>(`${toolVersionPath(toolId, versionId)}/publish`, {}),
+  recommend: (toolId: string, versionId: string) =>
+    api.put<{ tool: ManagedTool; environments: ManagedEnvironment[] }>(
+      `${toolPath(toolId)}/recommended`,
+      { versionId },
+    ),
+  logs: (toolId: string, versionId: string) =>
+    api.get<{
+      buildId?: string | null;
+      buildLogUrl?: string | null;
+      failure?: ManagedToolVersion['failure'];
+      scanFindings?: ManagedToolVersion['scanFindings'];
+      verification?: ManagedToolVersion['verification'];
+    }>(`${toolVersionPath(toolId, versionId)}/logs`),
+};
+
+export const environmentResetService = {
+  preview: () => api.get<ManagedEnvironmentResetPreview>('/environment-reset'),
+  execute: (confirmation: string) =>
+    api.post<{
+      result?: ManagedEnvironmentResetResult;
+      marker: ManagedEnvironmentResetMarker;
+    }>('/environment-reset', { confirmation }),
 };

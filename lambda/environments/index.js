@@ -5,20 +5,25 @@ import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
 import { buildResponse } from '../shared/response.js';
 import { isPlatformAdmin, requirePlatformAdmin } from '../shared/authz.js';
 import {
-  ENVIRONMENT_TOOL_CATALOG,
   applyToolPrerequisites,
   generateBuildContext,
   normalizeEnvironmentId,
   orderRebuilds,
-  validateRecipe,
-  flattenRecipe,
 } from './recipe.js';
+import {
+  ENVIRONMENT_RECIPE_SCHEMA_VERSION,
+  generateEnvironmentBuildContextV2,
+  rebuildEnvironmentRecipe,
+  resolveEnvironmentRecipe,
+} from './recipe-v2.js';
 import { createEnvironmentStore } from './store.js';
+import { createToolStore } from './tool-store.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
 const codebuild = new CodeBuildClient({});
 const defaultStore = createEnvironmentStore({ ddb });
+const defaultToolStore = createToolStore({ ddb });
 
 const actorFrom = (event) => {
   const claims = event?.requestContext?.authorizer?.claims ?? {};
@@ -44,6 +49,7 @@ const configuredCore = () => ({
   coreImageDigest: process.env.CORE_IMAGE_DIGEST,
   coreRuntimeArn: process.env.CORE_RUNTIME_ARN,
   coreRuntimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
+  coreImageSizeBytes: Number(process.env.CORE_IMAGE_SIZE_BYTES || 0) || null,
 });
 
 const responseError = (response, error) =>
@@ -106,33 +112,32 @@ const assertAcyclicBase = async (store, environmentId, baseEnvironmentId) => {
   }
 };
 
-const prepareRecipe = async (store, input, baseEnvironmentId) => {
+const prepareRecipe = async (store, toolStore, input, baseEnvironmentId) => {
   const { revision: baseRevision } = await publishedBase(store, baseEnvironmentId);
-  const recipe = applyToolPrerequisites({
-    schemaVersion: input?.schemaVersion ?? 1,
-    base: {
-      environmentId: baseEnvironmentId,
-      revisionId: baseRevision.revisionId,
-      imageUri: baseRevision.imageUri,
-      imageDigest: baseRevision.imageDigest,
+  return resolveEnvironmentRecipe({
+    input: {
+      ...input,
+      schemaVersion: ENVIRONMENT_RECIPE_SCHEMA_VERSION,
     },
-    tools: input?.tools ?? {},
-    buildTools: input?.buildTools ?? {},
-    aptPackages: input?.aptPackages ?? [],
-    environmentVariables: input?.environmentVariables ?? {},
-    buildCommands: input?.buildCommands ?? [],
+    baseEnvironmentId,
+    baseRevision,
+    toolStore,
   });
-  const validation = validateRecipe(recipe);
-  if (!validation.valid) {
-    throw Object.assign(new Error('Invalid environment recipe'), {
-      statusCode: 400,
-      issues: validation.issues,
-    });
+};
+
+const assertCatalogRevision = (environmentId, revision) => {
+  if (
+    environmentId !== 'standard' &&
+    revision?.recipe?.schemaVersion !== ENVIRONMENT_RECIPE_SCHEMA_VERSION
+  ) {
+    throw Object.assign(
+      new Error('Legacy environments must be removed and recreated with catalog tools'),
+      {
+        statusCode: 409,
+        code: 'LEGACY_ENVIRONMENT_REQUIRES_RESET',
+      },
+    );
   }
-  return {
-    recipe,
-    flattenedRecipe: applyToolPrerequisites(flattenRecipe(recipe, baseRevision.flattenedRecipe)),
-  };
 };
 
 const startBuild = async ({ store, environment, revision, actor, deps }) => {
@@ -141,13 +146,35 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
       statusCode: 409,
     });
   }
-  const recipe = applyToolPrerequisites(revision.recipe);
-  const flattenedRecipe = applyToolPrerequisites(revision.flattenedRecipe);
-  const context = generateBuildContext({
-    environment,
-    revision,
-    flattenedRecipe,
-  });
+  const maxImageBytes = Number(process.env.MAX_ENVIRONMENT_IMAGE_MB || 2048) * 1024 * 1024;
+  if (
+    revision.projectedImageSizeBytes &&
+    Number(revision.projectedImageSizeBytes) > maxImageBytes
+  ) {
+    throw Object.assign(
+      new Error(
+        `Projected image size exceeds the ${Math.round(maxImageBytes / 1024 / 1024)} MiB runtime limit`,
+      ),
+      { statusCode: 409, code: 'PROJECTED_IMAGE_SIZE_EXCEEDED' },
+    );
+  }
+  const v2 = revision.recipe?.schemaVersion === ENVIRONMENT_RECIPE_SCHEMA_VERSION;
+  const recipe = v2 ? revision.recipe : applyToolPrerequisites(revision.recipe);
+  const flattenedRecipe = v2
+    ? revision.flattenedRecipe
+    : applyToolPrerequisites(revision.flattenedRecipe);
+  const context = v2
+    ? generateEnvironmentBuildContextV2({
+        environment,
+        revision,
+        recipe,
+        flattenedRecipe,
+      })
+    : generateBuildContext({
+        environment,
+        revision,
+        flattenedRecipe,
+      });
   const prefix = `managed-environments/contexts/${environment.environmentId}/${revision.revisionId}`;
   await Promise.all(
     Object.entries(context.files).map(([name, body]) =>
@@ -298,16 +325,11 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
     });
   }
   const { revision: latestBase } = await publishedBase(store, environment.baseEnvironmentId);
-  const recipe = {
-    ...sourceRevision.recipe,
-    base: {
-      environmentId: environment.baseEnvironmentId,
-      revisionId: latestBase.revisionId,
-      imageUri: latestBase.imageUri,
-      imageDigest: latestBase.imageDigest,
-    },
-  };
-  const flattenedRecipe = flattenRecipe(recipe, latestBase.flattenedRecipe);
+  const { recipe, flattenedRecipe } = rebuildEnvironmentRecipe({
+    sourceRecipe: sourceRevision.recipe,
+    baseEnvironmentId: environment.baseEnvironmentId,
+    baseRevision: latestBase,
+  });
   return store.createRevision({
     environment,
     recipe,
@@ -320,6 +342,7 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
 
 export const createHandler = ({
   store = defaultStore,
+  toolStore = defaultToolStore,
   s3Client = s3,
   codebuildClient = codebuild,
 } = {}) => {
@@ -354,10 +377,6 @@ export const createHandler = ({
         return response(200, await store.listEnvironments({ publishedOnly }));
       }
 
-      if (event.httpMethod === 'GET' && tail.length === 1 && environmentId === 'catalog') {
-        return response(200, ENVIRONMENT_TOOL_CATALOG);
-      }
-
       if (event.httpMethod === 'POST' && tail.length === 0) {
         const denied = requirePlatformAdmin(event);
         if (denied)
@@ -368,12 +387,12 @@ export const createHandler = ({
         const data = parseBody(event);
         if (!data.name?.trim()) return response(400, { error: 'name is required' });
         const id = normalizeEnvironmentId(data.environmentId || data.name);
-        if (['catalog', 'rebuild'].includes(id)) {
+        if (['rebuild', 'reset'].includes(id)) {
           return response(400, { error: 'environmentId is reserved by the platform' });
         }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';
         await assertAcyclicBase(store, id, baseEnvironmentId);
-        const prepared = await prepareRecipe(store, data.recipe, baseEnvironmentId);
+        const prepared = await prepareRecipe(store, toolStore, data.recipe, baseEnvironmentId);
         const created = await store.createEnvironment({
           environmentId: id,
           name: data.name.trim(),
@@ -456,11 +475,15 @@ export const createHandler = ({
             error: 'The Standard environment follows the protected core runtime',
           });
         }
+        assertCatalogRevision(
+          environmentId,
+          await store.getRevision(environmentId, environment.currentRevisionId),
+        );
         const data = parseBody(event);
         const baseEnvironmentId =
           data.baseEnvironmentId || environment.baseEnvironmentId || 'standard';
         await assertAcyclicBase(store, environmentId, baseEnvironmentId);
-        const prepared = await prepareRecipe(store, data.recipe, baseEnvironmentId);
+        const prepared = await prepareRecipe(store, toolStore, data.recipe, baseEnvironmentId);
         const revision = await store.createRevision({
           environment,
           recipe: prepared.recipe,
@@ -533,6 +556,7 @@ export const createHandler = ({
             code: denied.code,
           });
         if (!revision) return response(404, { error: 'Revision not found' });
+        assertCatalogRevision(environmentId, revision);
         if (environment.updateAvailable) {
           return response(409, {
             error: 'A newer base is available; rebuild on the latest base',
@@ -550,6 +574,7 @@ export const createHandler = ({
             code: denied.code,
           });
         if (!revision) return response(404, { error: 'Revision not found' });
+        assertCatalogRevision(environmentId, revision);
         if (environment.updateAvailable) {
           return response(409, {
             error: 'A newer base is available; rebuild on the latest base',
@@ -656,6 +681,7 @@ export const createHandler = ({
             code: denied.code,
           });
         if (!revision) return response(404, { error: 'Revision not found' });
+        assertCatalogRevision(environmentId, revision);
         if (revision.status !== 'READY') {
           return response(409, {
             error: 'Only READY revisions can be published',

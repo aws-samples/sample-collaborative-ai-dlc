@@ -28,6 +28,11 @@ variable "core_image_digest" {
   type        = string
 }
 
+variable "core_image_size_bytes" {
+  description = "Compressed size of the protected AgentCore image"
+  type        = number
+}
+
 variable "core_runtime_arn" {
   description = "Protected AgentCore runtime ARN"
   type        = string
@@ -90,6 +95,46 @@ variable "environment_repository_arn" {
 
 variable "cors_allowed_origins" {
   description = "Comma-separated CORS origins"
+  type        = string
+}
+
+variable "neptune_endpoint" {
+  description = "Neptune endpoint used by the destructive environment reset"
+  type        = string
+}
+
+variable "neptune_cluster_resource_id" {
+  description = "Neptune cluster resource id used for IAM authentication"
+  type        = string
+}
+
+variable "vpc_subnet_ids" {
+  description = "Private subnets for the environment reset Lambda"
+  type        = list(string)
+}
+
+variable "vpc_security_group_ids" {
+  description = "Security groups for the environment reset Lambda"
+  type        = list(string)
+}
+
+variable "v2_executions_table_name" {
+  description = "Intent execution table name"
+  type        = string
+}
+
+variable "v2_executions_table_arn" {
+  description = "Intent execution table ARN"
+  type        = string
+}
+
+variable "v2_orchestrator_qualified_name" {
+  description = "Qualified durable orchestrator function name"
+  type        = string
+}
+
+variable "v2_orchestrator_qualified_arn" {
+  description = "Qualified durable orchestrator function ARN"
   type        = string
 }
 

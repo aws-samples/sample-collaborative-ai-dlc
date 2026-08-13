@@ -301,6 +301,19 @@ const inspectImage = async ({
     );
     const image = described.imageDetails?.[0];
     if (!image?.imageDigest) return { environment, revision, pending: true };
+    const maxImageBytes = Number(process.env.MAX_ENVIRONMENT_IMAGE_MB || 2048) * 1024 * 1024;
+    if (Number(image.imageSizeInBytes ?? 0) > maxImageBytes) {
+      return {
+        environment,
+        revision: await failRevision(
+          store,
+          environment.environmentId,
+          revision,
+          'image_size_exceeded',
+          `Image is ${image.imageSizeInBytes} bytes; maximum is ${maxImageBytes}`,
+        ),
+      };
+    }
     const imageUri = process.env.ENVIRONMENT_ECR_REPOSITORY_URI;
     let scanning = revision;
     if (revision.status === 'BUILDING') {
@@ -311,6 +324,7 @@ const inspectImage = async ({
           status: 'SCANNING',
           imageUri,
           imageDigest: image.imageDigest,
+          imageSizeBytes: image.imageSizeInBytes ?? null,
           failure: null,
         },
         { fromStatus: 'BUILDING' },

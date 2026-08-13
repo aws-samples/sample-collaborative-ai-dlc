@@ -1,9 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
-  ENVIRONMENT_TOOL_CATALOG,
   SYSTEM_ENVIRONMENT_TEMPLATES,
-  applyToolPrerequisites,
   assertRevisionTransition,
   evaluateScanFindings,
   flattenRecipe,
@@ -22,6 +20,45 @@ const BASE = {
   imageDigest: `sha256:${'a'.repeat(64)}`,
 };
 
+const archive = (version, url, algorithm, value, stripComponents = 1) => ({
+  version,
+  source: 'archive',
+  url,
+  checksum: { algorithm, value },
+  stripComponents,
+});
+const PYTHON = { version: '3.11', source: 'base' };
+const JAVA = archive(
+  '21.0.8',
+  'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.8_9.tar.gz',
+  'sha256',
+  'e5c41a1ab0865ea5de9b4529bf8526005f1d4593090845387d14fe450ce39c33',
+);
+const GO = archive(
+  '1.24.6',
+  'https://go.dev/dl/go1.24.6.linux-arm64.tar.gz',
+  'sha256',
+  '124ea6033a8bf98aa9fbab53e58d134905262d45a022af3a90b73320f3c3afd5',
+);
+const RUST = archive(
+  '1.89.0',
+  'https://static.rust-lang.org/dist/rust-1.89.0-aarch64-unknown-linux-gnu.tar.gz',
+  'sha256',
+  '26d6de84ac59da702aa8c2f903e3c344e3259da02e02ce92ad1c735916b29a4a',
+);
+const MAVEN = archive(
+  '3.9.11',
+  'https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries/apache-maven-3.9.11-bin.tar.gz',
+  'sha512',
+  'bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978',
+);
+const GRADLE = archive(
+  '9.0.0',
+  'https://services.gradle.org/distributions/gradle-9.0.0-bin.zip',
+  'sha256',
+  '8fad3d78296ca518113f3d29016617c7f9367dc005f932bd9d93bf45ba46072b',
+);
+
 const recipe = (overrides = {}) => ({
   schemaVersion: 1,
   base: BASE,
@@ -36,46 +73,12 @@ const recipe = (overrides = {}) => ({
 });
 
 describe('managed environment recipes', () => {
-  it('seeds the five required system environments', () => {
-    expect(SYSTEM_ENVIRONMENT_TEMPLATES.map((item) => item.id)).toEqual([
-      'standard',
-      'jvm',
-      'go',
-      'rust',
-      'polyglot',
-    ]);
-  });
-
-  it('publishes the exact tool versions and package provenance available to the editor', () => {
-    expect(ENVIRONMENT_TOOL_CATALOG.tools.node.versions).toEqual([
-      { version: '24.15.0', source: 'base' },
-    ]);
-    expect(ENVIRONMENT_TOOL_CATALOG.tools.python.versions).toEqual([
-      { version: '3.11', source: 'base' },
-    ]);
-    expect(ENVIRONMENT_TOOL_CATALOG.tools.java.versions).toEqual([
-      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'jvm').recipe.tools.java,
-    ]);
-    expect(ENVIRONMENT_TOOL_CATALOG.tools.go.versions).toEqual([
-      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'go').recipe.tools.go,
-    ]);
-    expect(ENVIRONMENT_TOOL_CATALOG.tools.rust.versions).toEqual([
-      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'rust').recipe.tools.rust,
-    ]);
-  });
-
-  it('adds the pinned native compiler toolchain required by Rust', () => {
-    const rust = ENVIRONMENT_TOOL_CATALOG.tools.rust.versions[0];
-
-    expect(
-      applyToolPrerequisites(recipe({ tools: { rust }, aptPackages: [] })).aptPackages,
-    ).toEqual([{ name: 'build-essential', version: '12.9' }]);
-    expect(
-      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'rust').recipe.aptPackages,
-    ).toEqual([{ name: 'build-essential', version: '12.9' }]);
-    expect(
-      SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'polyglot').recipe.aptPackages,
-    ).toEqual([{ name: 'build-essential', version: '12.9' }]);
+  it('seeds only the protected Standard environment', () => {
+    expect(SYSTEM_ENVIRONMENT_TEMPLATES.map((item) => item.id)).toEqual(['standard']);
+    expect(SYSTEM_ENVIRONMENT_TEMPLATES[0].recipe.tools).toEqual({
+      node: { version: '24.15.0', source: 'base' },
+      python: { version: '3.11', source: 'base' },
+    });
   });
 
   it('collapses and trims long environment id separator runs', () => {
@@ -84,38 +87,16 @@ describe('managed environment recipes', () => {
     );
   });
 
-  it('generates representative build checks for every system environment', () => {
-    const expectedChecks = {
-      standard: ['npm init -y', 'python3 -m py_compile'],
-      jvm: ['javac "$d/Main.java"', 'mvn -q -o validate', 'gradle --offline'],
-      go: ['go build -o app'],
-      rust: ['cargo build -q'],
-      polyglot: [
-        'npm init -y',
-        'python3 -m py_compile',
-        'javac "$d/Main.java"',
-        'mvn -q -o validate',
-        'gradle --offline',
-        'go build -o app',
-        'cargo build -q',
-      ],
-    };
-
-    for (const template of SYSTEM_ENVIRONMENT_TEMPLATES) {
-      const flattenedRecipe = {
-        ...template.recipe,
-        base: BASE,
-      };
-      const context = generateBuildContext({
-        environment: { environmentId: template.id },
-        revision: { revisionId: 'r-1', runtimeCompatibilityVersion: '1' },
-        flattenedRecipe,
-        generatedAt: '2026-08-10T00:00:00.000Z',
-      });
-      for (const check of expectedChecks[template.id]) {
-        expect(context.files['verification.sh']).toContain(check);
-      }
-    }
+  it('retains representative checks for protected Standard revisions', () => {
+    const template = SYSTEM_ENVIRONMENT_TEMPLATES[0];
+    const context = generateBuildContext({
+      environment: { environmentId: template.id },
+      revision: { revisionId: 'r-1', runtimeCompatibilityVersion: '1' },
+      flattenedRecipe: { ...template.recipe, base: BASE },
+      generatedAt: '2026-08-10T00:00:00.000Z',
+    });
+    expect(context.files['verification.sh']).toContain('npm init -y');
+    expect(context.files['verification.sh']).toContain('python3 -m py_compile');
   });
 
   it('flattens tools, packages, variables, and ordered commands', () => {
@@ -192,8 +173,7 @@ describe('managed environment recipes', () => {
   });
 
   it('stages the Rust installer outside its final prefix', () => {
-    const rust = ENVIRONMENT_TOOL_CATALOG.tools.rust.versions[0];
-    const dockerfile = generateDockerfile(recipe({ tools: { rust } }));
+    const dockerfile = generateDockerfile(recipe({ tools: { rust: RUST } }));
 
     expect(dockerfile).toContain('apt-get install -y --no-install-recommends build-essential=12.9');
     expect(dockerfile).toContain(
@@ -228,13 +208,13 @@ describe('managed environment recipes', () => {
     const verification = generateVerificationScript(
       recipe({
         tools: {
-          python: ENVIRONMENT_TOOL_CATALOG.tools.python.versions[0],
-          java: ENVIRONMENT_TOOL_CATALOG.tools.java.versions[0],
-          go: ENVIRONMENT_TOOL_CATALOG.tools.go.versions[0],
+          python: PYTHON,
+          java: JAVA,
+          go: GO,
         },
         buildTools: {
-          maven: ENVIRONMENT_TOOL_CATALOG.buildTools.maven.versions[0],
-          gradle: ENVIRONMENT_TOOL_CATALOG.buildTools.gradle.versions[0],
+          maven: MAVEN,
+          gradle: GRADLE,
         },
       }),
     );

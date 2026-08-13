@@ -65,92 +65,9 @@ const PACKAGE_PATTERN = /^[a-z0-9][a-z0-9+.-]*$/;
 const VERSION_PATTERN = /^[0-9][0-9A-Za-z.+:~_-]*$/;
 const VARIABLE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
-const exactChecksum = (algorithm, value) => ({ algorithm, value });
-const archive = (version, url, algorithm, value, stripComponents = 1) => ({
-  version,
-  source: 'archive',
-  url,
-  checksum: exactChecksum(algorithm, value),
-  stripComponents,
-});
-
 const NODE = { version: '24.15.0', source: 'base' };
 const PYTHON = { version: '3.11', source: 'base' };
-const JAVA = archive(
-  '21.0.8',
-  'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.8_9.tar.gz',
-  'sha256',
-  'e5c41a1ab0865ea5de9b4529bf8526005f1d4593090845387d14fe450ce39c33',
-);
-const GO = archive(
-  '1.24.6',
-  'https://go.dev/dl/go1.24.6.linux-arm64.tar.gz',
-  'sha256',
-  '124ea6033a8bf98aa9fbab53e58d134905262d45a022af3a90b73320f3c3afd5',
-);
-const RUST = archive(
-  '1.89.0',
-  'https://static.rust-lang.org/dist/rust-1.89.0-aarch64-unknown-linux-gnu.tar.gz',
-  'sha256',
-  '26d6de84ac59da702aa8c2f903e3c344e3259da02e02ce92ad1c735916b29a4a',
-);
 const RUST_APT_PACKAGES = [{ name: 'build-essential', version: '12.9' }];
-const MAVEN = archive(
-  '3.9.11',
-  'https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries/apache-maven-3.9.11-bin.tar.gz',
-  'sha512',
-  'bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978',
-);
-const GRADLE = archive(
-  '9.0.0',
-  'https://services.gradle.org/distributions/gradle-9.0.0-bin.zip',
-  'sha256',
-  '8fad3d78296ca518113f3d29016617c7f9367dc005f932bd9d93bf45ba46072b',
-  1,
-);
-
-export const ENVIRONMENT_TOOL_CATALOG = {
-  schemaVersion: RECIPE_SCHEMA_VERSION,
-  tools: {
-    node: {
-      label: 'Node.js',
-      publisher: 'Protected runtime',
-      versions: [NODE],
-    },
-    python: {
-      label: 'Python',
-      publisher: 'Protected runtime',
-      versions: [PYTHON],
-    },
-    java: {
-      label: 'Java',
-      publisher: 'Eclipse Temurin',
-      versions: [JAVA],
-    },
-    go: {
-      label: 'Go',
-      publisher: 'The Go project',
-      versions: [GO],
-    },
-    rust: {
-      label: 'Rust',
-      publisher: 'The Rust project',
-      versions: [RUST],
-    },
-  },
-  buildTools: {
-    maven: {
-      label: 'Apache Maven',
-      publisher: 'Apache Software Foundation',
-      versions: [MAVEN],
-    },
-    gradle: {
-      label: 'Gradle',
-      publisher: 'Gradle',
-      versions: [GRADLE],
-    },
-  },
-};
 
 const baseRecipe = (tools = {}, buildTools = {}, aptPackages = []) => ({
   schemaVersion: RECIPE_SCHEMA_VERSION,
@@ -172,44 +89,6 @@ export const SYSTEM_ENVIRONMENT_TEMPLATES = [
       node: NODE,
       python: PYTHON,
     }),
-  },
-  {
-    id: 'jvm',
-    name: 'JVM',
-    description: 'Java with Maven and Gradle on the protected runtime.',
-    baseEnvironmentId: 'standard',
-    recipe: baseRecipe({ java: JAVA }, { maven: MAVEN, gradle: GRADLE }),
-  },
-  {
-    id: 'go',
-    name: 'Go',
-    description: 'Go on the protected runtime.',
-    baseEnvironmentId: 'standard',
-    recipe: baseRecipe({ go: GO }),
-  },
-  {
-    id: 'rust',
-    name: 'Rust',
-    description: 'Rust and Cargo on the protected runtime.',
-    baseEnvironmentId: 'standard',
-    recipe: baseRecipe({ rust: RUST }, {}, RUST_APT_PACKAGES),
-  },
-  {
-    id: 'polyglot',
-    name: 'Polyglot',
-    description: 'Java, Node.js, Python, Go, Rust, Maven, and Gradle.',
-    baseEnvironmentId: 'standard',
-    recipe: baseRecipe(
-      {
-        node: NODE,
-        python: PYTHON,
-        java: JAVA,
-        go: GO,
-        rust: RUST,
-      },
-      { maven: MAVEN, gradle: GRADLE },
-      RUST_APT_PACKAGES,
-    ),
   },
 ];
 

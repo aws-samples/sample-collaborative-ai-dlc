@@ -67,10 +67,10 @@ const environments = [
     updatedAt: '2026-08-10T00:00:00.000Z',
   },
   {
-    environmentId: 'polyglot',
-    name: 'Polyglot',
+    environmentId: 'rust-ci',
+    name: 'Rust CI',
     description: '',
-    system: true,
+    system: false,
     status: 'PUBLISHED',
     baseEnvironmentId: 'standard',
     currentRevisionId: 'r-7',
@@ -84,6 +84,61 @@ const environments = [
 const detail = (environmentId: string) => {
   const environment = environments.find((item) => item.environmentId === environmentId)!;
   const revisionId = environment.publishedRevisionId!;
+  const rust = {
+    toolId: 'rust',
+    name: 'Rust Toolchain',
+    category: 'language-sdk',
+    publisher: 'The Rust project',
+    versionId: 'tv-rust-1',
+    version: '1.89.0',
+    imageUri: 'tools',
+    imageDigest: `sha256:${'b'.repeat(64)}`,
+    imageSizeBytes: 100,
+    trustLevel: 'PUBLISHER_VERIFIED',
+    source: null,
+    executables: [{ name: 'rustc', path: 'bin/rustc' }],
+    dependencies: [],
+    aptPackages: [{ name: 'build-essential', version: '12.9' }],
+    environmentVariables: {},
+    verification: {
+      preset: 'rust',
+      versionCommand: { argv: ['rustc', '--version'], expected: '1.89.0' },
+      script: '',
+      files: [],
+    },
+    scanFindings: null,
+    securityFindingsAcceptedAt: null,
+    securityFindingsAcceptedBy: null,
+  };
+  const standardRecipe = {
+    schemaVersion: 1 as const,
+    base: null,
+    tools: {
+      node: { version: '24.15.0', source: 'base' as const },
+      python: { version: '3.11', source: 'base' as const },
+    },
+    buildTools: {},
+    aptPackages: [],
+    environmentVariables: {},
+    buildCommands: [],
+  };
+  const rustRecipe = {
+    schemaVersion: 2 as const,
+    base: {
+      environmentId: 'standard',
+      revisionId: 'core-1',
+      imageUri: 'repo',
+      imageDigest: `sha256:${'a'.repeat(64)}`,
+      imageSizeBytes: 100,
+    },
+    toolVersionIds: ['tv-rust-1'],
+    tools: [rust],
+    resolvedTools: [rust],
+    aptPackages: [{ name: 'build-essential', version: '12.9' }],
+    environmentVariables: {},
+    buildCommands: [],
+  };
+  const recipe = environmentId === 'rust-ci' ? rustRecipe : standardRecipe;
   const revision = {
     environmentId,
     revisionId,
@@ -93,38 +148,8 @@ const detail = (environmentId: string) => {
     imageDigest: `sha256:${'a'.repeat(64)}`,
     runtimeArn: 'runtime',
     runtimeEndpoint: `revision_${revisionId}`,
-    recipe: {
-      schemaVersion: 1,
-      base: null,
-      tools:
-        environmentId === 'polyglot'
-          ? {
-              node: { version: '24.15.0', source: 'base' },
-              python: { version: '3.11', source: 'base' },
-              rust: { version: '1.89.0', source: 'base' },
-            }
-          : { node: { version: '24.15.0', source: 'base' } },
-      buildTools: {},
-      aptPackages: [],
-      environmentVariables: {},
-      buildCommands: [],
-    },
-    flattenedRecipe: {
-      schemaVersion: 1,
-      base: null,
-      tools:
-        environmentId === 'polyglot'
-          ? {
-              node: { version: '24.15.0', source: 'base' },
-              python: { version: '3.11', source: 'base' },
-              rust: { version: '1.89.0', source: 'base' },
-            }
-          : { node: { version: '24.15.0', source: 'base' } },
-      buildTools: {},
-      aptPackages: [],
-      environmentVariables: {},
-      buildCommands: [],
-    },
+    recipe,
+    flattenedRecipe: recipe,
     createdAt: '2026-08-10T00:00:00.000Z',
     updatedAt: '2026-08-10T00:00:00.000Z',
   };
@@ -162,20 +187,18 @@ describe('EnvironmentTab', () => {
       revision: detail('standard').publishedRevision,
     });
     assignEnvironment.mockResolvedValue({
-      environmentId: 'polyglot',
+      environmentId: 'rust-ci',
       environment: environments[1],
-      revision: detail('polyglot').publishedRevision,
+      revision: detail('rust-ci').publishedRevision,
     });
   });
 
   it('shows repository compatibility warnings for missing tools', async () => {
     render(<EnvironmentTab project={project} canEdit onProjectUpdated={vi.fn()} />);
     expect(
-      await screen.findByText('Python is detected in a repository but is not included.'),
+      await screen.findByText('Rust is detected in a repository but is not included.'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText('Rust is detected in a repository but is not included.'),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Python is detected/)).not.toBeInTheDocument();
   });
 
   it('assigns a published environment to the space', async () => {
@@ -184,10 +207,10 @@ describe('EnvironmentTab', () => {
     render(<EnvironmentTab project={project} canEdit onProjectUpdated={onProjectUpdated} />);
     await user.selectOptions(
       await screen.findByRole('combobox', { name: 'Environment' }),
-      'polyglot',
+      'rust-ci',
     );
     await user.click(screen.getByRole('button', { name: 'Assign Environment' }));
-    expect(assignEnvironment).toHaveBeenCalledWith('p1', 'polyglot');
-    expect(onProjectUpdated).toHaveBeenCalledWith({ environmentId: 'polyglot' });
+    expect(assignEnvironment).toHaveBeenCalledWith('p1', 'rust-ci');
+    expect(onProjectUpdated).toHaveBeenCalledWith({ environmentId: 'rust-ci' });
   });
 });

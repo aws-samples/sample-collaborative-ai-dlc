@@ -40,25 +40,51 @@ terraform -chdir=terraform output -raw managed_environment_codebuild_project_nam
 terraform -chdir=terraform output -raw managed_environment_control_lambda_name
 terraform -chdir=terraform output -raw managed_environment_status_lambda_name
 terraform -chdir=terraform output -raw managed_environment_build_context_bucket_name
+terraform -chdir=terraform output -raw managed_tool_repository_name
+terraform -chdir=terraform output -raw managed_tool_codebuild_project_name
+terraform -chdir=terraform output -raw managed_tool_control_lambda_name
+terraform -chdir=terraform output -raw managed_tool_status_lambda_name
+terraform -chdir=terraform output -raw managed_environment_reset_lambda_name
 ```
 
-Sign in as a platform administrator and open **Platform Settings -> Environments**. The
-first request seeds Standard Node/Python, JVM, Go, Rust, and Polyglot.
-Standard is published from the protected core runtime. For JVM, Go, Rust, and
-Polyglot:
+Sign in as a platform administrator and open **Platform Settings ->
+Environments**. The deployment publishes only Standard. Within five minutes,
+the catalog bootstrap creates Java, Go, Rust, Maven, and Gradle tool families
+and queues their initial versions for import.
 
-1. Confirm the recipe shows exact versions, archive checksums, and a
-   digest-pinned generated Dockerfile.
-2. Start the image build and follow its CodeBuild log.
-3. Confirm the revision passes image inspection, ECR scanning, container
-   validation, representative tool builds, and AgentCore endpoint validation.
-4. Publish the READY revision.
+For each shipped tool:
 
-Create a project with a small repository that exercises the selected
-toolchain. In **Project Settings -> Environment**, assign each published system
-environment in turn and start a new intent. Confirm the intent detail and audit
-views show the exact environment revision, image digest, runtime version,
-endpoint, compatibility version, and passed verification result.
+1. Follow its CodeBuild log.
+2. Confirm the source URL, retained source digest, publisher evidence, OCI
+   digest, SBOM, compressed size, and core compatibility evidence are visible.
+3. Confirm the version command and representative build run as the non-root
+   runtime user.
+4. Review ECR findings. Accept Critical or High findings only for this
+   disposable deployment and confirm the acceptance remains visible.
+5. Publish the version. Mark Java as recommended before publishing Maven or
+   Gradle.
+
+Create a `.NET SDK` tool using an official Linux ARM64 SDK archive and the
+`.NET` preset. Confirm source inspection, normalization, scanning, `dotnet
+--version`, and a real console build succeed, then publish it.
+
+Create catalog-backed environments based on Standard:
+
+1. Select Go and publish the resulting environment.
+2. Select Maven and confirm the recommended Java version is added
+   automatically.
+3. Select `.NET SDK` and publish the resulting environment.
+4. Confirm every generated Dockerfile copies tools from exact OCI digests and
+   retains the protected base entrypoint, command, user, port, and health
+   behavior.
+5. Confirm the projected and actual compressed image sizes stay below the
+   configured AgentCore image limit.
+
+Create projects with small repositories that exercise each selected toolchain.
+In **Project Settings -> Environment**, assign each published environment and
+start a new intent. Confirm the intent detail and audit views show the exact
+environment revision, image digest, runtime version, endpoint, compatibility
+version, tool snapshots, and passed verification result.
 
 To verify immutable intent targeting:
 
@@ -68,11 +94,16 @@ To verify immutable intent targeting:
 4. Confirm its detail and audit views retain the original revision and
    endpoint, while a newly created intent uses the new assignment.
 
-To verify base updates, create and publish an environment based on JVM. Create
-and publish another JVM revision, then confirm the dependent environment shows
-an update warning while its published revision and project assignments remain
-unchanged. Run **Rebuild on latest base**, confirm only the pinned base revision
-changes, and publish the READY replacement after review.
+To verify updates:
+
+1. Publish a second Go tool version and leave the original recommended.
+2. Confirm existing environments remain unchanged.
+3. Mark the new Go version recommended and confirm affected environments show a
+   structured tool update warning.
+4. Edit one affected environment to select the new exact version, then build
+   and publish it.
+5. Publish a new Standard revision and confirm dependent environments retain
+   their published revisions until **Rebuild on latest base** is used.
 
 Inspect failures through the UI or the resource outputs above. Critical and
 High findings must stop at security review until a platform administrator
@@ -80,14 +111,22 @@ accepts them. The findings and acceptance record must remain visible after
 publication. Image build, container validation, and AgentCore endpoint failures
 must leave the previous published revision and project assignments unchanged.
 
-When testing is complete, delete the test intents and retire the test
-environments in the UI. Environment images are retained while the stack exists;
-the non-production repository is force-deleted with the stack. Managed
-AgentCore runtimes and endpoints are created by the control plane rather than
-Terraform, so delete those test endpoints and runtimes in the AgentCore console
-before destroying the logical deployment. Use the revision details in
-**Platform Settings -> Environments** to identify the runtime ID, version, and endpoint. The
-resources are also tagged with `ManagedEnvironment` and `ManagedEnvironmentRevision`.
+For an upgraded installation with legacy non-Standard environment records,
+open **Platform Settings -> Environments -> Reset**. Confirm the dry-run counts,
+type the exact confirmation, and verify projects are reassigned to Standard,
+active legacy intents are cancelled, sessions stop, and legacy runtimes,
+images, revisions, and environment records are removed. Repeat the request and
+confirm the completed marker prevents duplicate cleanup.
+
+When testing is complete, delete the test intents and retire the catalog-backed
+test environments in the UI. Environment and tool images are retained while
+the stack exists; the non-production repositories are force-deleted with the
+stack. Managed AgentCore runtimes and endpoints are created by the control
+plane rather than Terraform, so delete remaining test endpoints and runtimes
+in the AgentCore console before destroying the logical deployment. Use the
+revision details in **Platform Settings -> Environments** to identify the
+runtime ID, version, and endpoint. The resources are also tagged with
+`ManagedEnvironment` and `ManagedEnvironmentRevision`.
 
 After those resources are removed, destroy the logical deployment:
 

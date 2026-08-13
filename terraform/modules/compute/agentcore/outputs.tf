@@ -23,6 +23,11 @@ output "image_digest" {
   value       = data.aws_ecr_image.agentcore.image_digest
 }
 
+output "image_size_bytes" {
+  description = "Compressed size of the protected AgentCore image"
+  value       = data.aws_ecr_image.agentcore.image_size_in_bytes
+}
+
 output "image_tag" {
   description = "Content-hash image tag"
   value       = local.agentcore_image_tag

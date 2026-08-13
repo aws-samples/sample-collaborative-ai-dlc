@@ -15,6 +15,11 @@ import {
   flattenRecipe,
   generateDockerfile,
 } from './recipe.js';
+import {
+  ENVIRONMENT_RECIPE_SCHEMA_VERSION,
+  generateEnvironmentDockerfileV2,
+  projectedEnvironmentImageSize,
+} from './recipe-v2.js';
 
 const environmentPk = (environmentId) => `ENV#${environmentId}`;
 const environmentKey = (environmentId) => ({ pk: environmentPk(environmentId), sk: 'META' });
@@ -46,6 +51,10 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   const nextId = () => (ids ? ids() : randomUUID());
   const compatibilityVersion = () =>
     process.env.RUNTIME_COMPATIBILITY_VERSION || CURRENT_RUNTIME_COMPATIBILITY_VERSION;
+  const revisionDockerfile = (recipe, flattenedRecipe) =>
+    recipe?.schemaVersion === ENVIRONMENT_RECIPE_SCHEMA_VERSION
+      ? generateEnvironmentDockerfileV2(recipe)
+      : generateDockerfile(flattenedRecipe);
 
   const getEnvironment = async (environmentId) => {
     const { Item } = await ddb.send(
@@ -132,6 +141,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       currentRevisionId: revisionId,
       publishedRevisionId: null,
       updateAvailable: false,
+      toolUpdates: [],
       createdAt,
       createdBy,
       updatedAt: createdAt,
@@ -153,7 +163,11 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       imageDigest: null,
       runtimeArn: null,
       runtimeEndpoint: null,
-      generatedDockerfile: generateDockerfile(flattenedRecipe),
+      generatedDockerfile: revisionDockerfile(recipe, flattenedRecipe),
+      projectedImageSizeBytes:
+        recipe?.schemaVersion === ENVIRONMENT_RECIPE_SCHEMA_VERSION
+          ? projectedEnvironmentImageSize(recipe)
+          : null,
       verification: null,
       scanFindings: null,
     };
@@ -208,7 +222,11 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       imageDigest: null,
       runtimeArn: null,
       runtimeEndpoint: null,
-      generatedDockerfile: generateDockerfile(flattenedRecipe),
+      generatedDockerfile: revisionDockerfile(recipe, flattenedRecipe),
+      projectedImageSizeBytes:
+        recipe?.schemaVersion === ENVIRONMENT_RECIPE_SCHEMA_VERSION
+          ? projectedEnvironmentImageSize(recipe)
+          : null,
       verification: null,
       scanFindings: null,
     };
@@ -261,6 +279,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       currentRevisionId: 'currentRevisionId',
       publishedRevisionId: 'publishedRevisionId',
       updateAvailable: 'updateAvailable',
+      toolUpdates: 'toolUpdates',
       retiredAt: 'retiredAt',
       retiredBy: 'retiredBy',
     };
@@ -327,6 +346,8 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'generatedDockerfile',
       'imageUri',
       'imageDigest',
+      'imageSizeBytes',
+      'projectedImageSizeBytes',
       'scanFindings',
       'highFindingsAcknowledgedAt',
       'highFindingsAcknowledgedBy',
@@ -418,13 +439,14 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
           Key: environmentKey(environment.environmentId),
           ConditionExpression: environmentCondition.expression,
           UpdateExpression:
-            'SET publishedRevisionId = :revision, currentRevisionId = :revision, baseEnvironmentId = :base, #status = :published, updateAvailable = :no, updatedAt = :at',
+            'SET publishedRevisionId = :revision, currentRevisionId = :revision, baseEnvironmentId = :base, #status = :published, updateAvailable = :no, toolUpdates = :emptyUpdates, updatedAt = :at',
           ExpressionAttributeNames: { '#status': 'status' },
           ExpressionAttributeValues: {
             ':revision': revision.revisionId,
             ':base': baseEnvironmentId,
             ':published': 'PUBLISHED',
             ':no': false,
+            ':emptyUpdates': [],
             ':at': publishedAt,
             ':retired': 'RETIRED',
             ...environmentCondition.values,
@@ -513,6 +535,37 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     return changed;
   };
 
+  const markToolUpdatesAvailable = async (toolId, recommendedVersionId) => {
+    const environments = await listEnvironments();
+    const changed = [];
+    for (const environment of environments) {
+      if (environment.status === 'RETIRED') continue;
+      const revisionId = environment.publishedRevisionId ?? environment.currentRevisionId;
+      if (!revisionId) continue;
+      const revision = await getRevision(environment.environmentId, revisionId);
+      const selected = revision?.flattenedRecipe?.resolvedTools?.find(
+        (tool) => tool.toolId === toolId,
+      );
+      if (!selected || selected.versionId === recommendedVersionId) continue;
+      const toolUpdates = [
+        ...(environment.toolUpdates ?? []).filter((update) => update.toolId !== toolId),
+        {
+          toolId,
+          currentVersionId: selected.versionId,
+          recommendedVersionId,
+        },
+      ];
+      changed.push(
+        await updateEnvironment(environment.environmentId, {
+          updateAvailable: true,
+          toolUpdates,
+          ...(environment.status === 'PUBLISHED' ? { status: 'UPDATE_AVAILABLE' } : {}),
+        }),
+      );
+    }
+    return changed;
+  };
+
   const removeLookup = async (kind, id) => {
     if (!id) return;
     await ddb.send(new DeleteCommand({ TableName: table(), Key: lookupKey(kind, id) }));
@@ -536,6 +589,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreImageDigest,
     coreRuntimeArn,
     coreRuntimeVersion = '1',
+    coreImageSizeBytes = null,
     actor = 'platform',
   }) => {
     const createdAt = now();
@@ -589,6 +643,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         currentRevisionId: revisionId,
         publishedRevisionId: template.id === 'standard' ? revisionId : null,
         updateAvailable: false,
+        toolUpdates: [],
         createdAt,
         createdBy: actor,
         updatedAt: createdAt,
@@ -608,10 +663,11 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         updatedAt: createdAt,
         imageUri: template.id === 'standard' ? coreImageUri : null,
         imageDigest: template.id === 'standard' ? coreImageDigest : null,
+        imageSizeBytes: template.id === 'standard' ? coreImageSizeBytes : null,
         runtimeArn: template.id === 'standard' ? coreRuntimeArn : null,
         runtimeVersion: template.id === 'standard' ? coreRuntimeVersion : null,
         runtimeEndpoint: null,
-        generatedDockerfile: generateDockerfile(flattenedRecipe),
+        generatedDockerfile: revisionDockerfile(recipe, flattenedRecipe),
         verification:
           template.id === 'standard'
             ? {
@@ -657,12 +713,20 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreImageDigest,
     coreRuntimeArn,
     coreRuntimeVersion = '1',
+    coreImageSizeBytes = null,
     actor = 'platform',
   }) => {
     const environment = await getEnvironment('standard');
     if (!environment?.publishedRevisionId) return null;
     const published = await getRevision('standard', environment.publishedRevisionId);
-    if (published?.imageDigest === coreImageDigest) return null;
+    if (published?.imageDigest === coreImageDigest) {
+      if (!published.imageSizeBytes && coreImageSizeBytes) {
+        await updateRevision('standard', published.revisionId, {
+          imageSizeBytes: coreImageSizeBytes,
+        });
+      }
+      return null;
+    }
 
     const revisionId = `core-${coreRuntimeVersion}-${String(coreImageDigest)
       .replace(/^sha256:/, '')
@@ -697,10 +761,11 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       updatedAt: createdAt,
       imageUri: coreImageUri,
       imageDigest: coreImageDigest,
+      imageSizeBytes: coreImageSizeBytes,
       runtimeArn: coreRuntimeArn,
       runtimeVersion: coreRuntimeVersion,
       runtimeEndpoint: null,
-      generatedDockerfile: generateDockerfile(flattenedRecipe),
+      generatedDockerfile: revisionDockerfile(recipe, flattenedRecipe),
       verification: {
         status: 'PASSED',
         source: 'core-runtime',
@@ -756,6 +821,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     listRevisionsByStatus,
     markDependentsUpdateAvailable,
     reconcileBaseUpdates,
+    markToolUpdatesAvailable,
     putLookup,
     getLookup,
     removeLookup,

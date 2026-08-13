@@ -300,3 +300,13 @@ output "v2_orchestrator_lambda_name" {
   description = "Name of the v2 orchestrator durable Lambda"
   value       = module.v2_orchestrator_lambda.lambda_function_name
 }
+
+output "v2_orchestrator_qualified_name" {
+  description = "Qualified name of the v2 orchestrator durable Lambda"
+  value       = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
+}
+
+output "v2_orchestrator_qualified_arn" {
+  description = "Qualified ARN of the v2 orchestrator durable Lambda"
+  value       = module.v2_orchestrator_alias.lambda_alias_arn
+}

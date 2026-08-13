@@ -22,8 +22,10 @@ locals {
   ]))
 
   managed_runtime_arn                     = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:runtime/*"
+  neptune_resource_arn                    = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
   managed_workload_identity_directory_arn = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default"
   managed_workload_identity_arn           = "${local.managed_workload_identity_directory_arn}/workload-identity/*"
+  reset_lambda_arn                        = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-environment-reset-${var.environment}"
   ecr_registry_host                       = split("/", var.environment_repository_url)[0]
 }
 
@@ -93,6 +95,22 @@ resource "aws_s3_bucket_policy" "build_context" {
   policy = data.aws_iam_policy_document.build_context.json
 }
 
+resource "aws_ecr_repository" "managed_tools" {
+  name                 = "${var.project_name}-managed-tools-${var.environment}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = var.environment != "prod"
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = var.tags
+}
+
 resource "aws_cloudwatch_log_group" "codebuild" {
   name              = "/aws/codebuild/${var.project_name}-managed-environments-${var.environment}"
   retention_in_days = var.environment == "prod" ? 30 : 7
@@ -151,7 +169,10 @@ resource "aws_iam_role_policy" "build" {
           "ecr:BatchGetImage",
           "ecr:GetDownloadUrlForLayer",
         ]
-        Resource = var.core_repository_arn
+        Resource = [
+          var.core_repository_arn,
+          aws_ecr_repository.managed_tools.arn,
+        ]
       },
       {
         Effect = "Allow"
@@ -208,7 +229,8 @@ resource "aws_codebuild_project" "managed_environments" {
             "aws s3 cp s3://$CONTEXT_BUCKET/$CONTEXT_PREFIX/ build-context/ --recursive",
             "cd \"$CODEBUILD_SRC_DIR/build-context\"",
             "sha256sum -c checksums.sha256",
-            "test \"$(head -n 1 Dockerfile)\" = \"FROM $(jq -r '.base.imageUri + \"@sha256:\" + (.base.imageDigest | sub(\"^sha256:\"; \"\"))' manifest.json)\"",
+            "base_ref=$(jq -r '.base.imageUri + \"@sha256:\" + (.base.imageDigest | sub(\"^sha256:\"; \"\"))' manifest.json)",
+            "grep -Fx \"FROM $base_ref\" Dockerfile >/dev/null",
             "chmod 0555 verification.sh",
           ]
         }
@@ -308,9 +330,11 @@ module "control_lambda" {
     ENVIRONMENT_ECR_REPOSITORY_URI  = var.environment_repository_url
     CORE_IMAGE_URI                  = var.core_image_uri
     CORE_IMAGE_DIGEST               = var.core_image_digest
+    CORE_IMAGE_SIZE_BYTES           = tostring(var.core_image_size_bytes)
     CORE_RUNTIME_ARN                = var.core_runtime_arn
     CORE_RUNTIME_VERSION            = var.core_runtime_version
     RUNTIME_COMPATIBILITY_VERSION   = var.runtime_compatibility_version
+    MAX_ENVIRONMENT_IMAGE_MB        = "2048"
     CORS_ALLOWED_ORIGINS            = var.cors_allowed_origins
   }
 }
@@ -430,6 +454,7 @@ module "status_lambda" {
     MANAGED_RUNTIME_SECURITY_GROUPS = jsonencode(var.runtime_security_group_ids)
     MANAGED_RUNTIME_ENVIRONMENT     = jsonencode(var.runtime_environment_variables)
     MANAGED_RUNTIME_TAGS            = jsonencode(var.tags)
+    MAX_ENVIRONMENT_IMAGE_MB        = "2048"
   }
 }
 
@@ -505,4 +530,522 @@ resource "aws_lambda_permission" "runtime_validation" {
   function_name = module.status_lambda.lambda_function_name
   principal     = "events.${local.dns_suffix}"
   source_arn    = aws_cloudwatch_event_rule.runtime_validation.arn
+}
+
+resource "aws_cloudwatch_log_group" "tool_codebuild" {
+  name              = "/aws/codebuild/${var.project_name}-managed-tools-${var.environment}"
+  retention_in_days = var.environment == "prod" ? 30 : 7
+  tags              = var.tags
+}
+
+resource "aws_iam_role" "tool_build" {
+  name = "${var.project_name}-tool-build-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "codebuild.${local.dns_suffix}" }
+    }]
+  })
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "tool_build" {
+  name = "managed-tool-build"
+  role = aws_iam_role.tool_build.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.tool_codebuild.arn}:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = aws_s3_bucket.build_context.arn
+        Condition = {
+          StringLike = { "s3:prefix" = ["managed-tools/*"] }
+        }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "${aws_s3_bucket.build_context.arn}/managed-tools/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+        ]
+        Resource = var.core_repository_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchGetImage",
+          "ecr:CompleteLayerUpload",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:InitiateLayerUpload",
+          "ecr:PutImage",
+          "ecr:UploadLayerPart",
+        ]
+        Resource = aws_ecr_repository.managed_tools.arn
+      },
+    ]
+  })
+}
+
+resource "aws_codebuild_project" "managed_tools" {
+  name           = "${var.project_name}-managed-tools-${var.environment}"
+  service_role   = aws_iam_role.tool_build.arn
+  build_timeout  = 60
+  queued_timeout = 60
+
+  artifacts {
+    type = "NO_ARTIFACTS"
+  }
+
+  environment {
+    compute_type                = "BUILD_GENERAL1_MEDIUM"
+    image                       = "aws/codebuild/amazonlinux-aarch64-standard:3.0"
+    type                        = "ARM_CONTAINER"
+    image_pull_credentials_type = "CODEBUILD"
+    privileged_mode             = true
+  }
+
+  logs_config {
+    cloudwatch_logs {
+      group_name  = aws_cloudwatch_log_group.tool_codebuild.name
+      stream_name = "tool-build"
+      status      = "ENABLED"
+    }
+  }
+
+  source {
+    type = "NO_SOURCE"
+    buildspec = yamlencode({
+      version = 0.2
+      phases = {
+        pre_build = {
+          commands = [
+            "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${local.ecr_registry_host}",
+            "mkdir -p build-context",
+            "aws s3 cp s3://$CONTEXT_BUCKET/$CONTEXT_PREFIX/ build-context/ --recursive",
+            "cd \"$CODEBUILD_SRC_DIR/build-context\"",
+            "sha256sum -c checksums.sha256",
+            "chmod 0555 install.sh verify.sh build-tool.sh",
+          ]
+        }
+        build = {
+          commands = [
+            "cd \"$CODEBUILD_SRC_DIR/build-context\"",
+            "./build-tool.sh",
+          ]
+        }
+      }
+    })
+  }
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "tool_control" {
+  name               = "${var.project_name}-tool-control-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "tool_control_basic" {
+  role       = aws_iam_role.tool_control.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "tool_control" {
+  name = "managed-tool-control"
+  role = aws_iam_role.tool_control.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:TransactWriteItems",
+        ]
+        Resource = [
+          var.registry_table_arn,
+          "${var.registry_table_arn}/index/*",
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${aws_s3_bucket.build_context.arn}/managed-tools/contexts/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["codebuild:StartBuild"]
+        Resource = aws_codebuild_project.managed_tools.arn
+      },
+    ]
+  })
+}
+
+module "tool_control_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-tool-control-${var.environment}"
+  handler       = "tools-index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 60
+
+  source_path = [{
+    path = "${path.module}/../../../../lambda/environments"
+    commands = [
+      "cd ../.. && npm run build -w environments",
+      ":zip lambda/environments/.build",
+    ]
+  }]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.tool_control.arn
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  environment_variables = {
+    ENVIRONMENT_REGISTRY_TABLE    = var.registry_table_name
+    BUILD_CONTEXT_BUCKET          = aws_s3_bucket.build_context.id
+    TOOL_CODEBUILD_PROJECT        = aws_codebuild_project.managed_tools.name
+    TOOL_ECR_REPOSITORY_NAME      = aws_ecr_repository.managed_tools.name
+    TOOL_ECR_REPOSITORY_URI       = aws_ecr_repository.managed_tools.repository_url
+    CORE_IMAGE_URI                = var.core_image_uri
+    CORE_IMAGE_DIGEST             = var.core_image_digest
+    RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
+    CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "tool_catalog_bootstrap" {
+  name                = "${var.project_name}-tool-catalog-bootstrap-${var.environment}"
+  schedule_expression = "rate(5 minutes)"
+}
+
+resource "aws_cloudwatch_event_target" "tool_catalog_bootstrap" {
+  rule      = aws_cloudwatch_event_rule.tool_catalog_bootstrap.name
+  target_id = "managed-tool-catalog-bootstrap"
+  arn       = module.tool_control_lambda.lambda_function_arn
+  input     = jsonencode({ action = "bootstrap" })
+}
+
+resource "aws_lambda_permission" "tool_catalog_bootstrap" {
+  statement_id  = "AllowManagedToolCatalogBootstrap"
+  action        = "lambda:InvokeFunction"
+  function_name = module.tool_control_lambda.lambda_function_name
+  principal     = "events.${local.dns_suffix}"
+  source_arn    = aws_cloudwatch_event_rule.tool_catalog_bootstrap.arn
+}
+
+resource "aws_iam_role" "tool_status" {
+  name               = "${var.project_name}-tool-status-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "tool_status_basic" {
+  role       = aws_iam_role.tool_status.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "tool_status" {
+  name = "managed-tool-status"
+  role = aws_iam_role.tool_status.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+        ]
+        Resource = [
+          var.registry_table_arn,
+          "${var.registry_table_arn}/index/*",
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${aws_s3_bucket.build_context.arn}/managed-tools/contexts/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:DescribeImages",
+          "ecr:DescribeImageScanFindings",
+        ]
+        Resource = aws_ecr_repository.managed_tools.arn
+      },
+    ]
+  })
+}
+
+module "tool_status_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-tool-status-${var.environment}"
+  handler       = "tools-status.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 300
+
+  source_path = [{
+    path = "${path.module}/../../../../lambda/environments"
+    commands = [
+      "cd ../.. && npm run build -w environments",
+      ":zip lambda/environments/.build",
+    ]
+  }]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.tool_status.arn
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  environment_variables = {
+    ENVIRONMENT_REGISTRY_TABLE = var.registry_table_name
+    BUILD_CONTEXT_BUCKET       = aws_s3_bucket.build_context.id
+    TOOL_ECR_REPOSITORY_NAME   = aws_ecr_repository.managed_tools.name
+    TOOL_ECR_REPOSITORY_URI    = aws_ecr_repository.managed_tools.repository_url
+    MAX_TOOL_IMAGE_MB          = "1536"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "tool_build_status" {
+  name = "${var.project_name}-tool-build-status-${var.environment}"
+
+  event_pattern = jsonencode({
+    source        = ["aws.codebuild"]
+    "detail-type" = ["CodeBuild Build State Change"]
+    detail = {
+      "project-name" = [aws_codebuild_project.managed_tools.name]
+      "build-status" = ["SUCCEEDED", "FAILED", "FAULT", "STOPPED", "TIMED_OUT"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "tool_build_status" {
+  rule      = aws_cloudwatch_event_rule.tool_build_status.name
+  target_id = "managed-tool-build-status"
+  arn       = module.tool_status_lambda.lambda_function_arn
+}
+
+resource "aws_lambda_permission" "tool_build_status" {
+  statement_id  = "AllowManagedToolBuildEvents"
+  action        = "lambda:InvokeFunction"
+  function_name = module.tool_status_lambda.lambda_function_name
+  principal     = "events.${local.dns_suffix}"
+  source_arn    = aws_cloudwatch_event_rule.tool_build_status.arn
+}
+
+resource "aws_cloudwatch_event_rule" "tool_scan_status" {
+  name = "${var.project_name}-tool-scan-status-${var.environment}"
+
+  event_pattern = jsonencode({
+    source        = ["aws.ecr"]
+    "detail-type" = ["ECR Image Scan"]
+    detail = {
+      "repository-name" = [aws_ecr_repository.managed_tools.name]
+      "scan-status"     = ["COMPLETE"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "tool_scan_status" {
+  rule      = aws_cloudwatch_event_rule.tool_scan_status.name
+  target_id = "managed-tool-scan-status"
+  arn       = module.tool_status_lambda.lambda_function_arn
+}
+
+resource "aws_lambda_permission" "tool_scan_status" {
+  statement_id  = "AllowManagedToolScanEvents"
+  action        = "lambda:InvokeFunction"
+  function_name = module.tool_status_lambda.lambda_function_name
+  principal     = "events.${local.dns_suffix}"
+  source_arn    = aws_cloudwatch_event_rule.tool_scan_status.arn
+}
+
+resource "aws_cloudwatch_event_rule" "tool_status_poll" {
+  name                = "${var.project_name}-tool-status-poll-${var.environment}"
+  schedule_expression = "rate(1 minute)"
+}
+
+resource "aws_cloudwatch_event_target" "tool_status_poll" {
+  rule      = aws_cloudwatch_event_rule.tool_status_poll.name
+  target_id = "managed-tool-status-poll"
+  arn       = module.tool_status_lambda.lambda_function_arn
+  input     = jsonencode({ action = "poll" })
+}
+
+resource "aws_lambda_permission" "tool_status_poll" {
+  statement_id  = "AllowManagedToolStatusPoll"
+  action        = "lambda:InvokeFunction"
+  function_name = module.tool_status_lambda.lambda_function_name
+  principal     = "events.${local.dns_suffix}"
+  source_arn    = aws_cloudwatch_event_rule.tool_status_poll.arn
+}
+
+resource "aws_iam_role" "reset" {
+  name               = "${var.project_name}-environment-reset-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "reset_basic" {
+  role       = aws_iam_role.reset.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "reset_vpc" {
+  role       = aws_iam_role.reset.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "reset" {
+  name = "managed-environment-reset"
+  role = aws_iam_role.reset.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["neptune-db:connect"]
+        Resource = local.neptune_resource_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:BatchWriteItem",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:UpdateItem",
+        ]
+        Resource = [
+          var.registry_table_arn,
+          "${var.registry_table_arn}/index/*",
+          var.v2_executions_table_arn,
+          "${var.v2_executions_table_arn}/index/*",
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchDeleteImage",
+          "ecr:ListImages",
+        ]
+        Resource = var.environment_repository_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:DeleteAgentRuntime",
+          "bedrock-agentcore:DeleteAgentRuntimeEndpoint",
+          "bedrock-agentcore:GetAgentRuntime",
+          "bedrock-agentcore:GetAgentRuntimeEndpoint",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:DeleteWorkloadIdentity"]
+        Resource = [
+          local.managed_workload_identity_directory_arn,
+          local.managed_workload_identity_arn,
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:StopRuntimeSession"]
+        Resource = [local.managed_runtime_arn, "${local.managed_runtime_arn}/*"]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:ListDurableExecutionsByFunction",
+          "lambda:StopDurableExecution",
+        ]
+        Resource = var.v2_orchestrator_qualified_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = local.reset_lambda_arn
+      },
+    ]
+  })
+}
+
+module "reset_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-environment-reset-${var.environment}"
+  handler       = "reset.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 900
+  memory_size   = 1024
+
+  source_path = [{
+    path = "${path.module}/../../../../lambda/environments"
+    commands = [
+      "cd ../.. && npm run build -w environments",
+      ":zip lambda/environments/.build",
+    ]
+  }]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.reset.arn
+
+  vpc_subnet_ids         = var.vpc_subnet_ids
+  vpc_security_group_ids = var.vpc_security_group_ids
+  attach_network_policy  = false
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  environment_variables = {
+    ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
+    V2_EXECUTIONS_TABLE             = var.v2_executions_table_name
+    ENVIRONMENT_ECR_REPOSITORY_NAME = var.environment_repository_name
+    NEPTUNE_ENDPOINT                = var.neptune_endpoint
+    V2_ORCHESTRATOR_FUNCTION        = var.v2_orchestrator_qualified_name
+    CORS_ALLOWED_ORIGINS            = var.cors_allowed_origins
+  }
 }

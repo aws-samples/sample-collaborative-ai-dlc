@@ -358,3 +358,28 @@ output "managed_environment_build_context_bucket_name" {
   description = "Private S3 bucket containing managed environment build contexts"
   value       = module.managed_environments.build_context_bucket_name
 }
+
+output "managed_tool_repository_name" {
+  description = "Immutable ECR repository for managed tool artifacts"
+  value       = module.managed_environments.tool_repository_name
+}
+
+output "managed_tool_codebuild_project_name" {
+  description = "ARM64 CodeBuild project for managed tool artifacts"
+  value       = module.managed_environments.tool_codebuild_project_name
+}
+
+output "managed_tool_control_lambda_name" {
+  description = "Managed tool control Lambda function name"
+  value       = module.managed_environments.tool_control_lambda_name
+}
+
+output "managed_tool_status_lambda_name" {
+  description = "Managed tool build-status Lambda function name"
+  value       = module.managed_environments.tool_status_lambda_name
+}
+
+output "managed_environment_reset_lambda_name" {
+  description = "Managed environment destructive reset Lambda function name"
+  value       = module.managed_environments.reset_lambda_name
+}

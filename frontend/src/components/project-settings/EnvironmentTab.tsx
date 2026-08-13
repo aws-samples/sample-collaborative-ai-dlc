@@ -28,6 +28,16 @@ interface Props {
 const includedTools = (detail: EnvironmentDetail | null) => {
   const recipe = detail?.publishedRevision?.flattenedRecipe;
   if (!recipe) return [];
+  if (recipe.schemaVersion === 2) {
+    return [
+      { name: 'node', version: 'protected' },
+      { name: 'python', version: 'protected' },
+      ...(recipe.resolvedTools ?? recipe.tools).map((tool) => ({
+        name: tool.toolId,
+        version: tool.version,
+      })),
+    ];
+  }
   return [...Object.entries(recipe.tools), ...Object.entries(recipe.buildTools)].map(
     ([name, spec]) => ({ name, version: spec.version }),
   );
@@ -36,7 +46,14 @@ const includedTools = (detail: EnvironmentDetail | null) => {
 const compatibilityWarnings = (project: Project, detail: EnvironmentDetail | null) => {
   const recipe = detail?.publishedRevision?.flattenedRecipe;
   if (!recipe) return [];
-  const available = new Set([...Object.keys(recipe.tools), ...Object.keys(recipe.buildTools)]);
+  const available =
+    recipe.schemaVersion === 2
+      ? new Set([
+          'node',
+          'python',
+          ...(recipe.resolvedTools ?? recipe.tools).map((tool) => tool.toolId),
+        ])
+      : new Set([...Object.keys(recipe.tools), ...Object.keys(recipe.buildTools)]);
   const stacks = (project.repos ?? [])
     .map((repo) => repo.detectedStack ?? '')
     .join(' ')
@@ -49,6 +66,7 @@ const compatibilityWarnings = (project: Project, detail: EnvironmentDetail | nul
     [/\bgradle\b/, 'gradle', 'Gradle'],
     [/\bgolang\b|\bgo\b/, 'go', 'Go'],
     [/\brust\b|\bcargo\b/, 'rust', 'Rust'],
+    [/(?:\.net\b|\bdotnet\b|\bcsharp\b|\basp\.net\b)/, 'dotnet-sdk', '.NET'],
   ];
   return requirements
     .filter(([pattern, tool]) => pattern.test(stacks) && !available.has(tool))

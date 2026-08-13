@@ -9,13 +9,14 @@
 # agentcore package and the shared/ helpers it imports via ../shared).
 FROM public.ecr.aws/docker/library/node:24.15.0-slim
 
-# Base tools: git (workspace checkout), curl/unzip (CLI installs), jq, procps,
+# Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
+# archives), jq, procps,
 # python3 (bare-`python`/`python3` MCP servers; `python`→`python3` symlink so
 # both resolve — uv/uvx manage their own Python separately).
 RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
     && apt-get install -y --no-install-recommends --allow-unauthenticated ca-certificates gnupg \
     && apt-get update \
-    && apt-get install -y --no-install-recommends git curl unzip jq procps python3 \
+    && apt-get install -y --no-install-recommends git curl unzip xz-utils jq procps python3 \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 

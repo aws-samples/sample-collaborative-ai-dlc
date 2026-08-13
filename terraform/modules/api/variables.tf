@@ -139,6 +139,26 @@ variable "environments_lambda_name" {
   type        = string
 }
 
+variable "tools_lambda_invoke_arn" {
+  description = "Invoke ARN of the managed tool control Lambda"
+  type        = string
+}
+
+variable "tools_lambda_name" {
+  description = "Name of the managed tool control Lambda"
+  type        = string
+}
+
+variable "environment_reset_lambda_invoke_arn" {
+  description = "Invoke ARN of the managed environment reset Lambda"
+  type        = string
+}
+
+variable "environment_reset_lambda_name" {
+  description = "Name of the managed environment reset Lambda"
+  type        = string
+}
+
 variable "agent_questions_table_name" {
   description = "Name of the agent questions DynamoDB table"
   type        = string

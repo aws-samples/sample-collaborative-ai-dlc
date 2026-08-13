@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const list = vi.fn();
-const catalog = vi.fn();
+const listTools = vi.fn();
 const get = vi.fn();
 const build = vi.fn();
 const create = vi.fn();
@@ -13,7 +13,6 @@ const rebuild = vi.fn();
 vi.mock('@/services/environments', () => ({
   environmentsService: {
     list: (...args: unknown[]) => list(...args),
-    catalog: (...args: unknown[]) => catalog(...args),
     get: (...args: unknown[]) => get(...args),
     build: (...args: unknown[]) => build(...args),
     create: (...args: unknown[]) => create(...args),
@@ -24,6 +23,13 @@ vi.mock('@/services/environments', () => ({
     rebuild: (...args: unknown[]) => rebuild(...args),
     rebuildAll: vi.fn(),
     retire: vi.fn(),
+  },
+  toolsService: {
+    list: (...args: unknown[]) => listTools(...args),
+  },
+  environmentResetService: {
+    preview: vi.fn(),
+    execute: vi.fn(),
   },
 }));
 
@@ -58,56 +64,113 @@ const custom = {
 };
 
 const recipe = {
-  schemaVersion: 1,
+  schemaVersion: 2 as const,
   base: {
     environmentId: 'standard',
     revisionId: 'core-1',
     imageUri: 'core',
     imageDigest: `sha256:${'a'.repeat(64)}`,
+    imageSizeBytes: 900 * 1024 * 1024,
   },
-  tools: { node: { version: '24.15.0', source: 'base' } },
-  buildTools: {},
+  toolVersionIds: [],
+  tools: [],
+  resolvedTools: [],
   aptPackages: [],
   environmentVariables: {},
   buildCommands: [],
 };
 
-const javaPackage = {
-  version: '21.0.8',
-  source: 'archive' as const,
-  url: 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.8_9.tar.gz',
-  checksum: {
-    algorithm: 'sha256' as const,
-    value: 'e5c41a1ab0865ea5de9b4529bf8526005f1d4593090845387d14fe450ce39c33',
+const javaVersion = {
+  toolId: 'java',
+  versionId: 'tv-java-21',
+  status: 'PUBLISHED' as const,
+  definition: {
+    schemaVersion: 1 as const,
+    version: '21.0.8',
+    source: {
+      type: 'https' as const,
+      url: 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.8_9.tar.gz',
+    },
+    installer: { mode: 'generated' as const, stripComponents: 1 },
+    executables: [
+      { name: 'java', path: 'bin/java' },
+      { name: 'javac', path: 'bin/javac' },
+    ],
+    dependencies: [],
+    aptPackages: [],
+    environmentVariables: { JAVA_HOME: '${TOOL_ROOT}' },
+    verification: {
+      preset: 'java' as const,
+      versionCommand: { argv: ['java', '-version'], expected: '21.0.8' },
+      script: '',
+      files: [],
+    },
   },
-  stripComponents: 1,
+  system: true,
+  autoBuild: false,
+  buildAttempt: 1,
+  imageUri: 'registry/tools',
+  imageDigest: `sha256:${'c'.repeat(64)}`,
+  imageSizeBytes: 200 * 1024 * 1024,
+  source: {
+    requestedUrl: 'https://example.test/java.tar.gz',
+    resolvedUrl: 'https://example.test/java.tar.gz',
+    sha256: 'd'.repeat(64),
+    sizeBytes: 100,
+    trustLevel: 'PUBLISHER_VERIFIED' as const,
+  },
+  createdAt: '2026-08-13T00:00:00.000Z',
+  updatedAt: '2026-08-13T00:00:00.000Z',
+  publishedAt: '2026-08-13T00:00:00.000Z',
 };
 
-const toolCatalog = {
-  schemaVersion: 1 as const,
-  tools: {
-    node: {
-      label: 'Node.js',
-      publisher: 'Protected runtime',
-      versions: [{ version: '24.15.0', source: 'base' as const }],
+const javaTool = {
+  toolId: 'java',
+  name: 'Java JDK',
+  description: 'Java SDK',
+  category: 'language-sdk',
+  publisher: 'Eclipse Temurin',
+  system: true,
+  recommendedVersionId: javaVersion.versionId,
+  versions: [javaVersion],
+  createdAt: '2026-08-13T00:00:00.000Z',
+  updatedAt: '2026-08-13T00:00:00.000Z',
+};
+
+const mavenVersion = {
+  ...javaVersion,
+  toolId: 'maven',
+  versionId: 'tv-maven-3',
+  definition: {
+    ...javaVersion.definition,
+    version: '3.9.11',
+    source: {
+      type: 'https' as const,
+      url: 'https://archive.apache.org/maven.tar.gz',
     },
-    python: {
-      label: 'Python',
-      publisher: 'Protected runtime',
-      versions: [{ version: '3.11', source: 'base' as const }],
+    executables: [{ name: 'mvn', path: 'bin/mvn' }],
+    dependencies: ['java'],
+    environmentVariables: {},
+    verification: {
+      preset: 'maven' as const,
+      versionCommand: { argv: ['mvn', '--version'], expected: '3.9.11' },
+      script: '',
+      files: [],
     },
-    java: {
-      label: 'Java',
-      publisher: 'Eclipse Temurin',
-      versions: [javaPackage],
-    },
-    go: { label: 'Go', publisher: 'The Go project', versions: [] },
-    rust: { label: 'Rust', publisher: 'The Rust project', versions: [] },
   },
-  buildTools: {
-    maven: { label: 'Apache Maven', publisher: 'Apache Software Foundation', versions: [] },
-    gradle: { label: 'Gradle', publisher: 'Gradle', versions: [] },
-  },
+  imageDigest: `sha256:${'e'.repeat(64)}`,
+  imageSizeBytes: 100 * 1024 * 1024,
+};
+
+const mavenTool = {
+  ...javaTool,
+  toolId: 'maven',
+  name: 'Apache Maven',
+  description: 'Maven build tool',
+  category: 'build-tool',
+  publisher: 'Apache Software Foundation',
+  recommendedVersionId: mavenVersion.versionId,
+  versions: [mavenVersion],
 };
 
 const revision = {
@@ -119,6 +182,7 @@ const revision = {
   runtimeCompatibilityVersion: '1',
   imageUri: null,
   imageDigest: null,
+  imageSizeBytes: null,
   runtimeArn: null,
   runtimeEndpoint: null,
   generatedDockerfile: 'FROM core@sha256:abc\nUSER node\n',
@@ -143,7 +207,7 @@ const scanFindings = {
 };
 
 const standardRecipe = {
-  ...recipe,
+  schemaVersion: 1 as const,
   base: {
     environmentId: 'core',
     revisionId: 'core-1',
@@ -154,6 +218,10 @@ const standardRecipe = {
     node: { version: '24.15.0', source: 'base' as const },
     python: { version: '3.11', source: 'base' as const },
   },
+  buildTools: {},
+  aptPackages: [],
+  environmentVariables: {},
+  buildCommands: [],
 };
 
 const standardRevision = {
@@ -161,6 +229,7 @@ const standardRevision = {
   environmentId: 'standard',
   revisionId: 'core-1',
   status: 'PUBLISHED',
+  imageSizeBytes: 900 * 1024 * 1024,
   recipe: standardRecipe,
   flattenedRecipe: standardRecipe,
 };
@@ -175,7 +244,7 @@ describe('EnvironmentsTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockResolvedValue([custom, standard]);
-    catalog.mockResolvedValue(toolCatalog);
+    listTools.mockResolvedValue([javaTool]);
     get.mockImplementation(async (environmentId: string) =>
       environmentId === 'standard'
         ? standardDetail
@@ -304,30 +373,38 @@ describe('EnvironmentsTab', () => {
 
     expect(await screen.findByText('Node.js 24.15.0')).toBeInTheDocument();
     expect(screen.getByText('Python 3.11')).toBeInTheDocument();
-    expect(screen.getAllByText('Inherited from Standard Node/Python')).toHaveLength(2);
     expect(screen.getByText('21.0.8')).toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Node.js version' })).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Java version' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Java archive URL')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Java checksum')).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Java official package' })).toHaveAttribute(
-      'href',
-      javaPackage.url,
-    );
 
-    await user.click(screen.getByRole('switch', { name: 'Include Java' }));
+    await user.click(screen.getByRole('switch', { name: 'Include Java JDK' }));
     await user.type(screen.getByLabelText('Name'), 'Java Custom');
     await user.click(screen.getByRole('button', { name: 'Create Draft' }));
 
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
         recipe: expect.objectContaining({
-          tools: expect.objectContaining({
-            java: javaPackage,
-          }),
+          schemaVersion: 2,
+          toolVersionIds: [javaVersion.versionId],
         }),
       }),
     );
+  });
+
+  it('shows automatically included dependencies and counts them in projected size', async () => {
+    const user = userEvent.setup();
+    listTools.mockResolvedValue([javaTool, mavenTool]);
+
+    render(<EnvironmentsTab />);
+    await screen.findByText('Generated Dockerfile');
+    await user.click(screen.getByRole('button', { name: 'New' }));
+    await user.click(screen.getByRole('switch', { name: 'Include Apache Maven' }));
+
+    expect(await screen.findByText('Added automatically for Apache Maven')).toBeInTheDocument();
+    expect(screen.getByText('Required')).toBeInTheDocument();
+    expect(screen.getByText('Projected 1200 / 2048 MiB')).toBeInTheDocument();
   });
 
   it('shows a successful image build and lets an admin accept security findings', async () => {
