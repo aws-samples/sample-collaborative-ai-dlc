@@ -69,9 +69,11 @@ import { mapWithConcurrency } from '../shared/concurrency.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
+import { createNativeExport } from './native-export.js';
 import {
   ATTACHMENT_UPLOAD_TTL_SECONDS,
   MAX_ATTACHMENTS,
@@ -107,6 +109,7 @@ const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION || '';
 // Compose report uploads land here (presigned PUT) and are read back at
 // compose dispatch. Key shape: compose-reports/<intentId>/<uuid>.json.
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
+const AIDLC_REPO_REF = () => process.env.AIDLC_REPO_REF || '';
 const attachmentCleanup = createAttachmentCleanupService({
   s3,
   store,
@@ -869,6 +872,7 @@ const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   sectionIndex:
     row.section_index === undefined || row.section_index === '' ? null : Number(row.section_index),
   unitSlug: row.unit_slug || null,
+  repository: row.repository || null,
   stageAttempt: Number(row.stage_attempt) || 0,
   generation: Math.max(1, Number(row.generation) || 1),
   versionCount: Math.max(0, Number(row.version_count) || 0) + legacyVersionCount,
@@ -1214,6 +1218,7 @@ const mapIntent = (meta) => ({
   gitProvider: meta.gitProvider ?? null,
   workflowId: meta.workflowId,
   workflowVersion: meta.workflowVersion ?? null,
+  aidlcRepoRef: meta.aidlcRepoRef ?? null,
   scope: meta.scope ?? null,
   currentPhase: meta.currentPhase ?? null,
   currentStage: meta.currentStage ?? null,
@@ -1240,6 +1245,85 @@ const mapIntent = (meta) => ({
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
 });
+
+const NATIVE_EXPORT_HARNESSES = new Set(['claude', 'codex', 'kiro', 'kiro-ide', 'opencode']);
+const NATIVE_EXPORT_STATUSES = new Set(['DRAFT', 'WAITING', 'FAILED', 'CANCELLED', 'SUCCEEDED']);
+
+const repositoryName = (repository) => {
+  const value = String(repository ?? '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '');
+  return value.split('/').at(-1) || value.split(':').at(-1) || 'repository';
+};
+
+const repositoryCloneUrl = (repository, provider) => {
+  const value = String(repository ?? '');
+  if (/^(?:https?|ssh):\/\//.test(value) || value.startsWith('git@')) return value;
+  if (provider === 'gitlab') return `git@gitlab.com:${value}.git`;
+  if (provider === 'bitbucket') return `git@bitbucket.org:${value}.git`;
+  return `git@github.com:${value}.git`;
+};
+
+const exportRepositories = (meta) =>
+  (meta.repos ?? []).map((repository) => {
+    const provider = meta.repoProviders?.[repository] || meta.gitProvider || 'github';
+    return {
+      name: repositoryName(repository),
+      url: repositoryCloneUrl(repository, provider),
+      branch: meta.branch || meta.baseBranches?.[repository] || meta.baseBranch || '',
+    };
+  });
+
+const findNativeIncompatibleBlocks = async (plan) => {
+  const agentIds = new Set();
+  const sensorIds = new Set();
+  const ruleIds = new Set();
+  for (const stage of plan.stages) {
+    for (const id of [
+      stage.agentRef,
+      ...(stage.supportAgentRefs ?? []),
+      stage.reviewer?.reviewerAgent,
+    ]) {
+      if (id && id !== 'orchestrator') agentIds.add(id);
+    }
+    for (const sensor of stage.sensors ?? []) sensorIds.add(sensor.sensorId);
+    for (const id of [...(stage.rules?.universal ?? []), ...(stage.rules?.phase ?? [])]) {
+      ruleIds.add(id);
+    }
+  }
+  const [agents, sensors, rules, knowledge] = await Promise.all([
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'AGENT'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'SENSOR'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'RULE'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'KNOWLEDGE'),
+  ]);
+  const custom = [
+    ...plan.stages
+      .filter((stage) => stage.stageTenant && stage.stageTenant !== SYSTEM_TENANT)
+      .map((stage) => `STAGE:${stage.stageId}`),
+    ...agents
+      .filter(
+        (block) => block.tenantId !== SYSTEM_TENANT && agentIds.has(block.id ?? block.blockId),
+      )
+      .map((block) => `AGENT:${block.id ?? block.blockId}`),
+    ...sensors
+      .filter(
+        (block) => block.tenantId !== SYSTEM_TENANT && sensorIds.has(block.id ?? block.blockId),
+      )
+      .map((block) => `SENSOR:${block.id ?? block.blockId}`),
+    ...rules
+      .filter((block) => block.tenantId !== SYSTEM_TENANT && ruleIds.has(block.id ?? block.blockId))
+      .map((block) => `RULE:${block.id ?? block.blockId}`),
+    ...knowledge
+      .filter(
+        (block) =>
+          block.tenantId !== SYSTEM_TENANT &&
+          (block.agentRef === 'shared' || agentIds.has(block.agentRef)),
+      )
+      .map((block) => `KNOWLEDGE:${block.id ?? block.blockId}`),
+  ];
+  return [...new Set(custom)].toSorted();
+};
 
 // Map a QEDIT# row (Quorum-supported artifact edit session) to the wire shape.
 const mapQuorumEdit = (q) => ({
@@ -1499,6 +1583,109 @@ export const handler = async (event) => {
         return response(created.created ? 202 : 200, mapFeedbackBatch(created.item));
       }
       return response(405, { error: 'Method not allowed' });
+    }
+
+    // POST /projects/{projectId}/intents/{intentId}/export — materialize a
+    // native AI-DLC workspace snapshot and return a short-lived S3 download.
+    // RUNNING is intentionally refused: stage and artifact rows can change
+    // while the archive is assembled, producing an internally inconsistent
+    // checkpoint.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/export')) {
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const meta = records.meta;
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (!NATIVE_EXPORT_STATUSES.has(meta.status)) {
+        return response(409, {
+          error: 'Wait for the intent to reach a stable state before exporting',
+        });
+      }
+      const data = body ? JSON.parse(body) : {};
+      const harness = data.harness || meta.agentCli || 'kiro';
+      if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
+        return response(400, { error: `Unsupported native AI-DLC harness: ${harness}` });
+      }
+      const planResult = await loadExecutionPlan({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        workflowId: meta.workflowId,
+        workflowVersion: meta.workflowVersion,
+        scope: meta.scope,
+        ...(Array.isArray(meta.skipStageIds) && meta.skipStageIds.length
+          ? { skipStageIds: meta.skipStageIds }
+          : {}),
+        ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+      });
+      if (!planResult.valid || !planResult.plan) {
+        return response(409, {
+          error: 'The workflow snapshot cannot be resolved for native export',
+          errors: planResult.errors ?? [],
+        });
+      }
+      const incompatibleBlocks = await findNativeIncompatibleBlocks(planResult.plan);
+      if (incompatibleBlocks.length > 0) {
+        return response(409, {
+          error: 'The workflow uses edited methodology blocks that cannot yet be exported',
+          incompatibleBlocks,
+        });
+      }
+      const stagesByInstance = new Map(
+        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+      );
+      const artifacts = (await fetchArtifacts(g, intentId)).map((artifact) => {
+        const producer = stagesByInstance.get(artifact.createdByStageInstanceId);
+        return {
+          ...artifact,
+          stageId: producer?.stageId ?? null,
+          phase: producer?.phase ?? null,
+          repository: artifact.repository ?? producer?.repository ?? null,
+        };
+      });
+      const stages = [
+        ...planResult.plan.stages,
+        ...(planResult.plan.skippedStages ?? []).map((stage) => ({ ...stage, excluded: true })),
+      ];
+      try {
+        const legacyRefWarning = meta.aidlcRepoRef
+          ? []
+          : [
+              'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+            ];
+        const exported = await createNativeExport({
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+          upstreamRef: meta.aidlcRepoRef || AIDLC_REPO_REF(),
+          harness,
+          warnings: legacyRefWarning,
+          projection: {
+            intent: {
+              intentId,
+              projectId,
+              title: meta.title,
+              prompt: meta.prompt,
+              scope: meta.scope,
+              workflowId: meta.workflowId,
+              workflowVersion: meta.workflowVersion,
+              createdAt: meta.startedAt,
+              branch: meta.branch,
+              customRules: meta.customRules ?? [],
+            },
+            stages,
+            stageRows: records.stages ?? [],
+            artifacts,
+            humanTasks: records.humanTasks ?? [],
+            repositories: exportRepositories(meta),
+          },
+        });
+        return response(201, exported);
+      } catch (error) {
+        console.error('Native workflow export failed:', error);
+        return response(409, {
+          error: 'This workflow snapshot is not compatible with native AI-DLC export',
+          detail: error.message,
+        });
+      }
     }
 
     // POST /projects/{projectId}/intents/{intentId}/realtime-token
@@ -4442,6 +4629,7 @@ export const handler = async (event) => {
         status: 'DRAFT',
         workflowId,
         workflowVersion,
+        aidlcRepoRef: AIDLC_REPO_REF(),
         scope,
         startedBy: sub,
         title: data.title || null,

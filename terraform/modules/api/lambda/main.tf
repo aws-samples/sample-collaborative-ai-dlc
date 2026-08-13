@@ -2082,6 +2082,7 @@ module "seed_blocks_lambda" {
   handler       = "index.handler"
   runtime       = "nodejs24.x"
   timeout       = 300
+  memory_size   = 512
 
   source_path = [
     {
@@ -2315,6 +2316,37 @@ resource "aws_iam_role_policy" "intents" {
         Resource = "${var.artifacts_bucket_arn}/compose-reports/*"
       },
       {
+        # Native AI-DLC workflow export: lazily cache the exact commit-pinned
+        # harness, then read it for subsequent exports.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "${var.artifacts_bucket_arn}/aidlc-distributions/*"
+      },
+      {
+        # S3 only returns NoSuchKey for a missing cache object when the caller
+        # can list that prefix; otherwise GetObject masks the miss as 403.
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = var.artifacts_bucket_arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["aidlc-distributions/*"]
+          }
+        }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
+        Resource = "${var.artifacts_bucket_arn}/workflow-exports/*"
+      },
+      {
+        # Project-uploaded Markdown rules are copied into the selected native
+        # harness's auto-loaded rules directory.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${var.artifacts_bucket_arn}/custom-rules/*"
+      },
+      {
         # DRAFT intent prompt attachments: mint browser PUT URLs, validate
         # committed objects, and purge removed/versioned objects.
         Effect   = "Allow"
@@ -2392,6 +2424,9 @@ module "intents_lambda" {
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
     # Compose report uploads (presigned PUT + bounded read-back at dispatch).
     ARTIFACTS_BUCKET = var.artifacts_bucket_name
+    # Default upstream ref for legacy intents created before the ref was
+    # persisted. Native distributions are fetched and cached on export.
+    AIDLC_REPO_REF = var.aidlc_repo_ref
     # Server-origin realtime reload hints (artifact edited/verified, quorum
     # edit lifecycle) on the intent channel — lambda/shared/ws-fanout.js.
     CONNECTIONS_TABLE  = var.connections_table_name
@@ -2556,7 +2591,7 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
       {
         # Blocks table: load the pinned workflow + block metadata for the plan.
         Effect   = "Allow"
-        Action   = ["dynamodb:Query"]
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {

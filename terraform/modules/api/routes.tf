@@ -1051,6 +1051,12 @@ resource "aws_api_gateway_resource" "intent_graph" {
   path_part   = "graph"
 }
 
+resource "aws_api_gateway_resource" "intent_export" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "export"
+}
+
 # Aggregated process/graph-read evidence (reads ledger, enrichment spend,
 # sensor findings) — the intent Audit view.
 resource "aws_api_gateway_resource" "intent_audit" {
@@ -1286,6 +1292,7 @@ locals {
     item_patch             = { resource = aws_api_gateway_resource.intent.id, method = "PATCH" }
     item_delete            = { resource = aws_api_gateway_resource.intent.id, method = "DELETE" }
     graph_get              = { resource = aws_api_gateway_resource.intent_graph.id, method = "GET" }
+    export_post            = { resource = aws_api_gateway_resource.intent_export.id, method = "POST" }
     audit_get              = { resource = aws_api_gateway_resource.intent_audit.id, method = "GET" }
     derive_post            = { resource = aws_api_gateway_resource.intent_derive.id, method = "POST" }
     outputs_get            = { resource = aws_api_gateway_resource.intent_outputs.id, method = "GET" }
@@ -1345,6 +1352,12 @@ module "cors_intents_metrics" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intents_metrics.id
+}
+
+module "cors_intent_export" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_export.id
 }
 
 module "cors_intent_attachments" {
