@@ -943,8 +943,13 @@ resource "aws_iam_role_policy" "reset" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["neptune-db:connect"]
+        Effect = "Allow"
+        Action = [
+          "neptune-db:ReadDataViaQuery",
+          "neptune-db:WriteDataViaQuery",
+          "neptune-db:DeleteDataViaQuery",
+          "neptune-db:connect",
+        ]
         Resource = local.neptune_resource_arn
       },
       {
