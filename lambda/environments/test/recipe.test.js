@@ -10,6 +10,7 @@ import {
   generateBuildContext,
   generateDockerfile,
   generateVerificationScript,
+  normalizeEnvironmentId,
   orderRebuilds,
   validateRecipe,
 } from '../recipe.js';
@@ -75,6 +76,12 @@ describe('managed environment recipes', () => {
     expect(
       SYSTEM_ENVIRONMENT_TEMPLATES.find((item) => item.id === 'polyglot').recipe.aptPackages,
     ).toEqual([{ name: 'build-essential', version: '12.9' }]);
+  });
+
+  it('collapses and trims long environment id separator runs', () => {
+    expect(normalizeEnvironmentId(`---Managed${'-'.repeat(100_000)}Environment---`)).toBe(
+      'managed-environment',
+    );
   });
 
   it('generates representative build checks for every system environment', () => {

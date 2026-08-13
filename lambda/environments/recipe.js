@@ -831,12 +831,15 @@ export const isSupportedCompatibilityVersion = (candidate, current) => {
 };
 
 export const normalizeEnvironmentId = (value) => {
-  const id = String(value ?? '')
+  const collapsed = String(value ?? '')
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 63);
+    .replace(/[^a-z0-9]+/g, '-');
+  const withoutLeadingSeparator = collapsed.startsWith('-') ? collapsed.slice(1) : collapsed;
+  const withoutBoundarySeparators = withoutLeadingSeparator.endsWith('-')
+    ? withoutLeadingSeparator.slice(0, -1)
+    : withoutLeadingSeparator;
+  const id = withoutBoundarySeparators.slice(0, 63);
   if (!ID_PATTERN.test(id))
     throw new Error('Environment id must contain lowercase letters and digits');
   return id;
