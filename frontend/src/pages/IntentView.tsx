@@ -45,6 +45,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import {
   Check,
   ChevronDown,
+  Copy,
   Download,
   Loader2,
   MoreHorizontal,
@@ -72,11 +73,38 @@ const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
 
-const CommandBlock = ({ children }: { children: string }) => (
-  <pre className="mt-2 w-full min-w-0 max-w-full whitespace-pre-wrap break-all rounded-md bg-muted px-3 py-2 font-mono text-xs leading-relaxed">
-    <code>{children}</code>
-  </pre>
-);
+const CommandBlock = ({ children, label }: { children: string; label: string }) => {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(children);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="relative mt-2 min-w-0">
+      <pre className="w-full min-w-0 max-w-full whitespace-pre-wrap break-all rounded-md bg-muted py-2 pl-3 pr-10 font-mono text-xs leading-relaxed">
+        <code>{children}</code>
+      </pre>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="absolute right-1.5 top-1.5 h-7 w-7"
+        aria-label={copied ? `${label} copied` : label}
+        title={copied ? 'Copied' : label}
+        onClick={() => void copy()}
+      >
+        {copied ? (
+          <Check className="h-3.5 w-3.5 text-green-600" />
+        ) : (
+          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+      </Button>
+    </div>
+  );
+};
 
 export default function IntentView() {
   const {
@@ -206,13 +234,7 @@ export default function IntentView() {
       document.body.append(download);
       download.click();
       download.remove();
-      const currentPhase = detail?.intent.currentPhase?.toLowerCase();
-      const hasActiveConstruction = detail?.stages.some(
-        (stage) =>
-          stage.phase?.toLowerCase() === 'construction' &&
-          ['RUNNING', 'WAITING_FOR_HUMAN'].includes(stage.state),
-      );
-      if (currentPhase === 'construction' || hasActiveConstruction) {
+      if (result.setup.showWorkspaceSetup) {
         setConstructionExport(result);
       }
     } catch (err) {
@@ -311,11 +333,21 @@ export default function IntentView() {
     `cd ${shellQuote(exportDirectory)}`,
     `unzip ${downloadedZip} -d .`,
   ].join('\n');
-  const launchCommands = constructionSetup?.launchCommand
-    ? `${constructionSetup.launchCommand}\n# Then run inside the agent session:\n${constructionSetup.continueCommand}`
-    : constructionSetup
-      ? `# Open this directory in Kiro IDE, then run:\n${constructionSetup.continueCommand}`
-      : '';
+  const legacyConstruction = constructionSetup?.construction?.perUnitIteration === false;
+  const completedUnitSummary = constructionSetup?.construction?.completedUnits.join(', ');
+  const constructionContinueCommand =
+    legacyConstruction &&
+    constructionSetup?.construction?.nextUnit &&
+    constructionSetup.continueCommand
+      ? [
+          `${constructionSetup.continueCommand} Continue the construction phase.`,
+          completedUnitSummary ? `Completed units: ${completedUnitSummary}.` : '',
+          `Continue with unit: ${constructionSetup.construction.nextUnit}.`,
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : constructionSetup?.continueCommand;
+  const launchCommand = constructionSetup?.launchCommand ?? null;
 
   return (
     <div className="space-y-6">
@@ -689,15 +721,27 @@ export default function IntentView() {
             </AlertDialogDescription>
           </AlertDialogHeader>
 
+          {constructionSetup?.construction?.nextUnit &&
+            !constructionSetup.construction.perUnitIteration && (
+              <p className="text-sm text-muted-foreground">
+                This workspace uses an older AI-DLC runtime with limited automatic per-unit
+                iteration. The complete Bolt DAG and completed-unit receipts are included. The
+                continuation command below names the next dependency-ready unit:{' '}
+                <code>{constructionSetup.construction.nextUnit}</code>.
+              </p>
+            )}
+
           {constructionSetup?.mode === 'workspace-sync' && (
             <ol className="list-decimal space-y-4 pl-5 text-sm">
               <li>
                 Create an empty workspace directory and extract the downloaded ZIP:
-                <CommandBlock>{extractCommands}</CommandBlock>
+                <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
               </li>
               <li>
                 Clone the repositories declared by the export:
-                <CommandBlock>{constructionSetup.syncCommand ?? ''}</CommandBlock>
+                <CommandBlock label="Copy workspace sync command">
+                  {constructionSetup.syncCommand ?? ''}
+                </CommandBlock>
                 <p className="mt-1 text-xs text-muted-foreground">
                   This reads <code>repos.json</code> and clones{' '}
                   {constructionSetup.repositories.length === 1
@@ -707,12 +751,24 @@ export default function IntentView() {
                 </p>
               </li>
               <li>
-                Start the selected harness and continue AI-DLC:
-                <CommandBlock>{launchCommands}</CommandBlock>
+                Start the selected harness:
+                {launchCommand ? (
+                  <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
+                ) : (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Open this directory in Kiro IDE.
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-muted-foreground">
                   Open this directory in your IDE. VS Code users may open{' '}
                   <code>aidlc.code-workspace</code>.
                 </p>
+              </li>
+              <li>
+                Then run inside the agent session:
+                <CommandBlock label="Copy AI-DLC command">
+                  {constructionContinueCommand ?? ''}
+                </CommandBlock>
               </li>
             </ol>
           )}
@@ -725,7 +781,7 @@ export default function IntentView() {
                   <div key={repository.name} className="mt-3 space-y-3">
                     <div>
                       <p className="text-xs font-medium">Fresh clone</p>
-                      <CommandBlock>
+                      <CommandBlock label={`Copy fresh clone commands for ${repository.name}`}>
                         {[
                           `git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.name)}`,
                           `cd ${shellQuote(repository.name)}`,
@@ -734,7 +790,7 @@ export default function IntentView() {
                     </div>
                     <div>
                       <p className="text-xs font-medium">Existing clone</p>
-                      <CommandBlock>
+                      <CommandBlock label={`Copy existing clone commands for ${repository.name}`}>
                         {[
                           `cd ${shellQuote(`/path/to/${repository.name}`)}`,
                           'git fetch origin',
@@ -748,11 +804,25 @@ export default function IntentView() {
               </li>
               <li>
                 From the repository root, extract the downloaded workspace:
-                <CommandBlock>{`unzip ${downloadedZip} -d .`}</CommandBlock>
+                <CommandBlock label="Copy extraction command">
+                  {`unzip ${downloadedZip} -d .`}
+                </CommandBlock>
               </li>
               <li>
-                Start the selected harness and continue AI-DLC:
-                <CommandBlock>{launchCommands}</CommandBlock>
+                Start the selected harness:
+                {launchCommand ? (
+                  <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
+                ) : (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Open this directory in Kiro IDE.
+                  </p>
+                )}
+              </li>
+              <li>
+                Then run inside the agent session:
+                <CommandBlock label="Copy AI-DLC command">
+                  {constructionContinueCommand ?? ''}
+                </CommandBlock>
               </li>
             </ol>
           )}
@@ -761,11 +831,24 @@ export default function IntentView() {
             <ol className="list-decimal space-y-4 pl-5 text-sm">
               <li>
                 Create a project directory and extract the downloaded workspace:
-                <CommandBlock>{extractCommands}</CommandBlock>
+                <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
+              </li>
+              <li>Open the extracted workspace directory in your IDE.</li>
+              <li>
+                Start the selected harness:
+                {launchCommand ? (
+                  <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
+                ) : (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Open this directory in Kiro IDE.
+                  </p>
+                )}
               </li>
               <li>
-                Start the selected harness and continue AI-DLC:
-                <CommandBlock>{launchCommands}</CommandBlock>
+                Then run inside the agent session:
+                <CommandBlock label="Copy AI-DLC command">
+                  {constructionContinueCommand ?? ''}
+                </CommandBlock>
               </li>
             </ol>
           )}
