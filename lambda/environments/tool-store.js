@@ -265,31 +265,27 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
   };
 
   const updateTool = async (toolId, patch) => {
-    const names = {};
+    const names = { '#updatedAt': 'updatedAt' };
     const values = { ':updated': now() };
-    const sets = ['updatedAt = :updated'];
-    const allowed = new Map([
-      ['name', '#name'],
-      ['description', 'description'],
-      ['category', 'category'],
-      ['publisher', 'publisher'],
-    ]);
+    const sets = ['#updatedAt = :updated'];
+    const allowed = new Set(['name', 'description', 'category', 'publisher']);
     for (const [key, value] of Object.entries(patch)) {
-      const target = allowed.get(key);
-      if (!target) continue;
-      if (target === '#name') names['#name'] = 'name';
+      if (!allowed.has(key)) continue;
+      const target = `#${key}`;
+      names[target] = key;
       sets.push(`${target} = :${key}`);
       values[`:${key}`] = value;
     }
-    const input = {
-      TableName: table(),
-      Key: toolKey(toolId),
-      UpdateExpression: `SET ${sets.join(', ')}`,
-      ExpressionAttributeValues: values,
-      ReturnValues: 'ALL_NEW',
-    };
-    if (Object.keys(names).length) input.ExpressionAttributeNames = names;
-    const { Attributes } = await ddb.send(new UpdateCommand(input));
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: toolKey(toolId),
+        UpdateExpression: `SET ${sets.join(', ')}`,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
     return Attributes;
   };
 
@@ -305,13 +301,17 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (patch.status) assertTransition(existing.status, patch.status);
     const updatedAt = now();
     const status = patch.status ?? existing.status;
-    const names = {};
+    const names = {
+      '#updatedAt': 'updatedAt',
+      '#gsiPk': 'GSI1PK',
+      '#gsiSk': 'GSI1SK',
+    };
     const values = {
       ':updated': updatedAt,
       ':gsiPk': `TOOL_VERSION_STATUS#${status}`,
       ':gsiSk': `${updatedAt}#${toolId}#${versionId}`,
     };
-    const sets = ['updatedAt = :updated', 'GSI1PK = :gsiPk', 'GSI1SK = :gsiSk'];
+    const sets = ['#updatedAt = :updated', '#gsiPk = :gsiPk', '#gsiSk = :gsiSk'];
     const allowed = new Set([
       'status',
       'definition',
@@ -336,8 +336,8 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     ]);
     for (const [key, value] of Object.entries(patch)) {
       if (!allowed.has(key)) continue;
-      const target = key === 'status' ? '#status' : key;
-      if (key === 'status') names['#status'] = 'status';
+      const target = `#${key}`;
+      names[target] = key;
       sets.push(`${target} = :${key}`);
       values[`:${key}`] = value;
     }
@@ -345,6 +345,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
       TableName: table(),
       Key: toolVersionKey(toolId, versionId),
       UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
       ReturnValues: 'ALL_NEW',
     };
@@ -353,7 +354,6 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
       input.ConditionExpression = '#status = :fromStatus';
       values[':fromStatus'] = fromStatus;
     }
-    if (Object.keys(names).length) input.ExpressionAttributeNames = names;
     const { Attributes } = await ddb.send(new UpdateCommand(input));
     if (patch.buildId) await putLookup('BUILD', patch.buildId, toolId, versionId);
     if (patch.buildArn) await putLookup('BUILD', patch.buildArn, toolId, versionId);

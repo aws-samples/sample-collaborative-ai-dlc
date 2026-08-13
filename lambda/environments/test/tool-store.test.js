@@ -57,6 +57,48 @@ describe('managed tool registry store', () => {
     expect(ddb.send).toHaveBeenCalledTimes(1);
   });
 
+  it('aliases every updated field so DynamoDB reserved words remain valid', async () => {
+    const ddb = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          Item: {
+            toolId: 'java',
+            versionId: 'tv-java-21',
+            status: 'DRAFT',
+            definition: java.version,
+          },
+        })
+        .mockResolvedValueOnce({ Attributes: { status: 'QUEUED' } }),
+    };
+    const store = createToolStore({
+      ddb,
+      tableName: 'registry',
+      clock: () => '2026-08-13T00:00:00.000Z',
+    });
+
+    await store.updateVersion(
+      'java',
+      'tv-java-21',
+      {
+        status: 'QUEUED',
+        definition: java.version,
+        source: { digest: 'sha256:source' },
+      },
+      { fromStatus: 'DRAFT' },
+    );
+
+    const update = ddb.send.mock.calls[1][0].input;
+    expect(update.UpdateExpression).toContain('#definition = :definition');
+    expect(update.UpdateExpression).toContain('#source = :source');
+    expect(update.ExpressionAttributeNames).toMatchObject({
+      '#status': 'status',
+      '#definition': 'definition',
+      '#source': 'source',
+    });
+    expect(update.UpdateExpression).not.toMatch(/(?:^|, )definition =/);
+  });
+
   it('publishes only READY versions with an atomic status transition', async () => {
     const published = {
       toolId: 'java',
