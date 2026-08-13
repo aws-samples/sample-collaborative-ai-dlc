@@ -4,6 +4,8 @@ import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import yaml from 'js-yaml';
 import {
+  MAX_DISTRIBUTION_BYTES,
+  MAX_DISTRIBUTION_FILES,
   buildDistributionArchive,
   extractDistributionArchive,
 } from '../shared/distribution-archive.js';
@@ -161,11 +163,12 @@ const loadCurrentCacheEntry = async ({ s3, bucket, upstreamRef, harness }) => {
     key: distributionManifestKey(upstreamRef, harness),
   });
   if (!manifestBody) return null;
-  const archive = await readObject({
+  const archive = await readObjectIfPresent({
     s3,
     bucket,
     key: distributionArchiveKey(upstreamRef, harness),
   });
+  if (!archive) return null;
   return validateDistribution({
     archive,
     manifest: JSON.parse(manifestBody.toString('utf8')),
@@ -193,7 +196,8 @@ const loadLegacyCacheEntry = async ({ s3, bucket, upstreamRef, harness }) => {
     throw new Error(`native-export: invalid ${harness} distribution manifest`);
   }
   const archivePath = safeArchivePath(distribution.archive);
-  const archive = await readObject({ s3, bucket, key: `${prefix}/${archivePath}` });
+  const archive = await readObjectIfPresent({ s3, bucket, key: `${prefix}/${archivePath}` });
+  if (!archive) return null;
   return validateDistribution({
     archive,
     manifest: {
@@ -210,7 +214,11 @@ const fetchAndCacheDistribution = async ({ s3, bucket, upstreamRef, harness }) =
   const repoPrefix = `dist/${harness}/`;
   let fetched;
   try {
-    fetched = await fetchRepoFiles(upstreamRef, { prefixes: [repoPrefix] });
+    fetched = await fetchRepoFiles(upstreamRef, {
+      prefixes: [repoPrefix],
+      maxFiles: MAX_DISTRIBUTION_FILES,
+      maxRetainedBytes: MAX_DISTRIBUTION_BYTES,
+    });
   } catch (error) {
     throw new Error(
       `native-export: ${harness} distribution is unavailable for ${upstreamRef}: ${error.message}`,

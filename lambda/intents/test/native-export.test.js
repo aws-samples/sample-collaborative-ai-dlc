@@ -259,12 +259,43 @@ describe('native workflow export', () => {
       upstreamRef: REF,
       harness: 'codex',
     });
-    expect(fetchRepoFiles).toHaveBeenCalledWith(REF, { prefixes: ['dist/codex/'] });
+    expect(fetchRepoFiles).toHaveBeenCalledWith(REF, {
+      prefixes: ['dist/codex/'],
+      maxFiles: 1_000,
+      maxRetainedBytes: 20 * 1024 * 1024,
+    });
     expect(result.workspaceLayout).toBe('spaces');
     expect(puts.map((put) => put.Key)).toEqual([
       `aidlc-distributions/${REF}/codex.tar.gz`,
       `aidlc-distributions/${REF}/codex.manifest.json`,
     ]);
+  });
+
+  it('refetches when a current cache manifest exists without its archive', async () => {
+    fetchRepoFiles.mockClear();
+    const { distributionFiles, manifest } = await distribution();
+    fetchRepoFiles.mockResolvedValueOnce(
+      new Map([...distributionFiles].map(([path, value]) => [`dist/codex/${path}`, value])),
+    );
+    const s3 = {
+      send: vi.fn(async (command) => {
+        if (command instanceof PutObjectCommand) return {};
+        if (command.input.Key.endsWith('codex.manifest.json')) return { Body: manifest };
+        const error = new Error('missing');
+        error.name = 'NoSuchKey';
+        throw error;
+      }),
+    };
+
+    const result = await loadDistribution({
+      s3,
+      bucket: 'artifacts',
+      upstreamRef: REF,
+      harness: 'codex',
+    });
+
+    expect(result.workspaceLayout).toBe('spaces');
+    expect(fetchRepoFiles).toHaveBeenCalledOnce();
   });
 
   it('creates a zip buffer', async () => {
