@@ -19,6 +19,9 @@ const getIssueDiscussion = (ctx, repository, resourceId) =>
 const addIssueComment = (ctx, repository, resourceId, body) =>
   invoke(ctx, repository, 'add-issue-comment', { number: resourceId, body });
 
+const closeIssue = (ctx, repository, resourceId) =>
+  invoke(ctx, repository, 'close-issue', { number: resourceId });
+
 const listExternalProjects = async () => {
   throw new ProviderError(
     501,
@@ -33,4 +36,5 @@ export const provider = {
   getIssue,
   getIssueDiscussion,
   addIssueComment,
+  closeIssue,
 };

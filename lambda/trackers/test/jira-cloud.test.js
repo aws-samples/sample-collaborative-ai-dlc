@@ -91,6 +91,7 @@ const seedConnectionRow = (overrides = {}) => ({
     baseUrl: `https://api.atlassian.com/ex/jira/${CLOUD_ID}`,
     siteHost: SITE_HOST,
     siteName: 'Acme',
+    scope: 'read:jira-work read:jira-user write:jira-work offline_access',
     expiresAt: Date.now() + 60 * 60 * 1000,
     ...overrides,
   },
@@ -128,7 +129,9 @@ describe('jira-cloud — OAuth helpers', () => {
     expect(url).toContain('https://auth.atlassian.com/authorize');
     expect(url).toContain('client_id=cid');
     expect(url).toContain('audience=api.atlassian.com');
-    expect(url).toContain('scope=read%3Ajira-work+read%3Ajira-user+offline_access');
+    expect(url).toContain(
+      'scope=read%3Ajira-work+read%3Ajira-user+write%3Ajira-work+offline_access',
+    );
     expect(url).toContain('redirect_uri=https%3A%2F%2Fapp%2Fcb');
     expect(url).toContain('state=abc');
     expect(url).toContain('prompt=consent');
@@ -213,7 +216,12 @@ describe('jira-cloud — persistConnection', () => {
       ddb: DynamoDBDocumentClient.from(new DynamoDBClient({})),
       ssm: new SSMClient({}),
       userId: 'user-1',
-      resource: { cloudId: CLOUD_ID, name: 'Acme', host: SITE_HOST },
+      resource: {
+        cloudId: CLOUD_ID,
+        name: 'Acme',
+        host: SITE_HOST,
+        scopes: ['read:jira-work', 'write:jira-work', 'offline_access'],
+      },
       tokens: { accessToken: 'a', refreshToken: 'r', expiresIn: 3600 },
     });
     const ssmCall = ssmMock.commandCalls(PutParameterCommand)[0];
@@ -226,6 +234,7 @@ describe('jira-cloud — persistConnection', () => {
       cloudId: CLOUD_ID,
       siteHost: SITE_HOST,
       baseUrl: `https://api.atlassian.com/ex/jira/${CLOUD_ID}`,
+      scope: 'read:jira-work write:jira-work offline_access',
     });
   });
 });
@@ -479,6 +488,142 @@ describe('jira-cloud — provider methods', () => {
       fetchMock.mockResolvedValueOnce(errResponse(404, { errorMessages: ['Not found'] }));
       const comments = await jiraProvider.getIssueDiscussion(ctx(), 'PROJ', 'PROJ-99');
       expect(comments).toEqual([]);
+    });
+  });
+
+  describe('addIssueComment', () => {
+    it('posts an ADF comment and maps the response', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okResponse({
+          id: '1002',
+          author: { displayName: 'AI-DLC' },
+          body: adfDoc('AI-DLC completed the workflow for this task.'),
+          created: '2026-08-10T00:00:00.000+0000',
+          updated: '2026-08-10T00:00:00.000+0000',
+        }),
+      );
+
+      const comment = await jiraProvider.addIssueComment(
+        ctx(),
+        'PROJ',
+        'PROJ-42',
+        [
+          'AI-DLC completed the workflow for this task.',
+          '',
+          '- Intent: [Login](https://aidlc.example/space/p1/intent/i1)',
+          '- Branch: [`feat/login`](https://github.com/acme/app/tree/feat/login)',
+          '- Pull requests:',
+          '  - `acme/app`: https://github.com/acme/app/pull/7',
+        ].join('\n'),
+      );
+
+      expect(comment).toMatchObject({ id: '1002', author: { handle: 'AI-DLC' } });
+      const [, init] = fetchMock.mock.calls[0];
+      expect(init.method).toBe('POST');
+      const payload = JSON.parse(init.body);
+      expect(payload.body).toMatchObject({ type: 'doc', version: 1 });
+      expect(payload.body.content[1]).toEqual({ type: 'paragraph' });
+      const bulletList = payload.body.content.find((node) => node.type === 'bulletList');
+      expect(bulletList.content).toHaveLength(3);
+      expect(bulletList.content[0]).toMatchObject({
+        type: 'listItem',
+        content: [
+          {
+            type: 'paragraph',
+            content: expect.arrayContaining([
+              expect.objectContaining({
+                text: 'Login',
+                marks: [
+                  {
+                    type: 'link',
+                    attrs: { href: 'https://aidlc.example/space/p1/intent/i1' },
+                  },
+                ],
+              }),
+            ]),
+          },
+        ],
+      });
+      expect(bulletList.content[1].content[0].content).toContainEqual({
+        type: 'text',
+        text: 'feat/login',
+        marks: [
+          {
+            type: 'link',
+            attrs: { href: 'https://github.com/acme/app/tree/feat/login' },
+          },
+        ],
+      });
+      const nested = bulletList.content[2].content.find((node) => node.type === 'bulletList');
+      expect(nested.content[0].content[0].content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ text: 'acme/app', marks: [{ type: 'code' }] }),
+          expect.objectContaining({
+            text: 'https://github.com/acme/app/pull/7',
+            marks: [
+              {
+                type: 'link',
+                attrs: { href: 'https://github.com/acme/app/pull/7' },
+              },
+            ],
+          }),
+        ]),
+      );
+    });
+
+    it('keeps multi-repository branches and pull requests under separate list items', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okResponse({
+          id: '1003',
+          author: { displayName: 'AI-DLC' },
+          body: adfDoc('AI-DLC completed the workflow for this task.'),
+          created: '2026-08-10T00:00:00.000+0000',
+          updated: '2026-08-10T00:00:00.000+0000',
+        }),
+      );
+
+      await jiraProvider.addIssueComment(
+        ctx(),
+        'PROJ',
+        'PROJ-42',
+        [
+          'AI-DLC completed the workflow for this task.',
+          '',
+          '- Branches:',
+          '  - `acme/api`: [`aidlc/login`](https://github.com/acme/api/tree/aidlc/login)',
+          '  - `acme/web`: [`aidlc/login`](https://github.com/acme/web/tree/aidlc/login)',
+          '- Pull requests:',
+          '  - `acme/api`: https://github.com/acme/api/pull/7',
+          '  - `acme/web`: https://github.com/acme/web/pull/8',
+        ].join('\n'),
+      );
+
+      const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const bulletList = payload.body.content.find((node) => node.type === 'bulletList');
+      const branches = bulletList.content[0];
+      const pullRequests = bulletList.content[1];
+      expect(branches.content[0].content[0].text).toBe('Branches:');
+      expect(branches.content[1].content).toHaveLength(2);
+      expect(pullRequests.content[0].content[0].text).toBe('Pull requests:');
+      expect(pullRequests.content[1].content).toHaveLength(2);
+      expect(pullRequests.content[1].content[0].content[0].content).toContainEqual(
+        expect.objectContaining({ text: 'https://github.com/acme/api/pull/7' }),
+      );
+    });
+
+    it('requires reconnect before writing with a legacy read-only grant', async () => {
+      ddbMock
+        .on(GetCommand, { TableName: TRACKER_TABLE })
+        .resolves(seedConnectionRow({ scope: 'read:jira-work read:jira-user offline_access' }));
+
+      await expect(
+        jiraProvider.addIssueComment(ctx(), 'PROJ', 'PROJ-42', 'Delivery complete'),
+      ).rejects.toMatchObject({
+        status: 403,
+        code: 'MISSING_SCOPES',
+        extra: { reconnect: true },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

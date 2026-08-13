@@ -401,6 +401,19 @@ const addIssueComment = async (ctx, repoId, issueNumber, body) => {
   return mapIssueDiscussionComment(data);
 };
 
+const closeIssue = async (ctx, repoId, issueNumber) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(ctx, `${API_BASE}/projects/${project}/issues/${issueNumber}`, {
+    method: 'PUT',
+    body: JSON.stringify({ state_event: 'close' }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to close issue');
+  }
+  return mapIssue(data);
+};
+
 // ---------------------------------------------------------------------------
 // MR comments (notes + discussions)
 // ---------------------------------------------------------------------------
@@ -979,6 +992,7 @@ export {
   getIssue,
   listIssueComments,
   addIssueComment,
+  closeIssue,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
@@ -1016,6 +1030,7 @@ export default {
   getIssue,
   listIssueComments,
   addIssueComment,
+  closeIssue,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,

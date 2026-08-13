@@ -326,7 +326,7 @@ const getIssue = async (ctx, repoId, issueNumber) => {
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.pull_request) {
     throw new ProviderError(
-      res.status || 404,
+      data?.pull_request ? 404 : res.status || 404,
       data?.message || (data?.pull_request ? 'Not found' : 'Failed to fetch issue'),
     );
   }
@@ -363,6 +363,21 @@ const addIssueComment = async (ctx, repoId, issueNumber, body) => {
     throw new ProviderError(res.status, data?.message || 'Failed to add issue comment');
   }
   return mapIssueDiscussionComment(data);
+};
+
+const closeIssue = async (ctx, repoId, issueNumber) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  await getIssue(ctx, repoId, issueNumber);
+  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state: 'closed' }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ProviderError(res.status, data?.message || 'Failed to close issue');
+  }
+  return mapIssue(data);
 };
 
 // ---------------------------------------------------------------------------
@@ -938,6 +953,7 @@ export {
   getIssue,
   listIssueComments,
   addIssueComment,
+  closeIssue,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
@@ -976,6 +992,7 @@ export default {
   getIssue,
   listIssueComments,
   addIssueComment,
+  closeIssue,
   listPRComments,
   addPRComment,
   getUnmergedConstructionTaskBranches,
