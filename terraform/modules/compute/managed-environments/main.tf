@@ -307,12 +307,13 @@ module "control_lambda" {
   handler       = "index.handler"
   runtime       = "nodejs24.x"
   timeout       = 60
+  artifacts_dir = "builds/managed-environments/environment-control"
 
   source_path = [{
     path = "${path.module}/../../../../lambda/environments"
     commands = [
-      "cd ../.. && npm run build -w environments",
-      ":zip lambda/environments/.build",
+      "cd ../.. && npm run build -w environments -- --outdir=../../terraform/builds/managed-environments/environment-control/source",
+      ":zip terraform/builds/managed-environments/environment-control/source",
     ]
   }]
   hash_extra = local.shared_sources_hash
@@ -429,12 +430,13 @@ module "status_lambda" {
   handler       = "status.handler"
   runtime       = "nodejs24.x"
   timeout       = 300
+  artifacts_dir = "builds/managed-environments/environment-status"
 
   source_path = [{
     path = "${path.module}/../../../../lambda/environments"
     commands = [
-      "cd ../.. && npm run build -w environments",
-      ":zip lambda/environments/.build",
+      "cd ../.. && npm run build -w environments -- --outdir=../../terraform/builds/managed-environments/environment-status/source",
+      ":zip terraform/builds/managed-environments/environment-status/source",
     ]
   }]
   hash_extra = local.shared_sources_hash
@@ -716,12 +718,13 @@ module "tool_control_lambda" {
   handler       = "tools-index.handler"
   runtime       = "nodejs24.x"
   timeout       = 60
+  artifacts_dir = "builds/managed-environments/tool-control"
 
   source_path = [{
     path = "${path.module}/../../../../lambda/environments"
     commands = [
-      "cd ../.. && npm run build -w environments",
-      ":zip lambda/environments/.build",
+      "cd ../.. && npm run build -w environments -- --outdir=../../terraform/builds/managed-environments/tool-control/source",
+      ":zip terraform/builds/managed-environments/tool-control/source",
     ]
   }]
   hash_extra = local.shared_sources_hash
@@ -829,12 +832,13 @@ module "tool_status_lambda" {
   handler       = "tools-status.handler"
   runtime       = "nodejs24.x"
   timeout       = 300
+  artifacts_dir = "builds/managed-environments/tool-status"
 
   source_path = [{
     path = "${path.module}/../../../../lambda/environments"
     commands = [
-      "cd ../.. && npm run build -w environments",
-      ":zip lambda/environments/.build",
+      "cd ../.. && npm run build -w environments -- --outdir=../../terraform/builds/managed-environments/tool-status/source",
+      ":zip terraform/builds/managed-environments/tool-status/source",
     ]
   }]
   hash_extra = local.shared_sources_hash
@@ -1035,12 +1039,13 @@ module "reset_lambda" {
   runtime       = "nodejs24.x"
   timeout       = 900
   memory_size   = 1024
+  artifacts_dir = "builds/managed-environments/environment-reset"
 
   source_path = [{
     path = "${path.module}/../../../../lambda/environments"
     commands = [
-      "cd ../.. && npm run build -w environments",
-      ":zip lambda/environments/.build",
+      "cd ../.. && npm run build -w environments -- --outdir=../../terraform/builds/managed-environments/environment-reset/source",
+      ":zip terraform/builds/managed-environments/environment-reset/source",
     ]
   }]
   hash_extra = local.shared_sources_hash
