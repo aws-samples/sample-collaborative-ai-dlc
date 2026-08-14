@@ -24,6 +24,11 @@ vi.mock('@/contexts/IntentContext', () => ({
   useIntent: () => ({ reload: (...a: unknown[]) => reloadIntent(...a) }),
 }));
 
+const setAssistAgentCli = vi.fn();
+vi.mock('@/components/discussion/DiscussionProvider', () => ({
+  useDiscussions: () => ({ setAssistAgentCli }),
+}));
+
 const get = vi.fn();
 const start = vi.fn();
 const update = vi.fn();
@@ -183,6 +188,7 @@ describe('IntentComposePage', () => {
     });
     flushDraft.mockReset().mockResolvedValue(undefined);
     reloadIntent.mockReset().mockResolvedValue(undefined);
+    setAssistAgentCli.mockReset();
     setSkipStageIds.mockReset();
     setScope.mockReset();
     setComposedGrid.mockReset();
@@ -328,6 +334,7 @@ describe('IntentComposePage', () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByTestId('agent-cli-kiro'));
+    await waitFor(() => expect(setAssistAgentCli).toHaveBeenLastCalledWith('kiro'));
     const startBtn = await screen.findByTestId('start-intent');
     await waitFor(() => expect(startBtn).toBeEnabled());
     await user.click(startBtn);

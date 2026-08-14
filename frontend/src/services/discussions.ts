@@ -1,4 +1,5 @@
 import { api, ApiError } from './api';
+import type { AgentCli } from './projects';
 
 // Discussions service — typed client for lambda/discussions.
 //
@@ -189,6 +190,7 @@ export const discussionsService = {
       command: AssistCommand;
       instructions?: string;
       selectedMessageIds?: string[];
+      agentCli?: AgentCli;
     },
   ) => {
     if (scope.kind !== 'intent') {

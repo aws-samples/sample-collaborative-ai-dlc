@@ -12,7 +12,7 @@ import { useParams } from 'react-router';
 import { discussionsService } from '@/services/discussions';
 import type { Discussion, DiscussionEntityType, DiscussionScope } from '@/services/discussions';
 import { projectsService } from '@/services/projects';
-import type { Member } from '@/services/projects';
+import type { AgentCli, Member } from '@/services/projects';
 import { realtimeService } from '@/services/realtime';
 import { useAuth } from '@/contexts/AuthContext';
 import { MentionToasts } from './MentionToasts';
@@ -60,6 +60,9 @@ interface DiscussionContextValue {
   members: Member[];
   /** The caller's project role (redact is admin/owner only). */
   role: Member['role'] | null;
+  /** Explicit CLI selected on the DRAFT compose page for Quorum assists. */
+  assistAgentCli: AgentCli | null;
+  setAssistAgentCli: (cli: AgentCli | null) => void;
 }
 
 const DiscussionContext = createContext<DiscussionContextValue | null>(null);
@@ -109,6 +112,11 @@ export function DiscussionProvider({
   const [discussions, setDiscussions] = useState<Discussion[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [toasts, setToasts] = useState<MentionToast[]>([]);
+  const [assistAgentCli, setAssistAgentCli] = useState<AgentCli | null>(null);
+
+  useEffect(() => {
+    setAssistAgentCli(null);
+  }, [projectId, intentId]);
 
   // ── Discussions list (badges + ActivityPanel tab) ──
   const reloadDiscussions = useCallback(async () => {
@@ -323,6 +331,8 @@ export function DiscussionProvider({
       discussionFor,
       members,
       role,
+      assistAgentCli,
+      setAssistAgentCli,
     }),
     [
       scope,
@@ -341,6 +351,7 @@ export function DiscussionProvider({
       discussionFor,
       members,
       role,
+      assistAgentCli,
     ],
   );
 

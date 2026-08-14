@@ -13,6 +13,7 @@ import {
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { agentsService, type AgentCapabilities } from '@/services/agents';
 import type { AgentCli } from '@/services/projects';
+import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
@@ -97,6 +98,7 @@ export default function IntentComposePage() {
   const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
   const { user } = useAuth();
   const { reload } = useIntent();
+  const setAssistAgentCli = useDiscussions()?.setAssistAgentCli;
   const userName = user?.displayName || user?.email || '';
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
 
@@ -114,6 +116,12 @@ export default function IntentComposePage() {
   const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
   const [selectedCli, setSelectedCli] = useState<AgentCli | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!setAssistAgentCli) return;
+    setAssistAgentCli(selectedCli);
+    return () => setAssistAgentCli(null);
+  }, [selectedCli, setAssistAgentCli]);
 
   const draft = useCollaborativeIntentDraft(projectId ?? '', intentId ?? null, userName);
   const { initFromIntent } = draft;

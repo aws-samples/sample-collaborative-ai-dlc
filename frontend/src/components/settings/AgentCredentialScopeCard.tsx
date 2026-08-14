@@ -12,6 +12,8 @@ import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 
+// Credential storage scopes. Intents pin an opaque binding to one of these;
+// they do not store a separate secret.
 type Scope = 'platform' | 'space' | 'personal';
 type SecretName = 'bedrockBearerToken' | 'kiroApiKey';
 

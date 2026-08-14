@@ -7,7 +7,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
-import { ddb, query, cardinality, TextP, __, locksTable } from './clients.js';
+import {
+  credentialProviderForCli,
+  resolveEffectiveCredentialBindings,
+} from '../shared/agent-credentials.js';
+import { ddb, ssm, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
   MESSAGE_ID_RE,
   MAX_CONTENT_LENGTH,
@@ -67,6 +71,7 @@ const ASSIST_COMMANDS = new Set(['summarize', 'explain', 'brainstorm', 'ask']);
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,160}$/;
 const MAX_ASSIST_INSTRUCTIONS = 2000;
 const MAX_SELECTED_MESSAGES = 40;
+const agentSettingsPrefix = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
 
 const assistMessageIdFor = (requestId) =>
   `dm-${createHash('sha256').update(requestId).digest('hex').slice(0, 32)}`;
@@ -582,6 +587,31 @@ export const assistDiscussion = async (event, res) => {
         .filter((id) => typeof id === 'string' && MESSAGE_ID_RE.test(id))
         .slice(0, MAX_SELECTED_MESSAGES)
     : [];
+  const requestedCli = typeof body.agentCli === 'string' ? body.agentCli.trim() : '';
+  const credentialProvider = requestedCli ? credentialProviderForCli(requestedCli) : null;
+  if (requestedCli && !credentialProvider) {
+    return res(400, {
+      error: `Unsupported agent CLI "${requestedCli}"`,
+      code: 'unsupported_agent_cli',
+    });
+  }
+
+  const resolveCredentialBinding = async () => {
+    if (!credentialProvider) return null;
+    const bindings = await resolveEffectiveCredentialBindings(ssm, {
+      base: agentSettingsPrefix(),
+      projectId: auth.projectId,
+      userId: caller.sub,
+    });
+    const binding = bindings[credentialProvider];
+    if (binding) return binding;
+    throw Object.assign(
+      new Error(
+        `No ${credentialProvider === 'kiro' ? 'Kiro' : 'Bedrock'} credential is available for this CLI`,
+      ),
+      { code: 'agent_credential_required' },
+    );
+  };
 
   const messageId = assistMessageIdFor(requestId);
   const failMessage = async (detail = '') => {
@@ -612,6 +642,7 @@ export const assistDiscussion = async (event, res) => {
 
   const invokeAssist = async () => {
     try {
+      const credentialBinding = await resolveCredentialBinding();
       const out = await invokeDiscussionAssist({
         intentId: scope.rootId,
         payload: {
@@ -627,6 +658,7 @@ export const assistDiscussion = async (event, res) => {
           requestedBy: caller.sub,
           requestedByName: caller.displayName,
           dispatchedAt: new Date().toISOString(),
+          ...(requestedCli ? { requestedCli, credentialBinding } : {}),
         },
       });
       if (out?.ok === false) {
@@ -634,7 +666,9 @@ export const assistDiscussion = async (event, res) => {
       }
     } catch (err) {
       console.error('discussion assist invoke failed:', err.message);
-      return await failMessage('');
+      return await failMessage(
+        err?.code === 'agent_credential_required' ? `Reason: ${err.message}` : '',
+      );
     }
     return null;
   };

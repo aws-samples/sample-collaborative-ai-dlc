@@ -1690,9 +1690,10 @@ module "timeline_events_lambda" {
 # -----------------------------------------------------------------------------
 # Role: discussions (1 Lambda — discussions)
 # Neptune CRUD + read access to the realtime doc-token secret (issues HMAC
-# scope tokens after a membership check) + the discussion-locks / read-state
-# tables (creation + message/assist guards) + connections-table fan-out
-# (server-driven discussion.message broadcasts) + Quorum AgentCore invocation.
+# scope tokens after a membership check) + effective agent-credential binding
+# lookup for DRAFT Quorum assists + the discussion-locks / read-state tables
+# (creation + message/assist guards) + connections-table fan-out (server-driven
+# discussion.message broadcasts) + Quorum AgentCore invocation.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "discussions" {
   name               = "${var.project_name}-discussions-${var.environment}"
@@ -1720,6 +1721,16 @@ resource "aws_iam_role_policy" "discussions" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = var.realtime_doc_secret_param_arn
+      },
+      {
+        Effect = "Allow"
+        Action = ["ssm:GetParameters"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
+        ]
       },
       {
         Effect = "Allow"
@@ -1775,15 +1786,16 @@ module "discussions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT      = var.neptune_endpoint
-    ENVIRONMENT           = var.environment
-    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
-    REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
-    LOCKS_TABLE           = var.discussion_locks_table_name
-    READ_STATE_TABLE      = var.discussion_read_state_table_name
-    CONNECTIONS_TABLE     = var.connections_table_name
-    WEBSOCKET_ENDPOINT    = var.websocket_api_endpoint_https
-    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    NEPTUNE_ENDPOINT          = var.neptune_endpoint
+    ENVIRONMENT               = var.environment
+    CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
+    REALTIME_SECRET_PARAM     = var.realtime_doc_secret_param_name
+    LOCKS_TABLE               = var.discussion_locks_table_name
+    READ_STATE_TABLE          = var.discussion_read_state_table_name
+    CONNECTIONS_TABLE         = var.connections_table_name
+    WEBSOCKET_ENDPOINT        = var.websocket_api_endpoint_https
+    AGENTCORE_RUNTIME_ARN     = var.agentcore_runtime_arn
+    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"

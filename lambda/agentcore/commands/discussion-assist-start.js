@@ -118,11 +118,17 @@ const fetchProjectConfig = async (g, projectId) => {
 // when the discussion belongs to a run, else the live project config. The
 // returned cliModels is the QUORUM-effective map (quorum row > flat selection
 // > fallback row) — Quorum surfaces have no agent persona, hence no tier.
-const resolveCliSelection = async ({ store, g, projectId, intentId }) => {
+const resolveCliSelection = async ({
+  store,
+  g,
+  projectId,
+  intentId,
+  requestedCli: payloadRequestedCli = null,
+}) => {
   const meta = await store?.getExecution?.(intentId).catch(() => null);
   if (meta?.agentCli || meta?.cliModels || meta?.tierModels) {
     return {
-      requestedCli: meta.agentCli ?? null,
+      requestedCli: meta.agentCli ?? payloadRequestedCli,
       cliModels: quorumCliModels({
         cliModels: meta.cliModels ?? null,
         tierModels: meta.tierModels ?? null,
@@ -135,7 +141,7 @@ const resolveCliSelection = async ({ store, g, projectId, intentId }) => {
     tierModels: null,
   }));
   return {
-    requestedCli: project.agentCli,
+    requestedCli: payloadRequestedCli ?? project.agentCli,
     cliModels: quorumCliModels({
       cliModels: project.cliModels,
       tierModels: project.tierModels,
@@ -382,6 +388,7 @@ export const createDiscussionAssistStart = ({
           g,
           projectId,
           intentId,
+          requestedCli: payload.requestedCli ?? null,
         });
         const prompt = await buildPrompt({
           g,

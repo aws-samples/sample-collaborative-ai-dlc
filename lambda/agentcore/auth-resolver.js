@@ -85,6 +85,20 @@ export const resolveInvocationAgentAuth = async ({
       });
     }
     if (binding) bindings = [binding];
+  } else if (payload.command === 'discussion-assist-start') {
+    const requestedCli = meta?.agentCli || payload.requestedCli || null;
+    // Started intents keep their pinned binding (or the historical platform
+    // binding). A DRAFT has no pinned CLI yet, so it must carry the binding
+    // resolved for the caller alongside their selected CLI.
+    const binding =
+      meta?.credentialBinding ??
+      (meta?.agentCli ? legacyPlatformBinding(requestedCli) : (payload.credentialBinding ?? null));
+    if (binding && !bindingMatchesCli(binding, requestedCli)) {
+      throw Object.assign(new Error('Agent credential does not match the selected CLI'), {
+        code: 'credential_binding_mismatch',
+      });
+    }
+    if (binding) bindings = [binding];
   } else {
     const requestedCli = payload.requestedCli || meta?.agentCli || null;
     const binding = meta?.credentialBinding || legacyPlatformBinding(requestedCli);

@@ -178,6 +178,75 @@ describe('resolveInvocationAgentAuth', () => {
     expect(result.credentialBindings).toEqual([{ provider: 'kiro', source: 'platform' }]);
   });
 
+  it('resolves the caller binding for a DRAFT discussion assist', async () => {
+    const result = await resolveInvocationAgentAuth({
+      payload: {
+        command: 'discussion-assist-start',
+        projectId: 'p-1',
+        intentId: 'e1',
+        requestedCli: 'kiro',
+        credentialBinding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+      },
+      store: {
+        getExecution: async () => ({
+          projectId: 'p-1',
+          status: 'DRAFT',
+          agentCli: null,
+          credentialBinding: null,
+        }),
+      },
+      env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+      ssm: {
+        send: async ({ input }) =>
+          input.Name === '/app/dev/users/u-1/agent-credentials/kiro-api-key'
+            ? { Parameter: { Name: input.Name, Value: 'draft-user-key' } }
+            : {},
+      },
+    });
+
+    expect(result.env.KIRO_API_KEY).toBe('draft-user-key');
+    expect(authenticatedClisForEnv({ installed: ['kiro', 'claude'], env: result.env })).toEqual([
+      'kiro',
+    ]);
+    expect(result.credentialBindings).toEqual([{ provider: 'kiro', source: 'user' }]);
+  });
+
+  it('keeps a started discussion assist on the intent pinned binding', async () => {
+    const values = new Map([
+      ['/app/dev/users/starter/agent-credentials/kiro-api-key', 'starter-key'],
+      ['/app/dev/users/collaborator/agent-credentials/kiro-api-key', 'collaborator-key'],
+    ]);
+    const result = await resolveInvocationAgentAuth({
+      payload: {
+        command: 'discussion-assist-start',
+        projectId: 'p-1',
+        intentId: 'e1',
+        requestedCli: 'kiro',
+        credentialBinding: {
+          provider: 'kiro',
+          source: 'user',
+          userId: 'collaborator',
+        },
+      },
+      store: {
+        getExecution: async () => ({
+          projectId: 'p-1',
+          status: 'RUNNING',
+          agentCli: 'kiro',
+          credentialBinding: { provider: 'kiro', source: 'user', userId: 'starter' },
+        }),
+      },
+      env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+      ssm: {
+        send: async ({ input }) => ({
+          Parameter: { Name: input.Name, Value: values.get(input.Name) },
+        }),
+      },
+    });
+
+    expect(result.env.KIRO_API_KEY).toBe('starter-key');
+  });
+
   it('rejects a compose binding for a different provider than the selected CLI', async () => {
     await expect(
       resolveInvocationAgentAuth({

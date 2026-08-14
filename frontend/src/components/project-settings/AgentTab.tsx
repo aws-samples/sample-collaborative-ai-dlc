@@ -321,7 +321,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             notOkTone="warning"
           />
         }
-        description="Highlighted when a user chooses a CLI for an intent; each user still makes an explicit selection."
+        description="Set the CLI shown as recommended on the intent compose page. Members still choose a CLI for each intent."
       >
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">

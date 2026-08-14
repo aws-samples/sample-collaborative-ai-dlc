@@ -19,6 +19,7 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import { SSMClient, GetParametersCommand } from '@aws-sdk/client-ssm';
 import shared from '../../shared/realtime-token.js';
 
 const { verifyRealtimeToken } = shared;
@@ -35,6 +36,7 @@ const PARTITION = `t-${randomUUID()}`;
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const apiMock = mockClient(ApiGatewayManagementApiClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
+const ssmMock = mockClient(SSMClient);
 
 // ─── In-memory DynamoDB conditional-write fake for the locks table ───
 //
@@ -149,6 +151,7 @@ beforeEach(async () => {
   ddbMock.reset();
   apiMock.reset();
   agentcoreMock.reset();
+  ssmMock.reset();
   lockStore.clear();
   readStateStore.clear();
   connectionItems = [];
@@ -158,6 +161,7 @@ beforeEach(async () => {
   vi.stubEnv('LOCKS_TABLE', LOCKS_TABLE);
   vi.stubEnv('READ_STATE_TABLE', READ_STATE_TABLE);
   vi.stubEnv('AGENTCORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/test');
+  vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/app/dev');
   // Pin Date so timestamps/expiries are assertable. Don't fake setTimeout —
   // the guard-poll loops and gremlin's WebSocket driver need real timers.
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -1611,6 +1615,12 @@ describe('intent-scoped discussions', () => {
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
     });
+    const personalKiroPath = '/app/dev/users/member-user/agent-credentials/kiro-api-key';
+    ssmMock.on(GetParametersCommand).callsFake((input) => ({
+      Parameters: input.Names.includes(personalKiroPath)
+        ? [{ Name: personalKiroPath, Value: 'personal-kiro-secret' }]
+        : [],
+    }));
     const { projectId, intentId } = await seedIntent();
     const created = json(
       await call('POST', intentPath('/discussions'), {
@@ -1625,6 +1635,7 @@ describe('intent-scoped discussions', () => {
         requestId: 'assist-request-1',
         command: 'summarize',
         instructions: 'Focus on decisions',
+        agentCli: 'kiro',
       },
     });
     expect(res.statusCode).toBe(202);
@@ -1654,7 +1665,14 @@ describe('intent-scoped discussions', () => {
       requestId: 'assist-request-1',
       assistCommand: 'summarize',
       instructions: 'Focus on decisions',
+      requestedCli: 'kiro',
+      credentialBinding: {
+        provider: 'kiro',
+        source: 'user',
+        userId: MEMBER_SUB,
+      },
     });
+    expect(JSON.stringify(payload)).not.toContain('personal-kiro-secret');
 
     const again = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
       pathParameters: { projectId, intentId, discussionId: created.id },
