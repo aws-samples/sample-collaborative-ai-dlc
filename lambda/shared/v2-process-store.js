@@ -20,6 +20,7 @@ import {
 import {
   META,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   humanTaskKey,
   steeringKey,
@@ -115,6 +116,29 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         Key: executionMetaKey(executionId),
         ...(consistentRead ? { ConsistentRead: true } : {}),
       }),
+    );
+    return Item ?? null;
+  };
+
+  // One atomic item is the latest-checkpoint pointer and its bounded process
+  // snapshot; overwriting it cannot expose a partially published checkpoint.
+  const putWorkflowCheckpoint = async (checkpoint) => {
+    if (!checkpoint?.executionId || !checkpoint?.checkpointId) {
+      throw new Error('putWorkflowCheckpoint requires executionId and checkpointId');
+    }
+    const item = {
+      ...workflowCheckpointKey(checkpoint.executionId),
+      ...checkpoint,
+      updatedAt: now(),
+    };
+    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    return item;
+  };
+
+  // Read the latest completed checkpoint for export hydration.
+  const getWorkflowCheckpoint = async (executionId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: workflowCheckpointKey(executionId) }),
     );
     return Item ?? null;
   };
@@ -2393,6 +2417,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   return {
     createExecution,
     getExecution,
+    putWorkflowCheckpoint,
+    getWorkflowCheckpoint,
     updateExecution,
     deleteExecution,
     putStage,

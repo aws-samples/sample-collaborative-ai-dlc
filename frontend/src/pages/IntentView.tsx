@@ -57,6 +57,7 @@ import {
   Trash2,
   TriangleAlert,
   Wrench,
+  X,
   XCircle,
 } from 'lucide-react';
 
@@ -66,7 +67,7 @@ import {
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
 const CREDENTIAL_FAILURE_CODES = new Set(['credential_unavailable', 'credential_invalid']);
-const EXPORTABLE_STATUSES = new Set(['DRAFT', 'WAITING', 'FAILED', 'CANCELLED', 'SUCCEEDED']);
+const NON_EXPORTABLE_STATUSES = new Set(['DRAFT', 'CREATED']);
 const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
@@ -76,6 +77,20 @@ const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
 ];
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+
+const errorMessage = (value: string) => {
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed === 'string') return parsed;
+    if (parsed && typeof parsed === 'object') {
+      if ('message' in parsed && typeof parsed.message === 'string') return parsed.message;
+      if ('error' in parsed && typeof parsed.error === 'string') return parsed.error;
+    }
+  } catch {
+    // Plain-text errors are already display-ready.
+  }
+  return value;
+};
 
 const workspaceDirectoryName = (value?: string | null) => {
   const name = String(value ?? '')
@@ -165,6 +180,7 @@ export default function IntentView() {
   const [exporting, setExporting] = useState(false);
   const [constructionExport, setConstructionExport] = useState<NativeWorkflowExport | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
 
   // A stage failure retries from the earliest failed stage, preserving all
   // completed upstream work. Failures before any stage row exists (init-ws,
@@ -185,6 +201,7 @@ export default function IntentView() {
         await reload();
       }
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to recover intent');
     } finally {
       setStarting(false);
@@ -203,6 +220,7 @@ export default function IntentView() {
     try {
       await cancelIntent();
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to cancel intent');
     } finally {
       setCancelling(false);
@@ -219,6 +237,7 @@ export default function IntentView() {
       await deleteIntent();
       navigate(`/space/${projectId}`);
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to delete intent');
       setConfirmDelete(false);
       setDeleting(false);
@@ -233,6 +252,7 @@ export default function IntentView() {
       setConfirmRepair(false);
       await reload();
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to repair intent');
     } finally {
       setRepairing(false);
@@ -256,6 +276,7 @@ export default function IntentView() {
         setConstructionExport(result);
       }
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to export workflow');
     } finally {
       setExporting(false);
@@ -300,6 +321,7 @@ export default function IntentView() {
   const needsLaneRepair =
     recoveryWaits.length > 0 && ['RUNNING', 'WAITING', 'FAILED'].includes(intent.status);
   const error = actionError ?? loadError;
+  const visibleError = error && error !== dismissedError ? errorMessage(error) : null;
   const isDraft = intent.status === 'DRAFT';
   // A DRAFT belongs on the collaborative compose page — one canonical draft
   // experience (shared prompt + projection selection) instead of two UIs.
@@ -312,18 +334,17 @@ export default function IntentView() {
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Deletable (destructive): owner/admin, any status except mid-RUNNING.
   const isDeletable = canDelete && intent.status !== 'RUNNING';
-  const isExportable = EXPORTABLE_STATUSES.has(intent.status);
-  const exportUnavailableReason =
-    intent.status === 'RUNNING'
-      ? 'Not available while workflow is running'
-      : intent.status === 'CREATED'
-        ? 'Not available while workflow is starting'
-        : 'Not available for this workflow status';
+  const isExportable = !NON_EXPORTABLE_STATUSES.has(intent.status);
+  const exportUnavailableReason = 'Not available before the workflow starts';
   const exportDisabled = exporting || !isExportable;
   const defaultExportHarness = intent.agentCli ?? undefined;
   const exportCli =
     EXPORT_HARNESSES.find((option) => option.value === defaultExportHarness)?.label ??
     'native AI-DLC';
+  const exportButtonLabel =
+    intent.status === 'RUNNING'
+      ? `Download ${exportCli} workspace from latest completed checkpoint`
+      : `Download ${exportCli} workspace`;
   // Pre-stage progress: before any stage row exists, init-ws lifecycle events
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
@@ -459,7 +480,7 @@ export default function IntentView() {
                       className="h-7 w-7 rounded-none"
                       disabled={exportDisabled}
                       onClick={() => requestExport()}
-                      aria-label={`Download ${exportCli} workspace`}
+                      aria-label={exportButtonLabel}
                     >
                       {exporting ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -473,7 +494,7 @@ export default function IntentView() {
                   {exporting
                     ? 'Preparing workspace…'
                     : isExportable
-                      ? `Download ${exportCli} workspace`
+                      ? exportButtonLabel
                       : exportUnavailableReason}
                 </TooltipContent>
               </Tooltip>
@@ -527,9 +548,22 @@ export default function IntentView() {
         </div>
       </div>
 
-      {error && (
-        <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
+      {visibleError && (
+        <div
+          className="flex items-center gap-2 rounded border border-destructive/20 bg-destructive/10 py-2 pl-3 pr-1 text-sm text-destructive"
+          role="alert"
+        >
+          <span className="min-w-0 flex-1 break-words">{visibleError}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
+            aria-label="Dismiss error"
+            onClick={() => setDismissedError(error)}
+          >
+            <X className="h-4 w-4" />
+          </Button>
         </div>
       )}
 
@@ -735,9 +769,11 @@ export default function IntentView() {
           <AlertDialogHeader>
             <AlertDialogTitle>Continue outside Collaborative AI-DLC?</AlertDialogTitle>
             <AlertDialogDescription className="break-words">
-              This download creates a point-in-time workspace. Work completed locally, including
-              decisions, approvals, artifacts, and code changes, will not be synchronized back to
-              this intent or included in its traceability history.
+              {intent.status === 'RUNNING'
+                ? 'This download uses the latest completed workflow checkpoint and excludes the stage currently in progress. '
+                : 'This download creates a point-in-time workspace. '}
+              Work completed locally, including decisions, approvals, artifacts, and code changes,
+              will not be synchronized back to this intent or included in its traceability history.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

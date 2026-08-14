@@ -458,6 +458,33 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         ? { name: meta.starterName, email: meta.starterEmail }
         : null;
     const sessionId = sessionIdFor(intentId);
+    const publishCheckpoint = async (stepName, sourceStageInstanceId = null) => {
+      const result = await ctx.step(stepName, async () => {
+        try {
+          return await invokeRuntime(
+            {
+              command: 'create-workflow-checkpoint',
+              projectId,
+              intentId,
+              executionId,
+              sourceStageInstanceId,
+            },
+            sessionId,
+          );
+        } catch (error) {
+          return { ok: false, reason: 'checkpoint_failed', detail: error.message };
+        }
+      });
+      if (!result || result.ok === false) {
+        await emitEvent(
+          ctx,
+          `${stepName}-failed`,
+          'v2.checkpoint.failed',
+          `Workflow checkpoint was not updated: ${result?.detail ?? result?.reason ?? 'no response'}`,
+        );
+      }
+      return result;
+    };
     await emitEvent(
       ctx,
       'init-ws-start',
@@ -520,6 +547,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         /* live fan-out is best-effort */
       }
     });
+    await publishCheckpoint('checkpoint-initial');
 
     // Resolve the ordered stage list once (pure read of pinned block metadata).
     // The per-intent skip overlay snapshotted at create rides along — every
@@ -953,6 +981,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       emitEvent,
       fail,
       executeStage,
+      publishCheckpoint,
       ids: { projectId, intentId, executionId },
       runId: null, // stamped below once minted
       intentBranch: meta.branch,
@@ -987,6 +1016,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       if (segment.kind === 'section') {
         const sectionOut = await runParallelSection(segment, sectionToolkit);
         if (sectionOut) return sectionOut;
+        await publishCheckpoint(`checkpoint-section-${segment.index}`);
         continue;
       }
       // The parallel section (if any) that consumes this segment's unit DAG:
@@ -1393,6 +1423,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           );
           dynamicSkipIds.push(flippedId);
         }
+        await publishCheckpoint(
+          `checkpoint-stage-${stage.stageInstanceId ?? stage.stageId}`,
+          stage.stageInstanceId ?? null,
+        );
       }
     }
 

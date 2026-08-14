@@ -388,6 +388,23 @@ describe('IntentView', () => {
     expect(exportWorkflow).toHaveBeenCalledWith('p1', 'i1', 'claude');
   });
 
+  it('shows only the error message and allows dismissing it', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
+    exportWorkflow.mockRejectedValue(new Error('{"error":"Workspace export is unavailable"}'));
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Workspace export is unavailable');
+    expect(
+      screen.queryByText('{"error":"Workspace export is unavailable"}'),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('keeps construction setup instructions open after starting the download', async () => {
     get.mockResolvedValue(
       baseDetail({
@@ -529,17 +546,29 @@ describe('IntentView', () => {
     expect(screen.queryByText('Export')).not.toBeInTheDocument();
   });
 
-  it('shows export disabled with an explanation while the workflow is running', async () => {
+  it('allows downloading the latest completed checkpoint while the workflow is running', async () => {
     get.mockResolvedValue(baseDetail({ status: 'RUNNING', agentCli: 'codex' }));
     renderAt();
 
-    expect(await screen.findByRole('button', { name: 'Download Codex workspace' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Choose workspace harness' })).toBeDisabled();
+    expect(
+      await screen.findByRole('button', {
+        name: 'Download Codex workspace from latest completed checkpoint',
+      }),
+    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Choose workspace harness' })).toBeEnabled();
     await userEvent.hover(screen.getByTestId('workspace-export-download'));
     expect(
       await screen.findByRole('tooltip', {
-        name: 'Not available while workflow is running',
+        name: 'Download Codex workspace from latest completed checkpoint',
       }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Download Codex workspace from latest completed checkpoint',
+      }),
+    );
+    expect(
+      await screen.findByText(/excludes the stage currently in progress/i),
     ).toBeInTheDocument();
   });
 

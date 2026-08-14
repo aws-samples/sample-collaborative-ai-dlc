@@ -58,6 +58,10 @@ const makeCtx = (over = {}) => {
 const makeRuntime = (ctx, script) => {
   let n = 0;
   return vi.fn(async (payload, sessionId) => {
+    if (payload.command === 'create-workflow-checkpoint') {
+      checkpointInvokes.push(payload);
+      return { ok: true, checkpointId: `cp-${checkpointInvokes.length}` };
+    }
     invokes.push(payload);
     sessions.push(sessionId);
     n += 1;
@@ -99,10 +103,12 @@ const META = {
 
 let deps;
 let invokes;
+let checkpointInvokes;
 let sessions;
 let ctx;
 beforeEach(() => {
   invokes = [];
+  checkpointInvokes = [];
   sessions = [];
   ctx = makeCtx();
   deps = {
@@ -155,6 +161,8 @@ describe('orchestrator durable handler', () => {
       'run-stage-start',
       'run-stage-start',
     ]);
+    expect(checkpointInvokes).toHaveLength(3);
+    expect(checkpointInvokes.map((p) => p.sourceStageInstanceId)).toEqual([null, null, null]);
     // init-ws carries the provider so the runtime picks the right clone scheme.
     const initWs = invokes.find((p) => p.command === 'init-ws');
     expect(initWs).toMatchObject({
@@ -1292,6 +1300,10 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     expect(stopped).toContain('aidlc-intent-i1-s1-billing'.padEnd(33, '0'));
     // Non-lane dispatches carry unitSlug null explicitly (uniform contract).
     expect(stageStarts().find((p) => p.stageId === 'bt').unitSlug).toBeNull();
+    // Initial + units-gen + approved skeleton + approved billing batch +
+    // completed section + bt. Approval checkpoints are captured before the
+    // next construction increment starts.
+    expect(checkpointInvokes).toHaveLength(6);
   });
 
   it('resumes after repair from persisted merged units without replaying the skeleton or its gate', async () => {
@@ -2241,6 +2253,7 @@ describe('WP5 — engine-gate decisions', () => {
     // Approved on the revision gate; the remaining lane then ran.
     expect(eventCalls.some((e) => e.type === 'v2.units.skeleton_approved')).toBe(true);
     expect(invokes.some((p) => p.command === 'init-lane' && p.unitSlug === 'billing')).toBe(true);
+    expect(checkpointInvokes).toHaveLength(6);
   });
 
   it('request-changes on a batch gate re-runs the batch lanes with feedback, then re-asks (gated mode)', async () => {
@@ -2269,6 +2282,7 @@ describe('WP5 — engine-gate decisions', () => {
     const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
     expect(eventCalls.some((e) => e.type === 'v2.units.batch_revision_requested')).toBe(true);
     expect(eventCalls.some((e) => e.type === 'v2.units.batch_approved')).toBe(true);
+    expect(checkpointInvokes).toHaveLength(6);
   });
 
   it('an uninterpretable halt-and-ask answer RE-ASKS; the follow-up choice is honored', async () => {

@@ -371,6 +371,7 @@ export const runParallelSection = async (segment, toolkit) => {
     emitEvent, // (ctxArg, stepName, type, summary, extra)
     fail, // (reason, detail) → terminal value
     executeStage, // (ctxArg, stage, opts) → { state, reason?, value? }
+    publishCheckpoint = async () => null,
     ids,
     intentBranch,
     cloneBase, // { repos, baseBranch, baseBranches, gitProvider, repoProviders }
@@ -2240,6 +2241,9 @@ export const runParallelSection = async (segment, toolkit) => {
           }`,
           { unitSlug: skeleton, sectionIndex: segment.index },
         );
+        await publishCheckpoint(
+          `checkpoint-section-${segment.index}-skeleton${revision ? `-v${revision}` : ''}`,
+        );
         break;
       }
       revision += 1;
@@ -2367,6 +2371,9 @@ export const runParallelSection = async (segment, toolkit) => {
               choice === 'accept-as-is' ? ` as-is after ${revision} revision cycle(s)` : ''
             }`,
             { sectionIndex: segment.index },
+          );
+          await publishCheckpoint(
+            `checkpoint-section-${segment.index}-batch-${w}${revision ? `-v${revision}` : ''}`,
           );
           break;
         }

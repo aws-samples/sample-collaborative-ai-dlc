@@ -3,10 +3,11 @@ import gremlin from 'gremlin';
 import { flattenVertexMap } from './graph-rows.js';
 
 const __ = gremlin.process.statics;
-const { cardinality, t: T } = gremlin.process;
+const { cardinality, t: T, P } = gremlin.process;
 
 export const ARTIFACT_VERSION_LABEL = 'ArtifactVersion';
 export const HAS_VERSION_EDGE = 'HAS_VERSION';
+export const HAS_CHECKPOINT_VERSION_EDGE = 'HAS_CHECKPOINT_VERSION';
 export const VERSIONED_RELATIONSHIP_EDGES = [
   'PRODUCES',
   'CONSUMES',
@@ -15,6 +16,16 @@ export const VERSIONED_RELATIONSHIP_EDGES = [
   'DEPENDS_ON',
   'CITES',
 ];
+
+export class CheckpointArtifactUnavailableError extends Error {
+  constructor({ versionId, reason }) {
+    super(`workflow-checkpoint: artifact version ${versionId} is unavailable (${reason})`);
+    this.name = 'CheckpointArtifactUnavailableError';
+    this.code = 'export_checkpoint_unavailable';
+    this.versionId = versionId;
+    this.reason = reason;
+  }
+}
 
 const dimension = (value) => (value === undefined || value === null ? '' : String(value));
 
@@ -192,6 +203,173 @@ const setProperties = async (traversal, properties) => {
   await q.next();
 };
 
+const ARTIFACT_SNAPSHOT_FIELDS = [
+  'id',
+  'artifact_type',
+  'title',
+  'created_by_execution_id',
+  'created_by_stage_instance_id',
+  'section_index',
+  'unit_slug',
+  'repository',
+  'stage_attempt',
+  'generation',
+  'artifact_aliases',
+  'created_at',
+  'updated_at',
+  'stale_since',
+  'stale_reason',
+  'edited_by',
+  'edited_by_name',
+  'edited_at',
+  'edit_origin',
+  'verified_by',
+  'verified_by_name',
+  'verified_at',
+  'summary_gist',
+  'summary_claims',
+  'enrichment_model',
+  'content',
+];
+
+// Keep only artifact properties that affect native projection and provenance;
+// graph bookkeeping must not create a distinct immutable version.
+export const artifactSnapshot = (row) =>
+  Object.fromEntries(
+    ARTIFACT_SNAPSHOT_FIELDS.filter((field) => row[field] !== undefined).map((field) => [
+      field,
+      row[field],
+    ]),
+  );
+
+// Content-address the complete export-relevant artifact snapshot, not only its
+// Markdown body, so attribution or repository changes produce a new version.
+export const artifactSnapshotHash = (row) =>
+  createHash('sha256')
+    .update(JSON.stringify(artifactSnapshot(row)))
+    .digest('hex');
+
+const ensureCheckpointVersion = async ({ g, intentId, canonical, logicalKey, checkpointedAt }) => {
+  const snapshotHash = artifactSnapshotHash(canonical);
+  const versionId = `${canonical.id}:sha256:${snapshotHash}`;
+  let versionVertexId = (
+    await g
+      .V()
+      .has(ARTIFACT_VERSION_LABEL, 'id', versionId)
+      .has('intent_id', intentId)
+      .limit(1)
+      .id()
+      .toList()
+  )[0];
+  if (versionVertexId === undefined) {
+    const content = String(canonical.content ?? '');
+    await setProperties(g.addV(ARTIFACT_VERSION_LABEL), {
+      ...artifactSnapshot(canonical),
+      id: versionId,
+      artifact_id: canonical.id,
+      intent_id: intentId,
+      artifact_logical_key: logicalKey,
+      checkpointed_at: checkpointedAt,
+      content_length: Buffer.byteLength(content, 'utf8'),
+      content_type: 'text/markdown',
+      content_hash: createHash('sha256').update(content).digest('hex'),
+      snapshot_hash: snapshotHash,
+    });
+    versionVertexId = (
+      await g
+        .V()
+        .has(ARTIFACT_VERSION_LABEL, 'id', versionId)
+        .has('intent_id', intentId)
+        .limit(1)
+        .id()
+        .next()
+    ).value;
+  }
+  const linked = await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .outE(HAS_CHECKPOINT_VERSION_EDGE)
+    .where(__.inV().hasId(versionVertexId))
+    .hasNext();
+  if (!linked) {
+    await g
+      .V()
+      .has('Intent', 'id', intentId)
+      .addE(HAS_CHECKPOINT_VERSION_EDGE)
+      .to(__.V(versionVertexId))
+      .next();
+  }
+  return {
+    artifactId: canonical.id,
+    logicalKey,
+    versionId,
+    snapshotHash,
+  };
+};
+
+// Materialize immutable versions for every current logical artifact head.
+// Unchanged heads reuse their existing content-addressed version.
+export const snapshotCurrentArtifactHeads = async ({
+  g,
+  intentId,
+  clock = () => new Date().toISOString(),
+}) => {
+  const heads = selectCurrentArtifactHeads(await readIntentArtifactEntries(g, intentId), intentId);
+  const checkpointedAt = clock();
+  const refs = [];
+  for (const canonical of heads.toSorted((a, b) =>
+    artifactLogicalKeyFromRow(a, intentId).localeCompare(artifactLogicalKeyFromRow(b, intentId)),
+  )) {
+    const logicalKey = artifactLogicalKeyFromRow(canonical, intentId);
+    refs.push(
+      await ensureCheckpointVersion({
+        g,
+        intentId,
+        canonical,
+        logicalKey,
+        checkpointedAt,
+      }),
+    );
+  }
+  return refs;
+};
+
+// Hydrate the exact immutable artifact versions named by a workflow checkpoint
+// and reject missing or mismatched references instead of falling back to heads.
+export const readCheckpointArtifactVersions = async ({ g, intentId, refs = [] }) => {
+  if (refs.length === 0) return [];
+  const ids = refs.map((ref) => ref.versionId);
+  const rows = await g
+    .V()
+    .hasLabel(ARTIFACT_VERSION_LABEL)
+    .has('intent_id', intentId)
+    .has('id', P.within(...ids))
+    .valueMap(true)
+    .toList();
+  const byId = new Map(
+    rows.map((row) => {
+      const flat = flattenVertexMap(row);
+      return [flat.id, flat];
+    }),
+  );
+  return refs.map((ref) => {
+    const row = byId.get(ref.versionId);
+    if (!row) {
+      throw new CheckpointArtifactUnavailableError({
+        versionId: ref.versionId,
+        reason: 'missing',
+      });
+    }
+    if (row.snapshot_hash !== ref.snapshotHash) {
+      throw new CheckpointArtifactUnavailableError({
+        versionId: ref.versionId,
+        reason: 'hash_mismatch',
+      });
+    }
+    return row;
+  });
+};
+
 const archiveOne = async ({
   g,
   intentId,
@@ -333,7 +511,9 @@ export const archiveArtifactsForStages = async ({
 
 export default {
   ARTIFACT_VERSION_LABEL,
+  CheckpointArtifactUnavailableError,
   HAS_VERSION_EDGE,
+  HAS_CHECKPOINT_VERSION_EDGE,
   VERSIONED_RELATIONSHIP_EDGES,
   artifactLogicalKey,
   artifactLogicalKeyFromRow,
@@ -343,5 +523,9 @@ export default {
   selectCurrentArtifactHeads,
   readIntentArtifactEntries,
   legacyVersionId,
+  artifactSnapshot,
+  artifactSnapshotHash,
+  snapshotCurrentArtifactHeads,
+  readCheckpointArtifactVersions,
   archiveArtifactsForStages,
 };
