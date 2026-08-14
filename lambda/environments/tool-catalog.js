@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const TOOL_SCHEMA_VERSION = 1;
-export const SYSTEM_TOOL_TEMPLATE_REVISION = 1;
+export const SYSTEM_TOOL_TEMPLATE_REVISION = 2;
 export const TOOL_VERSION_STATUSES = [
   'DRAFT',
   'QUEUED',
@@ -1121,7 +1121,10 @@ node generate-sbom.mjs
 docker build --platform linux/arm64 --tag "$tool_ref" -f Dockerfile.tool .
 docker build --platform linux/arm64 --tag "$validation_ref" \
   --build-arg "TOOL_IMAGE=$tool_ref" -f Dockerfile.validation .
-docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+docker run --rm --network none --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+  --tmpfs /mnt/workspace:rw,exec,nosuid,nodev,size=512m,mode=1777 \
+  --env TMPDIR=/mnt/workspace \
   --pids-limit 256 --memory 3g --cpus 2 "$validation_ref"
 docker push "$tool_ref"
 
