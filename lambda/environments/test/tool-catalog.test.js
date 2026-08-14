@@ -184,11 +184,11 @@ describe('managed tool catalog', () => {
     });
 
     expect(context.manifest.dependencies).toEqual([java]);
-    expect(context.files['Dockerfile.validation']).toMatch(
-      new RegExp(
-        `^ARG TOOL_IMAGE\\nFROM ${java.imageUri}@${java.imageDigest} AS managed_dependency_0`,
+    expect(
+      context.files['Dockerfile.validation'].startsWith(
+        `ARG TOOL_IMAGE\nFROM ${java.imageUri}@${java.imageDigest} AS managed_dependency_0`,
       ),
-    );
+    ).toBe(true);
     expect(context.files['Dockerfile.validation']).toContain(
       `FROM ${java.imageUri}@${java.imageDigest} AS managed_dependency_0`,
     );
