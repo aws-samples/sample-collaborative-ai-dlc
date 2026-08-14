@@ -185,6 +185,13 @@ describe('orchestrator durable handler', () => {
     deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
       if (n === 1) return { ok: true }; // init-ws
       if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      expect(deps.store.updateExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executionId: 'i1',
+          status: 'RUNNING',
+          pendingHumanTaskId: null,
+        }),
+      );
       return { ok: true, state: 'SUCCEEDED' };
     });
 
@@ -503,6 +510,40 @@ describe('orchestrator durable handler', () => {
     // …and wrote no terminal status over the new run's META.
     const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status).filter(Boolean);
     expect(statuses).not.toContain('FAILED');
+  });
+
+  it('exits retired when cancel or rewind wins the unpark CAS', async () => {
+    const cas = Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' });
+    deps.store.updateExecution = vi.fn(async (input) => {
+      if (input.fromStatus === 'WAITING') throw cas;
+      return { orchestratorRunId: input.orchestratorRunId ?? null };
+    });
+    deps.store.getExecution
+      .mockResolvedValueOnce(META)
+      .mockResolvedValue({ ...META, status: 'WAITING' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.store.getHumanTask = vi.fn(async () => ({ status: 'answered' }));
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: false, reason: 'retired', humanTaskId: 'h1' });
+    expect(invokes.filter((p) => p.resumeFrom === 'h1')).toHaveLength(0);
+    expect(deps.store.updateExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'RUNNING',
+        fromStatus: 'WAITING',
+        ifOrchestratorRunId: expect.stringMatching(/^run-/),
+      }),
+    );
   });
 
   it('skips release when parkReleaseSeconds is null', async () => {

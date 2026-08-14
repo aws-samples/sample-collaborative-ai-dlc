@@ -147,6 +147,37 @@ describe('resolveInvocationAgentAuth', () => {
     expect(result.env.KIRO_API_KEY).toBeUndefined();
   });
 
+  it('uses the legacy platform credential for an in-flight compose without a binding', async () => {
+    const reads = [];
+    const result = await resolveInvocationAgentAuth({
+      payload: {
+        command: 'compose-plan-start',
+        projectId: 'p-1',
+        executionId: 'e1',
+        mode: 'inflight',
+        requestedCli: 'kiro',
+      },
+      store: {
+        getExecution: async () => ({
+          projectId: 'p-1',
+          status: 'WAITING',
+          agentCli: 'kiro',
+        }),
+      },
+      env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+      ssm: {
+        send: async ({ input }) => {
+          reads.push(input.Name);
+          return { Parameter: { Name: input.Name, Value: 'platform-key' } };
+        },
+      },
+    });
+
+    expect(reads).toEqual(['/app/dev/kiro-api-key']);
+    expect(result.env.KIRO_API_KEY).toBe('platform-key');
+    expect(result.credentialBindings).toEqual([{ provider: 'kiro', source: 'platform' }]);
+  });
+
   it('rejects a compose binding for a different provider than the selected CLI', async () => {
     await expect(
       resolveInvocationAgentAuth({

@@ -864,6 +864,32 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           };
         }
 
+        // Credential resolution only permits active executions. Unpark META
+        // before AgentCore restores a released session's workspace, otherwise
+        // the re-clone is rejected while the execution still reads WAITING.
+        const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, async () => {
+          try {
+            await store.updateExecution({
+              executionId,
+              status: 'RUNNING',
+              pendingHumanTaskId: null,
+              fromStatus: 'WAITING',
+              ifOrchestratorRunId: runId,
+            });
+            return true;
+          } catch (e) {
+            if (e?.name === 'ConditionalCheckFailedException') return false;
+            throw e;
+          }
+        });
+        if (!ownedUnpark) {
+          ctx.logger?.info?.('run retired while unparking gate', { intentId, humanTaskId });
+          return {
+            state: 'TERMINAL',
+            value: { ok: false, reason: 'retired', intentId, humanTaskId },
+          };
+        }
+
         result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: humanTaskId });
       }
 

@@ -334,25 +334,7 @@ beforeAll(async () => {
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
   const imported = await import('../index.js');
-  const realHandler = imported.handler;
-  // Existing lifecycle tests are not about CLI selection. Give their DRAFT
-  // Start requests an explicit selection while leaving `{}` available to the
-  // dedicated required-selection test below.
-  handler = (event) => {
-    const { __noDefaultAgentCli, ...request } = event ?? {};
-    if (!request.path?.endsWith('/start') || __noDefaultAgentCli) {
-      return realHandler(request);
-    }
-    try {
-      const parsed = request.body ? JSON.parse(request.body) : {};
-      return realHandler({
-        ...request,
-        body: JSON.stringify({ agentCli: 'kiro', ...parsed }),
-      });
-    } catch {
-      return realHandler(request);
-    }
-  };
+  handler = imported.handler;
 
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
   conn = new gremlin.driver.DriverRemoteConnection(url);
@@ -1411,6 +1393,7 @@ describe('composed grids + DRAFT PATCH', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     const res = await patchIntent(sub, projectId, intent.id, { title: 'Too late' });
@@ -1437,7 +1420,10 @@ describe('composed grids + DRAFT PATCH', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
-      body: JSON.stringify({ composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' } }),
+      body: JSON.stringify({
+        agentCli: 'kiro',
+        composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' },
+      }),
       ...claims(sub),
     });
     expect(res.statusCode).toBe(202);
@@ -1456,6 +1442,7 @@ describe('composed grids + DRAFT PATCH', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     // Flip to FAILED so it is startable again, then try to smuggle a grid in.
@@ -1587,6 +1574,7 @@ describe('composed grids + DRAFT PATCH', () => {
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
       body: JSON.stringify({
+        agentCli: 'kiro',
         composedGrid: { analyze: 'SKIP', extra: 'EXECUTE', build: 'EXECUTE' },
       }),
       ...claims(sub),
@@ -1777,6 +1765,7 @@ describe('POST /compose — composer sessions', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     const res = await composeReq(sub, projectId, intent.id);
@@ -2160,7 +2149,6 @@ describe('POST /start', () => {
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
       body: '{}',
-      __noDefaultAgentCli: true,
       ...claims(sub),
     });
     expect(res.statusCode).toBe(400);
@@ -2188,6 +2176,7 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(res.statusCode).toBe(409);
@@ -2209,6 +2198,7 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(res.statusCode).toBe(202);
@@ -2223,6 +2213,7 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(res.statusCode).toBe(202);
@@ -2259,6 +2250,7 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(failed.statusCode).toBe(500);
@@ -2281,6 +2273,7 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(retry.statusCode).toBe(202);
@@ -5870,7 +5863,7 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
       .property(gremlin.process.cardinality.single, 'stage_skipping', 'enabled')
       .next();
 
-  const startIntent = (sub, projectId, intentId, bodyObj = {}) =>
+  const startIntent = (sub, projectId, intentId, bodyObj) =>
     handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intentId}/start`,
@@ -5886,7 +5879,10 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
     await enableProjectSkipping(projectId);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
 
-    const res = await startIntent(sub, projectId, intent.id, { skipStageIds: ['optional'] });
+    const res = await startIntent(sub, projectId, intent.id, {
+      agentCli: 'kiro',
+      skipStageIds: ['optional'],
+    });
     expect(res.statusCode).toBe(202);
     expect(JSON.parse(res.body).skipStageIds).toEqual(['optional']);
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toEqual(['optional']);
@@ -5907,7 +5903,10 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
         })
       ).body,
     );
-    const res = await startIntent(sub, projectId, intent.id, { skipStageIds: [] });
+    const res = await startIntent(sub, projectId, intent.id, {
+      agentCli: 'kiro',
+      skipStageIds: [],
+    });
     expect(res.statusCode).toBe(202);
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toBeNull();
   });
@@ -5927,7 +5926,7 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
         })
       ).body,
     );
-    const res = await startIntent(sub, projectId, intent.id);
+    const res = await startIntent(sub, projectId, intent.id, { agentCli: 'kiro' });
     expect(res.statusCode).toBe(202);
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toEqual(['optional']);
   });
@@ -5938,13 +5937,19 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
     seedSkippablePlan();
     // Disabled run (no override, platform default = disabled).
     const plain = JSON.parse((await createIntent(sub, projectId)).body);
-    const denied = await startIntent(sub, projectId, plain.id, { skipStageIds: ['optional'] });
+    const denied = await startIntent(sub, projectId, plain.id, {
+      agentCli: 'kiro',
+      skipStageIds: ['optional'],
+    });
     expect(denied.statusCode).toBe(400);
     expect(JSON.parse(denied.body).error).toMatch(/disabled/);
     // Enabled run, but an ALWAYS stage → structured plan error.
     await enableProjectSkipping(projectId);
     const enabled = JSON.parse((await createIntent(sub, projectId)).body);
-    const bad = await startIntent(sub, projectId, enabled.id, { skipStageIds: ['main'] });
+    const bad = await startIntent(sub, projectId, enabled.id, {
+      agentCli: 'kiro',
+      skipStageIds: ['main'],
+    });
     expect(bad.statusCode).toBe(400);
     expect(JSON.parse(bad.body).errors.map((e) => e.code)).toContain('skip_not_allowed');
   });
@@ -5960,7 +5965,7 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toMatch(/DRAFT/);
     // A plain restart still works.
-    const retry = await startIntent(sub, projectId, intent.id);
+    const retry = await startIntent(sub, projectId, intent.id, {});
     expect(retry.statusCode).toBe(202);
   });
 });

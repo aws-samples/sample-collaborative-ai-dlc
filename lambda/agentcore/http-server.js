@@ -80,6 +80,21 @@ export const createBusyTracker = () => {
   };
 };
 
+// Only commands that can spawn an agent CLI need hierarchical credential
+// resolution. Engine-only commands must remain available during an SSM outage.
+const AGENT_AUTH_COMMANDS = new Set([
+  'run-stage',
+  'run-stage-start',
+  'derive-artifacts',
+  'resolve-conflict',
+  'discussion-assist-start',
+  'compose-plan-start',
+  'quorum-edit-plan-start',
+  'quorum-edit-apply-start',
+  'repair-structure',
+  'capabilities',
+]);
+
 // Dispatch one parsed invocation to the right command handler. PURE of HTTP —
 // returns { statusCode, body }. `handlers` = { initWs, runStage }; `busy` is the
 // tracker so a long run-stage flips /ping to HealthyBusy.
@@ -118,7 +133,8 @@ export const dispatchInvocation = async ({
 
   busy?.enter();
   try {
-    const context = prepareInvocation ? await prepareInvocation(payload) : {};
+    const context =
+      prepareInvocation && AGENT_AUTH_COMMANDS.has(command) ? await prepareInvocation(payload) : {};
     const result = await handler(payload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator

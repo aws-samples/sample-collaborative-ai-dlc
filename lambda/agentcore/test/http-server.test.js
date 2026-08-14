@@ -57,6 +57,43 @@ describe('dispatchInvocation', () => {
     });
   });
 
+  it('does not prepare agent credentials for engine-only commands', async () => {
+    const prepareInvocation = vi.fn(async () => {
+      throw new Error('SSM unavailable');
+    });
+    const result = await dispatchInvocation({
+      payload: { command: 'init-ws', intentId: 'i1' },
+      handlers,
+      prepareInvocation,
+    });
+
+    expect(result).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, intentId: 'i1', command: 'init-ws' },
+    });
+    expect(prepareInvocation).not.toHaveBeenCalled();
+  });
+
+  it('prepares agent credentials for CLI-consuming commands', async () => {
+    const prepareInvocation = vi.fn(async () => ({ availableClis: ['kiro'] }));
+    const result = await dispatchInvocation({
+      payload: { command: 'run-stage', stageId: 's1' },
+      handlers: {
+        runStage: async (_payload, context) => ({
+          ok: true,
+          availableClis: context.availableClis,
+        }),
+      },
+      prepareInvocation,
+    });
+
+    expect(result).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, availableClis: ['kiro'], command: 'run-stage' },
+    });
+    expect(prepareInvocation).toHaveBeenCalledOnce();
+  });
+
   it('routes promote-units (WP3 unit DAG promotion)', async () => {
     const r = await dispatchInvocation({
       payload: { command: 'promote-units', intentId: 'i1', executionId: 'e1' },

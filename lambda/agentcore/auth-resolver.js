@@ -70,8 +70,16 @@ export const resolveInvocationAgentAuth = async ({
       (provider) => payload.credentialBindings[provider],
     ).filter(Boolean);
   } else if (payload.command === 'compose-plan-start') {
-    const binding = payload.credentialBinding ?? null;
-    if (binding && !bindingMatchesCli(binding, payload.requestedCli)) {
+    const requestedCli = payload.requestedCli || meta?.agentCli || null;
+    // Fresh DRAFT composes must carry the binding resolved for the caller.
+    // Older in-flight intents predate credentialBinding, so preserve their
+    // historical platform credential without allowing a draft to fall back.
+    const binding =
+      payload.credentialBinding ??
+      (payload.mode === 'inflight'
+        ? (meta?.credentialBinding ?? legacyPlatformBinding(requestedCli))
+        : null);
+    if (binding && !bindingMatchesCli(binding, requestedCli)) {
       throw Object.assign(new Error('Agent credential does not match the selected CLI'), {
         code: 'credential_binding_mismatch',
       });
