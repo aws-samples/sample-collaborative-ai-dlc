@@ -378,7 +378,10 @@ describe('native workflow export', () => {
 
   it('copies project rules into the selected harness native rules directory', async () => {
     const s3 = {
-      send: vi.fn().mockResolvedValue({ Body: Buffer.from('Always test.\n') }),
+      send: vi.fn(async (command) => {
+        expect(command.input.VersionId).toBe('rule-version-1');
+        return { Body: Buffer.from('Always test.\n') };
+      }),
     };
     const files = await loadCustomRules({
       s3,
@@ -390,7 +393,13 @@ describe('native workflow export', () => {
           Buffer.from(JSON.stringify({ harnessDir: '.codex', rulesSubdir: 'aidlc-rules' })),
         ],
       ]),
-      customRules: [{ filename: 'standards.md', s3Key: 'custom-rules/p1/standards.md' }],
+      customRules: [
+        {
+          filename: 'standards.md',
+          s3Key: 'custom-rules/p1/standards.md',
+          versionId: 'rule-version-1',
+        },
+      ],
     });
     expect(files.get('.codex/aidlc-rules/custom--standards.md').toString()).toBe('Always test.\n');
   });
@@ -410,6 +419,11 @@ describe('native workflow export', () => {
       }),
     };
     const presign = vi.fn().mockResolvedValue('https://download.example/export.zip');
+    const sourceCheckpoint = {
+      checkpointId: 'checkpoint-abc',
+      createdAt: '2026-08-11T11:30:00.000Z',
+      sourceStageInstanceId: 'intent-capture',
+    };
     const result = await createNativeExport({
       s3,
       bucket: 'artifacts',
@@ -417,6 +431,7 @@ describe('native workflow export', () => {
       harness: 'codex',
       now: '2026-08-11T12:00:00.000Z',
       presign,
+      sourceCheckpoint,
       projection: {
         intent: {
           projectId: 'project-1',
@@ -447,6 +462,7 @@ describe('native workflow export', () => {
     });
     expect(result.downloadUrl).toBe('https://download.example/export.zip');
     expect(result.filename).toBe('260811-payment-service-codex.zip');
+    expect(result.checkpoint).toEqual(sourceCheckpoint);
     expect(result.setup).toEqual({
       workspaceLayout: 'spaces',
       mode: 'manual-workspace',
@@ -470,6 +486,43 @@ describe('native workflow export', () => {
     expect(puts).toHaveLength(1);
     expect(puts[0].Key).toMatch(/^workflow-exports\/intent-1\/.+\.zip$/);
     expect(puts[0].Body.subarray(0, 2).toString()).toBe('PK');
+  });
+
+  it('does not upload a legacy live snapshot that changed during ZIP generation', async () => {
+    const { archive, manifest } = await distribution();
+    const s3 = {
+      send: vi.fn(async (command) => {
+        if (command instanceof PutObjectCommand) return {};
+        return {
+          Body: command.input.Key.endsWith('codex.manifest.json') ? manifest : archive,
+        };
+      }),
+    };
+    await expect(
+      createNativeExport({
+        s3,
+        bucket: 'artifacts',
+        upstreamRef: REF,
+        harness: 'codex',
+        validateSnapshot: vi.fn().mockResolvedValue(false),
+        projection: {
+          intent: {
+            projectId: 'project-1',
+            intentId: 'intent-1',
+            title: 'Payment service',
+            scope: 'feature',
+            workflowId: 'aidlc-v2',
+            workflowVersion: 4,
+            createdAt: '2026-08-11T10:00:00.000Z',
+          },
+          stages: [{ stageId: 'intent-capture', phase: 'ideation' }],
+          stageRows: [],
+          artifacts: [],
+          repositories: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'export_snapshot_changed' });
+    expect(s3.send.mock.calls.some(([command]) => command instanceof PutObjectCommand)).toBe(false);
   });
 
   it('returns the next unfinished unit and documents legacy iteration limits', async () => {

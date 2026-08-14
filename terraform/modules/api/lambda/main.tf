@@ -2170,7 +2170,7 @@ resource "aws_iam_role_policy" "intents" {
         # Project-uploaded Markdown rules are copied into the selected native
         # harness's auto-loaded rules directory.
         Effect   = "Allow"
-        Action   = ["s3:GetObject"]
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
         Resource = "${var.artifacts_bucket_arn}/custom-rules/*"
       },
       {

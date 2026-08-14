@@ -161,9 +161,12 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
     // Exactly-once side effects across every replay:
     expect(world.invokes.map((p) => p.command)).toEqual([
       'init-ws',
+      'create-workflow-checkpoint', // initial boundary
       'run-stage-start', // a (fresh)
       'run-stage-start', // a (resume h1)
+      'create-workflow-checkpoint', // accepted a
       'run-stage-start', // b
+      'create-workflow-checkpoint', // accepted b
     ]);
     const starts = world.invokes.filter((p) => p.command === 'run-stage-start');
     expect(starts.map((p) => p.stageId)).toEqual(['a', 'a', 'b']);
@@ -378,17 +381,22 @@ describe('WP5 sections on the real durable runner', () => {
       // and ONE merge-lane, in skeleton-then-remaining order.
       expect(world.invokes.map((p) => `${p.command}:${p.stageId ?? p.unitSlug ?? '-'}`)).toEqual([
         'init-ws:-',
+        'create-workflow-checkpoint:-',
         'run-stage-start:gen',
         'derive-artifacts:-',
         'promote-units:-',
+        'create-workflow-checkpoint:-',
         'init-lane:auth',
         'run-stage-start:cg', // auth fresh (parks)
         'run-stage-start:cg', // auth resume h7
         'merge-lane:auth',
+        'create-workflow-checkpoint:-', // approved walking skeleton
         'init-lane:billing',
         'run-stage-start:cg', // billing
         'merge-lane:billing',
+        'create-workflow-checkpoint:-',
         'run-stage-start:bt',
+        'create-workflow-checkpoint:-',
       ]);
       const starts = world.invokes.filter((p) => p.command === 'run-stage-start');
       expect(starts.map((p) => `${p.stageId}:${p.unitSlug ?? '-'}:${p.resumeFrom ?? '-'}`)).toEqual(

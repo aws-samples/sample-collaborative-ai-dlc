@@ -61,9 +61,12 @@ import {
   artifactAliases,
   artifactLogicalKeyFromRow,
   legacyVersionId,
+  readCheckpointArtifactVersions,
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
+import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
+import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
@@ -839,6 +842,15 @@ const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   content: row.content ?? null,
 });
 
+const mapCheckpointArtifact = (row) =>
+  mapArtifactHead(
+    {
+      ...row,
+      id: row.artifact_id,
+    },
+    0,
+  );
+
 // The fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
 const fetchPullRequests = async (g, intentId) => {
   const rows = await g
@@ -1153,7 +1165,44 @@ const mapIntent = (meta) => ({
 });
 
 const NATIVE_EXPORT_HARNESSES = new Set(['claude', 'codex', 'kiro', 'kiro-ide', 'opencode']);
-const NATIVE_EXPORT_STATUSES = new Set(['DRAFT', 'WAITING', 'FAILED', 'CANCELLED', 'SUCCEEDED']);
+const NATIVE_EXPORT_BLOCKED_STATUSES = new Set(['DRAFT', 'CREATED']);
+const ACTIVE_UNIT_STATES = new Set([
+  'RUNNING',
+  'MERGING',
+  'PR_DRAFT',
+  'RECONCILING',
+  'PR_READY',
+  'ADDRESSING_FEEDBACK',
+]);
+
+// Parallel lane questions do not park execution-level META. Treat RUNNING as
+// safely parked only when every active lane is waiting on a persisted human
+// task and no sibling stage can still mutate the snapshot.
+const isGloballyParkedForExport = (records) => {
+  if (records?.meta?.status !== 'RUNNING') return true;
+  const pendingStageIds = new Set(
+    (records.humanTasks ?? [])
+      .filter((task) => task.status === 'pending' && task.stageInstanceId)
+      .map((task) => task.stageInstanceId),
+  );
+  const parkedStages = (records.stages ?? []).filter(
+    (stage) => stage.state === 'WAITING_FOR_HUMAN' && pendingStageIds.has(stage.stageInstanceId),
+  );
+  if (parkedStages.length === 0) return false;
+  if ((records.stages ?? []).some((stage) => stage.state === 'RUNNING')) return false;
+
+  return (records.units ?? [])
+    .filter((unit) => ACTIVE_UNIT_STATES.has(unit.state))
+    .every(
+      (unit) =>
+        unit.state === 'RUNNING' &&
+        parkedStages.some(
+          (stage) =>
+            stage.unitSlug === unit.slug &&
+            Number(stage.sectionIndex) === Number(unit.sectionIndex),
+        ),
+    );
+};
 
 const repositoryName = (repository) => {
   const value = String(repository ?? '')
@@ -1179,6 +1228,27 @@ const exportRepositories = (meta) =>
       branch: meta.branch || meta.baseBranches?.[repository] || meta.baseBranch || '',
     };
   });
+
+const exportSnapshotToken = (projection) =>
+  createHash('sha256')
+    .update(
+      canonicalJson({
+        ...projection,
+        artifacts: [...(projection.artifacts ?? [])].toSorted((a, b) =>
+          String(a.id).localeCompare(String(b.id)),
+        ),
+        stageRows: [...(projection.stageRows ?? [])].toSorted((a, b) =>
+          String(a.stageInstanceId).localeCompare(String(b.stageInstanceId)),
+        ),
+        humanTasks: [...(projection.humanTasks ?? [])].toSorted((a, b) =>
+          String(a.humanTaskId).localeCompare(String(b.humanTaskId)),
+        ),
+        unitRows: [...(projection.unitRows ?? [])].toSorted((a, b) =>
+          String(a.slug).localeCompare(String(b.slug)),
+        ),
+      }),
+    )
+    .digest('hex');
 
 const findNativeIncompatibleBlocks = async (plan) => {
   const agentIds = new Set();
@@ -1493,20 +1563,30 @@ export const handler = async (event) => {
 
     // POST /projects/{projectId}/intents/{intentId}/export — materialize a
     // native AI-DLC workspace snapshot and return a short-lived S3 download.
-    // RUNNING is intentionally refused: stage and artifact rows can change
-    // while the archive is assembled, producing an internally inconsistent
-    // checkpoint.
+    // RUNNING executions export their latest completed immutable checkpoint.
+    // Parked and terminal executions export current live state with a final
+    // consistency recheck so post-stage human edits are preserved.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/export')) {
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      const meta = records.meta;
-      if (!meta || meta.projectId !== projectId) {
+      const liveRecords = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const liveMeta = liveRecords.meta;
+      if (!liveMeta || liveMeta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
-      if (!NATIVE_EXPORT_STATUSES.has(meta.status)) {
+      if (NATIVE_EXPORT_BLOCKED_STATUSES.has(liveMeta.status)) {
         return response(409, {
-          error: 'Wait for the intent to reach a stable state before exporting',
+          error: 'The intent is not in an exportable state',
         });
       }
+      const useLiveSnapshot = isGloballyParkedForExport(liveRecords);
+      const checkpoint = useLiveSnapshot ? null : await store.getWorkflowCheckpoint(intentId);
+      if (!useLiveSnapshot && !checkpoint) {
+        return response(409, {
+          error: 'No completed workflow checkpoint is available yet',
+          code: 'export_checkpoint_unavailable',
+        });
+      }
+      const records = checkpoint ? checkpointProjection(checkpoint) : liveRecords;
+      const meta = records.meta;
       const data = body ? JSON.parse(body) : {};
       const harness = data.harness || meta.agentCli || 'kiro';
       if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
@@ -1536,23 +1616,65 @@ export const handler = async (event) => {
           incompatibleBlocks,
         });
       }
-      const stagesByInstance = new Map(
-        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
-      );
-      const artifacts = (await fetchArtifacts(g, intentId)).map((artifact) => {
-        const producer = stagesByInstance.get(artifact.createdByStageInstanceId);
-        return {
-          ...artifact,
-          stageId: producer?.stageId ?? null,
-          phase: producer?.phase ?? null,
-          repository: artifact.repository ?? producer?.repository ?? null,
-        };
-      });
       const stages = [
         ...planResult.plan.stages,
         ...(planResult.plan.skippedStages ?? []).map((stage) => ({ ...stage, excluded: true })),
       ];
       try {
+        const artifactRows = checkpoint
+          ? (
+              await readCheckpointArtifactVersions({
+                g,
+                intentId,
+                refs: checkpoint.artifactRefs ?? [],
+              })
+            ).map(mapCheckpointArtifact)
+          : await fetchArtifacts(g, intentId);
+        const customRules = checkpoint
+          ? (checkpoint.customRuleRefs ?? [])
+          : await pinCustomRuleVersions({
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+              rules: meta.customRules ?? [],
+            });
+        const buildProjection = (projectionRecords, projectionArtifacts, projectionRules) => {
+          const projectionMeta = projectionRecords.meta;
+          const projectionStagesByInstance = new Map(
+            (projectionRecords.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+          );
+          return {
+            intent: {
+              intentId,
+              projectId,
+              title: projectionMeta.title,
+              prompt: projectionMeta.prompt,
+              scope: projectionMeta.scope,
+              workflowId: projectionMeta.workflowId,
+              workflowVersion: projectionMeta.workflowVersion,
+              createdAt: projectionMeta.startedAt,
+              branch: projectionMeta.branch,
+              projectType: projectionMeta.projectType,
+              customRules: projectionRules,
+            },
+            stages,
+            stageRows: projectionRecords.stages ?? [],
+            artifacts: projectionArtifacts.map((artifact) => {
+              const producer = projectionStagesByInstance.get(artifact.createdByStageInstanceId);
+              return {
+                ...artifact,
+                stageId: producer?.stageId ?? null,
+                phase: producer?.phase ?? null,
+                repository: artifact.repository ?? producer?.repository ?? null,
+              };
+            }),
+            humanTasks: projectionRecords.humanTasks ?? [],
+            repositories: exportRepositories(projectionMeta),
+            unitPlan: projectionRecords.unitPlan,
+            unitRows: projectionRecords.units ?? [],
+          };
+        };
+        const projection = buildProjection(records, artifactRows, customRules);
+        const initialSnapshotToken = checkpoint ? null : exportSnapshotToken(projection);
         const legacyRefWarning = meta.aidlcRepoRef
           ? []
           : [
@@ -1564,32 +1686,56 @@ export const handler = async (event) => {
           upstreamRef: meta.aidlcRepoRef || AIDLC_REPO_REF(),
           harness,
           warnings: legacyRefWarning,
-          projection: {
-            intent: {
-              intentId,
-              projectId,
-              title: meta.title,
-              prompt: meta.prompt,
-              scope: meta.scope,
-              workflowId: meta.workflowId,
-              workflowVersion: meta.workflowVersion,
-              createdAt: meta.startedAt,
-              branch: meta.branch,
-              projectType: meta.projectType,
-              customRules: meta.customRules ?? [],
-            },
-            stages,
-            stageRows: records.stages ?? [],
-            artifacts,
-            humanTasks: records.humanTasks ?? [],
-            repositories: exportRepositories(meta),
-            unitPlan: records.unitPlan,
-            unitRows: records.units ?? [],
-          },
+          projection,
+          sourceCheckpoint: checkpoint
+            ? {
+                checkpointId: checkpoint.checkpointId,
+                createdAt: checkpoint.createdAt,
+                sourceStageInstanceId: checkpoint.sourceStageInstanceId ?? null,
+              }
+            : null,
+          validateSnapshot: checkpoint
+            ? null
+            : async () => {
+                const latestRecords = await store.getExecutionRecords(intentId, {
+                  includeOutputs: false,
+                });
+                if (
+                  !latestRecords.meta ||
+                  latestRecords.meta.projectId !== projectId ||
+                  NATIVE_EXPORT_BLOCKED_STATUSES.has(latestRecords.meta.status) ||
+                  !isGloballyParkedForExport(latestRecords)
+                ) {
+                  return false;
+                }
+                const latestArtifacts = await fetchArtifacts(g, intentId);
+                const latestRules = await pinCustomRuleVersions({
+                  s3,
+                  bucket: ARTIFACTS_BUCKET(),
+                  rules: latestRecords.meta.customRules ?? [],
+                });
+                return (
+                  exportSnapshotToken(
+                    buildProjection(latestRecords, latestArtifacts, latestRules),
+                  ) === initialSnapshotToken
+                );
+              },
         });
         return response(201, exported);
       } catch (error) {
         console.error('Native workflow export failed:', error);
+        if (error.code === 'export_snapshot_changed') {
+          return response(409, {
+            error: error.message,
+            code: error.code,
+          });
+        }
+        if (error.code === 'export_checkpoint_unavailable') {
+          return response(409, {
+            error: 'The latest completed checkpoint is incomplete or unavailable',
+            code: error.code,
+          });
+        }
         return response(409, {
           error: 'This workflow snapshot is not compatible with native AI-DLC export',
           detail: error.message,

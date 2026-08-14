@@ -38,6 +38,7 @@
 //     (sparse maintenance index for live execution and integration work)
 
 const META = 'META';
+const WORKFLOW_CHECKPOINT = 'CHECKPOINT';
 
 // ── Partition keys ──
 const executionPk = (executionId) => `EXEC#${executionId}`;
@@ -48,6 +49,10 @@ const TRACKER_SYNCS_INDEX_PK = 'TRACKER_SYNCS';
 
 // ── Item keys ──
 const executionMetaKey = (executionId) => ({ pk: executionPk(executionId), sk: META });
+const workflowCheckpointKey = (executionId) => ({
+  pk: executionPk(executionId),
+  sk: WORKFLOW_CHECKPOINT,
+});
 const stageKey = (executionId, stageInstanceId) => ({
   pk: executionPk(executionId),
   sk: `STAGE#${stageInstanceId}`,
@@ -1119,9 +1124,11 @@ const buildTrackerSyncRow = ({
 
 export {
   META,
+  WORKFLOW_CHECKPOINT,
   executionPk,
   projectPk,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   eventKey,
   humanTaskKey,
@@ -1185,9 +1192,11 @@ export {
 };
 export default {
   META,
+  WORKFLOW_CHECKPOINT,
   executionPk,
   projectPk,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   eventKey,
   humanTaskKey,

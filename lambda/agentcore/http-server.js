@@ -27,6 +27,9 @@
 //     → rebuild the fine-grained graph projection from canonical artifact markdown.
 //       `enrichment` ('off'|'llm') is the Admin toggle snapshotted on the execution;
 //       'llm' adds bounded summary metadata via a one-shot agent-CLI call.
+//   { "command": "create-workflow-checkpoint", projectId, intentId, executionId,
+//     sourceStageInstanceId? }
+//     → freeze the latest completed workflow boundary for native export.
 //   { "command": "init-lane",  ...initLane args }   → WP5: prepare a unit
 //       lane's session workspace (clone + unit branch off intent HEAD + push).
 //   { "command": "merge-lane", ...mergeLane args }  → WP5: serialized --no-ff
@@ -97,6 +100,7 @@ export const dispatchInvocation = async ({
     'run-stage-start': handlers.runStageStart,
     'promote-units': handlers.promoteUnits,
     'derive-artifacts': handlers.deriveArtifacts,
+    'create-workflow-checkpoint': handlers.createWorkflowCheckpoint,
     'record-pr': handlers.recordPr,
     'record-unit-pr': handlers.recordUnitPr,
     'init-lane': handlers.initLane,
@@ -182,6 +186,7 @@ export const createServer = ({
 const main = async () => {
   const {
     ddb,
+    s3,
     openGraph,
     broadcastToIntent,
     sendStageCallbackSuccess,
@@ -197,6 +202,7 @@ const main = async () => {
   const { repairStructure } = await import('./commands/repair-structure.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
   const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
+  const { createWorkflowCheckpoint } = await import('./commands/create-workflow-checkpoint.js');
   const { recordPr } = await import('./commands/record-pr.js');
   const { recordUnitPr } = await import('./commands/record-unit-pr.js');
   const { initLane, mergeLane, reconcileLane, refreshIntentWorkspace } =
@@ -257,6 +263,13 @@ const main = async () => {
     promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
     deriveArtifacts: (p) =>
       deriveArtifacts(p, { store, openGraph, broadcast, availableClis, env: process.env }),
+    createWorkflowCheckpoint: (p) =>
+      createWorkflowCheckpoint(p, {
+        store,
+        openGraph,
+        s3,
+        bucket: process.env.ARTIFACTS_BUCKET,
+      }),
     // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
     // has no Neptune access, so it forwards the structured PR data here).
     recordPr: (p) => recordPr(p, { store, openGraph, broadcast }),

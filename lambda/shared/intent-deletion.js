@@ -226,6 +226,15 @@ const deleteIntentCascade = async ({
   await g
     .V()
     .has('Intent', 'id', intentId)
+    .out('HAS_CHECKPOINT_VERSION')
+    .hasLabel('ArtifactVersion')
+    .has('intent_id', intentId)
+    .drop()
+    .next();
+
+  await g
+    .V()
+    .has('Intent', 'id', intentId)
     .out('CONTAINS')
     .has('intent_id', intentId)
     .hasLabel('Artifact')

@@ -11,6 +11,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import {
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   humanTaskKey,
   steeringKey,
@@ -49,6 +50,7 @@ import { createProcessStore } from '../v2-process-store.js';
 describe('v2-process-keys', () => {
   it('namespaces every record under EXEC#<id>', () => {
     expect(executionMetaKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'META' });
+    expect(workflowCheckpointKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'CHECKPOINT' });
     expect(stageKey('e1', 'si-1')).toEqual({ pk: 'EXEC#e1', sk: 'STAGE#si-1' });
     expect(humanTaskKey('e1', 'h1')).toEqual({ pk: 'EXEC#e1', sk: 'HUMAN#h1' });
     expect(trackerSyncKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'TRACKERSYNC' });
@@ -165,6 +167,23 @@ describe('createProcessStore', () => {
     const call = ddb.commandCalls(PutCommand)[0].args[0].input;
     expect(call.Item.sk).toBe('META');
     expect(call.ConditionExpression).toContain('attribute_not_exists(pk)');
+  });
+
+  it('stores and retrieves the latest workflow checkpoint', async () => {
+    ddb.on(PutCommand).resolves({});
+    ddb.on(GetCommand).resolves({
+      Item: { pk: 'EXEC#e1', sk: 'CHECKPOINT', executionId: 'e1', checkpointId: 'cp1' },
+    });
+    await store.putWorkflowCheckpoint({ executionId: 'e1', checkpointId: 'cp1' });
+    expect(ddb.commandCalls(PutCommand)[0].args[0].input.Item).toMatchObject({
+      pk: 'EXEC#e1',
+      sk: 'CHECKPOINT',
+      checkpointId: 'cp1',
+      updatedAt: 'T',
+    });
+    await expect(store.getWorkflowCheckpoint('e1')).resolves.toMatchObject({
+      checkpointId: 'cp1',
+    });
   });
 
   it('updateExecution sets status + re-stamps both indexes', async () => {

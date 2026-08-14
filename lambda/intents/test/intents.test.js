@@ -37,17 +37,25 @@ import {
 // Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
-const { archiveArtifactsSpy } = vi.hoisted(() => ({
-  archiveArtifactsSpy: vi.fn(),
-}));
+const { archiveArtifactsSpy, createNativeExportSpy, readCheckpointArtifactVersionsSpy } =
+  vi.hoisted(() => ({
+    archiveArtifactsSpy: vi.fn(),
+    createNativeExportSpy: vi.fn(),
+    readCheckpointArtifactVersionsSpy: vi.fn(),
+  }));
 vi.mock('../../shared/artifact-versioning.js', async (importOriginal) => {
   const actual = await importOriginal();
   archiveArtifactsSpy.mockImplementation(actual.archiveArtifactsForStages);
+  readCheckpointArtifactVersionsSpy.mockImplementation(actual.readCheckpointArtifactVersions);
   return {
     ...actual,
     archiveArtifactsForStages: archiveArtifactsSpy,
+    readCheckpointArtifactVersions: readCheckpointArtifactVersionsSpy,
   };
 });
+vi.mock('../native-export.js', () => ({
+  createNativeExport: createNativeExportSpy,
+}));
 
 const PARTITION = `t-${randomUUID()}`;
 
@@ -362,6 +370,12 @@ beforeEach(() => {
   agentcoreMock.reset();
   attachmentUpdateConflict = null;
   archiveArtifactsSpy.mockClear();
+  readCheckpointArtifactVersionsSpy.mockClear();
+  createNativeExportSpy.mockReset();
+  createNativeExportSpy.mockResolvedValue({
+    downloadUrl: 'https://example.test/export.zip',
+    expiresAt: '2026-08-14T16:00:00.000Z',
+  });
 });
 
 const claims = (sub) => ({
@@ -1017,6 +1031,297 @@ describe('POST /projects/{id}/intents', () => {
       .next();
     const res = await createIntent(sub, projectId);
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /projects/{id}/intents/{intentId}/export', () => {
+  const seedExportPlan = () => {
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#requirements-analysis'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#PLACEMENT#requirements-analysis',
+      stageId: 'requirements-analysis',
+      order: 1,
+      scopeMembership: { feature: 'EXECUTE' },
+    });
+    procStore.set(keyOf('BLOCK#requirements-analysis', 'META'), {
+      pk: 'BLOCK#requirements-analysis',
+      sk: 'META',
+      GSI1PK: 'TENANT#default#STAGE',
+      GSI1SK: 'NAME#requirements-analysis',
+      id: 'requirements-analysis',
+      blockId: 'requirements-analysis',
+      type: 'STAGE',
+      version: 1,
+      phase: 'inception',
+      mode: 'inline',
+      leadAgent: 'orchestrator',
+      produces: [],
+      consumes: [],
+      sensors: [],
+      humanValidation: 'none',
+    });
+  };
+
+  const exportIntent = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/export`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify({ harness: 'codex' }),
+      ...claims(sub),
+    });
+
+  const createExportableIntent = async (sub, status) => {
+    const projectId = await seedV2Project(sub);
+    seedExportPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const meta = {
+      ...procStore.get(metaKey),
+      status,
+      title: 'Live title',
+      startedAt: '2026-08-14T10:00:00.000Z',
+    };
+    procStore.set(metaKey, meta);
+    return { projectId, intent, meta };
+  };
+
+  const seedCheckpoint = (intentId, meta) => {
+    const checkpoint = {
+      pk: `EXEC#${intentId}`,
+      sk: 'CHECKPOINT',
+      type: 'WorkflowCheckpoint',
+      executionId: intentId,
+      checkpointId: 'checkpoint-1',
+      createdAt: '2026-08-14T10:05:00.000Z',
+      sourceStageInstanceId: 'requirements-analysis@1',
+      process: {
+        meta: { ...meta, title: 'Checkpoint title' },
+        stages: [],
+        humanTasks: [],
+        unitPlan: null,
+        units: [],
+      },
+      artifactRefs: [
+        {
+          artifactId: 'requirements',
+          versionId: 'requirements:sha256:abc',
+          snapshotHash: 'abc',
+        },
+      ],
+      customRuleRefs: [],
+    };
+    procStore.set(keyOf(`EXEC#${intentId}`, 'CHECKPOINT'), checkpoint);
+    return checkpoint;
+  };
+
+  it.each(['DRAFT', 'CREATED'])('blocks %s intents before archive construction', async (status) => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, status);
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('The intent is not in an exportable state');
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it('requires a completed checkpoint while RUNNING', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'RUNNING');
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'No completed workflow checkpoint is available yet',
+      code: 'export_checkpoint_unavailable',
+    });
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it('exports live state when a RUNNING parallel lane is globally parked', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'RUNNING');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'STAGE#si-code'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-code',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-code',
+      stageId: 'code-generation',
+      sectionIndex: 1,
+      unitSlug: 'identification',
+      state: 'WAITING_FOR_HUMAN',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#q-code-plan'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'HUMAN#q-code-plan',
+      type: 'HumanTask',
+      executionId: intent.id,
+      humanTaskId: 'q-code-plan',
+      stageInstanceId: 'si-code',
+      sectionIndex: 1,
+      unitSlug: 'identification',
+      status: 'pending',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#identification'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNIT#S1#identification',
+      type: 'Unit',
+      executionId: intent.id,
+      sectionIndex: 1,
+      slug: 'identification',
+      state: 'RUNNING',
+    });
+    createNativeExportSpy.mockImplementationOnce(async ({ validateSnapshot }) => {
+      await expect(validateSnapshot()).resolves.toBe(true);
+      return {
+        downloadUrl: 'https://example.test/export.zip',
+        expiresAt: '2026-08-14T16:00:00.000Z',
+      };
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceCheckpoint: null,
+        validateSnapshot: expect.any(Function),
+      }),
+    );
+  });
+
+  it('requires a checkpoint when a sibling lane is still running', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'RUNNING');
+    for (const [slug, state, stageState] of [
+      ['identification', 'RUNNING', 'WAITING_FOR_HUMAN'],
+      ['display-results', 'RUNNING', 'RUNNING'],
+    ]) {
+      const stageInstanceId = `si-${slug}`;
+      procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${stageInstanceId}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `STAGE#${stageInstanceId}`,
+        type: 'Stage',
+        executionId: intent.id,
+        stageInstanceId,
+        stageId: 'code-generation',
+        sectionIndex: 1,
+        unitSlug: slug,
+        state: stageState,
+      });
+      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `UNIT#S1#${slug}`,
+        type: 'Unit',
+        executionId: intent.id,
+        sectionIndex: 1,
+        slug,
+        state,
+      });
+    }
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#q-code-plan'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'HUMAN#q-code-plan',
+      type: 'HumanTask',
+      executionId: intent.id,
+      humanTaskId: 'q-code-plan',
+      stageInstanceId: 'si-identification',
+      sectionIndex: 1,
+      unitSlug: 'identification',
+      status: 'pending',
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('export_checkpoint_unavailable');
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it('exports the immutable checkpoint while RUNNING', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'RUNNING');
+    seedCheckpoint(intent.id, meta);
+    readCheckpointArtifactVersionsSpy.mockResolvedValueOnce([
+      {
+        artifact_id: 'requirements',
+        artifact_type: 'requirements',
+        content: '# Checkpoint requirements',
+        created_by_stage_instance_id: 'requirements-analysis@1',
+        snapshot_hash: 'abc',
+      },
+    ]);
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projection: expect.objectContaining({
+          intent: expect.objectContaining({ title: 'Checkpoint title' }),
+          artifacts: [
+            expect.objectContaining({
+              id: 'requirements',
+              content: '# Checkpoint requirements',
+            }),
+          ],
+        }),
+        sourceCheckpoint: {
+          checkpointId: 'checkpoint-1',
+          createdAt: '2026-08-14T10:05:00.000Z',
+          sourceStageInstanceId: 'requirements-analysis@1',
+        },
+        validateSnapshot: null,
+      }),
+    );
+  });
+
+  it('exports and revalidates live state for stable statuses', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    seedCheckpoint(intent.id, meta);
+    createNativeExportSpy.mockImplementationOnce(async ({ projection, validateSnapshot }) => {
+      expect(projection.intent.title).toBe('Live title');
+      await expect(validateSnapshot()).resolves.toBe(true);
+      return {
+        downloadUrl: 'https://example.test/export.zip',
+        expiresAt: '2026-08-14T16:00:00.000Z',
+      };
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(readCheckpointArtifactVersionsSpy).not.toHaveBeenCalled();
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceCheckpoint: null,
+        validateSnapshot: expect.any(Function),
+      }),
+    );
+  });
+
+  it('maps checkpoint artifact integrity failures to a specific response', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'RUNNING');
+    seedCheckpoint(intent.id, meta);
+    readCheckpointArtifactVersionsSpy.mockRejectedValueOnce(
+      Object.assign(new Error('checkpoint version missing'), {
+        code: 'export_checkpoint_unavailable',
+      }),
+    );
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'The latest completed checkpoint is incomplete or unavailable',
+      code: 'export_checkpoint_unavailable',
+    });
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
   });
 });
 

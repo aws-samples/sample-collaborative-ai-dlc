@@ -274,9 +274,20 @@ const stageTimeline = ({ intent, stages, stageRows = [], now }) => {
   return timeline;
 };
 
-const unitStageAggregate = ({ stage, rows, unitPlan, completedUnits }) => {
+const unitStageAggregate = ({ stage, rows, unitPlan, completedUnits, activeUnit }) => {
   if (stage.forEach !== 'unit-of-work' || stage.forEachDegraded || !unitPlan) {
     return stageAggregate(rows);
+  }
+  if (activeUnit) {
+    const activeUnitPlan = unitPlan.units.find((unit) => unit.name === activeUnit);
+    if (
+      completedUnits.has(activeUnit) ||
+      activeUnitPlan == null ||
+      unitPlan.skipMatrix?.[activeUnit]?.includes(stage.stageId)
+    ) {
+      return 'SKIPPED';
+    }
+    return stageAggregate(rows.filter((row) => row.unitSlug === activeUnit));
   }
   const rowsByUnit = new Map();
   for (const row of rows) {
@@ -299,7 +310,13 @@ const unitStageAggregate = ({ stage, rows, unitPlan, completedUnits }) => {
   );
 };
 
-const projectStageState = ({ stages, stageRows, unitPlan = null, unitRows = [] }) => {
+const projectStageState = ({
+  stages,
+  stageRows,
+  unitPlan = null,
+  unitRows = [],
+  activeUnit = null,
+}) => {
   const rowsByStage = new Map();
   for (const row of stageRows ?? []) {
     if (!row?.stageId) continue;
@@ -319,6 +336,7 @@ const projectStageState = ({ stages, stageRows, unitPlan = null, unitRows = [] }
           rows: rowsByStage.get(stage.stageId) ?? [],
           unitPlan,
           completedUnits,
+          activeUnit,
         }),
   }));
   const firstUnfinished = projected.findIndex(
@@ -438,11 +456,25 @@ const renderState = ({
         stage.phase === 'construction' && stage.forEach === 'unit-of-work' && stage.marker !== 'S',
     )
     .at(-1);
+  const activeUnitLastCompletedStage =
+    activeIndex >= 0
+      ? stages
+          .slice(0, activeIndex)
+          .toReversed()
+          .find(
+            (stage) =>
+              stage.phase === 'construction' &&
+              stage.forEach === 'unit-of-work' &&
+              stage.marker === 'x',
+          )
+      : null;
   const constructionResume = current?.phase === 'construction' && nextUnit;
   const resumeLastCompleted =
-    constructionResume && lastCompletedUnit && lastCompletedUnitStage
-      ? `${lastCompletedUnitStage.stageId} for unit ${lastCompletedUnit}`
-      : lastCompleted?.stageId || 'none';
+    constructionResume && activeUnitLastCompletedStage
+      ? `${activeUnitLastCompletedStage.stageId} for unit ${nextUnit}`
+      : constructionResume && lastCompletedUnit && lastCompletedUnitStage
+        ? `${lastCompletedUnitStage.stageId} for unit ${lastCompletedUnit}`
+        : lastCompleted?.stageId || 'none';
   const resumeNextAction = current
     ? constructionResume
       ? `Execute ${current.stageId} for unit ${nextUnit}`
@@ -766,7 +798,13 @@ const projectNativeWorkspace = ({
   const remainingUnits = unitOrder.filter((unit) => !completedUnits.has(unit));
   const readyUnits = dependencyReadyUnitSlugs({ unitPlan, completedUnits });
   const nextUnit = readyUnits[0] ?? remainingUnits[0] ?? null;
-  const projectedStages = projectStageState({ stages, stageRows, unitPlan, unitRows });
+  const projectedStages = projectStageState({
+    stages,
+    stageRows,
+    unitPlan,
+    unitRows,
+    activeUnit: nextUnit,
+  });
   const timeline = stageTimeline({
     intent,
     stages: projectedStages,

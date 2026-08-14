@@ -118,6 +118,11 @@ export interface NativeWorkflowExport {
   downloadUrl: string;
   expiresAt: string;
   warnings: string[];
+  checkpoint?: {
+    checkpointId: string;
+    createdAt: string;
+    sourceStageInstanceId: string | null;
+  };
   setup: {
     workspaceLayout: 'flat' | 'spaces';
     mode: 'extract-only' | 'workspace-sync' | 'manual-workspace' | 'manual-clone';
