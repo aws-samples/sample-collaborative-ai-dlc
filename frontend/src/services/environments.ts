@@ -276,43 +276,6 @@ export interface ToolMutationResult {
   version: ManagedToolVersion;
 }
 
-export interface ManagedEnvironmentResetCounts {
-  projects: number;
-  activeIntents: number;
-  environments: number;
-  revisions: number;
-  runtimes: number;
-  images: number;
-}
-
-export interface ManagedEnvironmentResetResult {
-  projectsReassigned: number;
-  intentsCancelled: number;
-  environmentsDeleted: number;
-  revisionsDeleted: number;
-  runtimesDeleted: number;
-  imagesDeleted: number;
-}
-
-export interface ManagedEnvironmentResetMarker {
-  status: 'IN_PROGRESS' | 'FAILED' | 'COMPLETE';
-  attempt: number;
-  startedAt: string;
-  startedBy: string;
-  updatedAt: string;
-  completedAt?: string;
-  completedBy?: string;
-  failedAt?: string;
-  failure?: { message: string };
-  result?: ManagedEnvironmentResetResult;
-}
-
-export interface ManagedEnvironmentResetPreview {
-  confirmation: string;
-  marker: ManagedEnvironmentResetMarker | null;
-  counts: ManagedEnvironmentResetCounts;
-}
-
 export interface ProjectEnvironmentAssignment {
   environmentId: string;
   environment: ManagedEnvironment | null;
@@ -422,13 +385,4 @@ export const toolsService = {
       scanFindings?: ManagedToolVersion['scanFindings'];
       verification?: ManagedToolVersion['verification'];
     }>(`${toolVersionPath(toolId, versionId)}/logs`),
-};
-
-export const environmentResetService = {
-  preview: () => api.get<ManagedEnvironmentResetPreview>('/environment-reset'),
-  execute: (confirmation: string) =>
-    api.post<{
-      result?: ManagedEnvironmentResetResult;
-      marker: ManagedEnvironmentResetMarker;
-    }>('/environment-reset', { confirmation }),
 };

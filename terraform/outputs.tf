@@ -378,8 +378,3 @@ output "managed_tool_status_lambda_name" {
   description = "Managed tool build-status Lambda function name"
   value       = module.managed_environments.tool_status_lambda_name
 }
-
-output "managed_environment_reset_lambda_name" {
-  description = "Managed environment destructive reset Lambda function name"
-  value       = module.managed_environments.reset_lambda_name
-}

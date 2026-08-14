@@ -62,13 +62,3 @@ output "tool_repository_url" {
   description = "URL of the immutable managed tool ECR repository"
   value       = aws_ecr_repository.managed_tools.repository_url
 }
-
-output "reset_lambda_invoke_arn" {
-  description = "Invoke ARN of the managed environment reset Lambda"
-  value       = module.reset_lambda.lambda_function_invoke_arn
-}
-
-output "reset_lambda_name" {
-  description = "Name of the managed environment reset Lambda"
-  value       = module.reset_lambda.lambda_function_name
-}

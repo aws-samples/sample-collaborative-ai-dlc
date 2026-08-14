@@ -27,10 +27,6 @@ vi.mock('@/services/environments', () => ({
   toolsService: {
     list: (...args: unknown[]) => listTools(...args),
   },
-  environmentResetService: {
-    preview: vi.fn(),
-    execute: vi.fn(),
-  },
 }));
 
 import { EnvironmentsTab } from './EnvironmentsTab';

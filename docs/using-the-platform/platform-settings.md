@@ -29,7 +29,7 @@ Everything the agent runtime needs to run:
 
 ## Environments
 
-The environment area contains three administrator views:
+The environment area contains two administrator views:
 
 - **Environments** — compose exact published tool versions over a protected
   base, build and scan the resulting ARM64 image, validate its AgentCore
@@ -37,9 +37,6 @@ The environment area contains three administrator views:
 - **Tools** — import, verify, publish, and recommend immutable tool versions.
   Java, Go, Rust, Maven, and Gradle are shipped as tool definitions rather than
   predefined environments. Administrators can add other tools such as .NET.
-- **Reset** — explicitly remove legacy non-Standard environments before
-  recreating them from catalog tools. The view shows a dry-run inventory and
-  requires typed confirmation.
 
 Only Standard is published as a system environment. Existing intents remain
 pinned to their exact environment revision when assignments, bases, or
@@ -48,7 +45,7 @@ recommended tool versions change.
 See [Managed tools and environments](managed-environments.md) for the complete
 administrator workflow: adding a tool, source provenance, build verification,
 security review, publication and recommendation, environment composition and
-updates, project assignment, intent pinning, and legacy reset behavior.
+updates, project assignment, and intent pinning.
 
 ## Source Control
 

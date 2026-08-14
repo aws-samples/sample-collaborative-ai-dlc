@@ -14,7 +14,6 @@ describe('managed environment Lambda packaging', () => {
       'environment-status',
       'tool-control',
       'tool-status',
-      'environment-reset',
     ];
 
     const artifactDirectories = [

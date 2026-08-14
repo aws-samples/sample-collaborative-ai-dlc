@@ -131,10 +131,12 @@ const assertCatalogRevision = (environmentId, revision) => {
     revision?.recipe?.schemaVersion !== ENVIRONMENT_RECIPE_SCHEMA_VERSION
   ) {
     throw Object.assign(
-      new Error('Legacy environments must be removed and recreated with catalog tools'),
+      new Error(
+        'Legacy environment recipes cannot be rebuilt; create a catalog-backed environment',
+      ),
       {
         statusCode: 409,
-        code: 'LEGACY_ENVIRONMENT_REQUIRES_RESET',
+        code: 'LEGACY_ENVIRONMENT_UNSUPPORTED',
       },
     );
   }
@@ -387,7 +389,7 @@ export const createHandler = ({
         const data = parseBody(event);
         if (!data.name?.trim()) return response(400, { error: 'name is required' });
         const id = normalizeEnvironmentId(data.environmentId || data.name);
-        if (['rebuild', 'reset'].includes(id)) {
+        if (id === 'rebuild') {
           return response(400, { error: 'environmentId is reserved by the platform' });
         }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';

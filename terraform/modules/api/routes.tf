@@ -66,12 +66,6 @@ resource "aws_api_gateway_resource" "tools_proxy" {
   path_part   = "{proxy+}"
 }
 
-resource "aws_api_gateway_resource" "environment_reset" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_resource.api.id
-  path_part   = "environment-reset"
-}
-
 # -----------------------------------------------------------------------------
 # /projects/{projectId}/migrate-tracker Resource (issue #194)
 # Per-project migration to the tracker provider abstraction. Owner/admin
@@ -454,23 +448,6 @@ resource "aws_api_gateway_integration" "tools_proxy" {
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.tools_lambda_invoke_arn
-}
-
-resource "aws_api_gateway_method" "environment_reset" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.environment_reset.id
-  http_method   = "ANY"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-resource "aws_api_gateway_integration" "environment_reset" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.environment_reset.id
-  http_method             = aws_api_gateway_method.environment_reset.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = var.environment_reset_lambda_invoke_arn
 }
 
 # =============================================================================
@@ -2096,12 +2073,6 @@ module "cors_tools_proxy" {
   resource_id = aws_api_gateway_resource.tools_proxy.id
 }
 
-module "cors_environment_reset" {
-  source      = "./cors"
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.environment_reset.id
-}
-
 module "cors_migrate_tracker" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -2283,14 +2254,6 @@ resource "aws_lambda_permission" "tools" {
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = var.tools_lambda_name
-  principal     = "apigateway.${local.dns_suffix}"
-  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
-}
-
-resource "aws_lambda_permission" "environment_reset" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = var.environment_reset_lambda_name
   principal     = "apigateway.${local.dns_suffix}"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }

@@ -18,8 +18,6 @@ The managed build views are under **Admin -> Environments** and require the
 
 - **Tools** imports, builds, verifies, publishes, and recommends tool versions.
 - **Environments** composes published tool versions into runtime images.
-- **Reset** removes read-only environments created by the previous recipe
-  model.
 
 Project Owners and Admins select a published environment under **Project
 Settings -> Environment**. Project Members can see the assignment but cannot
@@ -585,26 +583,3 @@ the run. Use those values when diagnosing a difference between two runs:
 
 The project setting describes what the next intent will use. The intent
 snapshot describes what that specific intent actually uses.
-
-## Remove legacy environments
-
-Upgraded installations may contain non-Standard environments created by the
-previous embedded-archive recipe model. Those records are read-only.
-
-Open **Admin -> Environments -> Reset** to inspect the destructive migration.
-The dry run reports how many projects, intents, runtimes, images, revisions,
-and environments are affected.
-
-After the exact confirmation is entered, the asynchronous reset:
-
-- Reassigns projects using non-Standard legacy environments to Standard.
-- Cancels active intents using those environments and stops their sessions.
-- Deletes their AgentCore endpoints and runtimes.
-- Deletes managed-environment images and registry records.
-- Preserves intent audit snapshots, but not the deleted runtime artifacts.
-
-Progress and final counts remain visible. The operation is idempotent and a
-completed reset cannot start a second destructive cleanup accidentally.
-
-This reset is for the legacy recipe migration. It is not the normal way to
-update a catalog-backed environment.

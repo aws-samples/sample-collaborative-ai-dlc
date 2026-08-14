@@ -254,7 +254,7 @@ describe('managed environment handler', () => {
 
     expect(response.statusCode).toBe(409);
     expect(JSON.parse(response.body)).toMatchObject({
-      code: 'LEGACY_ENVIRONMENT_REQUIRES_RESET',
+      code: 'LEGACY_ENVIRONMENT_UNSUPPORTED',
     });
   });
 
@@ -280,8 +280,8 @@ describe('managed environment handler', () => {
       httpMethod: 'POST',
       path: '/environments',
       body: JSON.stringify({
-        environmentId: 'reset',
-        name: 'Reset',
+        environmentId: 'rebuild',
+        name: 'Rebuild',
         baseEnvironmentId: 'standard',
         recipe: RECIPE,
       }),

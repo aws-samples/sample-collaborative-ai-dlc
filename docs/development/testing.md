@@ -44,7 +44,6 @@ terraform -chdir=terraform output -raw managed_tool_repository_name
 terraform -chdir=terraform output -raw managed_tool_codebuild_project_name
 terraform -chdir=terraform output -raw managed_tool_control_lambda_name
 terraform -chdir=terraform output -raw managed_tool_status_lambda_name
-terraform -chdir=terraform output -raw managed_environment_reset_lambda_name
 ```
 
 Sign in as a platform administrator and open **Platform Settings ->
@@ -110,13 +109,6 @@ High findings must stop at security review until a platform administrator
 accepts them. The findings and acceptance record must remain visible after
 publication. Image build, container validation, and AgentCore endpoint failures
 must leave the previous published revision and project assignments unchanged.
-
-For an upgraded installation with legacy non-Standard environment records,
-open **Platform Settings -> Environments -> Reset**. Confirm the dry-run counts,
-type the exact confirmation, and verify projects are reassigned to Standard,
-active legacy intents are cancelled, sessions stop, and legacy runtimes,
-images, revisions, and environment records are removed. Repeat the request and
-confirm the completed marker prevents duplicate cleanup.
 
 When testing is complete, delete the test intents and retire the catalog-backed
 test environments in the UI. Environment and tool images are retained while
