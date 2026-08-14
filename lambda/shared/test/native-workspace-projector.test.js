@@ -253,6 +253,93 @@ describe('projectNativeWorkspace', () => {
     });
   });
 
+  it('resumes the active unit at its current Construction stage', () => {
+    const value = input();
+    value.stages.splice(
+      2,
+      0,
+      {
+        stageId: 'functional-design',
+        phase: 'construction',
+        number: '3.1',
+        leadAgent: 'aidlc-architect-agent',
+        produces: ['functional-design'],
+        forEach: 'unit-of-work',
+      },
+      {
+        stageId: 'infrastructure-design',
+        phase: 'construction',
+        number: '3.4',
+        leadAgent: 'aidlc-architect-agent',
+        produces: ['infrastructure-design'],
+        forEach: 'unit-of-work',
+      },
+    );
+    value.stages.find((stage) => stage.stageId === 'code-generation').forEach = 'unit-of-work';
+    value.stageRows = [
+      { stageId: 'intent-capture', state: 'SUCCEEDED' },
+      { stageId: 'requirements-analysis', state: 'SUCCEEDED' },
+      {
+        stageId: 'functional-design',
+        unitSlug: 'upload-image',
+        state: 'SUCCEEDED',
+      },
+      {
+        stageId: 'infrastructure-design',
+        unitSlug: 'upload-image',
+        state: 'SUCCEEDED',
+      },
+      {
+        stageId: 'code-generation',
+        unitSlug: 'upload-image',
+        state: 'SUCCEEDED',
+      },
+      {
+        stageId: 'functional-design',
+        unitSlug: 'identify-plant',
+        state: 'SUCCEEDED',
+      },
+      {
+        stageId: 'infrastructure-design',
+        unitSlug: 'identify-plant',
+        state: 'SUCCEEDED',
+      },
+      {
+        stageId: 'code-generation',
+        unitSlug: 'identify-plant',
+        state: 'WAITING_FOR_HUMAN',
+      },
+    ];
+    value.unitPlan = {
+      units: [
+        { slug: 'upload-image', dependsOn: [] },
+        { slug: 'identify-plant', dependsOn: ['upload-image'] },
+        { slug: 'display-result', dependsOn: ['identify-plant'] },
+      ],
+      batches: [['upload-image'], ['identify-plant'], ['display-result']],
+      walkingSkeleton: 'upload-image',
+      autonomyMode: 'gated',
+    };
+    value.unitRows = [
+      { slug: 'upload-image', sectionIndex: 1, state: 'MERGED' },
+      { slug: 'identify-plant', sectionIndex: 1, state: 'RUNNING' },
+      { slug: 'display-result', sectionIndex: 1, state: 'PENDING' },
+    ];
+
+    const result = projectNativeWorkspace(value);
+    const state = result.files.get(
+      'aidlc/spaces/default/intents/260811-payment-service/aidlc-state.md',
+    );
+    expect(state).toContain('- [x] functional-design — EXECUTE');
+    expect(state).toContain('- [x] infrastructure-design — EXECUTE');
+    expect(state).toContain('- [-] code-generation — EXECUTE');
+    expect(state).toContain('- **Current Stage**: code-generation');
+    expect(state).toContain(
+      '- **Last Completed Stage**: infrastructure-design for unit identify-plant',
+    );
+    expect(state).toContain('- **Next Action**: Execute code-generation for unit identify-plant');
+  });
+
   it('selects the next dependency-ready unit after multiple merged units', () => {
     const value = input();
     value.unitPlan = {

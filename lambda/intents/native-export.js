@@ -64,8 +64,14 @@ const bodyToBuffer = async (body) => {
   return Buffer.concat(chunks);
 };
 
-const readObject = async ({ s3, bucket, key }) => {
-  const result = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+const readObject = async ({ s3, bucket, key, versionId = null }) => {
+  const result = await s3.send(
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ...(versionId ? { VersionId: versionId } : {}),
+    }),
+  );
   return bodyToBuffer(result.Body);
 };
 
@@ -330,7 +336,12 @@ const loadCustomRules = async ({ s3, bucket, harness, distributionFiles, customR
     if (!key.startsWith('custom-rules/') || !/^[A-Za-z0-9._-]+\.md$/i.test(filename)) {
       throw new Error(`native-export: invalid custom rule reference ${key || filename}`);
     }
-    const body = await readObject({ s3, bucket, key });
+    const body = await readObject({
+      s3,
+      bucket,
+      key,
+      versionId: rule.versionId ?? null,
+    });
     if (body.length > 100 * 1024) {
       throw new Error(`native-export: custom rule ${filename} exceeds the 100 KB limit`);
     }
@@ -539,6 +550,8 @@ const createNativeExport = async ({
   now = new Date().toISOString(),
   presign = getSignedUrl,
   warnings = [],
+  sourceCheckpoint = null,
+  validateSnapshot = null,
 }) => {
   if (!bucket) throw new Error('native-export: artifacts bucket is not configured');
   if (!upstreamRef) throw new Error('native-export: upstream ref is not configured');
@@ -594,6 +607,7 @@ const createNativeExport = async ({
 
   const manifest = {
     ...projected.manifest,
+    ...(sourceCheckpoint ? { checkpoint: sourceCheckpoint } : {}),
     native: {
       ...projected.manifest.native,
       scopeRegistered: registeredScope.registered,
@@ -611,6 +625,12 @@ const createNativeExport = async ({
   files.set('export-manifest.json', Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
 
   const zip = await buildZip(files);
+  if (validateSnapshot && !(await validateSnapshot())) {
+    throw Object.assign(
+      new Error('The intent changed while the workspace was being exported. Retry the export.'),
+      { code: 'export_snapshot_changed' },
+    );
+  }
   const exportId = randomUUID();
   const key = `workflow-exports/${projection.intent.intentId}/${exportId}.zip`;
   await s3.send(
@@ -651,6 +671,7 @@ const createNativeExport = async ({
     downloadUrl,
     expiresAt: new Date(Date.parse(now) + DOWNLOAD_TTL_SECONDS * 1000).toISOString(),
     warnings: effectiveWarnings,
+    ...(sourceCheckpoint ? { checkpoint: sourceCheckpoint } : {}),
     setup: {
       workspaceLayout: distribution.workspaceLayout,
       mode: setupMode,
