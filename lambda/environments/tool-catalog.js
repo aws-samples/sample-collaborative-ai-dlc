@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const TOOL_SCHEMA_VERSION = 1;
-export const SYSTEM_TOOL_TEMPLATE_REVISION = 2;
+export const SYSTEM_TOOL_TEMPLATE_REVISION = 3;
 export const TOOL_VERSION_STATUSES = [
   'DRAFT',
   'QUEUED',
@@ -574,6 +574,9 @@ dotnet run --no-restore >/dev/null`,
 };
 
 const VERIFICATION_PRESETS = new Set(Object.keys(PRESET_SCRIPTS));
+const PRESET_SETUP_SCRIPTS = {
+  gradle: 'export GRADLE_USER_HOME="$(mktemp -d)"',
+};
 
 const generatedInstaller = (stripComponents) => `#!/usr/bin/env bash
 set -Eeuo pipefail
@@ -606,9 +609,11 @@ export const generateToolVerifierScript = (
   const argv = definition.verification.versionCommand.argv.map(quote).join(' ');
   const expected = quote(definition.verification.versionCommand.expected);
   const preset = PRESET_SCRIPTS[definition.verification.preset] ?? PRESET_SCRIPTS.generic;
+  const setup = PRESET_SETUP_SCRIPTS[definition.verification.preset] ?? '';
   return `#!/usr/bin/env bash
 set -Eeuo pipefail
 export TOOL_FIXTURES=${quote(fixturesPath)}
+${setup}
 output="$(${argv} 2>&1)"
 printf '%s' "$output" | grep -F ${expected} >/dev/null
 ${preset}
@@ -676,16 +681,14 @@ const validationDockerfile = ({
     environmentVariables: definition.environmentVariables,
     root,
   });
-  const lines = dependencies.map(
-    (dependency, index) =>
-      `FROM ${dependency.imageUri}@${dependency.imageDigest} AS managed_dependency_${index}`,
-  );
-  lines.push(
+  const lines = [
     'ARG TOOL_IMAGE',
-    `FROM \${TOOL_IMAGE} AS managed_tool`,
-    `FROM ${coreImageRef}`,
-    'USER root',
-  );
+    ...dependencies.map(
+      (dependency, index) =>
+        `FROM ${dependency.imageUri}@${dependency.imageDigest} AS managed_dependency_${index}`,
+    ),
+  ];
+  lines.push(`FROM \${TOOL_IMAGE} AS managed_tool`, `FROM ${coreImageRef}`, 'USER root');
   for (const [index, dependency] of dependencies.entries()) {
     const dependencyRoot = `/opt/managed/tools/${dependency.toolId}/${dependency.version}`;
     lines.push(`COPY --from=managed_dependency_${index} /opt/tool/ ${dependencyRoot}/`);

@@ -19,6 +19,7 @@ const javaTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'java'
 const goTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'go');
 const rustTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'rust');
 const mavenTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'maven');
+const gradleTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'gradle');
 
 const publishedVersion = (toolId, versionId, dependencies = []) => ({
   toolId,
@@ -183,6 +184,11 @@ describe('managed tool catalog', () => {
     });
 
     expect(context.manifest.dependencies).toEqual([java]);
+    expect(context.files['Dockerfile.validation']).toMatch(
+      new RegExp(
+        `^ARG TOOL_IMAGE\\nFROM ${java.imageUri}@${java.imageDigest} AS managed_dependency_0`,
+      ),
+    );
     expect(context.files['Dockerfile.validation']).toContain(
       `FROM ${java.imageUri}@${java.imageDigest} AS managed_dependency_0`,
     );
@@ -192,6 +198,23 @@ describe('managed tool catalog', () => {
     expect(context.files['Dockerfile.validation']).toContain(
       'ENV JAVA_HOME="/opt/managed/tools/java/21.0.8"',
     );
+  });
+
+  it('prepares Gradle native services before probing its version', () => {
+    const context = generateToolBuildContext({
+      tool: gradleTemplate,
+      version: {
+        versionId: 'tv-gradle-9',
+        definition: gradleTemplate.version,
+      },
+      coreImageUri: '111111111111.dkr.ecr.us-east-1.amazonaws.com/core',
+      coreImageDigest: `sha256:${'a'.repeat(64)}`,
+    });
+    const verifier = context.files['verify.sh'];
+    const setup = 'export GRADLE_USER_HOME="$(mktemp -d)"';
+
+    expect(verifier).toContain(setup);
+    expect(verifier.indexOf(setup)).toBeLessThan(verifier.indexOf('output="$('));
   });
 
   it('rejects dependency artifacts that collide with the tool being built', () => {
