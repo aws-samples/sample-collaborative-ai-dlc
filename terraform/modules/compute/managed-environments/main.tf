@@ -685,6 +685,7 @@ resource "aws_iam_role_policy" "tool_control" {
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
           "dynamodb:Query",
           "dynamodb:Scan",
           "dynamodb:TransactWriteItems",

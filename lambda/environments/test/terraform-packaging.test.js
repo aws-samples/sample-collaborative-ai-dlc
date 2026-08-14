@@ -34,4 +34,13 @@ describe('managed environment Lambda packaging', () => {
     expect(new Set(artifactDirectories).size).toBe(expectedPackages.length);
     expect(new Set(buildOutputs).size).toBe(expectedPackages.length);
   });
+
+  it('allows tool recommendations to condition-check published versions', async () => {
+    const terraform = await readFile(terraformPath, 'utf8');
+    const toolControlPolicy = terraform.match(
+      /resource "aws_iam_role_policy" "tool_control" \{([\s\S]*?)^\}/m,
+    )?.[1];
+
+    expect(toolControlPolicy).toContain('"dynamodb:ConditionCheckItem"');
+  });
 });
