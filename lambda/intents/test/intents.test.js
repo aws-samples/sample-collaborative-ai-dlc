@@ -2318,6 +2318,56 @@ describe('POST /start', () => {
     });
   });
 
+  it('falls back to a space credential when the personal credential was cleared before start', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const spacePath = `/collab/dev/projects/${projectId}/agent-credentials/kiro-api-key`;
+    ssmMock.on(GetParametersCommand).callsFake((input) => ({
+      Parameters: (input.Names ?? [])
+        .filter((name) => name === spacePath)
+        .map((Name) => ({ Name, Value: 'space-kiro-key' })),
+    }));
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).credentialSource).toBe('space');
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).credentialBinding).toEqual({
+      provider: 'kiro',
+      source: 'space',
+    });
+  });
+
+  it('blocks a draft start after its only credential was cleared', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    ssmMock.on(GetParametersCommand).resolves({ Parameters: [] });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'agent_credential_required',
+      provider: 'kiro',
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('DRAFT');
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
   const setStatus = (intentId, status) => {
     const k = keyOf(`EXEC#${intentId}`, 'META');
     procStore.set(k, { ...procStore.get(k), status });

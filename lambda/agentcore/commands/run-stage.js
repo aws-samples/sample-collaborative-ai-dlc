@@ -87,6 +87,7 @@ import {
   stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
+import { credentialProviderForCli } from '../../shared/agent-credentials.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
@@ -151,6 +152,42 @@ export const OFF_MOUNT_CACHE_ENV = {
 // Free-space floor for the disk preflight — below this, installs and even the
 // engine commit are at ENOSPC risk on the 1 GiB mount.
 export const DISK_LOW_FLOOR_BYTES = 100 * 1024 * 1024;
+
+const CREDENTIAL_PROVIDER_LABELS = {
+  bedrock: 'Bedrock',
+  kiro: 'Kiro',
+};
+
+const CREDENTIAL_SOURCE_LABELS = {
+  user: 'Personal',
+  space: 'Space',
+  platform: 'Platform',
+};
+
+const credentialBindingForCli = (bindings, cli) => {
+  const provider = credentialProviderForCli(cli);
+  if (!provider) return null;
+  return bindings.find((binding) => binding?.provider === provider) ?? null;
+};
+
+const credentialFailureDetail = ({ binding, state }) => {
+  if (!binding) return null;
+  const provider = CREDENTIAL_PROVIDER_LABELS[binding.provider] ?? binding.provider;
+  const source = CREDENTIAL_SOURCE_LABELS[binding.source] ?? binding.source;
+  const condition = state === 'rejected' ? 'was rejected' : 'is no longer available';
+  const remediation = {
+    user: 'Restore or rotate it in Account Settings, then restart the run.',
+    space:
+      'A Space owner or admin must restore or rotate it in Space Settings, then restart the run.',
+    platform: 'A platform administrator must restore or rotate it, then restart the run.',
+  }[binding.source];
+  const fallback = {
+    user: 'Active runs do not fall back to Space or Platform credentials.',
+    space: 'Active runs do not fall back to Platform credentials.',
+    platform: 'No fallback credential scope is available for this run.',
+  }[binding.source];
+  return `The ${source} ${provider} credential pinned to this run ${condition}. ${remediation} ${fallback}`;
+};
 
 // Resolve the plan and locate the stage instance for `stageId`. The optional
 // `skipStageIds` overlay (per-intent + gate-time skips, forwarded by the
@@ -971,6 +1008,8 @@ export const runStage = async (
     mcpEntry,
     openGraph = null,
     availableClis = [],
+    credentialBindings = [],
+    missingCredentialBindings = [],
     env = process.env,
     spawnFn,
     broadcast = async () => {},
@@ -1381,6 +1420,11 @@ export const runStage = async (
       return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
     }
     if (cli && !availableClis.includes(cli)) {
+      const detail = credentialFailureDetail({
+        binding: credentialBindingForCli(missingCredentialBindings, cli),
+        state: 'missing',
+      });
+      if (detail) return fail(stageInstanceId, 'credential_unavailable', detail);
       if (!reviewFeedback)
         return fail(stageInstanceId, 'no_cli', `resume CLI "${cli}" not installed`);
       cli = null;
@@ -1426,6 +1470,18 @@ export const runStage = async (
   } else {
     cli = selectCli({ requested: requestedCli, availableClis });
     if (!cli) {
+      const missingBinding =
+        credentialBindingForCli(missingCredentialBindings, requestedCli) ??
+        (!requestedCli && missingCredentialBindings.length === 1
+          ? missingCredentialBindings[0]
+          : null);
+      const credentialDetail = credentialFailureDetail({
+        binding: missingBinding,
+        state: 'missing',
+      });
+      if (credentialDetail) {
+        return fail(stageInstanceId, 'credential_unavailable', credentialDetail);
+      }
       // An explicit request that didn't match a usable CLI is a config problem
       // (the selected CLI isn't installed/authed) — say so rather than just
       // listing what's available.
@@ -2321,11 +2377,13 @@ export const runStage = async (
         })
         .catch(() => {});
     } else if (isCredentialFailure(result?.stderrTail)) {
-      return fail(
-        stageInstanceId,
-        'credential_invalid',
-        'The pinned agent credential was rejected; rotate it at the selected credential scope',
-      );
+      const detail =
+        credentialFailureDetail({
+          binding: credentialBindingForCli(credentialBindings, cli),
+          state: 'rejected',
+        }) ??
+        'The pinned agent credential was rejected; rotate it at the selected credential scope';
+      return fail(stageInstanceId, 'credential_invalid', detail);
     } else {
       return fail(stageInstanceId, 'cli_nonzero_exit', String(exitCode));
     }

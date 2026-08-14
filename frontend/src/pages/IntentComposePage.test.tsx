@@ -367,6 +367,25 @@ describe('IntentComposePage', () => {
     expect(screen.getByText('Select an agent CLI to continue')).toBeInTheDocument();
   });
 
+  it('reports missing credentials without claiming the CLIs are not installed', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: [],
+      runtimeClis: [],
+      credentialSources: { bedrock: null, kiro: null },
+    });
+
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        'No agent credential is currently available. Add one before starting this draft.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('no credential')).toHaveLength(4);
+    expect(screen.queryByText('not installed')).not.toBeInTheDocument();
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+  });
+
   it('applying a matched proposal writes the scope into the shared draft and clears any grid', async () => {
     const user = userEvent.setup();
     listComposes.mockResolvedValue({

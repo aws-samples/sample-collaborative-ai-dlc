@@ -88,10 +88,17 @@ export const resolveInvocationAgentAuth = async ({
     if (binding) bindings = [binding];
   }
 
+  const credentialBindings = [];
   const resolvedProviders = [];
   const missingProviders = [];
+  const missingCredentialBindings = [];
   for (const rawBinding of bindings) {
     const binding = normalizeCredentialBinding(rawBinding);
+    const credentialBinding = {
+      provider: binding.provider,
+      source: binding.source,
+    };
+    credentialBindings.push(credentialBinding);
     const value = await readCredentialBindingValue(client, {
       base,
       binding,
@@ -99,6 +106,7 @@ export const resolveInvocationAgentAuth = async ({
     });
     if (!value) {
       missingProviders.push(binding.provider);
+      missingCredentialBindings.push(credentialBinding);
       continue;
     }
     invocationEnv[credentialEnvName(binding.provider)] = value;
@@ -107,8 +115,10 @@ export const resolveInvocationAgentAuth = async ({
 
   return {
     env: invocationEnv,
+    credentialBindings,
     resolvedProviders,
     missingProviders,
+    missingCredentialBindings,
   };
 };
 

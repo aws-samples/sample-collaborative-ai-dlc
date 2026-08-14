@@ -121,6 +121,8 @@ describe('resolveInvocationAgentAuth', () => {
     });
     expect(result.env.KIRO_API_KEY).toBeUndefined();
     expect(result.missingProviders).toEqual(['kiro']);
+    expect(result.credentialBindings).toEqual([{ provider: 'kiro', source: 'user' }]);
+    expect(result.missingCredentialBindings).toEqual([{ provider: 'kiro', source: 'user' }]);
   });
 
   it('never falls back to a platform key when pre-start compose has no binding', async () => {

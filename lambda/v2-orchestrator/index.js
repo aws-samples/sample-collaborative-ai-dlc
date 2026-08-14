@@ -867,8 +867,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         result = await runStage(ctxArg, invokeRuntime, { ...stageOpts, resumeFrom: humanTaskId });
       }
 
-      if (result?.state === 'FAILED')
-        return { state: 'FAILED', reason: result?.reason ?? '', result };
+      if (result?.state === 'FAILED') {
+        return {
+          state: 'FAILED',
+          reason: result?.reason ?? '',
+          detail: result?.detail ?? null,
+          result,
+        };
+      }
       return { state: 'SUCCEEDED', result };
     };
 
@@ -964,7 +970,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           });
           if (outcome.state === 'TERMINAL') return outcome.value;
           if (outcome.state === 'FAILED') {
-            const out = await fail('stage_failed', `${stage.stageId}: ${outcome.reason}`);
+            const stageFailure = outcome.detail
+              ? `${outcome.reason}: ${outcome.detail}`
+              : outcome.reason;
+            const out = await fail('stage_failed', `${stage.stageId}: ${stageFailure}`);
             return { ...out, stageId: stage.stageId };
           }
 

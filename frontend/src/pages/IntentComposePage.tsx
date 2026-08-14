@@ -76,6 +76,12 @@ const AGENT_CLI_LABELS: Record<AgentCli, string> = {
   opencode: 'OpenCode',
   codex: 'Codex',
 };
+const AGENT_CLI_CREDENTIAL_PROVIDERS: Record<AgentCli, 'bedrock' | 'kiro'> = {
+  kiro: 'kiro',
+  claude: 'bedrock',
+  opencode: 'bedrock',
+  codex: 'bedrock',
+};
 const CREDENTIAL_SOURCE_LABELS = {
   user: 'Personal',
   space: 'Space',
@@ -503,12 +509,17 @@ export default function IntentComposePage() {
   );
   const cliAvailable = (cli: AgentCli) =>
     runtimeCliStatus.get(cli)?.available ?? agentCapabilities?.available.includes(cli) ?? false;
-  const cliInstalled = (cli: AgentCli) =>
-    runtimeCliStatus.get(cli)?.installed ?? agentCapabilities?.available.includes(cli) ?? false;
   const availableCliCount = AGENT_CLIS.filter(cliAvailable).length;
+  const hasEffectiveCredential = AGENT_CLIS.some((cli) => {
+    const status = runtimeCliStatus.get(cli);
+    return Boolean(
+      status?.credentialSource ??
+      agentCapabilities?.credentialSources?.[AGENT_CLI_CREDENTIAL_PROVIDERS[cli]],
+    );
+  });
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="min-h-full">
       <div className="space-y-6">
         <div className="flex items-center gap-3">
           <Button
@@ -660,9 +671,17 @@ export default function IntentComposePage() {
               {AGENT_CLIS.map((cli) => {
                 const status = runtimeCliStatus.get(cli);
                 const available = cliAvailable(cli);
-                const installed = cliInstalled(cli);
                 const selected = selectedCli === cli;
-                const source = status?.credentialSource;
+                const source =
+                  status?.credentialSource ??
+                  agentCapabilities?.credentialSources?.[AGENT_CLI_CREDENTIAL_PROVIDERS[cli]] ??
+                  null;
+                const unavailableReason =
+                  status?.installed === false
+                    ? 'not installed'
+                    : status?.authed === false || !source
+                      ? 'no credential'
+                      : 'unavailable';
                 return (
                   <button
                     key={cli}
@@ -696,8 +715,7 @@ export default function IntentComposePage() {
                           {CREDENTIAL_SOURCE_LABELS[source]} key
                         </span>
                       )}
-                      {!installed && <span>not installed</span>}
-                      {installed && !available && <span>no credential</span>}
+                      {!available && <span>{unavailableReason}</span>}
                     </span>
                   </button>
                 );
@@ -706,7 +724,10 @@ export default function IntentComposePage() {
             {!capabilitiesLoading && availableCliCount === 0 && (
               <div className="flex items-center justify-between gap-3 rounded-md border border-agent-warning/30 bg-agent-warning/[0.06] px-3 py-2">
                 <p className="text-xs text-muted-foreground">
-                  {capabilitiesError ?? 'No agent credential is available for your account.'}
+                  {capabilitiesError ??
+                    (hasEffectiveCredential
+                      ? 'No configured agent CLI is currently available.'
+                      : 'No agent credential is currently available. Add one before starting this draft.')}
                 </p>
                 <Button
                   type="button"

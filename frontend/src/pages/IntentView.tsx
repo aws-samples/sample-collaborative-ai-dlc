@@ -41,6 +41,7 @@ import {
   Loader2,
   MoreHorizontal,
   Bot,
+  KeyRound,
   Play,
   Trash2,
   TriangleAlert,
@@ -64,6 +65,16 @@ const CREDENTIAL_SOURCE_LABELS = {
   space: 'Space',
   platform: 'Platform',
 } as const;
+
+const credentialFailureMessage = (failureReason: string | null) => {
+  if (!failureReason) return null;
+  for (const reason of ['credential_unavailable', 'credential_invalid']) {
+    const marker = `${reason}: `;
+    const markerIndex = failureReason.indexOf(marker);
+    if (markerIndex >= 0) return failureReason.slice(markerIndex + marker.length);
+  }
+  return failureReason;
+};
 
 export default function IntentView() {
   const {
@@ -226,6 +237,20 @@ export default function IntentView() {
     intent.status === 'CREATED' &&
     !!lastTouch &&
     Date.now() - new Date(lastTouch).getTime() > 120_000;
+  const isCredentialFailure =
+    isFailed &&
+    Boolean(
+      intent.failureReason?.includes('credential_unavailable') ||
+      intent.failureReason?.includes('credential_invalid'),
+    );
+  const credentialSettingsPath = isCredentialFailure
+    ? intent.credentialSource === 'user'
+      ? '/account/settings'
+      : intent.credentialSource === 'space'
+        ? `/space/${projectId}/settings?tab=agent`
+        : null
+    : null;
+  const failureMessage = credentialFailureMessage(intent.failureReason);
 
   return (
     <div className="space-y-6">
@@ -356,10 +381,8 @@ export default function IntentView() {
                 <XCircle className="h-4 w-4" />
                 {isFailed ? 'Run failed' : 'Run stalled — never started'}
               </div>
-              {isFailed && intent.failureReason && (
-                <p className="mt-1 break-words font-mono text-[12px] text-agent-error/90">
-                  {intent.failureReason}
-                </p>
+              {isFailed && failureMessage && (
+                <p className="mt-1 break-words text-[12px] text-agent-error/90">{failureMessage}</p>
               )}
               {isStalled && (
                 <p className="mt-1 text-[12px] text-agent-error/90">
@@ -367,20 +390,34 @@ export default function IntentView() {
                 </p>
               )}
             </div>
-            <Button
-              onClick={handleStart}
-              disabled={starting}
-              size="sm"
-              variant="outline"
-              className="shrink-0 gap-1.5"
-            >
-              {starting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Play className="h-3.5 w-3.5" />
+            <div className="flex shrink-0 gap-2">
+              {credentialSettingsPath && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={() => navigate(credentialSettingsPath)}
+                >
+                  <KeyRound className="h-3.5 w-3.5" />
+                  Credential settings
+                </Button>
               )}
-              {starting ? 'Restarting…' : 'Restart'}
-            </Button>
+              <Button
+                onClick={handleStart}
+                disabled={starting}
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+              >
+                {starting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Play className="h-3.5 w-3.5" />
+                )}
+                {starting ? 'Restarting…' : 'Restart'}
+              </Button>
+            </div>
           </div>
         </div>
       )}

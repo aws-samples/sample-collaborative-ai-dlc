@@ -259,6 +259,8 @@ const main = async () => {
           mcpEntry,
           openGraph,
           availableClis: context.availableClis,
+          credentialBindings: context.credentialBindings,
+          missingCredentialBindings: context.missingCredentialBindings,
           broadcast,
           env: context.env,
         },

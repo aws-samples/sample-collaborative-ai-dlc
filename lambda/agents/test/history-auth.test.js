@@ -3,10 +3,17 @@ import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { SSMClient, GetParametersCommand } from '@aws-sdk/client-ssm';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import { mockClient } from 'aws-sdk-client-mock';
 
 const PARTITION = `t-${randomUUID()}`;
 const ddbMock = mockClient(DynamoDBDocumentClient);
+const ssmMock = mockClient(SSMClient);
+const agentcoreMock = mockClient(BedrockAgentCoreClient);
 
 let handler;
 let conn;
@@ -17,6 +24,8 @@ beforeAll(async () => {
   vi.stubEnv('AWS_PROFILE', undefined);
   vi.stubEnv('AGENT_OUTPUTS_TABLE', 'agent-outputs-test');
   vi.stubEnv('QUESTIONS_TABLE', 'agent-questions-test');
+  vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+  vi.stubEnv('AGENTCORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu:1:runtime/test');
   ({ handler } = await import('../index.js'));
 
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
@@ -39,6 +48,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   ddbMock.reset();
+  ssmMock.reset();
+  agentcoreMock.reset();
   await g.V().drop().next();
 });
 
@@ -153,6 +164,62 @@ describe('legacy project agent history authorization', () => {
       .values('current_agent_status')
       .next();
     expect(status.value).toBe('running');
+  });
+});
+
+describe('project agent capabilities', () => {
+  it('passes the project id so AgentCore can resolve space-scoped credentials', async () => {
+    const caller = `u-${randomUUID()}`;
+    const { projectId } = await seedProject(caller);
+    const bedrockPath = `/collab/dev/projects/${projectId}/agent-credentials/bedrock-bearer-token`;
+    const kiroPath = `/collab/dev/projects/${projectId}/agent-credentials/kiro-api-key`;
+    ssmMock.on(GetParametersCommand).callsFake((input) => ({
+      Parameters: (input.Names ?? [])
+        .filter((name) => name === bedrockPath || name === kiroPath)
+        .map((Name) => ({ Name, Value: `${Name}-value` })),
+    }));
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({
+            ok: true,
+            clis: [
+              { cli: 'kiro', installed: true, authed: true, available: true },
+              { cli: 'claude', installed: true, authed: true, available: true },
+              { cli: 'opencode', installed: true, authed: true, available: true },
+              { cli: 'codex', installed: true, authed: true, available: true },
+            ],
+            kiroModels: { models: [], default: null },
+          }),
+      },
+    });
+
+    const response = await handler(
+      event({
+        path: `/projects/${projectId}/agent-capabilities`,
+        projectId,
+        sub: caller,
+      }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      available: ['kiro', 'claude', 'opencode', 'codex'],
+      credentialSources: { bedrock: 'space', kiro: 'space' },
+    });
+    const payload = JSON.parse(
+      Buffer.from(
+        agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input.payload,
+      ).toString(),
+    );
+    expect(payload).toMatchObject({
+      command: 'capabilities',
+      projectId,
+      credentialBindings: {
+        bedrock: { provider: 'bedrock', source: 'space' },
+        kiro: { provider: 'kiro', source: 'space' },
+      },
+    });
   });
 });
 

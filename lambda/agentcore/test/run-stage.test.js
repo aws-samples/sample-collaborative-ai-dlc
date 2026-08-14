@@ -856,6 +856,34 @@ describe('runStage — failure paths (always records terminal state)', () => {
     ).toBe(true);
   });
 
+  it.each([
+    {
+      source: 'user',
+      sourceLabel: 'Personal',
+      remediation: 'Restore or rotate it in Account Settings',
+      fallback: 'do not fall back to Space or Platform credentials',
+    },
+    {
+      source: 'space',
+      sourceLabel: 'Space',
+      remediation: 'A Space owner or admin must restore or rotate it in Space Settings',
+      fallback: 'do not fall back to Platform credentials',
+    },
+  ])(
+    'explains when the pinned $source credential was removed',
+    async ({ source, sourceLabel, remediation, fallback }) => {
+      const deps = baseDeps({
+        availableClis: [],
+        missingCredentialBindings: [{ provider: 'kiro', source }],
+      });
+      const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
+      expect(res).toMatchObject({ ok: false, reason: 'credential_unavailable' });
+      expect(res.detail).toContain(`The ${sourceLabel} Kiro credential pinned to this run`);
+      expect(res.detail).toContain(remediation);
+      expect(res.detail).toContain(fallback);
+    },
+  );
+
   it('fails when the workflow is not found', async () => {
     const deps = baseDeps({ loadLibrary: async () => ({ workflow: null, library: null }) });
     const res = await runStage(baseArgs, deps);
@@ -1747,6 +1775,22 @@ describe('runStage — resume mode', () => {
     });
     const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
     expect(res).toMatchObject({ ok: false, reason: 'resume_no_session' });
+  });
+
+  it('explains a removed pinned credential when resuming a parked stage', async () => {
+    const deps = baseDeps({
+      availableClis: [],
+      missingCredentialBindings: [{ provider: 'kiro', source: 'space' }],
+      spawnFn: okSpawn,
+      store: spyStore({
+        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
+        stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'credential_unavailable' });
+    expect(res.detail).toContain('The Space Kiro credential pinned to this run');
+    expect(res.detail).toContain('do not fall back to Platform credentials');
   });
 });
 

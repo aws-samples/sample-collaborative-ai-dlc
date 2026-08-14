@@ -83,7 +83,10 @@ const PLATFORM_CREDENTIAL_BINDINGS = {
 // invoking its `capabilities` command. Best-effort: returns null when no v2
 // runtime is configured or the invoke fails, so the endpoint still returns
 // Bedrock models + SSM auth state.
-const fetchRuntimeCapabilities = async (credentialBindings = PLATFORM_CREDENTIAL_BINDINGS) => {
+const fetchRuntimeCapabilities = async (
+  credentialBindings = PLATFORM_CREDENTIAL_BINDINGS,
+  projectId = null,
+) => {
   if (!AGENTCORE_RUNTIME_ARN) return null;
   try {
     const res = await agentcore.send(
@@ -96,6 +99,7 @@ const fetchRuntimeCapabilities = async (credentialBindings = PLATFORM_CREDENTIAL
           JSON.stringify({
             command: 'capabilities',
             ...(credentialBindings ? { credentialBindings } : {}),
+            ...(projectId ? { projectId } : {}),
           }),
         ),
       }),
@@ -408,7 +412,7 @@ export const handler = async (event) => {
               },
             })
           : [],
-        fetchRuntimeCapabilities(credentialBindings),
+        fetchRuntimeCapabilities(credentialBindings, projectId),
       ]);
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
       const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({

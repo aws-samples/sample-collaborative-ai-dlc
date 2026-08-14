@@ -530,7 +530,14 @@ describe('orchestrator durable handler', () => {
       plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
     });
     deps.invokeRuntime = makeRuntime(ctx, (payload, n) =>
-      n === 1 ? { ok: true } : { ok: false, state: 'FAILED', reason: 'stage_job_crashed' },
+      n === 1
+        ? { ok: true }
+        : {
+            ok: false,
+            state: 'FAILED',
+            reason: 'credential_unavailable',
+            detail: 'The Space Kiro credential pinned to this run is no longer available.',
+          },
     );
     const res = await __durableHandler(
       { action: 'start', intentId: 'i1', executionId: 'i1' },
@@ -540,11 +547,15 @@ describe('orchestrator durable handler', () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('stage_failed');
     expect(deps.store.updateExecution.mock.calls.map((c) => c[0].status)).toContain('FAILED');
+    const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+    expect(failCall[0].failureReason).toContain(
+      'credential_unavailable: The Space Kiro credential pinned to this run is no longer available.',
+    );
     expect(deps.store.failRunningStageAttempt).toHaveBeenCalledWith({
       executionId: 'i1',
       stageInstanceId: 'si-a',
       stageCallbackId: 'cb-stage-cb-a',
-      runtimeError: 'stage_job_crashed',
+      runtimeError: 'credential_unavailable',
     });
   });
 
