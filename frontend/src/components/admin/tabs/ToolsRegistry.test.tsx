@@ -270,6 +270,39 @@ describe('ToolsRegistry', () => {
     expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
   });
 
+  it('shows an accepted ECR scan limitation as resolved evidence', async () => {
+    const acceptedVersion = {
+      ...publishedVersion,
+      scanFindings: {
+        status: 'UNSUPPORTED',
+        description:
+          'UnsupportedImageError: The operating system and/or package manager are not supported.',
+        severityCounts: {},
+        findings: [],
+      },
+      verification: {
+        status: 'PASSED',
+        securityScan: 'ACCEPTED',
+        runtimeCompatibilityVersion: '1',
+      },
+      securityFindingsAcceptedAt: '2026-08-14T11:23:28.161Z',
+      securityFindingsAcceptedBy: 'admin@example.com',
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [acceptedVersion] }]);
+
+    render(<ToolsRegistry />);
+
+    expect(await screen.findByText('ECR scan limitation accepted')).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'UnsupportedImageError: The operating system and/or package manager are not supported.',
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Security scan limitation accepted by admin@example.com/),
+    ).toBeInTheDocument();
+  });
+
   it('shows dependent drafts as pending until the dependency is recommended', async () => {
     const mavenVersion = {
       ...publishedVersion,

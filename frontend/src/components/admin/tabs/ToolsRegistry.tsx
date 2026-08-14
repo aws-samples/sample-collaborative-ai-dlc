@@ -342,6 +342,10 @@ function ToolStatus({ status }: { status: string }) {
 function VersionEvidence({ version }: { version: ManagedToolVersion }) {
   const findings = version.scanFindings?.findings ?? [];
   const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
+  const scanLimitationAccepted =
+    scanUnsupported &&
+    (version.verification?.securityScan === 'ACCEPTED' ||
+      Boolean(version.securityFindingsAcceptedAt));
   return (
     <div className="space-y-3 border-t pt-4">
       <div className="grid gap-4 sm:grid-cols-3">
@@ -389,11 +393,13 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
           {version.scanFindings?.status && (
             <p className="mt-1 text-[11px] text-muted-foreground">
               {scanUnsupported
-                ? 'ECR scan unavailable'
+                ? scanLimitationAccepted
+                  ? 'ECR scan limitation accepted'
+                  : 'ECR scan unavailable'
                 : `ECR scan ${version.scanFindings.status.toLowerCase()}`}
             </p>
           )}
-          {version.scanFindings?.description && (
+          {version.scanFindings?.description && !scanLimitationAccepted && (
             <p className="mt-1 text-[11px] text-muted-foreground">
               {version.scanFindings.description}
             </p>
