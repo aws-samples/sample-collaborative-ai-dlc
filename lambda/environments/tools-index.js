@@ -328,8 +328,11 @@ export const createToolsHandler = ({
   const initialize = () => {
     initialization ??= (async () => {
       await store.seedSystemTools();
-      const drafts = await store.listVersionsByStatus('DRAFT');
-      const autoBuilds = drafts.filter((version) => version.autoBuild);
+      const candidates = [
+        ...(await store.listVersionsByStatus('DRAFT')),
+        ...(await store.listVersionsByStatus('FAILED')),
+      ];
+      const autoBuilds = candidates.filter((version) => version.autoBuild);
       for (const version of autoBuilds) {
         const tool = await store.getTool(version.toolId);
         if (!tool) continue;

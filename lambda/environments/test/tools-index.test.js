@@ -58,7 +58,9 @@ describe('managed tool control API', () => {
     };
     const store = {
       ...baseStore(),
-      listVersionsByStatus: vi.fn().mockResolvedValue([draft]),
+      listVersionsByStatus: vi
+        .fn()
+        .mockImplementation(async (status) => (status === 'DRAFT' ? [draft] : [])),
       getTool: vi.fn().mockResolvedValue(java),
       updateVersion: vi.fn().mockImplementation(async (_toolId, _versionId, patch) => ({
         ...draft,
@@ -78,6 +80,7 @@ describe('managed tool control API', () => {
 
     await expect(handler({ action: 'bootstrap' })).resolves.toEqual({ initialized: true });
     expect(store.seedSystemTools).toHaveBeenCalledOnce();
+    expect(store.listVersionsByStatus).toHaveBeenCalledWith('FAILED');
     expect(s3Client.send).toHaveBeenCalled();
     expect(codebuildClient.send.mock.calls[0][0].input).toMatchObject({
       projectName: 'tool-build',
@@ -106,7 +109,9 @@ describe('managed tool control API', () => {
     };
     const store = {
       ...baseStore(),
-      listVersionsByStatus: vi.fn().mockResolvedValue([draft]),
+      listVersionsByStatus: vi
+        .fn()
+        .mockImplementation(async (status) => (status === 'DRAFT' ? [draft] : [])),
       getTool: vi.fn().mockImplementation(async (toolId) =>
         toolId === 'maven'
           ? maven
@@ -126,6 +131,49 @@ describe('managed tool control API', () => {
     expect(store.updateVersion).not.toHaveBeenCalled();
     expect(s3Client.send).not.toHaveBeenCalled();
     expect(codebuildClient.send).not.toHaveBeenCalled();
+  });
+
+  it('automatically retries reconciled failed system tool versions', async () => {
+    const failed = {
+      toolId: 'rust',
+      versionId: 'tv-rust-1',
+      status: 'FAILED',
+      autoBuild: true,
+      buildAttempt: 1,
+      definition: SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'rust').version,
+    };
+    const store = {
+      ...baseStore(),
+      listVersionsByStatus: vi
+        .fn()
+        .mockImplementation(async (status) => (status === 'FAILED' ? [failed] : [])),
+      getTool: vi
+        .fn()
+        .mockResolvedValue(SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'rust')),
+      updateVersion: vi.fn().mockImplementation(async (_toolId, _versionId, patch) => ({
+        ...failed,
+        ...patch,
+      })),
+    };
+    const s3Client = { send: vi.fn().mockResolvedValue({}) };
+    const codebuildClient = {
+      send: vi.fn().mockResolvedValue({
+        build: {
+          id: 'tool-build:2',
+          arn: 'arn:aws:codebuild:us-east-1:111111111111:build/tool-build:2',
+        },
+      }),
+    };
+    const handler = createToolsHandler({ store, s3Client, codebuildClient });
+
+    await expect(handler({ action: 'bootstrap' })).resolves.toEqual({ initialized: true });
+
+    expect(codebuildClient.send.mock.calls[0][0].input).toMatchObject({
+      environmentVariablesOverride: expect.arrayContaining([
+        { name: 'TOOL_IMAGE_TAG', value: 'tv-rust-1-a2', type: 'PLAINTEXT' },
+      ]),
+    });
+    expect(store.updateVersion.mock.calls[0][3]).toEqual({ fromStatus: 'FAILED' });
   });
 
   it('marks environments when a published version becomes recommended', async () => {

@@ -69,16 +69,16 @@ environments by themselves.
 
 The version selector in **Tools** shows every version and its status:
 
-| Status            | Meaning                                                                        | Available action                                 |
-| ----------------- | ------------------------------------------------------------------------------ | ------------------------------------------------ |
-| `DRAFT`           | Definition is editable and no build is active.                                 | **Edit** or **Build**                            |
-| `QUEUED`          | CodeBuild has been requested.                                                  | Wait or refresh                                  |
-| `BUILDING`        | Source import, installation, normalization, and functional checks are running. | Open **Build logs**                              |
-| `SCANNING`        | The immutable OCI artifact exists and ECR scan results are being evaluated.    | Wait or refresh                                  |
-| `SECURITY_REVIEW` | Critical or High findings require an explicit administrator decision.          | **Accept Findings**                              |
-| `READY`           | Source, artifact, scan decision, and verification evidence are complete.       | **Publish**                                      |
-| `PUBLISHED`       | The immutable version can be selected by environments.                         | **Recommend** when it is not already recommended |
-| `FAILED`          | Import, installation, scan processing, or verification failed.                 | Inspect evidence, **Edit**, or **Retry**         |
+| Status            | Meaning                                                                                                 | Available action                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `DRAFT`           | Definition is editable and no build is active.                                                          | **Edit** or **Build**                             |
+| `QUEUED`          | CodeBuild has been requested.                                                                           | Wait or refresh                                   |
+| `BUILDING`        | Source import, installation, normalization, and functional checks are running.                          | Open **Build logs**                               |
+| `SCANNING`        | The immutable OCI artifact exists and ECR scan results are being evaluated.                             | Wait or refresh                                   |
+| `SECURITY_REVIEW` | Critical or High findings, or an unsupported artifact scan, require an explicit administrator decision. | **Accept Findings** or **Accept Scan Limitation** |
+| `READY`           | Source, artifact, scan decision, and verification evidence are complete.                                | **Publish**                                       |
+| `PUBLISHED`       | The immutable version can be selected by environments.                                                  | **Recommend** when it is not already recommended  |
+| `FAILED`          | Import, installation, scan processing, or verification failed.                                          | Inspect evidence, **Edit**, or **Retry**          |
 
 Refreshing the browser is not required while a build is active; the view polls
 the version until it reaches a reviewable or terminal status.
@@ -296,7 +296,8 @@ records evidence for:
 5. **OCI publication**: an immutable ARM64 tool image and digest.
 6. **SBOM**: an SPDX document generated from the normalized payload.
 7. **Security scan**: ECR findings with severity, advisory, package, and
-   package version where available.
+   package version where available, or a recorded administrator decision when
+   ECR cannot scan the normalized artifact.
 8. **Runtime compatibility**: the protected core digest and compatibility
    version used for verification.
 9. **Version check**: the configured command contains the exact expected
@@ -328,13 +329,19 @@ when the version number changes.
 ### Security review
 
 Critical or High ECR findings move the version to `SECURITY_REVIEW`; they do
-not erase a successful artifact build.
+not erase a successful artifact build. ECR Basic scanning cannot inspect some
+normalized artifacts that intentionally contain no operating-system package
+database. Those versions also move to `SECURITY_REVIEW` with the scanner
+limitation retained as evidence.
 
 The administrator can:
 
 - Leave the version unpublished and remediate its source or dependencies.
 - Choose **Accept Findings** to record the identity and timestamp and move the
   version to `READY`.
+- Choose **Accept Scan Limitation** when ECR reports the artifact as
+  unsupported, after reviewing the publisher checksum, generated SBOM, and
+  networkless functional verification.
 
 Acceptance does not publish the version. The findings and acceptance record
 remain visible after publication and in every environment revision that

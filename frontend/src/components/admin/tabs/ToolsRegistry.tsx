@@ -44,12 +44,25 @@ type VerificationPreset = (typeof PRESETS)[number];
 
 const RUST_INSTALLER_SCRIPT = `#!/usr/bin/env bash
 set -Eeuo pipefail
-staging="$(mktemp -d)"
+staging="$TOOL_OUTPUT/.rust-installer"
+archive_root="rust-\${TOOL_VERSION}-aarch64-unknown-linux-gnu"
+components="rustc,rust-std-aarch64-unknown-linux-gnu,cargo,rustfmt-preview"
+mkdir -p "$staging"
 trap 'rm -rf "$staging"' EXIT
-tar -xzf "$TOOL_SOURCE" -C "$staging"
-installer="$(find "$staging" -mindepth 2 -maxdepth 2 -name install.sh -type f -print -quit)"
-test -n "$installer"
-"$installer" --prefix="$TOOL_OUTPUT" --disable-ldconfig
+tar -xzf "$TOOL_SOURCE" -C "$staging" \\
+  "$archive_root/install.sh" \\
+  "$archive_root/components" \\
+  "$archive_root/rust-installer-version" \\
+  "$archive_root/rustc" \\
+  "$archive_root/rust-std-aarch64-unknown-linux-gnu" \\
+  "$archive_root/cargo" \\
+  "$archive_root/rustfmt-preview"
+installer="$staging/$archive_root/install.sh"
+test -f "$installer"
+"$installer" \\
+  --prefix="$TOOL_OUTPUT" \\
+  --disable-ldconfig \\
+  --components="$components"
 `;
 
 const presetDefaults = (
@@ -328,6 +341,7 @@ function ToolStatus({ status }: { status: string }) {
 
 function VersionEvidence({ version }: { version: ManagedToolVersion }) {
   const findings = version.scanFindings?.findings ?? [];
+  const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
   return (
     <div className="space-y-3 border-t pt-4">
       <div className="grid gap-4 sm:grid-cols-3">
@@ -372,6 +386,18 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
           <p className="mt-1 text-xs">
             {version.verification ? 'ARM64 and functional checks passed' : 'Pending'}
           </p>
+          {version.scanFindings?.status && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {scanUnsupported
+                ? 'ECR scan unavailable'
+                : `ECR scan ${version.scanFindings.status.toLowerCase()}`}
+            </p>
+          )}
+          {version.scanFindings?.description && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {version.scanFindings.description}
+            </p>
+          )}
           {typeof version.verification?.runtimeCompatibilityVersion === 'string' && (
             <p className="mt-1 font-mono text-[10px] text-muted-foreground">
               Runtime contract {String(version.verification.runtimeCompatibilityVersion)}
@@ -423,8 +449,9 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
       )}
       {version.securityFindingsAcceptedAt && (
         <p className="text-[11px] text-muted-foreground">
-          Security findings accepted by {version.securityFindingsAcceptedBy ?? 'an administrator'}{' '}
-          on {new Date(version.securityFindingsAcceptedAt).toLocaleString()}.
+          {scanUnsupported ? 'Security scan limitation' : 'Security findings'} accepted by{' '}
+          {version.securityFindingsAcceptedBy ?? 'an administrator'} on{' '}
+          {new Date(version.securityFindingsAcceptedAt).toLocaleString()}.
         </p>
       )}
       {version.failure && (
@@ -1267,12 +1294,16 @@ export function ToolsRegistry() {
                           <Button
                             size="sm"
                             onClick={() => {
+                              const scanUnsupported =
+                                selectedVersion.scanFindings?.status === 'UNSUPPORTED';
                               const counts = selectedVersion.scanFindings?.severityCounts ?? {};
                               const critical = counts.CRITICAL ?? 0;
                               const high = counts.HIGH ?? 0;
                               if (
                                 !window.confirm(
-                                  `Accept ${critical} Critical and ${high} High findings and continue verification?`,
+                                  scanUnsupported
+                                    ? 'ECR could not scan this artifact. Accept the scan limitation and continue verification?'
+                                    : `Accept ${critical} Critical and ${high} High findings and continue verification?`,
                                 )
                               ) {
                                 return;
@@ -1286,7 +1317,9 @@ export function ToolsRegistry() {
                             }}
                           >
                             <ShieldAlert className="h-3.5 w-3.5" />
-                            Accept Findings
+                            {selectedVersion.scanFindings?.status === 'UNSUPPORTED'
+                              ? 'Accept Scan Limitation'
+                              : 'Accept Findings'}
                           </Button>
                         )}
                         {selectedVersion?.status === 'READY' && (

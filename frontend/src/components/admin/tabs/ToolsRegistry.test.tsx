@@ -8,6 +8,7 @@ const createVersion = vi.fn();
 const updateVersion = vi.fn();
 const build = vi.fn();
 const retry = vi.fn();
+const acceptFindings = vi.fn();
 const recommend = vi.fn();
 
 vi.mock('@/services/environments', () => ({
@@ -18,7 +19,7 @@ vi.mock('@/services/environments', () => ({
     updateVersion: (...args: unknown[]) => updateVersion(...args),
     build: (...args: unknown[]) => build(...args),
     retry: (...args: unknown[]) => retry(...args),
-    acceptFindings: vi.fn(),
+    acceptFindings: (...args: unknown[]) => acceptFindings(...args),
     publish: vi.fn(),
     recommend: (...args: unknown[]) => recommend(...args),
   },
@@ -112,6 +113,7 @@ describe('ToolsRegistry', () => {
     }));
     build.mockResolvedValue({});
     retry.mockResolvedValue({});
+    acceptFindings.mockResolvedValue({});
     updateVersion.mockResolvedValue({
       tool: { toolId: 'go' },
       version: { ...publishedVersion, status: 'FAILED' },
@@ -234,6 +236,38 @@ describe('ToolsRegistry', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Recommend' }));
     expect(recommend).toHaveBeenCalledWith('go', 'tv-go-1');
+  });
+
+  it('requires explicit acceptance when ECR cannot scan a tool artifact', async () => {
+    const user = userEvent.setup();
+    const unsupportedVersion = {
+      ...publishedVersion,
+      status: 'SECURITY_REVIEW' as const,
+      scanFindings: {
+        status: 'UNSUPPORTED',
+        description:
+          'UnsupportedImageError: The operating system and/or package manager are not supported.',
+        severityCounts: {},
+        findings: [],
+      },
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [unsupportedVersion] }]);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<ToolsRegistry />);
+
+    expect(await screen.findByText('ECR scan unavailable')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'UnsupportedImageError: The operating system and/or package manager are not supported.',
+      ),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Accept Scan Limitation' }));
+
+    expect(confirm).toHaveBeenCalledWith(
+      'ECR could not scan this artifact. Accept the scan limitation and continue verification?',
+    );
+    expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
   });
 
   it('shows dependent drafts as pending until the dependency is recommended', async () => {

@@ -56,6 +56,9 @@ const summarizeFindings = (scan) => {
     );
 };
 
+const isUnsupportedScan = (status, description) =>
+  status === 'UNSUPPORTED_IMAGE' || /UnsupportedImageError/i.test(description ?? '');
+
 const failVersion = async (store, version, reason, detail = null, patch = {}) =>
   store.updateVersion(
     version.toolId,
@@ -148,8 +151,36 @@ const inspectToolImage = async ({ store, version, ecrClient = ecr, s3Client = s3
       }),
     );
     const scanStatus = scan.imageScanStatus?.status;
+    const scanDescription = scan.imageScanStatus?.description ?? null;
     if (scanStatus === 'IN_PROGRESS' || scanStatus === 'PENDING') {
       return { version: scanning, pending: true };
+    }
+    if (isUnsupportedScan(scanStatus, scanDescription)) {
+      const evaluatedAt = new Date().toISOString();
+      return {
+        version: await store.updateVersion(
+          scanning.toolId,
+          scanning.versionId,
+          {
+            status: 'SECURITY_REVIEW',
+            scanFindings: {
+              status: 'UNSUPPORTED',
+              description: scanDescription,
+              severityCounts: {},
+              findings: [],
+              findingsTruncated: false,
+              evaluatedAt,
+              imageDigest: image.imageDigest,
+            },
+            verification: {
+              ...scanning.verification,
+              securityScan: 'UNSUPPORTED',
+            },
+            failure: null,
+          },
+          { fromStatus: 'SCANNING' },
+        ),
+      };
     }
     if (scanStatus !== 'COMPLETE' && scanStatus !== 'ACTIVE') {
       return {
@@ -157,7 +188,7 @@ const inspectToolImage = async ({ store, version, ecrClient = ecr, s3Client = s3
           store,
           scanning,
           'tool_image_scan_failed',
-          scan.imageScanStatus?.description ?? scanStatus ?? 'unknown scan state',
+          scanDescription ?? scanStatus ?? 'unknown scan state',
         ),
       };
     }

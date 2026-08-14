@@ -16,6 +16,8 @@ const exec = promisify(execFile);
 const temporaryDirectories = [];
 
 const javaTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'java');
+const goTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'go');
+const rustTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'rust');
 const mavenTemplate = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'maven');
 
 const publishedVersion = (toolId, versionId, dependencies = []) => ({
@@ -57,6 +59,14 @@ describe('managed tool catalog', () => {
       algorithm: 'sha256',
       evidenceUrl: expect.stringMatching(/^https:/),
     });
+    expect(goTemplate.version.source.expectedChecksum.evidenceUrl).toBe(
+      'https://go.dev/dl/?mode=json&include=all',
+    );
+    expect(rustTemplate.version.installer.script).toContain('--components="$components"');
+    expect(rustTemplate.version.installer.script).toContain(
+      'staging="$TOOL_OUTPUT/.rust-installer"',
+    );
+    expect(rustTemplate.version.installer.script).not.toContain('mktemp -d');
   });
 
   it('normalizes administrator tool ids without ambiguous boundary matching', () => {
@@ -119,7 +129,7 @@ describe('managed tool catalog', () => {
     expect(context.files['build-tool.sh']).toContain('normalized tool output exceeds 1536 MiB');
     expect(context.files['build-tool.sh']).toContain('managed-tools/sources/${retained_sha}');
     expect(context.files['fetch-source.mjs']).toContain(
-      'publisher checksum evidence exceeds 1 MiB',
+      'publisher checksum evidence exceeds 4 MiB',
     );
     expect(context.files['Dockerfile.tool']).toContain('/opt/tool-metadata/sbom.spdx.json');
     expect(context.manifest).toMatchObject({

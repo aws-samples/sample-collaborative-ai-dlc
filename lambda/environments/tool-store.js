@@ -8,6 +8,7 @@ import {
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
+  SYSTEM_TOOL_TEMPLATE_REVISION,
   SYSTEM_TOOL_TEMPLATES,
   TOOL_VERSION_STATUSES,
   normalizeToolVersionDefinition,
@@ -191,6 +192,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     createdBy,
     system = false,
     autoBuild = false,
+    systemTemplateRevision = null,
   }) => {
     const normalized = normalizeToolVersionDefinition(definition);
     const createdAt = now();
@@ -205,6 +207,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
       definition: normalized,
       system,
       autoBuild,
+      systemTemplateRevision,
       buildAttempt: 0,
       contextPrefix: null,
       buildId: null,
@@ -316,6 +319,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
       'status',
       'definition',
       'autoBuild',
+      'systemTemplateRevision',
       'buildAttempt',
       'contextPrefix',
       'buildId',
@@ -480,7 +484,22 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
         }
       }
       const existing = await getVersionByName(template.toolId, template.version.version);
-      if (existing) continue;
+      if (existing) {
+        if (
+          existing.system &&
+          ['DRAFT', 'FAILED'].includes(existing.status) &&
+          Number(existing.systemTemplateRevision ?? 0) < SYSTEM_TOOL_TEMPLATE_REVISION
+        ) {
+          created.push(
+            await updateVersion(template.toolId, existing.versionId, {
+              definition: template.version,
+              autoBuild: true,
+              systemTemplateRevision: SYSTEM_TOOL_TEMPLATE_REVISION,
+            }),
+          );
+        }
+        continue;
+      }
       try {
         created.push(
           await createVersion({
@@ -489,6 +508,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
             createdBy: actor,
             system: true,
             autoBuild: true,
+            systemTemplateRevision: SYSTEM_TOOL_TEMPLATE_REVISION,
           }),
         );
       } catch (error) {

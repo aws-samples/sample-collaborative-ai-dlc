@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const TOOL_SCHEMA_VERSION = 1;
+export const SYSTEM_TOOL_TEMPLATE_REVISION = 1;
 export const TOOL_VERSION_STATUSES = [
   'DRAFT',
   'QUEUED',
@@ -82,12 +83,25 @@ const archiveVersion = ({
 
 const RUST_INSTALLER = `#!/usr/bin/env bash
 set -Eeuo pipefail
-staging="$(mktemp -d)"
+staging="$TOOL_OUTPUT/.rust-installer"
+archive_root="rust-\${TOOL_VERSION}-aarch64-unknown-linux-gnu"
+components="rustc,rust-std-aarch64-unknown-linux-gnu,cargo,rustfmt-preview"
+mkdir -p "$staging"
 trap 'rm -rf "$staging"' EXIT
-tar -xzf "$TOOL_SOURCE" -C "$staging"
-installer="$(find "$staging" -mindepth 2 -maxdepth 2 -name install.sh -type f -print -quit)"
-test -n "$installer"
-"$installer" --prefix="$TOOL_OUTPUT" --disable-ldconfig
+tar -xzf "$TOOL_SOURCE" -C "$staging" \\
+  "$archive_root/install.sh" \\
+  "$archive_root/components" \\
+  "$archive_root/rust-installer-version" \\
+  "$archive_root/rustc" \\
+  "$archive_root/rust-std-aarch64-unknown-linux-gnu" \\
+  "$archive_root/cargo" \\
+  "$archive_root/rustfmt-preview"
+installer="$staging/$archive_root/install.sh"
+test -f "$installer"
+"$installer" \\
+  --prefix="$TOOL_OUTPUT" \\
+  --disable-ldconfig \\
+  --components="$components"
 `;
 
 export const SYSTEM_TOOL_TEMPLATES = [
@@ -122,7 +136,7 @@ export const SYSTEM_TOOL_TEMPLATES = [
       version: '1.24.6',
       url: 'https://go.dev/dl/go1.24.6.linux-arm64.tar.gz',
       checksum: '124ea6033a8bf98aa9fbab53e58d134905262d45a022af3a90b73320f3c3afd5',
-      checksumEvidenceUrl: 'https://go.dev/dl/',
+      checksumEvidenceUrl: 'https://go.dev/dl/?mode=json&include=all',
       preset: 'go',
       executables: [
         { name: 'go', path: 'bin/go' },
@@ -746,6 +760,7 @@ import { Readable } from 'node:stream';
 
 const manifest = JSON.parse(await readFile('manifest.json', 'utf8'));
 const maxBytes = 1024 * 1024 * 1024;
+const maxEvidenceBytes = 4 * 1024 * 1024;
 
 const privateAddress = (address) => {
   const normalized = address.toLowerCase();
@@ -805,12 +820,12 @@ const fetchPublic = async (
 
 const readTextBounded = async (response, maxBytes) => {
   const declared = Number(response.headers.get('content-length') || 0);
-  if (declared > maxBytes) throw new Error('publisher checksum evidence exceeds 1 MiB');
+  if (declared > maxBytes) throw new Error('publisher checksum evidence exceeds 4 MiB');
   let bytes = 0;
   const chunks = [];
   for await (const chunk of Readable.fromWeb(response.body)) {
     bytes += chunk.length;
-    if (bytes > maxBytes) throw new Error('publisher checksum evidence exceeds 1 MiB');
+    if (bytes > maxBytes) throw new Error('publisher checksum evidence exceeds 4 MiB');
     chunks.push(Buffer.from(chunk));
   }
   return Buffer.concat(chunks).toString('utf8');
@@ -842,7 +857,7 @@ if (expected && evidenceUrl) {
     timeout: 60000,
     allowInitialQuery: true,
   });
-  const evidenceText = await readTextBounded(evidenceResponse, 1024 * 1024);
+  const evidenceText = await readTextBounded(evidenceResponse, maxEvidenceBytes);
   if (!evidenceText.toLowerCase().includes(expected.toLowerCase())) {
     throw new Error('publisher checksum evidence does not contain the expected digest');
   }

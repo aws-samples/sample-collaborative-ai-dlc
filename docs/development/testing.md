@@ -59,7 +59,9 @@ For each shipped tool:
 3. Confirm the version command and representative build run as the non-root
    runtime user.
 4. Review ECR findings. Accept Critical or High findings only for this
-   disposable deployment and confirm the acceptance remains visible.
+   disposable deployment. If ECR reports the normalized artifact as
+   unsupported, explicitly accept that scan limitation and confirm the
+   acceptance remains visible.
 5. Publish the version. Mark Java as recommended before publishing Maven or
    Gradle.
 

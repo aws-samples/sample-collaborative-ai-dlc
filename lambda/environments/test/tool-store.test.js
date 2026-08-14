@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SYSTEM_TOOL_TEMPLATES } from '../tool-catalog.js';
+import { SYSTEM_TOOL_TEMPLATE_REVISION, SYSTEM_TOOL_TEMPLATES } from '../tool-catalog.js';
 import { createToolStore } from '../tool-store.js';
 
 const java = SYSTEM_TOOL_TEMPLATES.find((tool) => tool.toolId === 'java');
@@ -19,12 +19,14 @@ describe('managed tool registry store', () => {
       tool,
       definition: java.version,
       createdBy: 'admin@example.com',
+      systemTemplateRevision: SYSTEM_TOOL_TEMPLATE_REVISION,
     });
 
     expect(created).toMatchObject({
       versionId: 'tv-java-21',
       status: 'DRAFT',
       definition: { version: '21.0.8' },
+      systemTemplateRevision: SYSTEM_TOOL_TEMPLATE_REVISION,
     });
     const transaction = ddb.send.mock.calls[0][0].input.TransactItems;
     expect(transaction[0].Put.Item).toMatchObject({
@@ -36,6 +38,68 @@ describe('managed tool registry store', () => {
       sk: 'VERSION_NAME#21.0.8',
       versionId: 'tv-java-21',
     });
+  });
+
+  it('reconciles failed system versions once when the shipped template changes', async () => {
+    const versions = new Map(
+      SYSTEM_TOOL_TEMPLATES.map((template) => [
+        template.toolId,
+        {
+          toolId: template.toolId,
+          versionId: `tv-${template.toolId}`,
+          status: template.toolId === 'rust' ? 'FAILED' : 'READY',
+          definition: template.version,
+          system: true,
+          autoBuild: false,
+          systemTemplateRevision: template.toolId === 'rust' ? 0 : SYSTEM_TOOL_TEMPLATE_REVISION,
+        },
+      ]),
+    );
+    const ddb = {
+      send: vi.fn().mockImplementation(async (command) => {
+        const { Key } = command.input;
+        if (command.constructor.name === 'GetCommand') {
+          const toolId = Key.pk.slice('TOOL#'.length);
+          if (Key.sk === 'META') return { Item: { toolId } };
+          if (Key.sk.startsWith('VERSION_NAME#')) {
+            return { Item: { toolId, versionId: `tv-${toolId}` } };
+          }
+          if (Key.sk.startsWith('VERSION#')) return { Item: versions.get(toolId) };
+        }
+        if (command.constructor.name === 'UpdateCommand') {
+          const toolId = Key.pk.slice('TOOL#'.length);
+          const updated = {
+            ...versions.get(toolId),
+            definition: command.input.ExpressionAttributeValues[':definition'],
+            autoBuild: command.input.ExpressionAttributeValues[':autoBuild'],
+            systemTemplateRevision:
+              command.input.ExpressionAttributeValues[':systemTemplateRevision'],
+          };
+          versions.set(toolId, updated);
+          return { Attributes: updated };
+        }
+        throw new Error(`Unsupported command ${command.constructor.name}`);
+      }),
+    };
+    const store = createToolStore({ ddb, tableName: 'registry' });
+
+    const reconciled = await store.seedSystemTools();
+
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0]).toMatchObject({
+      toolId: 'rust',
+      status: 'FAILED',
+      autoBuild: true,
+      systemTemplateRevision: SYSTEM_TOOL_TEMPLATE_REVISION,
+      definition: {
+        installer: {
+          script: expect.stringContaining('--components="$components"'),
+        },
+      },
+    });
+    expect(
+      ddb.send.mock.calls.filter(([command]) => command.constructor.name === 'UpdateCommand'),
+    ).toHaveLength(1);
   });
 
   it('rejects definition changes after a build starts', async () => {

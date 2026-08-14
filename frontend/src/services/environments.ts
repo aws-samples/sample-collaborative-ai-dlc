@@ -148,6 +148,7 @@ export interface EnvironmentRevision {
   buildLogUrl?: string | null;
   scanFindings?: {
     status?: string;
+    description?: string | null;
     severityCounts?: Record<string, number>;
     findings?: EnvironmentScanFinding[];
     findingsTruncated?: boolean;

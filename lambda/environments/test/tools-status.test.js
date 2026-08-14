@@ -63,7 +63,12 @@ const buildEvent = {
   },
 };
 
-const ecrClient = ({ severityCounts = {}, imageSizeInBytes = 1000 } = {}) => ({
+const ecrClient = ({
+  severityCounts = {},
+  imageSizeInBytes = 1000,
+  scanStatus = 'COMPLETE',
+  scanDescription,
+} = {}) => ({
   send: vi
     .fn()
     .mockResolvedValueOnce({
@@ -75,7 +80,10 @@ const ecrClient = ({ severityCounts = {}, imageSizeInBytes = 1000 } = {}) => ({
       ],
     })
     .mockResolvedValueOnce({
-      imageScanStatus: { status: 'COMPLETE' },
+      imageScanStatus: {
+        status: scanStatus,
+        ...(scanDescription ? { description: scanDescription } : {}),
+      },
       imageScanFindings: {
         findingSeverityCounts: severityCounts,
         findings:
@@ -145,6 +153,37 @@ describe('managed tool build status', () => {
             packageName: 'runtime',
           },
         ],
+      },
+    });
+  });
+
+  it('routes unsupported artifact scans to explicit administrator review', async () => {
+    const store = mutableStore();
+    const handler = createToolsStatusHandler({
+      store,
+      ecrClient: ecrClient({
+        scanStatus: 'FAILED',
+        scanDescription:
+          'UnsupportedImageError: The operating system and/or package manager are not supported.',
+      }),
+      s3Client,
+    });
+
+    const result = await handler(buildEvent);
+
+    expect(result.version).toMatchObject({
+      status: 'SECURITY_REVIEW',
+      failure: null,
+      scanFindings: {
+        status: 'UNSUPPORTED',
+        description:
+          'UnsupportedImageError: The operating system and/or package manager are not supported.',
+        severityCounts: {},
+        findings: [],
+      },
+      verification: {
+        status: 'PASSED',
+        securityScan: 'UNSUPPORTED',
       },
     });
   });
