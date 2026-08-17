@@ -405,6 +405,44 @@ describe('IntentView', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('shows export warnings even when no workspace setup is required', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
+    exportWorkflow.mockResolvedValue({
+      exportId: 'export-warning',
+      filename: 'workspace.zip',
+      downloadUrl: 'https://download.example/workspace.zip',
+      expiresAt: '2026-08-12T12:15:00.000Z',
+      warnings: ['The pinned runtime has limited per-unit Construction support.'],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'extract-only',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: false,
+        repositories: [],
+      },
+    });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
+
+    expect(downloadClick).toHaveBeenCalledOnce();
+    expect(await screen.findByText('Workspace downloaded with warnings')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'The pinned runtime has limited per-unit Construction support.',
+    );
+    expect(screen.queryByText('Create a project directory')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByText('Workspace downloaded with warnings')).not.toBeInTheDocument();
+    downloadClick.mockRestore();
+  });
+
   it('keeps construction setup instructions open after starting the download', async () => {
     get.mockResolvedValue(
       baseDetail({
@@ -496,7 +534,9 @@ describe('IntentView', () => {
       filename: 'legacy-claude.zip',
       downloadUrl: 'https://download.example/legacy-claude.zip',
       expiresAt: '2026-08-12T12:15:00.000Z',
-      warnings: [],
+      warnings: [
+        'This workspace uses an older AI-DLC runtime with limited automatic per-unit iteration.',
+      ],
       setup: {
         workspaceLayout: 'flat',
         mode: 'manual-clone',
