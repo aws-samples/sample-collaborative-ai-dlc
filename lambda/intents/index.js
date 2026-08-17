@@ -68,6 +68,7 @@ import {
 import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
+import { assignNativeRepositoryDirectories, repositoryId } from '../shared/native-repositories.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
@@ -1205,13 +1206,6 @@ const isGloballyParkedForExport = (records) => {
     );
 };
 
-const repositoryName = (repository) => {
-  const value = String(repository ?? '')
-    .replace(/\/+$/, '')
-    .replace(/\.git$/, '');
-  return value.split('/').at(-1) || value.split(':').at(-1) || 'repository';
-};
-
 const repositoryCloneUrl = (repository, provider) => {
   const value = String(repository ?? '');
   if (/^(?:https?|ssh):\/\//.test(value) || value.startsWith('git@')) return value;
@@ -1221,14 +1215,16 @@ const repositoryCloneUrl = (repository, provider) => {
 };
 
 const exportRepositories = (meta) =>
-  (meta.repos ?? []).map((repository) => {
-    const provider = meta.repoProviders?.[repository] || meta.gitProvider || 'github';
-    return {
-      name: repositoryName(repository),
-      url: repositoryCloneUrl(repository, provider),
-      branch: meta.branch || meta.baseBranches?.[repository] || meta.baseBranch || '',
-    };
-  });
+  assignNativeRepositoryDirectories(
+    (meta.repos ?? []).map((repository) => {
+      const provider = meta.repoProviders?.[repository] || meta.gitProvider || 'github';
+      return {
+        id: repositoryId(repository),
+        url: repositoryCloneUrl(repository, provider),
+        branch: meta.branch || meta.baseBranches?.[repository] || meta.baseBranch || '',
+      };
+    }),
+  );
 
 const exportSnapshotToken = (projection) =>
   createHash('sha256')

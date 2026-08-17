@@ -832,20 +832,20 @@ export default function IntentView() {
               <li>
                 Clone each repository into the workspace:
                 {constructionSetup.repositories.map((repository) => (
-                  <div key={repository.name} className="mt-3 space-y-3">
+                  <div key={repository.id} className="mt-3 space-y-3">
                     <div>
-                      <p className="text-xs font-medium">Fresh clone: {repository.name}</p>
-                      <CommandBlock label={`Copy fresh clone command for ${repository.name}`}>
-                        {`git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.name)}`}
+                      <p className="text-xs font-medium">Fresh clone: {repository.id}</p>
+                      <CommandBlock label={`Copy fresh clone command for ${repository.id}`}>
+                        {`git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.directory)}`}
                       </CommandBlock>
                     </div>
                     <div>
-                      <p className="text-xs font-medium">Existing clone: {repository.name}</p>
-                      <CommandBlock label={`Copy existing clone commands for ${repository.name}`}>
+                      <p className="text-xs font-medium">Existing clone: {repository.id}</p>
+                      <CommandBlock label={`Copy existing clone commands for ${repository.id}`}>
                         {[
-                          `git -C ${shellQuote(repository.name)} fetch origin`,
-                          `git -C ${shellQuote(repository.name)} switch ${shellQuote(repository.branch)}`,
-                          `git -C ${shellQuote(repository.name)} pull --ff-only`,
+                          `git -C ${shellQuote(repository.directory)} fetch origin`,
+                          `git -C ${shellQuote(repository.directory)} switch ${shellQuote(repository.branch)}`,
+                          `git -C ${shellQuote(repository.directory)} pull --ff-only`,
                         ].join('\n')}
                       </CommandBlock>
                     </div>
@@ -880,21 +880,21 @@ export default function IntentView() {
               <li>
                 Retrieve the source repository and its intent branch:
                 {constructionSetup.repositories.map((repository) => (
-                  <div key={repository.name} className="mt-3 space-y-3">
+                  <div key={repository.id} className="mt-3 space-y-3">
                     <div>
                       <p className="text-xs font-medium">Fresh clone</p>
-                      <CommandBlock label={`Copy fresh clone commands for ${repository.name}`}>
+                      <CommandBlock label={`Copy fresh clone commands for ${repository.id}`}>
                         {[
-                          `git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.name)}`,
-                          `cd ${shellQuote(repository.name)}`,
+                          `git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.directory)}`,
+                          `cd ${shellQuote(repository.directory)}`,
                         ].join('\n')}
                       </CommandBlock>
                     </div>
                     <div>
                       <p className="text-xs font-medium">Existing clone</p>
-                      <CommandBlock label={`Copy existing clone commands for ${repository.name}`}>
+                      <CommandBlock label={`Copy existing clone commands for ${repository.id}`}>
                         {[
-                          `cd ${shellQuote(`/path/to/${repository.name}`)}`,
+                          `cd ${shellQuote(`/path/to/${repository.directory}`)}`,
                           'git fetch origin',
                           `git switch ${shellQuote(repository.branch)}`,
                           'git pull --ff-only',

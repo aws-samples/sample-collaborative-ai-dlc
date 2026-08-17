@@ -1330,6 +1330,32 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
     );
   });
 
+  it('preserves repository identities and assigns collision-safe export directories', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    meta.repos = ['org-a/api', 'org-b/api'];
+    meta.repoProviders = { 'org-a/api': 'github', 'org-b/api': 'github' };
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    createNativeExportSpy.mockImplementationOnce(async ({ projection }) => {
+      expect(projection.repositories.map((repository) => repository.id)).toEqual([
+        'org-a/api',
+        'org-b/api',
+      ]);
+      expect(projection.repositories.map((repository) => repository.directory)).toEqual([
+        'org-a_api',
+        'org-b_api',
+      ]);
+      return {
+        downloadUrl: 'https://example.test/export.zip',
+        expiresAt: '2026-08-14T16:00:00.000Z',
+      };
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+  });
+
   it('rejects an export whose stages record a different AI-DLC revision', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');

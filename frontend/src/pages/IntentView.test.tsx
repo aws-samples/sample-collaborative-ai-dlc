@@ -398,8 +398,18 @@ describe('IntentView', () => {
         continueCommand: '$aidlc',
         showWorkspaceSetup: true,
         repositories: [
-          { name: 'api', url: 'git@github.com:example/api.git', branch: 'aidlc/i1' },
-          { name: 'web', url: 'git@github.com:example/web.git', branch: 'aidlc/i1' },
+          {
+            id: 'org-a/api',
+            directory: 'org-a_api',
+            url: 'git@github.com:org-a/api.git',
+            branch: 'aidlc/i1',
+          },
+          {
+            id: 'org-b/api',
+            directory: 'org-b_api',
+            url: 'git@github.com:org-b/api.git',
+            branch: 'aidlc/i1',
+          },
         ],
         construction: {
           nextUnit: 'identify-plant',
@@ -425,8 +435,10 @@ describe('IntentView', () => {
     expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
     expect(screen.getByText(/mkdir 'Bookstore_Tracker'/)).toBeInTheDocument();
     expect(screen.getByText(/unzip "\$HOME\/Downloads\/workspace.zip" -d \./)).toBeInTheDocument();
-    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'api'/)).toBeInTheDocument();
-    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'web'/)).toBeInTheDocument();
+    expect(screen.getByText('Fresh clone: org-a/api')).toBeInTheDocument();
+    expect(screen.getByText('Fresh clone: org-b/api')).toBeInTheDocument();
+    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'org-a_api'/)).toBeInTheDocument();
+    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'org-b_api'/)).toBeInTheDocument();
     expect(screen.queryByText(/aidlc-workspace-sync/)).not.toBeInTheDocument();
     expect(screen.getByText('Start the selected harness:')).toBeInTheDocument();
     expect(screen.getByText('codex')).toBeInTheDocument();
@@ -465,7 +477,8 @@ describe('IntentView', () => {
         showWorkspaceSetup: true,
         repositories: [
           {
-            name: 'plant-finder',
+            id: 'example/plant-finder',
+            directory: 'plant-finder',
             url: 'git@github.com:example/plant-finder.git',
             branch: 'aidlc/intent-1',
           },
