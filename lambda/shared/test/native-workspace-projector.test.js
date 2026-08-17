@@ -50,12 +50,14 @@ const input = () => ({
   ],
   repositories: [
     {
-      name: 'checkout-api',
+      id: 'example/checkout-api',
+      directory: 'checkout-api',
       url: 'git@github.com:example/checkout-api.git',
       branch: 'aidlc/intent-1',
     },
     {
-      name: 'checkout-web',
+      id: 'example/checkout-web',
+      directory: 'checkout-web',
       url: 'git@github.com:example/checkout-web.git',
       branch: 'aidlc/intent-1',
     },
@@ -561,5 +563,50 @@ X. Other (please specify)
       content: '# Architecture',
     });
     expect(() => projectNativeWorkspace(value)).toThrow(/has no repository/);
+  });
+
+  it('maps canonical repository identities to collision-safe CodeKB directories', () => {
+    const value = input();
+    value.repositories = [
+      {
+        id: 'org-a/api',
+        directory: 'org-a_api',
+        url: 'git@github.com:org-a/api.git',
+        branch: 'aidlc/intent-1',
+      },
+      {
+        id: 'org-b/api',
+        directory: 'org-b_api',
+        url: 'git@github.com:org-b/api.git',
+        branch: 'aidlc/intent-1',
+      },
+    ];
+    value.artifacts.push({
+      id: 'architecture',
+      artifactType: 'architecture',
+      stageId: 'reverse-engineering',
+      phase: 'inception',
+      repository: 'org-b/api',
+      content: '# Architecture',
+    });
+
+    const result = projectNativeWorkspace(value);
+
+    expect(result.files.get('aidlc/spaces/default/codekb/org-b_api/architecture.md')).toBe(
+      '# Architecture',
+    );
+    expect(result.manifest.repositories).toEqual(value.repositories);
+    expect(JSON.parse(result.files.get('repos.json')).repos).toEqual([
+      {
+        name: 'org-a_api',
+        url: 'git@github.com:org-a/api.git',
+        branch: 'aidlc/intent-1',
+      },
+      {
+        name: 'org-b_api',
+        url: 'git@github.com:org-b/api.git',
+        branch: 'aidlc/intent-1',
+      },
+    ]);
   });
 });

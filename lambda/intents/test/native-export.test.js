@@ -448,12 +448,14 @@ describe('native workflow export', () => {
         artifacts: [],
         repositories: [
           {
-            name: 'api',
+            id: 'example/api',
+            directory: 'api',
             url: 'git@github.com:example/api.git',
             branch: 'aidlc/payment-service',
           },
           {
-            name: 'web',
+            id: 'example/web',
+            directory: 'web',
             url: 'git@github.com:example/web.git',
             branch: 'aidlc/payment-service',
           },
@@ -472,12 +474,14 @@ describe('native workflow export', () => {
       showWorkspaceSetup: false,
       repositories: [
         {
-          name: 'api',
+          id: 'example/api',
+          directory: 'api',
           url: 'git@github.com:example/api.git',
           branch: 'aidlc/payment-service',
         },
         {
-          name: 'web',
+          id: 'example/web',
+          directory: 'web',
           url: 'git@github.com:example/web.git',
           branch: 'aidlc/payment-service',
         },

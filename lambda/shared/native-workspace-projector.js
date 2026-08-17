@@ -738,11 +738,23 @@ const artifactPath = ({
     if (workspaceLayout === 'flat') {
       return `${recordRoot.path}/inception/reverse-engineering/${type}.md`;
     }
-    const repo = artifact.repository || (repositories.length === 1 ? repositories[0].name : null);
-    if (!repo) {
+    const repositoryRef =
+      artifact.repository || (repositories.length === 1 ? repositories[0].id : null);
+    const matches = repositories.filter(
+      (repository) =>
+        repository.id === repositoryRef ||
+        repository.directory === repositoryRef ||
+        repository.id.split('/').at(-1) === repositoryRef,
+    );
+    if (matches.length === 0) {
       throw new Error(`native-export: reverse-engineering artifact ${type} has no repository`);
     }
-    return `aidlc/spaces/${recordRoot.space}/codekb/${assertSafeSegment(repo, 'repository')}/${type}.md`;
+    if (matches.length > 1) {
+      throw new Error(
+        `native-export: reverse-engineering artifact ${type} has an ambiguous repository`,
+      );
+    }
+    return `aidlc/spaces/${recordRoot.space}/codekb/${matches[0].directory}/${type}.md`;
   }
   if (phase === 'construction' && artifact.unitSlug) {
     return `${recordRoot.path}/construction/${assertSafeSegment(artifact.unitSlug, 'unit')}/${stageId}/${type}.md`;
@@ -785,7 +797,8 @@ const projectNativeWorkspace = ({
           path: `aidlc/spaces/${safeSpace}/intents/${recordDir}`,
         };
   const normalizedRepos = repositories.map((repo) => ({
-    name: assertSafeSegment(repo.name, 'repository'),
+    id: String(repo.id || ''),
+    directory: assertSafeSegment(repo.directory, 'repository directory'),
     url: String(repo.url || ''),
     branch: String(repo.branch || intent.branch || ''),
   }));
@@ -834,7 +847,9 @@ const projectNativeWorkspace = ({
             slug: label,
             dirName: recordDir,
             scope: nativeScope,
-            ...(normalizedRepos.length ? { repos: normalizedRepos.map((repo) => repo.name) } : {}),
+            ...(normalizedRepos.length
+              ? { repos: normalizedRepos.map((repo) => repo.directory) }
+              : {}),
             status: projectedStages.some((stage) => stage.marker === '-')
               ? 'in-flight'
               : 'complete',
@@ -882,7 +897,7 @@ const projectNativeWorkspace = ({
         {
           org,
           repos: normalizedRepos.map((repo) => ({
-            name: repo.name,
+            name: repo.directory,
             ...(repo.branch ? { branch: repo.branch } : {}),
             ...(repo.url ? { url: repo.url } : {}),
           })),
