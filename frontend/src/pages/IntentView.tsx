@@ -21,6 +21,7 @@ import { AgentProgressCard } from '@/components/intent/AgentProgressCard';
 import { GateCard } from '@/components/intent/GateCard';
 import { StageReviewPanel } from '@/components/intent/StageReviewPanel';
 import { WorkProductsSection } from '@/components/intent/WorkProductsSection';
+import { NativeExportSetupDialog } from '@/components/intent/NativeExportSetupDialog';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -45,7 +46,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import {
   Check,
   ChevronDown,
-  Copy,
   Download,
   Loader2,
   MoreHorizontal,
@@ -72,8 +72,6 @@ const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
   { value: 'opencode', label: 'OpenCode' },
 ];
 
-const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
-
 const errorMessage = (value: string) => {
   try {
     const parsed = JSON.parse(value);
@@ -86,53 +84,6 @@ const errorMessage = (value: string) => {
     // Plain-text errors are already display-ready.
   }
   return value;
-};
-
-const workspaceDirectoryName = (value?: string | null) => {
-  const name = String(value ?? '')
-    .normalize('NFKD')
-    .replace(/[^\p{ASCII}]/gu, '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .replace(/[^A-Za-z0-9._-]+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^[._-]+|[._-]+$/g, '')
-    .slice(0, 80)
-    .replace(/[._-]+$/g, '');
-  return name || 'aidlc-workspace';
-};
-
-const CommandBlock = ({ children, label }: { children: string; label: string }) => {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(children);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div className="relative mt-2 min-w-0">
-      <pre className="w-full min-w-0 max-w-full whitespace-pre-wrap break-all rounded-md bg-muted py-2 pl-3 pr-10 font-mono text-xs leading-relaxed">
-        <code>{children}</code>
-      </pre>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="absolute right-1.5 top-1.5 h-7 w-7"
-        aria-label={copied ? `${label} copied` : label}
-        title={copied ? 'Copied' : label}
-        onClick={() => void copy()}
-      >
-        {copied ? (
-          <Check className="h-3.5 w-3.5 text-green-600" />
-        ) : (
-          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-        )}
-      </Button>
-    </div>
-  );
 };
 
 export default function IntentView() {
@@ -268,7 +219,7 @@ export default function IntentView() {
       document.body.append(download);
       download.click();
       download.remove();
-      if (result.setup.showWorkspaceSetup) {
+      if (result.setup.showWorkspaceSetup || result.warnings.length > 0) {
         setConstructionExport(result);
       }
     } catch (err) {
@@ -358,32 +309,6 @@ export default function IntentView() {
     intent.status === 'CREATED' &&
     !!lastTouch &&
     Date.now() - new Date(lastTouch).getTime() > 120_000;
-  const constructionSetup = constructionExport?.setup ?? null;
-  const exportDirectory = workspaceDirectoryName(project?.name);
-  const downloadedZip = constructionExport
-    ? `"$HOME/Downloads/${constructionExport.filename}"`
-    : '"$HOME/Downloads/aidlc-workspace.zip"';
-  const extractCommands = [
-    `mkdir ${shellQuote(exportDirectory)}`,
-    `cd ${shellQuote(exportDirectory)}`,
-    `unzip ${downloadedZip} -d .`,
-  ].join('\n');
-  const legacyConstruction = constructionSetup?.construction?.perUnitIteration === false;
-  const completedUnitSummary = constructionSetup?.construction?.completedUnits.join(', ');
-  const constructionContinueCommand =
-    legacyConstruction &&
-    constructionSetup?.construction?.nextUnit &&
-    constructionSetup.continueCommand
-      ? [
-          `${constructionSetup.continueCommand} Continue the construction phase.`,
-          completedUnitSummary ? `Completed units: ${completedUnitSummary}.` : '',
-          `Continue with unit: ${constructionSetup.construction.nextUnit}.`,
-        ]
-          .filter(Boolean)
-          .join(' ')
-      : constructionSetup?.continueCommand;
-  const launchCommand = constructionSetup?.launchCommand ?? null;
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -756,210 +681,11 @@ export default function IntentView() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog
-        open={constructionExport !== null}
-        onOpenChange={(open) => {
-          if (!open) setConstructionExport(null);
-        }}
-      >
-        <AlertDialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-x-hidden overflow-y-scroll [&>*]:min-w-0">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Set up your local workspace</AlertDialogTitle>
-            <AlertDialogDescription>
-              The workspace download is in progress. Source code should be retrieved separately from
-              Git using your own credentials.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-
-          {constructionSetup?.construction?.nextUnit &&
-            !constructionSetup.construction.perUnitIteration && (
-              <p className="text-sm text-muted-foreground">
-                This workspace uses an older AI-DLC runtime with limited automatic per-unit
-                iteration. The complete Bolt DAG and completed-unit receipts are included. The
-                continuation command below names the next dependency-ready unit:{' '}
-                <code>{constructionSetup.construction.nextUnit}</code>.
-              </p>
-            )}
-
-          {constructionSetup?.mode === 'workspace-sync' && (
-            <ol className="list-decimal space-y-4 pl-5 text-sm">
-              <li>
-                Create an empty workspace directory and extract the downloaded ZIP:
-                <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
-              </li>
-              <li>
-                Clone the repositories declared by the export:
-                <CommandBlock label="Copy workspace sync command">
-                  {constructionSetup.syncCommand ?? ''}
-                </CommandBlock>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  This reads <code>repos.json</code> and clones{' '}
-                  {constructionSetup.repositories.length === 1
-                    ? 'the repository'
-                    : `all ${constructionSetup.repositories.length} repositories`}
-                  {' on their declared intent branches.'}
-                </p>
-              </li>
-              <li>
-                Start the selected harness:
-                {launchCommand ? (
-                  <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
-                ) : (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Open this directory in Kiro IDE.
-                  </p>
-                )}
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Open this directory in your IDE. VS Code users may open{' '}
-                  <code>aidlc.code-workspace</code>.
-                </p>
-              </li>
-              <li>
-                Then run inside the agent session:
-                <CommandBlock label="Copy AI-DLC command">
-                  {constructionContinueCommand ?? ''}
-                </CommandBlock>
-              </li>
-            </ol>
-          )}
-
-          {constructionSetup?.mode === 'manual-workspace' && (
-            <ol className="list-decimal space-y-4 pl-5 text-sm">
-              <li>
-                Create an empty workspace directory and extract the downloaded ZIP:
-                <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
-              </li>
-              <li>
-                Clone each repository into the workspace:
-                {constructionSetup.repositories.map((repository) => (
-                  <div key={repository.id} className="mt-3 space-y-3">
-                    <div>
-                      <p className="text-xs font-medium">Fresh clone: {repository.id}</p>
-                      <CommandBlock label={`Copy fresh clone command for ${repository.id}`}>
-                        {`git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.directory)}`}
-                      </CommandBlock>
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium">Existing clone: {repository.id}</p>
-                      <CommandBlock label={`Copy existing clone commands for ${repository.id}`}>
-                        {[
-                          `git -C ${shellQuote(repository.directory)} fetch origin`,
-                          `git -C ${shellQuote(repository.directory)} switch ${shellQuote(repository.branch)}`,
-                          `git -C ${shellQuote(repository.directory)} pull --ff-only`,
-                        ].join('\n')}
-                      </CommandBlock>
-                    </div>
-                  </div>
-                ))}
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Keep these repositories as immediate children of the workspace, alongside{' '}
-                  <code>aidlc/</code> and the harness directory.
-                </p>
-              </li>
-              <li>
-                Start the selected harness:
-                {launchCommand ? (
-                  <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
-                ) : (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Open this directory in Kiro IDE.
-                  </p>
-                )}
-              </li>
-              <li>
-                Then run inside the agent session:
-                <CommandBlock label="Copy AI-DLC command">
-                  {constructionContinueCommand ?? ''}
-                </CommandBlock>
-              </li>
-            </ol>
-          )}
-
-          {constructionSetup?.mode === 'manual-clone' && (
-            <ol className="list-decimal space-y-4 pl-5 text-sm">
-              <li>
-                Retrieve the source repository and its intent branch:
-                {constructionSetup.repositories.map((repository) => (
-                  <div key={repository.id} className="mt-3 space-y-3">
-                    <div>
-                      <p className="text-xs font-medium">Fresh clone</p>
-                      <CommandBlock label={`Copy fresh clone commands for ${repository.id}`}>
-                        {[
-                          `git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.directory)}`,
-                          `cd ${shellQuote(repository.directory)}`,
-                        ].join('\n')}
-                      </CommandBlock>
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium">Existing clone</p>
-                      <CommandBlock label={`Copy existing clone commands for ${repository.id}`}>
-                        {[
-                          `cd ${shellQuote(`/path/to/${repository.directory}`)}`,
-                          'git fetch origin',
-                          `git switch ${shellQuote(repository.branch)}`,
-                          'git pull --ff-only',
-                        ].join('\n')}
-                      </CommandBlock>
-                    </div>
-                  </div>
-                ))}
-              </li>
-              <li>
-                From the repository root, extract the downloaded workspace:
-                <CommandBlock label="Copy extraction command">
-                  {`unzip ${downloadedZip} -d .`}
-                </CommandBlock>
-              </li>
-              <li>
-                Start the selected harness:
-                {launchCommand ? (
-                  <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
-                ) : (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Open this directory in Kiro IDE.
-                  </p>
-                )}
-              </li>
-              <li>
-                Then run inside the agent session:
-                <CommandBlock label="Copy AI-DLC command">
-                  {constructionContinueCommand ?? ''}
-                </CommandBlock>
-              </li>
-            </ol>
-          )}
-
-          {constructionSetup?.mode === 'extract-only' && (
-            <ol className="list-decimal space-y-4 pl-5 text-sm">
-              <li>
-                Create a project directory and extract the downloaded workspace:
-                <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
-              </li>
-              <li>Open the extracted workspace directory in your IDE.</li>
-              <li>
-                Start the selected harness:
-                {launchCommand ? (
-                  <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
-                ) : (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Open this directory in Kiro IDE.
-                  </p>
-                )}
-              </li>
-              <li>
-                Then run inside the agent session:
-                <CommandBlock label="Copy AI-DLC command">
-                  {constructionContinueCommand ?? ''}
-                </CommandBlock>
-              </li>
-            </ol>
-          )}
-
-          <AlertDialogFooter>
-            <AlertDialogAction onClick={() => setConstructionExport(null)}>Done</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <NativeExportSetupDialog
+        exportResult={constructionExport}
+        projectName={project?.name}
+        onClose={() => setConstructionExport(null)}
+      />
 
       {/* Delete confirmation */}
       <AlertDialog
