@@ -177,6 +177,18 @@ describe('seed-blocks handler', () => {
     expect(manifest.sensorScripts).toContain('core/tools/aidlc-sensor-linter.ts');
   });
 
+  it('writes a body-free methodology catalog for historical exports', async () => {
+    const result = await handler({});
+    const key = `aidlc-catalogs/v1/${REF}.json`;
+    expect(result.methodologyCatalog).toBe(key);
+    const catalog = JSON.parse(s3Store.get(key));
+    expect(catalog.ref).toBe(REF);
+    expect(catalog.workflow.id).toBe('aidlc-v2');
+    expect(catalog.blocks.STAGE.length).toBeGreaterThan(0);
+    expect(catalog.blocks.STAGE[0].body).toBeUndefined();
+    expect(catalog.blocks.STAGE[0].bodyRef.s3Key).toMatch(/^blocks\/bodies\/sha256\//);
+  });
+
   it('does not seed runtime files as editable blocks', async () => {
     await handler({});
     expect(tableStore.has('BLOCK#SYSTEM#TOOL#aidlc-orchestrate|V#latest')).toBe(false);
@@ -198,6 +210,15 @@ describe('seed-blocks handler', () => {
     const result = await handler({ ref: overrideRef });
     expect(result.ref).toBe(overrideRef);
     expect(s3Store.has(`aidlc-runtime/${overrideRef}/manifest.json`)).toBe(true);
+  });
+
+  it('retains the previous commit catalog across a SYSTEM reseed', async () => {
+    const nextRef = 'b'.repeat(40);
+    await handler({ ref: REF });
+    await handler({ ref: nextRef, reseed: true });
+
+    expect(s3Store.has(`aidlc-catalogs/v1/${REF}.json`)).toBe(true);
+    expect(s3Store.has(`aidlc-catalogs/v1/${nextRef}.json`)).toBe(true);
   });
 
   it('seeds the aidlc-v2 workflow partition (META + phases + placements)', async () => {
