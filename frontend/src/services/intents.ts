@@ -140,7 +140,8 @@ export interface NativeWorkflowExport {
     continueCommand: string;
     showWorkspaceSetup: boolean;
     repositories: Array<{
-      name: string;
+      id: string;
+      directory: string;
       url: string;
       branch: string;
     }>;
