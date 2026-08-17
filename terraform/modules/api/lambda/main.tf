@@ -710,10 +710,11 @@ resource "aws_iam_role_policy" "neptune_tasks" {
 # -----------------------------------------------------------------------------
 # Role 7: blocks (2 Lambdas — building-blocks CRUD + seed-blocks)
 # DynamoDB RW on the blocks table + its GSI1, plus S3 RW scoped to the blocks/
-# prefix (content-addressed block bodies/scripts) and the aidlc-runtime/ prefix
-# (the seed job's commit-pinned internal runtime snapshot) of the artifacts
-# bucket. No Neptune; seed-blocks optionally uses VPC NAT egress to download the
-# pinned workflow source from codeload.github.com.
+# prefix (content-addressed block bodies/scripts), the aidlc-runtime/ prefix
+# (the seed job's commit-pinned internal runtime snapshot), and aidlc-catalogs/
+# (structured methodology snapshots used by historical exports). No Neptune;
+# seed-blocks optionally uses VPC NAT egress to download the pinned workflow
+# source from codeload.github.com.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "blocks" {
   name               = "${var.project_name}-blocks-${var.environment}"
@@ -760,6 +761,7 @@ resource "aws_iam_role_policy" "blocks" {
         Resource = [
           "${var.artifacts_bucket_arn}/blocks/*",
           "${var.artifacts_bucket_arn}/aidlc-runtime/*",
+          "${var.artifacts_bucket_arn}/aidlc-catalogs/*",
         ]
       }
     ]
@@ -2323,6 +2325,13 @@ resource "aws_iam_role_policy" "intents" {
         Resource = "${var.artifacts_bucket_arn}/aidlc-distributions/*"
       },
       {
+        # Preserve and lazily rebuild the structured SYSTEM methodology needed
+        # to export intents created before a baseline reseed.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "${var.artifacts_bucket_arn}/aidlc-catalogs/*"
+      },
+      {
         # S3 only returns NoSuchKey for a missing cache object when the caller
         # can list that prefix; otherwise GetObject masks the miss as 403.
         Effect   = "Allow"
@@ -2330,7 +2339,7 @@ resource "aws_iam_role_policy" "intents" {
         Resource = var.artifacts_bucket_arn
         Condition = {
           StringLike = {
-            "s3:prefix" = ["aidlc-distributions/*"]
+            "s3:prefix" = ["aidlc-distributions/*", "aidlc-catalogs/*"]
           }
         }
       },

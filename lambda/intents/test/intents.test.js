@@ -31,11 +31,18 @@ import {
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 // Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
+import { buildFromFiles } from '../../shared/block-mappers.js';
+import {
+  buildMethodologyCatalog,
+  methodologyCatalogKey,
+} from '../../shared/methodology-catalog.js';
+import { CORE_FILES } from '../../shared/test/fixtures/repo-files.js';
 
 const { archiveArtifactsSpy, createNativeExportSpy, readCheckpointArtifactVersionsSpy } =
   vi.hoisted(() => ({
@@ -1351,6 +1358,47 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
       expect.objectContaining({
         sourceCheckpoint: null,
         validateSnapshot: expect.any(Function),
+      }),
+    );
+  });
+
+  it('uses the intent SHA catalog when SYSTEM workflow versions were reseeded', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    const oldRef = 'a'.repeat(40);
+    const catalog = buildMethodologyCatalog({
+      ref: oldRef,
+      ...buildFromFiles(CORE_FILES),
+    });
+    const updatedMeta = {
+      ...meta,
+      workflowVersion: 1,
+      aidlcRepoRef: oldRef,
+      methodologyPins: null,
+      scope: 'mvp',
+    };
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), updatedMeta);
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (input.Key === methodologyCatalogKey(oldRef)) {
+        return { Body: Buffer.from(JSON.stringify(catalog)) };
+      }
+      const error = new Error('missing');
+      error.name = 'NoSuchKey';
+      throw error;
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(s3Mock.commandCalls(GetObjectCommand)[0].args[0].input.Key).toBe(
+      methodologyCatalogKey(oldRef),
+    );
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        upstreamRef: oldRef,
+        projection: expect.objectContaining({
+          stages: expect.arrayContaining([expect.objectContaining({ stageId: 'intent-capture' })]),
+        }),
       }),
     );
   });

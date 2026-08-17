@@ -69,6 +69,10 @@ import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { assignNativeRepositoryDirectories, repositoryId } from '../shared/native-repositories.js';
+import {
+  executionPlanFromMethodologyCatalog,
+  loadOrCreateMethodologyCatalog,
+} from '../shared/methodology-catalog.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
@@ -1392,6 +1396,71 @@ const findNativeIncompatibleBlocks = async (plan) => {
   return [...new Set(custom)].toSorted();
 };
 
+const hasNonSystemMethodologyPins = (methodologyPins) =>
+  Object.values(methodologyPins ?? {}).some((pins) =>
+    Object.values(pins ?? {}).some((pin) => pin?.tenantId !== SYSTEM_TENANT),
+  );
+
+const methodologyRefsMatch = (planResult, expectedRef) => {
+  const refs = planResult?.methodologySourceRefs ?? [];
+  return refs.length === 1 && refs[0] === expectedRef;
+};
+
+// Prefer the normal DynamoDB workflow snapshot. If a SYSTEM reseed replaced
+// those version keys, reconstruct the same plan from the intent's commit-pinned
+// S3 catalog instead. Customer-edited methodology remains intentionally
+// unsupported by native export and never falls back to the SYSTEM catalog.
+const loadNativeExportPlan = async (meta) => {
+  const options = {
+    workflowId: meta.workflowId,
+    workflowVersion: meta.workflowVersion,
+    scope: meta.scope,
+    ...(Array.isArray(meta.skipStageIds) && meta.skipStageIds.length
+      ? { skipStageIds: meta.skipStageIds }
+      : {}),
+    ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+    ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+  };
+  let currentResult = null;
+  let currentError = null;
+  try {
+    currentResult = await loadExecutionPlan({
+      ddb,
+      tableName: BLOCKS_TABLE(),
+      ...options,
+    });
+  } catch (error) {
+    currentError = error;
+  }
+
+  const canUseCatalog = meta.aidlcRepoRef && !hasNonSystemMethodologyPins(meta.methodologyPins);
+  if (
+    currentResult?.valid &&
+    currentResult.plan &&
+    (!canUseCatalog || methodologyRefsMatch(currentResult, meta.aidlcRepoRef))
+  ) {
+    return currentResult;
+  }
+  if (!canUseCatalog) {
+    if (currentError) throw currentError;
+    return currentResult;
+  }
+
+  const catalog = await loadOrCreateMethodologyCatalog({
+    s3,
+    bucket: ARTIFACTS_BUCKET(),
+    ref: meta.aidlcRepoRef,
+  });
+  return executionPlanFromMethodologyCatalog({
+    catalog,
+    workflowId: meta.workflowId,
+    workflowVersion: meta.workflowVersion,
+    scope: meta.scope,
+    skipStageIds: options.skipStageIds,
+    composedGrid: options.composedGrid,
+  });
+};
+
 // Map a QEDIT# row (Quorum-supported artifact edit session) to the wire shape.
 const mapQuorumEdit = (q) => ({
   editId: q.editId,
@@ -1683,18 +1752,19 @@ export const handler = async (event) => {
       if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
         return response(400, { error: `Unsupported native AI-DLC harness: ${harness}` });
       }
-      const planResult = await loadExecutionPlan({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId: meta.workflowId,
-        workflowVersion: meta.workflowVersion,
-        scope: meta.scope,
-        ...(Array.isArray(meta.skipStageIds) && meta.skipStageIds.length
-          ? { skipStageIds: meta.skipStageIds }
-          : {}),
-        ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-      });
+      const executionRefs = new Set(
+        (records.stages ?? []).map((stage) => stage.aidlcRepoRef).filter(Boolean),
+      );
+      if (
+        executionRefs.size > 1 ||
+        (meta.aidlcRepoRef && [...executionRefs].some((ref) => ref !== meta.aidlcRepoRef))
+      ) {
+        return response(409, {
+          error: 'This workflow was executed with multiple AI-DLC revisions and cannot be exported',
+          code: 'export_mixed_aidlc_refs',
+        });
+      }
+      const planResult = await loadNativeExportPlan(meta);
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
           error: 'The workflow snapshot cannot be resolved for native export',
@@ -1766,19 +1836,6 @@ export const handler = async (event) => {
           };
         };
         const projection = buildProjection(records, artifactRows, customRules);
-        const executionRefs = new Set(
-          (records.stages ?? []).map((stage) => stage.aidlcRepoRef).filter(Boolean),
-        );
-        if (
-          executionRefs.size > 1 ||
-          (meta.aidlcRepoRef && [...executionRefs].some((ref) => ref !== meta.aidlcRepoRef))
-        ) {
-          return response(409, {
-            error:
-              'This workflow was executed with multiple AI-DLC revisions and cannot be exported',
-            code: 'export_mixed_aidlc_refs',
-          });
-        }
         const initialSnapshotToken = checkpoint ? null : exportSnapshotToken(projection);
         const legacyRefWarning = meta.aidlcRepoRef
           ? []
