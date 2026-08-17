@@ -67,6 +67,7 @@ import {
 } from '../shared/artifact-versioning.js';
 import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
+import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
@@ -1602,6 +1603,7 @@ export const handler = async (event) => {
           ? { skipStageIds: meta.skipStageIds }
           : {}),
         ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -1674,6 +1676,19 @@ export const handler = async (event) => {
           };
         };
         const projection = buildProjection(records, artifactRows, customRules);
+        const executionRefs = new Set(
+          (records.stages ?? []).map((stage) => stage.aidlcRepoRef).filter(Boolean),
+        );
+        if (
+          executionRefs.size > 1 ||
+          (meta.aidlcRepoRef && [...executionRefs].some((ref) => ref !== meta.aidlcRepoRef))
+        ) {
+          return response(409, {
+            error:
+              'This workflow was executed with multiple AI-DLC revisions and cannot be exported',
+            code: 'export_mixed_aidlc_refs',
+          });
+        }
         const initialSnapshotToken = checkpoint ? null : exportSnapshotToken(projection);
         const legacyRefWarning = meta.aidlcRepoRef
           ? []
@@ -1857,6 +1872,9 @@ export const handler = async (event) => {
             ? { skipStageIds: records.meta.skipStageIds }
             : {}),
           ...(records.meta.composedGrid ? { composedGrid: records.meta.composedGrid } : {}),
+          ...(records.meta.methodologyPins
+            ? { methodologyPins: records.meta.methodologyPins }
+            : {}),
         });
         plan = planResult.valid ? planResult.plan : null;
       } catch {
@@ -2492,6 +2510,7 @@ export const handler = async (event) => {
           scope: meta.scope,
           ...(effectiveSkips?.length ? { skipStageIds: effectiveSkips } : {}),
           ...(effectiveGrid ? { composedGrid: effectiveGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -2860,6 +2879,7 @@ export const handler = async (event) => {
             workflowId: meta.workflowId,
             workflowVersion: meta.workflowVersion,
             scope: match.scopeId,
+            ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
           });
           if (planCheck.valid) {
             const row = await store.createCompose({
@@ -3135,6 +3155,7 @@ export const handler = async (event) => {
           scope: effScope,
           ...(effSkips?.length ? { skipStageIds: effSkips } : {}),
           ...(effGrid ? { composedGrid: effGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -3369,6 +3390,7 @@ export const handler = async (event) => {
           ? { skipStageIds: meta.skipStageIds }
           : {}),
         ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -3745,6 +3767,7 @@ export const handler = async (event) => {
         scope: meta.scope,
         ...(rewindSkipIds.length ? { skipStageIds: rewindSkipIds } : {}),
         ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -4126,6 +4149,7 @@ export const handler = async (event) => {
           scope: meta.scope,
           ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
           ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         const currentSectionIds = new Set(
           (currentPlanResult.plan?.stages ?? [])
@@ -4158,6 +4182,7 @@ export const handler = async (event) => {
         scope: newScope,
         composedGrid: newGrid,
         ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         strict: true,
       });
       if (!planResult.valid || !planResult.plan) {
@@ -4558,6 +4583,24 @@ export const handler = async (event) => {
         });
       }
       const planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+      let aidlcRepoRef = null;
+      if (AIDLC_REPO_REF()) {
+        try {
+          aidlcRepoRef = await resolveAidlcRepoRef(AIDLC_REPO_REF());
+        } catch (error) {
+          return response(503, {
+            error: 'The configured AI-DLC repository ref could not be resolved',
+            detail: error.message,
+          });
+        }
+      }
+      if ((planCheck.methodologySourceRefs ?? []).length > 1) {
+        return response(409, {
+          error: 'The selected workflow combines blocks from multiple AI-DLC revisions',
+          refs: planCheck.methodologySourceRefs,
+        });
+      }
+      aidlcRepoRef = planCheck.methodologySourceRefs?.[0] ?? aidlcRepoRef;
       // Optional per-repo base-branch override (see validateBaseBranches) —
       // validated against THIS intent's repo set before anything is written.
       const { value: baseBranches, error: baseBranchesError } = validateBaseBranches(
@@ -4593,7 +4636,8 @@ export const handler = async (event) => {
         status: 'DRAFT',
         workflowId,
         workflowVersion,
-        aidlcRepoRef: AIDLC_REPO_REF(),
+        aidlcRepoRef,
+        methodologyPins: planCheck.methodologyPins,
         scope,
         startedBy: sub,
         title: data.title || null,

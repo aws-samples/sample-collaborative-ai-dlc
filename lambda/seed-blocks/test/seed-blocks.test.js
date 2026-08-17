@@ -12,7 +12,7 @@ import { buildFromFiles } from '../../shared/block-mappers.js';
 
 const BLOCKS_TABLE = 'blocks-test';
 const ARTIFACTS_BUCKET = 'artifacts-test';
-const REF = 'testsha';
+const REF = 'a'.repeat(40);
 
 // Mock the repo fetch so the seed reads the fixture tree, not the network.
 vi.mock('../../shared/repo-fetch.js', () => ({
@@ -108,6 +108,9 @@ describe('seed-blocks handler', () => {
   it('seeds each block as a SYSTEM V#latest + V#1 pair', async () => {
     const result = await handler({});
     expect(result.seeded).toHaveLength(TOTAL);
+    expect([...tableStore.values()].find((item) => item.blockType === 'STAGE')?.sourceRef).toBe(
+      REF,
+    );
     expect(result.skipped).toHaveLength(0);
     for (const block of FIXTURE_BLOCKS) {
       const pk = `BLOCK#SYSTEM#${block.type}#${block.id}`;
@@ -191,9 +194,10 @@ describe('seed-blocks handler', () => {
   });
 
   it('uses the ref from the event, overriding the env default', async () => {
-    const result = await handler({ ref: 'override-ref' });
-    expect(result.ref).toBe('override-ref');
-    expect(s3Store.has('aidlc-runtime/override-ref/manifest.json')).toBe(true);
+    const overrideRef = 'b'.repeat(40);
+    const result = await handler({ ref: overrideRef });
+    expect(result.ref).toBe(overrideRef);
+    expect(s3Store.has(`aidlc-runtime/${overrideRef}/manifest.json`)).toBe(true);
   });
 
   it('seeds the aidlc-v2 workflow partition (META + phases + placements)', async () => {

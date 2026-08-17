@@ -537,6 +537,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         scope,
         ...(intentSkipIds.length ? { skipStageIds: intentSkipIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
       }),
     );
     if (!planResult.valid || !planResult.plan) {
@@ -735,6 +736,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         ids: { projectId, intentId, executionId },
         workflowId,
         workflowVersion,
+        ...(meta.aidlcRepoRef ? { aidlcRepoRef: meta.aidlcRepoRef } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         scope,
         ...(allSkipIds.length ? { skipStageIds: allSkipIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
@@ -1529,6 +1532,8 @@ const runStage = async (
     ids,
     workflowId,
     workflowVersion,
+    aidlcRepoRef = null,
+    methodologyPins = null,
     scope,
     // Per-run skip overlay (intent-level + accumulated gate-time skips) —
     // forwarded so the container's plan resolution matches the walk's.
@@ -1597,6 +1602,8 @@ const runStage = async (
         sectionIndex,
         workflowId,
         workflowVersion,
+        ...(aidlcRepoRef ? { aidlcRepoRef } : {}),
+        ...(methodologyPins ? { methodologyPins } : {}),
         scope,
         ...(skipStageIds?.length ? { skipStageIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),

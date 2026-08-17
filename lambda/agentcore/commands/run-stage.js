@@ -883,6 +883,8 @@ export const runStage = async (
     stageId,
     workflowId,
     workflowVersion,
+    aidlcRepoRef = null,
+    methodologyPins = null,
     scope,
     // Per-run skip overlay (shared/stage-skip.js): intent-level deselections +
     // accumulated gate-time skips, forwarded by the orchestrator on EVERY
@@ -1115,7 +1117,12 @@ export const runStage = async (
   // knowledge is held for the prompt. Reading the agentRef needs the stage, but
   // the merge needs to precede resolution — so we resolve once to read the
   // agentRef, merge, then resolve against the enriched library.
-  const loaded = await loadLibrary({ workflowId, workflowVersion });
+  let loaded;
+  try {
+    loaded = await loadLibrary({ workflowId, workflowVersion, methodologyPins });
+  } catch (error) {
+    return fail(null, 'methodology_snapshot_unavailable', error.message);
+  }
   if (!loaded.workflow || !loaded.library)
     return fail(null, 'workflow_not_found', `${workflowId}@${workflowVersion}`);
 
@@ -1444,6 +1451,13 @@ export const runStage = async (
   // stage row + threaded to the MCP scope for read-time token pricing.
   const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
   const priorStageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
+  if (priorStageRow?.aidlcRepoRef && aidlcRepoRef && priorStageRow.aidlcRepoRef !== aidlcRepoRef) {
+    return fail(
+      stageInstanceId,
+      'aidlc_ref_mismatch',
+      `stage ${stageInstanceId} started with ${priorStageRow.aidlcRepoRef}, received ${aidlcRepoRef}`,
+    );
+  }
   const stageScope = {
     executionId,
     intentId,
@@ -1524,6 +1538,7 @@ export const runStage = async (
       cliSessionId,
       resolvedModel: model,
       stageCallbackId,
+      aidlcRepoRef,
     });
   } else {
     await store.putStage({
@@ -1539,6 +1554,7 @@ export const runStage = async (
       cliSessionId,
       resolvedModel: model,
       stageCallbackId,
+      aidlcRepoRef,
     });
   }
   await store.updateExecution({
@@ -1725,7 +1741,7 @@ export const runStage = async (
     const [stageBody, agentPersona, conductor] = await Promise.all([
       loadBlockBody(stageBlock).catch(() => ''),
       agentBlock ? loadBlockBody(agentBlock).catch(() => '') : Promise.resolve(''),
-      loadConductor(env.AIDLC_REPO_REF).catch(() => ''),
+      loadConductor(aidlcRepoRef || env.AIDLC_REPO_REF).catch(() => ''),
     ]);
     // Knowledge has two tiers: the authored methodology (library blocks) and the
     // project's accrued team knowledge (already read from Neptune above). Both are

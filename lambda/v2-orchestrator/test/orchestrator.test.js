@@ -375,6 +375,27 @@ describe('orchestrator durable handler', () => {
     }
   });
 
+  it('forwards the intent AI-DLC ref and methodology pins to plan and stage execution', async () => {
+    const methodologyPins = {
+      AGENT: { 'aidlc-product-agent': { tenantId: 'SYSTEM', version: 2 } },
+    };
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      aidlcRepoRef: 'a'.repeat(40),
+      methodologyPins,
+    }));
+
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+    expect(deps.loadPlan).toHaveBeenCalledWith(expect.objectContaining({ methodologyPins }));
+    for (const start of stageStarts()) {
+      expect(start).toMatchObject({
+        aidlcRepoRef: 'a'.repeat(40),
+        methodologyPins,
+      });
+    }
+  });
+
   it('forwards the clone inputs to run-stage-start so it can self-heal a wiped checkout', async () => {
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
     const starts = stageStarts();
