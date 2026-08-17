@@ -344,6 +344,8 @@ describe('projectNativeWorkspace', () => {
 
   it('selects the next dependency-ready unit after multiple merged units', () => {
     const value = input();
+    value.stageRows[1].state = 'SUCCEEDED';
+    value.stages[2].forEach = 'unit-of-work';
     value.unitPlan = {
       units: [
         { slug: 'upload-image', dependsOn: [] },
@@ -363,18 +365,18 @@ describe('projectNativeWorkspace', () => {
       completedUnits: ['upload-image', 'identify-plant'],
       readyUnits: ['display-result'],
       nextUnit: 'display-result',
-      autonomyMode: 'gated',
-      autonomyModeSource: 'export-default',
+      autonomyMode: null,
+      autonomyModeSource: 'unset',
     });
     const audit = result.files.get(
       'aidlc/spaces/default/intents/260811-payment-service/audit/export.md',
     );
     expect(audit.match(/\*\*Event\*\*: BOLT_COMPLETED/g)).toHaveLength(2);
-    expect(audit).toContain(`**Event**: AUTONOMY_MODE_SET
-**Mode**: gated`);
-    expect(
-      result.files.get('aidlc/spaces/default/intents/260811-payment-service/aidlc-state.md'),
-    ).toContain('- **Construction Autonomy Mode**: gated');
+    expect(audit).not.toContain('**Event**: AUTONOMY_MODE_SET');
+    const state = result.files.get(
+      'aidlc/spaces/default/intents/260811-payment-service/aidlc-state.md',
+    );
+    expect(state).toContain('- **Construction Autonomy Mode**: unset');
   });
 
   it('projects legacy distributions into aidlc-docs', () => {
