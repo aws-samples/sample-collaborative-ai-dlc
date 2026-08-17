@@ -11,6 +11,7 @@ import {
 } from '../shared/distribution-archive.js';
 import { projectNativeWorkspace } from '../shared/native-workspace-projector.js';
 import { fetchRepoFiles } from '../shared/repo-fetch.js';
+import { isCommitSha } from '../shared/aidlc-ref.js';
 
 const MAX_EXPORT_BYTES = 100 * 1024 * 1024;
 const DOWNLOAD_TTL_SECONDS = 15 * 60;
@@ -37,7 +38,6 @@ const workspaceSyncCommand = ({ distributionFiles, harness }) => {
   return distributionFiles.has(tool) ? `bun ${tool}` : null;
 };
 const sha256 = (body) => createHash('sha256').update(body).digest('hex');
-const isCommitSha = (value) => /^[0-9a-f]{40}$/i.test(String(value ?? ''));
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
 const safeArchivePath = (value) => {

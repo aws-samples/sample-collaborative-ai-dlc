@@ -299,6 +299,9 @@ const buildExecutionMeta = ({
   // Commit-pinned native AI-DLC distribution used by this intent. Export
   // prefers this snapshot over the deployment's current baseline ref.
   aidlcRepoRef = null,
+  // Exact supporting block versions resolved when the intent was created.
+  // Stage versions remain pinned by workflow placements.
+  methodologyPins = null,
   scope = null,
   currentPhase = null,
   currentStage = null,
@@ -444,6 +447,7 @@ const buildExecutionMeta = ({
   workflowId,
   workflowVersion,
   aidlcRepoRef,
+  methodologyPins,
   scope,
   currentPhase,
   currentStage,
@@ -528,6 +532,7 @@ const buildStageRow = ({
   // instances so every stage row is attributable to its lane.
   unitSlug = null,
   sectionIndex = null,
+  aidlcRepoRef = null,
   now,
 }) => ({
   ...stageKey(executionId, stageInstanceId),
@@ -538,6 +543,7 @@ const buildStageRow = ({
   stageId: stageId ?? null,
   unitSlug,
   sectionIndex,
+  aidlcRepoRef,
   phase,
   state,
   attempt,

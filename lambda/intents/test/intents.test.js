@@ -922,6 +922,32 @@ describe('POST /projects/{id}/intents', () => {
     expect(JSON.parse(res.body).scope).toBe('feature');
   });
 
+  it('resolves and persists an immutable AI-DLC commit when creating an intent', async () => {
+    const sha = 'a'.repeat(40);
+    process.env.AIDLC_REPO_REF = 'release/v2';
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, json: async () => ({ sha }) });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+      });
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+      expect(meta.aidlcRepoRef).toBe(sha);
+      expect(meta.methodologyPins).toBeTruthy();
+      expect(fetchSpy.mock.calls[0][0]).toContain('/commits/release%2Fv2');
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.AIDLC_REPO_REF;
+    }
+  });
+
   it('rejects a scope not offered by the workflow', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -1327,6 +1353,29 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
         validateSnapshot: expect.any(Function),
       }),
     );
+  });
+
+  it('rejects an export whose stages record a different AI-DLC revision', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    meta.aidlcRepoRef = 'a'.repeat(40);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'STAGE#si-requirements'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-requirements',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-requirements',
+      stageId: 'requirements-analysis',
+      state: 'SUCCEEDED',
+      aidlcRepoRef: 'b'.repeat(40),
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('export_mixed_aidlc_refs');
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
   });
 
   it('maps checkpoint artifact integrity failures to a specific response', async () => {

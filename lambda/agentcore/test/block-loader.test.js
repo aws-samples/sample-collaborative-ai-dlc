@@ -167,4 +167,41 @@ describe('loadLibrary — paginated table reads', () => {
       sk: 'V#2',
     });
   });
+
+  it('loads supporting blocks from exact execution pins instead of catalog heads', async () => {
+    const agent = {
+      tenantId: 'SYSTEM',
+      blockId: 'agent-x',
+      version: 3,
+      name: 'Pinned agent',
+    };
+    ddbMock.on(GetCommand).callsFake((input) => ({
+      Item: input.Key.pk === 'BLOCK#SYSTEM#AGENT#agent-x' && input.Key.sk === 'V#3' ? agent : null,
+    }));
+    ddbMock.on(QueryCommand).callsFake((input) => {
+      const values = input.ExpressionAttributeValues || {};
+      if (values[':pk'] === 'WF#SYSTEM#aidlc-v2') {
+        return { Items: [{ sk: 'V#1#META' }] };
+      }
+      return { Items: [] };
+    });
+
+    const { library } = await loadLibrary({
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      methodologyPins: {
+        AGENT: { 'agent-x': { tenantId: 'SYSTEM', version: 3 } },
+        SENSOR: {},
+        RULE: {},
+        ARTIFACT: {},
+        KNOWLEDGE: {},
+      },
+    });
+
+    expect(library.agentsById['agent-x']).toEqual(agent);
+    expect(ddbMock.commandCalls(GetCommand).map((call) => call.args[0].input.Key)).toContainEqual({
+      pk: 'BLOCK#SYSTEM#AGENT#agent-x',
+      sk: 'V#3',
+    });
+  });
 });

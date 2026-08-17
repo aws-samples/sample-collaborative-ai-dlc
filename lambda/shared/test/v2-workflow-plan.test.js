@@ -10,11 +10,12 @@ import {
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const TABLE = 'blocks-test';
+const SOURCE_REF = 'a'.repeat(40);
 
 // Minimal fixture: a workflow with two placed stages (a→b via produces/consumes)
 // in scope "feature", plus the two STAGE blocks.
 const wfItems = [
-  { pk: 'WF#SYSTEM#aidlc-v2', sk: 'V#1#META', version: 1 },
+  { pk: 'WF#SYSTEM#aidlc-v2', sk: 'V#1#META', version: 1, sourceRef: SOURCE_REF },
   {
     pk: 'WF#SYSTEM#aidlc-v2',
     sk: 'V#1#PLACEMENT#stage-a',
@@ -44,6 +45,7 @@ const stageBlocks = [
     version: 1,
     phase: 'inception',
     leadAgent: 'agent-x',
+    sourceRef: SOURCE_REF,
   },
   {
     GSI1PK: 'TENANT#SYSTEM#STAGE',
@@ -53,21 +55,37 @@ const stageBlocks = [
     phase: 'construction',
     leadAgent: 'agent-x',
     reviewer: 'agent-x',
+    sourceRef: SOURCE_REF,
   },
 ];
 
 // The AGENT blocks the stages above reference. loadExecutionPlan must load these
 // into agentsById or every agent-bearing stage fails `unresolved_agent`.
-const agentBlocks = [{ GSI1PK: 'TENANT#SYSTEM#AGENT', id: 'agent-x', blockId: 'agent-x' }];
+const agentBlocks = [
+  {
+    GSI1PK: 'TENANT#SYSTEM#AGENT',
+    tenantId: 'SYSTEM',
+    id: 'agent-x',
+    blockId: 'agent-x',
+    version: 4,
+    sourceRef: SOURCE_REF,
+  },
+];
 
 beforeEach(() => {
   ddbMock.reset();
   ddbMock.on(GetCommand).callsFake((input) => ({
-    Item: stageBlocks.find(
-      (stage) =>
-        input.Key.pk === `BLOCK#SYSTEM#STAGE#${stage.blockId}` &&
-        input.Key.sk === `V#${stage.version}`,
-    ),
+    Item:
+      stageBlocks.find(
+        (stage) =>
+          input.Key.pk === `BLOCK#SYSTEM#STAGE#${stage.blockId}` &&
+          input.Key.sk === `V#${stage.version}`,
+      ) ??
+      agentBlocks.find(
+        (agent) =>
+          input.Key.pk === `BLOCK#SYSTEM#AGENT#${agent.blockId}` &&
+          input.Key.sk === `V#${agent.version}`,
+      ),
   }));
   ddbMock.on(QueryCommand).callsFake((input) => {
     const values = input.ExpressionAttributeValues || {};
@@ -145,6 +163,32 @@ describe('loadExecutionPlan', () => {
     });
     expect(result.valid).toBe(true);
     expect((result.errors ?? []).map((e) => e.code)).not.toContain('unresolved_agent');
+    expect(result.methodologyPins.AGENT).toEqual({
+      'agent-x': { tenantId: 'SYSTEM', version: 4 },
+    });
+    expect(result.methodologySourceRefs).toEqual([SOURCE_REF]);
+  });
+
+  it('reloads supporting methodology from exact create-time version pins', async () => {
+    const result = await loadExecutionPlan({
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope: 'feature',
+      methodologyPins: {
+        AGENT: { 'agent-x': { tenantId: 'SYSTEM', version: 4 } },
+        SENSOR: {},
+        RULE: {},
+        ARTIFACT: {},
+        KNOWLEDGE: {},
+      },
+    });
+    expect(result.valid).toBe(true);
+    expect(ddbMock.commandCalls(GetCommand).map((call) => call.args[0].input.Key)).toContainEqual({
+      pk: 'BLOCK#SYSTEM#AGENT#agent-x',
+      sk: 'V#4',
+    });
   });
 
   it('loads the immutable stage version pinned by the workflow snapshot', async () => {
