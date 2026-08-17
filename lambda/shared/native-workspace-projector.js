@@ -161,8 +161,8 @@ const normalizedUnitPlan = (unitPlan) => {
     batches: parsed.batches,
     skipMatrix: unitPlan.skipMatrix ?? {},
     walkingSkeleton: unitPlan.walkingSkeleton ?? null,
-    autonomyMode: hasRecordedAutonomyMode ? unitPlan.autonomyMode : 'gated',
-    autonomyModeSource: hasRecordedAutonomyMode ? 'cloud' : 'export-default',
+    autonomyMode: hasRecordedAutonomyMode ? unitPlan.autonomyMode : null,
+    autonomyModeSource: hasRecordedAutonomyMode ? 'cloud' : 'unset',
   };
 };
 
