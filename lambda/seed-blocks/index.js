@@ -10,6 +10,8 @@
 //   - the INTERNAL RUNTIME files (engine tools, hooks, protocols, conductor) to
 //     a commit-pinned S3 snapshot under aidlc-runtime/<ref>/<repo-path> — NOT
 //     editable blocks, but available for the execution layer to inject.
+//   - a body-free METHODOLOGY CATALOG under aidlc-catalogs/v1/<ref>.json so
+//     historical exports survive replacement of the mutable SYSTEM catalog.
 //
 // The pinned ref comes from the AIDLC_REPO_REF env var (set by Terraform) and
 // can be overridden per-invoke with {"ref":"<sha|tag|branch>"}.
@@ -57,6 +59,11 @@ import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchCoreFiles } from '../shared/repo-fetch.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
+import {
+  buildMethodologyCatalog,
+  methodologyCatalogKey,
+  writeMethodologyCatalog,
+} from '../shared/methodology-catalog.js';
 import {
   LATEST,
   blockPk,
@@ -259,6 +266,23 @@ export const handler = async (event = {}) => {
   // stale seed is worse than a clear failure the operator retries.
   const files = await fetchCoreFiles(ref);
   const { blocks, workflow, sensorScripts, runtimeFiles } = buildFromFiles(files);
+  const methodologyCatalog = buildMethodologyCatalog({
+    ref,
+    blocks,
+    workflow,
+    sensorScripts,
+  });
+
+  // Preserve the structured methodology before a reseed replaces the mutable
+  // SYSTEM catalog. Historical intents can reconstruct their exact plan from
+  // this commit-pinned snapshot without retaining duplicate Markdown bodies.
+  if (!dryRun) {
+    await writeMethodologyCatalog({
+      s3,
+      bucket: artifactsBucket(),
+      catalog: methodologyCatalog,
+    });
+  }
 
   // Reseed: clear the SYSTEM baseline first so the writes below land fresh.
   let cleared = 0;
@@ -374,6 +398,7 @@ export const handler = async (event = {}) => {
     total: blocks.length + 1,
     runtimeFiles: runtimeWritten,
     sensorScripts: sensorScripts.size,
+    methodologyCatalog: methodologyCatalogKey(ref),
     seeded,
     skipped,
   };
