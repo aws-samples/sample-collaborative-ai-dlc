@@ -376,14 +376,16 @@ describe('IntentView', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('shows export warnings even when no workspace setup is required', async () => {
+  it('shows the legacy-ref warning even when no workspace setup is required', async () => {
     get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
     exportWorkflow.mockResolvedValue({
       exportId: 'export-warning',
       filename: 'workspace.zip',
       downloadUrl: 'https://download.example/workspace.zip',
       expiresAt: '2026-08-12T12:15:00.000Z',
-      warnings: ['The pinned runtime has limited per-unit Construction support.'],
+      warnings: [
+        'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+      ],
       setup: {
         workspaceLayout: 'spaces',
         mode: 'extract-only',
@@ -405,7 +407,7 @@ describe('IntentView', () => {
     expect(downloadClick).toHaveBeenCalledOnce();
     expect(await screen.findByText('Workspace downloaded with warnings')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'The pinned runtime has limited per-unit Construction support.',
+      'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
     );
     expect(screen.queryByText('Create a project directory')).not.toBeInTheDocument();
 
