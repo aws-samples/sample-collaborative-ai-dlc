@@ -57,14 +57,75 @@ const listMergedBlocks = async (ddb, tableName, type) => {
   return [...byId.values()];
 };
 
-const loadPlacedStages = async (ddb, tableName, placements) => {
-  const legacyPlacements = placements.filter((placement) => !placement.stageTenant);
+const blockPin = (block) => ({
+  tenantId: block.tenantId,
+  version: Number(block.version),
+});
+
+const pinsForBlocks = (blocks) =>
+  Object.fromEntries(
+    blocks
+      .filter(
+        (block) =>
+          block?.blockId &&
+          block?.tenantId &&
+          Number.isInteger(Number(block.version)) &&
+          Number(block.version) > 0,
+      )
+      .map((block) => [block.blockId, blockPin(block)]),
+  );
+
+const loadPinnedBlocks = async (ddb, tableName, type, pins) => {
+  const entries = Object.entries(pins ?? {});
+  const blocks = await Promise.all(
+    entries.map(async ([blockId, pin]) => {
+      const result = await ddb.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: {
+            pk: blockPk(pin.tenantId, type, blockId),
+            sk: versionSk(Number(pin.version)),
+          },
+        }),
+      );
+      return result.Item ?? null;
+    }),
+  );
+  const missing = entries.filter((_, index) => blocks[index] == null).map(([blockId]) => blockId);
+  if (missing.length) {
+    throw new Error(`Pinned ${type} block versions are unavailable: ${missing.join(', ')}`);
+  }
+  return blocks;
+};
+
+const loadLibraryType = (ddb, tableName, type, methodologyPins) =>
+  methodologyPins?.[type]
+    ? loadPinnedBlocks(ddb, tableName, type, methodologyPins[type])
+    : listMergedBlocks(ddb, tableName, type);
+
+const loadPlacedStages = async (ddb, tableName, placements, stagePins = null) => {
+  const legacyPlacements = placements.filter(
+    (placement) => !placement.stageTenant && !stagePins?.[placement.stageId],
+  );
   const legacyStages = legacyPlacements.length
     ? await listMergedBlocks(ddb, tableName, 'STAGE')
     : [];
   const legacyById = new Map(legacyStages.map((stage) => [stage.id ?? stage.blockId, stage]));
   const stages = await Promise.all(
     placements.map(async (placement) => {
+      const pin = stagePins?.[placement.stageId];
+      if (!placement.stageTenant && pin) {
+        const result = await ddb.send(
+          new GetCommand({
+            TableName: tableName,
+            Key: {
+              pk: blockPk(pin.tenantId, 'STAGE', placement.stageId),
+              sk: versionSk(Number(pin.version)),
+            },
+          }),
+        );
+        return result.Item ?? null;
+      }
       if (!placement.stageTenant) return legacyById.get(placement.stageId) ?? null;
       const tenant = placement.stageTenant;
       const sk =
@@ -105,9 +166,12 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
   const ruleRefs = [];
   const scopeRefs = [];
   const phases = [];
+  let sourceRef = null;
   for (const it of items) {
     const sk = liveSk(it.sk);
-    if (sk.startsWith('PLACEMENT#')) {
+    if (sk === 'META') {
+      sourceRef = it.sourceRef ?? null;
+    } else if (sk.startsWith('PLACEMENT#')) {
       placements.push({
         stageId: it.stageId,
         stageTenant: it.stageTenant ?? null,
@@ -127,6 +191,7 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
   return {
     workflowId,
     workflowVersion: Number(workflowVersion),
+    sourceRef,
     placements,
     ruleRefs,
     scopeRefs,
@@ -153,6 +218,7 @@ const loadExecutionPlan = async ({
   skipStageIds = null,
   composedGrid = null,
   strict = false,
+  methodologyPins = null,
 }) => {
   const items = await loadWorkflowItems(ddb, tableName, workflowId, workflowVersion);
   if (!items.length) {
@@ -167,12 +233,13 @@ const loadExecutionPlan = async ({
   // leadAgent / supportAgents / reviewer against agentsById, so omitting them
   // makes EVERY agent-bearing stage fail `unresolved_agent` and rejects the plan
   // before any stage runs (the bodies still load lazily in the runtime container).
-  const [stages, agents, sensors, rules, artifacts] = await Promise.all([
-    loadPlacedStages(ddb, tableName, workflow.placements),
-    listMergedBlocks(ddb, tableName, 'AGENT'),
-    listMergedBlocks(ddb, tableName, 'SENSOR'),
-    listMergedBlocks(ddb, tableName, 'RULE'),
-    listMergedBlocks(ddb, tableName, 'ARTIFACT'),
+  const [stages, agents, sensors, rules, artifacts, knowledge] = await Promise.all([
+    loadPlacedStages(ddb, tableName, workflow.placements, methodologyPins?.STAGE),
+    loadLibraryType(ddb, tableName, 'AGENT', methodologyPins),
+    loadLibraryType(ddb, tableName, 'SENSOR', methodologyPins),
+    loadLibraryType(ddb, tableName, 'RULE', methodologyPins),
+    loadLibraryType(ddb, tableName, 'ARTIFACT', methodologyPins),
+    loadLibraryType(ddb, tableName, 'KNOWLEDGE', methodologyPins),
   ]);
   const library = {
     stagesById: keyById(stages),
@@ -181,7 +248,32 @@ const loadExecutionPlan = async ({
     rulesById: keyById(rules),
     artifactsById: keyById(artifacts),
   };
-  return buildExecutionPlan({ workflow, scope, library, skipStageIds, composedGrid, strict });
+  const result = buildExecutionPlan({
+    workflow,
+    scope,
+    library,
+    skipStageIds,
+    composedGrid,
+    strict,
+  });
+  return {
+    ...result,
+    methodologySourceRefs: [
+      ...new Set(
+        [workflow, ...stages, ...agents, ...sensors, ...rules, ...artifacts, ...knowledge]
+          .map((item) => item?.sourceRef)
+          .filter(Boolean),
+      ),
+    ].toSorted(),
+    methodologyPins: methodologyPins ?? {
+      STAGE: pinsForBlocks(stages),
+      AGENT: pinsForBlocks(agents),
+      SENSOR: pinsForBlocks(sensors),
+      RULE: pinsForBlocks(rules),
+      ARTIFACT: pinsForBlocks(artifacts),
+      KNOWLEDGE: pinsForBlocks(knowledge),
+    },
+  };
 };
 
 // List the scopes a pinned workflow offers (the vocabulary the intent scope
@@ -195,7 +287,7 @@ const loadWorkflowScopes = async ({ ddb, tableName, workflowId, workflowVersion 
   return [...workflowScopes(workflow)];
 };
 
-const __test = { listMergedBlocks, loadPlacedStages };
+const __test = { listMergedBlocks, loadPlacedStages, loadPinnedBlocks, pinsForBlocks };
 export { loadExecutionPlan, loadWorkflowScopes, assembleWorkflow, listMergedBlocks, __test };
 export default {
   loadExecutionPlan,

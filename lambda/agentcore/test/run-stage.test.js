@@ -1435,6 +1435,38 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(putStage).toMatchObject({ cli: 'claude', cliSessionId: 'forced-uuid' });
   });
 
+  it('uses and records the intent-pinned AI-DLC methodology revision', async () => {
+    const methodologyPins = {
+      AGENT: { 'aidlc-product-agent': { tenantId: 'SYSTEM', version: 2 } },
+    };
+    const loadLibrary = vi.fn(async () => ({ workflow: workflow(), library: library() }));
+    const loadConductor = vi.fn(async () => '# pinned conductor');
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ids: () => 'forced-uuid',
+      loadLibrary,
+      loadConductor,
+    });
+    await runStage(
+      {
+        ...baseArgs,
+        aidlcRepoRef: 'a'.repeat(40),
+        methodologyPins,
+      },
+      deps,
+    );
+
+    expect(loadLibrary).toHaveBeenCalledWith({
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      methodologyPins,
+    });
+    expect(loadConductor).toHaveBeenCalledWith('a'.repeat(40));
+    expect(deps.store.calls.find((call) => call[0] === 'putStage')[1]).toMatchObject({
+      aidlcRepoRef: 'a'.repeat(40),
+    });
+  });
+
   it('parks WAITING_FOR_HUMAN (no SUCCEEDED) when a gate is still pending at exit', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,

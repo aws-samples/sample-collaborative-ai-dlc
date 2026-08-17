@@ -36,6 +36,7 @@ const META_FIELDS = [
   'skipStageIds',
   'composedGrid',
   'aidlcRepoRef',
+  'methodologyPins',
 ];
 const STAGE_FIELDS = [
   'executionId',
@@ -46,6 +47,7 @@ const STAGE_FIELDS = [
   'attempt',
   'unitSlug',
   'sectionIndex',
+  'aidlcRepoRef',
   'startedAt',
   'completedAt',
   'updatedAt',

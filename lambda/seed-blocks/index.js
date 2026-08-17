@@ -55,6 +55,7 @@ import {
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchCoreFiles } from '../shared/repo-fetch.js';
+import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import {
   LATEST,
@@ -90,7 +91,7 @@ const runtimeKey = (ref, repoPath) => `${runtimePrefix(ref)}/${repoPath}`;
 
 // Builds the two stored items (V#latest pointer + V#1 snapshot) for a block,
 // with its body (and, for a sensor, its script) externalized to S3.
-const buildItems = (block, bodyRef, scriptRef, now) => {
+const buildItems = (block, bodyRef, scriptRef, now, sourceRef) => {
   const { type, id, name, body, script, ...attrs } = block;
   void body; // externalized into bodyRef
   void script; // externalized into scriptRef
@@ -101,6 +102,7 @@ const buildItems = (block, bodyRef, scriptRef, now) => {
     blockId: id,
     name,
     version: 1,
+    sourceRef,
     bodyRef,
     ...(scriptRef ? { scriptRef } : {}),
     createdAt: now,
@@ -127,7 +129,7 @@ const workflowSnapshotItem = (item, version) => {
 // Builds the items for a baseline workflow partition: the META header (carrying
 // the workflow catalog GSI1 keys), the inline phase tree, stage placements, rule
 // refs, and immutable V#1 workflow snapshot rows.
-const buildWorkflowItems = (wf, now) => {
+const buildWorkflowItems = (wf, now, sourceRef) => {
   const pk = workflowPk(SYSTEM_TENANT, wf.id);
   const meta = {
     pk,
@@ -141,6 +143,7 @@ const buildWorkflowItems = (wf, now) => {
     defaultScope: wf.defaultScope ?? null,
     status: 'PUBLISHED',
     version: 1,
+    sourceRef,
     createdAt: now,
     updatedAt: now,
     GSI1PK: workflowGsi1Pk(SYSTEM_TENANT),
@@ -243,10 +246,11 @@ const putObject = (key, body, contentType) =>
 export const handler = async (event = {}) => {
   const dryRun = event?.dryRun === true;
   const reseed = event?.reseed === true;
-  const ref = event?.ref || defaultRef();
-  if (!ref) {
+  const configuredRef = event?.ref || defaultRef();
+  if (!configuredRef) {
     throw new Error('seed-blocks: no repo ref — set AIDLC_REPO_REF or pass {"ref":"<sha>"}');
   }
+  const ref = await resolveAidlcRepoRef(configuredRef);
   const now = new Date().toISOString();
   const seeded = [];
   const skipped = [];
@@ -279,7 +283,7 @@ export const handler = async (event = {}) => {
       await putObject(scriptRef.s3Key, script, 'text/plain');
     }
 
-    const { latest, snapshot } = buildItems(block, bodyRef, scriptRef, now);
+    const { latest, snapshot } = buildItems(block, bodyRef, scriptRef, now, ref);
     try {
       // Guard on V#latest only — its absence means the block is new. The
       // snapshot write follows unconditionally so a half-seeded block heals.
@@ -307,7 +311,7 @@ export const handler = async (event = {}) => {
   if (dryRun) {
     seeded.push(`WORKFLOW#${wf.id}`);
   } else {
-    const { meta, children } = buildWorkflowItems(wf, now);
+    const { meta, children } = buildWorkflowItems(wf, now, ref);
     try {
       await ddb.send(
         new PutCommand({
