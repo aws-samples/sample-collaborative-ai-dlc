@@ -26,11 +26,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { generateColor } from '@/utils/colors';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ChevronRight, FileText, Layers, SearchAlert, SearchCheck, Sparkles } from 'lucide-react';
+import {
+  ChevronRight,
+  FileText,
+  Laptop,
+  Layers,
+  SearchAlert,
+  SearchCheck,
+  Sparkles,
+} from 'lucide-react';
 
 // Identified-items grouping for the review gate. Mirrors the workbench's
 // DerivedItemsSection ordering: canonical types first, unknowns alphabetical
@@ -208,6 +217,8 @@ export function StageReviewPanel({
   // re-validated server-side.
   const [skipTo, setSkipTo] = useState('');
   const skipTargets = gate.skipTargets ?? [];
+  const localDevelopmentAvailable =
+    Array.isArray(gate.options) && gate.options.includes('develop-externally');
   const graph = useIntentGraph(projectId, intentId);
   const stage = detail.stages.find((s) => s.stageInstanceId === gate.stageInstanceId) ?? null;
   const artifacts = detail.artifacts.filter(
@@ -248,19 +259,26 @@ export function StageReviewPanel({
       userName,
       enabled: pending,
     });
-  const submit = async (decision: 'approve' | 'request-changes') => {
+  const submit = async (decision: 'approve' | 'develop-externally' | 'request-changes') => {
     setSubmitting(true);
     try {
       const currentFeedback = getFeedback();
       await onAnswer(gate, {
-        status: decision === 'approve' ? 'approved' : 'rejected',
+        status:
+          decision === 'approve'
+            ? 'approved'
+            : decision === 'request-changes'
+              ? 'rejected'
+              : 'answered',
         answer:
           decision === 'approve'
             ? {
                 decision,
                 ...(skipTo ? { skipTo } : {}),
               }
-            : { decision, feedback: currentFeedback },
+            : decision === 'request-changes'
+              ? { decision, feedback: currentFeedback }
+              : { decision },
       });
       onBack();
     } finally {
@@ -574,6 +592,26 @@ export function StageReviewPanel({
                 >
                   Request changes
                 </Button>
+                {localDevelopmentAvailable && (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          disabled={submitting}
+                          onClick={() => submit('develop-externally')}
+                        >
+                          <Laptop className="h-4 w-4" />
+                          Approve and develop externally
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-80">
+                        Approve this stage, then develop the unit in your preferred IDE or CLI.
+                        Submit the completed result to continue the workflow.
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
                 <Button disabled={submitting} onClick={() => submit('approve')}>
                   {skipTo
                     ? `Approve & skip to ${skipTo}`
