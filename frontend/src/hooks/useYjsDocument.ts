@@ -6,6 +6,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { realtimeService } from '../services/realtime';
 import { authService } from '../services/auth';
+import { currentSessionEpoch, notifySessionExpired } from '../services/sessionExpiry';
 import {
   getRealtimeToken,
   invalidateRealtimeToken,
@@ -104,7 +105,10 @@ export function useYjsDocument(
       // refreshes automatically when the token is near expiry.
       let session;
       try {
-        session = await authService.getSession();
+        const epoch = currentSessionEpoch();
+        const resolution = await authService.resolveSession();
+        session = resolution.session;
+        if (resolution.expired) notifySessionExpired(epoch);
       } catch (error) {
         console.error('Yjs: failed to refresh Cognito session:', error);
         scheduleReconnect();

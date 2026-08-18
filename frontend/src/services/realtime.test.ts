@@ -1,14 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  getSession: vi.fn(),
+  resolveSession: vi.fn(),
+  notifySessionExpired: vi.fn(),
   getRealtimeToken: vi.fn(),
   invalidateRealtimeToken: vi.fn(),
   msUntilRefresh: vi.fn(),
 }));
 
 vi.mock('./auth', () => ({
-  authService: { getSession: (...args: unknown[]) => mocks.getSession(...args) },
+  authService: { resolveSession: (...args: unknown[]) => mocks.resolveSession(...args) },
+}));
+
+vi.mock('./sessionExpiry', () => ({
+  currentSessionEpoch: () => 7,
+  notifySessionExpired: mocks.notifySessionExpired,
 }));
 
 vi.mock('../lib/realtimeToken', () => ({
@@ -70,7 +76,10 @@ describe('RealtimeService', () => {
     vi.useFakeTimers();
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
-    mocks.getSession.mockReset().mockResolvedValue({ idToken: 'id-token' });
+    mocks.resolveSession
+      .mockReset()
+      .mockResolvedValue({ session: { idToken: 'id-token' }, expired: false });
+    mocks.notifySessionExpired.mockReset();
     mocks.getRealtimeToken
       .mockReset()
       .mockResolvedValue({ token: 'scope-token', exp: 123, scopes: [] });
@@ -98,6 +107,20 @@ describe('RealtimeService', () => {
     expect(mocks.getRealtimeToken).toHaveBeenNthCalledWith(1, target);
     expect(mocks.getRealtimeToken).toHaveBeenNthCalledWith(2, target);
     expect(MockWebSocket.instances[1].url).toContain('documentId=intent%3Aintent-1');
+  });
+
+  it('notifies when Cognito reports definitive session expiry', async () => {
+    mocks.resolveSession.mockResolvedValue({ session: null, expired: true });
+    const service = new RealtimeService(false);
+
+    await expect(
+      service.connect('intent:intent-1', {
+        intentId: 'intent-1',
+        projectId: 'project-1',
+      }),
+    ).rejects.toThrow('Not authenticated');
+
+    expect(mocks.notifySessionExpired).toHaveBeenCalledWith(7);
   });
 
   it('reconnects an unexpectedly closed intent channel with the same target', async () => {

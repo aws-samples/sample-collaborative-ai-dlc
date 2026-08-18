@@ -115,6 +115,33 @@ export interface AuthSession {
   refreshToken: string;
 }
 
+export interface SessionResolution {
+  session: AuthSession | null;
+  /** True only when Cognito reports the session is definitively gone (no
+   *  tokens, or a refusal such as `NotAuthorizedException`). Transient
+   *  failures — offline, service errors — resolve to false so callers do not
+   *  sign the user out while the refresh token is still valid. */
+  expired: boolean;
+}
+
+/** Cognito errors meaning the refresh token itself is no longer usable, as
+ *  opposed to a transient transport failure. Mirrors Amplify's own
+ *  `TokenOrchestrator.isAuthenticationError` list, which is what decides
+ *  whether it discards the stored tokens. */
+const SESSION_REFUSED_ERRORS = [
+  'NotAuthorizedException',
+  'TokenRevokedException',
+  'UserNotFoundException',
+  'PasswordResetRequiredException',
+  'UserNotConfirmedException',
+  'RefreshTokenReuseException',
+];
+
+function isSessionRefusedError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : '';
+  return SESSION_REFUSED_ERRORS.some((refusal) => name.startsWith(refusal));
+}
+
 export interface AuthResult {
   user?: User;
   nextStep?: 'NEW_PASSWORD_REQUIRED' | 'MFA_REQUIRED';
@@ -299,21 +326,32 @@ export const authService = {
     await updateUserAttributes({ userAttributes: attrs });
   },
 
-  async getSession(): Promise<AuthSession | null> {
+  async resolveSession(options: { forceRefresh?: boolean } = {}): Promise<SessionResolution> {
     try {
-      const session = await fetchAuthSession();
+      const session = await fetchAuthSession(options);
       if (session.tokens) {
         return {
-          accessToken: session.tokens.accessToken.toString(),
-          idToken: session.tokens.idToken?.toString() || '',
-          refreshToken: (session.tokens as any).refreshToken?.toString() || '',
+          session: {
+            accessToken: session.tokens.accessToken.toString(),
+            idToken: session.tokens.idToken?.toString() || '',
+            refreshToken: (session.tokens as any).refreshToken?.toString() || '',
+          },
+          expired: false,
         };
       }
-      return null;
+      // No tokens means either "never signed in" or a refresh Cognito refused:
+      // `TokenOrchestrator.refreshTokens` swallows only `NotAuthorizedException`
+      // and rethrows every transient failure, so this is always definitive.
+      return { session: null, expired: true };
     } catch (error) {
       console.error('Get session error:', error);
-      return null;
+      return { session: null, expired: isSessionRefusedError(error) };
     }
+  },
+
+  async getSession(): Promise<AuthSession | null> {
+    const { session } = await authService.resolveSession();
+    return session;
   },
 
   async isAuthenticated(): Promise<boolean> {

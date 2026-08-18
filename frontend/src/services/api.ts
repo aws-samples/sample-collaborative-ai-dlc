@@ -1,4 +1,9 @@
 import { authService } from './auth';
+import {
+  currentSessionEpoch,
+  isSessionExpiryNotified,
+  notifySessionExpired,
+} from './sessionExpiry';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
@@ -18,8 +23,16 @@ export class ApiError extends Error {
 }
 
 async function fetchWithAuth(path: string, options: RequestInit = {}): Promise<Response> {
-  const session = await authService.getSession();
+  // Tagging the request with the current epoch keeps a late 401 from a
+  // previous session from signing out a user who has since re-authenticated.
+  const epoch = currentSessionEpoch();
+  const { session, expired } = await authService.resolveSession();
   if (!session) {
+    // A transient refresh failure (offline) leaves the refresh token valid, so
+    // only a definitive expiry signs the user out.
+    if (expired) {
+      notifySessionExpired(epoch);
+    }
     throw new ApiError(401, 'Not authenticated');
   }
 
@@ -33,6 +46,17 @@ async function fetchWithAuth(path: string, options: RequestInit = {}): Promise<R
   });
 
   if (!response.ok) {
+    // A 401 is not proof the Cognito session is dead: endpoints forward
+    // upstream provider statuses verbatim, so a revoked GitHub/GitLab/Jira
+    // token surfaces as a 401 too. Only sign out when a forced refresh shows
+    // the session itself is unusable. (403 is authorization — admin gates —
+    // and never means expiry.)
+    if (response.status === 401 && !isSessionExpiryNotified()) {
+      const refreshed = await authService.resolveSession({ forceRefresh: true });
+      if (refreshed.expired) {
+        notifySessionExpired(epoch);
+      }
+    }
     const rawText = await response.text().catch(() => '');
     let parsed: Record<string, unknown> | undefined;
     try {

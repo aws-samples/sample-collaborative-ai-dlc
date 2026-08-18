@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const authMocks = vi.hoisted(() => ({
   signIn: vi.fn(),
@@ -48,8 +48,72 @@ vi.mock('aws-amplify/auth/cognito', () => ({
   },
 }));
 
-import { cognitoOauthScopes, parseSsoProviders } from './auth';
+import { authService as sessionAuthService, cognitoOauthScopes, parseSsoProviders } from './auth';
 import { isSsoAccessDeniedError } from './authErrors';
+
+function amplifyError(name: string): Error {
+  const error = new Error(name);
+  error.name = name;
+  return error;
+}
+
+describe('authService.resolveSession', () => {
+  beforeEach(() => {
+    authMocks.fetchAuthSession.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('reports a live session', async () => {
+    authMocks.fetchAuthSession.mockResolvedValue({
+      tokens: { accessToken: 'access', idToken: 'id' },
+    });
+
+    await expect(sessionAuthService.resolveSession()).resolves.toEqual({
+      session: { accessToken: 'access', idToken: 'id', refreshToken: '' },
+      expired: false,
+    });
+  });
+
+  it('treats an empty token set as a definitive expiry', async () => {
+    authMocks.fetchAuthSession.mockResolvedValue({});
+
+    await expect(sessionAuthService.resolveSession()).resolves.toEqual({
+      session: null,
+      expired: true,
+    });
+  });
+
+  it('does not expire the session on a transient network failure', async () => {
+    authMocks.fetchAuthSession.mockRejectedValue(amplifyError('NetworkError'));
+
+    await expect(sessionAuthService.resolveSession()).resolves.toEqual({
+      session: null,
+      expired: false,
+    });
+  });
+
+  it.each([
+    'NotAuthorizedException',
+    'TokenRevokedException',
+    'UserNotFoundException',
+    'RefreshTokenReuseException',
+  ])('expires the session when Cognito refuses the refresh (%s)', async (name) => {
+    authMocks.fetchAuthSession.mockRejectedValue(amplifyError(name));
+
+    await expect(sessionAuthService.resolveSession()).resolves.toEqual({
+      session: null,
+      expired: true,
+    });
+  });
+
+  it('forces a refresh when asked to', async () => {
+    authMocks.fetchAuthSession.mockResolvedValue({});
+
+    await sessionAuthService.resolveSession({ forceRefresh: true });
+
+    expect(authMocks.fetchAuthSession).toHaveBeenCalledWith({ forceRefresh: true });
+  });
+});
 
 describe('SSO frontend configuration', () => {
   const providers = [
