@@ -668,9 +668,9 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
         },
       ],
       [
-        '/commits/head-7/refs',
+        '/repository/merge_base?',
         {
-          json: [{ type: 'branch', name: 'intent' }],
+          json: { id: 'head-7' },
         },
       ],
     ]);
@@ -698,6 +698,38 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
     expect(await gl.isCommitAncestor({ token: 't', fetchImpl }, 'g/p', 'head-7', 'intent')).toBe(
       true,
     );
+  });
+
+  it('checks exact submitted SHA ancestry through the repository merge base', async () => {
+    const baseSha = '6b13c79d7d5d828fb0e90fd7b631016d1fd6e318';
+    const headSha = '9792b59590a1a06e4cb203e2f1ff2e94f3f85f1f';
+    const fetchImpl = makeFetch([
+      [
+        '/repository/merge_base?',
+        (url) => {
+          expect(url).toContain(`refs%5B%5D=${baseSha}`);
+          expect(url).toContain(`refs%5B%5D=${headSha}`);
+          return { json: { id: baseSha } };
+        },
+      ],
+    ]);
+
+    await expect(
+      gl.isCommitAncestor({ token: 't', fetchImpl }, 'jeromevdl/test-pyramid', baseSha, headSha),
+    ).resolves.toBe(true);
+  });
+
+  it('rejects an exact submitted SHA whose merge base differs', async () => {
+    const fetchImpl = makeFetch([['/repository/merge_base?', { json: { id: '0'.repeat(40) } }]]);
+
+    await expect(
+      gl.isCommitAncestor(
+        { token: 't', fetchImpl },
+        'jeromevdl/test-pyramid',
+        '1'.repeat(40),
+        '2'.repeat(40),
+      ),
+    ).resolves.toBe(false);
   });
 
   it('createPullRequest resolves the project default branch when baseBranch is omitted', async () => {

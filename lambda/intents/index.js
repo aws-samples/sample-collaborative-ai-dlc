@@ -1969,6 +1969,25 @@ export const handler = async (event, context) => {
                 );
               },
         });
+        if (handoffTask) {
+          const exportedTask = await store.updateExternalDevelopment({
+            executionId: intentId,
+            humanTaskId: handoffTaskId,
+            stageAttempt: Number(handoffTask.externalDevelopment?.stageAttempt ?? -1),
+            externalDevelopment: {
+              ...handoffTask.externalDevelopment,
+              harness,
+              exportId: exported.exportId ?? null,
+              exportedAt: new Date().toISOString(),
+            },
+          });
+          if (!exportedTask) {
+            return response(409, {
+              error: 'The external-development handoff is no longer current',
+              code: 'handoff_not_pending',
+            });
+          }
+        }
         const exporter = getResponder(event);
         await store
           .appendEvent({

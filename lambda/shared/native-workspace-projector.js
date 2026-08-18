@@ -266,7 +266,6 @@ const normalizeHandoff = ({
   unitPlan,
   unitRows,
   repositories,
-  harness,
 }) => {
   if (mode !== 'unit-handoff') {
     if (handoffTaskId != null) {
@@ -314,10 +313,6 @@ const normalizeHandoff = ({
   ) {
     throw new Error('native-export: external-development task has a stale stage attempt');
   }
-  if (task.externalDevelopment?.harness && task.externalDevelopment.harness !== harness) {
-    throw new Error('native-export: selected harness does not match the external-development task');
-  }
-
   const targetIndex = stages.findIndex((stage) => stage.stageId === stageId);
   const targetStage = stages[targetIndex];
   if (
@@ -1031,7 +1026,6 @@ const projectNativeWorkspace = ({
     unitPlan,
     unitRows,
     repositories: baseRepositories,
-    harness,
   });
   const normalizedRepos = handoffProjection.repositories;
   const effectiveStages = handoffProjection.stages;
