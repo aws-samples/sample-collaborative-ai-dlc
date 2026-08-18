@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
 import {
   intentsService,
+  NATIVE_EXPORT_HARNESS_OPTIONS,
   type IntentGate,
   type NativeExportHarness,
   type NativeHandoffDocuments,
@@ -71,14 +72,6 @@ import {
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
 const CREDENTIAL_FAILURE_CODES = new Set(['credential_unavailable', 'credential_invalid']);
 const NON_EXPORTABLE_STATUSES = new Set(['DRAFT', 'CREATED']);
-const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
-  { value: 'claude', label: 'Claude' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'kiro', label: 'Kiro CLI' },
-  { value: 'kiro-ide', label: 'Kiro IDE' },
-  { value: 'opencode', label: 'OpenCode' },
-];
-
 const errorMessage = (value: string) => {
   try {
     const parsed = JSON.parse(value);
@@ -141,6 +134,9 @@ export default function IntentView() {
   const [constructionExport, setConstructionExport] = useState<NativeWorkflowExport | null>(null);
   const [constructionExportHandoff, setConstructionExportHandoff] = useState<IntentGate | null>(
     null,
+  );
+  const [downloadedHandoffTaskIds, setDownloadedHandoffTaskIds] = useState<Set<string>>(
+    () => new Set(),
   );
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
@@ -237,6 +233,13 @@ export default function IntentView() {
       document.body.append(download);
       download.click();
       download.remove();
+      if (handoffGate) {
+        setDownloadedHandoffTaskIds((current) => {
+          const next = new Set(current);
+          next.add(handoffGate.humanTaskId);
+          return next;
+        });
+      }
       if (handoffGate || result.setup.showWorkspaceSetup || result.warnings.length > 0) {
         setConstructionExportHandoff(handoffGate ?? null);
         setConstructionExport(result);
@@ -268,11 +271,9 @@ export default function IntentView() {
     setConfirmExport(true);
   };
 
-  const requestHandoffExport = async (handoffGate: IntentGate) => {
+  const requestHandoffExport = async (handoffGate: IntentGate, harness: NativeExportHarness) => {
     setRequestedHandoffGate(handoffGate);
-    setRequestedExportHarness(
-      handoffGate.externalDevelopment?.harness as NativeExportHarness | undefined,
-    );
+    setRequestedExportHarness(harness);
     setConfirmExport(true);
   };
 
@@ -330,8 +331,11 @@ export default function IntentView() {
   const defaultExportHarness = intent.agentCli ?? undefined;
   const activeExportHarness = selectedExportHarness ?? defaultExportHarness;
   const exportCli =
-    EXPORT_HARNESSES.find((option) => option.value === activeExportHarness)?.label ??
+    NATIVE_EXPORT_HARNESS_OPTIONS.find((option) => option.value === activeExportHarness)?.label ??
     'native AI-DLC';
+  const requestedExportCli =
+    NATIVE_EXPORT_HARNESS_OPTIONS.find((option) => option.value === requestedExportHarness)
+      ?.label ?? 'native AI-DLC';
   const exportButtonLabel =
     intent.status === 'RUNNING'
       ? `Download ${exportCli} workspace from latest completed checkpoint`
@@ -404,7 +408,7 @@ export default function IntentView() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start">
-                        {EXPORT_HARNESSES.map((option) => (
+                        {NATIVE_EXPORT_HARNESS_OPTIONS.map((option) => (
                           <DropdownMenuItem
                             key={option.value}
                             disabled={exporting}
@@ -662,6 +666,10 @@ export default function IntentView() {
                   projectId={projectId}
                   intentId={intentId}
                   userName={userName}
+                  handoffWorkspaceDownloaded={
+                    downloadedHandoffTaskIds.has(gate.humanTaskId) ||
+                    Boolean(gate.externalDevelopment?.exportedAt)
+                  }
                   onAnswer={answerGate}
                   onExportHandoff={requestHandoffExport}
                   onSubmitHandoff={handleSubmitHandoff}
@@ -715,9 +723,9 @@ export default function IntentView() {
             {requestedHandoffGate ? (
               <>
                 <AlertDialogDescription className="break-words">
-                  This download creates a point-in-time native AI-DLC workspace scoped to this
-                  unit&apos;s <code>code-generation</code> stage. Collaborative AI-DLC keeps the
-                  unit parked while you work externally.
+                  This download creates a point-in-time {requestedExportCli} workspace scoped to
+                  this unit&apos;s <code>code-generation</code> stage. Collaborative AI-DLC keeps
+                  the unit parked while you work externally.
                 </AlertDialogDescription>
                 <div className="space-y-2 text-sm text-muted-foreground">
                   <p>

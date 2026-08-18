@@ -925,20 +925,20 @@ const reopenPullRequest = async (ctx, repoId, mrIid) => {
 
 const isCommitAncestor = async (ctx, repoId, ancestorSha, descendantRef) => {
   const project = encodeProject(repoId);
-  for (let page = 1; page <= 100; page += 1) {
-    const res = await glFetch(
-      ctx,
-      `${API_BASE}/projects/${project}/repository/commits/${encodeURIComponent(
-        ancestorSha,
-      )}/refs?type=branch&per_page=100&page=${page}`,
-    );
-    if (!res.ok) return false;
-    const refs = await res.json();
-    if (!Array.isArray(refs)) return false;
-    if (refs.some((ref) => ref.type === 'branch' && ref.name === descendantRef)) return true;
-    if (refs.length < 100) break;
-  }
-  return false;
+  const query = new URLSearchParams();
+  query.append('refs[]', ancestorSha);
+  query.append('refs[]', descendantRef);
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/repository/merge_base?${query.toString()}`,
+  );
+  if (!res.ok) return false;
+  const data = await res.json().catch(() => ({}));
+  const mergeBaseSha = data?.id;
+  return (
+    typeof mergeBaseSha === 'string' &&
+    (mergeBaseSha === ancestorSha || mergeBaseSha.startsWith(ancestorSha))
+  );
 };
 
 // Server-side merge of a task branch into the sprint branch. GitLab has no

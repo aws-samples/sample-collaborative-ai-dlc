@@ -1,6 +1,11 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import type { GateAnswer, IntentGate, NativeHandoffDocuments } from '@/services/intents';
+import type {
+  GateAnswer,
+  IntentGate,
+  NativeExportHarness,
+  NativeHandoffDocuments,
+} from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import QuestionEditor from '@/components/QuestionEditor';
 import type { Question } from '@/services/questions';
@@ -32,8 +37,9 @@ export interface GateCardProps {
   projectId: string;
   intentId: string;
   userName: string;
+  handoffWorkspaceDownloaded?: boolean;
   onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
-  onExportHandoff?: (gate: IntentGate) => Promise<void>;
+  onExportHandoff?: (gate: IntentGate, harness: NativeExportHarness) => Promise<void>;
   onSubmitHandoff?: (gate: IntentGate, documents: NativeHandoffDocuments) => Promise<void>;
 }
 
@@ -42,6 +48,7 @@ export function GateCard({
   projectId,
   intentId,
   userName,
+  handoffWorkspaceDownloaded = false,
   onAnswer,
   onExportHandoff,
   onSubmitHandoff,
@@ -77,6 +84,7 @@ export function GateCard({
     return (
       <ExternalDevelopmentGateCard
         gate={gate}
+        workspaceDownloaded={handoffWorkspaceDownloaded}
         onAnswer={onAnswer}
         onExport={onExportHandoff}
         onSubmit={onSubmitHandoff}

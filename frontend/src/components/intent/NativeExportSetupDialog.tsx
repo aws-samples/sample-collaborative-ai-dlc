@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { Check, Copy, TriangleAlert } from 'lucide-react';
+import { TriangleAlert } from 'lucide-react';
 import type { IntentGate, NativeWorkflowExport } from '@/services/intents';
+import { CopyableCommandBlock } from '@/components/intent/CopyableCommandBlock';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,7 +10,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Button } from '@/components/ui/button';
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
 
@@ -26,39 +25,6 @@ const workspaceDirectoryName = (value?: string | null) => {
     .slice(0, 80)
     .replace(/[._-]+$/g, '');
   return name || 'aidlc-workspace';
-};
-
-const CommandBlock = ({ children, label }: { children: string; label: string }) => {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(children);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div className="relative mt-2 min-w-0">
-      <pre className="w-full min-w-0 max-w-full whitespace-pre-wrap break-all rounded-md bg-muted py-2 pl-3 pr-10 font-mono text-xs leading-relaxed">
-        <code>{children}</code>
-      </pre>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="absolute right-1.5 top-1.5 h-7 w-7"
-        aria-label={copied ? `${label} copied` : label}
-        title={copied ? 'Copied' : label}
-        onClick={() => void copy()}
-      >
-        {copied ? (
-          <Check className="h-3.5 w-3.5 text-green-600" />
-        ) : (
-          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-        )}
-      </Button>
-    </div>
-  );
 };
 
 interface NativeExportSetupDialogProps {
@@ -83,6 +49,7 @@ export function NativeExportSetupDialog({
   const downloadedZip = exportResult
     ? `"$HOME/Downloads/${exportResult.filename}"`
     : '"$HOME/Downloads/aidlc-workspace.zip"';
+  const unitName = handoffGate?.unitSlug ?? 'unit';
   const extractCommands = [
     `mkdir ${shellQuote(exportDirectory)}`,
     `cd ${shellQuote(exportDirectory)}`,
@@ -100,6 +67,10 @@ export function NativeExportSetupDialog({
           .filter(Boolean)
           .join(' ')
       : setup?.continueCommand;
+  const agentContinueCommand =
+    isHandoff && constructionContinueCommand
+      ? `${constructionContinueCommand} Let's perform the code-generation stage for unit ${shellQuote(unitName)}.`
+      : constructionContinueCommand;
   const launchCommand = setup?.launchCommand ?? null;
   const repositories =
     setup?.repositories.length || !externalDevelopment
@@ -113,8 +84,6 @@ export function NativeExportSetupDialog({
           url: repository.repository,
           branch: repository.branch,
         }));
-  const unitName = handoffGate?.unitSlug ?? 'unit';
-
   return (
     <AlertDialog
       open={exportResult !== null}
@@ -133,7 +102,7 @@ export function NativeExportSetupDialog({
           </AlertDialogTitle>
           <AlertDialogDescription>
             {isHandoff
-              ? 'The workspace download is in progress. Complete code generation on the assigned branches, then submit the generated plan and summary to resume Collaborative AI-DLC.'
+              ? 'The workspace download is in progress. Follow these steps to prepare the workspace and start code generation for this unit.'
               : showSetup
                 ? 'The workspace download is in progress. Source code should be retrieved separately from Git using your own credentials.'
                 : 'Review these warnings before continuing with the downloaded workspace.'}
@@ -161,13 +130,15 @@ export function NativeExportSetupDialog({
           <ol className="list-decimal space-y-4 pl-5 text-sm">
             <li>
               Create an empty workspace directory and extract the downloaded ZIP:
-              <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
+              <CopyableCommandBlock label="Copy extraction commands">
+                {extractCommands}
+              </CopyableCommandBlock>
             </li>
             <li>
               Clone the repositories declared by the export:
-              <CommandBlock label="Copy workspace sync command">
+              <CopyableCommandBlock label="Copy workspace sync command">
                 {setup.syncCommand ?? ''}
-              </CommandBlock>
+              </CopyableCommandBlock>
               <p className="mt-1 text-xs text-muted-foreground">
                 This reads <code>repos.json</code> and clones{' '}
                 {repositories.length === 1
@@ -179,7 +150,9 @@ export function NativeExportSetupDialog({
             <li>
               Start the selected harness:
               {launchCommand ? (
-                <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
+                <CopyableCommandBlock label="Copy harness command">
+                  {launchCommand}
+                </CopyableCommandBlock>
               ) : (
                 <p className="mt-1 text-xs text-muted-foreground">
                   Open this directory in Kiro IDE.
@@ -192,9 +165,9 @@ export function NativeExportSetupDialog({
             </li>
             <li>
               Then run inside the agent session:
-              <CommandBlock label="Copy AI-DLC command">
-                {constructionContinueCommand ?? ''}
-              </CommandBlock>
+              <CopyableCommandBlock label="Copy AI-DLC command">
+                {agentContinueCommand ?? ''}
+              </CopyableCommandBlock>
             </li>
           </ol>
         )}
@@ -203,7 +176,9 @@ export function NativeExportSetupDialog({
           <ol className="list-decimal space-y-4 pl-5 text-sm">
             <li>
               Create an empty workspace directory and extract the downloaded ZIP:
-              <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
+              <CopyableCommandBlock label="Copy extraction commands">
+                {extractCommands}
+              </CopyableCommandBlock>
             </li>
             <li>
               Clone each repository into the workspace:
@@ -211,19 +186,21 @@ export function NativeExportSetupDialog({
                 <div key={repository.id} className="mt-3 space-y-3">
                   <div>
                     <p className="text-xs font-medium">Fresh clone: {repository.id}</p>
-                    <CommandBlock label={`Copy fresh clone command for ${repository.id}`}>
+                    <CopyableCommandBlock label={`Copy fresh clone command for ${repository.id}`}>
                       {`git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.directory)}`}
-                    </CommandBlock>
+                    </CopyableCommandBlock>
                   </div>
                   <div>
                     <p className="text-xs font-medium">Existing clone: {repository.id}</p>
-                    <CommandBlock label={`Copy existing clone commands for ${repository.id}`}>
+                    <CopyableCommandBlock
+                      label={`Copy existing clone commands for ${repository.id}`}
+                    >
                       {[
                         `git -C ${shellQuote(repository.directory)} fetch origin`,
                         `git -C ${shellQuote(repository.directory)} switch ${shellQuote(repository.branch)}`,
                         `git -C ${shellQuote(repository.directory)} pull --ff-only`,
                       ].join('\n')}
-                    </CommandBlock>
+                    </CopyableCommandBlock>
                   </div>
                 </div>
               ))}
@@ -235,7 +212,9 @@ export function NativeExportSetupDialog({
             <li>
               Start the selected harness:
               {launchCommand ? (
-                <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
+                <CopyableCommandBlock label="Copy harness command">
+                  {launchCommand}
+                </CopyableCommandBlock>
               ) : (
                 <p className="mt-1 text-xs text-muted-foreground">
                   Open this directory in Kiro IDE.
@@ -244,9 +223,9 @@ export function NativeExportSetupDialog({
             </li>
             <li>
               Then run inside the agent session:
-              <CommandBlock label="Copy AI-DLC command">
-                {constructionContinueCommand ?? ''}
-              </CommandBlock>
+              <CopyableCommandBlock label="Copy AI-DLC command">
+                {agentContinueCommand ?? ''}
+              </CopyableCommandBlock>
             </li>
           </ol>
         )}
@@ -259,37 +238,41 @@ export function NativeExportSetupDialog({
                 <div key={repository.id} className="mt-3 space-y-3">
                   <div>
                     <p className="text-xs font-medium">Fresh clone</p>
-                    <CommandBlock label={`Copy fresh clone commands for ${repository.id}`}>
+                    <CopyableCommandBlock label={`Copy fresh clone commands for ${repository.id}`}>
                       {[
                         `git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.directory)}`,
                         `cd ${shellQuote(repository.directory)}`,
                       ].join('\n')}
-                    </CommandBlock>
+                    </CopyableCommandBlock>
                   </div>
                   <div>
                     <p className="text-xs font-medium">Existing clone</p>
-                    <CommandBlock label={`Copy existing clone commands for ${repository.id}`}>
+                    <CopyableCommandBlock
+                      label={`Copy existing clone commands for ${repository.id}`}
+                    >
                       {[
                         `cd ${shellQuote(`/path/to/${repository.directory}`)}`,
                         'git fetch origin',
                         `git switch ${shellQuote(repository.branch)}`,
                         'git pull --ff-only',
                       ].join('\n')}
-                    </CommandBlock>
+                    </CopyableCommandBlock>
                   </div>
                 </div>
               ))}
             </li>
             <li>
               From the repository root, extract the downloaded workspace:
-              <CommandBlock label="Copy extraction command">
+              <CopyableCommandBlock label="Copy extraction command">
                 {`unzip ${downloadedZip} -d .`}
-              </CommandBlock>
+              </CopyableCommandBlock>
             </li>
             <li>
               Start the selected harness:
               {launchCommand ? (
-                <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
+                <CopyableCommandBlock label="Copy harness command">
+                  {launchCommand}
+                </CopyableCommandBlock>
               ) : (
                 <p className="mt-1 text-xs text-muted-foreground">
                   Open this directory in Kiro IDE.
@@ -298,9 +281,9 @@ export function NativeExportSetupDialog({
             </li>
             <li>
               Then run inside the agent session:
-              <CommandBlock label="Copy AI-DLC command">
-                {constructionContinueCommand ?? ''}
-              </CommandBlock>
+              <CopyableCommandBlock label="Copy AI-DLC command">
+                {agentContinueCommand ?? ''}
+              </CopyableCommandBlock>
             </li>
           </ol>
         )}
@@ -309,13 +292,17 @@ export function NativeExportSetupDialog({
           <ol className="list-decimal space-y-4 pl-5 text-sm">
             <li>
               Create a project directory and extract the downloaded workspace:
-              <CommandBlock label="Copy extraction commands">{extractCommands}</CommandBlock>
+              <CopyableCommandBlock label="Copy extraction commands">
+                {extractCommands}
+              </CopyableCommandBlock>
             </li>
             <li>Open the extracted workspace directory in your IDE.</li>
             <li>
               Start the selected harness:
               {launchCommand ? (
-                <CommandBlock label="Copy harness command">{launchCommand}</CommandBlock>
+                <CopyableCommandBlock label="Copy harness command">
+                  {launchCommand}
+                </CopyableCommandBlock>
               ) : (
                 <p className="mt-1 text-xs text-muted-foreground">
                   Open this directory in Kiro IDE.
@@ -324,57 +311,11 @@ export function NativeExportSetupDialog({
             </li>
             <li>
               Then run inside the agent session:
-              <CommandBlock label="Copy AI-DLC command">
-                {constructionContinueCommand ?? ''}
-              </CommandBlock>
+              <CopyableCommandBlock label="Copy AI-DLC command">
+                {agentContinueCommand ?? ''}
+              </CopyableCommandBlock>
             </li>
           </ol>
-        )}
-
-        {isHandoff && (
-          <div className="space-y-3 border-t pt-4 text-sm">
-            <p className="font-medium">Finish and return the unit</p>
-            <ol className="list-decimal space-y-4 pl-5">
-              <li>
-                Complete only the unit&apos;s <code>code-generation</code> stage. The workspace
-                contains the workflow context and assigned branches; later stages remain owned by
-                Collaborative AI-DLC.
-              </li>
-              <li>
-                Locate the generated plan and summary before submitting:
-                <CommandBlock label="Copy document lookup command">
-                  {
-                    "find . -type f \\( -name 'code-generation-plan.md' -o -name 'code-summary.md' \\) -print"
-                  }
-                </CommandBlock>
-              </li>
-              <li>
-                From the workspace root, review and stage only source changes, then commit and push
-                each assigned branch:
-                {repositories.map((repository) => (
-                  <div key={repository.id} className="mt-3">
-                    <p className="text-xs font-medium">
-                      {repository.id}: <code>{repository.branch}</code>
-                    </p>
-                    <CommandBlock label={`Copy commit and push commands for ${repository.id}`}>
-                      {[
-                        `git -C ${shellQuote(repository.directory)} status --short`,
-                        `git -C ${shellQuote(repository.directory)} add -p`,
-                        `git -C ${shellQuote(repository.directory)} commit -m ${shellQuote(`Implement ${unitName} code generation`)}`,
-                        `git -C ${shellQuote(repository.directory)} push origin ${shellQuote(repository.branch)}`,
-                      ].join('\n')}
-                    </CommandBlock>
-                  </div>
-                ))}
-              </li>
-              <li>
-                Return to the external-development gate, select the generated{' '}
-                <code>code-generation-plan.md</code> and <code>code-summary.md</code>, then choose{' '}
-                <strong>Submit</strong>. Collaborative AI-DLC will validate the pushed branch heads
-                and both documents before resuming the unit.
-              </li>
-            </ol>
-          </div>
         )}
 
         <AlertDialogFooter>
