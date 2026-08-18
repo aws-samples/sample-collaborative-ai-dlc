@@ -202,6 +202,8 @@ function revalidateProjects(force = false): Promise<void> {
     const persisted = loadPersisted<ProjectWithSprint[]>('projects');
     if (persisted && !projectsCache) {
       projectsCache = persisted;
+      // A fresh persisted entry skips the fetch below, so hydration must emit.
+      notifyProjectListeners();
     }
   }
   if (projectsInflight) {
@@ -256,6 +258,7 @@ function revalidateSprints(projectId: string, force = false): Promise<void> {
     const persisted = loadPersisted<Sprint[]>(`sprints:${projectId}`);
     if (persisted) {
       sprintsCache.set(projectId, persisted);
+      notifySprintListeners(projectId);
     }
   }
   const inflight = sprintsInflight.get(projectId);
