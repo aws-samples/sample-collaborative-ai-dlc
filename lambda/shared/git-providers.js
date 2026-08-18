@@ -16,6 +16,7 @@
 //            refreshAccessToken?({clientId, clientSecret, refreshToken}) }
 //   listRepos(ctx)                      -> GitRepo[]
 //   listBranches(ctx, repoId)           -> string[]
+//   getBranchHead(ctx, repoId, branch)  -> { branch, sha }
 //   getTree(ctx, repoId, branch)        -> GitFile[]
 //   getFileContents(ctx, repoId, path, branch) -> GitFileContent
 //   findPullRequest(ctx, repoId, {sourceBranch,targetBranch,state}) -> provider PR | null

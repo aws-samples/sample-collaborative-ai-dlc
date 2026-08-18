@@ -50,6 +50,7 @@
 // wakes: a superseded gate (cancel/rewind) retires the run with NO writes.
 
 import processKeysPkg from '../shared/v2-process-keys.js';
+import { assignNativeRepositoryDirectories, repositoryId } from '../shared/native-repositories.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from './pr-attribution.js';
 
@@ -147,6 +148,10 @@ export const awaitEngineGate = async (
     // Valid recompose-delta targets (arbitrary later CONDITIONAL stages the
     // approve answer may flip to SKIP). Advisory only, same re-validation.
     recomposeTargets = null,
+    // Section-level gates are barriers and mirror WAITING on META. Per-lane
+    // stage validation must suspend only its child context so sibling lanes
+    // remain runnable.
+    parkExecution = true,
     // The COMPUTED next stage after this gate approves (upstream 2.2.6):
     // string = its stageId, null = approving completes the workflow,
     // undefined = not computed (non-validation gates) — the UI keeps its
@@ -185,16 +190,18 @@ export const awaitEngineGate = async (
     } catch {
       /* already exists from a prior attempt — idempotent open */
     }
-    // Park META (WAITING + pointer): the cancel endpoint and the UI badge key
-    // off it. Engine gates are barriers — no lanes are running while pending.
-    try {
-      await store.updateExecution({
-        executionId,
-        status: 'WAITING',
-        pendingHumanTaskId: humanTaskId,
-      });
-    } catch {
-      /* park bookkeeping is best-effort; the gate row is the truth */
+    if (parkExecution) {
+      // Barrier gates mirror WAITING on META. Lane-local validation keeps the
+      // intent RUNNING because sibling lanes may still be active.
+      try {
+        await store.updateExecution({
+          executionId,
+          status: 'WAITING',
+          pendingHumanTaskId: humanTaskId,
+        });
+      } catch {
+        /* park bookkeeping is best-effort; the gate row is the truth */
+      }
     }
     try {
       await broadcast?.(intentId, {
@@ -241,13 +248,15 @@ export const awaitEngineGate = async (
     store.getHumanTask(executionId, humanTaskId).catch(() => null),
   );
   if (!gate || gate.status === 'superseded') return { superseded: true };
-  await ctxArg.step(`gate-unpark-${name}`, async () => {
-    try {
-      await store.updateExecution({ executionId, status: 'RUNNING', pendingHumanTaskId: null });
-    } catch {
-      /* best-effort un-park */
-    }
-  });
+  if (parkExecution) {
+    await ctxArg.step(`gate-unpark-${name}`, async () => {
+      try {
+        await store.updateExecution({ executionId, status: 'RUNNING', pendingHumanTaskId: null });
+      } catch {
+        /* best-effort un-park */
+      }
+    });
+  }
   return { gate };
 };
 
@@ -268,6 +277,179 @@ export const parseChoice = (answer, allowed) => {
     if (v && allowed.includes(v)) return v;
   }
   return null;
+};
+
+// Park one lane's code-generation stage for native execution. This uses the
+// same HUMAN# callback ownership as agent questions, but it does not park META:
+// sibling unit lanes remain free to run.
+export const awaitExternalDevelopment = async (
+  ctxArg,
+  toolkit,
+  { stage, unitSlug, sectionIndex, repositories, branch, harness, assignedTo = null, sessionId },
+) => {
+  const { store, broadcast, stopSession, ids, runId, stageInstanceIdFor } = toolkit;
+  const { executionId, intentId, projectId } = ids;
+  if (
+    repositories.length === 0 ||
+    repositories.some((repository) => !/^[0-9a-f]{40,64}$/i.test(repository.baseSha))
+  ) {
+    return { state: 'FAILED', reason: 'external_development_base_revision_missing' };
+  }
+  const stageInstanceId = stageInstanceIdFor(stage.stageId, unitSlug, sectionIndex);
+  const prior = await ctxArg.step(`external-stage-pre-${sectionIndex}-${unitSlug}`, () =>
+    store.getStage(executionId, stageInstanceId).catch(() => null),
+  );
+  const attempt = Number(prior?.attempt ?? 0);
+  const humanTaskId = `external-s${sectionIndex}-${unitSlug}-a${attempt}`;
+
+  await ctxArg.step(`external-stage-open-${sectionIndex}-${unitSlug}-a${attempt}`, async () => {
+    await store.putStage({
+      executionId,
+      stageInstanceId,
+      stageId: stage.stageId,
+      unitSlug,
+      sectionIndex,
+      phase: stage.phase ?? null,
+      state: 'RUNNING',
+      attempt,
+    });
+    try {
+      await store.createHumanTask({
+        executionId,
+        humanTaskId,
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        kind: 'external-development',
+        prompt: `Develop ${unitSlug} externally with ${harness}, then submit the completed code-generation result.`,
+        externalDevelopment: {
+          stageAttempt: attempt,
+          harness,
+          assignedTo,
+          repositories,
+        },
+      });
+    } catch {
+      // Replays reuse the deterministic task id.
+    }
+    await store.updateStageState({
+      executionId,
+      stageInstanceId,
+      state: 'WAITING_FOR_HUMAN',
+      parkedAt: true,
+      pendingHumanTaskId: humanTaskId,
+    });
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.stage.external_development',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'orchestrator',
+        summary: `Stage code-generation for unit ${unitSlug} handed off for external development`,
+      })
+      .catch(() => {});
+    await broadcast?.(intentId, {
+      action: 'agent.question',
+      intentId,
+      projectId,
+      executionId,
+      humanTaskId,
+      stageInstanceId,
+      unitSlug,
+      sectionIndex,
+      kind: 'external-development',
+      prompt: `Develop ${unitSlug} externally with ${harness}.`,
+    }).catch(() => {});
+  });
+
+  const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
+  const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
+    store.setGateCallbackId({
+      executionId,
+      humanTaskId,
+      callbackId,
+      stageInstanceId,
+      callbackOwner: `stage:${stageInstanceId}`,
+    }),
+  );
+  if (!callbackBound) {
+    return { state: 'FAILED', reason: 'gate_callback_conflict' };
+  }
+
+  const answeredEarly = await ctxArg.step(`external-answered-early-${humanTaskId}`, async () => {
+    const task = await store.getHumanTask(executionId, humanTaskId);
+    return Boolean(task?.status) && task.status !== 'pending';
+  });
+  if (!answeredEarly) {
+    await ctxArg
+      .step(`external-release-${humanTaskId}`, () => stopSession(sessionId))
+      .catch(() => {});
+    await callbackPromise;
+  }
+
+  const task = await ctxArg.step(`external-after-${humanTaskId}`, () =>
+    store.getHumanTask(executionId, humanTaskId),
+  );
+  if (!task || task.status === 'superseded') {
+    return { state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId, humanTaskId } };
+  }
+  if (task.status === 'pending') {
+    return { state: 'FAILED', reason: 'external_development_not_accepted' };
+  }
+
+  const ownership = await ctxArg.step(`external-owner-${humanTaskId}`, () =>
+    store.getExecution(executionId),
+  );
+  if (
+    ownership?.status === 'CANCELLED' ||
+    (runId && ownership?.orchestratorRunId && ownership.orchestratorRunId !== runId)
+  ) {
+    return { state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId, humanTaskId } };
+  }
+
+  if (task.answer?.decision === 'run-managed') {
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.stage.external_development_cancelled',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: task.answeredByName || task.answeredBy || 'human',
+        summary: `External development cancelled for unit ${unitSlug}; code-generation will run managed`,
+      })
+      .catch(() => {});
+    return { state: 'RUN_MANAGED', task, branch };
+  }
+  if (task.answer?.decision !== 'accepted') {
+    return { state: 'FAILED', reason: 'external_development_not_accepted' };
+  }
+
+  const completed = await ctxArg.step(`external-complete-${humanTaskId}`, () =>
+    store.completeExternalDevelopmentStage({
+      executionId,
+      stageInstanceId,
+      humanTaskId,
+      attempt,
+    }),
+  );
+  if (!completed) {
+    return { state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId, humanTaskId } };
+  }
+  await store
+    .appendEvent({
+      executionId,
+      type: 'v2.stage.succeeded',
+      stageInstanceId,
+      unitSlug,
+      sectionIndex,
+      actor: 'orchestrator',
+      summary: `Stage code-generation for unit ${unitSlug} completed from an accepted local handoff`,
+    })
+    .catch(() => {});
+  return { state: 'SUCCEEDED', task, branch };
 };
 
 // Validate fan-out-gate overrides against the plan (A2 rule 7: only
@@ -1536,8 +1718,10 @@ export const runParallelSection = async (segment, toolkit) => {
   //                    lane stage as resumeFrom so the agent revises with the
   //                    human's feedback (same mechanism as validation gates)
   //   revive         — allow re-running an already-MERGED lane (revision)
+  //   stageGates     — honor the AI-DLC stage humanValidation contract in this
+  //                    lane (walking skeleton and gated remaining lanes)
   const runLaneBody = async (laneCtx, slug, round, laneOpts = {}) => {
-    const { idSuffix = '', feedbackTaskId = null, revive = false } = laneOpts;
+    const { idSuffix = '', feedbackTaskId = null, revive = false, stageGates = false } = laneOpts;
     const unit = bySlug.get(slug);
     const rTag = `${idSuffix}${round > 0 ? `-r${round}` : ''}`;
     const laneSession = laneSessionIdFor(intentId, segment.index, slug);
@@ -1703,9 +1887,82 @@ export const runParallelSection = async (segment, toolkit) => {
           detail: init?.detail ?? null,
         });
       }
+      const nativeRepositories = assignNativeRepositoryDirectories(
+        cloneBase.repos.map((repository) => ({ id: repositoryId(repoIdOf(repository)) })),
+      );
+      const initShaByRepository = new Map(
+        (init.repos ?? []).map((repository) => [repositoryId(repository.repo), repository.sha]),
+      );
+      const isStageSkipped = (stage) => {
+        const matrixSkipped =
+          (decisions.skipMatrix[slug] ?? []).includes(stage.stageId) &&
+          stage.execution === 'CONDITIONAL';
+        const kindSkipped =
+          !matrixSkipped &&
+          stageIsNoopForUnit(stage.outputArtifacts, stage.producesKinds, unit?.kind ?? null);
+        return { matrixSkipped, kindSkipped };
+      };
+      const nextRunnableStageId = (stageIndex) => {
+        for (let index = stageIndex + 1; index < segment.stages.length; index += 1) {
+          const candidate = segment.stages[index];
+          const skipped = isStageSkipped(candidate);
+          if (!skipped.matrixSkipped && !skipped.kindSkipped) return candidate.stageId;
+        }
+        return null;
+      };
+      const runAndDeriveStage = async (stage, { resumeFrom = null, suffix = rTag } = {}) => {
+        const outcome = await executeStage(laneCtx, stage, {
+          unitSlug: slug,
+          sectionIndex: segment.index,
+          sessionId: laneSession,
+          cloneInputs: laneCloneInputs,
+          suffix,
+          ...(resumeFrom ? { initialResumeFrom: resumeFrom } : {}),
+        });
+        if (outcome.state !== 'SUCCEEDED') return outcome;
+
+        const laneOutputTypes = (stage.outputArtifacts ?? [])
+          .map((output) => output.artifact ?? output)
+          .filter(Boolean);
+        if (laneOutputTypes.length > 0) {
+          const derived = await laneCtx.step(
+            `derive-artifacts-${stage.stageId}-u-${slug}${suffix}`,
+            () =>
+              invokeRuntime(
+                {
+                  command: 'derive-artifacts',
+                  projectId,
+                  intentId,
+                  executionId,
+                  stageInstanceId: toolkit.stageInstanceIdFor(stage.stageId, slug, segment.index),
+                  artifactTypes: laneOutputTypes,
+                  enrichment: deriveEnrichment,
+                  unitSlug: slug,
+                  sectionIndex: segment.index,
+                  ...(requestedCli ? { requestedCli } : {}),
+                  ...(cliModels ? { cliModels } : {}),
+                  ...(tierModels ? { tierModels } : {}),
+                },
+                laneSession,
+              ),
+          );
+          if (!derived || derived.ok === false) {
+            await emitEvent(
+              laneCtx,
+              `derive-failed-${stage.stageId}-u-${slug}${suffix}`,
+              'v2.derive.failed',
+              `${stage.stageId} (unit ${slug}): ${derived?.reason ?? 'no_response'}`,
+              { unitSlug: slug, sectionIndex: segment.index },
+            );
+          }
+        }
+        return outcome;
+      };
+      let pendingExternalDevelopment = null;
 
       // The section's stages, in plan order, per-unit instances (WP4 model).
-      for (const stage of segment.stages) {
+      for (let stageIndex = 0; stageIndex < segment.stages.length; stageIndex += 1) {
+        const stage = segment.stages[stageIndex];
         if (persistedUnit?.recoveryPreserveCompleted && !feedbackTaskId) {
           const completed = await laneCtx.step(
             `preserve-completed-${stage.stageId}-u-${slug}${rTag}`,
@@ -1726,12 +1983,7 @@ export const runParallelSection = async (segment, toolkit) => {
         //   - kind pruning (produces_kinds): every required output of the
         //     stage is narrowed to kinds this unit is not — the stage has
         //     nothing to produce for this unit and never spawns.
-        const matrixSkipped =
-          (decisions.skipMatrix[slug] ?? []).includes(stage.stageId) &&
-          stage.execution === 'CONDITIONAL';
-        const kindSkipped =
-          !matrixSkipped &&
-          stageIsNoopForUnit(stage.outputArtifacts, stage.producesKinds, unit?.kind ?? null);
+        const { matrixSkipped, kindSkipped } = isStageSkipped(stage);
         if (matrixSkipped || kindSkipped) {
           await laneCtx.step(`skip-${stage.stageId}-u-${slug}${rTag}`, async () => {
             try {
@@ -1759,16 +2011,30 @@ export const runParallelSection = async (segment, toolkit) => {
           );
           continue;
         }
-        const outcome = await executeStage(laneCtx, stage, {
-          unitSlug: slug,
-          sectionIndex: segment.index,
-          sessionId: laneSession,
-          cloneInputs: laneCloneInputs,
-          suffix: rTag,
-          // Revision runs re-enter every lane stage with the request-changes
-          // feedback (the answered gate id) — the agent revises, not restarts.
-          ...(feedbackTaskId ? { initialResumeFrom: feedbackTaskId } : {}),
-        });
+        let outcome =
+          stage.stageId === 'code-generation' && pendingExternalDevelopment && !feedbackTaskId
+            ? await awaitExternalDevelopment(laneCtx, toolkit, {
+                stage,
+                unitSlug: slug,
+                sectionIndex: segment.index,
+                repositories: nativeRepositories.map((repository) => ({
+                  name: repository.directory,
+                  repository: repository.id,
+                  provider:
+                    cloneBase.repoProviders?.[repository.id] || cloneBase.gitProvider || 'github',
+                  baseSha: initShaByRepository.get(repository.id) ?? '',
+                  branch: unitBranch,
+                })),
+                branch: unitBranch,
+                harness: pendingExternalDevelopment.harness,
+                assignedTo: pendingExternalDevelopment.assignedTo,
+                sessionId: laneSession,
+              })
+            : await runAndDeriveStage(stage, { resumeFrom: feedbackTaskId });
+        if (outcome.state === 'RUN_MANAGED') {
+          pendingExternalDevelopment = null;
+          outcome = await runAndDeriveStage(stage);
+        }
         if (outcome.state === 'TERMINAL') return { slug, state: 'TERMINAL', value: outcome.value };
         if (outcome.state === 'FAILED') {
           return await laneFailed(laneCtx, slug, round, {
@@ -1777,44 +2043,88 @@ export const runParallelSection = async (segment, toolkit) => {
           });
         }
 
-        // Graph projection for lane-produced artifacts — the lane twin of the
-        // once-per-workflow derive hook (index.js). Scoped to THIS unit's
-        // stage instance; unitSlug attributes enrichment spend + events to the
-        // lane in the audit. Fail-open: a derive failure is an event, never a
-        // lane failure (the canonical markdown is already in the graph).
-        const laneOutputTypes = (stage.outputArtifacts ?? [])
-          .map((o) => o.artifact ?? o)
-          .filter(Boolean);
-        if (laneOutputTypes.length > 0) {
-          const derived = await laneCtx.step(
-            `derive-artifacts-${stage.stageId}-u-${slug}${rTag}`,
-            () =>
-              invokeRuntime(
-                {
-                  command: 'derive-artifacts',
-                  projectId,
-                  intentId,
-                  executionId,
-                  stageInstanceId: toolkit.stageInstanceIdFor(stage.stageId, slug, segment.index),
-                  artifactTypes: laneOutputTypes,
-                  enrichment: deriveEnrichment,
-                  unitSlug: slug,
-                  sectionIndex: segment.index,
-                  ...(requestedCli ? { requestedCli } : {}),
-                  ...(cliModels ? { cliModels } : {}),
-                  ...(tierModels ? { tierModels } : {}),
-                },
-                laneSession,
-              ),
-          );
-          if (!derived || derived.ok === false) {
+        if (!stageGates || stage.humanValidation !== 'required') continue;
+
+        for (let validationRound = 0; ; validationRound += 1) {
+          const nextStageId = nextRunnableStageId(stageIndex);
+          const canDevelopExternally =
+            nextStageId === 'code-generation' && nativeRepositories.length > 0;
+          const options = canDevelopExternally
+            ? ['approve', 'develop-externally', 'request-changes']
+            : ['approve', 'request-changes'];
+          const validation = await awaitEngineGate(laneCtx, toolkit, {
+            name: `validation-${stage.stageId}-${sk}-${slug}${rTag}-v${validationRound}`,
+            kind: 'validation',
+            stageInstanceId: toolkit.stageInstanceIdFor(stage.stageId, slug, segment.index),
+            unitSlug: slug,
+            sectionIndex: segment.index,
+            prompt: [
+              `Review stage ${stage.stageId} for unit ${slug}.`,
+              nextStageId
+                ? `Approve to continue to ${nextStageId}, or request changes to revise this stage.`
+                : 'Approve to complete the unit stages, or request changes to revise this stage.',
+              ...(canDevelopExternally
+                ? ['Choose external development to execute code-generation in a native workspace.']
+                : []),
+            ].join('\n\n'),
+            options,
+            nextStageId,
+            parkExecution: false,
+          });
+          if (validation.superseded) {
+            return {
+              slug,
+              state: 'TERMINAL',
+              value: { ok: false, reason: 'retired', intentId },
+            };
+          }
+          const choice =
+            parseChoice(validation.gate.answer, options) ??
+            (validation.gate.status === 'rejected' ? 'request-changes' : 'approve');
+          if (choice === 'develop-externally') {
+            pendingExternalDevelopment = {
+              harness: requestedCli || 'kiro',
+              assignedTo: validation.gate.answeredBy ?? null,
+            };
             await emitEvent(
               laneCtx,
-              `derive-failed-${stage.stageId}-u-${slug}${rTag}`,
-              'v2.derive.failed',
-              `${stage.stageId} (unit ${slug}): ${derived?.reason ?? 'no_response'}`,
+              `local-development-selected-${stage.stageId}-${sk}-${slug}${rTag}`,
+              'v2.stage.external_development_selected',
+              `Unit ${slug} will execute code-generation externally`,
               { unitSlug: slug, sectionIndex: segment.index },
             );
+            break;
+          }
+          if (choice === 'approve') {
+            await emitEvent(
+              laneCtx,
+              `stage-validated-${stage.stageId}-${sk}-${slug}${rTag}-v${validationRound}`,
+              'v2.stage.validated',
+              `Stage ${stage.stageId} approved for unit ${slug}`,
+              { unitSlug: slug, sectionIndex: segment.index },
+            );
+            break;
+          }
+
+          await emitEvent(
+            laneCtx,
+            `stage-revision-${stage.stageId}-${sk}-${slug}${rTag}-v${validationRound + 1}`,
+            'v2.stage.revision_requested',
+            `Human requested changes for stage ${stage.stageId} in unit ${slug}`,
+            { unitSlug: slug, sectionIndex: segment.index },
+          );
+          const revision = await runAndDeriveStage(stage, {
+            resumeFrom: validation.gate.humanTaskId,
+            suffix: `${rTag}-validation-v${validationRound + 1}`,
+          });
+          if (revision.state === 'TERMINAL') {
+            return { slug, state: 'TERMINAL', value: revision.value };
+          }
+          if (revision.state === 'FAILED') {
+            return await laneFailed(laneCtx, slug, round, {
+              stageId: stage.stageId,
+              reason: revision.reason,
+            });
           }
         }
       }
@@ -2143,7 +2453,7 @@ export const runParallelSection = async (segment, toolkit) => {
   // durable identities distinct from the original run's.
   const runUntilResolved = async (
     initialSlugs,
-    { tag, idSuffix = '', feedbackTaskId = null, revive = false },
+    { tag, idSuffix = '', feedbackTaskId = null, revive = false, stageGates = false },
   ) => {
     let toRun = initialSlugs;
     let round = 0;
@@ -2154,7 +2464,7 @@ export const runParallelSection = async (segment, toolkit) => {
       const { terminal } = await runLanes(toRun, {
         round,
         tag,
-        laneOpts: { idSuffix, feedbackTaskId, revive },
+        laneOpts: { idSuffix, feedbackTaskId, revive, stageGates },
       });
       if (terminal) return terminal;
       const failed = toRun.filter((s) => laneState.get(s) === 'FAILED');
@@ -2192,7 +2502,10 @@ export const runParallelSection = async (segment, toolkit) => {
     laneState.get(skeleton) === 'MERGED' &&
     CONSTRUCTION_AUTONOMY_MODES.includes(unitPlan.autonomyMode);
   if (laneState.get(skeleton) !== 'MERGED') {
-    const skeletonOut = await runUntilResolved([skeleton], { tag: '-skel' });
+    const skeletonOut = await runUntilResolved([skeleton], {
+      tag: '-skel',
+      stageGates: true,
+    });
     if (skeletonOut) return skeletonOut;
   }
 
@@ -2255,6 +2568,7 @@ export const runParallelSection = async (segment, toolkit) => {
         idSuffix: `-v${revision}`,
         feedbackTaskId: skeletonGate.gate.humanTaskId,
         revive: true,
+        stageGates: true,
       });
       if (revisionOut) return revisionOut;
       // A skipped (failed) revision leaves the previously merged skeleton in
@@ -2322,7 +2636,7 @@ export const runParallelSection = async (segment, toolkit) => {
   if (mode === 'autonomous') {
     // TRUE WAVEFRONT: all remaining lanes at once; dependents self-block on
     // their dependency lanes' DurablePromises; the semaphore caps concurrency.
-    const out = await runUntilResolved(remaining, { tag: '' });
+    const out = await runUntilResolved(remaining, { tag: '', stageGates: false });
     if (out) return out;
   } else {
     // GATED: batch barriers over the topological waves, one gate per batch
@@ -2331,7 +2645,10 @@ export const runParallelSection = async (segment, toolkit) => {
     for (let w = 0; w < waves.length; w++) {
       const waveSlugs = waves[w].filter((s) => remaining.includes(s));
       if (waveSlugs.length === 0) continue;
-      const out = await runUntilResolved(waveSlugs, { tag: `-w${w}` });
+      const out = await runUntilResolved(waveSlugs, {
+        tag: `-w${w}`,
+        stageGates: true,
+      });
       if (out) return out;
       for (let revision = 0; ;) {
         const mergedInWave = waveSlugs.filter((s) => laneState.get(s) === 'MERGED');
@@ -2386,6 +2703,7 @@ export const runParallelSection = async (segment, toolkit) => {
           idSuffix: `-w${w}v${revision}`,
           feedbackTaskId: batchGate.gate.humanTaskId,
           revive: true,
+          stageGates: true,
         });
         if (revisionOut) return revisionOut;
       }

@@ -84,6 +84,7 @@ const input = () => ({
 describe('projectNativeWorkspace', () => {
   it('builds a resumable native multi-repository workspace', () => {
     const result = projectNativeWorkspace(input());
+    expect(result.manifest.mode).toBe('workflow-continuation');
     expect(result.recordDir).toBe('260811-payment-service');
     expect(result.files.get('aidlc/active-space')).toBe('default\n');
     expect(result.files.get('repos.json')).toContain('"checkout-api"');
@@ -133,6 +134,228 @@ describe('projectNativeWorkspace', () => {
 **Stage**: requirements-analysis
 **Agent**: aidlc-product-agent`);
     expect(audit).not.toContain('**Stage**: code-generation');
+  });
+
+  it('projects one parked code-generation unit for local handoff', () => {
+    const value = input();
+    value.stages[2].forEach = 'unit-of-work';
+    value.stages.push({
+      stageId: 'build-and-test',
+      phase: 'construction',
+      number: '3.6',
+      leadAgent: 'aidlc-developer-agent',
+      produces: ['build-and-test-summary'],
+      forEach: 'unit-of-work',
+    });
+    value.stageRows = [
+      { stageInstanceId: 'si-intent', stageId: 'intent-capture', state: 'SUCCEEDED' },
+      {
+        stageInstanceId: 'si-requirements',
+        stageId: 'requirements-analysis',
+        state: 'SUCCEEDED',
+      },
+      {
+        stageInstanceId: 'si-code-payment',
+        stageId: 'code-generation',
+        unitSlug: 'payment-api',
+        sectionIndex: 0,
+        attempt: 2,
+        state: 'WAITING_FOR_HUMAN',
+      },
+    ];
+    value.unitPlan = {
+      units: [
+        { slug: 'payment-api', dependsOn: [] },
+        { slug: 'payment-web', dependsOn: ['payment-api'] },
+      ],
+      batches: [['payment-api'], ['payment-web']],
+      walkingSkeleton: 'payment-api',
+      autonomyMode: 'gated',
+    };
+    value.unitRows = [
+      { slug: 'payment-api', sectionIndex: 0, state: 'RUNNING' },
+      { slug: 'payment-web', sectionIndex: 0, state: 'PENDING' },
+    ];
+    value.mode = 'unit-handoff';
+    value.handoffTaskId = 'external-123';
+    value.stageRows[2].pendingHumanTaskId = value.handoffTaskId;
+    value.humanTasks = [
+      {
+        humanTaskId: value.handoffTaskId,
+        executionId: 'execution-123',
+        stageInstanceId: 'si-code-payment',
+        sectionIndex: 0,
+        unitSlug: 'payment-api',
+        kind: 'external-development',
+        status: 'pending',
+        externalDevelopment: {
+          stageAttempt: 2,
+          harness: 'codex',
+          repositories: [
+            {
+              name: 'checkout-api',
+              baseSha: 'a'.repeat(40),
+              branch: 'aidlc/intent-1/payment-api/g3',
+            },
+            {
+              name: 'checkout-web',
+              baseSha: 'b'.repeat(40),
+              branch: 'aidlc/intent-1/payment-api/g3',
+            },
+          ],
+        },
+      },
+    ];
+
+    const result = projectNativeWorkspace(value);
+    const root = 'aidlc/spaces/default/intents/260811-payment-service';
+    const state = result.files.get(`${root}/aidlc-state.md`);
+
+    expect(state).toContain('- [-] code-generation — EXECUTE');
+    expect(state).toContain('- [S] build-and-test — SKIP');
+    expect(state).toContain('- **Current Stage**: code-generation');
+    expect(state).toContain('- **Next Action**: Execute code-generation for unit payment-api');
+    expect(JSON.parse(result.files.get('repos.json')).repos).toEqual([
+      {
+        name: 'checkout-api',
+        url: 'git@github.com:example/checkout-api.git',
+        branch: 'aidlc/intent-1/payment-api/g3',
+      },
+      {
+        name: 'checkout-web',
+        url: 'git@github.com:example/checkout-web.git',
+        branch: 'aidlc/intent-1/payment-api/g3',
+      },
+    ]);
+    expect(result.manifest).toMatchObject({
+      mode: 'unit-handoff',
+      construction: {
+        selectedUnit: 'payment-api',
+        nextUnit: 'payment-api',
+      },
+      repositories: [
+        {
+          id: 'example/checkout-api',
+          directory: 'checkout-api',
+          branch: 'aidlc/intent-1/payment-api/g3',
+        },
+        {
+          id: 'example/checkout-web',
+          directory: 'checkout-web',
+          branch: 'aidlc/intent-1/payment-api/g3',
+        },
+      ],
+      handoff: {
+        taskId: 'external-123',
+        executionId: 'execution-123',
+        stageInstanceId: 'si-code-payment',
+        stageAttempt: 2,
+        sectionIndex: 0,
+        unitSlug: 'payment-api',
+        stageId: 'code-generation',
+        repositories: [
+          {
+            name: 'checkout-api',
+            baseSha: 'a'.repeat(40),
+            branch: 'aidlc/intent-1/payment-api/g3',
+          },
+          {
+            name: 'checkout-web',
+            baseSha: 'b'.repeat(40),
+            branch: 'aidlc/intent-1/payment-api/g3',
+          },
+        ],
+      },
+    });
+    expect(result.stages.find((stage) => stage.stageId === 'build-and-test')).toMatchObject({
+      marker: 'S',
+      excluded: true,
+      handoffExcluded: true,
+    });
+  });
+
+  it('rejects unit handoff unless the selected cloud stage is parked', () => {
+    const value = input();
+    value.stages[2].forEach = 'unit-of-work';
+    value.stageRows[1].state = 'SUCCEEDED';
+    value.unitPlan = {
+      units: [{ slug: 'payment-api', dependsOn: [] }],
+      batches: [['payment-api']],
+    };
+    value.unitRows = [{ slug: 'payment-api', sectionIndex: 0, state: 'RUNNING' }];
+    value.mode = 'unit-handoff';
+    value.handoffTaskId = 'external-123';
+    value.humanTasks = [
+      {
+        humanTaskId: value.handoffTaskId,
+        executionId: 'execution-123',
+        stageInstanceId: 'si-code-payment',
+        sectionIndex: 0,
+        unitSlug: 'payment-api',
+        kind: 'external-development',
+        status: 'pending',
+        externalDevelopment: {
+          stageAttempt: 0,
+          harness: 'codex',
+          repositories: value.repositories.map((repository) => ({
+            name: repository.directory,
+            baseSha: 'a'.repeat(40),
+            branch: 'aidlc/intent-1/payment-api/g1',
+          })),
+        },
+      },
+    ];
+
+    expect(() => projectNativeWorkspace(value)).toThrow(/does not own the parked stage/);
+  });
+
+  it('rejects a handoff repository set that does not match the intent', () => {
+    const value = input();
+    value.stages[2].forEach = 'unit-of-work';
+    value.stageRows = [
+      { stageId: 'intent-capture', state: 'SUCCEEDED' },
+      { stageId: 'requirements-analysis', state: 'SUCCEEDED' },
+      {
+        stageId: 'code-generation',
+        stageInstanceId: 'si-code-payment',
+        unitSlug: 'payment-api',
+        sectionIndex: 0,
+        attempt: 0,
+        state: 'WAITING_FOR_HUMAN',
+        pendingHumanTaskId: 'external-123',
+      },
+    ];
+    value.unitPlan = {
+      units: [{ slug: 'payment-api', dependsOn: [] }],
+      batches: [['payment-api']],
+    };
+    value.unitRows = [{ slug: 'payment-api', sectionIndex: 0, state: 'RUNNING' }];
+    value.mode = 'unit-handoff';
+    value.handoffTaskId = 'external-123';
+    value.humanTasks = [
+      {
+        humanTaskId: value.handoffTaskId,
+        executionId: 'execution-123',
+        stageInstanceId: 'si-code-payment',
+        sectionIndex: 0,
+        unitSlug: 'payment-api',
+        kind: 'external-development',
+        status: 'pending',
+        externalDevelopment: {
+          stageAttempt: 0,
+          harness: 'codex',
+          repositories: [
+            {
+              name: 'checkout-api',
+              baseSha: 'a'.repeat(40),
+              branch: 'aidlc/intent-1/payment-api/g1',
+            },
+          ],
+        },
+      },
+    ];
+
+    expect(() => projectNativeWorkspace(value)).toThrow(/repository set does not match/);
   });
 
   it('reads an explicit project type from canonical work products', () => {

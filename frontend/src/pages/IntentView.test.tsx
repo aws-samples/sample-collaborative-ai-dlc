@@ -67,6 +67,7 @@ const rewind = vi.fn();
 const answerGate = vi.fn();
 const repair = vi.fn();
 const exportWorkflow = vi.fn();
+const submitHandoff = vi.fn();
 const writeText = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
@@ -79,6 +80,7 @@ vi.mock('@/services/intents', () => ({
     answerGate: (...a: unknown[]) => answerGate(...a),
     repair: (...a: unknown[]) => repair(...a),
     exportWorkflow: (...a: unknown[]) => exportWorkflow(...a),
+    submitHandoff: (...a: unknown[]) => submitHandoff(...a),
     // Knowledge graph feeding the popovers/derived-items section — empty
     // graph keeps those affordances out of these page-behavior tests.
     graph: (...a: unknown[]) => graph(...a),
@@ -161,6 +163,7 @@ describe('IntentView', () => {
     answerGate.mockReset();
     repair.mockReset();
     exportWorkflow.mockReset();
+    submitHandoff.mockReset();
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText },
@@ -377,6 +380,183 @@ describe('IntentView', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('downloads a task-scoped workspace from an external-development gate', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      gates: [
+        {
+          humanTaskId: 'external-s1-auth-a0',
+          stageInstanceId: 'si-code-auth',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'external-development',
+          status: 'pending',
+          prompt: 'Develop auth externally.',
+          options: null,
+          questions: null,
+          externalDevelopment: {
+            stageAttempt: 0,
+            harness: 'codex',
+            repositories: [],
+          },
+        },
+      ],
+    });
+    exportWorkflow.mockResolvedValue({
+      exportId: 'handoff-1',
+      filename: 'auth-codex.zip',
+      downloadUrl: 'https://download.example/auth.zip',
+      expiresAt: '2026-08-17T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'extract-only',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: false,
+        repositories: [],
+      },
+    });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+
+    renderAt();
+    await userEvent.click(await screen.findByRole('button', { name: 'Download workspace' }));
+
+    expect(exportWorkflow).toHaveBeenCalledWith('p1', 'i1', 'codex', 'external-s1-auth-a0');
+    expect(downloadClick).toHaveBeenCalledOnce();
+    downloadClick.mockRestore();
+  });
+
+  it('submits the two selected native documents for an external-development gate', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      gates: [
+        {
+          humanTaskId: 'external-s1-auth-a0',
+          stageInstanceId: 'si-code-auth',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'external-development',
+          status: 'pending',
+          prompt: 'Develop auth externally.',
+          options: null,
+          questions: null,
+          externalDevelopment: {
+            stageAttempt: 0,
+            harness: 'codex',
+            repositories: [],
+          },
+        },
+      ],
+    });
+    submitHandoff.mockResolvedValue({ ok: true });
+    renderAt();
+
+    const inputs = await screen.findAllByLabelText(/Select (plan|summary)/);
+    await userEvent.upload(inputs[0], new File(['# Plan\n'], 'plan.md', { type: 'text/markdown' }));
+    await userEvent.upload(
+      inputs[1],
+      new File(['# Summary\n'], 'agent-notes.md', { type: 'text/markdown' }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    expect(submitHandoff).toHaveBeenCalledWith('p1', 'i1', 'external-s1-auth-a0', {
+      'code-generation-plan': {
+        content: '# Plan\n',
+      },
+      'code-summary': {
+        content: '# Summary\n',
+      },
+    });
+  });
+
+  it('cancels external development and requests managed code generation', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      gates: [
+        {
+          humanTaskId: 'external-s1-auth-a0',
+          stageInstanceId: 'si-code-auth',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'external-development',
+          status: 'pending',
+          prompt: 'Develop auth externally.',
+          options: null,
+          questions: null,
+          externalDevelopment: {
+            stageAttempt: 0,
+            harness: 'codex',
+            repositories: [],
+          },
+        },
+      ],
+    });
+    answerGate.mockResolvedValue({});
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderAt();
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Cancel external development' }),
+    );
+
+    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'external-s1-auth-a0', {
+      status: 'answered',
+      answer: { decision: 'run-managed' },
+    });
+  });
+
+  it('reloads persisted validation findings after a rejected handoff submission', async () => {
+    const gate = {
+      humanTaskId: 'external-s1-auth-a0',
+      stageInstanceId: 'si-code-auth',
+      unitSlug: 'auth',
+      sectionIndex: 1,
+      kind: 'external-development',
+      status: 'pending',
+      prompt: 'Develop auth externally.',
+      options: null,
+      questions: null,
+      externalDevelopment: {
+        stageAttempt: 0,
+        harness: 'codex',
+        repositories: [],
+      },
+    };
+    get
+      .mockResolvedValueOnce({ ...baseDetail({ status: 'RUNNING' }), gates: [gate] })
+      .mockResolvedValue({
+        ...baseDetail({ status: 'RUNNING' }),
+        gates: [
+          {
+            ...gate,
+            externalDevelopment: {
+              ...gate.externalDevelopment,
+              validationFindings: [
+                { field: 'code-summary', code: 'content_required', detail: null },
+              ],
+            },
+          },
+        ],
+      });
+    submitHandoff.mockRejectedValue(new Error('Submission failed validation'));
+    renderAt();
+
+    const inputs = await screen.findAllByLabelText(/Select (plan|summary)/);
+    await userEvent.upload(
+      inputs[0],
+      new File(['# Plan\n'], 'code-generation-plan.md', { type: 'text/markdown' }),
+    );
+    await userEvent.upload(inputs[1], new File([''], 'summary.md', { type: 'text/markdown' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    expect(await screen.findByText('code-summary: content_required')).toBeInTheDocument();
+    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it('shows the legacy-ref warning even when no workspace setup is required', async () => {
@@ -741,7 +921,7 @@ describe('IntentView', () => {
           kind: 'validation',
           status: 'pending',
           prompt: 'Review stage stage-a.',
-          options: ['approve', 'request-changes'],
+          options: ['approve', 'develop-externally', 'request-changes'],
           questions: null,
           answer: null,
           answeredBy: null,
@@ -791,6 +971,15 @@ describe('IntentView', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Approve stage/i })).toBeInTheDocument();
+    const externalButton = screen.getByRole('button', {
+      name: 'Approve and develop externally',
+    });
+    await userEvent.hover(externalButton);
+    expect(
+      await screen.findAllByText(
+        /Approve this stage, then develop the unit in your preferred IDE or CLI/i,
+      ),
+    ).not.toHaveLength(0);
     const reviewDiscuss = screen
       .getAllByTestId('discuss')
       .find((b) => b.getAttribute('data-entity') === 'review');

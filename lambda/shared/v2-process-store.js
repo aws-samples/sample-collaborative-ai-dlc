@@ -485,6 +485,50 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Attributes;
   };
 
+  // Complete an externally executed code-generation stage only while the same
+  // pending-task pointer and attempt still own it. Retry/rewind changes one of
+  // those values, so a stale handoff callback cannot finish a newer attempt.
+  const completeExternalDevelopmentStage = async ({
+    executionId,
+    stageInstanceId,
+    humanTaskId,
+    attempt,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          ConditionExpression:
+            '#state = :waiting AND pendingHumanTaskId = :task AND attempt = :attempt',
+          UpdateExpression:
+            'SET #state = :succeeded, updatedAt = :ts, completedAt = :ts, parkedAt = :null, pendingHumanTaskId = :null, runtimeError = :null, GSI2SK = :g2sk',
+          ExpressionAttributeNames: { '#state': 'state' },
+          ExpressionAttributeValues: {
+            ':waiting': 'WAITING_FOR_HUMAN',
+            ':succeeded': 'SUCCEEDED',
+            ':task': humanTaskId,
+            ':attempt': attempt,
+            ':ts': ts,
+            ':null': null,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'STAGE',
+              state: 'SUCCEEDED',
+              id: stageInstanceId,
+            }).GSI2SK,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
   // Reconcile a detached stage job that the orchestrator has declared failed.
   // The callback id is the attempt ownership token: a delayed callback timeout
   // from an older attempt must never overwrite a retry/resume that has already
@@ -651,6 +695,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     questions,
     skipTargets,
     recomposeTargets,
+    externalDevelopment,
     nextStageId,
     humanTaskId,
   }) => {
@@ -667,6 +712,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       questions,
       skipTargets,
       recomposeTargets,
+      externalDevelopment,
       nextStageId,
       now: now(),
     });
@@ -678,6 +724,38 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }),
     );
     return item;
+  };
+
+  const updateExternalDevelopment = async ({
+    executionId,
+    humanTaskId,
+    stageAttempt,
+    externalDevelopment,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression:
+            '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+          UpdateExpression: 'SET externalDevelopment = :externalDevelopment, updatedAt = :ts',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':pending': 'pending',
+            ':stageAttempt': stageAttempt,
+            ':externalDevelopment': externalDevelopment,
+            ':ts': ts,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
   };
 
   // Bind one durable callback to one pending gate owner. Concurrent lanes must
@@ -2383,11 +2461,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     putStage,
     getStage,
     updateStageState,
+    completeExternalDevelopmentStage,
     failRunningStageAttempt,
     resumeStageRow,
     appendEvent,
     listEvents,
     createHumanTask,
+    updateExternalDevelopment,
     getHumanTask,
     setGateCallbackId,
     answerHumanTask,

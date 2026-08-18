@@ -190,6 +190,12 @@ const installDdbFakes = () => {
     if (cond.includes('#status <> :pending') && (!existing || existing.status === 'pending')) {
       casFail();
     }
+    if (
+      cond.includes('externalDevelopment.stageAttempt = :stageAttempt') &&
+      Number(existing?.externalDevelopment?.stageAttempt) !== Number(values[':stageAttempt'])
+    ) {
+      casFail();
+    }
     if (cond.includes('attribute_exists(pk)') && !existing) casFail();
     if (cond.includes('#state = :ready') && (!existing || existing.state !== values[':ready'])) {
       casFail();
@@ -312,7 +318,15 @@ const installDdbFakes = () => {
 const seedGate = (
   intentId,
   humanTaskId,
-  { status = 'pending', callbackId = null, stageInstanceId = 'si-req' } = {},
+  {
+    status = 'pending',
+    callbackId = null,
+    stageInstanceId = 'si-req',
+    kind = 'question',
+    unitSlug,
+    sectionIndex,
+    externalDevelopment,
+  } = {},
 ) => {
   procStore.set(keyOf(`EXEC#${intentId}`, `HUMAN#${humanTaskId}`), {
     pk: `EXEC#${intentId}`,
@@ -321,11 +335,14 @@ const seedGate = (
     executionId: intentId,
     humanTaskId,
     stageInstanceId,
-    kind: 'question',
+    kind,
+    unitSlug,
+    sectionIndex,
     status,
     questions: '[{"text":"?","type":"single","options":[{"label":"Yes"}]}]',
     answer: null,
     callbackId,
+    externalDevelopment,
   });
 };
 
@@ -335,6 +352,15 @@ const answerGate = (sub, projectId, intentId, humanTaskId, bodyObj = { answer: {
     path: `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/answer`,
     pathParameters: { projectId, intentId, humanTaskId },
     body: JSON.stringify(bodyObj),
+    ...claims(sub),
+  });
+
+const submitHandoff = (sub, projectId, intentId, humanTaskId, documents) =>
+  handler({
+    httpMethod: 'POST',
+    path: `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/submit`,
+    pathParameters: { projectId, intentId, humanTaskId },
+    body: JSON.stringify({ documents }),
     ...claims(sub),
   });
 
@@ -1095,12 +1121,12 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
     });
   };
 
-  const exportIntent = (sub, projectId, intentId) =>
+  const exportIntent = (sub, projectId, intentId, input = { harness: 'codex' }) =>
     handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intentId}/export`,
       pathParameters: { projectId, intentId },
-      body: JSON.stringify({ harness: 'codex' }),
+      body: JSON.stringify(input),
       ...claims(sub),
     });
 
@@ -1223,6 +1249,73 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
         sourceCheckpoint: null,
         validateSnapshot: expect.any(Function),
       }),
+    );
+  });
+
+  it('exports one pending handoff from live state while sibling lanes continue', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'RUNNING');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'STAGE#si-external'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-external',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-external',
+      stageId: 'code-generation',
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      state: 'WAITING_FOR_HUMAN',
+      attempt: 2,
+      pendingHumanTaskId: 'external-auth',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'STAGE#si-sibling'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-sibling',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-sibling',
+      stageId: 'functional-design',
+      sectionIndex: 1,
+      unitSlug: 'billing',
+      state: 'RUNNING',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#external-auth'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'HUMAN#external-auth',
+      type: 'HumanTask',
+      executionId: intent.id,
+      humanTaskId: 'external-auth',
+      stageInstanceId: 'si-external',
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      kind: 'external-development',
+      status: 'pending',
+      externalDevelopment: {
+        stageAttempt: 2,
+        harness: 'codex',
+        repositories: [],
+      },
+    });
+    createNativeExportSpy.mockImplementationOnce(async ({ projection, validateSnapshot }) => {
+      expect(projection).toMatchObject({
+        mode: 'unit-handoff',
+        handoffTaskId: 'external-auth',
+      });
+      await expect(validateSnapshot()).resolves.toBe(true);
+      return {
+        downloadUrl: 'https://example.test/handoff.zip',
+        expiresAt: '2026-08-17T16:00:00.000Z',
+      };
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id, {
+      harness: 'codex',
+      handoffTaskId: 'external-auth',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceCheckpoint: null }),
     );
   });
 
@@ -3244,7 +3337,229 @@ describe('POST /start — preconditions', () => {
   });
 });
 
+describe('POST /gates/{humanTaskId}/submit', () => {
+  const documents = () => ({
+    'code-generation-plan': {
+      content: '# Code generation plan\n\nImplement auth.\n',
+    },
+    'code-summary': {
+      content: '# Code summary\n\nAuth implemented.\n',
+    },
+  });
+
+  const seedExternalHandoff = async (
+    sub,
+    repositories = [
+      {
+        name: 'api',
+        repository: 'owner/api',
+        provider: 'github',
+        branch: 'aidlc/i1--s1-unit-auth',
+        baseSha: 'a'.repeat(40),
+      },
+    ],
+  ) => {
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const humanTaskId = 'external-auth';
+    const stageInstanceId = 'si-code-auth';
+    procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${stageInstanceId}`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `STAGE#${stageInstanceId}`,
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId,
+      stageId: 'code-generation',
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      state: 'WAITING_FOR_HUMAN',
+      attempt: 2,
+      pendingHumanTaskId: humanTaskId,
+    });
+    seedGate(intent.id, humanTaskId, {
+      kind: 'external-development',
+      callbackId: 'cb-external',
+      stageInstanceId,
+      unitSlug: 'auth',
+      sectionIndex: 1,
+      externalDevelopment: {
+        stageAttempt: 2,
+        harness: 'codex',
+        assignedTo: sub,
+        repositories,
+      },
+    });
+    return { projectId, intent, humanTaskId, stageInstanceId };
+  };
+
+  it('freezes branch heads, imports both documents, and resumes the parked lane', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, humanTaskId } = await seedExternalHandoff(sub);
+    const submittedSha = 'b'.repeat(40);
+    sourceControlOperationHandler = ({ operation }) =>
+      operation === 'branch-head' ? { branch: 'aidlc/i1--s1-unit-auth', sha: submittedSha } : true;
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({
+            ok: true,
+            imported: ['auth-code-generation-plan', 'auth-code-summary'],
+          }),
+      },
+    });
+
+    const result = await submitHandoff(sub, projectId, intent.id, humanTaskId, documents());
+
+    expect(result.statusCode).toBe(200);
+    const task = procStore.get(keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`));
+    expect(task.status).toBe('answered');
+    expect(task.answer.repositories).toEqual([
+      expect.objectContaining({ repository: 'owner/api', submittedSha }),
+    ]);
+    const runtimeCall = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    const payload = JSON.parse(Buffer.from(runtimeCall.payload).toString());
+    expect(payload).toMatchObject({
+      command: 'import-handoff-artifacts',
+      humanTaskId,
+      stageAttempt: 2,
+      repositories: [expect.objectContaining({ submittedSha })],
+    });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+    delete process.env.AGENTCORE_RUNTIME_ARN;
+  });
+
+  it('validates independent repository heads concurrently and preserves assignment order', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    const sub = `u-${randomUUID()}`;
+    const repositories = ['api', 'web', 'infra'].map((name) => ({
+      name,
+      repository: `owner/${name}`,
+      provider: 'github',
+      branch: `aidlc/i1--s1-unit-auth-${name}`,
+      baseSha: 'a'.repeat(40),
+    }));
+    const { projectId, intent, humanTaskId } = await seedExternalHandoff(sub, repositories);
+    const submittedSha = 'b'.repeat(40);
+    sourceControlOperationHandler = ({ operation, args }) =>
+      operation === 'branch-head' ? { branch: args.branch, sha: submittedSha } : true;
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({
+            ok: true,
+            imported: ['auth-code-generation-plan', 'auth-code-summary'],
+          }),
+      },
+    });
+
+    const result = await submitHandoff(sub, projectId, intent.id, humanTaskId, documents());
+
+    expect(result.statusCode).toBe(200);
+    const sourceControlRequests = lambdaMock
+      .commandCalls(InvokeCommand)
+      .map(({ args }) => args[0].input)
+      .filter(({ FunctionName }) => FunctionName === 'source-control-test')
+      .map(({ Payload }) => JSON.parse(Buffer.from(Payload).toString()));
+    expect(sourceControlRequests.map(({ operation }) => operation)).toEqual([
+      'branch-head',
+      'branch-head',
+      'branch-head',
+      'is-ancestor',
+      'is-ancestor',
+      'is-ancestor',
+    ]);
+    const task = procStore.get(keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`));
+    expect(task.answer.repositories.map(({ name }) => name)).toEqual(['api', 'web', 'infra']);
+    delete process.env.AGENTCORE_RUNTIME_ARN;
+  });
+
+  it('keeps the task pending and records document validation findings', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, humanTaskId } = await seedExternalHandoff(sub);
+    const invalidDocuments = documents();
+    invalidDocuments['code-summary'].content = '';
+
+    const result = await submitHandoff(sub, projectId, intent.id, humanTaskId, invalidDocuments);
+
+    expect(result.statusCode).toBe(422);
+    const task = procStore.get(keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`));
+    expect(task.status).toBe('pending');
+    expect(task.externalDevelopment.validationFindings).toContainEqual(
+      expect.objectContaining({ field: 'code-summary', code: 'content_required' }),
+    );
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+  });
+
+  it('cancels external development and wakes the lane for managed execution', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, humanTaskId } = await seedExternalHandoff(sub);
+
+    const result = await answerGate(sub, projectId, intent.id, humanTaskId, {
+      status: 'answered',
+      answer: { decision: 'run-managed' },
+    });
+
+    expect(result.statusCode).toBe(200);
+    const task = procStore.get(keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`));
+    expect(task).toMatchObject({
+      status: 'answered',
+      answer: { decision: 'run-managed' },
+      answeredBy: sub,
+    });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+
+    const staleSubmission = await submitHandoff(
+      sub,
+      projectId,
+      intent.id,
+      humanTaskId,
+      documents(),
+    );
+    expect(staleSubmission.statusCode).toBe(409);
+    expect(JSON.parse(staleSubmission.body).code).toBe('handoff_stale');
+  });
+
+  it('rejects cancellation when the parked stage attempt is stale', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, humanTaskId, stageInstanceId } = await seedExternalHandoff(sub);
+    const stageKey = keyOf(`EXEC#${intent.id}`, `STAGE#${stageInstanceId}`);
+    procStore.set(stageKey, {
+      ...procStore.get(stageKey),
+      attempt: 3,
+    });
+
+    const result = await answerGate(sub, projectId, intent.id, humanTaskId, {
+      status: 'answered',
+      answer: { decision: 'run-managed' },
+    });
+
+    expect(result.statusCode).toBe(409);
+    expect(JSON.parse(result.body).code).toBe('handoff_stale');
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+  });
+});
+
 describe('POST /gates/{humanTaskId}/answer', () => {
+  it('requires the submission flow for external-development tasks', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'external-auth', {
+      status: 'pending',
+      kind: 'external-development',
+      callbackId: 'cb-external',
+    });
+
+    const res = await answerGate(sub, projectId, intent.id, 'external-auth');
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('external_development_requires_submission');
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+  });
+
   it('answers a pending gate (CAS) and resumes the durable callback when bound', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

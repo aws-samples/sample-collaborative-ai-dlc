@@ -231,7 +231,7 @@ export interface IntentGate {
   // Unit lane attribution (docs/v2-parallel.md WP4); null outside lanes.
   unitSlug?: string | null;
   sectionIndex?: number | null;
-  kind: 'approval' | 'question' | 'review-verdict' | 'validation';
+  kind: 'approval' | 'question' | 'review-verdict' | 'validation' | 'external-development';
   // `superseded` = the gate was retired unanswered by a cancel/rewind.
   status: 'pending' | 'answered' | 'approved' | 'rejected' | 'superseded';
   prompt: string | null;
@@ -252,6 +252,24 @@ export interface IntentGate {
   // labels rather than claiming "Complete workflow". Display-only.
   nextStageId?: string | null;
   questions: string | null;
+  externalDevelopment?: {
+    stageAttempt: number;
+    harness: string;
+    assignedTo?: string | null;
+    repositories: Array<{
+      name: string;
+      repository: string;
+      provider: string;
+      baseSha: string;
+      branch: string;
+    }>;
+    exportManifestKey?: string | null;
+    validationFindings?: Array<{
+      field: string;
+      code: string;
+      detail?: string | null;
+    }>;
+  } | null;
   answer: unknown;
   answeredBy: string | null;
   answeredByName?: string | null;
@@ -263,6 +281,11 @@ export interface IntentGate {
   revisionSteerId?: string | null;
   supersededAt?: string | null;
   supersededBy?: string | null;
+}
+
+export interface NativeHandoffDocuments {
+  'code-generation-plan': { content: string };
+  'code-summary': { content: string };
 }
 
 // A human steering / course-correction message (docs/v2-steering.md).
@@ -1038,10 +1061,25 @@ export const intentsService = {
   ) => api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
   cancel: (projectId: string, intentId: string) =>
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
-  exportWorkflow: (projectId: string, intentId: string, harness?: NativeExportHarness) =>
-    api.post<NativeWorkflowExport>(
-      `/projects/${projectId}/intents/${intentId}/export`,
-      harness ? { harness } : {},
+  exportWorkflow: (
+    projectId: string,
+    intentId: string,
+    harness?: NativeExportHarness,
+    handoffTaskId?: string,
+  ) =>
+    api.post<NativeWorkflowExport>(`/projects/${projectId}/intents/${intentId}/export`, {
+      ...(harness ? { harness } : {}),
+      ...(handoffTaskId ? { handoffTaskId } : {}),
+    }),
+  submitHandoff: (
+    projectId: string,
+    intentId: string,
+    humanTaskId: string,
+    documents: NativeHandoffDocuments,
+  ) =>
+    api.post<{ ok: true; humanTaskId: string }>(
+      `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/submit`,
+      { documents },
     ),
   // Permanent delete: removes the intent's graph data, process state and
   // realtime docs. Owner/admin only; refused (409) while RUNNING.

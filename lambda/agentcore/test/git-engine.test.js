@@ -12,6 +12,7 @@ import {
   remoteBranchExists,
   commitAndPushAll,
   seedInitialCommit,
+  checkoutRemoteRevision,
 } from '../git-engine.js';
 
 // Real git spawns (~10 per test) can be slow on busy CI machines.
@@ -696,6 +697,53 @@ describe('fetchOrigin', () => {
     expect(res.reason).toBe('fetch_failed');
     const { stdout } = await git(['remote', 'get-url', 'origin'], work);
     expect(stdout.trim()).toBe('https://github.com/o/r.git');
+  });
+});
+
+describe('checkoutRemoteRevision', () => {
+  it('checks out the exact observed remote branch head', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await commitOnRemote(remote, 'aidlc/unit/auth', 'auth.txt', 'external work\n');
+    const submittedSha = (
+      await git(['ls-remote', remote, 'refs/heads/aidlc/unit/auth'], root)
+    ).stdout.split(/\s/)[0];
+
+    const result = await checkoutRemoteRevision({
+      dir: work,
+      repo: 'o/r',
+      branch: 'aidlc/unit/auth',
+      sha: submittedSha,
+      urls: laneUrls(remote),
+    });
+
+    expect(result).toEqual({ ready: true, sha: submittedSha });
+    expect((await git(['rev-parse', 'HEAD'], work)).stdout.trim()).toBe(submittedSha);
+    expect(await readFile(path.join(work, 'auth.txt'), 'utf8')).toBe('external work\n');
+  });
+
+  it('refuses a dirty workspace and a branch head that moved after submission', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'dirty.txt'), 'local change\n');
+    await expect(
+      checkoutRemoteRevision({
+        dir: work,
+        repo: 'o/r',
+        branch: 'main',
+        sha: 'a'.repeat(40),
+        urls: laneUrls(remote),
+      }),
+    ).resolves.toMatchObject({ ready: false, reason: 'workspace_dirty' });
+
+    await rm(path.join(work, 'dirty.txt'));
+    await expect(
+      checkoutRemoteRevision({
+        dir: work,
+        repo: 'o/r',
+        branch: 'main',
+        sha: 'a'.repeat(40),
+        urls: laneUrls(remote),
+      }),
+    ).resolves.toMatchObject({ ready: false, reason: 'branch_head_moved' });
   });
 });
 

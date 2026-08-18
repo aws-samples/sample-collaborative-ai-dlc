@@ -1291,3 +1291,30 @@ describe('OAuth metadata', () => {
     expect(refreshed.scope).toBe('account email repository pullrequest');
   });
 });
+
+describe('provider branch heads', () => {
+  it.each([
+    ['github', '/git/ref/heads/unit/auth', { object: { sha: 'a'.repeat(40) } }],
+    ['gitlab', '/repository/branches/unit%2Fauth', { commit: { id: 'b'.repeat(40) } }],
+    ['bitbucket', '/refs/branches/unit%2Fauth', { target: { hash: 'c'.repeat(40) } }],
+  ])('reads the exact %s branch head', async (providerId, urlFragment, json) => {
+    const provider = getProvider(providerId);
+    const fetchImpl = makeFetch([[urlFragment, { json }]]);
+
+    const result = await provider.getBranchHead(
+      { token: 't', fetchImpl },
+      'owner/repo',
+      'unit/auth',
+    );
+
+    expect(result).toEqual({
+      branch: 'unit/auth',
+      sha:
+        providerId === 'github'
+          ? 'a'.repeat(40)
+          : providerId === 'gitlab'
+            ? 'b'.repeat(40)
+            : 'c'.repeat(40),
+    });
+  });
+});

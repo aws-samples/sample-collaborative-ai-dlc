@@ -198,7 +198,13 @@ const ACTIVE_EXECUTION_STATUSES = ['CREATED', 'RUNNING', 'WAITING'];
 const STAGE_STATE = ['PENDING', 'RUNNING', 'WAITING_FOR_HUMAN', 'SUCCEEDED', 'FAILED', 'SKIPPED'];
 // Human gate kinds + lifecycle. `superseded` retires a still-pending gate whose
 // run was cancelled/rewound — never answered, kept as the audit record.
-const HUMAN_TASK_KINDS = ['approval', 'question', 'review-verdict', 'validation'];
+const HUMAN_TASK_KINDS = [
+  'approval',
+  'question',
+  'review-verdict',
+  'validation',
+  'external-development',
+];
 const HUMAN_TASK_STATUSES = ['pending', 'answered', 'approved', 'rejected', 'superseded'];
 // Human steering (course-correction) messages. Immutable once written; a
 // correction of a correction supersedes the old row. Delivery ("consumed") only
@@ -613,6 +619,10 @@ const buildHumanTaskRow = ({
   // stage skipping is disabled or nothing qualifies. Advisory only; the
   // orchestrator re-validates every entry.
   recomposeTargets = null,
+  // Metadata for a unit-scoped local code-generation handoff. The HUMAN# row
+  // already owns the stage callback and pending/superseded lifecycle, so this
+  // map only carries assignment and export correlation data.
+  externalDevelopment = null,
   // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
   // string = its stageId, null = approving completes the workflow. The
   // attribute is written ONLY when the orchestrator computed it (undefined
@@ -636,6 +646,7 @@ const buildHumanTaskRow = ({
   options,
   skipTargets,
   recomposeTargets,
+  externalDevelopment,
   ...(nextStageId !== undefined ? { nextStageId } : {}),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,

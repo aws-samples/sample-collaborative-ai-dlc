@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { parseBoltDag } from './v2-sensor-contract.js';
+import { isSafeRef } from './repo-validation.js';
 
 const PHASES = ['initialization', 'ideation', 'inception', 'construction', 'operation'];
+const PROJECTION_MODES = ['workflow-continuation', 'unit-handoff'];
 const PHASE_LABELS = {
   initialization: 'INITIALIZATION PHASE',
   ideation: 'IDEATION PHASE',
@@ -204,6 +206,151 @@ const dependencyReadyUnitSlugs = ({ unitPlan, completedUnits }) => {
     .filter((unit) => !completedUnits.has(unit.name))
     .filter((unit) => unit.depends_on.every((dependency) => completedUnits.has(dependency)))
     .map((unit) => unit.name);
+};
+
+const normalizeProjectionMode = (mode) => {
+  const normalized = mode ?? 'workflow-continuation';
+  if (!PROJECTION_MODES.includes(normalized)) {
+    throw new Error(`native-export: unsupported projection mode ${normalized}`);
+  }
+  return normalized;
+};
+
+const normalizeHandoff = ({
+  mode,
+  handoffTaskId,
+  humanTasks,
+  stages,
+  stageRows,
+  unitPlan,
+  unitRows,
+  repositories,
+  harness,
+}) => {
+  if (mode !== 'unit-handoff') {
+    if (handoffTaskId != null) {
+      throw new Error('native-export: handoff task requires unit-handoff mode');
+    }
+    return { handoff: null, repositories, stages, selectedUnit: null };
+  }
+  const taskId = assertSafeSegment(handoffTaskId, 'handoff task id');
+  const task = humanTasks.find((candidate) => candidate?.humanTaskId === taskId);
+  if (!task || task.kind !== 'external-development' || task.status !== 'pending') {
+    throw new Error('native-export: unit-handoff requires a pending external-development task');
+  }
+  if (!unitPlan) {
+    throw new Error('native-export: unit-handoff requires a construction unit plan');
+  }
+
+  const executionId = assertSafeSegment(task.executionId, 'execution id');
+  const stageInstanceId = assertSafeSegment(task.stageInstanceId, 'stage instance id');
+  const sectionIndex = Number(task.sectionIndex);
+  const unitSlug = assertSafeSegment(task.unitSlug, 'handoff unit');
+  if (!Number.isInteger(sectionIndex) || sectionIndex < 0) {
+    throw new Error('native-export: handoff section index must be a non-negative integer');
+  }
+  if (!unitPlan.units.some((unit) => unit.name === unitSlug)) {
+    throw new Error(`native-export: handoff unit ${unitSlug} is not in the construction plan`);
+  }
+
+  const matchingStage = stageRows.find((row) => row?.stageInstanceId === stageInstanceId);
+  const stageAttempt = Number(matchingStage?.attempt ?? 0);
+  const stageId = matchingStage?.stageId;
+  if (
+    !matchingStage ||
+    stageId !== 'code-generation' ||
+    matchingStage.unitSlug !== unitSlug ||
+    matchingStage.sectionIndex == null ||
+    Number(matchingStage.sectionIndex) !== sectionIndex ||
+    matchingStage.state !== 'WAITING_FOR_HUMAN' ||
+    matchingStage.pendingHumanTaskId !== taskId
+  ) {
+    throw new Error('native-export: external-development task does not own the parked stage');
+  }
+  if (
+    !Number.isInteger(task.externalDevelopment?.stageAttempt) ||
+    task.externalDevelopment.stageAttempt !== stageAttempt
+  ) {
+    throw new Error('native-export: external-development task has a stale stage attempt');
+  }
+  if (task.externalDevelopment?.harness && task.externalDevelopment.harness !== harness) {
+    throw new Error('native-export: selected harness does not match the external-development task');
+  }
+
+  const targetIndex = stages.findIndex((stage) => stage.stageId === stageId);
+  const targetStage = stages[targetIndex];
+  if (
+    targetIndex < 0 ||
+    targetStage.excluded ||
+    normalizePhase(targetStage.phase) !== 'construction' ||
+    targetStage.forEach !== 'unit-of-work'
+  ) {
+    throw new Error('native-export: code-generation is not an executable per-unit stage');
+  }
+  const matchingUnit = unitRows.find(
+    (row) =>
+      row?.slug === unitSlug &&
+      row.sectionIndex != null &&
+      Number(row.sectionIndex) === sectionIndex &&
+      row.state === 'RUNNING',
+  );
+  if (!matchingUnit) {
+    throw new Error(
+      `native-export: handoff unit ${unitSlug} is not RUNNING in section ${sectionIndex}`,
+    );
+  }
+  const taskRepositories = task.externalDevelopment?.repositories;
+  if (!Array.isArray(taskRepositories) || taskRepositories.length === 0) {
+    throw new Error('native-export: unit-handoff requires assigned repositories');
+  }
+  const assignedByName = new Map();
+  for (const assigned of taskRepositories) {
+    const name = assertSafeSegment(assigned?.name, 'handoff repository name');
+    if (assignedByName.has(name)) {
+      throw new Error(`native-export: duplicate handoff repository ${name}`);
+    }
+    const baseSha = String(assigned?.baseSha ?? '');
+    if (!/^[0-9a-f]{40,64}$/i.test(baseSha)) {
+      throw new Error(`native-export: handoff repository ${name} has an invalid base SHA`);
+    }
+    const branch = String(assigned?.branch ?? '');
+    if (!isSafeRef(branch)) {
+      throw new Error(`native-export: handoff repository ${name} has an invalid branch`);
+    }
+    assignedByName.set(name, { name, baseSha, branch });
+  }
+  if (assignedByName.size !== repositories.length) {
+    throw new Error('native-export: handoff repository set does not match the intent');
+  }
+  const assignedRepositories = repositories.map((repository) => {
+    const assigned = assignedByName.get(repository.directory);
+    if (!assigned) {
+      throw new Error(
+        `native-export: handoff has no assignment for repository ${repository.directory}`,
+      );
+    }
+    return { ...repository, branch: assigned.branch };
+  });
+
+  return {
+    selectedUnit: unitSlug,
+    repositories: assignedRepositories,
+    stages: stages.map((stage, index) =>
+      index > targetIndex ? { ...stage, excluded: true, handoffExcluded: true } : stage,
+    ),
+    handoff: {
+      taskId,
+      executionId,
+      stageInstanceId,
+      stageAttempt,
+      sectionIndex,
+      unitSlug,
+      stageId,
+      repositories: assignedRepositories.map((repository) =>
+        assignedByName.get(repository.directory),
+      ),
+    },
+  };
 };
 
 const completedUnitTimestamp = ({ unitSlug, unitRows = [], fallback }) => {
@@ -777,6 +924,8 @@ const projectNativeWorkspace = ({
   harness,
   workspaceLayout = 'spaces',
   nativeScope = intent?.scope,
+  mode: requestedMode = 'workflow-continuation',
+  handoffTaskId = null,
 }) => {
   if (!intent?.intentId) throw new Error('native-export: intentId is required');
   if (!nativeScope) throw new Error('native-export: native scope is required');
@@ -796,28 +945,58 @@ const projectNativeWorkspace = ({
           space: safeSpace,
           path: `aidlc/spaces/${safeSpace}/intents/${recordDir}`,
         };
-  const normalizedRepos = repositories.map((repo) => ({
+  const mode = normalizeProjectionMode(requestedMode);
+  const baseRepositories = repositories.map((repo) => ({
     id: String(repo.id || ''),
     directory: assertSafeSegment(repo.directory, 'repository directory'),
     url: String(repo.url || ''),
     branch: String(repo.branch || intent.branch || ''),
   }));
-  if (workspaceLayout === 'flat' && normalizedRepos.length > 1) {
+  if (workspaceLayout === 'flat' && baseRepositories.length > 1) {
     throw new Error('native-export: legacy flat workspaces do not support multiple repositories');
   }
   const unitPlan = normalizedUnitPlan(rawUnitPlan);
+  const handoffProjection = normalizeHandoff({
+    mode,
+    handoffTaskId,
+    humanTasks,
+    stages,
+    stageRows,
+    unitPlan,
+    unitRows,
+    repositories: baseRepositories,
+    harness,
+  });
+  const normalizedRepos = handoffProjection.repositories;
+  const effectiveStages = handoffProjection.stages;
   const completedUnits = completedUnitSlugs({ unitPlan, unitRows });
   const unitOrder = unitPlan?.batches.flat() ?? [];
   const remainingUnits = unitOrder.filter((unit) => !completedUnits.has(unit));
   const readyUnits = dependencyReadyUnitSlugs({ unitPlan, completedUnits });
-  const nextUnit = readyUnits[0] ?? remainingUnits[0] ?? null;
+  const nextUnit = handoffProjection.selectedUnit ?? readyUnits[0] ?? remainingUnits[0] ?? null;
   const projectedStages = projectStageState({
-    stages,
+    stages: effectiveStages,
     stageRows,
     unitPlan,
     unitRows,
     activeUnit: nextUnit,
   });
+  if (mode === 'unit-handoff') {
+    const targetIndex = projectedStages.findIndex(
+      (stage) => stage.stageId === handoffProjection.handoff.stageId,
+    );
+    const unfinishedBeforeTarget = projectedStages
+      .slice(0, targetIndex)
+      .find((stage) => !['x', 'S'].includes(stage.marker));
+    if (unfinishedBeforeTarget) {
+      throw new Error(
+        `native-export: handoff cannot skip unfinished stage ${unfinishedBeforeTarget.stageId}`,
+      );
+    }
+    if (projectedStages[targetIndex]?.marker !== '-') {
+      throw new Error('native-export: handoff code-generation stage is not active');
+    }
+  }
   const timeline = stageTimeline({
     intent,
     stages: projectedStages,
@@ -985,7 +1164,7 @@ const projectNativeWorkspace = ({
   }
   const manifest = {
     schemaVersion: 1,
-    mode: 'workflow-continuation',
+    mode,
     exportedAt: now,
     source: {
       projectId: intent.projectId,
@@ -1012,12 +1191,16 @@ const projectNativeWorkspace = ({
             remainingUnits,
             readyUnits,
             nextUnit,
+            ...(handoffProjection.selectedUnit
+              ? { selectedUnit: handoffProjection.selectedUnit }
+              : {}),
             walkingSkeleton: unitPlan.walkingSkeleton,
             autonomyMode: unitPlan.autonomyMode,
             autonomyModeSource: unitPlan.autonomyModeSource,
           },
         }
       : {}),
+    ...(handoffProjection.handoff ? { handoff: handoffProjection.handoff } : {}),
     files: [...files]
       .map(([path, body]) => ({
         path,
@@ -1032,6 +1215,7 @@ const projectNativeWorkspace = ({
 
 export {
   PHASES,
+  PROJECTION_MODES,
   artifactPath,
   projectNativeWorkspace,
   projectStageState,

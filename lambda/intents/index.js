@@ -76,6 +76,7 @@ import {
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
+import { validateHandoffDocuments } from '../shared/native-handoff-submission.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
@@ -123,6 +124,16 @@ const attachmentCleanup = createAttachmentCleanupService({
 });
 const attachmentEventKey = /^intent-attachments\/staging\/([^/]+)\/([^.]+)(\.[a-z0-9]+)$/i;
 const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
+const HANDOFF_REPOSITORY_VALIDATION_CONCURRENCY = 8;
+
+const externalDevelopmentStageAttempt = (gate) =>
+  Number(gate?.externalDevelopment?.stageAttempt ?? -1);
+
+const isCurrentExternalDevelopmentHandoff = ({ gate, stage, humanTaskId }) =>
+  gate?.status === 'pending' &&
+  stage?.state === 'WAITING_FOR_HUMAN' &&
+  stage.pendingHumanTaskId === humanTaskId &&
+  Number(stage.attempt ?? 0) === externalDevelopmentStageAttempt(gate);
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
 // its DynamoDB reservation, copy the exact object version from staging to the
@@ -1643,7 +1654,24 @@ export const handler = async (event) => {
           error: 'The intent is not in an exportable state',
         });
       }
-      const useLiveSnapshot = isGloballyParkedForExport(liveRecords);
+      const data = body ? JSON.parse(body) : {};
+      const handoffTaskId =
+        typeof data.handoffTaskId === 'string' && data.handoffTaskId ? data.handoffTaskId : null;
+      const handoffTask = handoffTaskId
+        ? (liveRecords.humanTasks ?? []).find(
+            (task) =>
+              task.humanTaskId === handoffTaskId &&
+              task.kind === 'external-development' &&
+              task.status === 'pending',
+          )
+        : null;
+      if (handoffTaskId && !handoffTask) {
+        return response(409, {
+          error: 'The external-development handoff is no longer pending',
+          code: 'handoff_not_pending',
+        });
+      }
+      const useLiveSnapshot = Boolean(handoffTask) || isGloballyParkedForExport(liveRecords);
       const checkpoint = useLiveSnapshot ? null : await store.getWorkflowCheckpoint(intentId);
       if (!useLiveSnapshot && !checkpoint) {
         return response(409, {
@@ -1653,7 +1681,6 @@ export const handler = async (event) => {
       }
       const records = checkpoint ? checkpointProjection(checkpoint) : liveRecords;
       const meta = records.meta;
-      const data = body ? JSON.parse(body) : {};
       const harness = data.harness || meta.agentCli || 'kiro';
       if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
         return response(400, { error: `Unsupported native AI-DLC harness: ${harness}` });
@@ -1711,6 +1738,12 @@ export const handler = async (event) => {
             (projectionRecords.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
           );
           return {
+            ...(handoffTaskId
+              ? {
+                  mode: 'unit-handoff',
+                  handoffTaskId,
+                }
+              : {}),
             intent: {
               intentId,
               projectId,
@@ -1768,6 +1801,27 @@ export const handler = async (event) => {
                 const latestRecords = await store.getExecutionRecords(intentId, {
                   includeOutputs: false,
                 });
+                if (handoffTaskId) {
+                  const latestTask = (latestRecords.humanTasks ?? []).find(
+                    (task) =>
+                      task.humanTaskId === handoffTaskId &&
+                      task.kind === 'external-development' &&
+                      task.status === 'pending',
+                  );
+                  const latestStage = (latestRecords.stages ?? []).find(
+                    (stage) => stage.stageInstanceId === latestTask?.stageInstanceId,
+                  );
+                  return Boolean(
+                    latestRecords.meta &&
+                    latestRecords.meta.projectId === projectId &&
+                    !NATIVE_EXPORT_BLOCKED_STATUSES.has(latestRecords.meta.status) &&
+                    latestTask &&
+                    latestStage?.state === 'WAITING_FOR_HUMAN' &&
+                    latestStage.pendingHumanTaskId === handoffTaskId &&
+                    Number(latestStage.attempt ?? 0) ===
+                      Number(latestTask.externalDevelopment?.stageAttempt ?? -1),
+                  );
+                }
                 if (
                   !latestRecords.meta ||
                   latestRecords.meta.projectId !== projectId ||
@@ -2292,6 +2346,278 @@ export const handler = async (event) => {
     }
 
     // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer
+    if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/submit')) {
+      const gate = await store.getHumanTask(intentId, humanTaskId);
+      if (!gate || gate.kind !== 'external-development') {
+        return response(404, { error: 'External-development handoff not found' });
+      }
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const responder = getResponder(event);
+      if (
+        gate.externalDevelopment?.assignedTo &&
+        gate.externalDevelopment.assignedTo !== responder.sub
+      ) {
+        return response(403, { error: 'This unit is assigned to another developer' });
+      }
+      const stage = await store.getStage(intentId, gate.stageInstanceId);
+      const stageAttempt = externalDevelopmentStageAttempt(gate);
+      if (!isCurrentExternalDevelopmentHandoff({ gate, stage, humanTaskId })) {
+        return response(409, {
+          error: 'The external-development handoff is no longer current',
+          code: 'handoff_stale',
+        });
+      }
+
+      const data = body ? JSON.parse(body) : {};
+      const documentValidation = validateHandoffDocuments(data.documents);
+      const findings = [...documentValidation.findings];
+      const assignedRepositories = gate.externalDevelopment?.repositories ?? [];
+      if (assignedRepositories.length === 0) {
+        findings.push({ field: 'repositories', code: 'repository_set_missing' });
+      }
+      const repositoryValidationResults = await mapWithConcurrency(
+        assignedRepositories,
+        HANDOFF_REPOSITORY_VALIDATION_CONCURRENCY,
+        async (repository) => {
+          if (!repository.repository || !repository.provider || !repository.branch) {
+            return {
+              finding: {
+                field: repository.name ?? 'repository',
+                code: 'repository_assignment_invalid',
+              },
+            };
+          }
+          try {
+            const head = await sourceControlOperation({
+              projectId,
+              provider: repository.provider,
+              repo: repository.repository,
+              operation: 'branch-head',
+              args: { branch: repository.branch },
+            });
+            if (!/^[0-9a-f]{40,64}$/i.test(head?.sha ?? '')) {
+              return {
+                finding: {
+                  field: repository.name,
+                  code: 'branch_head_invalid',
+                },
+              };
+            }
+            const descendsFromBase = await sourceControlOperation({
+              projectId,
+              provider: repository.provider,
+              repo: repository.repository,
+              operation: 'is-ancestor',
+              args: {
+                ancestorSha: repository.baseSha,
+                descendantRef: head.sha,
+              },
+            });
+            if (!descendsFromBase) {
+              return {
+                finding: {
+                  field: repository.name,
+                  code: 'base_not_ancestor',
+                },
+              };
+            }
+            return {
+              submittedRepository: {
+                ...repository,
+                submittedSha: head.sha,
+              },
+            };
+          } catch (error) {
+            return {
+              finding: {
+                field: repository.name ?? repository.repository,
+                code: error.code ?? 'repository_validation_failed',
+              },
+            };
+          }
+        },
+      );
+      findings.push(
+        ...repositoryValidationResults.flatMap(({ finding }) => (finding ? [finding] : [])),
+      );
+      const submittedRepositories = repositoryValidationResults.flatMap(
+        ({ submittedRepository }) => (submittedRepository ? [submittedRepository] : []),
+      );
+
+      const externalDevelopment = {
+        ...gate.externalDevelopment,
+        validationFindings: findings,
+        lastSubmittedAt: new Date().toISOString(),
+      };
+      if (findings.length > 0) {
+        await store.updateExternalDevelopment({
+          executionId: intentId,
+          humanTaskId,
+          stageAttempt,
+          externalDevelopment,
+        });
+        return response(422, {
+          error: 'External-development submission failed validation',
+          code: 'handoff_validation_failed',
+          findings,
+        });
+      }
+      if (!AGENTCORE_RUNTIME_ARN()) {
+        return response(503, { error: 'The handoff import runtime is not configured' });
+      }
+
+      const candidate = {
+        documents: Object.fromEntries(
+          Object.entries(documentValidation.documents).map(([artifactType, document]) => [
+            artifactType,
+            {
+              filename: document.filename,
+              bytes: document.bytes,
+              sha256: document.sha256,
+            },
+          ]),
+        ),
+        repositories: submittedRepositories.map(
+          ({ name, repository, provider, branch, baseSha, submittedSha }) => ({
+            name,
+            repository,
+            provider,
+            branch,
+            baseSha,
+            submittedSha,
+          }),
+        ),
+      };
+      const candidateStored = await store.updateExternalDevelopment({
+        executionId: intentId,
+        humanTaskId,
+        stageAttempt,
+        externalDevelopment: {
+          ...externalDevelopment,
+          validationFindings: [],
+          candidate,
+        },
+      });
+      if (!candidateStored) {
+        return response(409, { error: 'The external-development handoff is no longer current' });
+      }
+
+      let imported;
+      try {
+        const runtime = await agentcore.send(
+          new InvokeAgentRuntimeCommand({
+            agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+            runtimeSessionId: laneSessionIdFor(intentId, gate.sectionIndex, gate.unitSlug),
+            contentType: 'application/json',
+            accept: 'application/json',
+            payload: Buffer.from(
+              JSON.stringify({
+                command: 'import-handoff-artifacts',
+                projectId,
+                intentId,
+                executionId: intentId,
+                humanTaskId,
+                stageInstanceId: gate.stageInstanceId,
+                stageAttempt,
+                unitSlug: gate.unitSlug,
+                sectionIndex: gate.sectionIndex,
+                repositories: submittedRepositories,
+                documents: documentValidation.documents,
+              }),
+            ),
+          }),
+        );
+        const text = runtime.response ? await runtime.response.transformToString() : '';
+        imported = text ? JSON.parse(text) : {};
+      } catch (error) {
+        imported = { ok: false, reason: 'runtime_invoke_failed', detail: error.message };
+      }
+      if (!imported.ok) {
+        const importFindings = [
+          {
+            field: imported.repository ?? 'submission',
+            code: imported.reason ?? 'handoff_import_failed',
+            detail: imported.detail ?? null,
+          },
+        ];
+        await store.updateExternalDevelopment({
+          executionId: intentId,
+          humanTaskId,
+          stageAttempt,
+          externalDevelopment: {
+            ...externalDevelopment,
+            candidate,
+            validationFindings: importFindings,
+          },
+        });
+        return response(422, {
+          error: 'External-development submission could not be imported',
+          code: 'handoff_import_failed',
+          findings: importFindings,
+        });
+      }
+
+      const acceptedAt = new Date().toISOString();
+      const acceptedResult = {
+        ...candidate,
+        importedArtifactIds: imported.imported ?? [],
+        acceptedAt,
+        acceptedBy: responder.sub,
+      };
+      const acceptedMetadata = await store.updateExternalDevelopment({
+        executionId: intentId,
+        humanTaskId,
+        stageAttempt,
+        externalDevelopment: {
+          ...externalDevelopment,
+          validationFindings: [],
+          candidate,
+          acceptedResult,
+        },
+      });
+      if (!acceptedMetadata) {
+        return response(409, { error: 'The external-development handoff is no longer current' });
+      }
+      const answered = await store.answerHumanTask({
+        executionId: intentId,
+        humanTaskId,
+        status: 'answered',
+        answer: { decision: 'accepted', ...acceptedResult },
+        answeredBy: responder.sub,
+        answeredByName: responder.displayName,
+      });
+      if (!answered) {
+        return response(409, { error: 'The external-development handoff was already completed' });
+      }
+      if (gate.callbackId) {
+        await resumeDurableCallback(gate.callbackId, answered.answer);
+      }
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.stage.external_development_accepted',
+          stageInstanceId: gate.stageInstanceId,
+          unitSlug: gate.unitSlug,
+          sectionIndex: gate.sectionIndex,
+          actor: responder.displayName || responder.sub,
+          summary: `External code generation accepted for unit ${gate.unitSlug}`,
+        })
+        .catch(() => {});
+      await broadcastToIntentChannel(intentId, {
+        action: 'agent.note',
+        intentId,
+        projectId,
+        noteType: 'v2.stage.external_development_accepted',
+        unitSlug: gate.unitSlug,
+        summary: `External code generation accepted for unit ${gate.unitSlug}`,
+      });
+      return response(200, { ok: true, humanTaskId, acceptedResult });
+    }
+
+    // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer
     if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/answer')) {
       const data = body ? JSON.parse(body) : {};
       const gate = await store.getHumanTask(intentId, humanTaskId);
@@ -2299,6 +2625,29 @@ export const handler = async (event) => {
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
+      }
+      const responder = getResponder(event);
+      if (gate.kind === 'external-development') {
+        if (data.answer?.decision !== 'run-managed') {
+          return response(409, {
+            error:
+              'Submit the local result or explicitly cancel external development to run code-generation managed',
+            code: 'external_development_requires_submission',
+          });
+        }
+        if (
+          gate.externalDevelopment?.assignedTo &&
+          gate.externalDevelopment.assignedTo !== responder.sub
+        ) {
+          return response(403, { error: 'This unit is assigned to another developer' });
+        }
+        const stage = await store.getStage(intentId, gate.stageInstanceId);
+        if (!isCurrentExternalDevelopmentHandoff({ gate, stage, humanTaskId })) {
+          return response(409, {
+            error: 'The external-development handoff is no longer current',
+            code: 'handoff_stale',
+          });
+        }
       }
       // A live Quorum edit is mutating this intent's artifacts; answering the
       // gate would resume the parked stage RIGHT INTO those writes. The run is
@@ -2317,7 +2666,6 @@ export const handler = async (event) => {
       // Answer THIS specific gate (CAS on pending). D3: a stage can leave more
       // than one pending gate; answer the one addressed by the URL, never blindly
       // META.pendingHumanTaskId.
-      const responder = getResponder(event);
       const answered = await store.answerHumanTask({
         executionId: intentId,
         humanTaskId,
@@ -5283,6 +5631,7 @@ const mapHumanTask = (h) => ({
   // keep its generic labels instead of falsely claiming "Complete workflow".
   ...('nextStageId' in h ? { nextStageId: h.nextStageId ?? null } : {}),
   questions: h.questions ?? null,
+  externalDevelopment: h.externalDevelopment ?? null,
   answer: h.answer ?? null,
   answeredBy: h.answeredBy ?? null,
   answeredByName: h.answeredByName ?? null,

@@ -567,10 +567,17 @@ const createNativeExport = async ({
     distributionFiles: distribution.files,
     harness,
   });
+  const projected = projectNativeWorkspace({
+    ...alignedProjection,
+    upstreamRef,
+    harness,
+    workspaceLayout: distribution.workspaceLayout,
+    now,
+  });
   const registeredScope = registerNativeScope({
     distributionFiles: distribution.files,
     harness,
-    stages: alignedProjection.stages,
+    stages: projected.stages,
     scope: alignedProjection.nativeScope,
   });
   const distributionFiles = registeredScope.files;
@@ -584,13 +591,6 @@ const createNativeExport = async ({
     harness,
     distributionFiles,
     customRules: projection.intent.customRules,
-  });
-  const projected = projectNativeWorkspace({
-    ...alignedProjection,
-    upstreamRef,
-    harness,
-    workspaceLayout: distribution.workspaceLayout,
-    now,
   });
   const nextUnit = projected.manifest.construction?.nextUnit ?? null;
   const effectiveWarnings = [...warnings];

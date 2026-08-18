@@ -633,6 +633,57 @@ export const fetchOrigin = async ({
   }
 };
 
+export const checkoutRemoteRevision = async ({
+  dir,
+  repo,
+  branch,
+  sha,
+  gitProvider,
+  projectId,
+  executionId,
+  urls = {},
+  git = runGit,
+  withGitCredential = defaultWithGitCredential,
+}) => {
+  const dirty = await git(['status', '--porcelain'], { cwd: dir });
+  if (dirty.exitCode !== 0) {
+    return { ready: false, reason: 'status_failed', detail: dirty.stderr.trim() };
+  }
+  if (dirty.stdout.trim()) {
+    return { ready: false, reason: 'workspace_dirty' };
+  }
+  const fetched = await fetchOrigin({
+    dir,
+    repo,
+    gitProvider,
+    projectId,
+    executionId,
+    urls,
+    git,
+    withGitCredential,
+  });
+  if (!fetched.fetched) return { ready: false, ...fetched };
+
+  const remoteRef = `refs/remotes/origin/${branch}`;
+  const remote = await git(['rev-parse', '--verify', remoteRef], { cwd: dir });
+  if (remote.exitCode !== 0) {
+    return { ready: false, reason: 'branch_missing', detail: branch };
+  }
+  if (remote.stdout.trim().toLowerCase() !== String(sha).toLowerCase()) {
+    return {
+      ready: false,
+      reason: 'branch_head_moved',
+      expectedSha: sha,
+      actualSha: remote.stdout.trim(),
+    };
+  }
+  const checkout = await git(['checkout', '-B', branch, sha], { cwd: dir });
+  if (checkout.exitCode !== 0) {
+    return { ready: false, reason: 'checkout_failed', detail: checkout.stderr.trim() };
+  }
+  return { ready: true, sha: remote.stdout.trim() };
+};
+
 // Ensure the unit-lane branch exists locally AND remotely, branched from the
 // intent branch's remote HEAD (docs/v2-parallel.md A3: lane start). An existing
 // remote unit branch (lane retry / relaunch / re-init after a wiped mount) is

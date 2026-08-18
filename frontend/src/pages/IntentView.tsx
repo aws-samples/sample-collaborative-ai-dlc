@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
 import {
   intentsService,
+  type IntentGate,
   type NativeExportHarness,
+  type NativeHandoffDocuments,
   type NativeWorkflowExport,
 } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
@@ -209,12 +211,14 @@ export default function IntentView() {
     }
   };
 
-  const handleExport = async (harness?: NativeExportHarness) => {
+  const handleExport = async (harness?: NativeExportHarness, handoffTaskId?: string) => {
     setConfirmExport(false);
     setExporting(true);
     setActionError(null);
     try {
-      const result = await intentsService.exportWorkflow(projectId, intentId, harness);
+      const result = handoffTaskId
+        ? await intentsService.exportWorkflow(projectId, intentId, harness, handoffTaskId)
+        : await intentsService.exportWorkflow(projectId, intentId, harness);
       const download = document.createElement('a');
       download.href = result.downloadUrl;
       download.download = result.filename;
@@ -231,6 +235,19 @@ export default function IntentView() {
     } finally {
       setExporting(false);
     }
+  };
+
+  const handleSubmitHandoff = async (
+    handoffGate: IntentGate,
+    documents: NativeHandoffDocuments,
+  ) => {
+    try {
+      await intentsService.submitHandoff(projectId, intentId, handoffGate.humanTaskId, documents);
+    } catch (error) {
+      await reload();
+      throw error;
+    }
+    await reload();
   };
 
   const requestExport = (harness?: NativeExportHarness) => {
@@ -622,6 +639,13 @@ export default function IntentView() {
                   intentId={intentId}
                   userName={userName}
                   onAnswer={answerGate}
+                  onExportHandoff={(handoffGate) =>
+                    handleExport(
+                      handoffGate.externalDevelopment?.harness as NativeExportHarness | undefined,
+                      handoffGate.humanTaskId,
+                    )
+                  }
+                  onSubmitHandoff={handleSubmitHandoff}
                 />
               )}
             />
