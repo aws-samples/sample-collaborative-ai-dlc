@@ -399,7 +399,15 @@ describe('IntentView', () => {
           externalDevelopment: {
             stageAttempt: 0,
             harness: 'codex',
-            repositories: [],
+            repositories: [
+              {
+                name: 'api',
+                repository: 'https://github.com/owner/api.git',
+                provider: 'github',
+                baseSha: 'a'.repeat(40),
+                branch: 'aidlc/i1--s1-unit-auth',
+              },
+            ],
           },
         },
       ],
@@ -417,7 +425,14 @@ describe('IntentView', () => {
         launchCommand: 'codex',
         continueCommand: '$aidlc',
         showWorkspaceSetup: false,
-        repositories: [],
+        repositories: [
+          {
+            id: 'api',
+            directory: 'api',
+            url: 'https://github.com/owner/api.git',
+            branch: 'aidlc/i1--s1-unit-auth',
+          },
+        ],
       },
     });
     const downloadClick = vi
@@ -426,9 +441,29 @@ describe('IntentView', () => {
 
     renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Download workspace' }));
+    expect(screen.getByRole('heading', { name: 'Develop auth externally?' })).toBeInTheDocument();
+    expect(screen.getByText(/point-in-time native AI-DLC workspace/i)).toBeInTheDocument();
+    expect(screen.getByText('aidlc/i1--s1-unit-auth')).toBeInTheDocument();
+    expect(screen.getByText(/code-generation-plan\.md/)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Download code-generation workspace' }),
+    );
 
     expect(exportWorkflow).toHaveBeenCalledWith('p1', 'i1', 'codex', 'external-s1-auth-a0');
     expect(downloadClick).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByRole('heading', { name: 'Set up external code generation for auth' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "find . -type f \\( -name 'code-generation-plan.md' -o -name 'code-summary.md' \\) -print",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/git -C 'api' push origin 'aidlc\/i1--s1-unit-auth'/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/git -C 'api' add -p/)).toBeInTheDocument();
+    expect(screen.getByText(/select the generated/i)).toBeInTheDocument();
     downloadClick.mockRestore();
   });
 

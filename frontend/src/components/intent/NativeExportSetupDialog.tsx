@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, Copy, TriangleAlert } from 'lucide-react';
-import type { NativeWorkflowExport } from '@/services/intents';
+import type { IntentGate, NativeWorkflowExport } from '@/services/intents';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -64,16 +64,21 @@ const CommandBlock = ({ children, label }: { children: string; label: string }) 
 interface NativeExportSetupDialogProps {
   exportResult: NativeWorkflowExport | null;
   projectName?: string | null;
+  handoffGate?: IntentGate | null;
   onClose: () => void;
 }
 
 export function NativeExportSetupDialog({
   exportResult,
   projectName,
+  handoffGate = null,
   onClose,
 }: NativeExportSetupDialogProps) {
   const setup = exportResult?.setup ?? null;
+  const externalDevelopment = handoffGate?.externalDevelopment ?? null;
+  const isHandoff = Boolean(externalDevelopment);
   const showSetup = setup?.showWorkspaceSetup ?? false;
+  const showInstructions = showSetup || isHandoff;
   const exportDirectory = workspaceDirectoryName(projectName);
   const downloadedZip = exportResult
     ? `"$HOME/Downloads/${exportResult.filename}"`
@@ -96,6 +101,19 @@ export function NativeExportSetupDialog({
           .join(' ')
       : setup?.continueCommand;
   const launchCommand = setup?.launchCommand ?? null;
+  const repositories =
+    setup?.repositories.length || !externalDevelopment
+      ? (setup?.repositories ?? [])
+      : externalDevelopment.repositories.map((repository, index, all) => ({
+          id: repository.name || repository.repository,
+          directory:
+            all.length === 1
+              ? '.'
+              : repository.name || repository.repository.split('/').pop() || `repo-${index + 1}`,
+          url: repository.repository,
+          branch: repository.branch,
+        }));
+  const unitName = handoffGate?.unitSlug ?? 'unit';
 
   return (
     <AlertDialog
@@ -107,12 +125,18 @@ export function NativeExportSetupDialog({
       <AlertDialogContent className="max-h-[85vh] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-x-hidden overflow-y-scroll [&>*]:min-w-0">
         <AlertDialogHeader>
           <AlertDialogTitle>
-            {showSetup ? 'Set up your local workspace' : 'Workspace downloaded with warnings'}
+            {isHandoff
+              ? `Set up external code generation for ${unitName}`
+              : showSetup
+                ? 'Set up your local workspace'
+                : 'Workspace downloaded with warnings'}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {showSetup
-              ? 'The workspace download is in progress. Source code should be retrieved separately from Git using your own credentials.'
-              : 'Review these warnings before continuing with the downloaded workspace.'}
+            {isHandoff
+              ? 'The workspace download is in progress. Complete code generation on the assigned branches, then submit the generated plan and summary to resume Collaborative AI-DLC.'
+              : showSetup
+                ? 'The workspace download is in progress. Source code should be retrieved separately from Git using your own credentials.'
+                : 'Review these warnings before continuing with the downloaded workspace.'}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -133,7 +157,7 @@ export function NativeExportSetupDialog({
           </div>
         )}
 
-        {showSetup && setup?.mode === 'workspace-sync' && (
+        {showInstructions && setup?.mode === 'workspace-sync' && (
           <ol className="list-decimal space-y-4 pl-5 text-sm">
             <li>
               Create an empty workspace directory and extract the downloaded ZIP:
@@ -146,9 +170,9 @@ export function NativeExportSetupDialog({
               </CommandBlock>
               <p className="mt-1 text-xs text-muted-foreground">
                 This reads <code>repos.json</code> and clones{' '}
-                {setup.repositories.length === 1
+                {repositories.length === 1
                   ? 'the repository'
-                  : `all ${setup.repositories.length} repositories`}
+                  : `all ${repositories.length} repositories`}
                 {' on their declared intent branches.'}
               </p>
             </li>
@@ -175,7 +199,7 @@ export function NativeExportSetupDialog({
           </ol>
         )}
 
-        {showSetup && setup?.mode === 'manual-workspace' && (
+        {showInstructions && setup?.mode === 'manual-workspace' && (
           <ol className="list-decimal space-y-4 pl-5 text-sm">
             <li>
               Create an empty workspace directory and extract the downloaded ZIP:
@@ -183,7 +207,7 @@ export function NativeExportSetupDialog({
             </li>
             <li>
               Clone each repository into the workspace:
-              {setup.repositories.map((repository) => (
+              {repositories.map((repository) => (
                 <div key={repository.id} className="mt-3 space-y-3">
                   <div>
                     <p className="text-xs font-medium">Fresh clone: {repository.id}</p>
@@ -227,11 +251,11 @@ export function NativeExportSetupDialog({
           </ol>
         )}
 
-        {showSetup && setup?.mode === 'manual-clone' && (
+        {showInstructions && setup?.mode === 'manual-clone' && (
           <ol className="list-decimal space-y-4 pl-5 text-sm">
             <li>
               Retrieve the source repository and its intent branch:
-              {setup.repositories.map((repository) => (
+              {repositories.map((repository) => (
                 <div key={repository.id} className="mt-3 space-y-3">
                   <div>
                     <p className="text-xs font-medium">Fresh clone</p>
@@ -281,7 +305,7 @@ export function NativeExportSetupDialog({
           </ol>
         )}
 
-        {showSetup && setup?.mode === 'extract-only' && (
+        {showInstructions && setup?.mode === 'extract-only' && (
           <ol className="list-decimal space-y-4 pl-5 text-sm">
             <li>
               Create a project directory and extract the downloaded workspace:
@@ -305,6 +329,52 @@ export function NativeExportSetupDialog({
               </CommandBlock>
             </li>
           </ol>
+        )}
+
+        {isHandoff && (
+          <div className="space-y-3 border-t pt-4 text-sm">
+            <p className="font-medium">Finish and return the unit</p>
+            <ol className="list-decimal space-y-4 pl-5">
+              <li>
+                Complete only the unit&apos;s <code>code-generation</code> stage. The workspace
+                contains the workflow context and assigned branches; later stages remain owned by
+                Collaborative AI-DLC.
+              </li>
+              <li>
+                Locate the generated plan and summary before submitting:
+                <CommandBlock label="Copy document lookup command">
+                  {
+                    "find . -type f \\( -name 'code-generation-plan.md' -o -name 'code-summary.md' \\) -print"
+                  }
+                </CommandBlock>
+              </li>
+              <li>
+                From the workspace root, review and stage only source changes, then commit and push
+                each assigned branch:
+                {repositories.map((repository) => (
+                  <div key={repository.id} className="mt-3">
+                    <p className="text-xs font-medium">
+                      {repository.id}: <code>{repository.branch}</code>
+                    </p>
+                    <CommandBlock label={`Copy commit and push commands for ${repository.id}`}>
+                      {[
+                        `git -C ${shellQuote(repository.directory)} status --short`,
+                        `git -C ${shellQuote(repository.directory)} add -p`,
+                        `git -C ${shellQuote(repository.directory)} commit -m ${shellQuote(`Implement ${unitName} code generation`)}`,
+                        `git -C ${shellQuote(repository.directory)} push origin ${shellQuote(repository.branch)}`,
+                      ].join('\n')}
+                    </CommandBlock>
+                  </div>
+                ))}
+              </li>
+              <li>
+                Return to the external-development gate, select the generated{' '}
+                <code>code-generation-plan.md</code> and <code>code-summary.md</code>, then choose{' '}
+                <strong>Submit</strong>. Collaborative AI-DLC will validate the pushed branch heads
+                and both documents before resuming the unit.
+              </li>
+            </ol>
+          </div>
         )}
 
         <AlertDialogFooter>

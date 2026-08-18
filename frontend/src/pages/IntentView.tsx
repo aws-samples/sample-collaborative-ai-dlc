@@ -129,8 +129,12 @@ export default function IntentView() {
   const [requestedExportHarness, setRequestedExportHarness] = useState<
     NativeExportHarness | undefined
   >();
+  const [requestedHandoffGate, setRequestedHandoffGate] = useState<IntentGate | null>(null);
   const [exporting, setExporting] = useState(false);
   const [constructionExport, setConstructionExport] = useState<NativeWorkflowExport | null>(null);
+  const [constructionExportHandoff, setConstructionExportHandoff] = useState<IntentGate | null>(
+    null,
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
 
@@ -211,13 +215,13 @@ export default function IntentView() {
     }
   };
 
-  const handleExport = async (harness?: NativeExportHarness, handoffTaskId?: string) => {
+  const handleExport = async (harness?: NativeExportHarness, handoffGate?: IntentGate | null) => {
     setConfirmExport(false);
     setExporting(true);
     setActionError(null);
     try {
-      const result = handoffTaskId
-        ? await intentsService.exportWorkflow(projectId, intentId, harness, handoffTaskId)
+      const result = handoffGate
+        ? await intentsService.exportWorkflow(projectId, intentId, harness, handoffGate.humanTaskId)
         : await intentsService.exportWorkflow(projectId, intentId, harness);
       const download = document.createElement('a');
       download.href = result.downloadUrl;
@@ -226,7 +230,8 @@ export default function IntentView() {
       document.body.append(download);
       download.click();
       download.remove();
-      if (result.setup.showWorkspaceSetup || result.warnings.length > 0) {
+      if (handoffGate || result.setup.showWorkspaceSetup || result.warnings.length > 0) {
+        setConstructionExportHandoff(handoffGate ?? null);
         setConstructionExport(result);
       }
     } catch (err) {
@@ -251,7 +256,16 @@ export default function IntentView() {
   };
 
   const requestExport = (harness?: NativeExportHarness) => {
+    setRequestedHandoffGate(null);
     setRequestedExportHarness(harness);
+    setConfirmExport(true);
+  };
+
+  const requestHandoffExport = async (handoffGate: IntentGate) => {
+    setRequestedHandoffGate(handoffGate);
+    setRequestedExportHarness(
+      handoffGate.externalDevelopment?.harness as NativeExportHarness | undefined,
+    );
     setConfirmExport(true);
   };
 
@@ -639,12 +653,7 @@ export default function IntentView() {
                   intentId={intentId}
                   userName={userName}
                   onAnswer={answerGate}
-                  onExportHandoff={(handoffGate) =>
-                    handleExport(
-                      handoffGate.externalDevelopment?.harness as NativeExportHarness | undefined,
-                      handoffGate.humanTaskId,
-                    )
-                  }
+                  onExportHandoff={requestHandoffExport}
                   onSubmitHandoff={handleSubmitHandoff}
                 />
               )}
@@ -680,19 +689,65 @@ export default function IntentView() {
         onOpenChange={(open) => {
           if (exporting) return;
           setConfirmExport(open);
-          if (!open) setRequestedExportHarness(undefined);
+          if (!open) {
+            setRequestedExportHarness(undefined);
+            setRequestedHandoffGate(null);
+          }
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Continue outside Collaborative AI-DLC?</AlertDialogTitle>
-            <AlertDialogDescription className="break-words">
-              {intent.status === 'RUNNING'
-                ? 'This download uses the latest completed workflow checkpoint and excludes the stage currently in progress. '
-                : 'This download creates a point-in-time workspace. '}
-              Work completed locally, including decisions, approvals, artifacts, and code changes,
-              will not be synchronized back to this intent or included in its traceability history.
-            </AlertDialogDescription>
+            <AlertDialogTitle>
+              {requestedHandoffGate
+                ? `Develop ${requestedHandoffGate.unitSlug ?? 'this unit'} externally?`
+                : 'Continue outside Collaborative AI-DLC?'}
+            </AlertDialogTitle>
+            {requestedHandoffGate ? (
+              <>
+                <AlertDialogDescription className="break-words">
+                  This download creates a point-in-time native AI-DLC workspace scoped to this
+                  unit&apos;s <code>code-generation</code> stage. Collaborative AI-DLC keeps the
+                  unit parked while you work externally.
+                </AlertDialogDescription>
+                <div className="space-y-2 text-sm text-muted-foreground">
+                  <p>
+                    Commit and push source changes to the assigned{' '}
+                    {requestedHandoffGate.externalDevelopment?.repositories.length === 1
+                      ? 'branch'
+                      : 'branches'}
+                    :
+                  </p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    {requestedHandoffGate.externalDevelopment?.repositories.map((repository) => (
+                      <li key={`${repository.repository}-${repository.branch}`}>
+                        <code>{repository.branch}</code>
+                        {repository.name ? ` (${repository.name})` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                  <p>
+                    When code generation is complete, return here and upload the generated{' '}
+                    <code>code-generation-plan.md</code> and <code>code-summary.md</code>.
+                    Collaborative AI-DLC will validate the pushed revisions and documents, then
+                    resume the unit&apos;s normal workflow.
+                  </p>
+                  <p>
+                    Only pushed commits and those two submitted documents are synchronized back.
+                    Other external decisions, approvals, or workspace state are not added to the
+                    intent&apos;s traceability history.
+                  </p>
+                </div>
+              </>
+            ) : (
+              <AlertDialogDescription className="break-words">
+                {intent.status === 'RUNNING'
+                  ? 'This download uses the latest completed workflow checkpoint and excludes the stage currently in progress. '
+                  : 'This download creates a point-in-time workspace. '}
+                Work completed locally, including decisions, approvals, artifacts, and code changes,
+                will not be synchronized back to this intent or included in its traceability
+                history.
+              </AlertDialogDescription>
+            )}
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={exporting}>Cancel</AlertDialogCancel>
@@ -700,10 +755,14 @@ export default function IntentView() {
               disabled={exporting}
               onClick={(event) => {
                 event.preventDefault();
-                void handleExport(requestedExportHarness);
+                void handleExport(requestedExportHarness, requestedHandoffGate);
               }}
             >
-              {exporting ? 'Preparing workspace…' : 'Download workspace'}
+              {exporting
+                ? 'Preparing workspace…'
+                : requestedHandoffGate
+                  ? 'Download code-generation workspace'
+                  : 'Download workspace'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -712,7 +771,11 @@ export default function IntentView() {
       <NativeExportSetupDialog
         exportResult={constructionExport}
         projectName={project?.name}
-        onClose={() => setConstructionExport(null)}
+        handoffGate={constructionExportHandoff}
+        onClose={() => {
+          setConstructionExport(null);
+          setConstructionExportHandoff(null);
+        }}
       />
 
       {/* Delete confirmation */}
