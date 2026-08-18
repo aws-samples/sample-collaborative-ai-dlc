@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
+  awaitEngineGate,
+  awaitExternalDevelopment,
   makeSemaphore,
   makeMergeLock,
   parseChoice,
@@ -97,6 +99,63 @@ describe('parseChoice (gate answers, never trusted blindly)', () => {
   });
 });
 
+describe('awaitEngineGate lane-local parking', () => {
+  it('keeps META running when a unit lane waits on stage validation', async () => {
+    let opened = false;
+    const store = {
+      createHumanTask: vi.fn(async (input) => {
+        opened = true;
+        return input;
+      }),
+      updateExecution: vi.fn(async () => ({})),
+      setGateCallbackId: vi.fn(async () => ({})),
+      getHumanTask: vi.fn(async () =>
+        opened
+          ? {
+              humanTaskId: 'eg-unit-stage',
+              status: 'approved',
+              answer: { decision: 'approve' },
+            }
+          : null,
+      ),
+    };
+    const ctx = {
+      step: async (_name, fn) => fn(),
+      createCallback: async () => [Promise.resolve(), 'callback-1'],
+    };
+
+    const result = await awaitEngineGate(
+      ctx,
+      {
+        store,
+        broadcast: vi.fn(async () => {}),
+        ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+      },
+      {
+        name: 'unit-stage',
+        kind: 'validation',
+        stageInstanceId: 'si-infrastructure-auth',
+        unitSlug: 'auth',
+        sectionIndex: 1,
+        prompt: 'Review infrastructure design.',
+        options: ['approve', 'develop-externally', 'request-changes'],
+        nextStageId: 'code-generation',
+        parkExecution: false,
+      },
+    );
+
+    expect(result.gate.answer).toEqual({ decision: 'approve' });
+    expect(store.createHumanTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unitSlug: 'auth',
+        options: ['approve', 'develop-externally', 'request-changes'],
+        nextStageId: 'code-generation',
+      }),
+    );
+    expect(store.updateExecution).not.toHaveBeenCalled();
+  });
+});
+
 describe('validateFanoutOverrides', () => {
   const bySlug = new Map([
     ['auth', { slug: 'auth', dependsOn: [] }],
@@ -140,6 +199,138 @@ describe('validateFanoutOverrides', () => {
     expect(validateFanoutOverrides(null, args).rejected).toEqual([]);
     expect(validateFanoutOverrides('approved', args).rejected).toEqual([]);
     expect(validateFanoutOverrides({}, args)).toEqual({ rejected: [] });
+  });
+});
+
+describe('awaitExternalDevelopment', () => {
+  it('parks and completes the existing stage through one HUMAN task', async () => {
+    const store = {
+      getStage: vi.fn(async () => null),
+      putStage: vi.fn(async (input) => input),
+      createHumanTask: vi.fn(async (input) => input),
+      updateStageState: vi.fn(async (input) => input),
+      appendEvent: vi.fn(async () => ({})),
+      setGateCallbackId: vi.fn(async () => ({})),
+      getHumanTask: vi.fn(async () => ({
+        humanTaskId: 'external-s1-auth-a0',
+        status: 'answered',
+        answer: { decision: 'accepted' },
+      })),
+      getExecution: vi.fn(async () => ({ status: 'RUNNING', orchestratorRunId: 'run-1' })),
+      completeExternalDevelopmentStage: vi.fn(async (input) => input),
+    };
+    const ctx = {
+      step: async (_name, fn) => fn(),
+      createCallback: async () => [Promise.resolve(), 'callback-1'],
+    };
+
+    const result = await awaitExternalDevelopment(
+      ctx,
+      {
+        store,
+        broadcast: vi.fn(async () => {}),
+        stopSession: vi.fn(async () => {}),
+        ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+        runId: 'run-1',
+        stageInstanceIdFor: () => 'si-code-auth',
+      },
+      {
+        stage: { stageId: 'code-generation', phase: 'construction' },
+        unitSlug: 'auth',
+        sectionIndex: 1,
+        repositories: [
+          {
+            name: 'api',
+            baseSha: 'a'.repeat(40),
+            branch: 'aidlc/i1--s1-unit-auth',
+          },
+        ],
+        branch: 'aidlc/i1--s1-unit-auth',
+        harness: 'codex',
+        assignedTo: 'u1',
+        sessionId: 'lane-auth',
+      },
+    );
+
+    expect(result.state).toBe('SUCCEEDED');
+    expect(store.createHumanTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'external-development',
+        humanTaskId: 'external-s1-auth-a0',
+        externalDevelopment: expect.objectContaining({
+          stageAttempt: 0,
+          harness: 'codex',
+          assignedTo: 'u1',
+        }),
+      }),
+    );
+    expect(store.updateStageState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: 'WAITING_FOR_HUMAN',
+        pendingHumanTaskId: 'external-s1-auth-a0',
+      }),
+    );
+    expect(store.completeExternalDevelopmentStage).toHaveBeenCalledWith({
+      executionId: 'e1',
+      stageInstanceId: 'si-code-auth',
+      humanTaskId: 'external-s1-auth-a0',
+      attempt: 0,
+    });
+  });
+
+  it('returns to managed execution without completing the external stage', async () => {
+    const store = {
+      getStage: vi.fn(async () => null),
+      putStage: vi.fn(async (input) => input),
+      createHumanTask: vi.fn(async (input) => input),
+      updateStageState: vi.fn(async (input) => input),
+      appendEvent: vi.fn(async () => ({})),
+      setGateCallbackId: vi.fn(async () => ({})),
+      getHumanTask: vi.fn(async () => ({
+        humanTaskId: 'external-s1-auth-a0',
+        status: 'answered',
+        answer: { decision: 'run-managed' },
+        answeredBy: 'u1',
+      })),
+      getExecution: vi.fn(async () => ({ status: 'RUNNING', orchestratorRunId: 'run-1' })),
+      completeExternalDevelopmentStage: vi.fn(async (input) => input),
+    };
+    const result = await awaitExternalDevelopment(
+      {
+        step: async (_name, fn) => fn(),
+        createCallback: async () => [Promise.resolve(), 'callback-1'],
+      },
+      {
+        store,
+        broadcast: vi.fn(async () => {}),
+        stopSession: vi.fn(async () => {}),
+        ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+        runId: 'run-1',
+        stageInstanceIdFor: () => 'si-code-auth',
+      },
+      {
+        stage: { stageId: 'code-generation', phase: 'construction' },
+        unitSlug: 'auth',
+        sectionIndex: 1,
+        repositories: [
+          {
+            name: 'api',
+            baseSha: 'a'.repeat(40),
+            branch: 'aidlc/i1--s1-unit-auth',
+          },
+        ],
+        branch: 'aidlc/i1--s1-unit-auth',
+        harness: 'codex',
+        assignedTo: 'u1',
+        sessionId: 'lane-auth',
+      },
+    );
+
+    expect(result.state).toBe('RUN_MANAGED');
+    expect(store.completeExternalDevelopmentStage).not.toHaveBeenCalled();
+    expect(store.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'v2.stage.external_development_cancelled' }),
+    );
   });
 });
 

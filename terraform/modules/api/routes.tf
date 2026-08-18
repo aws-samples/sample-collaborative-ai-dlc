@@ -1138,6 +1138,7 @@ resource "aws_lambda_permission" "workflows" {
 #   /projects/{projectId}/intents/{intentId}/units/{sectionIndex}/{unitSlug}/feedback GET, POST
 #   /projects/{projectId}/intents/{intentId}/realtime-token        POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer  POST
+#   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/submit  POST
 #   /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise  POST
 #   /projects/{projectId}/intents/{intentId}/artifacts/{artifactId}/impact       GET
 #   /projects/{projectId}/intents/{intentId}/artifacts/{artifactId}/content      PUT
@@ -1324,6 +1325,12 @@ resource "aws_api_gateway_resource" "intent_gate_answer" {
   path_part   = "answer"
 }
 
+resource "aws_api_gateway_resource" "intent_gate_submit" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent_gate.id
+  path_part   = "submit"
+}
+
 # Steering: revise an already-answered gate (the correction is a STEER row
 # delivered at the next deterministic injection point).
 resource "aws_api_gateway_resource" "intent_gate_revise" {
@@ -1434,6 +1441,7 @@ locals {
     feedback_get           = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "GET" }
     feedback_post          = { resource = aws_api_gateway_resource.intent_unit_feedback.id, method = "POST" }
     answer_post            = { resource = aws_api_gateway_resource.intent_gate_answer.id, method = "POST" }
+    submit_post            = { resource = aws_api_gateway_resource.intent_gate_submit.id, method = "POST" }
     revise_post            = { resource = aws_api_gateway_resource.intent_gate_revise.id, method = "POST" }
     # Post-hoc artifact editing (human + Quorum-supported).
     artifact_impact_get   = { resource = aws_api_gateway_resource.intent_artifact_impact.id, method = "GET" }
@@ -1595,6 +1603,12 @@ module "cors_intent_gate_answer" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_gate_answer.id
+}
+
+module "cors_intent_gate_submit" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_gate_submit.id
 }
 
 module "cors_intent_gate_revise" {

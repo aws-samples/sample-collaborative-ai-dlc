@@ -843,6 +843,19 @@ const compareBranches = async (ctx, repoId, { base, head }) => {
   return { status: aheadBy > 0 ? 'ahead' : 'identical', aheadBy, base: resolvedBase };
 };
 
+const getBranchHead = async (ctx, repoId, branch) => {
+  const project = encodeProject(repoId);
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${project}/repository/branches/${encodeURIComponent(branch)}`,
+  );
+  if (!res.ok) throw new ProviderError(res.status, `Branch not found: ${branch}`);
+  const data = await res.json();
+  const sha = data?.commit?.id;
+  if (!sha) throw new ProviderError(502, `Branch head unavailable: ${branch}`);
+  return { branch, sha };
+};
+
 // Get the live state of an MR ('open' | 'closed' | 'merged' | null).
 const getPullRequestState = async (ctx, repoId, mrIid) => {
   const status = await getPullRequestStatus(ctx, repoId, mrIid);
@@ -998,6 +1011,7 @@ export {
   findPullRequest,
   createPullRequest,
   compareBranches,
+  getBranchHead,
   getPullRequestState,
   getPullRequestStatus,
   setPullRequestDraft,
@@ -1036,6 +1050,7 @@ export default {
   findPullRequest,
   createPullRequest,
   compareBranches,
+  getBranchHead,
   getPullRequestState,
   getPullRequestStatus,
   setPullRequestDraft,
