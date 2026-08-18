@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
@@ -73,6 +73,13 @@ const graph = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
 vi.mock('@/services/intents', () => ({
+  NATIVE_EXPORT_HARNESS_OPTIONS: [
+    { value: 'claude', label: 'Claude' },
+    { value: 'codex', label: 'Codex' },
+    { value: 'kiro', label: 'Kiro CLI' },
+    { value: 'kiro-ide', label: 'Kiro IDE' },
+    { value: 'opencode', label: 'OpenCode' },
+  ],
   intentsService: {
     get: (...a: unknown[]) => get(...a),
     start: (...a: unknown[]) => start(...a),
@@ -156,6 +163,10 @@ const baseDetail = (over: Record<string, unknown> = {}) => ({
 
 describe('IntentView', () => {
   beforeEach(() => {
+    window.HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
+    window.HTMLElement.prototype.setPointerCapture = vi.fn();
+    window.HTMLElement.prototype.releasePointerCapture = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
     clearIntentCache();
     get.mockReset();
     start.mockReset();
@@ -440,31 +451,96 @@ describe('IntentView', () => {
       .mockImplementation(() => {});
 
     renderAt();
+    expect(
+      await screen.findByText(/Download this unit’s code-generation workspace/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upload plan' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upload summary' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Choose external development harness' }),
+    );
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Claude' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Download workspace' }));
     expect(screen.getByRole('heading', { name: 'Develop auth externally?' })).toBeInTheDocument();
-    expect(screen.getByText(/point-in-time native AI-DLC workspace/i)).toBeInTheDocument();
+    expect(screen.getByText(/point-in-time Claude workspace/i)).toBeInTheDocument();
     expect(screen.getByText('aidlc/i1--s1-unit-auth')).toBeInTheDocument();
     expect(screen.getByText(/code-generation-plan\.md/)).toBeInTheDocument();
     await userEvent.click(
       screen.getByRole('button', { name: 'Download code-generation workspace' }),
     );
 
-    expect(exportWorkflow).toHaveBeenCalledWith('p1', 'i1', 'codex', 'external-s1-auth-a0');
+    expect(exportWorkflow).toHaveBeenCalledWith('p1', 'i1', 'claude', 'external-s1-auth-a0');
     expect(downloadClick).toHaveBeenCalledOnce();
     expect(
       await screen.findByRole('heading', { name: 'Set up external code generation for auth' }),
     ).toBeInTheDocument();
     expect(
+      screen.getByText("$aidlc Let's perform the code-generation stage for unit 'auth'."),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('alertdialog')).queryByText('Finish and return the unit'),
+    ).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(
+      screen.getByRole('button', { name: 'Choose external development harness' }),
+    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Download workspace' })).toBeEnabled();
+    expect(screen.getByText('Finish and return the unit')).toBeInTheDocument();
+    expect(
       screen.getByText(
         "find . -type f \\( -name 'code-generation-plan.md' -o -name 'code-summary.md' \\) -print",
       ),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/git -C 'api' push origin 'aidlc\/i1--s1-unit-auth'/),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/git -C 'api' add -p/)).toBeInTheDocument();
-    expect(screen.getByText(/select the generated/i)).toBeInTheDocument();
+    expect(screen.getByText(/git push origin 'aidlc\/i1--s1-unit-auth'/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Upload plan' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Upload summary' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled();
     downloadClick.mockRestore();
+  });
+
+  it('restores the handoff return phase from persisted export metadata', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      gates: [
+        {
+          humanTaskId: 'external-s1-auth-a0',
+          stageInstanceId: 'si-code-auth',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'external-development',
+          status: 'pending',
+          prompt: 'Develop auth externally.',
+          options: null,
+          questions: null,
+          externalDevelopment: {
+            stageAttempt: 0,
+            harness: 'claude',
+            exportId: 'handoff-export',
+            exportedAt: '2026-08-18T12:00:00.000Z',
+            repositories: [
+              {
+                name: 'api',
+                repository: 'https://github.com/owner/api.git',
+                provider: 'github',
+                baseSha: 'a'.repeat(40),
+                branch: 'aidlc/i1--s1-unit-auth',
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    renderAt();
+
+    expect(await screen.findByText('Finish and return the unit')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download workspace' })).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'Choose external development harness' }),
+    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Upload plan' })).toBeInTheDocument();
+    expect(exportWorkflow).not.toHaveBeenCalled();
   });
 
   it('submits the two selected native documents for an external-development gate', async () => {
@@ -489,10 +565,34 @@ describe('IntentView', () => {
         },
       ],
     });
+    exportWorkflow.mockResolvedValue({
+      exportId: 'handoff-submit',
+      filename: 'auth-codex.zip',
+      downloadUrl: 'https://download.example/auth-submit.zip',
+      expiresAt: '2026-08-17T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'extract-only',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: false,
+        repositories: [],
+      },
+    });
     submitHandoff.mockResolvedValue({ ok: true });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
     renderAt();
 
-    const inputs = await screen.findAllByLabelText(/Select (plan|summary)/);
+    await userEvent.click(await screen.findByRole('button', { name: 'Download workspace' }));
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Download code-generation workspace' }),
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Done' }));
+    const inputs = await screen.findAllByLabelText(/Upload (code-generation plan|code summary)/);
     await userEvent.upload(inputs[0], new File(['# Plan\n'], 'plan.md', { type: 'text/markdown' }));
     await userEvent.upload(
       inputs[1],
@@ -508,6 +608,7 @@ describe('IntentView', () => {
         content: '# Summary\n',
       },
     });
+    downloadClick.mockRestore();
   });
 
   it('cancels external development and requests managed code generation', async () => {
@@ -579,10 +680,34 @@ describe('IntentView', () => {
           },
         ],
       });
+    exportWorkflow.mockResolvedValue({
+      exportId: 'handoff-rejected',
+      filename: 'auth-codex.zip',
+      downloadUrl: 'https://download.example/auth-rejected.zip',
+      expiresAt: '2026-08-17T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'extract-only',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: false,
+        repositories: [],
+      },
+    });
     submitHandoff.mockRejectedValue(new Error('Submission failed validation'));
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
     renderAt();
 
-    const inputs = await screen.findAllByLabelText(/Select (plan|summary)/);
+    await userEvent.click(await screen.findByRole('button', { name: 'Download workspace' }));
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Download code-generation workspace' }),
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Done' }));
+    const inputs = await screen.findAllByLabelText(/Upload (code-generation plan|code summary)/);
     await userEvent.upload(
       inputs[0],
       new File(['# Plan\n'], 'code-generation-plan.md', { type: 'text/markdown' }),
@@ -592,6 +717,7 @@ describe('IntentView', () => {
 
     expect(await screen.findByText('code-summary: content_required')).toBeInTheDocument();
     expect(get).toHaveBeenCalledTimes(2);
+    downloadClick.mockRestore();
   });
 
   it('shows the legacy-ref warning even when no workspace setup is required', async () => {
@@ -1005,6 +1131,12 @@ describe('IntentView', () => {
     renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Review navigation' })).toHaveTextContent(
+      'Back to intent',
+    );
+    const approvalActions = screen.getByRole('group', { name: 'Approval actions' });
+    expect(approvalActions).toHaveTextContent('Approve stage');
+    expect(approvalActions).toHaveTextContent('Approve and develop externally');
     expect(screen.getByRole('button', { name: /Approve stage/i })).toBeInTheDocument();
     const externalButton = screen.getByRole('button', {
       name: 'Approve and develop externally',
@@ -1208,7 +1340,7 @@ describe('IntentView', () => {
     const { unmount } = renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(
-      await screen.findByRole('button', { name: 'Approve — continue to stage-b' }),
+      await screen.findByRole('button', { name: 'Approve and continue to stage-b' }),
     ).toBeInTheDocument();
     unmount();
 
@@ -1217,7 +1349,7 @@ describe('IntentView', () => {
     renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(
-      await screen.findByRole('button', { name: 'Approve — complete workflow' }),
+      await screen.findByRole('button', { name: 'Approve and complete workflow' }),
     ).toBeInTheDocument();
   });
 

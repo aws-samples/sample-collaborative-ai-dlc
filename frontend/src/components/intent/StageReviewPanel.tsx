@@ -32,12 +32,15 @@ import { generateColor } from '@/utils/colors';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  ArrowLeft,
   ChevronRight,
   FileText,
-  Laptop,
   Layers,
   SearchAlert,
   SearchCheck,
+  SquareArrowOutUpRight,
+  SquarePen,
+  SquarePlay,
   Sparkles,
 } from 'lucide-react';
 
@@ -289,6 +292,12 @@ export function StageReviewPanel({
   return (
     <Card className="border-agent-waiting/30">
       <CardHeader className="space-y-3">
+        <nav aria-label="Review navigation">
+          <Button variant="ghost" size="sm" className="-ml-2" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" />
+            Back to intent
+          </Button>
+        </nav>
         <div>
           <CardTitle className="text-base">
             Review: {stageNameOf(gate.stageInstanceId ?? gate.humanTaskId)}
@@ -579,29 +588,37 @@ export function StageReviewPanel({
               </Select>
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button variant="outline" className="mr-auto" onClick={onBack}>
-              Back to intent
-            </Button>
-            {pending && (
-              <>
-                <Button
-                  variant="outline"
-                  disabled={submitting || !synced || !feedback.trim()}
-                  onClick={() => submit('request-changes')}
-                >
-                  Request changes
-                </Button>
+          {pending && (
+            <div
+              role="group"
+              aria-label="Review actions"
+              className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <Button
+                variant="outline"
+                className="order-2 w-full sm:order-1 sm:w-auto"
+                disabled={submitting || !synced || !feedback.trim()}
+                onClick={() => submit('request-changes')}
+              >
+                <SquarePen className="h-4 w-4" />
+                Request changes
+              </Button>
+              <div
+                role="group"
+                aria-label="Approval actions"
+                className="order-1 flex flex-col gap-2 sm:order-2 sm:flex-row sm:flex-wrap sm:justify-end"
+              >
                 {localDevelopmentAvailable && (
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           variant="outline"
+                          className="order-2 w-full sm:order-1 sm:w-auto"
                           disabled={submitting}
                           onClick={() => submit('develop-externally')}
                         >
-                          <Laptop className="h-4 w-4" />
+                          <SquareArrowOutUpRight className="h-4 w-4" />
                           Approve and develop externally
                         </Button>
                       </TooltipTrigger>
@@ -612,18 +629,23 @@ export function StageReviewPanel({
                     </Tooltip>
                   </TooltipProvider>
                 )}
-                <Button disabled={submitting} onClick={() => submit('approve')}>
+                <Button
+                  className="order-1 w-full sm:order-2 sm:w-auto"
+                  disabled={submitting}
+                  onClick={() => submit('approve')}
+                >
+                  <SquarePlay className="h-4 w-4" />
                   {skipTo
-                    ? `Approve & skip to ${skipTo}`
+                    ? `Approve and skip to ${skipTo}`
                     : gate.nextStageId !== undefined
                       ? gate.nextStageId
-                        ? `Approve — continue to ${gate.nextStageId}`
-                        : 'Approve — complete workflow'
+                        ? `Approve and continue to ${gate.nextStageId}`
+                        : 'Approve and complete workflow'
                       : 'Approve stage'}
                 </Button>
-              </>
-            )}
-          </div>
+              </div>
+            </div>
+          )}
           {pending && skipTo && (
             <p className="text-xs text-amber-600 dark:text-amber-500">
               Every CONDITIONAL stage between this one and {skipTo} will be marked skipped;

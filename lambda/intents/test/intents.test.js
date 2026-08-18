@@ -1303,20 +1303,28 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
       });
       await expect(validateSnapshot()).resolves.toBe(true);
       return {
+        exportId: 'handoff-export',
         downloadUrl: 'https://example.test/handoff.zip',
         expiresAt: '2026-08-17T16:00:00.000Z',
       };
     });
 
     const res = await exportIntent(sub, projectId, intent.id, {
-      harness: 'codex',
+      harness: 'claude',
       handoffTaskId: 'external-auth',
     });
 
     expect(res.statusCode).toBe(201);
     expect(createNativeExportSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceCheckpoint: null }),
+      expect.objectContaining({ harness: 'claude', sourceCheckpoint: null }),
     );
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#external-auth')).externalDevelopment,
+    ).toMatchObject({
+      harness: 'claude',
+      exportId: 'handoff-export',
+      exportedAt: expect.any(String),
+    });
   });
 
   it('requires a checkpoint when a sibling lane is still running', async () => {

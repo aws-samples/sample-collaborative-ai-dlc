@@ -1843,6 +1843,25 @@ export const handler = async (event) => {
                 );
               },
         });
+        if (handoffTask) {
+          const exportedTask = await store.updateExternalDevelopment({
+            executionId: intentId,
+            humanTaskId: handoffTaskId,
+            stageAttempt: Number(handoffTask.externalDevelopment?.stageAttempt ?? -1),
+            externalDevelopment: {
+              ...handoffTask.externalDevelopment,
+              harness,
+              exportId: exported.exportId ?? null,
+              exportedAt: new Date().toISOString(),
+            },
+          });
+          if (!exportedTask) {
+            return response(409, {
+              error: 'The external-development handoff is no longer current',
+              code: 'handoff_not_pending',
+            });
+          }
+        }
         return response(201, exported);
       } catch (error) {
         console.error('Native workflow export failed:', error);

@@ -136,7 +136,7 @@ describe('projectNativeWorkspace', () => {
     expect(audit).not.toContain('**Stage**: code-generation');
   });
 
-  it('projects one parked code-generation unit for local handoff', () => {
+  it('projects one parked code-generation unit with the selected external harness', () => {
     const value = input();
     value.stages[2].forEach = 'unit-of-work';
     value.stages.push({
@@ -190,7 +190,7 @@ describe('projectNativeWorkspace', () => {
         status: 'pending',
         externalDevelopment: {
           stageAttempt: 2,
-          harness: 'codex',
+          harness: 'kiro',
           repositories: [
             {
               name: 'checkout-api',

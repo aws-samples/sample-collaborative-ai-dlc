@@ -147,6 +147,16 @@ export interface NativeWorkflowExport {
 }
 
 export type NativeExportHarness = AgentCli | 'kiro-ide';
+export const NATIVE_EXPORT_HARNESS_OPTIONS: ReadonlyArray<{
+  value: NativeExportHarness;
+  label: string;
+}> = [
+  { value: 'claude', label: 'Claude' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'kiro', label: 'Kiro CLI' },
+  { value: 'kiro-ide', label: 'Kiro IDE' },
+  { value: 'opencode', label: 'OpenCode' },
+];
 
 // Shape mirrors the plan resolver's error objects (lambda/shared/v2-execution-plan.js).
 export interface PlanWarning {
@@ -264,6 +274,8 @@ export interface IntentGate {
       branch: string;
     }>;
     exportManifestKey?: string | null;
+    exportId?: string | null;
+    exportedAt?: string | null;
     validationFindings?: Array<{
       field: string;
       code: string;
