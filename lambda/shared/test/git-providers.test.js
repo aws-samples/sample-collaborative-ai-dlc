@@ -732,6 +732,16 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
     ).resolves.toBe(false);
   });
 
+  it('does not accept an abbreviated GitLab ancestor hash', async () => {
+    const fetchImpl = makeFetch([
+      ['/repository/merge_base?', { json: { id: 'abcdef1234567890abcdef1234567890abcdef12' } }],
+    ]);
+
+    await expect(
+      gl.isCommitAncestor({ token: 't', fetchImpl }, 'g/p', 'abcdef1', 'intent'),
+    ).resolves.toBe(false);
+  });
+
   it('createPullRequest resolves the project default branch when baseBranch is omitted', async () => {
     const fetchImpl = makeFetch([
       ['/repository/branches?search', { json: [] }],
@@ -983,11 +993,11 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
     expect(fetchImpl.calls[0].url).toContain('/merge-base/target-sha..intent');
   });
 
-  it('isCommitAncestor matches when merge-base returns the full hash for a short ancestor', async () => {
+  it('isCommitAncestor rejects an abbreviated ancestor hash', async () => {
     const fetchImpl = makeFetch([['/merge-base/', { json: { hash: 'abcdef1234567890' } }]]);
     expect(
       await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'abcdef1', 'intent'),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('isCommitAncestor returns false when the merge-base is a different commit', async () => {

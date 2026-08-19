@@ -649,9 +649,7 @@ const isCommitAncestor = async (ctx, repoId, ancestorSha, descendantRef) => {
   const mergeBaseHash = data?.hash;
   if (!mergeBaseHash) return false;
 
-  // ancestorSha may be a short hash; merge-base returns the full hash. Compare
-  // both directions so a prefix match still counts.
-  return mergeBaseHash === ancestorSha || mergeBaseHash.startsWith(ancestorSha);
+  return mergeBaseHash === ancestorSha;
 };
 
 const getUnmergedConstructionTaskBranches = async (ctx, repoId, branch) => {
