@@ -2,7 +2,7 @@
 
 An external code-generation handoff lets a developer complete one unit's `code-generation` stage in a local IDE, CLI, hosted workspace, or remote agent, then return the result to the running intent.
 
-Unlike a general [workspace export](exporting-workspaces.md), this is a controlled round trip. AIDLC Collaborative keeps the unit parked, validates the pushed source revisions and required documents, imports the result, and resumes the unit's remaining workflow stages.
+Unlike a general [workspace export](exporting-workspaces.md), this is a controlled round trip. Collaborative AIDLC keeps the unit parked, validates the pushed source revisions and required documents, imports the result, and resumes the unit's remaining workflow stages.
 
 ## Start an external handoff
 
@@ -27,7 +27,7 @@ The handoff is assigned to the user who selected external development. Only that
 
 The downloaded workspace is scoped to the selected unit and its `code-generation` stage. It includes the pinned workflow context, completed upstream artifacts, repository assignments, continuation instructions, and harness-specific AI-DLC files.
 
-Complete only code generation in this workspace. Later construction, review, build, test, and delivery stages remain owned by AIDLC Collaborative and run after the handoff is accepted.
+Complete only code generation in this workspace. Later construction, review, build, test, and delivery stages remain owned by Collaborative AIDLC and run after the handoff is accepted.
 
 ## Work on the assigned branches
 
@@ -40,7 +40,7 @@ The confirmation dialog and handoff card list one assigned branch per repository
 
 For a multi-repository unit, push every listed repository before submitting the handoff.
 
-The platform records the repository revision from which the handoff started. At submission it verifies that each assigned branch exists and that its current head descends from that original revision.
+The platform records the repository revision from which the handoff started. At submission, it verifies that each assigned branch exists and that its current head descends from that original revision.
 
 ## Produce the required documents
 
@@ -92,6 +92,6 @@ Refresh the intent before retrying if the handoff is reported as stale.
 
 ## Return to managed execution
 
-Choose **Cancel external development** if you no longer want to complete the handoff outside the platform. After confirmation, AIDLC Collaborative closes the external task and runs the unit's `code-generation` stage in its managed agent runtime.
+Choose **Cancel external development** if you no longer want to complete the handoff outside the platform. After confirmation, Collaborative AIDLC closes the external task and runs the unit's `code-generation` stage in its managed agent runtime.
 
 Cancelling external development does not cancel the intent.
