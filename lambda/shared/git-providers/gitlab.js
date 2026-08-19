@@ -935,10 +935,7 @@ const isCommitAncestor = async (ctx, repoId, ancestorSha, descendantRef) => {
   if (!res.ok) return false;
   const data = await res.json().catch(() => ({}));
   const mergeBaseSha = data?.id;
-  return (
-    typeof mergeBaseSha === 'string' &&
-    (mergeBaseSha === ancestorSha || mergeBaseSha.startsWith(ancestorSha))
-  );
+  return typeof mergeBaseSha === 'string' && mergeBaseSha === ancestorSha;
 };
 
 // Server-side merge of a task branch into the sprint branch. GitLab has no
