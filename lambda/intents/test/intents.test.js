@@ -3470,6 +3470,22 @@ describe('POST /gates/{humanTaskId}/submit', () => {
       stageAttempt: 2,
       repositories: [expect.objectContaining({ submittedSha })],
     });
+    const acceptanceWrites = ddbMock.commandCalls(UpdateCommand).filter(({ args }) => {
+      const input = args[0].input;
+      return input.ExpressionAttributeValues?.[':answer']?.decision === 'accepted';
+    });
+    expect(acceptanceWrites).toHaveLength(1);
+    expect(acceptanceWrites[0].args[0].input).toMatchObject({
+      ConditionExpression:
+        '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+      ExpressionAttributeValues: expect.objectContaining({
+        ':stageAttempt': 2,
+        ':answered': 'answered',
+      }),
+    });
+    expect(acceptanceWrites[0].args[0].input.UpdateExpression).toContain(
+      'externalDevelopment = :externalDevelopment',
+    );
     expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
     delete process.env.AGENTCORE_RUNTIME_ARN;
   });

@@ -758,6 +758,55 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
+  // Atomically accept one external-development submission. Cancellation and
+  // concurrent submissions update the same task row, so exactly one pending
+  // task owner can persist accepted metadata and answer the gate.
+  const acceptExternalDevelopment = async ({
+    executionId,
+    humanTaskId,
+    stageAttempt,
+    externalDevelopment,
+    answer,
+    answeredBy,
+    answeredByName,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression:
+            '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+          UpdateExpression:
+            'SET externalDevelopment = :externalDevelopment, #status = :answered, answer = :answer, answeredBy = :by, answeredByName = :byName, answeredAt = :ts, updatedAt = :ts, GSI2SK = :g2sk',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':pending': 'pending',
+            ':answered': 'answered',
+            ':stageAttempt': stageAttempt,
+            ':externalDevelopment': externalDevelopment,
+            ':answer': answer,
+            ':by': answeredBy ?? null,
+            ':byName': answeredByName ?? null,
+            ':ts': ts,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'HUMAN',
+              state: 'answered',
+              id: humanTaskId,
+            }).GSI2SK,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
   // Bind one durable callback to one pending gate owner. Concurrent lanes must
   // never overwrite each other's callback: a replay may repeat the identical
   // binding, but a different callback/owner fails the CAS and is surfaced by
@@ -2468,6 +2517,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     listEvents,
     createHumanTask,
     updateExternalDevelopment,
+    acceptExternalDevelopment,
     getHumanTask,
     setGateCallbackId,
     answerHumanTask,

@@ -2597,7 +2597,7 @@ export const handler = async (event) => {
         acceptedAt,
         acceptedBy: responder.sub,
       };
-      const acceptedMetadata = await store.updateExternalDevelopment({
+      const answered = await store.acceptExternalDevelopment({
         executionId: intentId,
         humanTaskId,
         stageAttempt,
@@ -2607,14 +2607,6 @@ export const handler = async (event) => {
           candidate,
           acceptedResult,
         },
-      });
-      if (!acceptedMetadata) {
-        return response(409, { error: 'The external-development handoff is no longer current' });
-      }
-      const answered = await store.answerHumanTask({
-        executionId: intentId,
-        humanTaskId,
-        status: 'answered',
         answer: { decision: 'accepted', ...acceptedResult },
         answeredBy: responder.sub,
         answeredByName: responder.displayName,

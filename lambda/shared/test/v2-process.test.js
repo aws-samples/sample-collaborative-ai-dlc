@@ -407,6 +407,57 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':stageAttempt']).toBe(2);
   });
 
+  it('atomically accepts external development only for the pending stage attempt', async () => {
+    ddb.on(UpdateCommand).resolves({
+      Attributes: {
+        status: 'answered',
+        answer: { decision: 'accepted' },
+        externalDevelopment: { stageAttempt: 2, acceptedResult: { acceptedAt: 'T' } },
+      },
+    });
+
+    const result = await store.acceptExternalDevelopment({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      stageAttempt: 2,
+      externalDevelopment: { stageAttempt: 2, acceptedResult: { acceptedAt: 'T' } },
+      answer: { decision: 'accepted' },
+      answeredBy: 'u1',
+      answeredByName: 'User One',
+    });
+
+    expect(result).toMatchObject({
+      status: 'answered',
+      answer: { decision: 'accepted' },
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+    );
+    expect(input.UpdateExpression).toContain('externalDevelopment = :externalDevelopment');
+    expect(input.UpdateExpression).toContain('#status = :answered');
+    expect(input.UpdateExpression).toContain('answer = :answer');
+  });
+
+  it('does not persist accepted metadata after another answer wins the task', async () => {
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+
+    const result = await store.acceptExternalDevelopment({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      stageAttempt: 2,
+      externalDevelopment: { stageAttempt: 2, acceptedResult: { acceptedAt: 'T' } },
+      answer: { decision: 'accepted' },
+      answeredBy: 'u1',
+      answeredByName: 'User One',
+    });
+
+    expect(result).toBeNull();
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(1);
+  });
+
   it('listEvents queries the EVENT# prefix time-ordered and drains pagination', async () => {
     // The PR fan-in reads this to detect recorded git activity — a dropped
     // page could hide a push failure (the 2026-07 lost-work signal).
