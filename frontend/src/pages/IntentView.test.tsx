@@ -381,6 +381,9 @@ describe('IntentView', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Choose workspace harness' }));
     expect(await screen.findByText('Codex')).toBeInTheDocument();
     await userEvent.click(await screen.findByText('Claude'));
+    expect(screen.queryByText('Continue outside Collaborative AI-DLC?')).not.toBeInTheDocument();
+    expect(exportWorkflow).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Download Claude workspace' }));
     expect(await screen.findByText('Continue outside Collaborative AI-DLC?')).toBeInTheDocument();
     expect(screen.getByText(/will not be synchronized back to this intent/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));

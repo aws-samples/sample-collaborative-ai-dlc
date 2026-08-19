@@ -125,6 +125,9 @@ export default function IntentView() {
   const [confirmRepair, setConfirmRepair] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [confirmExport, setConfirmExport] = useState(false);
+  const [selectedExportHarness, setSelectedExportHarness] = useState<
+    NativeExportHarness | undefined
+  >();
   const [requestedExportHarness, setRequestedExportHarness] = useState<
     NativeExportHarness | undefined
   >();
@@ -289,8 +292,9 @@ export default function IntentView() {
   const exportUnavailableReason = 'Not available before the workflow starts';
   const exportDisabled = exporting || !isExportable;
   const defaultExportHarness = intent.agentCli ?? undefined;
+  const activeExportHarness = selectedExportHarness ?? defaultExportHarness;
   const exportCli =
-    EXPORT_HARNESSES.find((option) => option.value === defaultExportHarness)?.label ??
+    EXPORT_HARNESSES.find((option) => option.value === activeExportHarness)?.label ??
     'native AI-DLC';
   const exportButtonLabel =
     intent.status === 'RUNNING'
@@ -376,10 +380,10 @@ export default function IntentView() {
                           <DropdownMenuItem
                             key={option.value}
                             disabled={exporting}
-                            onClick={() => requestExport(option.value)}
+                            onClick={() => setSelectedExportHarness(option.value)}
                           >
                             <span>{option.label}</span>
-                            {option.value === defaultExportHarness && (
+                            {option.value === activeExportHarness && (
                               <Check className="ml-auto h-4 w-4" aria-label="Current harness" />
                             )}
                           </DropdownMenuItem>
@@ -405,7 +409,7 @@ export default function IntentView() {
                       size="icon"
                       className="h-7 w-7 rounded-none"
                       disabled={exportDisabled}
-                      onClick={() => requestExport()}
+                      onClick={() => requestExport(activeExportHarness)}
                       aria-label={exportButtonLabel}
                     >
                       {exporting ? (
