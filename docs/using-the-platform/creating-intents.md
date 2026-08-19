@@ -60,6 +60,12 @@ Creating the intent opens it on the workbench in **DRAFT** state, with a **Revie
 
 Terminal states are not dead ends: any executed stage can be [rewound](intent-observability.md#steering-and-rewind) to iterate.
 
+## Continue in a local agent harness
+
+After an intent starts, you can download a point-in-time native AI-DLC workspace for Claude, Codex, Kiro CLI, Kiro IDE, or OpenCode. The export control is beside **Discuss** in the intent header. Choose the harness with the small arrow, then use the adjacent download button.
+
+Running intents export their latest completed workflow checkpoint, so work from the active stage is not included. The handoff is one-way: local decisions, artifacts, and code changes do not synchronize back to the intent. See [Exporting a workspace](exporting-workspaces.md) for the archive contents and setup steps.
+
 ## The project intent list
 
 The project page lists all intents with live status (Running, Waiting for input, Completed, Failed), created/updated timestamps, and sorting. The global dashboard surfaces each project's latest intent and floats projects with active work to the top.

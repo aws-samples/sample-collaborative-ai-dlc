@@ -71,6 +71,7 @@ Not happy with a stage's output? Open its detail view and **restart from this st
 ## What's next
 
 - [Creating intents](../using-the-platform/creating-intents.md) — the full reference for intent creation
+- [Exporting a workspace](../using-the-platform/exporting-workspaces.md) — continue an intent in a local agent harness
 - [Observing intents](../using-the-platform/intent-observability.md) — everything on the workbench, observability, graph, and audit pages
 - [Git and tracker integration](../using-the-platform/git-integration.md) — connect trackers and understand branch/PR behavior
 - [Managing workflows](../using-the-platform/workflows.md) — tailor the methodology (platform administrators)
