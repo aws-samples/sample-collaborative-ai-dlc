@@ -67,6 +67,9 @@ const parseJsonValue = (value, field) => {
 
 const optionLetter = (index) => String.fromCharCode(65 + index);
 
+const otherOptionIndex = (options) =>
+  options.findIndex((option) => /^other\b/i.test(String(option?.label ?? '').trim()));
+
 const renderQuestionAnswer = ({ answer, question, index }) => {
   const parsed = parseJsonValue(answer, 'question answer');
   const entry = Array.isArray(parsed?.answers)
@@ -86,7 +89,13 @@ const renderQuestionAnswer = ({ answer, question, index }) => {
         })
     : [];
   const freeText = typeof entry.freeText === 'string' ? entry.freeText.trim() : '';
-  if (selected.length === 0) return freeText ? `X. ${freeText}` : '';
+  if (selected.length === 0) {
+    if (!freeText) return '';
+    const options = Array.isArray(question.options) ? question.options : [];
+    const explicitOtherIndex = otherOptionIndex(options);
+    if (explicitOtherIndex < 0) return `X. ${freeText}`;
+    return `${optionLetter(explicitOtherIndex)}. ${options[explicitOtherIndex].label}; ${freeText}`;
+  }
   return freeText ? `${selected.join(', ')}; ${freeText}` : selected.join(', ');
 };
 
@@ -113,7 +122,7 @@ const renderQuestionFile = ({ stageId, tasks }) => {
         const description = option?.description ? ` — ${option.description}` : '';
         return `${optionLetter(optionIndex)}. ${option?.label ?? ''}${description}`;
       });
-      if (!options.some((option) => /^other\b/i.test(String(option?.label ?? '').trim()))) {
+      if (otherOptionIndex(options) < 0) {
         optionLines.push('X. Other (please specify)');
       }
       const answer = renderQuestionAnswer({ answer: task.answer, question, index });

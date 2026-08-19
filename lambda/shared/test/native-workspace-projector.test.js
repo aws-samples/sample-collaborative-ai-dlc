@@ -734,6 +734,36 @@ X. Other (please specify)
     expect(questions).toContain('[Answer]: A. REST, B. Events; Webhooks later');
   });
 
+  it('references an explicit Other option when reconstructing a free-text answer', () => {
+    const value = input();
+    value.humanTasks = [
+      {
+        humanTaskId: 'q-requirements',
+        stageInstanceId: 'si-requirements',
+        kind: 'question',
+        status: 'answered',
+        questions: [
+          {
+            text: 'Which interface is required?',
+            type: 'single',
+            options: [{ label: 'REST' }, { label: 'Other' }],
+          },
+        ],
+        answer: {
+          answers: [{ selectedOptions: [], freeText: 'GraphQL' }],
+        },
+      },
+    ];
+
+    const result = projectNativeWorkspace(value);
+    const questions = result.files.get(
+      'aidlc/spaces/default/intents/260811-payment-service/inception/requirements-analysis/requirements-analysis-questions.md',
+    );
+    expect(questions).toContain('A. REST\nB. Other\n\n[Answer]: B. Other; GraphQL');
+    expect(questions).not.toContain('X. Other');
+    expect(questions).not.toContain('[Answer]: X.');
+  });
+
   it('keeps an existing question artifact authoritative', () => {
     const value = input();
     value.artifacts.push({
