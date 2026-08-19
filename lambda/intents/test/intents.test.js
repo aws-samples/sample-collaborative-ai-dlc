@@ -395,6 +395,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  delete process.env.AIDLC_REPO_REF;
   installDdbFakes();
   sourceControlReviewComments = [];
   sourceControlValidationResponse = { ready: true, repositories: [] };
@@ -1094,6 +1095,8 @@ describe('POST /projects/{id}/intents', () => {
 });
 
 describe('POST /projects/{id}/intents/{intentId}/export', () => {
+  const deploymentRef = 'd'.repeat(40);
+
   const seedExportPlan = () => {
     procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#requirements-analysis'), {
       pk: 'WF#default#aidlc-v2',
@@ -1121,14 +1124,16 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
     });
   };
 
-  const exportIntent = (sub, projectId, intentId, input = { harness: 'codex' }) =>
-    handler({
+  const exportIntent = (sub, projectId, intentId, input = { harness: 'codex' }) => {
+    process.env.AIDLC_REPO_REF ||= deploymentRef;
+    return handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intentId}/export`,
       pathParameters: { projectId, intentId },
       body: JSON.stringify(input),
       ...claims(sub),
     });
+  };
 
   const createExportableIntent = async (sub, status) => {
     const projectId = await seedV2Project(sub);
@@ -1436,6 +1441,38 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
         validateSnapshot: expect.any(Function),
       }),
     );
+  });
+
+  it('resolves the deployment tag before exporting a legacy intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    const sha = 'c'.repeat(40);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), {
+      ...meta,
+      aidlcRepoRef: null,
+    });
+    process.env.AIDLC_REPO_REF = 'v2.3.0';
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, json: async () => ({ sha }) });
+
+    try {
+      const res = await exportIntent(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(201);
+      expect(fetchSpy.mock.calls[0][0]).toContain('/commits/v2.3.0');
+      expect(createNativeExportSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          upstreamRef: sha,
+          warnings: [
+            'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+          ],
+        }),
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.AIDLC_REPO_REF;
+    }
   });
 
   it('uses the intent SHA catalog when SYSTEM workflow versions were reseeded', async () => {

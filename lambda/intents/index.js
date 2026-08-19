@@ -1711,6 +1711,17 @@ export const handler = async (event) => {
           incompatibleBlocks,
         });
       }
+      let upstreamRef = meta.aidlcRepoRef;
+      if (!upstreamRef) {
+        try {
+          upstreamRef = await resolveAidlcRepoRef(AIDLC_REPO_REF());
+        } catch (error) {
+          return response(503, {
+            error: 'The configured AI-DLC repository ref could not be resolved',
+            detail: error.message,
+          });
+        }
+      }
       const stages = [
         ...planResult.plan.stages,
         ...(planResult.plan.skippedStages ?? []).map((stage) => ({ ...stage, excluded: true })),
@@ -1784,7 +1795,7 @@ export const handler = async (event) => {
         const exported = await createNativeExport({
           s3,
           bucket: ARTIFACTS_BUCKET(),
-          upstreamRef: meta.aidlcRepoRef || AIDLC_REPO_REF(),
+          upstreamRef,
           harness,
           warnings: legacyRefWarning,
           projection,
