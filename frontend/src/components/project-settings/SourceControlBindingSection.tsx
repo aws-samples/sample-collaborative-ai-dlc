@@ -34,6 +34,7 @@ import {
 interface Props {
   project: Project;
   canEdit: boolean;
+  onStatusChange?: (status: ProjectSourceControlStatus) => void;
 }
 
 const authOptions = (provider: GitProvider): SourceControlAuthType[] =>
@@ -124,7 +125,7 @@ function ProviderBindingControl({
   );
 }
 
-export function SourceControlBindingSection({ project, canEdit }: Props) {
+export function SourceControlBindingSection({ project, canEdit, onStatusChange }: Props) {
   const [status, setStatus] = useState<ProjectSourceControlStatus | null>(null);
   const [authTypes, setAuthTypes] = useState<Partial<Record<GitProvider, SourceControlAuthType>>>(
     {},
@@ -152,6 +153,7 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
     try {
       const next = await sourceControlService.getStatus(project.id);
       setStatus(next);
+      onStatusChange?.(next);
       setAuthTypes((current) => {
         const updated = { ...current };
         for (const provider of providers) {
@@ -192,7 +194,9 @@ export function SourceControlBindingSection({ project, canEdit }: Props) {
     setSaving(true);
     setError(null);
     try {
-      setStatus(await sourceControlService.bind(project.id, selections));
+      const next = await sourceControlService.bind(project.id, selections);
+      setStatus(next);
+      onStatusChange?.(next);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to bind source control');
     } finally {
