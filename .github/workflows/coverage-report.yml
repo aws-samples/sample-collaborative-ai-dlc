@@ -1,0 +1,76 @@
+name: Backend Coverage Report
+
+on:
+  workflow_run:
+    workflows:
+      - Unit Tests
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: >-
+    coverage-report-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      # Keep the privileged workflow on trusted default-branch code. The action
+      # documents workflow_run support, but changed-file rows still require an
+      # end-to-end check on the first PR after this workflow reaches main.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download pull request coverage
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+          name: backend-coverage-node-24
+          path: coverage
+
+      - name: Download latest main coverage baseline
+        id: baseline
+        uses: dawidd6/action-download-artifact@ac66b43f0e6a346234dd65d4d0c8fbb31cb316e5 # v11
+        with:
+          workflow: test.yml
+          branch: main
+          event: push
+          workflow_conclusion: success
+          name: backend-coverage-baseline
+          path: coverage-main
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Comment backend coverage trend
+        if: steps.baseline.outputs.found_artifact == 'true'
+        uses: davelosert/vitest-coverage-report-action@8b157684c6a6b259b97d45e72b44242865c0f6a5 # v2
+        with:
+          name: Backend
+          github-token: ${{ github.token }}
+          comment-on: pr
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
+          json-summary-compare-path: coverage-main/coverage-summary.json
+          file-coverage-mode: changes
+          sort-by: lines-asc
+
+      - name: Comment backend coverage without baseline
+        if: steps.baseline.outputs.found_artifact != 'true'
+        uses: davelosert/vitest-coverage-report-action@8b157684c6a6b259b97d45e72b44242865c0f6a5 # v2
+        with:
+          name: Backend
+          github-token: ${{ github.token }}
+          comment-on: pr
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
+          file-coverage-mode: changes
+          sort-by: lines-asc

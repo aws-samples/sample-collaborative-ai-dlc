@@ -1,0 +1,70 @@
+name: Backend Mutation PR
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - lambda/**/*.js
+      - '!lambda/**/test/**'
+      - '!lambda/**/.build/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Mutate changed backend files
+        id: mutation
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          MUTATION_WORKFLOW_URL: >-
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >-
+          npm run test:mutation:changed --
+          --base=${{ github.event.pull_request.base.sha }}
+
+      - name: Finalize mutation summary
+        if: always()
+        env:
+          MUTATION_EXECUTION_INCOMPLETE: ${{ steps.mutation.outcome != 'success' }}
+          MUTATION_WORKFLOW_URL: >-
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >-
+          npm run test:mutation:changed --
+          --report-only
+          --base=${{ github.event.pull_request.base.sha }}
+
+      - name: Upload mutation reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-mutation-pr
+          path: reports/mutation/pr/
+          if-no-files-found: warn
+          retention-days: 7

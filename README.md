@@ -411,7 +411,34 @@ Run the unit tests and generate a coverage report:
 ```bash
 npm test                 # run all unit tests
 npm run test:coverage    # run tests with a coverage report (HTML in coverage/)
+npm run test:mutation:dry # validate the mutation-testing harness without running mutants
+npm run test:mutation     # mutate all backend JavaScript sources
+npm run test:mutation:changed -- --base=origin/main # mutate changed backend files
 ```
+
+Backend coverage includes untested Lambda source files and produces text, HTML,
+LCOV, JSON summary, and JSON detail reports. CI retains the full HTML report as
+a workflow artifact. Every successful push to `main` also publishes the latest
+coverage summary as the comparison baseline. Pull requests receive a
+non-blocking coverage comment showing the trend for changed backend files. The
+first PR after these workflows reach `main` must confirm that the third-party
+report action correctly resolves changed files from its `workflow_run` context.
+Mutation testing uses StrykerJS with the existing Vitest tests across all Lambda
+projects. It runs each Lambda domain sequentially to keep the instrumented
+process bounded, writes per-domain HTML and JSON reports under
+`reports/mutation/`, then generates `reports/mutation/summary.json`. Pass a
+single domain when needed, for example
+`npm run test:mutation -- --scope=v2-orchestrator`. Static mutants are ignored
+by default because they require reloading the test environment and dominate the
+runtime on the largest domains. Pass `--include-static` for an exhaustive run.
+Mutation scores are initially informational so the first runs establish a
+baseline before any blocking threshold is chosen. Pull requests that change
+backend JavaScript also run an informational mutation campaign over each
+changed production file. The PR comment uses the official Stryker metrics and
+highlights surviving or uncovered mutants without blocking the pull request.
+Draft pull requests are skipped, static mutants are excluded, previous runs are
+cancelled after a new push, and the pilot stops after 30 minutes. A timeout
+produces a partial informational report rather than failing the pull request.
 
 Lint, format, and security checks:
 

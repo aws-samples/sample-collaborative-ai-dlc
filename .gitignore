@@ -41,6 +41,8 @@ node_modules
 
 # Test coverage output
 coverage/
+reports/
+.stryker-tmp/
 
 # Dev screenshots and scratch files
 *.png

@@ -1,0 +1,59 @@
+name: Backend Mutation Report
+
+on:
+  workflow_run:
+    workflows:
+      - Backend Mutation PR
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  report:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find pull request
+        id: pull-request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          OWNER_REPO: ${{ github.repository }}
+          WORKFLOW_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          number="$WORKFLOW_PR"
+          if [ -z "$number" ]; then
+            number=$(gh api "repos/$OWNER_REPO/commits/$HEAD_SHA/pulls" --jq '.[0].number')
+          fi
+          if ! [[ "$number" =~ ^[0-9]+$ ]]; then
+            echo "Unable to identify the pull request for $HEAD_SHA" >&2
+            exit 1
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          draft=$(gh api "repos/$OWNER_REPO/pulls/$number" --jq '.draft')
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
+
+      - name: Download mutation report
+        if: steps.pull-request.outputs.draft == 'false'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+          name: backend-mutation-pr
+          path: mutation-report
+
+      - name: Comment mutation findings
+        if: steps.pull-request.outputs.draft == 'false'
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          number_force: ${{ steps.pull-request.outputs.number }}
+          header: backend-mutation
+          path: mutation-report/summary.md
+          skip_unchanged: true
