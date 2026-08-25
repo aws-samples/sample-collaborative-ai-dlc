@@ -104,5 +104,6 @@ You start an intent by writing a prompt (or importing a tracker issue), reviewin
 Read about how it works in detail:
 
 - [Architecture](architecture.md) — system-level component overview
+- [Data model](data-model.md) — knowledge graph, execution state, and workflow library
 - [Workflows and building blocks](workflows-and-blocks.md) — how the methodology is composed
 - [Execution model](execution.md) — how an intent runs, from orchestration to pull request
