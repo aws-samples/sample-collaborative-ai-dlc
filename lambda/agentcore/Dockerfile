@@ -91,14 +91,14 @@ RUN mkdir -p /opt/uv/bin \
     && rm -rf /tmp/uv-aarch64-unknown-linux-gnu /tmp/uv.tar.gz
 
 # Install the agentcore package deps (its own package.json — isolated).
-COPY agentcore/package.json /opt/agentcore/package.json
+COPY --chown=node:node --chmod=0644 agentcore/package.json /opt/agentcore/package.json
 RUN cd /opt/agentcore \
     && npm install --omit=dev \
     && npm cache clean --force
 
 # App code: the agentcore package + the shared/ helpers it imports via ../shared.
-COPY agentcore/ /opt/agentcore/
-COPY shared/ /opt/shared/
+COPY --chown=node:node agentcore/ /opt/agentcore/
+COPY --chown=node:node shared/ /opt/shared/
 
 # The shared/ helpers are CommonJS loaded from /opt/shared, so Node resolves their
 # @aws-sdk deps upward from /opt/shared — never into /opt/agentcore/node_modules

@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const agentcoreDir = path.join(here, '..');
 const sharedDir = path.join(here, '..', '..', 'shared');
+const dockerfile = readFileSync(path.join(agentcoreDir, 'Dockerfile'), 'utf8');
 
 const pkg = JSON.parse(readFileSync(path.join(agentcoreDir, 'package.json'), 'utf8'));
 const declared = new Set(Object.keys(pkg.dependencies ?? {}));
@@ -139,5 +140,16 @@ describe('container dependency closure (Dockerfile installs ONLY agentcore/packa
     expect([...externals.keys()]).toContain('js-yaml');
     expect([...externals.keys()]).toContain('gremlin');
     void sharedDir; // documented anchor of the second copied tree
+  });
+});
+
+describe('container runtime file ownership', () => {
+  it('makes restrictive managed-checkout files readable by the node runtime user', () => {
+    expect(dockerfile).toContain(
+      'COPY --chown=node:node --chmod=0644 agentcore/package.json /opt/agentcore/package.json',
+    );
+    expect(dockerfile).toContain('COPY --chown=node:node agentcore/ /opt/agentcore/');
+    expect(dockerfile).toContain('COPY --chown=node:node shared/ /opt/shared/');
+    expect(dockerfile).not.toMatch(/chown -R .*\/opt\/(?:agentcore|shared)/);
   });
 });
