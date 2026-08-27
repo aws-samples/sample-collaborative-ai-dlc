@@ -107,34 +107,34 @@ layer is an index over those documents and can be regenerated.
 
 #### Scope and authored knowledge
 
-| Vertex | Scope | Purpose |
-| --- | --- | --- |
-| `Project` | Platform | Membership and the shared knowledge boundary. |
-| `Intent` | Project | Anchor for one unit of requested agent work. |
-| `Artifact` | Intent | Canonical Markdown output produced by a stage. |
-| `ArtifactVersion` | Artifact | Immutable history for a logical artifact head. |
-| `Question` | Intent | Agent question, structured answer, and answering provenance. |
-| `Steering` | Intent | Human course correction, revision, or redirect. |
-| `Discussion` | Intent/entity | Thread attached to an entity in the intent graph. |
-| `DiscussionMessage` | Discussion | Durable message in a discussion thread. |
-| `PullRequest` | Intent | Final intent-level pull request. |
-| `UnitPullRequest` | Intent/unit | Pull request produced by an individual construction lane. |
-| `TeamKnowledge` | Project | Reusable knowledge injected into relevant agent runs. |
-| `LearningRule` | Project | Reusable team or project learning guardrail. |
+| Vertex              | Scope         | Purpose                                                      |
+| ------------------- | ------------- | ------------------------------------------------------------ |
+| `Project`           | Platform      | Membership and the shared knowledge boundary.                |
+| `Intent`            | Project       | Anchor for one unit of requested agent work.                 |
+| `Artifact`          | Intent        | Canonical Markdown output produced by a stage.               |
+| `ArtifactVersion`   | Artifact      | Immutable history for a logical artifact head.               |
+| `Question`          | Intent        | Agent question, structured answer, and answering provenance. |
+| `Steering`          | Intent        | Human course correction, revision, or redirect.              |
+| `Discussion`        | Intent/entity | Thread attached to an entity in the intent graph.            |
+| `DiscussionMessage` | Discussion    | Durable message in a discussion thread.                      |
+| `PullRequest`       | Intent        | Final intent-level pull request.                             |
+| `UnitPullRequest`   | Intent/unit   | Pull request produced by an individual construction lane.    |
+| `TeamKnowledge`     | Project       | Reusable knowledge injected into relevant agent runs.        |
+| `LearningRule`      | Project       | Reusable team or project learning guardrail.                 |
 
 #### Derived structure
 
-| Vertex | Derived from | Important fields |
-| --- | --- | --- |
-| `Section` | Markdown heading | `slug`, heading level, order, line range, content hash |
-| `Requirement` | `requirements` block | category, priority, description, acceptance criteria |
-| `Story` | `stories` block | persona, priority, covered requirements, dependencies, acceptance criteria |
-| `Persona` | `personas` block | role, goals, pain points |
-| `Component` | `components` block | description, responsibilities, dependencies |
-| `Decision` | `decisions` block | status, context, decision, consequences |
-| `StoryMapEntry` | `mappings` block | unit and delivered stories |
-| `Contract` | `contracts` block | provider, consumers, kind, description |
-| `UnitOfWork` | Compiled unit plan | stable unit slug and execution provenance |
+| Vertex          | Derived from         | Important fields                                                           |
+| --------------- | -------------------- | -------------------------------------------------------------------------- |
+| `Section`       | Markdown heading     | `slug`, heading level, order, line range, content hash                     |
+| `Requirement`   | `requirements` block | category, priority, description, acceptance criteria                       |
+| `Story`         | `stories` block      | persona, priority, covered requirements, dependencies, acceptance criteria |
+| `Persona`       | `personas` block     | role, goals, pain points                                                   |
+| `Component`     | `components` block   | description, responsibilities, dependencies                                |
+| `Decision`      | `decisions` block    | status, context, decision, consequences                                    |
+| `StoryMapEntry` | `mappings` block     | unit and delivered stories                                                 |
+| `Contract`      | `contracts` block    | provider, consumers, kind, description                                     |
+| `UnitOfWork`    | Compiled unit plan   | stable unit slug and execution provenance                                  |
 
 The typed-item list and field definitions come from the extraction registry in
 `lambda/shared/artifact-extractors.js`. That registry is the implementation
@@ -145,44 +145,44 @@ validation, agent authoring instructions, and graph reads.
 
 #### Scope and ownership
 
-| Edge | Meaning |
-| --- | --- |
-| `CONTAINS` | A scope owns an entity, most commonly an intent owning artifacts, questions, steering, and units. |
-| `HAS_SECTION` | An artifact contains a derived Markdown section. |
-| `HAS_ITEM` | An artifact contains a derived typed item. |
-| `HAS_DISCUSSION` | An intent or entity has an attached discussion. |
-| `HAS_MESSAGE` | A discussion contains a durable message. |
-| `HAS_PR` | An intent produced a final pull request. |
-| `HAS_UNIT_PR` | An intent produced a unit-level pull request. |
-| `HAS_KNOWLEDGE` | A project owns reusable team knowledge. |
-| `HAS_LEARNING` | A project owns a reusable learning rule. |
-| `HAS_VERSION` | A logical artifact head retains an immutable historical version. |
+| Edge             | Meaning                                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------- |
+| `CONTAINS`       | A scope owns an entity, most commonly an intent owning artifacts, questions, steering, and units. |
+| `HAS_SECTION`    | An artifact contains a derived Markdown section.                                                  |
+| `HAS_ITEM`       | An artifact contains a derived typed item.                                                        |
+| `HAS_DISCUSSION` | An intent or entity has an attached discussion.                                                   |
+| `HAS_MESSAGE`    | A discussion contains a durable message.                                                          |
+| `HAS_PR`         | An intent produced a final pull request.                                                          |
+| `HAS_UNIT_PR`    | An intent produced a unit-level pull request.                                                     |
+| `HAS_KNOWLEDGE`  | A project owns reusable team knowledge.                                                           |
+| `HAS_LEARNING`   | A project owns a reusable learning rule.                                                          |
+| `HAS_VERSION`    | A logical artifact head retains an immutable historical version.                                  |
 
 #### Artifact relationships
 
-| Edge | Meaning |
-| --- | --- |
-| `PRODUCES` | One artifact or stage output produces another. |
-| `CONSUMES` | An artifact consumes another artifact as input. |
+| Edge           | Meaning                                                                                                          |
+| -------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `PRODUCES`     | One artifact or stage output produces another.                                                                   |
+| `CONSUMES`     | An artifact consumes another artifact as input.                                                                  |
 | `DERIVED_FROM` | An artifact was derived from another artifact, or a section, item, or unit was derived from its source artifact. |
-| `RELATES_TO` | A durable semantic association that is more specific than shared scope but has no stronger edge type. |
-| `DEPENDS_ON` | The source cannot be understood or delivered independently of the target. |
-| `CITES` | An artifact explicitly references another artifact by its artifact type. |
+| `RELATES_TO`   | A durable semantic association that is more specific than shared scope but has no stronger edge type.            |
+| `DEPENDS_ON`   | The source cannot be understood or delivered independently of the target.                                        |
+| `CITES`        | An artifact explicitly references another artifact by its artifact type.                                         |
 
 #### Traceability and provenance
 
-| Source | Edge | Target |
-| --- | --- | --- |
-| `Story` | `COVERS` | `Requirement` |
-| `Story` | `FOR_PERSONA` | `Persona` |
-| `StoryMapEntry` | `IMPLEMENTS` | `Story` or `UnitOfWork` |
-| `Story`, `Component`, or `UnitOfWork` | `DEPENDS_ON` | Another entity of the same type |
-| `UnitOfWork` | `EXPOSES` | `Contract` |
-| `UnitOfWork` | `CONSUMES_CONTRACT` | `Contract` |
-| Answered `Question` or `Steering` | `INFLUENCES` | Resulting `Artifact` |
-| `Steering` | `REVISES` | Revised `Question` |
-| `Discussion` | `DISCUSSES` | Attached entity |
-| `TeamKnowledge` or `LearningRule` | `INFORMS` | `Intent` |
+| Source                                | Edge                | Target                          |
+| ------------------------------------- | ------------------- | ------------------------------- |
+| `Story`                               | `COVERS`            | `Requirement`                   |
+| `Story`                               | `FOR_PERSONA`       | `Persona`                       |
+| `StoryMapEntry`                       | `IMPLEMENTS`        | `Story` or `UnitOfWork`         |
+| `Story`, `Component`, or `UnitOfWork` | `DEPENDS_ON`        | Another entity of the same type |
+| `UnitOfWork`                          | `EXPOSES`           | `Contract`                      |
+| `UnitOfWork`                          | `CONSUMES_CONTRACT` | `Contract`                      |
+| Answered `Question` or `Steering`     | `INFLUENCES`        | Resulting `Artifact`            |
+| `Steering`                            | `REVISES`           | Revised `Question`              |
+| `Discussion`                          | `DISCUSSES`         | Attached entity                 |
+| `TeamKnowledge` or `LearningRule`     | `INFORMS`           | `Intent`                        |
 
 `INFORMS` is synthesized in the graph API projection to show prompt injection;
 Neptune persists the knowledge vertices under `Project` through `HAS_KNOWLEDGE`
@@ -279,25 +279,25 @@ graph LR
 
 ### Record types
 
-| Sort-key pattern | Record | Purpose |
-| --- | --- | --- |
-| `META` | Execution | Captured intent and workflow configuration, overall status, timestamps, and repository context. |
-| `STAGE#<stageInstanceId>` | Stage | State and attempts for one concrete stage invocation, including a unit-specific stage. |
-| `EVENT#<timestamp>#<eventId>` | Event | Ordered execution timeline and audit event. |
-| `HUMAN#<humanTaskId>` | Human task | A suspended human gate, its callback, answer, and resolution state. |
-| `OUTPUT#<sequence>` | Output | Ordered agent-output chunk; the zero-padded sequence preserves emission order. |
-| `METRIC#<timestamp>#<metricId>` | Metric | Token, cost, duration, or other collected execution metric. |
-| `SENSOR#<timestamp>#<sensorRunId>` | Sensor run | Deterministic post-stage validation result. |
-| `READ#<timestamp>#<readId>` | Graph read | Audit record of context read from the knowledge graph. |
-| `STEER#<timestamp>#<steerId>` | Steering | Pending or consumed human course correction, ordered by creation time. |
-| `UNITPLAN` | Unit plan | Current scheduling snapshot for the construction unit DAG. |
-| `UNIT#<laneId>` | Unit | Scheduling state for one construction lane, including dependencies, branch, and session. |
-| `UNITPR#<laneId>#<repository>` | Unit pull request | Pull-request lifecycle for one unit and repository. |
-| `FEEDBACK#<laneId>#<batchId>` | Feedback batch | A queued or completed batch of review feedback for a unit. |
-| `FEEDBACKCOMMENT#<laneId>#<comment>` | Feedback comment | Stable per-comment state within unit feedback processing. |
-| `QEDIT#<editId>` | Quorum edit | Post-hoc artifact edit plan, approval callback, and apply outcome. |
-| `COMPOSE#<composeId>` | Compose request | Adaptive-workflow proposal and its validation result. |
-| `TRACKERSYNC` | Tracker sync | Current external-tracker synchronization state and next check. |
+| Sort-key pattern                     | Record            | Purpose                                                                                         |
+| ------------------------------------ | ----------------- | ----------------------------------------------------------------------------------------------- |
+| `META`                               | Execution         | Captured intent and workflow configuration, overall status, timestamps, and repository context. |
+| `STAGE#<stageInstanceId>`            | Stage             | State and attempts for one concrete stage invocation, including a unit-specific stage.          |
+| `EVENT#<timestamp>#<eventId>`        | Event             | Ordered execution timeline and audit event.                                                     |
+| `HUMAN#<humanTaskId>`                | Human task        | A suspended human gate, its callback, answer, and resolution state.                             |
+| `OUTPUT#<sequence>`                  | Output            | Ordered agent-output chunk; the zero-padded sequence preserves emission order.                  |
+| `METRIC#<timestamp>#<metricId>`      | Metric            | Token, cost, duration, or other collected execution metric.                                     |
+| `SENSOR#<timestamp>#<sensorRunId>`   | Sensor run        | Deterministic post-stage validation result.                                                     |
+| `READ#<timestamp>#<readId>`          | Graph read        | Audit record of context read from the knowledge graph.                                          |
+| `STEER#<timestamp>#<steerId>`        | Steering          | Pending or consumed human course correction, ordered by creation time.                          |
+| `UNITPLAN`                           | Unit plan         | Current scheduling snapshot for the construction unit DAG.                                      |
+| `UNIT#<laneId>`                      | Unit              | Scheduling state for one construction lane, including dependencies, branch, and session.        |
+| `UNITPR#<laneId>#<repository>`       | Unit pull request | Pull-request lifecycle for one unit and repository.                                             |
+| `FEEDBACK#<laneId>#<batchId>`        | Feedback batch    | A queued or completed batch of review feedback for a unit.                                      |
+| `FEEDBACKCOMMENT#<laneId>#<comment>` | Feedback comment  | Stable per-comment state within unit feedback processing.                                       |
+| `QEDIT#<editId>`                     | Quorum edit       | Post-hoc artifact edit plan, approval callback, and apply outcome.                              |
+| `COMPOSE#<composeId>`                | Compose request   | Adaptive-workflow proposal and its validation result.                                           |
+| `TRACKERSYNC`                        | Tracker sync      | Current external-tracker synchronization state and next check.                                  |
 
 `UNITPLAN` and `UNIT#…` rows are the scheduling source of truth. Their
 `UnitOfWork` representation in Neptune is a traceability and UI projection; the
@@ -307,32 +307,32 @@ orchestrator never schedules work from the graph.
 
 The table has three global secondary indexes:
 
-| Index | Key pattern | Access pattern |
-| --- | --- | --- |
-| `GSI1` | `PROJECT#<projectId>` / `STATUS#<status>#STARTED#<timestamp>#EXEC#<executionId>` | List a project's executions by status and start time. |
-| `GSI2` | `EXEC#<executionId>` / `TYPE#<type>#STATE#<state>#<id>` | Find records of one type and state within an execution, such as pending human gates or ready units. |
-| `GSI3` | Sparse operational keys | Find cross-execution maintenance work without scanning the table. |
+| Index  | Key pattern                                                                      | Access pattern                                                                                      |
+| ------ | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `GSI1` | `PROJECT#<projectId>` / `STATUS#<status>#STARTED#<timestamp>#EXEC#<executionId>` | List a project's executions by status and start time.                                               |
+| `GSI2` | `EXEC#<executionId>` / `TYPE#<type>#STATE#<state>#<id>`                          | Find records of one type and state within an execution, such as pending human gates or ready units. |
+| `GSI3` | Sparse operational keys                                                          | Find cross-execution maintenance work without scanning the table.                                   |
 
 `GSI3` currently groups three kinds of live work:
 
-| Partition value | Purpose |
-| --- | --- |
-| `ACTIVE_EXECUTIONS` | Executions that may require recovery or continuation. |
-| `PR_WAITS` | Unit pull requests parked while waiting for an external condition. |
-| `TRACKER_SYNCS` | Tracker synchronizations ordered by their next scheduled check. |
+| Partition value     | Purpose                                                            |
+| ------------------- | ------------------------------------------------------------------ |
+| `ACTIVE_EXECUTIONS` | Executions that may require recovery or continuation.              |
+| `PR_WAITS`          | Unit pull requests parked while waiting for an external condition. |
+| `TRACKER_SYNCS`     | Tracker synchronizations ordered by their next scheduled check.    |
 
 ### Relationship to the graph
 
 The execution and graph models are joined by stable application identifiers,
 not by database-level foreign keys:
 
-| Identifier | DynamoDB role | Neptune role |
-| --- | --- | --- |
-| `projectId` | Project execution index and captured configuration. | Project scope, membership, knowledge, and learnings. |
-| `intentId` | Associates the execution header with the user's intent. | Anchors the intent knowledge subgraph. |
-| `executionId` | Owns the execution-table partition. | Provenance field on artifacts created by that run. |
-| `stageInstanceId` | Identifies a stage row and its callbacks, output, and metrics. | Provenance field on artifacts produced by the stage. |
-| `sectionIndex` and `unitSlug` | Identify parallel construction lanes. | Identify the corresponding derived units and artifact provenance. |
+| Identifier                    | DynamoDB role                                                  | Neptune role                                                      |
+| ----------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `projectId`                   | Project execution index and captured configuration.            | Project scope, membership, knowledge, and learnings.              |
+| `intentId`                    | Associates the execution header with the user's intent.        | Anchors the intent knowledge subgraph.                            |
+| `executionId`                 | Owns the execution-table partition.                            | Provenance field on artifacts created by that run.                |
+| `stageInstanceId`             | Identifies a stage row and its callbacks, output, and metrics. | Provenance field on artifacts produced by the stage.              |
+| `sectionIndex` and `unitSlug` | Identify parallel construction lanes.                          | Identify the corresponding derived units and artifact provenance. |
 
 An intent can have a DynamoDB `META` row while it is still a draft and before
 its Neptune `Intent` vertex exists. Starting the intent creates the graph
@@ -389,13 +389,13 @@ pk = WF#<tenant>#<workflowId>
 
 One partition contains the complete live composition:
 
-| Sort-key pattern | Record |
-| --- | --- |
-| `META` | Workflow header and current version. |
-| `PHASE#<path>#<phaseId>` | Ordered, nestable inline phase. |
-| `PLACEMENT#<stageId>` | Stage placement and scope membership. |
-| `SCOPEREF#<scopeId>` | Scope available to the workflow. |
-| `RULEREF#<layer>#<id>` | Rule attached at a workflow rule layer. |
+| Sort-key pattern         | Record                                  |
+| ------------------------ | --------------------------------------- |
+| `META`                   | Workflow header and current version.    |
+| `PHASE#<path>#<phaseId>` | Ordered, nestable inline phase.         |
+| `PLACEMENT#<stageId>`    | Stage placement and scope membership.   |
+| `SCOPEREF#<scopeId>`     | Scope available to the workflow.        |
+| `RULEREF#<layer>#<id>`   | Rule attached at a workflow rule layer. |
 
 Every workflow mutation creates an immutable snapshot by copying the live rows
 under `V#<version>#<live-sort-key>`. A single partition query therefore loads
