@@ -145,6 +145,15 @@ describe('container dependency closure (Dockerfile installs ONLY agentcore/packa
 
 describe('container runtime file ownership', () => {
   it('makes restrictive managed-checkout files readable by the node runtime user', () => {
+    const createDirs = dockerfile.indexOf('RUN install -d -o node -g node -m 0755');
+    const copyManifest = dockerfile.indexOf(
+      'COPY --chown=node:node --chmod=0644 agentcore/package.json',
+    );
+    expect(createDirs).toBeGreaterThan(-1);
+    expect(createDirs).toBeLessThan(copyManifest);
+    expect(dockerfile).toMatch(
+      /RUN install -d -o node -g node -m 0755 \\\n\s+\/opt\/agentcore \\\n\s+\/opt\/shared/,
+    );
     expect(dockerfile).toContain(
       'COPY --chown=node:node --chmod=0644 agentcore/package.json /opt/agentcore/package.json',
     );

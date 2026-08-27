@@ -90,6 +90,18 @@ RUN mkdir -p /opt/uv/bin \
     && uv --version | grep -F "uv ${UV_VERSION}" \
     && rm -rf /tmp/uv-aarch64-unknown-linux-gnu /tmp/uv.tar.gz
 
+# Pre-create the application directories before COPY --chmod writes into them.
+# Otherwise BuildKit may apply a file's 0644 mode to an auto-created parent,
+# making /opt/agentcore non-traversable. Create the local workspace fallback and
+# ephemeral CLI-state directories here too, with their final ownership, so no
+# recursive chown layer is needed later.
+RUN install -d -o node -g node -m 0755 \
+    /opt/agentcore \
+    /opt/shared \
+    /mnt/workspace \
+    /home/node/.codex-state \
+    /home/node/.codex-runs
+
 # Install the agentcore package deps (its own package.json — isolated).
 COPY --chown=node:node --chmod=0644 agentcore/package.json /opt/agentcore/package.json
 RUN cd /opt/agentcore \
@@ -104,16 +116,6 @@ COPY --chown=node:node shared/ /opt/shared/
 # @aws-sdk deps upward from /opt/shared — never into /opt/agentcore/node_modules
 # where they are installed. Symlink so the shared helpers see the same deps.
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
-
-# /mnt/workspace is the AgentCore managed-session-storage mount (present only at
-# invocation time). Create the local fallback and ephemeral CLI-state directories
-# with their final ownership immediately. The application and CLI trees under
-# /opt are immutable at runtime and only need to be readable/executable by node;
-# recursively chowning them would duplicate their contents in a new image layer.
-RUN install -d -o node -g node \
-    /mnt/workspace \
-    /home/node/.codex-state \
-    /home/node/.codex-runs
 
 WORKDIR /mnt/workspace
 USER node
