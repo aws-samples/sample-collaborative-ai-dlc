@@ -2,10 +2,10 @@ FROM public.ecr.aws/docker/library/node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY --chown=node:node --chmod=0644 package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY server.js realtime-token.js doc-name.js ./
+COPY --chown=node:node --chmod=0644 server.js realtime-token.js doc-name.js ./
 
 USER node
 
