@@ -6,6 +6,7 @@ import {
   checkoutRepos as checkoutReposImpl,
   checkoutRepo as checkoutRepoImpl,
   ensureWorkspaceSource as ensureWorkspaceSourceImpl,
+  trustGitDirectory,
 } from '../workspace.js';
 
 const TEST_SECRET = ['broker', 'credential'].join('-');
@@ -23,6 +24,7 @@ const credentialContext = {
   executionId: 'e1',
   gitProvider: 'github',
   withGitCredential: withTestCredential,
+  trustDirectory: async () => true,
 };
 const checkoutRepo = (args) => checkoutRepoImpl({ ...credentialContext, ...args });
 const checkoutRepos = (args) => checkoutReposImpl({ ...credentialContext, ...args });
@@ -931,5 +933,34 @@ describe('ensureWorkspaceSource (self-heal a wiped checkout)', () => {
       statFn: statFor([]),
     });
     expect(res).toMatchObject({ restored: true, repos: ['acme/api'], failed: ['acme/api'] });
+  });
+});
+
+describe('trustGitDirectory', () => {
+  it('adds only the exact repository path when it is not already trusted', async () => {
+    const commands = [];
+    const runner = async (command, args) => {
+      commands.push([command, ...args].join(' '));
+      return { code: args.includes('--get-all') ? 1 : 0 };
+    };
+
+    await expect(trustGitDirectory({ targetDir: '/ws/acme/api', runner })).resolves.toBe(true);
+    expect(commands).toEqual([
+      'git config --global --fixed-value --get-all safe.directory /ws/acme/api',
+      'git config --global --add safe.directory /ws/acme/api',
+    ]);
+  });
+
+  it('does not add a duplicate exact repository path', async () => {
+    const commands = [];
+    const runner = async (command, args) => {
+      commands.push([command, ...args].join(' '));
+      return { code: 0 };
+    };
+
+    await expect(trustGitDirectory({ targetDir: '/ws/acme/api', runner })).resolves.toBe(true);
+    expect(commands).toEqual([
+      'git config --global --fixed-value --get-all safe.directory /ws/acme/api',
+    ]);
   });
 });

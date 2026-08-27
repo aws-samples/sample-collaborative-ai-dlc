@@ -7,65 +7,94 @@
 #
 # Build context is the repo `lambda/` dir (so the image can COPY both the
 # agentcore package and the shared/ helpers it imports via ../shared).
-FROM public.ecr.aws/docker/library/node:24.15.0-slim
+FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:be8929e08ae137e81b5e1edba02259e6c4cb2f5ad655092bb9f56b97e41c4536
 
 # Base tools: git (workspace checkout), curl/unzip (CLI installs), jq, procps,
 # python3 (bare-`python`/`python3` MCP servers; `python`→`python3` symlink so
 # both resolve — uv/uvx manage their own Python separately).
-RUN apt-get update -o Acquire::AllowInsecureRepositories=true \
-    && apt-get install -y --no-install-recommends --allow-unauthenticated ca-certificates gnupg \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends git curl unzip jq procps python3 \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git curl unzip jq procps python3 \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs — installed for all supported drivers; selectCli picks what's
 # present at runtime. Kiro (API-key auth), Claude Code + OpenCode + Codex
 # (Bedrock).
-RUN curl -fsSL https://cli.kiro.dev/install | bash \
+ARG KIRO_CLI_VERSION=2.19.2
+ARG KIRO_CLI_SHA256=84df9ddcf02156d9563910850c7a07805ea41cf6a32bc30438741878f10a5af5
+RUN curl -fsSLo /tmp/kiro-cli.zip \
+        "https://prod.download.cli.kiro.dev/stable/${KIRO_CLI_VERSION}/kirocli-aarch64-linux-musl.zip" \
+    && echo "${KIRO_CLI_SHA256}  /tmp/kiro-cli.zip" | sha256sum -c - \
+    && unzip -q /tmp/kiro-cli.zip -d /tmp/kiro-cli \
+    && KIRO_CLI_SKIP_SETUP=1 /tmp/kiro-cli/kirocli/install.sh \
     && mkdir -p /opt/kiro \
     && cp -a /root/.local/bin /opt/kiro/bin \
     && ln -sf /opt/kiro/bin/kiro-cli /usr/local/bin/kiro-cli \
-    && rm -rf /root/.local
-RUN npm install -g @anthropic-ai/claude-code
+    && kiro-cli --version | grep -F "${KIRO_CLI_VERSION}" \
+    && rm -rf /root/.local /tmp/kiro-cli /tmp/kiro-cli.zip
+ARG CLAUDE_CODE_VERSION=2.1.246
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && claude --version | grep -F "${CLAUDE_CODE_VERSION}" \
+    && npm cache clean --force
 ARG OPENCODE_VERSION=1.17.20
+ARG OPENCODE_SHA256=0a41572e83a896eb008683589dfe09e17b941d06122608510f3e5f16d86d9afc
 RUN mkdir -p /opt/opencode/bin \
-    && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
-    | tar -xz -C /opt/opencode/bin \
+    && curl -fsSLo /tmp/opencode.tar.gz \
+        "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
+    && echo "${OPENCODE_SHA256}  /tmp/opencode.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/opencode.tar.gz -C /opt/opencode/bin \
     && chmod +x /opt/opencode/bin/opencode \
-    && /opt/opencode/bin/opencode --version | grep -F "${OPENCODE_VERSION}"
+    && /opt/opencode/bin/opencode --version | grep -F "${OPENCODE_VERSION}" \
+    && rm -f /tmp/opencode.tar.gz
 # Codex — pinned for reproducibility (the npm package ships the arm64 binary).
 # The per-stage CODEX_HOME (config.toml) is materialized at run time; the
 # version assert catches a broken/mismatched install at build time.
 ARG CODEX_VERSION=0.145.0
 RUN npm install -g @openai/codex@${CODEX_VERSION} \
-    && codex --version | grep -F "${CODEX_VERSION}"
+    && codex --version | grep -F "${CODEX_VERSION}" \
+    && npm cache clean --force
 
 # Bun — the runtime the deterministic CODE sensors (linter, type-check) run on.
 # They shell out to `bunx eslint`/`bunx tsc` against the workspace checkout, so
 # the binary must be on PATH for the script-kind sensor runner. Document-shape
 # sensors run in-process (no bun) — this is only for the code-quality axis.
-RUN curl -fsSL https://bun.sh/install | bash \
-    && mkdir -p /opt/bun \
-    && cp -a /root/.bun/bin /opt/bun/bin \
+ARG BUN_VERSION=1.4.0
+ARG BUN_SHA256=4b1a332ee861983eb93bcfe6f770fff94e3e31b2c388bdaea3c8ed35e58eed0e
+RUN mkdir -p /opt/bun/bin \
+    && curl -fsSLo /tmp/bun.zip \
+        "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-aarch64.zip" \
+    && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
+    && unzip -q /tmp/bun.zip -d /tmp/bun \
+    && install -m 0755 /tmp/bun/bun-linux-aarch64/bun /opt/bun/bin/bun \
+    && ln -sf /opt/bun/bin/bun /opt/bun/bin/bunx \
     && ln -sf /opt/bun/bin/bun /usr/local/bin/bun \
     && ln -sf /opt/bun/bin/bunx /usr/local/bin/bunx \
-    && rm -rf /root/.bun
+    && bun --version | grep -Fx "${BUN_VERSION}" \
+    && rm -rf /tmp/bun /tmp/bun.zip
 
 # uv / uvx — the standard launcher for Python-based MCP servers (e.g.
 # `uvx mcp-server-fetch`). Custom MCP servers configured per-project/globally
 # may reference it, and the mcp-validator allows `uv`/`uvx` as bare commands, so
-# the binaries must be on PATH. Same install→/opt→symlink pattern as Kiro/bun.
-# UV_NO_MODIFY_PATH: we set PATH explicitly below; skip the installer's shell
-# profile edits (noise/failure in a non-interactive image build).
-RUN curl -LsSf https://astral.sh/uv/install.sh \
-    | env UV_INSTALL_DIR=/opt/uv/bin UV_NO_MODIFY_PATH=1 sh \
+# the binaries must be on PATH.
+ARG UV_VERSION=0.12.6
+ARG UV_SHA256=d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
+RUN mkdir -p /opt/uv/bin \
+    && curl -fsSLo /tmp/uv.tar.gz \
+        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-aarch64-unknown-linux-gnu.tar.gz" \
+    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/uv.tar.gz -C /tmp \
+    && install -m 0755 /tmp/uv-aarch64-unknown-linux-gnu/uv /opt/uv/bin/uv \
+    && install -m 0755 /tmp/uv-aarch64-unknown-linux-gnu/uvx /opt/uv/bin/uvx \
     && ln -sf /opt/uv/bin/uv /usr/local/bin/uv \
-    && ln -sf /opt/uv/bin/uvx /usr/local/bin/uvx
+    && ln -sf /opt/uv/bin/uvx /usr/local/bin/uvx \
+    && uv --version | grep -F "uv ${UV_VERSION}" \
+    && rm -rf /tmp/uv-aarch64-unknown-linux-gnu /tmp/uv.tar.gz
 
 # Install the agentcore package deps (its own package.json — isolated).
 COPY agentcore/package.json /opt/agentcore/package.json
-RUN cd /opt/agentcore && npm install --omit=dev
+RUN cd /opt/agentcore \
+    && npm install --omit=dev \
+    && npm cache clean --force
 
 # App code: the agentcore package + the shared/ helpers it imports via ../shared.
 COPY agentcore/ /opt/agentcore/
@@ -77,10 +106,14 @@ COPY shared/ /opt/shared/
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 
 # /mnt/workspace is the AgentCore managed-session-storage mount (present only at
-# invocation time). Create a fallback dir for local/non-AgentCore runs; chown so
-# the node user can write the checkout + CLI stores when the mount is absent.
-RUN mkdir -p /mnt/workspace /home/node/.codex-state /home/node/.codex-runs \
-    && chown -R node:node /mnt/workspace /opt/agentcore /opt/shared /opt/kiro /opt/opencode /opt/bun /opt/uv /home/node/.codex-state /home/node/.codex-runs
+# invocation time). Create the local fallback and ephemeral CLI-state directories
+# with their final ownership immediately. The application and CLI trees under
+# /opt are immutable at runtime and only need to be readable/executable by node;
+# recursively chowning them would duplicate their contents in a new image layer.
+RUN install -d -o node -g node \
+    /mnt/workspace \
+    /home/node/.codex-state \
+    /home/node/.codex-runs
 
 WORKDIR /mnt/workspace
 USER node
@@ -111,14 +144,6 @@ ENV HOME=/home/node \
     V2_CODEX_HOME_ROOT=/home/node/.codex-runs \
     V2_CODEX_STORE_DIR=/mnt/workspace/.aidlc/codex-home \
     V2_MCP_ENTRY=/opt/agentcore/mcp/index.js
-
-# The AgentCore managed-session-storage mount (/mnt/workspace) is owned by a uid
-# that differs from the node user, so git refuses to operate on the checkout
-# ("detected dubious ownership"). Mark all workspace checkouts safe. A wildcard
-# (not a single path) is required because multi-repo intents clone into
-# /mnt/workspace/<owner>/<repo> subdirs, each of which trips the per-repo check.
-# Written as the node user so it lands in this user's global ~/.gitconfig.
-RUN git config --global --add safe.directory '*'
 
 # AgentCore Runtime contract: listen on 8080. /ping is the health surface.
 EXPOSE 8080
