@@ -5,12 +5,39 @@ This page explains what happens when an intent runs: the orchestration, the agen
 ## The intent lifecycle
 
 ```
-DRAFT → CREATED → RUNNING → WAITING → SUCCEEDED | FAILED | CANCELLED
+DRAFT → CREATED → RUNNING ↔ WAITING
+                    └→ SUCCEEDED | FAILED | CANCELLED
 ```
 
 An intent is created as a draft, reviewed, and started. On start, the platform compiles the project's pinned workflow into an execution plan for the intent's scope, snapshots the project's runtime settings (CLI, models, park release, parallelism, PR strategy), and hands off to a **durable orchestrator** — a Lambda-based durable execution that drives the intent end to end.
 
 `WAITING` means the run is parked on a human gate; answering resumes it exactly where it stopped. Terminal states can be rewound (see [Steering and rewind](#steering-and-rewind)).
+
+## Durable execution state
+
+The orchestrator's application state is persisted in the **v2 executions
+DynamoDB table**. Each run has one `EXEC#<executionId>` partition containing:
+
+- a `META` record for the intent configuration and overall execution state;
+- `STAGE#…` and `HUMAN#…` records for stage state and suspended gates;
+- ordered events, agent outputs, metrics, sensor verdicts, and graph-read audit
+  records;
+- the `UNITPLAN` and `UNIT#…` scheduling state for parallel construction;
+- unit pull-request, feedback, steering, edit, and tracker-sync state.
+
+This table is the source of truth for orchestration, recovery, and scheduling.
+It lets the UI restore a run after reload, lets the durable orchestrator suspend
+without holding compute, and lets maintenance find active executions or parked
+external work without scanning every run. In particular, construction lanes are
+scheduled from DynamoDB; their `UnitOfWork` vertices in Neptune are a
+traceability projection.
+
+The execution table does not store the development knowledge agents produce.
+Artifacts and their relationships go to Neptune, linked back to the process
+state through identifiers such as `intentId`, `executionId`,
+`stageInstanceId`, and `unitSlug`. See the
+[DynamoDB execution model](data-model.md#dynamodb-execution-model) for the
+record keys and indexes.
 
 ## The agent runtime: Bedrock AgentCore
 
@@ -75,7 +102,11 @@ Methodology documents (requirements, stories, designs, decisions) are written to
 - Agents read the graph through a compact-first ladder (graph overview → table of contents → individual sections/items) instead of re-reading whole documents, keeping context bounded.
 - An optional **graph enrichment** mode (a platform admin setting) adds LLM-generated summaries to derived artifacts.
 
-The graph is a re-derivable index — documents stay the source of truth. You explore it on the intent's [Graph page](../using-the-platform/intent-observability.md#the-graph-page), and audit how agents used it on the Audit page.
+The graph is a re-derivable index — documents stay the source of truth. See the
+[Neptune knowledge-graph model](data-model.md#neptune-knowledge-graph) for the
+vertex and edge catalogue. You explore the graph on the intent's
+[Graph page](../using-the-platform/intent-observability.md#the-graph-page), and
+audit how agents used it on the Audit page.
 
 ## Observability
 

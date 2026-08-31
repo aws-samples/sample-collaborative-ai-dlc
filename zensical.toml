@@ -17,6 +17,7 @@ nav = [
   { "How it works" = [
     "concepts/index.md",
     "concepts/architecture.md",
+    "concepts/data-model.md",
     "concepts/workflows-and-blocks.md",
     "concepts/execution.md",
   ] },
