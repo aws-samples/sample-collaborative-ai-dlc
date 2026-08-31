@@ -61,7 +61,7 @@ export function TrackersTab({ providers, providersLoading, onProvidersChanged }:
         <SettingsCard
           icon={<Link2 />}
           title="Source-control trackers"
-          description="These reuse the source-control OAuth apps — one connection covers repos and issues."
+          description="These authenticate through each space's source-control binding — GitHub App or delegated OAuth. One binding covers repos and issues."
         >
           <div className="divide-y rounded-lg border">
             {gitBacked.map((p) => {
