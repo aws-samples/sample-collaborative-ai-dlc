@@ -241,7 +241,7 @@ export const checkoutRepos = async ({
 
 // A repo's checkout is present when its target dir has a `.git` (clone) — an
 // checkout. Absent dir / no `.git` means the mount was wiped.
-const hasCheckout = async (targetDir, statFn) => {
+export const hasCheckout = async (targetDir, statFn = stat) => {
   try {
     const s = await statFn(path.join(targetDir, '.git'));
     return s.isDirectory() || s.isFile(); // .git is a dir normally; a file for worktrees/submodules

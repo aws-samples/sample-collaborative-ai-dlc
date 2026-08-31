@@ -319,6 +319,13 @@ These environment variables are useful when iterating:
 | `AIDLC_BACKEND_FILE`  | Path to an alternative `.s3.tfbackend`.                                                                    |
 | `AIDLC_CONFIG_DIR`    | Directory holding `environments/`, if you keep Terraform configuration outside the checkout.               |
 
+For infrastructure-only changes that do not modify the upstream AI-DLC pin,
+baseline blocks, or default workflow, skip the post-apply reseed:
+
+```bash
+./scripts/deploy-terraform.sh dev --skip-seed
+```
+
 ### Bootstrap the first platform administrator
 
 The **Admin** page (user management, agent settings and default models, provider OAuth/App configuration, migrations) and workflow/building-block authoring require the **`platform-admin`** role. For local Cognito users, bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional local admins can be granted or revoked in the UI under **Admin → Users**:

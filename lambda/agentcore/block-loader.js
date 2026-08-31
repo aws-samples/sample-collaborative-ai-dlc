@@ -7,10 +7,10 @@
 // the same id. We read default first, fall back to SYSTEM — matching the API's
 // read semantics so the runtime honours user forks.
 
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { ddb, s3 } from './clients.js';
-import { catalogGsi1Pk } from '../shared/blocks.js';
+import { blockPk, catalogGsi1Pk, LATEST, versionSk } from '../shared/blocks.js';
 import { workflowPk, workflowVersionPrefix } from '../shared/workflows.js';
 import { DEFAULT_TENANT, SYSTEM_TENANT } from '../shared/tenant.js';
 
@@ -69,6 +69,69 @@ export const listMergedBlocks = async (type) => {
   return [...byId.values()];
 };
 
+const loadPinnedBlocks = async (type, pins) => {
+  const entries = Object.entries(pins ?? {});
+  const blocks = await Promise.all(
+    entries.map(async ([blockId, pin]) => {
+      const result = await ddb.send(
+        new GetCommand({
+          TableName: blocksTable(),
+          Key: {
+            pk: blockPk(pin.tenantId, type, blockId),
+            sk: versionSk(Number(pin.version)),
+          },
+        }),
+      );
+      return result.Item ?? null;
+    }),
+  );
+  const missing = entries.filter((_, index) => blocks[index] == null).map(([blockId]) => blockId);
+  if (missing.length) {
+    throw new Error(`Pinned ${type} block versions are unavailable: ${missing.join(', ')}`);
+  }
+  return blocks;
+};
+
+const loadLibraryType = (type, methodologyPins) =>
+  methodologyPins?.[type] ? loadPinnedBlocks(type, methodologyPins[type]) : listMergedBlocks(type);
+
+const loadPlacedStages = async (placements, stagePins = null) => {
+  const legacyPlacements = placements.filter(
+    (placement) => !placement.stageTenant && !stagePins?.[placement.stageId],
+  );
+  const legacyStages = legacyPlacements.length ? await listMergedBlocks('STAGE') : [];
+  const legacyById = new Map(legacyStages.map((stage) => [stage.id ?? stage.blockId, stage]));
+  const stages = await Promise.all(
+    placements.map(async (placement) => {
+      const pin = stagePins?.[placement.stageId];
+      if (!placement.stageTenant && pin) {
+        const result = await ddb.send(
+          new GetCommand({
+            TableName: blocksTable(),
+            Key: {
+              pk: blockPk(pin.tenantId, 'STAGE', placement.stageId),
+              sk: versionSk(Number(pin.version)),
+            },
+          }),
+        );
+        return result.Item ?? null;
+      }
+      if (!placement.stageTenant) return legacyById.get(placement.stageId) ?? null;
+      const tenant = placement.stageTenant;
+      const sk =
+        placement.pinnedVersion == null ? LATEST : versionSk(Number(placement.pinnedVersion));
+      const result = await ddb.send(
+        new GetCommand({
+          TableName: blocksTable(),
+          Key: { pk: blockPk(tenant, 'STAGE', placement.stageId), sk },
+        }),
+      );
+      return result.Item ?? null;
+    }),
+  );
+  return stages.filter(Boolean);
+};
+
 // Load the pinned workflow composition (META + phases + placements + refs) at an
 // immutable version, honouring default→SYSTEM shadowing.
 const loadWorkflow = async ({ workflowId, workflowVersion }) => {
@@ -97,11 +160,16 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
   const ruleRefs = [];
   const scopeRefs = [];
   const phases = [];
+  let sourceRef = null;
   for (const it of items) {
     const sk = liveSk(it.sk);
-    if (sk.startsWith('PLACEMENT#')) {
+    if (sk === 'META') {
+      sourceRef = it.sourceRef ?? null;
+    } else if (sk.startsWith('PLACEMENT#')) {
       placements.push({
         stageId: it.stageId,
+        stageTenant: it.stageTenant ?? null,
+        pinnedVersion: it.pinnedVersion ?? null,
         order: it.order ?? 0,
         phasePath: it.phasePath ?? null,
         scopeMembership: it.scopeMembership ?? {},
@@ -117,6 +185,7 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
   return {
     workflowId,
     workflowVersion: Number(workflowVersion),
+    sourceRef,
     placements,
     ruleRefs,
     scopeRefs,
@@ -130,18 +199,18 @@ const keyById = (items) => Object.fromEntries(items.map((b) => [b.id ?? b.blockI
 
 // Load everything the runtime needs for one execution: the pinned workflow plus
 // the library blocks (stages/agents/sensors/rules/artifacts) it references.
-export const loadLibrary = async ({ workflowId, workflowVersion }) => {
+export const loadLibrary = async ({ workflowId, workflowVersion, methodologyPins = null }) => {
   const wf = await loadWorkflow({ workflowId, workflowVersion });
   if (!wf) return { workflow: null, library: null };
   const workflow = assembleWorkflow(wf.items, { workflowId, workflowVersion });
 
   const [stages, agents, sensors, rules, artifacts, knowledge] = await Promise.all([
-    listMergedBlocks('STAGE'),
-    listMergedBlocks('AGENT'),
-    listMergedBlocks('SENSOR'),
-    listMergedBlocks('RULE'),
-    listMergedBlocks('ARTIFACT'),
-    listMergedBlocks('KNOWLEDGE'),
+    loadPlacedStages(workflow.placements, methodologyPins?.STAGE),
+    loadLibraryType('AGENT', methodologyPins),
+    loadLibraryType('SENSOR', methodologyPins),
+    loadLibraryType('RULE', methodologyPins),
+    loadLibraryType('ARTIFACT', methodologyPins),
+    loadLibraryType('KNOWLEDGE', methodologyPins),
   ]);
 
   const library = {
@@ -184,4 +253,10 @@ export const loadRuntimeFile = async (ref, repoPath) =>
 export const loadConductor = async (ref) =>
   ref ? getObjectText(`aidlc-runtime/${ref}/core/aidlc-common/conductor.md`) : '';
 
-export const __test = { assembleWorkflow, keyById, streamToString };
+export const __test = {
+  assembleWorkflow,
+  keyById,
+  streamToString,
+  loadPlacedStages,
+  loadPinnedBlocks,
+};

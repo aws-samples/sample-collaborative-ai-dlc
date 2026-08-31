@@ -58,6 +58,10 @@ const makeCtx = (over = {}) => {
 const makeRuntime = (ctx, script) => {
   let n = 0;
   return vi.fn(async (payload, sessionId) => {
+    if (payload.command === 'create-workflow-checkpoint') {
+      checkpointInvokes.push(payload);
+      return { ok: true, checkpointId: `cp-${checkpointInvokes.length}` };
+    }
     invokes.push(payload);
     sessions.push(sessionId);
     n += 1;
@@ -99,10 +103,12 @@ const META = {
 
 let deps;
 let invokes;
+let checkpointInvokes;
 let sessions;
 let ctx;
 beforeEach(() => {
   invokes = [];
+  checkpointInvokes = [];
   sessions = [];
   ctx = makeCtx();
   deps = {
@@ -154,6 +160,8 @@ describe('orchestrator durable handler', () => {
       'run-stage-start',
       'run-stage-start',
     ]);
+    expect(checkpointInvokes).toHaveLength(3);
+    expect(checkpointInvokes.map((p) => p.sourceStageInstanceId)).toEqual([null, null, null]);
     // init-ws carries the provider so the runtime picks the right clone scheme.
     const initWs = invokes.find((p) => p.command === 'init-ws');
     expect(initWs).toMatchObject({
@@ -364,6 +372,27 @@ describe('orchestrator durable handler', () => {
     expect(starts.length).toBeGreaterThan(0);
     for (const rs of starts) {
       expect(rs.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
+    }
+  });
+
+  it('forwards the intent AI-DLC ref and methodology pins to plan and stage execution', async () => {
+    const methodologyPins = {
+      AGENT: { 'aidlc-product-agent': { tenantId: 'SYSTEM', version: 2 } },
+    };
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      aidlcRepoRef: 'a'.repeat(40),
+      methodologyPins,
+    }));
+
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+    expect(deps.loadPlan).toHaveBeenCalledWith(expect.objectContaining({ methodologyPins }));
+    for (const start of stageStarts()) {
+      expect(start).toMatchObject({
+        aidlcRepoRef: 'a'.repeat(40),
+        methodologyPins,
+      });
     }
   });
 
@@ -1168,6 +1197,40 @@ const SECTION_PLAN = () => ({
   },
 });
 
+const GATED_CODE_GENERATION_PLAN = () => ({
+  valid: true,
+  plan: {
+    namespace: 'aidlc-v2@1',
+    stages: [
+      {
+        stageId: 'units-gen',
+        stageInstanceId: 'si-units-gen',
+        parallelSection: null,
+        outputArtifacts: [{ artifact: 'unit-of-work-dependency' }],
+      },
+      {
+        stageId: 'functional-design',
+        stageInstanceId: 'si-functional-design',
+        parallelSection: 1,
+        execution: 'ALWAYS',
+        phase: 'construction',
+        humanValidation: 'required',
+        outputArtifacts: [],
+      },
+      {
+        stageId: 'code-generation',
+        stageInstanceId: 'si-code-generation',
+        parallelSection: 1,
+        execution: 'ALWAYS',
+        phase: 'construction',
+        humanValidation: 'required',
+        outputArtifacts: [],
+      },
+      { stageId: 'bt', stageInstanceId: 'si-bt', parallelSection: null, outputArtifacts: [] },
+    ],
+  },
+});
+
 const UNIT_PLAN = (over = {}) => ({
   units: [
     { slug: 'auth', dependsOn: [] },
@@ -1257,6 +1320,195 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     expect(stopped).toContain('aidlc-intent-i1-s1-billing'.padEnd(33, '0'));
     // Non-lane dispatches carry unitSlug null explicitly (uniform contract).
     expect(stageStarts().find((p) => p.stageId === 'bt').unitSlug).toBeNull();
+    // Initial + units-gen + approved skeleton + approved billing batch +
+    // completed section + bt. Approval checkpoints are captured before the
+    // next construction increment starts.
+    expect(checkpointInvokes).toHaveLength(6);
+  });
+
+  it('offers external development at the walking-skeleton gate immediately before code generation', async () => {
+    const openedTasks = new Map();
+    deps.loadPlan = vi.fn(async () => GATED_CODE_GENERATION_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () =>
+      UNIT_PLAN({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+      }),
+    );
+    deps.store.createHumanTask = vi.fn(async (task) => {
+      openedTasks.set(task.humanTaskId, task);
+      return task;
+    });
+    deps.store.getHumanTask = vi.fn(async (_executionId, humanTaskId) =>
+      openedTasks.has(humanTaskId)
+        ? { ...openedTasks.get(humanTaskId), status: 'answered', answer: { decision: 'approve' } }
+        : null,
+    );
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    expect(deps.store.createHumanTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'validation',
+        unitSlug: 'auth',
+        nextStageId: 'code-generation',
+        options: ['approve', 'develop-externally', 'request-changes'],
+      }),
+    );
+  });
+
+  it('runs code generation through the external task when the pre-code gate selects external development', async () => {
+    const openedTasks = new Map();
+    deps.loadPlan = vi.fn(async () => GATED_CODE_GENERATION_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () =>
+      UNIT_PLAN({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+      }),
+    );
+    deps.store.updateStageState = vi.fn(async (args) => args);
+    deps.store.completeExternalDevelopmentStage = vi.fn(async (args) => args);
+    deps.store.getExecution = vi.fn(async () => ({ ...META, orchestratorRunId: null }));
+    deps.store.createHumanTask = vi.fn(async (task) => {
+      openedTasks.set(task.humanTaskId, task);
+      return task;
+    });
+    deps.store.getHumanTask = vi.fn(async (_executionId, humanTaskId) =>
+      openedTasks.has(humanTaskId)
+        ? {
+            ...openedTasks.get(humanTaskId),
+            status: 'answered',
+            answer: {
+              decision: humanTaskId.includes('validation-functional-design')
+                ? 'develop-externally'
+                : humanTaskId.startsWith('external-')
+                  ? 'accepted'
+                  : 'approve',
+            },
+            answeredBy: 'u1',
+          }
+        : null,
+    );
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') {
+        return { ok: true, unitCount: 1, batchCount: 1, walkingSkeleton: 'auth' };
+      }
+      if (payload.command === 'init-lane') {
+        return {
+          ok: true,
+          repos: [{ repo: 'owner/repo', sha: 'a'.repeat(40) }],
+        };
+      }
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    expect(
+      stageStarts().some(
+        (payload) => payload.stageId === 'code-generation' && payload.unitSlug === 'auth',
+      ),
+    ).toBe(false);
+    expect(deps.store.createHumanTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'external-development',
+        unitSlug: 'auth',
+        externalDevelopment: expect.objectContaining({
+          assignedTo: 'u1',
+          repositories: [
+            expect.objectContaining({
+              baseSha: 'a'.repeat(40),
+              branch: 'aidlc/i1--s1-unit-auth',
+            }),
+          ],
+        }),
+      }),
+    );
+    expect(deps.store.completeExternalDevelopmentStage).toHaveBeenCalled();
+  });
+
+  it('runs managed code generation when external development is cancelled', async () => {
+    const openedTasks = new Map();
+    deps.loadPlan = vi.fn(async () => GATED_CODE_GENERATION_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () =>
+      UNIT_PLAN({
+        units: [{ slug: 'auth', dependsOn: [] }],
+        batches: [['auth']],
+      }),
+    );
+    deps.store.updateStageState = vi.fn(async (args) => args);
+    deps.store.completeExternalDevelopmentStage = vi.fn(async (args) => args);
+    deps.store.getExecution = vi.fn(async () => ({ ...META, orchestratorRunId: null }));
+    deps.store.createHumanTask = vi.fn(async (task) => {
+      openedTasks.set(task.humanTaskId, task);
+      return task;
+    });
+    deps.store.getHumanTask = vi.fn(async (_executionId, humanTaskId) =>
+      openedTasks.has(humanTaskId)
+        ? {
+            ...openedTasks.get(humanTaskId),
+            status: 'answered',
+            answer: {
+              decision: humanTaskId.includes('validation-functional-design')
+                ? 'develop-externally'
+                : humanTaskId.startsWith('external-')
+                  ? 'run-managed'
+                  : 'approve',
+            },
+            answeredBy: 'u1',
+          }
+        : null,
+    );
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') {
+        return { ok: true, unitCount: 1, batchCount: 1, walkingSkeleton: 'auth' };
+      }
+      if (payload.command === 'init-lane') {
+        return {
+          ok: true,
+          repos: [{ repo: 'owner/repo', sha: 'a'.repeat(40) }],
+        };
+      }
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    expect(
+      stageStarts().filter(
+        (payload) => payload.stageId === 'code-generation' && payload.unitSlug === 'auth',
+      ),
+    ).toHaveLength(1);
+    expect(deps.store.completeExternalDevelopmentStage).not.toHaveBeenCalled();
+  });
+
+  it('bypasses stage gates for remaining lanes after autonomous mode is selected', async () => {
+    const openedTasks = new Map();
+    deps.loadPlan = vi.fn(async () => GATED_CODE_GENERATION_PLAN());
+    deps.store.getUnitPlan = vi.fn(async () => UNIT_PLAN({ autonomyMode: 'autonomous' }));
+    deps.store.createHumanTask = vi.fn(async (task) => {
+      openedTasks.set(task.humanTaskId, task);
+      return task;
+    });
+    deps.store.getHumanTask = vi.fn(async (_executionId, humanTaskId) =>
+      openedTasks.has(humanTaskId)
+        ? { ...openedTasks.get(humanTaskId), status: 'answered', answer: { decision: 'approve' } }
+        : null,
+    );
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    const laneValidationTasks = deps.store.createHumanTask.mock.calls
+      .map(([task]) => task)
+      .filter((task) => task.kind === 'validation' && task.unitSlug);
+    expect(laneValidationTasks.some((task) => task.unitSlug === 'auth')).toBe(true);
+    expect(laneValidationTasks.some((task) => task.unitSlug === 'billing')).toBe(false);
   });
 
   it('resumes after repair from persisted merged units without replaying the skeleton or its gate', async () => {
@@ -2206,6 +2458,7 @@ describe('WP5 — engine-gate decisions', () => {
     // Approved on the revision gate; the remaining lane then ran.
     expect(eventCalls.some((e) => e.type === 'v2.units.skeleton_approved')).toBe(true);
     expect(invokes.some((p) => p.command === 'init-lane' && p.unitSlug === 'billing')).toBe(true);
+    expect(checkpointInvokes).toHaveLength(6);
   });
 
   it('request-changes on a batch gate re-runs the batch lanes with feedback, then re-asks (gated mode)', async () => {
@@ -2234,6 +2487,7 @@ describe('WP5 — engine-gate decisions', () => {
     const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
     expect(eventCalls.some((e) => e.type === 'v2.units.batch_revision_requested')).toBe(true);
     expect(eventCalls.some((e) => e.type === 'v2.units.batch_approved')).toBe(true);
+    expect(checkpointInvokes).toHaveLength(6);
   });
 
   it('an uninterpretable halt-and-ask answer RE-ASKS; the follow-up choice is honored', async () => {

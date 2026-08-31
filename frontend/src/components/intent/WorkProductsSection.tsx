@@ -56,18 +56,6 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
     if (!['CREATED', 'RUNNING', 'WAITING'].includes(detail.intent.status)) {
       return null;
     }
-    return (
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm">Work products</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="py-4 text-center text-sm text-muted-foreground">
-            No work products yet — documents, items and code will appear here as the run progresses.
-          </p>
-        </CardContent>
-      </Card>
-    );
   }
 
   return (
@@ -75,36 +63,38 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-sm">Work products</CardTitle>
-          {documentCount > 1 && (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    aria-label={
-                      newestFirst
-                        ? 'Sort work products by oldest first'
-                        : 'Sort work products by newest first'
-                    }
-                    onClick={() => {
-                      const nextOrder = newestFirst ? 'oldest-first' : 'newest-first';
-                      setDocumentOrderState(nextOrder);
-                      setDocumentOrder(nextOrder);
-                    }}
-                  >
-                    <ArrowDownUp className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {newestFirst
-                    ? 'Show oldest work products first'
-                    : 'Show newest work products first'}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )}
+          <div className="flex items-center gap-1">
+            {documentCount > 1 && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      aria-label={
+                        newestFirst
+                          ? 'Sort work products by oldest first'
+                          : 'Sort work products by newest first'
+                      }
+                      onClick={() => {
+                        const nextOrder = newestFirst ? 'oldest-first' : 'newest-first';
+                        setDocumentOrderState(nextOrder);
+                        setDocumentOrder(nextOrder);
+                      }}
+                    >
+                      <ArrowDownUp className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {newestFirst
+                      ? 'Show oldest work products first'
+                      : 'Show newest work products first'}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </div>
         </div>
         {detail.intent.planWarnings &&
           detail.intent.planWarnings.length > 0 &&
@@ -126,24 +116,32 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
           )}
       </CardHeader>
       <CardContent className="space-y-3">
-        <ProvenanceTree
-          detail={detail}
-          stageRows={stageRows}
-          phaseNameOf={phaseNameOf}
-          getNeighbors={getNeighbors}
-          itemsByArtifact={itemsByArtifact}
-          derivedItems={derivedItems}
-          codeItems={codeItems}
-          openArtifactPreview={openArtifactPreview}
-          openItemPreview={openItemPreview}
-          documentOrder={documentOrder}
-        />
+        {detail.artifacts.length > 0 || codeItems.length > 0 ? (
+          <ProvenanceTree
+            detail={detail}
+            stageRows={stageRows}
+            phaseNameOf={phaseNameOf}
+            getNeighbors={getNeighbors}
+            itemsByArtifact={itemsByArtifact}
+            derivedItems={derivedItems}
+            codeItems={codeItems}
+            openArtifactPreview={openArtifactPreview}
+            openItemPreview={openItemPreview}
+            documentOrder={documentOrder}
+          />
+        ) : (
+          <p className="py-4 text-center text-sm text-muted-foreground">
+            No work products yet — documents, items and code will appear here as the run progresses.
+          </p>
+        )}
 
-        <HistorySection
-          questionGates={questionGates}
-          steering={steering}
-          influencedArtifactsByQuestion={influencedArtifactsByQuestion}
-        />
+        {(questionGates.length > 0 || steering.length > 0) && (
+          <HistorySection
+            questionGates={questionGates}
+            steering={steering}
+            influencedArtifactsByQuestion={influencedArtifactsByQuestion}
+          />
+        )}
       </CardContent>
     </Card>
   );

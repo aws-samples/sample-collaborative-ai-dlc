@@ -64,6 +64,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
       noncurrent_days = 1
     }
   }
+
+  rule {
+    id     = "expire_workflow_exports"
+    status = "Enabled"
+
+    filter {
+      prefix = "workflow-exports/"
+    }
+
+    expiration {
+      days = 1
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
 }
 
 # Code snapshots bucket for agent code outputs

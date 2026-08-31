@@ -38,6 +38,7 @@
 //     (sparse maintenance index for live execution and integration work)
 
 const META = 'META';
+const WORKFLOW_CHECKPOINT = 'CHECKPOINT';
 
 // ── Partition keys ──
 const executionPk = (executionId) => `EXEC#${executionId}`;
@@ -48,6 +49,10 @@ const TRACKER_SYNCS_INDEX_PK = 'TRACKER_SYNCS';
 
 // ── Item keys ──
 const executionMetaKey = (executionId) => ({ pk: executionPk(executionId), sk: META });
+const workflowCheckpointKey = (executionId) => ({
+  pk: executionPk(executionId),
+  sk: WORKFLOW_CHECKPOINT,
+});
 const stageKey = (executionId, stageInstanceId) => ({
   pk: executionPk(executionId),
   sk: `STAGE#${stageInstanceId}`,
@@ -193,7 +198,13 @@ const ACTIVE_EXECUTION_STATUSES = ['CREATED', 'RUNNING', 'WAITING'];
 const STAGE_STATE = ['PENDING', 'RUNNING', 'WAITING_FOR_HUMAN', 'SUCCEEDED', 'FAILED', 'SKIPPED'];
 // Human gate kinds + lifecycle. `superseded` retires a still-pending gate whose
 // run was cancelled/rewound — never answered, kept as the audit record.
-const HUMAN_TASK_KINDS = ['approval', 'question', 'review-verdict', 'validation'];
+const HUMAN_TASK_KINDS = [
+  'approval',
+  'question',
+  'review-verdict',
+  'validation',
+  'external-development',
+];
 const HUMAN_TASK_STATUSES = ['pending', 'answered', 'approved', 'rejected', 'superseded'];
 // Human steering (course-correction) messages. Immutable once written; a
 // correction of a correction supersedes the old row. Delivery ("consumed") only
@@ -291,6 +302,12 @@ const buildExecutionMeta = ({
   status = 'CREATED',
   workflowId,
   workflowVersion,
+  // Commit-pinned native AI-DLC distribution used by this intent. Export
+  // prefers this snapshot over the deployment's current baseline ref.
+  aidlcRepoRef = null,
+  // Exact supporting block versions resolved when the intent was created.
+  // Stage versions remain pinned by workflow placements.
+  methodologyPins = null,
   scope = null,
   currentPhase = null,
   currentStage = null,
@@ -366,6 +383,10 @@ const buildExecutionMeta = ({
   // 'gated' (one approval gate per parallel batch). null until the ladder
   // prompt after the walking-skeleton gate is answered.
   constructionAutonomyMode = null,
+  // Structured result of the always-run workspace-detection stage. Persisted
+  // through a stage-scoped MCP tool so downstream consumers never need to
+  // infer methodology context from repository presence or agent prose.
+  projectType = null,
   // Optional tracker reference the intent was kicked off from (GitHub issue,
   // Jira artifact, …). The imported text lives in `prompt`; this is just the
   // provenance link surfaced in the UI. null when typed by hand. Mirrors the v1
@@ -427,6 +448,8 @@ const buildExecutionMeta = ({
   status,
   workflowId,
   workflowVersion,
+  aidlcRepoRef,
+  methodologyPins,
   scope,
   currentPhase,
   currentStage,
@@ -454,6 +477,7 @@ const buildExecutionMeta = ({
   maxParallelUnits,
   prStrategy,
   constructionAutonomyMode,
+  projectType,
   source,
   planWarnings,
   orchestratorRunId,
@@ -507,6 +531,7 @@ const buildStageRow = ({
   // instances so every stage row is attributable to its lane.
   unitSlug = null,
   sectionIndex = null,
+  aidlcRepoRef = null,
   now,
 }) => ({
   ...stageKey(executionId, stageInstanceId),
@@ -517,6 +542,7 @@ const buildStageRow = ({
   stageId: stageId ?? null,
   unitSlug,
   sectionIndex,
+  aidlcRepoRef,
   phase,
   state,
   attempt,
@@ -593,6 +619,10 @@ const buildHumanTaskRow = ({
   // stage skipping is disabled or nothing qualifies. Advisory only; the
   // orchestrator re-validates every entry.
   recomposeTargets = null,
+  // Metadata for a unit-scoped local code-generation handoff. The HUMAN# row
+  // already owns the stage callback and pending/superseded lifecycle, so this
+  // map only carries assignment and export correlation data.
+  externalDevelopment = null,
   // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
   // string = its stageId, null = approving completes the workflow. The
   // attribute is written ONLY when the orchestrator computed it (undefined
@@ -616,6 +646,7 @@ const buildHumanTaskRow = ({
   options,
   skipTargets,
   recomposeTargets,
+  externalDevelopment,
   ...(nextStageId !== undefined ? { nextStageId } : {}),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,
@@ -1110,9 +1141,11 @@ const buildTrackerSyncRow = ({
 
 export {
   META,
+  WORKFLOW_CHECKPOINT,
   executionPk,
   projectPk,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   eventKey,
   humanTaskKey,
@@ -1176,9 +1209,11 @@ export {
 };
 export default {
   META,
+  WORKFLOW_CHECKPOINT,
   executionPk,
   projectPk,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   eventKey,
   humanTaskKey,

@@ -83,6 +83,52 @@ describe('dispatchInvocation', () => {
     });
   });
 
+  it('routes handoff artifact import to the trusted runtime handler', async () => {
+    const importHandoffArtifacts = vi.fn(async (payload) => ({
+      ok: true,
+      imported: [payload.humanTaskId],
+    }));
+    const result = await dispatchInvocation({
+      payload: {
+        command: 'import-handoff-artifacts',
+        humanTaskId: 'external-auth',
+      },
+      handlers: { importHandoffArtifacts },
+    });
+
+    expect(result).toMatchObject({
+      statusCode: 200,
+      body: {
+        ok: true,
+        imported: ['external-auth'],
+        command: 'import-handoff-artifacts',
+      },
+    });
+    expect(importHandoffArtifacts).toHaveBeenCalledOnce();
+  });
+
+  it('routes workflow checkpoint publication', async () => {
+    const r = await dispatchInvocation({
+      payload: { command: 'create-workflow-checkpoint', intentId: 'i1', executionId: 'e1' },
+      handlers: {
+        createWorkflowCheckpoint: async (p) => ({
+          ok: true,
+          checkpointId: 'cp1',
+          executionId: p.executionId,
+        }),
+      },
+    });
+    expect(r).toMatchObject({
+      statusCode: 200,
+      body: {
+        ok: true,
+        checkpointId: 'cp1',
+        executionId: 'e1',
+        command: 'create-workflow-checkpoint',
+      },
+    });
+  });
+
   it('routes discussion-assist-start for Quorum discussion jobs', async () => {
     const r = await dispatchInvocation({
       payload: {

@@ -61,14 +61,26 @@ import {
   artifactAliases,
   artifactLogicalKeyFromRow,
   legacyVersionId,
+  readCheckpointArtifactVersions,
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
+import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
+import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
+import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
+import { assignNativeRepositoryDirectories, repositoryId } from '../shared/native-repositories.js';
+import {
+  executionPlanFromMethodologyCatalog,
+  loadOrCreateMethodologyCatalog,
+} from '../shared/methodology-catalog.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
+import { SYSTEM_TENANT } from '../shared/tenant.js';
+import { validateHandoffDocuments } from '../shared/native-handoff-submission.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
+import { createNativeExport } from './native-export.js';
 import {
   ATTACHMENT_UPLOAD_TTL_SECONDS,
   MAX_ATTACHMENTS,
@@ -104,6 +116,7 @@ const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION || '';
 // Compose report uploads land here (presigned PUT) and are read back at
 // compose dispatch. Key shape: compose-reports/<intentId>/<uuid>.json.
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
+const AIDLC_REPO_REF = () => process.env.AIDLC_REPO_REF || '';
 const attachmentCleanup = createAttachmentCleanupService({
   s3,
   store,
@@ -111,6 +124,16 @@ const attachmentCleanup = createAttachmentCleanupService({
 });
 const attachmentEventKey = /^intent-attachments\/staging\/([^/]+)\/([^.]+)(\.[a-z0-9]+)$/i;
 const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
+const HANDOFF_REPOSITORY_VALIDATION_CONCURRENCY = 8;
+
+const externalDevelopmentStageAttempt = (gate) =>
+  Number(gate?.externalDevelopment?.stageAttempt ?? -1);
+
+const isCurrentExternalDevelopmentHandoff = ({ gate, stage, humanTaskId }) =>
+  gate?.status === 'pending' &&
+  stage?.state === 'WAITING_FOR_HUMAN' &&
+  stage.pendingHumanTaskId === humanTaskId &&
+  Number(stage.attempt ?? 0) === externalDevelopmentStageAttempt(gate);
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
 // its DynamoDB reservation, copy the exact object version from staging to the
@@ -815,6 +838,7 @@ const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   sectionIndex:
     row.section_index === undefined || row.section_index === '' ? null : Number(row.section_index),
   unitSlug: row.unit_slug || null,
+  repository: row.repository || null,
   stageAttempt: Number(row.stage_attempt) || 0,
   generation: Math.max(1, Number(row.generation) || 1),
   versionCount: Math.max(0, Number(row.version_count) || 0) + legacyVersionCount,
@@ -834,6 +858,15 @@ const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   enrichmentModel: row.enrichment_model ?? null,
   content: row.content ?? null,
 });
+
+const mapCheckpointArtifact = (row) =>
+  mapArtifactHead(
+    {
+      ...row,
+      id: row.artifact_id,
+    },
+    0,
+  );
 
 // The fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
 const fetchPullRequests = async (g, intentId) => {
@@ -1122,6 +1155,7 @@ const mapIntent = (meta) => ({
   gitProvider: meta.gitProvider ?? null,
   workflowId: meta.workflowId,
   workflowVersion: meta.workflowVersion ?? null,
+  aidlcRepoRef: meta.aidlcRepoRef ?? null,
   scope: meta.scope ?? null,
   currentPhase: meta.currentPhase ?? null,
   currentStage: meta.currentStage ?? null,
@@ -1146,6 +1180,203 @@ const mapIntent = (meta) => ({
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
 });
+
+const NATIVE_EXPORT_HARNESSES = new Set(['claude', 'codex', 'kiro', 'kiro-ide', 'opencode']);
+const NATIVE_EXPORT_BLOCKED_STATUSES = new Set(['DRAFT', 'CREATED']);
+const ACTIVE_UNIT_STATES = new Set([
+  'RUNNING',
+  'MERGING',
+  'PR_DRAFT',
+  'RECONCILING',
+  'PR_READY',
+  'ADDRESSING_FEEDBACK',
+]);
+
+// Parallel lane questions do not park execution-level META. Treat RUNNING as
+// safely parked only when every active lane is waiting on a persisted human
+// task and no sibling stage can still mutate the snapshot.
+const isGloballyParkedForExport = (records) => {
+  if (records?.meta?.status !== 'RUNNING') return true;
+  const pendingStageIds = new Set(
+    (records.humanTasks ?? [])
+      .filter((task) => task.status === 'pending' && task.stageInstanceId)
+      .map((task) => task.stageInstanceId),
+  );
+  const parkedStages = (records.stages ?? []).filter(
+    (stage) => stage.state === 'WAITING_FOR_HUMAN' && pendingStageIds.has(stage.stageInstanceId),
+  );
+  if (parkedStages.length === 0) return false;
+  if ((records.stages ?? []).some((stage) => stage.state === 'RUNNING')) return false;
+
+  return (records.units ?? [])
+    .filter((unit) => ACTIVE_UNIT_STATES.has(unit.state))
+    .every(
+      (unit) =>
+        unit.state === 'RUNNING' &&
+        parkedStages.some(
+          (stage) =>
+            stage.unitSlug === unit.slug &&
+            Number(stage.sectionIndex) === Number(unit.sectionIndex),
+        ),
+    );
+};
+
+const repositoryCloneUrl = (repository, provider) => {
+  const value = String(repository ?? '');
+  if (/^(?:https?|ssh):\/\//.test(value) || value.startsWith('git@')) return value;
+  if (provider === 'gitlab') return `git@gitlab.com:${value}.git`;
+  if (provider === 'bitbucket') return `git@bitbucket.org:${value}.git`;
+  return `git@github.com:${value}.git`;
+};
+
+const exportRepositories = (meta) =>
+  assignNativeRepositoryDirectories(
+    (meta.repos ?? []).map((repository) => {
+      const provider = meta.repoProviders?.[repository] || meta.gitProvider || 'github';
+      return {
+        id: repositoryId(repository),
+        url: repositoryCloneUrl(repository, provider),
+        branch: meta.branch || meta.baseBranches?.[repository] || meta.baseBranch || '',
+      };
+    }),
+  );
+
+const exportSnapshotToken = (projection) =>
+  createHash('sha256')
+    .update(
+      canonicalJson({
+        ...projection,
+        artifacts: [...(projection.artifacts ?? [])].toSorted((a, b) =>
+          String(a.id).localeCompare(String(b.id)),
+        ),
+        stageRows: [...(projection.stageRows ?? [])].toSorted((a, b) =>
+          String(a.stageInstanceId).localeCompare(String(b.stageInstanceId)),
+        ),
+        humanTasks: [...(projection.humanTasks ?? [])].toSorted((a, b) =>
+          String(a.humanTaskId).localeCompare(String(b.humanTaskId)),
+        ),
+        unitRows: [...(projection.unitRows ?? [])].toSorted((a, b) =>
+          String(a.slug).localeCompare(String(b.slug)),
+        ),
+      }),
+    )
+    .digest('hex');
+
+const findNativeIncompatibleBlocks = async (plan) => {
+  const agentIds = new Set();
+  const sensorIds = new Set();
+  const ruleIds = new Set();
+  for (const stage of plan.stages) {
+    for (const id of [
+      stage.agentRef,
+      ...(stage.supportAgentRefs ?? []),
+      stage.reviewer?.reviewerAgent,
+    ]) {
+      if (id && id !== 'orchestrator') agentIds.add(id);
+    }
+    for (const sensor of stage.sensors ?? []) sensorIds.add(sensor.sensorId);
+    for (const id of [...(stage.rules?.universal ?? []), ...(stage.rules?.phase ?? [])]) {
+      ruleIds.add(id);
+    }
+  }
+  const [agents, sensors, rules, knowledge] = await Promise.all([
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'AGENT'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'SENSOR'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'RULE'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'KNOWLEDGE'),
+  ]);
+  const custom = [
+    ...plan.stages
+      .filter((stage) => stage.stageTenant && stage.stageTenant !== SYSTEM_TENANT)
+      .map((stage) => `STAGE:${stage.stageId}`),
+    ...agents
+      .filter(
+        (block) => block.tenantId !== SYSTEM_TENANT && agentIds.has(block.id ?? block.blockId),
+      )
+      .map((block) => `AGENT:${block.id ?? block.blockId}`),
+    ...sensors
+      .filter(
+        (block) => block.tenantId !== SYSTEM_TENANT && sensorIds.has(block.id ?? block.blockId),
+      )
+      .map((block) => `SENSOR:${block.id ?? block.blockId}`),
+    ...rules
+      .filter((block) => block.tenantId !== SYSTEM_TENANT && ruleIds.has(block.id ?? block.blockId))
+      .map((block) => `RULE:${block.id ?? block.blockId}`),
+    ...knowledge
+      .filter(
+        (block) =>
+          block.tenantId !== SYSTEM_TENANT &&
+          (block.agentRef === 'shared' || agentIds.has(block.agentRef)),
+      )
+      .map((block) => `KNOWLEDGE:${block.id ?? block.blockId}`),
+  ];
+  return [...new Set(custom)].toSorted();
+};
+
+const hasNonSystemMethodologyPins = (methodologyPins) =>
+  Object.values(methodologyPins ?? {}).some((pins) =>
+    Object.values(pins ?? {}).some((pin) => pin?.tenantId !== SYSTEM_TENANT),
+  );
+
+const methodologyRefsMatch = (planResult, expectedRef) => {
+  const refs = planResult?.methodologySourceRefs ?? [];
+  return refs.length === 1 && refs[0] === expectedRef;
+};
+
+// Prefer the normal DynamoDB workflow snapshot. If a SYSTEM reseed replaced
+// those version keys, reconstruct the same plan from the intent's commit-pinned
+// S3 catalog instead. Customer-edited methodology remains intentionally
+// unsupported by native export and never falls back to the SYSTEM catalog.
+const loadNativeExportPlan = async (meta) => {
+  const options = {
+    workflowId: meta.workflowId,
+    workflowVersion: meta.workflowVersion,
+    scope: meta.scope,
+    ...(Array.isArray(meta.skipStageIds) && meta.skipStageIds.length
+      ? { skipStageIds: meta.skipStageIds }
+      : {}),
+    ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+    ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+  };
+  let currentResult = null;
+  let currentError = null;
+  try {
+    currentResult = await loadExecutionPlan({
+      ddb,
+      tableName: BLOCKS_TABLE(),
+      ...options,
+    });
+  } catch (error) {
+    currentError = error;
+  }
+
+  const canUseCatalog = meta.aidlcRepoRef && !hasNonSystemMethodologyPins(meta.methodologyPins);
+  if (
+    currentResult?.valid &&
+    currentResult.plan &&
+    (!canUseCatalog || methodologyRefsMatch(currentResult, meta.aidlcRepoRef))
+  ) {
+    return currentResult;
+  }
+  if (!canUseCatalog) {
+    if (currentError) throw currentError;
+    return currentResult;
+  }
+
+  const catalog = await loadOrCreateMethodologyCatalog({
+    s3,
+    bucket: ARTIFACTS_BUCKET(),
+    ref: meta.aidlcRepoRef,
+  });
+  return executionPlanFromMethodologyCatalog({
+    catalog,
+    workflowId: meta.workflowId,
+    workflowVersion: meta.workflowVersion,
+    scope: meta.scope,
+    skipStageIds: options.skipStageIds,
+    composedGrid: options.composedGrid,
+  });
+};
 
 // Map a QEDIT# row (Quorum-supported artifact edit session) to the wire shape.
 const mapQuorumEdit = (q) => ({
@@ -1407,6 +1638,263 @@ export const handler = async (event) => {
       return response(405, { error: 'Method not allowed' });
     }
 
+    // POST /projects/{projectId}/intents/{intentId}/export — materialize a
+    // native AI-DLC workspace snapshot and return a short-lived S3 download.
+    // RUNNING executions export their latest completed immutable checkpoint.
+    // Parked and terminal executions export current live state with a final
+    // consistency recheck so post-stage human edits are preserved.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/export')) {
+      const liveRecords = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const liveMeta = liveRecords.meta;
+      if (!liveMeta || liveMeta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (NATIVE_EXPORT_BLOCKED_STATUSES.has(liveMeta.status)) {
+        return response(409, {
+          error: 'The intent is not in an exportable state',
+        });
+      }
+      const data = body ? JSON.parse(body) : {};
+      const handoffTaskId =
+        typeof data.handoffTaskId === 'string' && data.handoffTaskId ? data.handoffTaskId : null;
+      const handoffTask = handoffTaskId
+        ? (liveRecords.humanTasks ?? []).find(
+            (task) =>
+              task.humanTaskId === handoffTaskId &&
+              task.kind === 'external-development' &&
+              task.status === 'pending',
+          )
+        : null;
+      if (handoffTaskId && !handoffTask) {
+        return response(409, {
+          error: 'The external-development handoff is no longer pending',
+          code: 'handoff_not_pending',
+        });
+      }
+      const useLiveSnapshot = Boolean(handoffTask) || isGloballyParkedForExport(liveRecords);
+      const checkpoint = useLiveSnapshot ? null : await store.getWorkflowCheckpoint(intentId);
+      if (!useLiveSnapshot && !checkpoint) {
+        return response(409, {
+          error: 'No completed workflow checkpoint is available yet',
+          code: 'export_checkpoint_unavailable',
+        });
+      }
+      const records = checkpoint ? checkpointProjection(checkpoint) : liveRecords;
+      const meta = records.meta;
+      const harness = data.harness || meta.agentCli || 'kiro';
+      if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
+        return response(400, { error: `Unsupported native AI-DLC harness: ${harness}` });
+      }
+      const executionRefs = new Set(
+        (records.stages ?? []).map((stage) => stage.aidlcRepoRef).filter(Boolean),
+      );
+      if (
+        executionRefs.size > 1 ||
+        (meta.aidlcRepoRef && [...executionRefs].some((ref) => ref !== meta.aidlcRepoRef))
+      ) {
+        return response(409, {
+          error: 'This workflow was executed with multiple AI-DLC revisions and cannot be exported',
+          code: 'export_mixed_aidlc_refs',
+        });
+      }
+      const planResult = await loadNativeExportPlan(meta);
+      if (!planResult.valid || !planResult.plan) {
+        return response(409, {
+          error: 'The workflow snapshot cannot be resolved for native export',
+          errors: planResult.errors ?? [],
+        });
+      }
+      const incompatibleBlocks = await findNativeIncompatibleBlocks(planResult.plan);
+      if (incompatibleBlocks.length > 0) {
+        return response(409, {
+          error: 'The workflow uses edited methodology blocks that cannot yet be exported',
+          incompatibleBlocks,
+        });
+      }
+      let upstreamRef = meta.aidlcRepoRef;
+      if (!upstreamRef) {
+        try {
+          upstreamRef = await resolveAidlcRepoRef(AIDLC_REPO_REF());
+        } catch (error) {
+          return response(503, {
+            error: 'The configured AI-DLC repository ref could not be resolved',
+            detail: error.message,
+          });
+        }
+      }
+      const stages = [
+        ...planResult.plan.stages,
+        ...(planResult.plan.skippedStages ?? []).map((stage) => ({ ...stage, excluded: true })),
+      ];
+      try {
+        const artifactRows = checkpoint
+          ? (
+              await readCheckpointArtifactVersions({
+                g,
+                intentId,
+                refs: checkpoint.artifactRefs ?? [],
+              })
+            ).map(mapCheckpointArtifact)
+          : await fetchArtifacts(g, intentId);
+        const customRules = checkpoint
+          ? (checkpoint.customRuleRefs ?? [])
+          : await pinCustomRuleVersions({
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+              rules: meta.customRules ?? [],
+            });
+        const buildProjection = (projectionRecords, projectionArtifacts, projectionRules) => {
+          const projectionMeta = projectionRecords.meta;
+          const projectionStagesByInstance = new Map(
+            (projectionRecords.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+          );
+          return {
+            ...(handoffTaskId
+              ? {
+                  mode: 'unit-handoff',
+                  handoffTaskId,
+                }
+              : {}),
+            intent: {
+              intentId,
+              projectId,
+              title: projectionMeta.title,
+              prompt: projectionMeta.prompt,
+              scope: projectionMeta.scope,
+              workflowId: projectionMeta.workflowId,
+              workflowVersion: projectionMeta.workflowVersion,
+              createdAt: projectionMeta.startedAt,
+              branch: projectionMeta.branch,
+              projectType: projectionMeta.projectType,
+              customRules: projectionRules,
+            },
+            stages,
+            stageRows: projectionRecords.stages ?? [],
+            artifacts: projectionArtifacts.map((artifact) => {
+              const producer = projectionStagesByInstance.get(artifact.createdByStageInstanceId);
+              return {
+                ...artifact,
+                stageId: producer?.stageId ?? null,
+                phase: producer?.phase ?? null,
+                repository: artifact.repository ?? producer?.repository ?? null,
+              };
+            }),
+            humanTasks: projectionRecords.humanTasks ?? [],
+            repositories: exportRepositories(projectionMeta),
+            unitPlan: projectionRecords.unitPlan,
+            unitRows: projectionRecords.units ?? [],
+          };
+        };
+        const projection = buildProjection(records, artifactRows, customRules);
+        const initialSnapshotToken = checkpoint ? null : exportSnapshotToken(projection);
+        const legacyRefWarning = meta.aidlcRepoRef
+          ? []
+          : [
+              'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+            ];
+        const exported = await createNativeExport({
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+          upstreamRef,
+          harness,
+          warnings: legacyRefWarning,
+          projection,
+          sourceCheckpoint: checkpoint
+            ? {
+                checkpointId: checkpoint.checkpointId,
+                createdAt: checkpoint.createdAt,
+                sourceStageInstanceId: checkpoint.sourceStageInstanceId ?? null,
+              }
+            : null,
+          validateSnapshot: checkpoint
+            ? null
+            : async () => {
+                const latestRecords = await store.getExecutionRecords(intentId, {
+                  includeOutputs: false,
+                });
+                if (handoffTaskId) {
+                  const latestTask = (latestRecords.humanTasks ?? []).find(
+                    (task) =>
+                      task.humanTaskId === handoffTaskId &&
+                      task.kind === 'external-development' &&
+                      task.status === 'pending',
+                  );
+                  const latestStage = (latestRecords.stages ?? []).find(
+                    (stage) => stage.stageInstanceId === latestTask?.stageInstanceId,
+                  );
+                  return Boolean(
+                    latestRecords.meta &&
+                    latestRecords.meta.projectId === projectId &&
+                    !NATIVE_EXPORT_BLOCKED_STATUSES.has(latestRecords.meta.status) &&
+                    latestTask &&
+                    latestStage?.state === 'WAITING_FOR_HUMAN' &&
+                    latestStage.pendingHumanTaskId === handoffTaskId &&
+                    Number(latestStage.attempt ?? 0) ===
+                      Number(latestTask.externalDevelopment?.stageAttempt ?? -1),
+                  );
+                }
+                if (
+                  !latestRecords.meta ||
+                  latestRecords.meta.projectId !== projectId ||
+                  NATIVE_EXPORT_BLOCKED_STATUSES.has(latestRecords.meta.status) ||
+                  !isGloballyParkedForExport(latestRecords)
+                ) {
+                  return false;
+                }
+                const latestArtifacts = await fetchArtifacts(g, intentId);
+                const latestRules = await pinCustomRuleVersions({
+                  s3,
+                  bucket: ARTIFACTS_BUCKET(),
+                  rules: latestRecords.meta.customRules ?? [],
+                });
+                return (
+                  exportSnapshotToken(
+                    buildProjection(latestRecords, latestArtifacts, latestRules),
+                  ) === initialSnapshotToken
+                );
+              },
+        });
+        if (handoffTask) {
+          const exportedTask = await store.updateExternalDevelopment({
+            executionId: intentId,
+            humanTaskId: handoffTaskId,
+            stageAttempt: Number(handoffTask.externalDevelopment?.stageAttempt ?? -1),
+            externalDevelopment: {
+              ...handoffTask.externalDevelopment,
+              harness,
+              exportId: exported.exportId ?? null,
+              exportedAt: new Date().toISOString(),
+            },
+          });
+          if (!exportedTask) {
+            return response(409, {
+              error: 'The external-development handoff is no longer current',
+              code: 'handoff_not_pending',
+            });
+          }
+        }
+        return response(201, exported);
+      } catch (error) {
+        console.error('Native workflow export failed:', error);
+        if (error.code === 'export_snapshot_changed') {
+          return response(409, {
+            error: error.message,
+            code: error.code,
+          });
+        }
+        if (error.code === 'export_checkpoint_unavailable') {
+          return response(409, {
+            error: 'The latest completed checkpoint is incomplete or unavailable',
+            code: error.code,
+          });
+        }
+        return response(409, {
+          error: 'This workflow snapshot is not compatible with native AI-DLC export',
+          detail: error.message,
+        });
+      }
+    }
+
     // POST /projects/{projectId}/intents/{intentId}/realtime-token
     if (intentId && httpMethod === 'POST' && path?.endsWith('/realtime-token')) {
       // Confirm the intent belongs to this project before minting an intent
@@ -1521,6 +2009,9 @@ export const handler = async (event) => {
             ? { skipStageIds: records.meta.skipStageIds }
             : {}),
           ...(records.meta.composedGrid ? { composedGrid: records.meta.composedGrid } : {}),
+          ...(records.meta.methodologyPins
+            ? { methodologyPins: records.meta.methodologyPins }
+            : {}),
         });
         plan = planResult.valid ? planResult.plan : null;
       } catch {
@@ -1885,6 +2376,270 @@ export const handler = async (event) => {
     }
 
     // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer
+    if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/submit')) {
+      const gate = await store.getHumanTask(intentId, humanTaskId);
+      if (!gate || gate.kind !== 'external-development') {
+        return response(404, { error: 'External-development handoff not found' });
+      }
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      const responder = getResponder(event);
+      if (
+        gate.externalDevelopment?.assignedTo &&
+        gate.externalDevelopment.assignedTo !== responder.sub
+      ) {
+        return response(403, { error: 'This unit is assigned to another developer' });
+      }
+      const stage = await store.getStage(intentId, gate.stageInstanceId);
+      const stageAttempt = externalDevelopmentStageAttempt(gate);
+      if (!isCurrentExternalDevelopmentHandoff({ gate, stage, humanTaskId })) {
+        return response(409, {
+          error: 'The external-development handoff is no longer current',
+          code: 'handoff_stale',
+        });
+      }
+
+      const data = body ? JSON.parse(body) : {};
+      const documentValidation = validateHandoffDocuments(data.documents);
+      const findings = [...documentValidation.findings];
+      const assignedRepositories = gate.externalDevelopment?.repositories ?? [];
+      if (assignedRepositories.length === 0) {
+        findings.push({ field: 'repositories', code: 'repository_set_missing' });
+      }
+      const repositoryValidationResults = await mapWithConcurrency(
+        assignedRepositories,
+        HANDOFF_REPOSITORY_VALIDATION_CONCURRENCY,
+        async (repository) => {
+          if (!repository.repository || !repository.provider || !repository.branch) {
+            return {
+              finding: {
+                field: repository.name ?? 'repository',
+                code: 'repository_assignment_invalid',
+              },
+            };
+          }
+          try {
+            const head = await sourceControlOperation({
+              projectId,
+              provider: repository.provider,
+              repo: repository.repository,
+              operation: 'branch-head',
+              args: { branch: repository.branch },
+            });
+            if (!/^[0-9a-f]{40,64}$/i.test(head?.sha ?? '')) {
+              return {
+                finding: {
+                  field: repository.name,
+                  code: 'branch_head_invalid',
+                },
+              };
+            }
+            const descendsFromBase = await sourceControlOperation({
+              projectId,
+              provider: repository.provider,
+              repo: repository.repository,
+              operation: 'is-ancestor',
+              args: {
+                ancestorSha: repository.baseSha,
+                descendantRef: head.sha,
+              },
+            });
+            if (!descendsFromBase) {
+              return {
+                finding: {
+                  field: repository.name,
+                  code: 'base_not_ancestor',
+                },
+              };
+            }
+            return {
+              submittedRepository: {
+                ...repository,
+                submittedSha: head.sha,
+              },
+            };
+          } catch (error) {
+            return {
+              finding: {
+                field: repository.name ?? repository.repository,
+                code: error.code ?? 'repository_validation_failed',
+              },
+            };
+          }
+        },
+      );
+      findings.push(
+        ...repositoryValidationResults.flatMap(({ finding }) => (finding ? [finding] : [])),
+      );
+      const submittedRepositories = repositoryValidationResults.flatMap(
+        ({ submittedRepository }) => (submittedRepository ? [submittedRepository] : []),
+      );
+
+      const externalDevelopment = {
+        ...gate.externalDevelopment,
+        validationFindings: findings,
+        lastSubmittedAt: new Date().toISOString(),
+      };
+      if (findings.length > 0) {
+        await store.updateExternalDevelopment({
+          executionId: intentId,
+          humanTaskId,
+          stageAttempt,
+          externalDevelopment,
+        });
+        return response(422, {
+          error: 'External-development submission failed validation',
+          code: 'handoff_validation_failed',
+          findings,
+        });
+      }
+      if (!AGENTCORE_RUNTIME_ARN()) {
+        return response(503, { error: 'The handoff import runtime is not configured' });
+      }
+
+      const candidate = {
+        documents: Object.fromEntries(
+          Object.entries(documentValidation.documents).map(([artifactType, document]) => [
+            artifactType,
+            {
+              filename: document.filename,
+              bytes: document.bytes,
+              sha256: document.sha256,
+            },
+          ]),
+        ),
+        repositories: submittedRepositories.map(
+          ({ name, repository, provider, branch, baseSha, submittedSha }) => ({
+            name,
+            repository,
+            provider,
+            branch,
+            baseSha,
+            submittedSha,
+          }),
+        ),
+      };
+      const candidateStored = await store.updateExternalDevelopment({
+        executionId: intentId,
+        humanTaskId,
+        stageAttempt,
+        externalDevelopment: {
+          ...externalDevelopment,
+          validationFindings: [],
+          candidate,
+        },
+      });
+      if (!candidateStored) {
+        return response(409, { error: 'The external-development handoff is no longer current' });
+      }
+
+      let imported;
+      try {
+        const runtime = await agentcore.send(
+          new InvokeAgentRuntimeCommand({
+            agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+            runtimeSessionId: laneSessionIdFor(intentId, gate.sectionIndex, gate.unitSlug),
+            contentType: 'application/json',
+            accept: 'application/json',
+            payload: Buffer.from(
+              JSON.stringify({
+                command: 'import-handoff-artifacts',
+                projectId,
+                intentId,
+                executionId: intentId,
+                humanTaskId,
+                stageInstanceId: gate.stageInstanceId,
+                stageAttempt,
+                unitSlug: gate.unitSlug,
+                sectionIndex: gate.sectionIndex,
+                repositories: submittedRepositories,
+                documents: documentValidation.documents,
+              }),
+            ),
+          }),
+        );
+        const text = runtime.response ? await runtime.response.transformToString() : '';
+        imported = text ? JSON.parse(text) : {};
+      } catch (error) {
+        imported = { ok: false, reason: 'runtime_invoke_failed', detail: error.message };
+      }
+      if (!imported.ok) {
+        const importFindings = [
+          {
+            field: imported.repository ?? 'submission',
+            code: imported.reason ?? 'handoff_import_failed',
+            detail: imported.detail ?? null,
+          },
+        ];
+        await store.updateExternalDevelopment({
+          executionId: intentId,
+          humanTaskId,
+          stageAttempt,
+          externalDevelopment: {
+            ...externalDevelopment,
+            candidate,
+            validationFindings: importFindings,
+          },
+        });
+        return response(422, {
+          error: 'External-development submission could not be imported',
+          code: 'handoff_import_failed',
+          findings: importFindings,
+        });
+      }
+
+      const acceptedAt = new Date().toISOString();
+      const acceptedResult = {
+        ...candidate,
+        importedArtifactIds: imported.imported ?? [],
+        acceptedAt,
+        acceptedBy: responder.sub,
+      };
+      const answered = await store.acceptExternalDevelopment({
+        executionId: intentId,
+        humanTaskId,
+        stageAttempt,
+        externalDevelopment: {
+          ...externalDevelopment,
+          validationFindings: [],
+          candidate,
+          acceptedResult,
+        },
+        answer: { decision: 'accepted', ...acceptedResult },
+        answeredBy: responder.sub,
+        answeredByName: responder.displayName,
+      });
+      if (!answered) {
+        return response(409, { error: 'The external-development handoff was already completed' });
+      }
+      if (gate.callbackId) {
+        await resumeDurableCallback(gate.callbackId, answered.answer);
+      }
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.stage.external_development_accepted',
+          stageInstanceId: gate.stageInstanceId,
+          unitSlug: gate.unitSlug,
+          sectionIndex: gate.sectionIndex,
+          actor: responder.displayName || responder.sub,
+          summary: `External code generation accepted for unit ${gate.unitSlug}`,
+        })
+        .catch(() => {});
+      await broadcastToIntentChannel(intentId, {
+        action: 'agent.note',
+        intentId,
+        projectId,
+        noteType: 'v2.stage.external_development_accepted',
+        unitSlug: gate.unitSlug,
+        summary: `External code generation accepted for unit ${gate.unitSlug}`,
+      });
+      return response(200, { ok: true, humanTaskId, acceptedResult });
+    }
+
+    // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer
     if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/answer')) {
       const data = body ? JSON.parse(body) : {};
       const gate = await store.getHumanTask(intentId, humanTaskId);
@@ -1892,6 +2647,29 @@ export const handler = async (event) => {
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
+      }
+      const responder = getResponder(event);
+      if (gate.kind === 'external-development') {
+        if (data.answer?.decision !== 'run-managed') {
+          return response(409, {
+            error:
+              'Submit the local result or explicitly cancel external development to run code-generation managed',
+            code: 'external_development_requires_submission',
+          });
+        }
+        if (
+          gate.externalDevelopment?.assignedTo &&
+          gate.externalDevelopment.assignedTo !== responder.sub
+        ) {
+          return response(403, { error: 'This unit is assigned to another developer' });
+        }
+        const stage = await store.getStage(intentId, gate.stageInstanceId);
+        if (!isCurrentExternalDevelopmentHandoff({ gate, stage, humanTaskId })) {
+          return response(409, {
+            error: 'The external-development handoff is no longer current',
+            code: 'handoff_stale',
+          });
+        }
       }
       // A live Quorum edit is mutating this intent's artifacts; answering the
       // gate would resume the parked stage RIGHT INTO those writes. The run is
@@ -1910,7 +2688,6 @@ export const handler = async (event) => {
       // Answer THIS specific gate (CAS on pending). D3: a stage can leave more
       // than one pending gate; answer the one addressed by the URL, never blindly
       // META.pendingHumanTaskId.
-      const responder = getResponder(event);
       const answered = await store.answerHumanTask({
         executionId: intentId,
         humanTaskId,
@@ -2156,6 +2933,7 @@ export const handler = async (event) => {
           scope: meta.scope,
           ...(effectiveSkips?.length ? { skipStageIds: effectiveSkips } : {}),
           ...(effectiveGrid ? { composedGrid: effectiveGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -2524,6 +3302,7 @@ export const handler = async (event) => {
             workflowId: meta.workflowId,
             workflowVersion: meta.workflowVersion,
             scope: match.scopeId,
+            ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
           });
           if (planCheck.valid) {
             const row = await store.createCompose({
@@ -2799,6 +3578,7 @@ export const handler = async (event) => {
           scope: effScope,
           ...(effSkips?.length ? { skipStageIds: effSkips } : {}),
           ...(effGrid ? { composedGrid: effGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -3033,6 +3813,7 @@ export const handler = async (event) => {
           ? { skipStageIds: meta.skipStageIds }
           : {}),
         ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -3409,6 +4190,7 @@ export const handler = async (event) => {
         scope: meta.scope,
         ...(rewindSkipIds.length ? { skipStageIds: rewindSkipIds } : {}),
         ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -3790,6 +4572,7 @@ export const handler = async (event) => {
           scope: meta.scope,
           ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
           ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         const currentSectionIds = new Set(
           (currentPlanResult.plan?.stages ?? [])
@@ -3822,6 +4605,7 @@ export const handler = async (event) => {
         scope: newScope,
         composedGrid: newGrid,
         ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         strict: true,
       });
       if (!planResult.valid || !planResult.plan) {
@@ -4222,6 +5006,24 @@ export const handler = async (event) => {
         });
       }
       const planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+      let aidlcRepoRef = null;
+      if (AIDLC_REPO_REF()) {
+        try {
+          aidlcRepoRef = await resolveAidlcRepoRef(AIDLC_REPO_REF());
+        } catch (error) {
+          return response(503, {
+            error: 'The configured AI-DLC repository ref could not be resolved',
+            detail: error.message,
+          });
+        }
+      }
+      if ((planCheck.methodologySourceRefs ?? []).length > 1) {
+        return response(409, {
+          error: 'The selected workflow combines blocks from multiple AI-DLC revisions',
+          refs: planCheck.methodologySourceRefs,
+        });
+      }
+      aidlcRepoRef = planCheck.methodologySourceRefs?.[0] ?? aidlcRepoRef;
       // Optional per-repo base-branch override (see validateBaseBranches) —
       // validated against THIS intent's repo set before anything is written.
       const { value: baseBranches, error: baseBranchesError } = validateBaseBranches(
@@ -4257,6 +5059,8 @@ export const handler = async (event) => {
         status: 'DRAFT',
         workflowId,
         workflowVersion,
+        aidlcRepoRef,
+        methodologyPins: planCheck.methodologyPins,
         scope,
         startedBy: sub,
         title: data.title || null,
@@ -4849,6 +5653,7 @@ const mapHumanTask = (h) => ({
   // keep its generic labels instead of falsely claiming "Complete workflow".
   ...('nextStageId' in h ? { nextStageId: h.nextStageId ?? null } : {}),
   questions: h.questions ?? null,
+  externalDevelopment: h.externalDevelopment ?? null,
   answer: h.answer ?? null,
   answeredBy: h.answeredBy ?? null,
   answeredByName: h.answeredByName ?? null,

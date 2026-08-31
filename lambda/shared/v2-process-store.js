@@ -20,6 +20,7 @@ import {
 import {
   META,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   humanTaskKey,
   steeringKey,
@@ -115,6 +116,29 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
+  // One atomic item is the latest-checkpoint pointer and its bounded process
+  // snapshot; overwriting it cannot expose a partially published checkpoint.
+  const putWorkflowCheckpoint = async (checkpoint) => {
+    if (!checkpoint?.executionId || !checkpoint?.checkpointId) {
+      throw new Error('putWorkflowCheckpoint requires executionId and checkpointId');
+    }
+    const item = {
+      ...workflowCheckpointKey(checkpoint.executionId),
+      ...checkpoint,
+      updatedAt: now(),
+    };
+    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    return item;
+  };
+
+  // Read the latest completed checkpoint for export hydration.
+  const getWorkflowCheckpoint = async (executionId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: workflowCheckpointKey(executionId) }),
+    );
+    return Item ?? null;
+  };
+
   // Update the execution-level status + current phase/stage + pending gate, and
   // re-stamp the GSI projections. `fromStatus` (optional) makes it a CAS.
   // `ifOrchestratorRunId` (optional) additionally requires META to still carry
@@ -142,6 +166,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     starterName,
     starterEmail,
     constructionAutonomyMode,
+    projectType,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
     skipStageIds,
@@ -273,6 +298,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }
       sets.push('constructionAutonomyMode = :cam');
       values[':cam'] = constructionAutonomyMode;
+    }
+    if (projectType !== undefined) {
+      if (projectType !== 'greenfield' && projectType !== 'brownfield') {
+        throw new Error(`invalid projectType: ${projectType}`);
+      }
+      sets.push('projectType = :pt');
+      values[':pt'] = projectType;
     }
     // Per-intent skip overlay (stage-skip.js): a rewind to a skipped stage
     // un-skips it. Validated shape only — the plan resolver owns the policy.
@@ -453,6 +485,50 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Attributes;
   };
 
+  // Complete an externally executed code-generation stage only while the same
+  // pending-task pointer and attempt still own it. Retry/rewind changes one of
+  // those values, so a stale handoff callback cannot finish a newer attempt.
+  const completeExternalDevelopmentStage = async ({
+    executionId,
+    stageInstanceId,
+    humanTaskId,
+    attempt,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          ConditionExpression:
+            '#state = :waiting AND pendingHumanTaskId = :task AND attempt = :attempt',
+          UpdateExpression:
+            'SET #state = :succeeded, updatedAt = :ts, completedAt = :ts, parkedAt = :null, pendingHumanTaskId = :null, runtimeError = :null, GSI2SK = :g2sk',
+          ExpressionAttributeNames: { '#state': 'state' },
+          ExpressionAttributeValues: {
+            ':waiting': 'WAITING_FOR_HUMAN',
+            ':succeeded': 'SUCCEEDED',
+            ':task': humanTaskId,
+            ':attempt': attempt,
+            ':ts': ts,
+            ':null': null,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'STAGE',
+              state: 'SUCCEEDED',
+              id: stageInstanceId,
+            }).GSI2SK,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
   // Reconcile a detached stage job that the orchestrator has declared failed.
   // The callback id is the attempt ownership token: a delayed callback timeout
   // from an older attempt must never overwrite a retry/resume that has already
@@ -619,6 +695,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     questions,
     skipTargets,
     recomposeTargets,
+    externalDevelopment,
     nextStageId,
     humanTaskId,
   }) => {
@@ -635,6 +712,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       questions,
       skipTargets,
       recomposeTargets,
+      externalDevelopment,
       nextStageId,
       now: now(),
     });
@@ -646,6 +724,87 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }),
     );
     return item;
+  };
+
+  const updateExternalDevelopment = async ({
+    executionId,
+    humanTaskId,
+    stageAttempt,
+    externalDevelopment,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression:
+            '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+          UpdateExpression: 'SET externalDevelopment = :externalDevelopment, updatedAt = :ts',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':pending': 'pending',
+            ':stageAttempt': stageAttempt,
+            ':externalDevelopment': externalDevelopment,
+            ':ts': ts,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  // Atomically accept one external-development submission. Cancellation and
+  // concurrent submissions update the same task row, so exactly one pending
+  // task owner can persist accepted metadata and answer the gate.
+  const acceptExternalDevelopment = async ({
+    executionId,
+    humanTaskId,
+    stageAttempt,
+    externalDevelopment,
+    answer,
+    answeredBy,
+    answeredByName,
+  }) => {
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression:
+            '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+          UpdateExpression:
+            'SET externalDevelopment = :externalDevelopment, #status = :answered, answer = :answer, answeredBy = :by, answeredByName = :byName, answeredAt = :ts, updatedAt = :ts, GSI2SK = :g2sk',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':pending': 'pending',
+            ':answered': 'answered',
+            ':stageAttempt': stageAttempt,
+            ':externalDevelopment': externalDevelopment,
+            ':answer': answer,
+            ':by': answeredBy ?? null,
+            ':byName': answeredByName ?? null,
+            ':ts': ts,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'HUMAN',
+              state: 'answered',
+              id: humanTaskId,
+            }).GSI2SK,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
   };
 
   // Bind one durable callback to one pending gate owner. Concurrent lanes must
@@ -2344,16 +2503,21 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   return {
     createExecution,
     getExecution,
+    putWorkflowCheckpoint,
+    getWorkflowCheckpoint,
     updateExecution,
     deleteExecution,
     putStage,
     getStage,
     updateStageState,
+    completeExternalDevelopmentStage,
     failRunningStageAttempt,
     resumeStageRow,
     appendEvent,
     listEvents,
     createHumanTask,
+    updateExternalDevelopment,
+    acceptExternalDevelopment,
     getHumanTask,
     setGateCallbackId,
     answerHumanTask,

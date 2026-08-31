@@ -353,6 +353,7 @@ module "lambda" {
 
   project_name                = var.project_name
   environment                 = var.environment
+  aidlc_repo_ref              = var.aidlc_repo_ref
   application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
