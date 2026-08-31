@@ -9,6 +9,7 @@ import {
   readdirSync,
   readlinkSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,6 +26,7 @@ const destroyTerraform = join(root, 'scripts/destroy.sh');
 const generateEnv = join(root, 'scripts/generate-env.sh');
 const releaseWorkflow = join(root, '.github/workflows/release.yml');
 const demoWorkflow = join(root, '.github/workflows/deploy-demo.yml');
+const yjsDockerfile = join(root, 'lambda/yjs-server/Dockerfile');
 
 const run = (file, args, options = {}) =>
   spawnSync(file, args, {
@@ -93,6 +95,23 @@ test('deployment scripts enforce locked dependencies without install hooks', () 
   assert.match(terraformDeployment, /npm ci --ignore-scripts/);
   assert.match(terraformDeployment, /terraform init -lockfile=readonly/);
   assert.match(frontendDeployment, /npm ci --ignore-scripts/);
+});
+
+test('Yjs image pins readable ownership and modes for non-root runtime files', () => {
+  const dockerfile = readFileSync(yjsDockerfile, 'utf8');
+
+  assert.match(
+    dockerfile,
+    /COPY --chown=node:node --chmod=0644 package\.json package-lock\.json \.\//,
+  );
+  assert.match(
+    dockerfile,
+    /COPY --chown=node:node --chmod=0644 server\.js realtime-token\.js doc-name\.js \.\//,
+  );
+  assert.ok(
+    dockerfile.indexOf('--chmod=0644 server.js') < dockerfile.indexOf('USER node'),
+    'runtime source permissions must be fixed before dropping privileges',
+  );
 });
 
 test('release check accepts prerelease metadata but final mode requires a date', () => {
@@ -715,9 +734,11 @@ const createReleaseRepository = () => {
   mkdirSync(join(repository, 'scripts'), { recursive: true });
   mkdirSync(join(repository, 'config'), { recursive: true });
   mkdirSync(join(repository, 'frontend'), { recursive: true });
+  mkdirSync(join(repository, 'lambda/yjs-server'), { recursive: true });
   cpSync(join(root, 'scripts/sso-config.mjs'), join(repository, 'scripts/sso-config.mjs'));
   cpSync(join(root, 'config/platform-roles.json'), join(repository, 'config/platform-roles.json'));
   writeJson(join(repository, 'frontend/package.json'), { name: 'frontend', private: true });
+  writeFileSync(join(repository, 'lambda/yjs-server/server.js'), 'console.log("ready");\n');
   writeFileSync(
     join(repository, 'terraform/environments/dev.tfvars.example'),
     [
@@ -811,6 +832,7 @@ test('installer supports fresh install, v1 adoption, v1-to-v2 update, and recove
   assert.equal(fresh.status, 0, fresh.stderr);
   const freshCurrent = readlinkSync(join(freshEnv.XDG_DATA_HOME, 'collaborative-ai-dlc/current'));
   assert.match(freshCurrent, /releases\/v2\.0\.0$/);
+  assert.equal(statSync(join(freshCurrent, 'lambda/yjs-server/server.js')).mode & 0o777, 0o644);
   const configText = readFileSync(
     join(freshEnv.XDG_CONFIG_HOME, 'collaborative-ai-dlc/install.conf'),
     'utf8',
@@ -870,6 +892,7 @@ test('installer tracks an explicitly selected branch by immutable commit', () =>
   const currentLink = join(env.XDG_DATA_HOME, 'collaborative-ai-dlc/current');
   const firstCheckout = readlinkSync(currentLink);
   assert.match(firstCheckout, /checkouts\/[0-9a-f]{40}$/);
+  assert.equal(statSync(join(firstCheckout, 'lambda/yjs-server/server.js')).mode & 0o777, 0o644);
 
   writeFileSync(join(repository, 'branch-update.txt'), 'next\n');
   execFileSync('git', ['add', 'branch-update.txt'], { cwd: repository });
