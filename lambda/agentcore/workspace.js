@@ -30,6 +30,24 @@ const run = (command, args, { cwd, env = {}, spawnFn = spawn } = {}) =>
 
 const cloneUrl = (repo, gitProvider) => buildCloneUrl(gitProvider, repo, '');
 
+// Managed-session storage can restore a checkout with an owner that differs
+// from the runtime node user. Trust only the exact repository root selected by
+// the validated project configuration; never opt out globally with '*'.
+export const trustGitDirectory = async ({ targetDir, runner = run }) => {
+  const existing = await runner(
+    'git',
+    ['config', '--global', '--fixed-value', '--get-all', 'safe.directory', targetDir],
+    {},
+  );
+  if (existing.code === 0) return true;
+  const added = await runner(
+    'git',
+    ['config', '--global', '--add', 'safe.directory', targetDir],
+    {},
+  );
+  return added.code === 0;
+};
+
 // Clone one repo and check out (creating if needed) the working branch off the
 // base branch. `runner`/`ensureDir`
 // injectable for tests. The origin remote is left TOKEN-FREE in both outcomes.
@@ -58,8 +76,18 @@ export const checkoutRepo = async ({
   statFn = stat,
   removeDir = (d) => rm(d, { recursive: true, force: true }),
   readGitConfig = (d) => readFile(path.join(d, '.git', 'config'), 'utf8'),
+  trustDirectory = trustGitDirectory,
 }) => {
   await ensureDir(targetDir);
+  if (!(await trustDirectory({ targetDir, runner }))) {
+    return {
+      repo,
+      targetDir,
+      cloned: false,
+      branchOk: false,
+      error: 'safe_directory_config_failed',
+    };
+  }
   const cleanUrl = cloneUrl(repo, gitProvider);
   const scrubRemote = async () => {
     const setUrl = await runner('git', ['remote', 'set-url', 'origin', cleanUrl], {
@@ -210,6 +238,7 @@ export const checkoutRepos = async ({
   runner = run,
   withGitCredential,
   ensureDir,
+  trustDirectory = trustGitDirectory,
 }) => {
   const out = [];
   const multi = repos.length > 1;
@@ -233,6 +262,7 @@ export const checkoutRepos = async ({
         runner,
         withGitCredential,
         ensureDir,
+        trustDirectory,
       }),
     );
   }
@@ -376,6 +406,7 @@ export const ensureWorkspaceSource = async ({
   withGitCredential,
   ensureDir,
   statFn = stat,
+  trustDirectory = trustGitDirectory,
 }) => {
   const multi = repos.length > 1;
   const restoredRepos = [];
@@ -388,7 +419,10 @@ export const ensureWorkspaceSource = async ({
       gitProvider ||
       'github';
     const targetDir = repoTargetDir({ url, workspaceDir, multi });
-    if (await hasCheckout(targetDir, statFn)) continue;
+    if (await hasCheckout(targetDir, statFn)) {
+      if (!(await trustDirectory({ targetDir, runner }))) failed.push(url);
+      continue;
+    }
     // Missing: re-clone this one. A failure leaves no reusable `.git` state.
     const res = await checkoutRepo({
       repo: url,
@@ -401,6 +435,7 @@ export const ensureWorkspaceSource = async ({
       runner,
       withGitCredential,
       ensureDir,
+      trustDirectory,
     });
     restoredRepos.push(url);
     if (!res.cloned || res.branchOk === false) failed.push(url);
