@@ -22,7 +22,7 @@ interface Props {
 
 // Trackers that piggyback on a source-control OAuth app instead of having
 // credentials of their own.
-const GIT_BACKED_TRACKERS = new Set(['github-issues', 'gitlab-issues', 'bitbucket-issues']);
+const GIT_BACKED_TRACKERS = new Set(['github-issues', 'gitlab-issues']);
 
 export function TrackersTab({ providers, providersLoading, onProvidersChanged }: Props) {
   // Skeleton only on the very first load — post-save refreshes keep the cards
