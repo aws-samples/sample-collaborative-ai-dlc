@@ -1141,6 +1141,44 @@ const normalizeSource = (raw, trackers) => {
 
 // ── DTO assembly ──
 
+const CREDENTIAL_FAILURE_CODES = ['credential_unavailable', 'credential_invalid'];
+
+// New execution rows persist a structured failure. Older rows only have the
+// concatenated failureReason string, so normalize those once at the API
+// boundary instead of making every client parse backend wording.
+const mapExecutionFailure = (meta) => {
+  const structured = meta.failure;
+  if (
+    structured &&
+    typeof structured === 'object' &&
+    !Array.isArray(structured) &&
+    typeof structured.code === 'string' &&
+    structured.code &&
+    typeof structured.message === 'string' &&
+    structured.message
+  ) {
+    return { code: structured.code, message: structured.message };
+  }
+
+  const legacyReason =
+    typeof meta.failureReason === 'string' && meta.failureReason ? meta.failureReason : null;
+  if (!legacyReason) return null;
+  for (const code of CREDENTIAL_FAILURE_CODES) {
+    const marker = `${code}: `;
+    const markerIndex = legacyReason.indexOf(marker);
+    if (markerIndex >= 0) {
+      return {
+        code,
+        message: legacyReason.slice(markerIndex + marker.length),
+      };
+    }
+  }
+  return {
+    code: /^[a-z][a-z0-9_]*$/.test(legacyReason) ? legacyReason : 'execution_failed',
+    message: legacyReason,
+  };
+};
+
 // Map a process-store META row to the wire shape the frontend consumes.
 const mapIntent = (meta) => ({
   id: meta.intentId,
@@ -1162,6 +1200,7 @@ const mapIntent = (meta) => ({
   currentStage: meta.currentStage ?? null,
   pendingHumanTaskId: meta.pendingHumanTaskId ?? null,
   failureReason: meta.failureReason ?? null,
+  failure: mapExecutionFailure(meta),
   rewindFromStageId: meta.rewindFromStageId ?? null,
   agentCli: meta.agentCli ?? null,
   credentialSource: meta.credentialBinding?.source ?? null,
@@ -2247,6 +2286,7 @@ export const handler = async (event) => {
           orchestratorExpiresAt: null,
           // Clear any stale failure from a prior attempt as we re-enter the pipeline.
           failureReason: null,
+          failure: null,
           startedBy: starter.sub,
           starterName: starter.displayName,
           starterEmail: starter.email,
@@ -3411,6 +3451,7 @@ export const handler = async (event) => {
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
         failureReason: null,
+        failure: null,
         completedAt: null,
         rewindFromStageId: fromStageId,
         startedBy: responder.sub,
@@ -3744,6 +3785,7 @@ export const handler = async (event) => {
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
         failureReason: null,
+        failure: null,
         completedAt: null,
         rewindFromStageId: fromStageId,
         startedBy: responder.sub,
@@ -3986,6 +4028,7 @@ export const handler = async (event) => {
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
         failureReason: null,
+        failure: null,
         completedAt: null,
         rewindFromStageId: fromStage.stageId,
         scope: newScope,

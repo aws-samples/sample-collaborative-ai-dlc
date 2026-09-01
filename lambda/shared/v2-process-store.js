@@ -138,6 +138,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     startedAt,
     completedAt,
     failureReason,
+    failure,
     startedBy,
     starterName,
     starterEmail,
@@ -226,6 +227,23 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (failureReason !== undefined) {
       sets.push('failureReason = :fr');
       values[':fr'] = failureReason;
+    }
+    if (failure !== undefined) {
+      if (
+        failure !== null &&
+        (typeof failure !== 'object' ||
+          Array.isArray(failure) ||
+          typeof failure.code !== 'string' ||
+          !failure.code ||
+          typeof failure.message !== 'string' ||
+          !failure.message)
+      ) {
+        throw new Error('failure must be {code, message} or null');
+      }
+      sets.push('#failure = :failure');
+      names['#failure'] = 'failure';
+      values[':failure'] =
+        failure === null ? null : { code: failure.code, message: failure.message };
     }
     if (startedBy !== undefined) {
       sets.push('startedBy = :sby');

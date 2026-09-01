@@ -36,6 +36,11 @@ export interface IntentSource {
   resourceUrl: string | null;
 }
 
+export interface IntentFailure {
+  code: string;
+  message: string;
+}
+
 export interface Intent {
   id: string;
   executionId: string;
@@ -60,6 +65,7 @@ export interface Intent {
   currentStage: string | null;
   pendingHumanTaskId: string | null;
   failureReason: string | null;
+  failure?: IntentFailure | null;
   // Set when the run was relaunched from a mid-plan stage (steering rewind).
   rewindFromStageId?: string | null;
   agentCli?: AgentCli | null;

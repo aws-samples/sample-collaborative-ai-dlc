@@ -476,6 +476,8 @@ const buildExecutionMeta = ({
   pendingAttachmentDeletions,
   updatedAt: startedAt,
   completedAt: null,
+  failureReason: null,
+  failure: null,
 });
 
 const buildStageRow = ({

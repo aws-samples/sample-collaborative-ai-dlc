@@ -56,16 +56,7 @@ import {
 // IntentActivityPanel where output/timeline/discussions render).
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
-
-const credentialFailureMessage = (failureReason: string | null) => {
-  if (!failureReason) return null;
-  for (const reason of ['credential_unavailable', 'credential_invalid']) {
-    const marker = `${reason}: `;
-    const markerIndex = failureReason.indexOf(marker);
-    if (markerIndex >= 0) return failureReason.slice(markerIndex + marker.length);
-  }
-  return failureReason;
-};
+const CREDENTIAL_FAILURE_CODES = new Set(['credential_unavailable', 'credential_invalid']);
 
 export default function IntentView() {
   const {
@@ -239,11 +230,7 @@ export default function IntentView() {
     !!lastTouch &&
     Date.now() - new Date(lastTouch).getTime() > 120_000;
   const isCredentialFailure =
-    isFailed &&
-    Boolean(
-      intent.failureReason?.includes('credential_unavailable') ||
-      intent.failureReason?.includes('credential_invalid'),
-    );
+    isFailed && Boolean(intent.failure?.code && CREDENTIAL_FAILURE_CODES.has(intent.failure.code));
   const credentialSettingsPath = isCredentialFailure
     ? intent.credentialSource === 'user'
       ? '/account/settings'
@@ -251,7 +238,7 @@ export default function IntentView() {
         ? `/space/${projectId}/settings?tab=agent`
         : null
     : null;
-  const failureMessage = credentialFailureMessage(intent.failureReason);
+  const failureMessage = intent.failure?.message ?? intent.failureReason;
 
   return (
     <div className="space-y-6">

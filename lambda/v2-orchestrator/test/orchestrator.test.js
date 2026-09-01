@@ -592,6 +592,10 @@ describe('orchestrator durable handler', () => {
     expect(failCall[0].failureReason).toContain(
       'credential_unavailable: The Space Kiro credential pinned to this run is no longer available.',
     );
+    expect(failCall[0].failure).toEqual({
+      code: 'credential_unavailable',
+      message: 'The Space Kiro credential pinned to this run is no longer available.',
+    });
     expect(deps.store.failRunningStageAttempt).toHaveBeenCalledWith({
       executionId: 'i1',
       stageInstanceId: 'si-a',

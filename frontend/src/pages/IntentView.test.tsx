@@ -190,8 +190,12 @@ describe('IntentView', () => {
         status: 'FAILED',
         agentCli: 'kiro',
         credentialSource: 'space',
-        failureReason:
-          'stage_failed: requirements-analysis: credential_unavailable: The Space Kiro credential pinned to this run is no longer available. A Space owner or admin must restore or rotate it in Space Settings, then restart the run. Active runs do not fall back to Platform credentials.',
+        failureReason: 'stage_failed: backend wording may change independently',
+        failure: {
+          code: 'credential_unavailable',
+          message:
+            'The Space Kiro credential pinned to this run is no longer available. A Space owner or admin must restore or rotate it in Space Settings, then restart the run. Active runs do not fall back to Platform credentials.',
+        },
       }),
     );
     renderAt();

@@ -2384,14 +2384,19 @@ describe('POST /start', () => {
   );
 
   it.each(['FAILED', 'CREATED'])(
-    'restarts a %s intent (re-enters the pipeline, clears failureReason)',
+    'restarts a %s intent (re-enters the pipeline, clears its failure)',
     async (status) => {
       const sub = `u-${randomUUID()}`;
       const projectId = await seedV2Project(sub);
       const intent = JSON.parse((await createIntent(sub, projectId)).body);
       // Simulate a stranded/failed prior run.
       const k = keyOf(`EXEC#${intent.id}`, 'META');
-      procStore.set(k, { ...procStore.get(k), status, failureReason: 'boom' });
+      procStore.set(k, {
+        ...procStore.get(k),
+        status,
+        failureReason: 'boom',
+        failure: { code: 'credential_unavailable', message: 'Old failure.' },
+      });
       const res = await handler({
         httpMethod: 'POST',
         path: `/projects/${projectId}/intents/${intent.id}/start`,
@@ -2402,6 +2407,10 @@ describe('POST /start', () => {
       expect(JSON.parse(res.body).status).toBe('CREATED');
       // Orchestrator was (re-)invoked.
       expect(orchestratorInvokes()).toHaveLength(1);
+      expect(procStore.get(k)).toMatchObject({
+        failureReason: null,
+        failure: null,
+      });
     },
   );
 });
@@ -2481,6 +2490,66 @@ describe('GET list + detail', () => {
     }
     expect(detail.intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(detail.intent.parkReleaseSeconds).toBe(120);
+  });
+
+  it('returns the structured execution failure independently of legacy wording', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const k = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(k, {
+      ...procStore.get(k),
+      status: 'FAILED',
+      failureReason: 'stage_failed: backend wording may change independently',
+      failure: {
+        code: 'credential_unavailable',
+        message: 'Restore or rotate the Space credential.',
+      },
+    });
+
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(detail.intent.failure).toEqual({
+      code: 'credential_unavailable',
+      message: 'Restore or rotate the Space credential.',
+    });
+  });
+
+  it('normalizes legacy credential failures once at the API boundary', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const k = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(k, {
+      ...procStore.get(k),
+      status: 'FAILED',
+      failureReason:
+        'stage_failed: requirements-analysis: credential_invalid: The credential expired.',
+      failure: null,
+    });
+
+    const list = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents`,
+          pathParameters: { projectId },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(list[0].failure).toEqual({
+      code: 'credential_invalid',
+      message: 'The credential expired.',
+    });
   });
 
   const seedOutput = (

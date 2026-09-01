@@ -361,8 +361,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // Guarded by the ownership token: a retired run (cancel/rewind relaunched the
   // intent under a new runId) fails the CAS and exits quietly instead of
   // clobbering the new run's META.
-  const fail = async (reason, detail) => {
+  const fail = async (reason, detail, structuredFailure = null) => {
     const message = detail ? `${reason}: ${detail}` : reason;
+    const failure = {
+      code: structuredFailure?.code ?? reason,
+      message: structuredFailure?.message ?? detail ?? reason,
+    };
     // The ownership verdict is the STEP RESULT (not a closure flag) so a durable
     // replay — which skips the memoized step body — still sees it.
     const owned = await ctx.step(`fail-${reason}`, async () => {
@@ -374,6 +378,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           startedAt: meta.startedAt,
           completedAt: nowIso(),
           failureReason: message,
+          failure,
           pendingHumanTaskId: null,
           ...(runId ? { ifOrchestratorRunId: runId } : {}),
         });
@@ -999,7 +1004,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             const stageFailure = outcome.detail
               ? `${outcome.reason}: ${outcome.detail}`
               : outcome.reason;
-            const out = await fail('stage_failed', `${stage.stageId}: ${stageFailure}`);
+            const out = await fail('stage_failed', `${stage.stageId}: ${stageFailure}`, {
+              code: outcome.reason || 'stage_failed',
+              message: outcome.detail || `${stage.stageId}: ${outcome.reason || 'stage failed'}`,
+            });
             return { ...out, stageId: stage.stageId };
           }
 
@@ -1368,6 +1376,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           status: 'SUCCEEDED',
           startedAt: meta.startedAt,
           completedAt: nowIso(),
+          failureReason: null,
+          failure: null,
           ...(runId ? { ifOrchestratorRunId: runId } : {}),
         });
         return true;
