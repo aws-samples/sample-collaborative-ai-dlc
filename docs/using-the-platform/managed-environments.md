@@ -11,7 +11,37 @@ Java, Go, Rust, Maven, and Gradle are shipped as tool definitions, not as
 predefined JVM, Go, Rust, or Polyglot environments. Administrators can add other
 tools, such as a .NET SDK, without changing the application source.
 
-## Access and responsibilities
+## Quick start
+
+Choose the path that matches your task:
+
+| Goal                                              | What to do                                                                                                                                                               |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Use the built-in Node.js and Python runtime       | Use **Standard**. Projects use it automatically until another environment is assigned.                                                                                   |
+| Create a Java, Go, Rust, Maven, or Gradle runtime | [Publish the required shipped tool versions](#publish-and-recommend-tools), [create an environment](#create-an-environment), then [publish it](#publish-an-environment). |
+| Add another SDK or CLI                            | [Add and verify a tool](#add-a-new-tool), publish its exact version, then include it in an environment.                                                                  |
+| Upgrade a tool without changing existing runs     | [Add the new tool version](#add-or-update-a-tool-version), create and publish a new environment revision, then create new intents.                                       |
+| Make an environment available to a project        | [Assign the published environment](#select-an-environment-for-a-project) before creating the intent.                                                                     |
+| Diagnose a failed or blocked build                | Review [tool failures and security findings](#review-failures-and-security-findings) or [environment build evidence](#what-an-environment-build-verifies).               |
+
+The normal flow is:
+
+```mermaid
+flowchart LR
+    T["Publish exact tool versions"] --> E["Build an environment revision"]
+    S["Standard<br/>Node.js + Python"] --> E
+    E --> P["Publish the environment"]
+    P --> A["Assign it to a project"]
+    A --> I["Create an intent<br/>runtime snapshot is pinned"]
+```
+
+Publishing a newer tool or environment revision never changes an existing
+intent. New intents snapshot the currently published revision of the
+project-assigned environment.
+
+## Detailed guide
+
+### Access and responsibilities
 
 The managed build views are under **Admin -> Environments** and require the
 `platform-admin` role:
@@ -23,7 +53,7 @@ Project Owners and Admins select a published environment under **Project
 Settings -> Environment**. Project Members can see the assignment but cannot
 change it.
 
-## The object model
+### The object model
 
 | Object                   | Meaning                                                                                                                                          |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -45,7 +75,7 @@ The important invariants are:
 - Publishing a new environment revision affects new intents for assigned
   projects. Existing intents stay pinned to their original runtime target.
 
-## Shipped tool definitions
+### Shipped tool definitions
 
 The catalog bootstrap creates these tool families and initial version
 definitions:
@@ -65,7 +95,7 @@ their own functional checks require Java.
 These are catalog entries only. They do not create project-selectable
 environments by themselves.
 
-## Tool-version lifecycle
+### Tool-version lifecycle
 
 The version selector in **Tools** shows every version and its status:
 
@@ -83,9 +113,9 @@ The version selector in **Tools** shows every version and its status:
 Refreshing the browser is not required while a build is active; the view polls
 the version until it reaches a reviewable or terminal status.
 
-## Add a new tool
+### Add a new tool
 
-### Prepare the source
+#### Prepare the source
 
 Before opening the form, identify:
 
@@ -124,7 +154,7 @@ Current import limits are:
 | Normalized tool output            | `1536 MiB` |
 | Final AgentCore environment image | `2048 MiB` |
 
-### Create the family and first version
+#### Create the family and first version
 
 1. Open **Admin -> Environments -> Tools**.
 2. Choose **Add Tool**.
@@ -144,7 +174,7 @@ The tool ID is a durable catalog key. Do not include the version in it. Use
 `dotnet-sdk`, not `dotnet-sdk-8`. The version belongs to the tool-version
 record.
 
-### Choose a verification preset
+#### Choose a verification preset
 
 Presets fill in executable paths, environment variables, dependencies, the
 version command, and a representative build:
@@ -162,7 +192,7 @@ version command, and a representative build:
 Selecting a preset is a starting point, not a bypass. Review the generated
 executable paths and expected version before building.
 
-### Publisher checksum and source trust
+#### Publisher checksum and source trust
 
 The publisher checksum section is optional. Supply both:
 
@@ -185,7 +215,7 @@ The first successful source import is retained under its digest. Retrying an
 installer or verifier correction reuses that retained source instead of
 silently downloading a new archive.
 
-### Generated archive installation
+#### Generated archive installation
 
 Use generated installation whenever the archive already contains the desired
 tool layout.
@@ -198,7 +228,7 @@ at the normalized tool root.
 Generated installation extracts the verified archive without executing
 publisher-supplied installation code.
 
-### Custom installation
+#### Custom installation
 
 Enable the custom installer only when extraction is insufficient. The Bash
 script receives:
@@ -225,7 +255,7 @@ possible.
 Do not put credentials or secrets in installer scripts. The API rejects common
 secret patterns, and definitions are visible to platform administrators.
 
-### Executables and dependencies
+#### Executables and dependencies
 
 Under **Executables, dependencies, and custom verification**:
 
@@ -243,7 +273,7 @@ recommended version. The platform rejects missing families, self-dependencies,
 dependency cycles, executable collisions, package-version conflicts, and
 environment-variable conflicts.
 
-### Custom verification
+#### Custom verification
 
 Every version requires a version command and expected output. Use the optional
 networkless verifier for additional behavior that the selected preset does not
@@ -261,7 +291,7 @@ The verifier:
 Use fixture files for a minimal real project, configuration file, or expected
 output. Do not include credentials or production data.
 
-### Example: add a .NET SDK
+#### Example: add a .NET SDK
 
 1. Choose **Add Tool**.
 2. Set **Name** to `.NET SDK` and **ID** to `dotnet-sdk`.
@@ -281,7 +311,7 @@ output. Do not include credentials or production data.
 This adds .NET as a selectable tool. It does not create or publish a .NET
 environment automatically.
 
-## What a tool build verifies
+### What a tool build verifies
 
 A successful CodeBuild job is only one part of the tool decision. The catalog
 records evidence for:
@@ -309,9 +339,9 @@ The Tools view retains the source digest, trust level, official source link,
 artifact digest, compressed size, runtime contract, findings, acceptance
 identity, failure detail, and CodeBuild logs.
 
-## Review failures and security findings
+### Review failures and security findings
 
-### Build or verification failure
+#### Build or verification failure
 
 For a `FAILED` version:
 
@@ -326,7 +356,7 @@ For a `FAILED` version:
 The exact version string cannot be changed while editing. Create a new version
 when the version number changes.
 
-### Security review
+#### Security review
 
 Critical or High ECR findings move the version to `SECURITY_REVIEW`; they do
 not erase a successful artifact build. ECR Basic scanning cannot inspect some
@@ -347,7 +377,7 @@ Acceptance does not publish the version. The findings and acceptance record
 remain visible after publication and in every environment revision that
 snapshots that tool version.
 
-## Publish and recommend tools
+### Publish and recommend tools
 
 Publishing and recommending are separate decisions:
 
@@ -372,7 +402,7 @@ new version:
 
 For shipped tools, publish and recommend Java before building Maven or Gradle.
 
-## Add or update a tool version
+### Add or update a tool version
 
 To add a newer version:
 
@@ -391,7 +421,7 @@ remain valid.
 To correct an unpublished version, use **Edit** while its status is `DRAFT` or
 `FAILED`. Published versions cannot be edited; create another version instead.
 
-## Select a specific Java, Go, Rust, or other tool version
+### Select a specific Java, Go, Rust, or other tool version
 
 Tool versions are selected on an environment revision, not globally:
 
@@ -414,7 +444,7 @@ appears when:
 The recommended version is preselected when a tool is enabled. It is a default,
 not a restriction. Any published version shown by the selector can be chosen.
 
-## Create an environment
+### Create an environment
 
 Open **Admin -> Environments -> Environments** and choose **New Environment**.
 
@@ -441,7 +471,7 @@ Environment variables and build commands cannot replace protected runtime
 behavior, inject secrets, change the runtime user, entrypoint, command, port,
 or health contract, or overwrite protected platform variables.
 
-## What an environment build verifies
+### What an environment build verifies
 
 The generated Dockerfile:
 
@@ -469,7 +499,7 @@ The build then checks:
 The revision reaches `READY` only after image validation, the security decision,
 and AgentCore runtime validation succeed.
 
-## Environment-revision lifecycle
+### Environment-revision lifecycle
 
 | Status            | Meaning                                                          | Available action                                |
 | ----------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
@@ -489,7 +519,7 @@ The evidence view separates image-build success, security findings, and runtime
 validation. A successful image can therefore remain visible even when it is
 waiting for security review or later runtime validation fails.
 
-## Publish an environment
+### Publish an environment
 
 Select a `READY` revision and choose **Publish**.
 
@@ -506,12 +536,12 @@ After publication:
 - Draft, failed, and ready revisions do not affect project execution until one
   is published.
 
-## Update an environment
+### Update an environment
 
 Environment revisions are immutable. Every change creates another draft
 revision.
 
-### Use a newer tool version
+#### Use a newer tool version
 
 1. Publish the new tool version.
 2. Recommend it when it should become the default. Affected environments show
@@ -524,7 +554,7 @@ revision.
 The warning is informational. No revision changes until the administrator
 selects versions and saves a new revision.
 
-### Use a newer base revision
+#### Use a newer base revision
 
 When the published base changes, dependent environments show an update
 warning. Choose **Rebuild on Latest Base** to clone the current recipe and
@@ -536,7 +566,7 @@ applicable, runtime validation, and manual publication.
 When both base and tool updates are available, edit the environment and use
 **Save as New Revision** so the exact tool selections are explicit.
 
-### Retry a failed revision
+#### Retry a failed revision
 
 Use **Retry** only when the same recipe and pinned base are still valid. If a
 newer base is required or the pinned digest is unavailable, use **Rebuild on
@@ -545,7 +575,7 @@ Latest Base** instead.
 A failed attempt never replaces the currently published revision and never
 changes project assignments.
 
-## Select an environment for a project
+### Select an environment for a project
 
 1. Open the project.
 2. Open **Project Settings -> Environment**.
@@ -579,7 +609,7 @@ their original snapshotted runtime and endpoint.
 
 Choose the environment before creating the intent that should use it.
 
-## Audit an intent's environment
+### Audit an intent's environment
 
 Intent details and audit output show the immutable environment snapshot used by
 the run. Use those values when diagnosing a difference between two runs:
