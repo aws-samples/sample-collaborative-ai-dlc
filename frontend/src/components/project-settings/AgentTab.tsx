@@ -139,7 +139,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
 
   useEffect(() => {
     agentsService
-      .getCapabilities(true)
+      .getCapabilities(true, project.id)
       .then((c) => {
         setAvailableCliNames(c.available);
         if (c.runtimeModelOverride) setRuntimeModelOverride(c.runtimeModelOverride);
@@ -159,7 +159,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       .catch(() => {
         /* non-fatal — placeholders fall back to generic defaults */
       });
-  }, []);
+  }, [project.id]);
 
   // Custom rules (steering docs) are readable by any member — fetch for all so
   // members can see which docs the agent runs with. The backend returns

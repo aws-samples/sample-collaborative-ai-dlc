@@ -480,6 +480,8 @@ module "api" {
   agent_outputs_table_name          = module.dynamodb.agent_outputs_table_name
   agents_lambda_role_arn            = module.lambda.agents_orchestrator_role_arn
   agentcore_runtime_arn             = module.agentcore.runtime_arn
+  environment_registry_table_name   = module.dynamodb.environment_registry_table_name
+  runtime_compatibility_version     = module.agentcore.runtime_compatibility_version
   private_subnet_ids                = module.networking.private_subnet_ids
   lambda_security_group_ids         = [module.lambda.lambda_security_group_id]
   neptune_endpoint                  = module.neptune.cluster_endpoint

@@ -472,9 +472,19 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = "*"
       },
       {
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = [
+          var.agentcore_runtime_arn,
+          "${var.agentcore_runtime_arn}/*",
+          local.managed_agentcore_runtime_arn,
+          "${local.managed_agentcore_runtime_arn}/*",
+        ]
+      },
+      {
         Effect   = "Allow"
-        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
-        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
+        Action   = ["dynamodb:GetItem"]
+        Resource = var.environment_registry_table_arn
       }
     ]
   })

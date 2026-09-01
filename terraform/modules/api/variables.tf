@@ -167,7 +167,15 @@ variable "agentcore_runtime_arn" {
   default     = ""
 }
 
+variable "environment_registry_table_name" {
+  description = "Managed environment registry table used to resolve project runtime targets"
+  type        = string
+}
 
+variable "runtime_compatibility_version" {
+  description = "Runtime contract version supported by the protected core runtime"
+  type        = string
+}
 
 
 
