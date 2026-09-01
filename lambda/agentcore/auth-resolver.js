@@ -7,7 +7,7 @@
 // A rotation at the bound SSM path is visible on the next invocation; clearing
 // it leaves the selected CLI unavailable and never falls back to another scope.
 
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { SSMClient } from '@aws-sdk/client-ssm';
 import {
   AGENT_CREDENTIAL_PROVIDERS,
   credentialEnvName,
@@ -17,15 +17,6 @@ import {
 } from '../shared/agent-credentials.js';
 
 const AUTH_ENV_NAMES = AGENT_CREDENTIAL_PROVIDERS.map(credentialEnvName);
-
-const defaultGetParam = (client) => async (name) => {
-  try {
-    const res = await client.send(new GetParameterCommand({ Name: name, WithDecryption: true }));
-    return res.Parameter?.Value ?? '';
-  } catch {
-    return '';
-  }
-};
 
 const cleanBaseEnv = (env) => {
   const invocationEnv = { ...env };
@@ -142,24 +133,4 @@ export const resolveInvocationAgentAuth = async ({
     missingProviders,
     missingCredentialBindings,
   };
-};
-
-// Backward-compatible helper retained for focused tests and local tooling. It
-// resolves the legacy platform paths into the supplied object, but production
-// AgentCore no longer calls it or mutates process.env.
-export const resolveAgentAuth = async ({ env = {}, getParam } = {}) => {
-  const get = getParam ?? defaultGetParam(new SSMClient({ region: env.AWS_REGION || 'us-east-1' }));
-  const resolved = [];
-  const paths = {
-    AWS_BEARER_TOKEN_BEDROCK: env.BEDROCK_BEARER_TOKEN_SSM_PATH,
-    KIRO_API_KEY: env.KIRO_API_KEY_SSM_PATH,
-  };
-  for (const [target, path] of Object.entries(paths)) {
-    if (env[target] || !path) continue;
-    const value = await get(path);
-    if (!value) continue;
-    env[target] = value;
-    resolved.push(target);
-  }
-  return resolved;
 };

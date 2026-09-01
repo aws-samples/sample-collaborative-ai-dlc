@@ -659,21 +659,19 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
   lifecycle_configuration = { idle_runtime_session_timeout = 900, max_lifetime = 28800 }
 
   environment_variables = {
-    V2_WORKSPACE_DIR              = "/mnt/workspace"
-    V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
-    BLOCKS_TABLE                  = var.blocks_table_name
-    ARTIFACTS_BUCKET              = var.artifacts_bucket_name
-    NEPTUNE_ENDPOINT              = var.neptune_endpoint
-    CONNECTIONS_TABLE             = var.connections_table_name
-    WEBSOCKET_ENDPOINT            = var.websocket_endpoint
-    AIDLC_REPO_REF                = var.aidlc_repo_ref
-    BEDROCK_MODEL                 = var.bedrock_model
-    AWS_REGION                    = var.aws_region
-    CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
-    SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
-    BEDROCK_BEARER_TOKEN_SSM_PATH = aws_ssm_parameter.bedrock_bearer_token.name
-    KIRO_API_KEY_SSM_PATH         = aws_ssm_parameter.kiro_api_key.name
-    AGENT_SETTINGS_SSM_PREFIX     = "/${var.project_name}/${var.environment}"
+    V2_WORKSPACE_DIR           = "/mnt/workspace"
+    V2_PROCESS_TABLE           = aws_dynamodb_table.v2_executions.name
+    BLOCKS_TABLE               = var.blocks_table_name
+    ARTIFACTS_BUCKET           = var.artifacts_bucket_name
+    NEPTUNE_ENDPOINT           = var.neptune_endpoint
+    CONNECTIONS_TABLE          = var.connections_table_name
+    WEBSOCKET_ENDPOINT         = var.websocket_endpoint
+    AIDLC_REPO_REF             = var.aidlc_repo_ref
+    BEDROCK_MODEL              = var.bedrock_model
+    AWS_REGION                 = var.aws_region
+    CREDENTIAL_BROKER_FUNCTION = "${var.project_name}-credential-broker-${var.environment}"
+    SOURCE_CONTROL_FUNCTION    = "${var.project_name}-source-control-${var.environment}"
+    AGENT_SETTINGS_SSM_PREFIX  = "/${var.project_name}/${var.environment}"
     # Base SSM prefix for MCP secret resolution ({prefix}/mcp-secrets/<VAR> and
     # {prefix}/projects/<id>/mcp-secrets/<VAR>).
     MCP_SECRETS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
