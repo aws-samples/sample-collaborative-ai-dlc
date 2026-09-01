@@ -1,4 +1,5 @@
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { supportsCompatibilityVersion } from './runtime-compatibility.js';
 
 const environmentKey = (environmentId) => ({ pk: `ENV#${environmentId}`, sk: 'META' });
 const revisionKey = (environmentId, revisionId) => ({
@@ -18,17 +19,6 @@ const fallbackSnapshot = (fallback = {}) => ({
   verification: fallback.verification ?? { status: 'PASSED', source: 'legacy-runtime' },
   tools: fallback.tools ?? [],
 });
-
-const supportsCompatibilityVersion = (candidate, current) => {
-  const candidateVersion = Number(candidate);
-  const currentVersion = Number(current);
-  return (
-    Number.isInteger(candidateVersion) &&
-    Number.isInteger(currentVersion) &&
-    candidateVersion >= currentVersion - 1 &&
-    candidateVersion <= currentVersion
-  );
-};
 
 export const resolveEnvironmentSnapshot = async ({
   ddb,

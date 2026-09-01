@@ -8,6 +8,7 @@ import {
   generateBuildContext,
   generateDockerfile,
   generateVerificationScript,
+  isSupportedCompatibilityVersion,
   normalizeEnvironmentId,
   orderRebuilds,
   validateRecipe,
@@ -73,6 +74,13 @@ const recipe = (overrides = {}) => ({
 });
 
 describe('managed environment recipes', () => {
+  it('uses the shared runtime compatibility window', () => {
+    expect(isSupportedCompatibilityVersion('2', '2')).toBe(true);
+    expect(isSupportedCompatibilityVersion('1', '2')).toBe(true);
+    expect(isSupportedCompatibilityVersion('0', '2')).toBe(false);
+    expect(isSupportedCompatibilityVersion('3', '2')).toBe(false);
+  });
+
   it('seeds only the protected Standard environment', () => {
     expect(SYSTEM_ENVIRONMENT_TEMPLATES.map((item) => item.id)).toEqual(['standard']);
     expect(SYSTEM_ENVIRONMENT_TEMPLATES[0].recipe.tools).toEqual({

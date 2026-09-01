@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+export { supportsCompatibilityVersion as isSupportedCompatibilityVersion } from '../shared/runtime-compatibility.js';
+
 export const RECIPE_SCHEMA_VERSION = 1;
 export const CURRENT_RUNTIME_COMPATIBILITY_VERSION = '1';
 
@@ -696,17 +698,6 @@ export const evaluateScanFindings = (severityCounts = {}, findingsAccepted = fal
     return { allowed: false, status: 'SECURITY_REVIEW', critical, high };
   }
   return { allowed: true, status: 'VERIFYING', critical, high };
-};
-
-export const isSupportedCompatibilityVersion = (candidate, current) => {
-  const candidateVersion = Number(candidate);
-  const currentVersion = Number(current);
-  return (
-    Number.isInteger(candidateVersion) &&
-    Number.isInteger(currentVersion) &&
-    candidateVersion >= currentVersion - 1 &&
-    candidateVersion <= currentVersion
-  );
 };
 
 export const normalizeEnvironmentId = (value) => {
