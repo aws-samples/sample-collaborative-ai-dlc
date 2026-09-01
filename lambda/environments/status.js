@@ -517,7 +517,8 @@ const verifyRuntime = async ({
       if (
         deterministic.ok !== true ||
         deterministic.nonce !== nonce ||
-        deterministic.compatibilityVersion !== revision.runtimeCompatibilityVersion
+        deterministic.compatibilityVersion !== revision.runtimeCompatibilityVersion ||
+        deterministic.nonRoot !== true
       ) {
         throw new Error('deterministic runtime validation failed');
       }

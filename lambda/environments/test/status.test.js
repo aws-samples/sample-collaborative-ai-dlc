@@ -424,6 +424,59 @@ describe('managed environment status handler', () => {
     });
   });
 
+  it('rejects a runtime whose deterministic check reports root execution', async () => {
+    const verifying = {
+      ...revision,
+      status: 'VERIFYING',
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
+      runtimeId: 'runtime-1',
+      runtimeVersion: '3',
+      runtimeEndpoint: 'revision_r_1',
+      runtimeEndpointArn:
+        'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
+    };
+    const store = mutableStore(verifying);
+    const runtimeClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          response: {
+            transformToString: async () => JSON.stringify({ ok: true, clis: ['node', 'python'] }),
+          },
+        })
+        .mockResolvedValueOnce({
+          response: {
+            transformToString: async () =>
+              JSON.stringify({
+                ok: true,
+                nonce: 'check-r-1',
+                compatibilityVersion: '1',
+                nonRoot: false,
+                workspaceWritable: true,
+                protectedRuntime: true,
+              }),
+          },
+        })
+        .mockResolvedValueOnce({}),
+    };
+    const handler = createStatusHandler({
+      store,
+      ecrClient: { send: vi.fn() },
+      controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+      runtimeClient,
+    });
+
+    const result = await handler({ action: 'poll' });
+
+    expect(result.results[0].revision).toMatchObject({
+      status: 'FAILED',
+      failure: {
+        reason: 'runtime_validation_failed',
+        detail: 'deterministic runtime validation failed',
+      },
+    });
+  });
+
   it('preserves the published image when runtime validation fails', async () => {
     const verifying = {
       ...revision,
