@@ -5,7 +5,7 @@ import {
   toolVersionSnapshot,
 } from './tool-catalog.js';
 
-export const ENVIRONMENT_RECIPE_SCHEMA_VERSION = 2;
+export const CATALOG_RECIPE_SCHEMA_VERSION = 2;
 
 const PACKAGE_PATTERN = /^[a-z0-9][a-z0-9+.-]*$/;
 const VERSION_PATTERN = /^[0-9][0-9A-Za-z.+:~_-]*$/;
@@ -130,9 +130,9 @@ const validateCommonFields = (recipe) => {
   return issues;
 };
 
-export const normalizeEnvironmentRecipeInput = (input = {}) => {
+export const normalizeCatalogRecipeInput = (input = {}) => {
   const recipe = {
-    schemaVersion: ENVIRONMENT_RECIPE_SCHEMA_VERSION,
+    schemaVersion: CATALOG_RECIPE_SCHEMA_VERSION,
     base: null,
     toolVersionIds: [...new Set((input.toolVersionIds ?? []).map((value) => String(value).trim()))],
     aptPackages: (input.aptPackages ?? []).map((pkg) => ({
@@ -179,7 +179,7 @@ const assertComposition = ({ inheritedTools, selectedTools, recipe }) => {
   return [...tools.values()].toSorted((left, right) => left.toolId.localeCompare(right.toolId));
 };
 
-export const resolveEnvironmentRecipe = async ({
+export const resolveCatalogEnvironmentRecipe = async ({
   input,
   baseEnvironmentId,
   baseRevision,
@@ -187,17 +187,17 @@ export const resolveEnvironmentRecipe = async ({
 }) => {
   if (
     baseEnvironmentId !== 'standard' &&
-    baseRevision.flattenedRecipe?.schemaVersion !== ENVIRONMENT_RECIPE_SCHEMA_VERSION
+    baseRevision.flattenedRecipe?.schemaVersion !== CATALOG_RECIPE_SCHEMA_VERSION
   ) {
     throw Object.assign(
-      new Error('Legacy base environments must be recreated with catalog tools'),
+      new Error('Fixed-tool base environments must be recreated with catalog tools'),
       {
         statusCode: 409,
-        code: 'LEGACY_BASE_REQUIRES_RECREATION',
+        code: 'FIXED_TOOL_BASE_REQUIRES_RECREATION',
       },
     );
   }
-  const normalized = normalizeEnvironmentRecipeInput(input);
+  const normalized = normalizeCatalogRecipeInput(input);
   const inheritedTools = baseRevision.flattenedRecipe?.resolvedTools ?? [];
   const tools = await toolStore.listTools();
   const versions = await toolStore.listAllVersions({ publishedOnly: true });
@@ -244,22 +244,26 @@ export const resolveEnvironmentRecipe = async ({
   return { recipe, flattenedRecipe };
 };
 
-export const rebuildEnvironmentRecipe = ({ sourceRecipe, baseEnvironmentId, baseRevision }) => {
-  if (sourceRecipe.schemaVersion !== ENVIRONMENT_RECIPE_SCHEMA_VERSION) {
-    throw Object.assign(new Error('Legacy recipes must be recreated with catalog tools'), {
+export const rebuildCatalogEnvironmentRecipe = ({
+  sourceRecipe,
+  baseEnvironmentId,
+  baseRevision,
+}) => {
+  if (sourceRecipe.schemaVersion !== CATALOG_RECIPE_SCHEMA_VERSION) {
+    throw Object.assign(new Error('Fixed-tool recipes must be recreated with catalog tools'), {
       statusCode: 409,
-      code: 'LEGACY_RECIPE_REQUIRES_RECREATION',
+      code: 'FIXED_TOOL_RECIPE_REQUIRES_RECREATION',
     });
   }
   if (
     baseEnvironmentId !== 'standard' &&
-    baseRevision.flattenedRecipe?.schemaVersion !== ENVIRONMENT_RECIPE_SCHEMA_VERSION
+    baseRevision.flattenedRecipe?.schemaVersion !== CATALOG_RECIPE_SCHEMA_VERSION
   ) {
     throw Object.assign(
-      new Error('Legacy base environments must be recreated with catalog tools'),
+      new Error('Fixed-tool base environments must be recreated with catalog tools'),
       {
         statusCode: 409,
-        code: 'LEGACY_BASE_REQUIRES_RECREATION',
+        code: 'FIXED_TOOL_BASE_REQUIRES_RECREATION',
       },
     );
   }
@@ -317,9 +321,9 @@ const directVariables = (recipe) =>
     recipe.environmentVariables,
   );
 
-export const generateEnvironmentDockerfileV2 = (recipe) => {
-  if (recipe.schemaVersion !== ENVIRONMENT_RECIPE_SCHEMA_VERSION || !recipe.base) {
-    throw new Error('A resolved schema v2 recipe with a pinned base is required');
+export const generateCatalogEnvironmentDockerfile = (recipe) => {
+  if (recipe.schemaVersion !== CATALOG_RECIPE_SCHEMA_VERSION || !recipe.base) {
+    throw new Error('A resolved catalog recipe with a pinned base is required');
   }
   const lines = recipe.tools.map(
     (tool, index) =>
@@ -383,7 +387,7 @@ const encodedVerifier = (tool) =>
     'utf8',
   ).toString('base64');
 
-export const generateEnvironmentVerificationScriptV2 = (recipe) => {
+export const generateCatalogEnvironmentVerificationScript = (recipe) => {
   const toolChecks = recipe.resolvedTools
     .map((tool) => `run_tool_check ${quote(tool.toolId)} ${quote(encodedVerifier(tool))}`)
     .join('\n');
@@ -459,16 +463,16 @@ export const projectedEnvironmentImageSize = (recipe) => {
     : null;
 };
 
-export const generateEnvironmentBuildContextV2 = ({
+export const generateCatalogEnvironmentBuildContext = ({
   environment,
   revision,
   recipe,
   flattenedRecipe,
   generatedAt = new Date().toISOString(),
 }) => {
-  const dockerfile = generateEnvironmentDockerfileV2(recipe);
+  const dockerfile = generateCatalogEnvironmentDockerfile(recipe);
   const manifest = {
-    schemaVersion: ENVIRONMENT_RECIPE_SCHEMA_VERSION,
+    schemaVersion: CATALOG_RECIPE_SCHEMA_VERSION,
     environmentId: environment.environmentId,
     revisionId: revision.revisionId,
     generatedAt,
@@ -510,7 +514,7 @@ export const generateEnvironmentBuildContextV2 = ({
     Dockerfile: dockerfile,
     'manifest.json': `${JSON.stringify(manifest, null, 2)}\n`,
     'sbom.spdx.json': `${JSON.stringify(sbom, null, 2)}\n`,
-    'verification.sh': generateEnvironmentVerificationScriptV2(flattenedRecipe),
+    'verification.sh': generateCatalogEnvironmentVerificationScript(flattenedRecipe),
   };
   for (const tool of recipe.tools) {
     for (const fixture of tool.verification.files ?? []) {
@@ -534,8 +538,8 @@ export const generateEnvironmentBuildContextV2 = ({
   return { files, manifest, dockerfile, checksums: contextChecksums };
 };
 
-export const assertResolvedRecipeV2 = (recipe) => {
-  if (recipe?.schemaVersion !== ENVIRONMENT_RECIPE_SCHEMA_VERSION) return false;
+export const isResolvedCatalogRecipe = (recipe) => {
+  if (recipe?.schemaVersion !== CATALOG_RECIPE_SCHEMA_VERSION) return false;
   if (!recipe.base?.imageUri || !DIGEST_PATTERN.test(recipe.base?.imageDigest ?? '')) return false;
   if (!Array.isArray(recipe.tools) || !Array.isArray(recipe.toolVersionIds)) return false;
   return true;

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export { supportsCompatibilityVersion as isSupportedCompatibilityVersion } from '../shared/runtime-compatibility.js';
 
-export const RECIPE_SCHEMA_VERSION = 1;
+export const FIXED_TOOL_RECIPE_SCHEMA_VERSION = 1;
 export const CURRENT_RUNTIME_COMPATIBILITY_VERSION = '1';
 
 export const ENVIRONMENT_STATUSES = [
@@ -72,7 +72,7 @@ const PYTHON = { version: '3.11', source: 'base' };
 const RUST_APT_PACKAGES = [{ name: 'build-essential', version: '12.9' }];
 
 const baseRecipe = (tools = {}, buildTools = {}, aptPackages = []) => ({
-  schemaVersion: RECIPE_SCHEMA_VERSION,
+  schemaVersion: FIXED_TOOL_RECIPE_SCHEMA_VERSION,
   base: null,
   tools,
   buildTools,
@@ -164,8 +164,10 @@ export const validateRecipe = (recipe) => {
   for (const key of Object.keys(recipe)) {
     if (!RECIPE_KEYS.has(key)) issues.push(issue(key, 'unsupported recipe field'));
   }
-  if (recipe.schemaVersion !== RECIPE_SCHEMA_VERSION) {
-    issues.push(issue('schemaVersion', `schemaVersion must be ${RECIPE_SCHEMA_VERSION}`));
+  if (recipe.schemaVersion !== FIXED_TOOL_RECIPE_SCHEMA_VERSION) {
+    issues.push(
+      issue('schemaVersion', `schemaVersion must be ${FIXED_TOOL_RECIPE_SCHEMA_VERSION}`),
+    );
   }
   if (recipe.base !== null && recipe.base !== undefined) {
     const base = recipe.base;
@@ -283,7 +285,7 @@ export const applyToolPrerequisites = (recipe) => ({
 });
 
 export const flattenRecipe = (recipe, parent = null) => ({
-  schemaVersion: RECIPE_SCHEMA_VERSION,
+  schemaVersion: FIXED_TOOL_RECIPE_SCHEMA_VERSION,
   base: recipe.base ?? parent?.base ?? null,
   tools: { ...parent?.tools, ...recipe.tools },
   buildTools: { ...parent?.buildTools, ...recipe.buildTools },
@@ -568,7 +570,7 @@ export const generateBuildContext = ({
   const resolvedRecipe = applyToolPrerequisites(flattenedRecipe);
   const dockerfile = generateDockerfile(resolvedRecipe);
   const manifest = {
-    schemaVersion: RECIPE_SCHEMA_VERSION,
+    schemaVersion: FIXED_TOOL_RECIPE_SCHEMA_VERSION,
     environmentId: environment.environmentId,
     revisionId: revision.revisionId,
     generatedAt,

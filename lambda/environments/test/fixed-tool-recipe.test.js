@@ -12,7 +12,7 @@ import {
   normalizeEnvironmentId,
   orderRebuilds,
   validateRecipe,
-} from '../recipe.js';
+} from '../fixed-tool-recipe.js';
 
 const BASE = {
   environmentId: 'standard',
@@ -73,7 +73,7 @@ const recipe = (overrides = {}) => ({
   ...overrides,
 });
 
-describe('managed environment recipes', () => {
+describe('fixed-tool environment recipes', () => {
   it('uses the shared runtime compatibility window', () => {
     expect(isSupportedCompatibilityVersion('2', '2')).toBe(true);
     expect(isSupportedCompatibilityVersion('1', '2')).toBe(true);

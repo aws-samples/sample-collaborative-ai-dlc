@@ -14,12 +14,12 @@ import {
   assertRevisionTransition,
   flattenRecipe,
   generateDockerfile,
-} from './recipe.js';
+} from './fixed-tool-recipe.js';
 import {
-  ENVIRONMENT_RECIPE_SCHEMA_VERSION,
-  generateEnvironmentDockerfileV2,
+  CATALOG_RECIPE_SCHEMA_VERSION,
+  generateCatalogEnvironmentDockerfile,
   projectedEnvironmentImageSize,
-} from './recipe-v2.js';
+} from './catalog-recipe.js';
 
 const environmentPk = (environmentId) => `ENV#${environmentId}`;
 const environmentKey = (environmentId) => ({ pk: environmentPk(environmentId), sk: 'META' });
@@ -52,8 +52,8 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   const compatibilityVersion = () =>
     process.env.RUNTIME_COMPATIBILITY_VERSION || CURRENT_RUNTIME_COMPATIBILITY_VERSION;
   const revisionDockerfile = (recipe, flattenedRecipe) =>
-    recipe?.schemaVersion === ENVIRONMENT_RECIPE_SCHEMA_VERSION
-      ? generateEnvironmentDockerfileV2(recipe)
+    recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION
+      ? generateCatalogEnvironmentDockerfile(recipe)
       : generateDockerfile(flattenedRecipe);
 
   const getEnvironment = async (environmentId) => {
@@ -165,7 +165,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       runtimeEndpoint: null,
       generatedDockerfile: revisionDockerfile(recipe, flattenedRecipe),
       projectedImageSizeBytes:
-        recipe?.schemaVersion === ENVIRONMENT_RECIPE_SCHEMA_VERSION
+        recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION
           ? projectedEnvironmentImageSize(recipe)
           : null,
       verification: null,
@@ -224,7 +224,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       runtimeEndpoint: null,
       generatedDockerfile: revisionDockerfile(recipe, flattenedRecipe),
       projectedImageSizeBytes:
-        recipe?.schemaVersion === ENVIRONMENT_RECIPE_SCHEMA_VERSION
+        recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION
           ? projectedEnvironmentImageSize(recipe)
           : null,
       verification: null,

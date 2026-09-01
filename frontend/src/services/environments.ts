@@ -29,7 +29,7 @@ export interface EnvironmentChecksum {
   value: string;
 }
 
-export interface LegacyEnvironmentTool {
+export interface FixedToolEnvironmentTool {
   version: string;
   source: 'base' | 'archive';
   url?: string;
@@ -37,7 +37,7 @@ export interface LegacyEnvironmentTool {
   stripComponents?: number;
 }
 
-export interface LegacyEnvironmentRecipe {
+export interface FixedToolEnvironmentRecipe {
   schemaVersion: 1;
   base?: {
     environmentId: string;
@@ -45,8 +45,8 @@ export interface LegacyEnvironmentRecipe {
     imageUri: string;
     imageDigest: string;
   } | null;
-  tools: Partial<Record<'node' | 'python' | 'java' | 'go' | 'rust', LegacyEnvironmentTool>>;
-  buildTools: Partial<Record<'maven' | 'gradle', LegacyEnvironmentTool>>;
+  tools: Partial<Record<'node' | 'python' | 'java' | 'go' | 'rust', FixedToolEnvironmentTool>>;
+  buildTools: Partial<Record<'maven' | 'gradle', FixedToolEnvironmentTool>>;
   aptPackages: { name: string; version: string }[];
   environmentVariables: Record<string, string>;
   buildCommands: string[];
@@ -74,7 +74,7 @@ export interface EnvironmentToolSnapshot {
   securityFindingsAcceptedBy?: string | null;
 }
 
-export interface ManagedEnvironmentRecipe {
+export interface CatalogEnvironmentRecipe {
   schemaVersion: 2;
   base?: {
     environmentId: string;
@@ -91,7 +91,7 @@ export interface ManagedEnvironmentRecipe {
   buildCommands: string[];
 }
 
-export type EnvironmentRecipe = LegacyEnvironmentRecipe | ManagedEnvironmentRecipe;
+export type EnvironmentRecipe = FixedToolEnvironmentRecipe | CatalogEnvironmentRecipe;
 
 export interface EnvironmentRecipeInput {
   schemaVersion: 2;

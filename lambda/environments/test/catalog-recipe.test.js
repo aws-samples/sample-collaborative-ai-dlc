@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  generateEnvironmentBuildContextV2,
-  generateEnvironmentDockerfileV2,
+  generateCatalogEnvironmentBuildContext,
+  generateCatalogEnvironmentDockerfile,
   projectedEnvironmentImageSize,
-  resolveEnvironmentRecipe,
-} from '../recipe-v2.js';
+  resolveCatalogEnvironmentRecipe,
+} from '../catalog-recipe.js';
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const baseRevision = {
@@ -84,7 +84,7 @@ describe('catalog-backed environment recipes', () => {
       dependencies: ['java'],
       executables: [{ name: 'mvn', path: 'bin/mvn' }],
     });
-    const resolved = await resolveEnvironmentRecipe({
+    const resolved = await resolveCatalogEnvironmentRecipe({
       input: {
         schemaVersion: 2,
         toolVersionIds: [maven.versionId],
@@ -146,7 +146,7 @@ describe('catalog-backed environment recipes', () => {
     );
 
     await expect(
-      resolveEnvironmentRecipe({
+      resolveCatalogEnvironmentRecipe({
         input,
         baseEnvironmentId: 'standard',
         baseRevision,
@@ -155,7 +155,7 @@ describe('catalog-backed environment recipes', () => {
     ).rejects.toMatchObject({ code: 'TOOL_EXECUTABLE_CONFLICT' });
   });
 
-  it('rejects legacy custom base environments while allowing Standard', async () => {
+  it('rejects fixed-tool custom base environments while allowing Standard', async () => {
     const go = version({
       toolId: 'go',
       versionId: 'tv-go-1',
@@ -171,16 +171,16 @@ describe('catalog-backed environment recipes', () => {
     const store = createToolStore([tool('go', go.versionId)], [go]);
 
     await expect(
-      resolveEnvironmentRecipe({
+      resolveCatalogEnvironmentRecipe({
         input,
-        baseEnvironmentId: 'legacy-go',
+        baseEnvironmentId: 'fixed-go',
         baseRevision,
         toolStore: store,
       }),
-    ).rejects.toMatchObject({ code: 'LEGACY_BASE_REQUIRES_RECREATION' });
+    ).rejects.toMatchObject({ code: 'FIXED_TOOL_BASE_REQUIRES_RECREATION' });
 
     await expect(
-      resolveEnvironmentRecipe({
+      resolveCatalogEnvironmentRecipe({
         input,
         baseEnvironmentId: 'standard',
         baseRevision,
@@ -198,7 +198,7 @@ describe('catalog-backed environment recipes', () => {
       number: '1.24.6',
       imageSizeBytes: 120 * 1024 * 1024,
     });
-    const { recipe, flattenedRecipe } = await resolveEnvironmentRecipe({
+    const { recipe, flattenedRecipe } = await resolveCatalogEnvironmentRecipe({
       input: {
         schemaVersion: 2,
         toolVersionIds: [go.versionId],
@@ -210,7 +210,7 @@ describe('catalog-backed environment recipes', () => {
       baseRevision,
       toolStore: createToolStore([tool('go', go.versionId)], [go]),
     });
-    const dockerfile = generateEnvironmentDockerfileV2(recipe);
+    const dockerfile = generateCatalogEnvironmentDockerfile(recipe);
 
     expect(dockerfile).toContain(`FROM ${go.imageUri}@${go.imageDigest} AS managed_tool_0`);
     expect(dockerfile).toContain(`FROM ${baseRevision.imageUri}@${baseRevision.imageDigest}`);
@@ -219,7 +219,7 @@ describe('catalog-backed environment recipes', () => {
     expect(dockerfile).toContain('RUN sha256sum -c /opt/managed/protected-runtime.sha256');
     expect(projectedEnvironmentImageSize(recipe)).toBe(1020 * 1024 * 1024);
 
-    const context = generateEnvironmentBuildContextV2({
+    const context = generateCatalogEnvironmentBuildContext({
       environment: { environmentId: 'go-build' },
       revision: { revisionId: 'r-1', runtimeCompatibilityVersion: '1' },
       recipe,
@@ -243,7 +243,7 @@ describe('catalog-backed environment recipes', () => {
     ];
     dotnet.definition.verification.script =
       'test "$(cat "$TOOL_FIXTURES/project/expected.txt")" = verified';
-    const { recipe, flattenedRecipe } = await resolveEnvironmentRecipe({
+    const { recipe, flattenedRecipe } = await resolveCatalogEnvironmentRecipe({
       input: {
         schemaVersion: 2,
         toolVersionIds: [dotnet.versionId],
@@ -256,7 +256,7 @@ describe('catalog-backed environment recipes', () => {
       toolStore: createToolStore([tool('dotnet-sdk', dotnet.versionId)], [dotnet]),
     });
 
-    const context = generateEnvironmentBuildContextV2({
+    const context = generateCatalogEnvironmentBuildContext({
       environment: { environmentId: 'dotnet-build' },
       revision: { revisionId: 'r-1', runtimeCompatibilityVersion: '1' },
       recipe,

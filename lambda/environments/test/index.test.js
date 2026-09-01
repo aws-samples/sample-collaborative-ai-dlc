@@ -18,7 +18,7 @@ const RECIPE = {
   buildCommands: [],
 };
 
-const MANAGED_RECIPE = {
+const CATALOG_RECIPE = {
   schemaVersion: 2,
   base: BASE,
   toolVersionIds: [],
@@ -78,7 +78,7 @@ describe('managed environment handler', () => {
     });
   });
 
-  it('requires legacy environments to be recreated with catalog tools', async () => {
+  it('requires fixed-tool environments to be recreated with catalog tools', async () => {
     const environment = {
       environmentId: 'go',
       status: 'FAILED',
@@ -176,7 +176,7 @@ describe('managed environment handler', () => {
 
     expect(response.statusCode).toBe(409);
     expect(JSON.parse(response.body)).toMatchObject({
-      code: 'LEGACY_RECIPE_REQUIRES_RECREATION',
+      code: 'FIXED_TOOL_RECIPE_REQUIRES_RECREATION',
     });
     expect(store.createRevision).not.toHaveBeenCalled();
     expect(codebuildClient.send).not.toHaveBeenCalled();
@@ -195,8 +195,8 @@ describe('managed environment handler', () => {
       environmentId: 'go',
       revisionId: 'seed-go-1',
       status: 'FAILED',
-      recipe: MANAGED_RECIPE,
-      flattenedRecipe: MANAGED_RECIPE,
+      recipe: CATALOG_RECIPE,
+      flattenedRecipe: CATALOG_RECIPE,
     };
     const store = {
       ...storeBase(),
@@ -222,16 +222,16 @@ describe('managed environment handler', () => {
     expect(codebuildClient.send).not.toHaveBeenCalled();
   });
 
-  it('blocks direct builds for legacy custom environments', async () => {
+  it('blocks direct builds for fixed-tool custom environments', async () => {
     const environment = {
-      environmentId: 'legacy-java',
+      environmentId: 'fixed-java',
       status: 'DRAFT',
       baseEnvironmentId: 'standard',
-      currentRevisionId: 'legacy-1',
+      currentRevisionId: 'fixed-1',
       publishedRevisionId: null,
       updateAvailable: false,
     };
-    const legacyRevision = {
+    const fixedToolRevision = {
       environmentId: environment.environmentId,
       revisionId: environment.currentRevisionId,
       status: 'DRAFT',
@@ -241,20 +241,20 @@ describe('managed environment handler', () => {
     const store = {
       ...storeBase(),
       getEnvironment: vi.fn().mockResolvedValue(environment),
-      getRevision: vi.fn().mockResolvedValue(legacyRevision),
+      getRevision: vi.fn().mockResolvedValue(fixedToolRevision),
     };
     const handler = createHandler({ store, codebuildClient: { send: vi.fn() } });
 
     const response = await handler({
       httpMethod: 'POST',
-      path: '/environments/legacy-java/revisions/legacy-1/build',
+      path: '/environments/fixed-java/revisions/fixed-1/build',
       body: '{}',
       ...claims('platform-admin'),
     });
 
     expect(response.statusCode).toBe(409);
     expect(JSON.parse(response.body)).toMatchObject({
-      code: 'LEGACY_ENVIRONMENT_UNSUPPORTED',
+      code: 'FIXED_TOOL_RECIPE_UNSUPPORTED',
     });
   });
 
@@ -304,8 +304,8 @@ describe('managed environment handler', () => {
       environmentId: 'custom',
       revisionId: 'r-old',
       status: 'FAILED',
-      recipe: MANAGED_RECIPE,
-      flattenedRecipe: MANAGED_RECIPE,
+      recipe: CATALOG_RECIPE,
+      flattenedRecipe: CATALOG_RECIPE,
     };
     const replacement = {
       ...failed,
@@ -351,8 +351,8 @@ describe('managed environment handler', () => {
     expect(store.createRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         reason: 'retry',
-        recipe: MANAGED_RECIPE,
-        flattenedRecipe: MANAGED_RECIPE,
+        recipe: CATALOG_RECIPE,
+        flattenedRecipe: CATALOG_RECIPE,
       }),
     );
     expect(store.updateRevision).toHaveBeenNthCalledWith(
@@ -361,8 +361,8 @@ describe('managed environment handler', () => {
       'r-new',
       expect.objectContaining({
         status: 'QUEUED',
-        recipe: MANAGED_RECIPE,
-        flattenedRecipe: MANAGED_RECIPE,
+        recipe: CATALOG_RECIPE,
+        flattenedRecipe: CATALOG_RECIPE,
       }),
       { fromStatus: 'DRAFT' },
     );
@@ -385,8 +385,8 @@ describe('managed environment handler', () => {
       environmentId: 'custom',
       revisionId: 'r-1',
       status: 'DRAFT',
-      recipe: MANAGED_RECIPE,
-      flattenedRecipe: MANAGED_RECIPE,
+      recipe: CATALOG_RECIPE,
+      flattenedRecipe: CATALOG_RECIPE,
     };
     const store = {
       ...storeBase(),
@@ -686,7 +686,7 @@ describe('managed environment handler', () => {
       getEnvironment: vi
         .fn()
         .mockImplementation((environmentId) => environments.get(environmentId)),
-      getRevision: vi.fn().mockResolvedValue({ recipe: MANAGED_RECIPE }),
+      getRevision: vi.fn().mockResolvedValue({ recipe: CATALOG_RECIPE }),
       createRevision: vi.fn(),
     };
     const handler = createHandler({ store });
@@ -694,7 +694,7 @@ describe('managed environment handler', () => {
     const response = await handler({
       httpMethod: 'PUT',
       path: '/environments/custom',
-      body: JSON.stringify({ baseEnvironmentId: 'child', recipe: MANAGED_RECIPE }),
+      body: JSON.stringify({ baseEnvironmentId: 'child', recipe: CATALOG_RECIPE }),
       ...claims('platform-admin'),
     });
 

@@ -38,7 +38,7 @@ import {
   type EnvironmentRevision,
   type EnvironmentToolSnapshot,
   type ManagedEnvironment,
-  type ManagedEnvironmentRecipe,
+  type CatalogEnvironmentRecipe,
   type ManagedTool,
   type ManagedToolVersion,
 } from '@/services/environments';
@@ -69,18 +69,18 @@ const emptyForm = (): EnvironmentForm => ({
   buildCommands: '',
 });
 
-const isManagedRecipe = (
+const isCatalogRecipe = (
   recipe: EnvironmentRevision['recipe'] | undefined,
-): recipe is ManagedEnvironmentRecipe => recipe?.schemaVersion === 2;
+): recipe is CatalogEnvironmentRecipe => recipe?.schemaVersion === 2;
 
 const resolvedTools = (revision: EnvironmentRevision | null): EnvironmentToolSnapshot[] => {
   const recipe = revision?.flattenedRecipe;
-  if (!isManagedRecipe(recipe)) return [];
+  if (!isCatalogRecipe(recipe)) return [];
   return recipe.resolvedTools ?? recipe.tools;
 };
 
 const directToolVersionIds = (revision: EnvironmentRevision | null) =>
-  isManagedRecipe(revision?.recipe) ? revision.recipe.toolVersionIds : [];
+  isCatalogRecipe(revision?.recipe) ? revision.recipe.toolVersionIds : [];
 
 const protectedRuntimeVersions = (revision: EnvironmentRevision | null) => {
   const recipe = revision?.flattenedRecipe;
@@ -765,10 +765,10 @@ export function EnvironmentRegistry() {
     detail?.revisions.find(
       (revision) => revision.revisionId === detail.environment.currentRevisionId,
     ) ?? null;
-  const legacyEnvironment =
+  const fixedToolEnvironment =
     detail?.environment.environmentId !== 'standard' &&
     Boolean(currentRevision) &&
-    !isManagedRecipe(currentRevision?.recipe);
+    !isCatalogRecipe(currentRevision?.recipe);
 
   useEffect(() => {
     if (!selectedId || !selectedRevision || !isActiveRevision(selectedRevision)) return;
@@ -969,10 +969,10 @@ export function EnvironmentRegistry() {
                         Recommended tool updates are available. Save a new revision to select them.
                       </p>
                     )}
-                    {legacyEnvironment && (
+                    {fixedToolEnvironment && (
                       <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                        This legacy environment is read-only. Use Reset to remove legacy managed
-                        environments, then recreate it from published catalog tools.
+                        This fixed-tool environment is read-only. Use Reset to remove it, then
+                        recreate it from published catalog tools.
                       </p>
                     )}
                   </div>
@@ -1045,7 +1045,7 @@ export function EnvironmentRegistry() {
                   <div className="ml-auto flex flex-wrap gap-2">
                     {selectedRevision?.status === 'DRAFT' &&
                       !environment.updateAvailable &&
-                      isManagedRecipe(selectedRevision.recipe) && (
+                      isCatalogRecipe(selectedRevision.recipe) && (
                         <Button
                           size="sm"
                           onClick={() =>
@@ -1063,7 +1063,7 @@ export function EnvironmentRegistry() {
                       )}
                     {selectedRevision?.status === 'FAILED' &&
                       !environment.updateAvailable &&
-                      isManagedRecipe(selectedRevision.recipe) && (
+                      isCatalogRecipe(selectedRevision.recipe) && (
                         <Button
                           size="sm"
                           onClick={() =>
@@ -1112,7 +1112,7 @@ export function EnvironmentRegistry() {
                     )}
                     {selectedRevision?.status === 'READY' &&
                       (environment.environmentId === 'standard' ||
-                        isManagedRecipe(selectedRevision.recipe)) && (
+                        isCatalogRecipe(selectedRevision.recipe)) && (
                         <Button
                           size="sm"
                           onClick={() =>
@@ -1131,7 +1131,7 @@ export function EnvironmentRegistry() {
                   </div>
                 </div>
 
-                {environment.environmentId !== 'standard' && !legacyEnvironment && (
+                {environment.environmentId !== 'standard' && !fixedToolEnvironment && (
                   <>
                     <RecipeEditor
                       form={form}

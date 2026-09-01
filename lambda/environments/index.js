@@ -9,13 +9,13 @@ import {
   generateBuildContext,
   normalizeEnvironmentId,
   orderRebuilds,
-} from './recipe.js';
+} from './fixed-tool-recipe.js';
 import {
-  ENVIRONMENT_RECIPE_SCHEMA_VERSION,
-  generateEnvironmentBuildContextV2,
-  rebuildEnvironmentRecipe,
-  resolveEnvironmentRecipe,
-} from './recipe-v2.js';
+  CATALOG_RECIPE_SCHEMA_VERSION,
+  generateCatalogEnvironmentBuildContext,
+  rebuildCatalogEnvironmentRecipe,
+  resolveCatalogEnvironmentRecipe,
+} from './catalog-recipe.js';
 import { createEnvironmentStore } from './store.js';
 import { createToolStore } from './tool-store.js';
 
@@ -112,12 +112,12 @@ const assertAcyclicBase = async (store, environmentId, baseEnvironmentId) => {
   }
 };
 
-const prepareRecipe = async (store, toolStore, input, baseEnvironmentId) => {
+const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId) => {
   const { revision: baseRevision } = await publishedBase(store, baseEnvironmentId);
-  return resolveEnvironmentRecipe({
+  return resolveCatalogEnvironmentRecipe({
     input: {
       ...input,
-      schemaVersion: ENVIRONMENT_RECIPE_SCHEMA_VERSION,
+      schemaVersion: CATALOG_RECIPE_SCHEMA_VERSION,
     },
     baseEnvironmentId,
     baseRevision,
@@ -128,15 +128,15 @@ const prepareRecipe = async (store, toolStore, input, baseEnvironmentId) => {
 const assertCatalogRevision = (environmentId, revision) => {
   if (
     environmentId !== 'standard' &&
-    revision?.recipe?.schemaVersion !== ENVIRONMENT_RECIPE_SCHEMA_VERSION
+    revision?.recipe?.schemaVersion !== CATALOG_RECIPE_SCHEMA_VERSION
   ) {
     throw Object.assign(
       new Error(
-        'Legacy environment recipes cannot be rebuilt; create a catalog-backed environment',
+        'Fixed-tool recipe environments cannot be rebuilt; recreate the environment with catalog tools',
       ),
       {
         statusCode: 409,
-        code: 'LEGACY_ENVIRONMENT_UNSUPPORTED',
+        code: 'FIXED_TOOL_RECIPE_UNSUPPORTED',
       },
     );
   }
@@ -160,13 +160,13 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
       { statusCode: 409, code: 'PROJECTED_IMAGE_SIZE_EXCEEDED' },
     );
   }
-  const v2 = revision.recipe?.schemaVersion === ENVIRONMENT_RECIPE_SCHEMA_VERSION;
-  const recipe = v2 ? revision.recipe : applyToolPrerequisites(revision.recipe);
-  const flattenedRecipe = v2
+  const catalogRecipe = revision.recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION;
+  const recipe = catalogRecipe ? revision.recipe : applyToolPrerequisites(revision.recipe);
+  const flattenedRecipe = catalogRecipe
     ? revision.flattenedRecipe
     : applyToolPrerequisites(revision.flattenedRecipe);
-  const context = v2
-    ? generateEnvironmentBuildContextV2({
+  const context = catalogRecipe
+    ? generateCatalogEnvironmentBuildContext({
         environment,
         revision,
         recipe,
@@ -327,7 +327,7 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
     });
   }
   const { revision: latestBase } = await publishedBase(store, environment.baseEnvironmentId);
-  const { recipe, flattenedRecipe } = rebuildEnvironmentRecipe({
+  const { recipe, flattenedRecipe } = rebuildCatalogEnvironmentRecipe({
     sourceRecipe: sourceRevision.recipe,
     baseEnvironmentId: environment.baseEnvironmentId,
     baseRevision: latestBase,
@@ -394,7 +394,12 @@ export const createHandler = ({
         }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';
         await assertAcyclicBase(store, id, baseEnvironmentId);
-        const prepared = await prepareRecipe(store, toolStore, data.recipe, baseEnvironmentId);
+        const prepared = await prepareCatalogRecipe(
+          store,
+          toolStore,
+          data.recipe,
+          baseEnvironmentId,
+        );
         const created = await store.createEnvironment({
           environmentId: id,
           name: data.name.trim(),
@@ -485,7 +490,12 @@ export const createHandler = ({
         const baseEnvironmentId =
           data.baseEnvironmentId || environment.baseEnvironmentId || 'standard';
         await assertAcyclicBase(store, environmentId, baseEnvironmentId);
-        const prepared = await prepareRecipe(store, toolStore, data.recipe, baseEnvironmentId);
+        const prepared = await prepareCatalogRecipe(
+          store,
+          toolStore,
+          data.recipe,
+          baseEnvironmentId,
+        );
         const revision = await store.createRevision({
           environment,
           recipe: prepared.recipe,
@@ -742,4 +752,4 @@ export const createHandler = ({
 
 export const handler = createHandler();
 
-export { startBuild, cloneOnLatestBase, prepareRecipe, assertAcyclicBase };
+export { startBuild, cloneOnLatestBase, prepareCatalogRecipe, assertAcyclicBase };

@@ -19,7 +19,7 @@ import {
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { createEnvironmentStore } from './store.js';
-import { evaluateScanFindings } from './recipe.js';
+import { evaluateScanFindings } from './fixed-tool-recipe.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ecr = new ECRClient({});
