@@ -1266,6 +1266,12 @@ const mapIntent = (meta) => ({
 
 const NATIVE_EXPORT_HARNESSES = new Set(['claude', 'codex', 'kiro', 'kiro-ide', 'opencode']);
 const NATIVE_EXPORT_BLOCKED_STATUSES = new Set(['DRAFT', 'CREATED']);
+const NATIVE_EXPORT_REF_REQUIRED_STAGE_STATES = new Set([
+  'SUCCEEDED',
+  'FAILED',
+  'RUNNING',
+  'WAITING_FOR_HUMAN',
+]);
 const ACTIVE_UNIT_STATES = new Set([
   'RUNNING',
   'MERGING',
@@ -1752,15 +1758,16 @@ export const handler = async (event) => {
       if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
         return response(400, { error: `Unsupported native AI-DLC harness: ${harness}` });
       }
-      const executionRefs = new Set(
-        (records.stages ?? []).map((stage) => stage.aidlcRepoRef).filter(Boolean),
+      const refRequiredStages = (records.stages ?? []).filter((stage) =>
+        NATIVE_EXPORT_REF_REQUIRED_STAGE_STATES.has(stage.state),
       );
-      if (
-        executionRefs.size > 1 ||
-        (meta.aidlcRepoRef && [...executionRefs].some((ref) => ref !== meta.aidlcRepoRef))
-      ) {
+      const executionRefsMatch = meta.aidlcRepoRef
+        ? refRequiredStages.every((stage) => stage.aidlcRepoRef === meta.aidlcRepoRef)
+        : new Set(refRequiredStages.map((stage) => stage.aidlcRepoRef).filter(Boolean)).size <= 1;
+      if (!executionRefsMatch) {
         return response(409, {
-          error: 'This workflow was executed with multiple AI-DLC revisions and cannot be exported',
+          error:
+            'This workflow has incomplete or mixed AI-DLC revision attribution and cannot be exported',
           code: 'export_mixed_aidlc_refs',
         });
       }

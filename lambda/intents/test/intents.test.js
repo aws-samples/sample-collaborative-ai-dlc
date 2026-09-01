@@ -1227,6 +1227,7 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
       sectionIndex: 1,
       unitSlug: 'identification',
       state: 'WAITING_FOR_HUMAN',
+      aidlcRepoRef: exportRef,
     });
     procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#q-code-plan'), {
       pk: `EXEC#${intent.id}`,
@@ -1516,6 +1517,58 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).code).toBe('export_mixed_aidlc_refs');
     expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it.each(['SUCCEEDED', 'FAILED', 'RUNNING', 'WAITING_FOR_HUMAN'])(
+    'rejects a pinned export when a %s stage has no AI-DLC revision',
+    async (state) => {
+      const sub = `u-${randomUUID()}`;
+      const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+      meta.aidlcRepoRef = exportRef;
+      procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+      procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#si-${state}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `STAGE#si-${state}`,
+        type: 'Stage',
+        executionId: intent.id,
+        stageInstanceId: `si-${state}`,
+        stageId: 'requirements-analysis',
+        state,
+      });
+
+      const res = await exportIntent(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('export_mixed_aidlc_refs');
+      expect(createNativeExportSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it('ignores PENDING and SKIPPED stage revision attribution', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    meta.aidlcRepoRef = exportRef;
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    for (const [state, aidlcRepoRef] of [
+      ['PENDING', null],
+      ['SKIPPED', 'b'.repeat(40)],
+    ]) {
+      procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#si-${state}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `STAGE#si-${state}`,
+        type: 'Stage',
+        executionId: intent.id,
+        stageInstanceId: `si-${state}`,
+        stageId: 'requirements-analysis',
+        state,
+        aidlcRepoRef,
+      });
+    }
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(createNativeExportSpy).toHaveBeenCalled();
   });
 
   it('maps checkpoint artifact integrity failures to a specific response', async () => {
