@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
+import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
 
 describe('createBusyTracker', () => {
   it('reports HealthyBusy while work is in flight, Healthy otherwise', () => {
@@ -30,6 +31,18 @@ describe('dispatchInvocation', () => {
   it('rejects an unknown command', async () => {
     const r = await dispatchInvocation({ payload: { command: 'nope' }, handlers });
     expect(r.statusCode).toBe(400);
+  });
+
+  it('keeps routing and authentication metadata in one command registry', () => {
+    expect(COMMANDS['init-ws']).toEqual({ handler: 'initWs', agentAuth: false });
+    expect(COMMANDS['run-stage']).toEqual({
+      handler: 'runStage',
+      agentAuth: AGENT_AUTH_MODES.EXECUTION,
+    });
+    expect(COMMANDS['compose-plan-start'].agentAuth).toBe(AGENT_AUTH_MODES.COMPOSE);
+    expect(COMMANDS['discussion-assist-start'].agentAuth).toBe(AGENT_AUTH_MODES.DISCUSSION);
+    expect(COMMANDS.capabilities.agentAuth).toBe(AGENT_AUTH_MODES.CAPABILITIES);
+    expect(commandDefinition('toString')).toBeNull();
   });
 
   it('routes init-ws and run-stage', async () => {
@@ -91,7 +104,10 @@ describe('dispatchInvocation', () => {
       statusCode: 200,
       body: { ok: true, availableClis: ['kiro'], command: 'run-stage' },
     });
-    expect(prepareInvocation).toHaveBeenCalledOnce();
+    expect(prepareInvocation).toHaveBeenCalledWith(
+      { command: 'run-stage', stageId: 's1' },
+      AGENT_AUTH_MODES.EXECUTION,
+    );
   });
 
   it('routes promote-units (WP3 unit DAG promotion)', async () => {

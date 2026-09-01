@@ -63,6 +63,7 @@
 
 import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
+import { commandDefinition } from './command-registry.js';
 
 // Track whether a stage is currently running so /ping can report HealthyBusy.
 export const createBusyTracker = () => {
@@ -80,21 +81,6 @@ export const createBusyTracker = () => {
   };
 };
 
-// Only commands that can spawn an agent CLI need hierarchical credential
-// resolution. Engine-only commands must remain available during an SSM outage.
-const AGENT_AUTH_COMMANDS = new Set([
-  'run-stage',
-  'run-stage-start',
-  'derive-artifacts',
-  'resolve-conflict',
-  'discussion-assist-start',
-  'compose-plan-start',
-  'quorum-edit-plan-start',
-  'quorum-edit-apply-start',
-  'repair-structure',
-  'capabilities',
-]);
-
 // Dispatch one parsed invocation to the right command handler. PURE of HTTP —
 // returns { statusCode, body }. `handlers` = { initWs, runStage }; `busy` is the
 // tracker so a long run-stage flips /ping to HealthyBusy.
@@ -107,34 +93,16 @@ export const dispatchInvocation = async ({
 }) => {
   const command = payload?.command;
   if (!command) return { statusCode: 400, body: { error: 'missing "command"' } };
-  const handler = {
-    'init-ws': handlers.initWs,
-    'run-stage': handlers.runStage,
-    'run-stage-start': handlers.runStageStart,
-    'promote-units': handlers.promoteUnits,
-    'derive-artifacts': handlers.deriveArtifacts,
-    'record-pr': handlers.recordPr,
-    'record-unit-pr': handlers.recordUnitPr,
-    'init-lane': handlers.initLane,
-    'merge-lane': handlers.mergeLane,
-    'reconcile-lane': handlers.reconcileLane,
-    'refresh-intent': handlers.refreshIntent,
-    'resolve-conflict': handlers.resolveConflict,
-    'discussion-assist-start': handlers.discussionAssistStart,
-    'compose-plan-start': handlers.composePlanStart,
-    'quorum-edit-plan-start': handlers.quorumEditPlanStart,
-    'quorum-edit-apply-start': handlers.quorumEditApplyStart,
-    'repair-structure': handlers.repairStructure,
-    inspect: handlers.inspect,
-    capabilities: handlers.capabilities,
-    'verify-mcp': handlers.verifyMcp,
-  }[command];
+  const definition = commandDefinition(command);
+  const handler = definition ? handlers[definition.handler] : null;
   if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
 
   busy?.enter();
   try {
     const context =
-      prepareInvocation && AGENT_AUTH_COMMANDS.has(command) ? await prepareInvocation(payload) : {};
+      prepareInvocation && definition.agentAuth
+        ? await prepareInvocation(payload, definition.agentAuth)
+        : {};
     const result = await handler(payload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
@@ -242,9 +210,10 @@ const main = async () => {
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
   const store = createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
   const installedClis = await discoverInstalledClis();
-  const invocationContext = async (payload) => {
+  const invocationContext = async (payload, authMode) => {
     const auth = await resolveInvocationAgentAuth({
       payload,
+      authMode,
       store,
       env: process.env,
     });

@@ -15,6 +15,7 @@ import {
   normalizeCredentialBinding,
   readCredentialBindingValue,
 } from '../shared/agent-credentials.js';
+import { AGENT_AUTH_MODES } from './command-registry.js';
 
 const AUTH_ENV_NAMES = AGENT_CREDENTIAL_PROVIDERS.map(credentialEnvName);
 
@@ -34,6 +35,64 @@ const bindingMatchesCli = (binding, requestedCli) => {
   return binding.provider === credentialProviderForCli(requestedCli);
 };
 
+const singleBinding = ({ binding, requestedCli, mismatchMessage }) => {
+  if (!binding) return [];
+  if (!bindingMatchesCli(binding, requestedCli)) {
+    throw Object.assign(new Error(mismatchMessage), {
+      code: 'credential_binding_mismatch',
+    });
+  }
+  return [binding];
+};
+
+const bindingResolvers = Object.freeze({
+  [AGENT_AUTH_MODES.CAPABILITIES]: ({ payload }) =>
+    payload.credentialBindings
+      ? AGENT_CREDENTIAL_PROVIDERS.map((provider) => payload.credentialBindings[provider]).filter(
+          Boolean,
+        )
+      : [],
+  [AGENT_AUTH_MODES.COMPOSE]: ({ payload, meta }) => {
+    const requestedCli = payload.requestedCli || meta?.agentCli || null;
+    // Fresh DRAFT composes must carry the binding resolved for the caller.
+    // Older in-flight intents predate credentialBinding, so preserve their
+    // historical platform credential without allowing a draft to fall back.
+    const binding =
+      payload.credentialBinding ??
+      (payload.mode === 'inflight'
+        ? (meta?.credentialBinding ?? legacyPlatformBinding(requestedCli))
+        : null);
+    return singleBinding({
+      binding,
+      requestedCli,
+      mismatchMessage: 'Agent credential does not match the selected CLI',
+    });
+  },
+  [AGENT_AUTH_MODES.DISCUSSION]: ({ payload, meta }) => {
+    const requestedCli = meta?.agentCli || payload.requestedCli || null;
+    // Started intents keep their pinned binding (or the historical platform
+    // binding). A DRAFT has no pinned CLI yet, so it must carry the binding
+    // resolved for the caller alongside their selected CLI.
+    const binding =
+      meta?.credentialBinding ??
+      (meta?.agentCli ? legacyPlatformBinding(requestedCli) : (payload.credentialBinding ?? null));
+    return singleBinding({
+      binding,
+      requestedCli,
+      mismatchMessage: 'Agent credential does not match the selected CLI',
+    });
+  },
+  [AGENT_AUTH_MODES.EXECUTION]: ({ payload, meta }) => {
+    const requestedCli = payload.requestedCli || meta?.agentCli || null;
+    const binding = meta?.credentialBinding || legacyPlatformBinding(requestedCli);
+    return singleBinding({
+      binding,
+      requestedCli,
+      mismatchMessage: 'Pinned agent credential does not match the selected CLI',
+    });
+  },
+});
+
 export const authenticatedClisForEnv = ({ installed = [], env = {} } = {}) =>
   installed.filter((cli) => {
     const provider = credentialProviderForCli(cli);
@@ -42,6 +101,7 @@ export const authenticatedClisForEnv = ({ installed = [], env = {} } = {}) =>
 
 export const resolveInvocationAgentAuth = async ({
   payload = {},
+  authMode = AGENT_AUTH_MODES.EXECUTION,
   store = null,
   env = process.env,
   ssm = null,
@@ -55,51 +115,12 @@ export const resolveInvocationAgentAuth = async ({
     meta = await store.getExecution(executionId);
   }
 
-  let bindings = [];
-  if (payload.command === 'capabilities' && payload.credentialBindings) {
-    bindings = AGENT_CREDENTIAL_PROVIDERS.map(
-      (provider) => payload.credentialBindings[provider],
-    ).filter(Boolean);
-  } else if (payload.command === 'compose-plan-start') {
-    const requestedCli = payload.requestedCli || meta?.agentCli || null;
-    // Fresh DRAFT composes must carry the binding resolved for the caller.
-    // Older in-flight intents predate credentialBinding, so preserve their
-    // historical platform credential without allowing a draft to fall back.
-    const binding =
-      payload.credentialBinding ??
-      (payload.mode === 'inflight'
-        ? (meta?.credentialBinding ?? legacyPlatformBinding(requestedCli))
-        : null);
-    if (binding && !bindingMatchesCli(binding, requestedCli)) {
-      throw Object.assign(new Error('Agent credential does not match the selected CLI'), {
-        code: 'credential_binding_mismatch',
-      });
-    }
-    if (binding) bindings = [binding];
-  } else if (payload.command === 'discussion-assist-start') {
-    const requestedCli = meta?.agentCli || payload.requestedCli || null;
-    // Started intents keep their pinned binding (or the historical platform
-    // binding). A DRAFT has no pinned CLI yet, so it must carry the binding
-    // resolved for the caller alongside their selected CLI.
-    const binding =
-      meta?.credentialBinding ??
-      (meta?.agentCli ? legacyPlatformBinding(requestedCli) : (payload.credentialBinding ?? null));
-    if (binding && !bindingMatchesCli(binding, requestedCli)) {
-      throw Object.assign(new Error('Agent credential does not match the selected CLI'), {
-        code: 'credential_binding_mismatch',
-      });
-    }
-    if (binding) bindings = [binding];
-  } else {
-    const requestedCli = payload.requestedCli || meta?.agentCli || null;
-    const binding = meta?.credentialBinding || legacyPlatformBinding(requestedCli);
-    if (binding && !bindingMatchesCli(binding, requestedCli)) {
-      throw Object.assign(new Error('Pinned agent credential does not match the selected CLI'), {
-        code: 'credential_binding_mismatch',
-      });
-    }
-    if (binding) bindings = [binding];
-  }
+  const resolveBindings =
+    typeof authMode === 'string' && Object.hasOwn(bindingResolvers, authMode)
+      ? bindingResolvers[authMode]
+      : null;
+  if (!resolveBindings) throw new Error(`Unsupported agent auth mode: ${authMode}`);
+  const bindings = resolveBindings({ payload, meta });
 
   const credentialBindings = [];
   const resolvedProviders = [];

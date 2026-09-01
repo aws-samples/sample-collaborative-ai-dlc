@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { authenticatedClisForEnv, resolveInvocationAgentAuth } from '../auth-resolver.js';
+import { AGENT_AUTH_MODES } from '../command-registry.js';
 
 describe('resolveInvocationAgentAuth', () => {
   it('keeps concurrent users in separate invocation environments', async () => {
@@ -82,9 +83,39 @@ describe('resolveInvocationAgentAuth', () => {
     expect(result.missingCredentialBindings).toEqual([{ provider: 'kiro', source: 'user' }]);
   });
 
+  it('resolves every supplied binding for a capabilities probe', async () => {
+    const values = new Map([
+      ['/app/dev/bedrock-bearer-token', 'bedrock-platform-key'],
+      ['/app/dev/kiro-api-key', 'kiro-platform-key'],
+    ]);
+    const result = await resolveInvocationAgentAuth({
+      authMode: AGENT_AUTH_MODES.CAPABILITIES,
+      payload: {
+        command: 'capabilities',
+        credentialBindings: {
+          bedrock: { provider: 'bedrock', source: 'platform' },
+          kiro: { provider: 'kiro', source: 'platform' },
+        },
+      },
+      env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+      ssm: {
+        send: async ({ input }) => ({
+          Parameter: { Name: input.Name, Value: values.get(input.Name) },
+        }),
+      },
+    });
+
+    expect(result.env).toMatchObject({
+      AWS_BEARER_TOKEN_BEDROCK: 'bedrock-platform-key',
+      KIRO_API_KEY: 'kiro-platform-key',
+    });
+    expect(result.resolvedProviders).toEqual(['bedrock', 'kiro']);
+  });
+
   it('never falls back to a platform key when pre-start compose has no binding', async () => {
     const reads = [];
     const result = await resolveInvocationAgentAuth({
+      authMode: AGENT_AUTH_MODES.COMPOSE,
       payload: {
         command: 'compose-plan-start',
         projectId: 'p-1',
@@ -107,6 +138,7 @@ describe('resolveInvocationAgentAuth', () => {
   it('uses the legacy platform credential for an in-flight compose without a binding', async () => {
     const reads = [];
     const result = await resolveInvocationAgentAuth({
+      authMode: AGENT_AUTH_MODES.COMPOSE,
       payload: {
         command: 'compose-plan-start',
         projectId: 'p-1',
@@ -137,6 +169,7 @@ describe('resolveInvocationAgentAuth', () => {
 
   it('resolves the caller binding for a DRAFT discussion assist', async () => {
     const result = await resolveInvocationAgentAuth({
+      authMode: AGENT_AUTH_MODES.DISCUSSION,
       payload: {
         command: 'discussion-assist-start',
         projectId: 'p-1',
@@ -174,6 +207,7 @@ describe('resolveInvocationAgentAuth', () => {
       ['/app/dev/users/collaborator/agent-credentials/kiro-api-key', 'collaborator-key'],
     ]);
     const result = await resolveInvocationAgentAuth({
+      authMode: AGENT_AUTH_MODES.DISCUSSION,
       payload: {
         command: 'discussion-assist-start',
         projectId: 'p-1',
@@ -207,6 +241,7 @@ describe('resolveInvocationAgentAuth', () => {
   it('rejects a compose binding for a different provider than the selected CLI', async () => {
     await expect(
       resolveInvocationAgentAuth({
+        authMode: AGENT_AUTH_MODES.COMPOSE,
         payload: {
           command: 'compose-plan-start',
           requestedCli: 'kiro',
