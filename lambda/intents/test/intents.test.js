@@ -73,6 +73,7 @@ const MANAGED_ENVIRONMENT_SNAPSHOT = {
   runtimeVersion: '7',
   compatibilityVersion: '1',
   verification: { status: 'PASSED' },
+  tools: [{ toolId: 'node', versionId: '22', name: 'Node.js', version: '22.17.0' }],
 };
 
 // In-memory single-table fake for the v2 process table + blocks table.
@@ -592,6 +593,46 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.constructionAutonomyMode).toBeNull();
     // WP6: PR strategy snapshotted (project default = intent-pr).
     expect(intent.prStrategy).toBe('intent-pr');
+  });
+
+  it('snapshots the resolved tools from a published managed environment', async () => {
+    vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', 'environment-registry-test');
+    vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', '1');
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'environment_id', 'polyglot')
+        .next();
+      procStore.set(keyOf('ENV#polyglot', 'META'), {
+        pk: 'ENV#polyglot',
+        sk: 'META',
+        environmentId: 'polyglot',
+        name: 'Polyglot',
+        status: 'PUBLISHED',
+        publishedRevisionId: 'r-7',
+      });
+      procStore.set(keyOf('ENV#polyglot', 'REV#r-7'), {
+        pk: 'ENV#polyglot',
+        sk: 'REV#r-7',
+        ...MANAGED_ENVIRONMENT_SNAPSHOT,
+        runtimeCompatibilityVersion: '1',
+        flattenedRecipe: { resolvedTools: MANAGED_ENVIRONMENT_SNAPSHOT.tools },
+      });
+
+      const res = await createIntent(sub, projectId);
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      expect(intent.environment.tools).toEqual(MANAGED_ENVIRONMENT_SNAPSHOT.tools);
+      expect(procStore.get(keyOf(`EXEC#${intent.executionId}`, 'META')).environment.tools).toEqual(
+        MANAGED_ENVIRONMENT_SNAPSHOT.tools,
+      );
+    } finally {
+      vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', undefined);
+      vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', undefined);
+    }
   });
 
   it('derives the branch from the title slug (single hyphens, no `--`)', async () => {

@@ -571,6 +571,7 @@ published revision and snapshots:
 - Runtime endpoint.
 - Runtime compatibility version.
 - Verification result.
+- Resolved tool versions.
 
 Changing the project assignment affects only intents created afterward.
 Running, waiting, rewound, cancelled, and resumed intents continue to target

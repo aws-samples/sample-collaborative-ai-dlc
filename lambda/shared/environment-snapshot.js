@@ -16,6 +16,7 @@ const fallbackSnapshot = (fallback = {}) => ({
   runtimeEndpoint: fallback.runtimeEndpoint ?? null,
   compatibilityVersion: fallback.compatibilityVersion ?? '1',
   verification: fallback.verification ?? { status: 'PASSED', source: 'legacy-runtime' },
+  tools: fallback.tools ?? [],
 });
 
 const supportsCompatibilityVersion = (candidate, current) => {
@@ -86,6 +87,7 @@ export const resolveEnvironmentSnapshot = async ({
     runtimeEndpoint: revision.runtimeEndpoint ?? null,
     compatibilityVersion,
     verification: revision.verification ?? null,
+    tools: revision.flattenedRecipe?.resolvedTools ?? [],
   };
 };
 

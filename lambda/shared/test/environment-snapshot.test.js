@@ -21,6 +21,12 @@ const revision = {
   runtimeEndpoint: 'revision_r_1',
   runtimeCompatibilityVersion: '2',
   verification: { status: 'PASSED' },
+  flattenedRecipe: {
+    resolvedTools: [
+      { toolId: 'node', versionId: '22', name: 'Node.js', version: '22.17.0' },
+      { toolId: 'python', versionId: '3.13', name: 'Python', version: '3.13.5' },
+    ],
+  },
 };
 
 const ddb = (revisionValue = revision) => ({
@@ -52,6 +58,7 @@ describe('environment snapshots', () => {
       runtimeEndpoint: 'revision_r_1',
       compatibilityVersion: '2',
       verification: { status: 'PASSED' },
+      tools: revision.flattenedRecipe.resolvedTools,
     });
   });
 
@@ -76,6 +83,7 @@ describe('environment snapshots', () => {
       runtimeVersion: '4',
       compatibilityVersion: '2',
       verification: { status: 'PASSED', source: 'core-runtime' },
+      tools: [],
     });
   });
 

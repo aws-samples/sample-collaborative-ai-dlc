@@ -90,6 +90,7 @@ describe('buildIntentAudit', () => {
       runtimeEndpoint: 'revision_r_7',
       compatibilityVersion: '1',
       verification: { status: 'PASSED' },
+      tools: [{ toolId: 'node', versionId: '22', name: 'Node.js', version: '22.17.0' }],
     };
     expect(buildIntentAudit({ records: { meta: { environment } } }).environment).toEqual(
       environment,
