@@ -6,13 +6,19 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  getSession: vi.fn(),
+  resolveSession: vi.fn(),
+  notifySessionExpired: vi.fn(),
   getRealtimeToken: vi.fn(),
   getYjsUrl: vi.fn(),
 }));
 
 vi.mock('../services/auth', () => ({
-  authService: { getSession: mocks.getSession },
+  authService: { resolveSession: mocks.resolveSession },
+}));
+
+vi.mock('../services/sessionExpiry', () => ({
+  currentSessionEpoch: () => 7,
+  notifySessionExpired: mocks.notifySessionExpired,
 }));
 
 vi.mock('../services/realtime', () => ({
@@ -67,7 +73,10 @@ const instances: MockWebSocket[] = [];
 describe('useYjsDocument', () => {
   beforeEach(() => {
     instances.length = 0;
-    mocks.getSession.mockReset().mockResolvedValue({ idToken: 'id-token' });
+    mocks.resolveSession
+      .mockReset()
+      .mockResolvedValue({ session: { idToken: 'id-token' }, expired: false });
+    mocks.notifySessionExpired.mockReset();
     mocks.getRealtimeToken
       .mockReset()
       .mockResolvedValue({ token: 'scope-token', exp: Math.floor(Date.now() / 1000) + 600 });
@@ -111,5 +120,15 @@ describe('useYjsDocument', () => {
     unmount();
     mirrorAwareness.destroy();
     mirrorDoc.destroy();
+  });
+
+  it('notifies when Cognito reports definitive session expiry', async () => {
+    mocks.resolveSession.mockResolvedValue({ session: null, expired: true });
+
+    const { unmount } = renderHook(() => useYjsDocument('inception-project-1', 'Alice'));
+
+    await waitFor(() => expect(mocks.notifySessionExpired).toHaveBeenCalledWith(7));
+    expect(instances).toHaveLength(0);
+    unmount();
   });
 });

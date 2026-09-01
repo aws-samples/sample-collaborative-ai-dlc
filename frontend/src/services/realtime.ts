@@ -1,4 +1,5 @@
 import { authService } from './auth';
+import { currentSessionEpoch, notifySessionExpired } from './sessionExpiry';
 import {
   getRealtimeToken,
   invalidateRealtimeToken,
@@ -96,7 +97,9 @@ export class RealtimeService {
   }
 
   private async doConnect(request: ConnectionRequest): Promise<void> {
-    const session = await authService.getSession();
+    const epoch = currentSessionEpoch();
+    const { session, expired } = await authService.resolveSession();
+    if (expired) notifySessionExpired(epoch);
     if (!session?.idToken) throw new Error('Not authenticated');
 
     const docToken = await getRealtimeToken(request.scopeTarget);
