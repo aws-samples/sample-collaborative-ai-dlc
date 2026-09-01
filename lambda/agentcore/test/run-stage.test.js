@@ -890,6 +890,20 @@ describe('runStage — failure paths (always records terminal state)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'workflow_not_found' });
   });
 
+  it('fails loudly when the pinned methodology snapshot was replaced', async () => {
+    const deps = baseDeps({
+      loadLibrary: async () => {
+        throw new Error('Pinned methodology snapshot does not match AI-DLC repository ref abc');
+      },
+    });
+    const res = await runStage({ ...baseArgs, aidlcRepoRef: 'abc' }, deps);
+    expect(res).toMatchObject({
+      ok: false,
+      reason: 'methodology_snapshot_unavailable',
+      detail: 'Pinned methodology snapshot does not match AI-DLC repository ref abc',
+    });
+  });
+
   it('fails when the stage is not in scope', async () => {
     const res = await runStage({ ...baseArgs, stageId: 'ghost' }, baseDeps());
     expect(res).toMatchObject({ ok: false, reason: 'stage_not_in_scope' });
@@ -1460,6 +1474,7 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
       workflowId: 'aidlc-v2',
       workflowVersion: 1,
       methodologyPins,
+      aidlcRepoRef: 'a'.repeat(40),
     });
     expect(loadConductor).toHaveBeenCalledWith('a'.repeat(40));
     expect(deps.store.calls.find((call) => call[0] === 'putStage')[1]).toMatchObject({

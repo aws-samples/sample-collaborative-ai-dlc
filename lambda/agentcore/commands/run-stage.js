@@ -1159,7 +1159,7 @@ export const runStage = async (
   // agentRef, merge, then resolve against the enriched library.
   let loaded;
   try {
-    loaded = await loadLibrary({ workflowId, workflowVersion, methodologyPins });
+    loaded = await loadLibrary({ workflowId, workflowVersion, methodologyPins, aidlcRepoRef });
   } catch (error) {
     return fail(null, 'methodology_snapshot_unavailable', error.message);
   }

@@ -174,6 +174,7 @@ describe('loadLibrary — paginated table reads', () => {
       blockId: 'agent-x',
       version: 3,
       name: 'Pinned agent',
+      sourceRef: 'a'.repeat(40),
     };
     ddbMock.on(GetCommand).callsFake((input) => ({
       Item: input.Key.pk === 'BLOCK#SYSTEM#AGENT#agent-x' && input.Key.sk === 'V#3' ? agent : null,
@@ -181,7 +182,7 @@ describe('loadLibrary — paginated table reads', () => {
     ddbMock.on(QueryCommand).callsFake((input) => {
       const values = input.ExpressionAttributeValues || {};
       if (values[':pk'] === 'WF#SYSTEM#aidlc-v2') {
-        return { Items: [{ sk: 'V#1#META' }] };
+        return { Items: [{ sk: 'V#1#META', sourceRef: 'a'.repeat(40) }] };
       }
       return { Items: [] };
     });
@@ -189,6 +190,7 @@ describe('loadLibrary — paginated table reads', () => {
     const { library } = await loadLibrary({
       workflowId: 'aidlc-v2',
       workflowVersion: 1,
+      aidlcRepoRef: 'a'.repeat(40),
       methodologyPins: {
         AGENT: { 'agent-x': { tenantId: 'SYSTEM', version: 3 } },
         SENSOR: {},
@@ -202,6 +204,75 @@ describe('loadLibrary — paginated table reads', () => {
     expect(ddbMock.commandCalls(GetCommand).map((call) => call.args[0].input.Key)).toContainEqual({
       pk: 'BLOCK#SYSTEM#AGENT#agent-x',
       sk: 'V#3',
+    });
+  });
+
+  it('rejects SYSTEM blocks that were reseeded from a different methodology revision', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: {
+        tenantId: 'SYSTEM',
+        blockId: 'agent-x',
+        version: 3,
+        sourceRef: 'b'.repeat(40),
+      },
+    });
+    ddbMock.on(QueryCommand).callsFake((input) => {
+      const values = input.ExpressionAttributeValues || {};
+      if (values[':pk'] === 'WF#SYSTEM#aidlc-v2') {
+        return { Items: [{ sk: 'V#1#META', sourceRef: 'a'.repeat(40) }] };
+      }
+      return { Items: [] };
+    });
+
+    await expect(
+      loadLibrary({
+        workflowId: 'aidlc-v2',
+        workflowVersion: 1,
+        aidlcRepoRef: 'a'.repeat(40),
+        methodologyPins: {
+          AGENT: { 'agent-x': { tenantId: 'SYSTEM', version: 3 } },
+          SENSOR: {},
+          RULE: {},
+          ARTIFACT: {},
+          KNOWLEDGE: {},
+        },
+      }),
+    ).rejects.toThrow(
+      `Pinned methodology snapshot does not match AI-DLC repository ref ${'a'.repeat(40)}: AGENT agent-x@3 has sourceRef ${'b'.repeat(40)}`,
+    );
+  });
+
+  it('does not apply SYSTEM source validation to custom tenant blocks', async () => {
+    const customAgent = {
+      tenantId: 'default',
+      blockId: 'agent-x',
+      version: 3,
+      sourceRef: 'custom-source',
+    };
+    ddbMock.on(GetCommand).resolves({ Item: customAgent });
+    ddbMock.on(QueryCommand).callsFake((input) => {
+      const values = input.ExpressionAttributeValues || {};
+      if (values[':pk'] === 'WF#default#custom-workflow') {
+        return { Items: [{ sk: 'V#1#META', sourceRef: 'custom-source' }] };
+      }
+      return { Items: [] };
+    });
+
+    await expect(
+      loadLibrary({
+        workflowId: 'custom-workflow',
+        workflowVersion: 1,
+        aidlcRepoRef: 'a'.repeat(40),
+        methodologyPins: {
+          AGENT: { 'agent-x': { tenantId: 'default', version: 3 } },
+          SENSOR: {},
+          RULE: {},
+          ARTIFACT: {},
+          KNOWLEDGE: {},
+        },
+      }),
+    ).resolves.toMatchObject({
+      library: { agentsById: { 'agent-x': customAgent } },
     });
   });
 });
