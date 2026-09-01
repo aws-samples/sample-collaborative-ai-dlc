@@ -459,6 +459,67 @@ describe('managed environment status handler', () => {
     expect(runtimeClient.send.mock.calls[1][0].constructor.name).toBe('StopRuntimeSessionCommand');
   });
 
+  it('preserves a validation failure when session cleanup also fails', async () => {
+    const verifying = {
+      ...revision,
+      status: 'VERIFYING',
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
+      runtimeId: 'runtime-1',
+      runtimeVersion: '3',
+      runtimeEndpoint: 'revision_r_1',
+      runtimeEndpointArn:
+        'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
+    };
+    const cleanupError = Object.assign(new Error('runtime session not found'), {
+      name: 'ResourceNotFoundException',
+    });
+    const store = mutableStore(verifying);
+    const runtimeClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          response: {
+            transformToString: async () => JSON.stringify({ ok: true, clis: ['node', 'python'] }),
+          },
+        })
+        .mockResolvedValueOnce({
+          response: {
+            transformToString: async () =>
+              JSON.stringify({
+                ok: false,
+                nonce: 'check-r-1',
+                compatibilityVersion: '1',
+              }),
+          },
+        })
+        .mockRejectedValueOnce(cleanupError),
+    };
+    const handler = createStatusHandler({
+      store,
+      ecrClient: { send: vi.fn() },
+      controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+      runtimeClient,
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await handler({ action: 'poll' });
+      expect(result.results[0]).not.toHaveProperty('pending');
+      expect(result.results[0].revision).toMatchObject({
+        status: 'FAILED',
+        failure: {
+          reason: 'runtime_validation_failed',
+          detail: 'deterministic runtime validation failed',
+        },
+      });
+      expect(runtimeClient.send.mock.calls[2][0].constructor.name).toBe(
+        'StopRuntimeSessionCommand',
+      );
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('runtime session not found'));
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('propagates unexpected handler failures so the event source can retry', async () => {
     const store = {
       getLookup: vi.fn().mockRejectedValue(new Error('registry unavailable')),

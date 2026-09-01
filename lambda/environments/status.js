@@ -522,13 +522,19 @@ const verifyRuntime = async ({
         throw new Error('deterministic runtime validation failed');
       }
     } finally {
-      await runtimeClient.send(
-        new StopRuntimeSessionCommand({
-          agentRuntimeArn: revision.runtimeArn,
-          qualifier: revision.runtimeEndpoint,
-          runtimeSessionId: session,
-        }),
-      );
+      try {
+        await runtimeClient.send(
+          new StopRuntimeSessionCommand({
+            agentRuntimeArn: revision.runtimeArn,
+            qualifier: revision.runtimeEndpoint,
+            runtimeSessionId: session,
+          }),
+        );
+      } catch (error) {
+        console.warn(
+          `Managed runtime validation session cleanup failed (${session}): ${error?.message ?? error}`,
+        );
+      }
     }
     const completedAt = new Date().toISOString();
     const elevatedFindings =
