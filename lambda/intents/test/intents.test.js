@@ -1093,7 +1093,14 @@ describe('POST /projects/{id}/intents', () => {
 });
 
 describe('POST /projects/{id}/intents/{intentId}/export', () => {
+  const exportRef = 'a'.repeat(40);
+
   const seedExportPlan = () => {
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#META'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#META',
+      sourceRef: exportRef,
+    });
     procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#requirements-analysis'), {
       pk: 'WF#default#aidlc-v2',
       sk: 'V#4#PLACEMENT#requirements-analysis',
@@ -1117,6 +1124,7 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
       consumes: [],
       sensors: [],
       humanValidation: 'none',
+      sourceRef: exportRef,
     });
   };
 
@@ -1132,7 +1140,15 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
   const createExportableIntent = async (sub, status) => {
     const projectId = await seedV2Project(sub);
     seedExportPlan();
-    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const configuredRef = process.env.AIDLC_REPO_REF;
+    process.env.AIDLC_REPO_REF = exportRef;
+    let intent;
+    try {
+      intent = JSON.parse((await createIntent(sub, projectId)).body);
+    } finally {
+      if (configuredRef === undefined) delete process.env.AIDLC_REPO_REF;
+      else process.env.AIDLC_REPO_REF = configuredRef;
+    }
     const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
     const meta = {
       ...procStore.get(metaKey),
@@ -1401,6 +1417,56 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
         }),
       }),
     );
+  });
+
+  it('resolves the configured tag before exporting a legacy intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    const sha = 'c'.repeat(40);
+    meta.aidlcRepoRef = null;
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    process.env.AIDLC_REPO_REF = 'release/v2';
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, json: async () => ({ sha }) });
+    try {
+      const res = await exportIntent(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(201);
+      expect(fetchSpy.mock.calls[0][0]).toContain('/commits/release%2Fv2');
+      expect(createNativeExportSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          upstreamRef: sha,
+          warnings: [
+            'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+          ],
+        }),
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.AIDLC_REPO_REF;
+    }
+  });
+
+  it('names a configured legacy ref that cannot be resolved', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    meta.aidlcRepoRef = null;
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    process.env.AIDLC_REPO_REF = 'missing-tag';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: false, status: 404 });
+    try {
+      const res = await exportIntent(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).detail).toBe(
+        'Unable to resolve AI-DLC repository ref "missing-tag" (404)',
+      );
+      expect(createNativeExportSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.AIDLC_REPO_REF;
+    }
   });
 
   it('preserves repository identities and assigns collision-safe export directories', async () => {

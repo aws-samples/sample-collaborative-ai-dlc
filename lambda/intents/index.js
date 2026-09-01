@@ -1842,10 +1842,11 @@ export const handler = async (event) => {
           : [
               'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
             ];
+        const upstreamRef = meta.aidlcRepoRef || (await resolveAidlcRepoRef(AIDLC_REPO_REF()));
         const exported = await createNativeExport({
           s3,
           bucket: ARTIFACTS_BUCKET(),
-          upstreamRef: meta.aidlcRepoRef || AIDLC_REPO_REF(),
+          upstreamRef,
           harness,
           warnings: legacyRefWarning,
           projection,
