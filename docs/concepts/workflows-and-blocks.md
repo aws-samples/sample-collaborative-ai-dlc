@@ -39,6 +39,9 @@ A **workflow** composes blocks into an executable plan. It consists of:
 
 Every mutation writes an immutable version snapshot. When an intent starts, it **pins the exact workflow version**, so a running intent is never affected by later edits.
 
+See the [blocks and workflows data model](data-model.md#dynamodb-blocks-and-workflows-model)
+for the DynamoDB partition, versioning, and S3-reference structure.
+
 ### Scopes gate execution
 
 Scope membership is the single execution gate: when an intent starts with scope `bugfix`, the run projects the workflow onto that scope and executes only the placements marked `EXECUTE` for it. This is what lets one workflow serve a two-stage bugfix and a thirty-stage greenfield build.

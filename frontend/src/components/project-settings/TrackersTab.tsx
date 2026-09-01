@@ -13,6 +13,7 @@ import {
   trackerIdForGitProvider,
   type GitTrackerProviderId,
 } from '@/services/gitProvider';
+import { sourceControlService, type ProjectSourceControlStatus } from '@/services/sourceControl';
 import { getTrackerProvider, TRACKER_PROVIDERS } from '@/lib/trackerProviders';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 import { MigrateTrackerCard } from '@/components/MigrateTrackerCard';
@@ -38,6 +39,7 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
   const { providers: trackerProviders } = useTrackerProviders();
   const [connectingJira, setConnectingJira] = useState(false);
   const [showJiraProjectPicker, setShowJiraProjectPicker] = useState(false);
+  const [sourceControl, setSourceControl] = useState<ProjectSourceControlStatus | null>(null);
 
   // Tracker-abstraction migration (#194 Phase 1).
   const [migrating, setMigrating] = useState(false);
@@ -54,6 +56,29 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
   }, []);
 
   const bindings = project.trackers ?? [];
+  const needsSourceControlStatus =
+    canEdit &&
+    bindings.some(
+      (binding) => binding.provider === 'github-issues' && binding.id !== 'legacy-github',
+    );
+
+  useEffect(() => {
+    if (!needsSourceControlStatus) return;
+
+    sourceControlService
+      .getStatus(project.id)
+      .then(setSourceControl)
+      .catch(() => setSourceControl(null));
+  }, [needsSourceControlStatus, project.id]);
+
+  // GitHub App bindings have no OAuth identity to reconnect.
+  const canReconnect = (binding: TrackerBinding) => {
+    if (binding.provider !== 'github-issues') return true;
+    const repository = sourceControl?.repositories.find(
+      (repo) => repo.provider === 'github' && repo.repo === binding.externalProjectKey,
+    );
+    return repository?.authType !== 'github-app';
+  };
 
   // Add the git-issues tracker matching the project's git provider
   // (github-issues / gitlab-issues). Both reuse the project's git connection.
@@ -230,15 +255,17 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
                     </div>
                     {canEdit && !isLegacy && (
                       <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2.5 text-[11px]"
-                          onClick={() => handleReconnectTracker(b)}
-                          disabled={togglingTracker}
-                        >
-                          Reconnect
-                        </Button>
+                        {canReconnect(b) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2.5 text-[11px]"
+                            onClick={() => handleReconnectTracker(b)}
+                            disabled={togglingTracker}
+                          >
+                            Reconnect
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="ghost"

@@ -30,6 +30,7 @@ import { gitProviderTerminology, type GitProvider, type GitRepo } from '@/servic
 import { GitRepoSelect } from '@/components/GitRepoSelect';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SourceControlBindingSection } from './SourceControlBindingSection';
+import type { ProjectSourceControlStatus } from '@/services/sourceControl';
 
 const REPO_ROLE_COLORS: Record<string, string> = {
   primary: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
@@ -54,6 +55,9 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
   const provider = (project.gitProvider ?? 'github') as GitProvider;
   const providerLabel = gitProviderTerminology(provider).label;
   const [error, setError] = useState<string | null>(null);
+  const [sourceControlStatus, setSourceControlStatus] = useState<ProjectSourceControlStatus | null>(
+    null,
+  );
 
   // Add dialog
   const [showAddRepo, setShowAddRepo] = useState(false);
@@ -65,6 +69,11 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
   const [removingRepo, setRemovingRepo] = useState<string | null>(null);
   const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
   const [confirmRemoveRepo, setConfirmRemoveRepo] = useState<string | null>(null);
+
+  const boundAuthType =
+    sourceControlStatus?.repositories.find((r) => r.provider === provider && r.authType)
+      ?.authType ?? null;
+  const repoSource = boundAuthType === 'github-app' ? 'github-app' : 'oauth';
 
   const handleAddRepos = async () => {
     if (selectedNewRepos.length === 0) return;
@@ -125,7 +134,11 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
 
   return (
     <div className="space-y-6">
-      <SourceControlBindingSection project={project} canEdit={canEdit} />
+      <SourceControlBindingSection
+        project={project}
+        canEdit={canEdit}
+        onStatusChange={setSourceControlStatus}
+      />
 
       <SettingsCard
         icon={<GitBranch />}
@@ -255,6 +268,7 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
                   setSelectedNewRepos(selected.map((r) => r.fullName));
                 }}
                 exclude={repos.map((r) => r.url)}
+                repoSource={repoSource}
               />
               {addError && <p className="text-sm text-destructive">{addError}</p>}
             </div>

@@ -666,13 +666,22 @@ select_version() {
     fi
 }
 
+clone_checkout() (
+    # The installer keeps a restrictive umask for credentials and generated
+    # configuration. Source checkouts are build inputs, though: Docker COPY
+    # preserves their modes, and runtime images execute as an unprivileged user.
+    # Clone with normal source permissions so regular files are readable.
+    umask 022
+    git clone "$@"
+)
+
 checkout_release() {
     local version="$1" destination="$RELEASES_DIR/v$1" temporary
     mkdir -p "$RELEASES_DIR"
     if [[ ! -d "$destination/.git" ]]; then
         temporary="$destination.tmp.$$"
         rm -rf "$temporary"
-        git clone --quiet --depth 1 --branch "v$version" "$REPOSITORY_URL" "$temporary"
+        clone_checkout --quiet --depth 1 --branch "v$version" "$REPOSITORY_URL" "$temporary"
         mv "$temporary" "$destination"
     fi
     local local_commit local_tag_commit remote_commit
@@ -716,7 +725,7 @@ checkout_ref() {
     if [[ ! -d "$destination/.git" ]]; then
         temporary="$destination.tmp.$$"
         rm -rf "$temporary"
-        git clone --quiet --depth 1 --branch "$ref" "$REPOSITORY_URL" "$temporary"
+        clone_checkout --quiet --depth 1 --branch "$ref" "$REPOSITORY_URL" "$temporary"
         local_commit="$(git -C "$temporary" rev-parse HEAD)"
         if [[ "$local_commit" != "$commit" ]]; then
             echo "Branch $ref changed while cloning; rerun the installer." >&2
