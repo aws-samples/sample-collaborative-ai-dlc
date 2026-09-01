@@ -1766,7 +1766,10 @@ describe('runStage — resume mode', () => {
         stage: { cli: 'claude', cliSessionId: 'sess-7' },
       }),
     });
-    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
+    const res = await runStage(
+      { ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) },
+      deps,
+    );
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'claude' });
     // Built a --resume invocation targeting the persisted session id.
     expect(cap.get().command).toBe('claude');
@@ -1787,6 +1790,9 @@ describe('runStage — resume mode', () => {
     // which would re-stamp startedAt (the "duration resets on answer" bug).
     expect(deps.store.calls.some((c) => c[0] === 'resumeStageRow')).toBe(true);
     expect(deps.store.calls.some((c) => c[0] === 'putStage')).toBe(false);
+    expect(deps.store.calls.find((c) => c[0] === 'resumeStageRow')[1]).toMatchObject({
+      aidlcRepoRef: 'a'.repeat(40),
+    });
   });
 
   it('a fresh run carries the existing row attempt forward (rewind reset sets attempt+1)', async () => {

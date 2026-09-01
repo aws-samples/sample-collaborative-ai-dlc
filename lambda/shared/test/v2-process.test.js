@@ -378,6 +378,7 @@ describe('createProcessStore', () => {
       cli: 'claude',
       cliSessionId: 'sess-1',
       stageCallbackId: 'cb-2',
+      aidlcRepoRef: 'a'.repeat(40),
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ExpressionAttributeValues[':state']).toBe('RUNNING');
@@ -389,6 +390,8 @@ describe('createProcessStore', () => {
     expect(input.UpdateExpression).not.toContain('attempt');
     expect(input.ExpressionAttributeValues[':csid']).toBe('sess-1');
     expect(input.ExpressionAttributeValues[':scb']).toBe('cb-2');
+    expect(input.UpdateExpression).toContain('aidlcRepoRef = :aidlcRepoRef');
+    expect(input.ExpressionAttributeValues[':aidlcRepoRef']).toBe('a'.repeat(40));
   });
 
   it('resumeStageRow tolerates a missing/unparsable park stamp (waitMs unchanged, no NaN)', async () => {

@@ -586,6 +586,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     cliSessionId,
     resolvedModel,
     stageCallbackId,
+    aidlcRepoRef,
   }) => {
     const existing = await getStage(executionId, stageInstanceId);
     const ts = now();
@@ -633,6 +634,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (stageCallbackId !== undefined) {
       sets.push('stageCallbackId = :scb');
       values[':scb'] = stageCallbackId;
+    }
+    if (aidlcRepoRef !== undefined) {
+      sets.push('aidlcRepoRef = :aidlcRepoRef');
+      values[':aidlcRepoRef'] = aidlcRepoRef;
     }
     const { Attributes } = await ddb.send(
       new UpdateCommand({
