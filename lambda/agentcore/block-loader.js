@@ -95,6 +95,39 @@ const loadPinnedBlocks = async (type, pins) => {
 const loadLibraryType = (type, methodologyPins) =>
   methodologyPins?.[type] ? loadPinnedBlocks(type, methodologyPins[type]) : listMergedBlocks(type);
 
+const assertSystemSourceRef = ({ aidlcRepoRef, workflowTenant, workflow, blocksByType }) => {
+  if (!aidlcRepoRef) return;
+
+  const mismatches = [];
+  const recordMismatch = (label, sourceRef) => {
+    if (sourceRef !== aidlcRepoRef) {
+      mismatches.push(`${label} has sourceRef ${sourceRef ?? '<missing>'}`);
+    }
+  };
+
+  if (workflowTenant === SYSTEM_TENANT) {
+    recordMismatch(
+      `workflow ${workflow.workflowId}@${workflow.workflowVersion}`,
+      workflow.sourceRef,
+    );
+  }
+  for (const [type, blocks] of Object.entries(blocksByType)) {
+    for (const block of blocks) {
+      if (block.tenantId !== SYSTEM_TENANT) continue;
+      recordMismatch(
+        `${type} ${block.id ?? block.blockId}@${block.version ?? '<unknown>'}`,
+        block.sourceRef,
+      );
+    }
+  }
+
+  if (mismatches.length) {
+    throw new Error(
+      `Pinned methodology snapshot does not match AI-DLC repository ref ${aidlcRepoRef}: ${mismatches.join('; ')}`,
+    );
+  }
+};
+
 const loadPlacedStages = async (placements, stagePins = null) => {
   const legacyPlacements = placements.filter(
     (placement) => !placement.stageTenant && !stagePins?.[placement.stageId],
@@ -199,7 +232,12 @@ const keyById = (items) => Object.fromEntries(items.map((b) => [b.id ?? b.blockI
 
 // Load everything the runtime needs for one execution: the pinned workflow plus
 // the library blocks (stages/agents/sensors/rules/artifacts) it references.
-export const loadLibrary = async ({ workflowId, workflowVersion, methodologyPins = null }) => {
+export const loadLibrary = async ({
+  workflowId,
+  workflowVersion,
+  methodologyPins = null,
+  aidlcRepoRef = null,
+}) => {
   const wf = await loadWorkflow({ workflowId, workflowVersion });
   if (!wf) return { workflow: null, library: null };
   const workflow = assembleWorkflow(wf.items, { workflowId, workflowVersion });
@@ -212,6 +250,20 @@ export const loadLibrary = async ({ workflowId, workflowVersion, methodologyPins
     loadLibraryType('ARTIFACT', methodologyPins),
     loadLibraryType('KNOWLEDGE', methodologyPins),
   ]);
+
+  assertSystemSourceRef({
+    aidlcRepoRef,
+    workflowTenant: wf.tenant,
+    workflow,
+    blocksByType: {
+      STAGE: stages,
+      AGENT: agents,
+      SENSOR: sensors,
+      RULE: rules,
+      ARTIFACT: artifacts,
+      KNOWLEDGE: knowledge,
+    },
+  });
 
   const library = {
     stagesById: keyById(stages),
@@ -259,4 +311,5 @@ export const __test = {
   streamToString,
   loadPlacedStages,
   loadPinnedBlocks,
+  assertSystemSourceRef,
 };
