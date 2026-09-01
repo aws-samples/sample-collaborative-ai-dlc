@@ -20,7 +20,6 @@ import {
   type Project,
   type AgentCli,
   type CliModels,
-  type RuntimeModelCli,
   type TierModels,
 } from '@/services/projects';
 import { agentsService, type AgentModel, type RuntimeCliStatus } from '@/services/agents';
@@ -33,54 +32,11 @@ import { CustomRulesSection } from '@/components/settings/CustomRulesSection';
 import { TierModelsSection, canonicalTierModels } from '@/components/settings/TierModelsSection';
 import { AgentCredentialScopeCard } from '@/components/settings/AgentCredentialScopeCard';
 import type { CustomRule } from '@/services/projects';
-
-const AGENT_CLI_CONFIG: Record<AgentCli, { label: string; description: string }> = {
-  kiro: {
-    label: 'Kiro',
-    description: 'AWS Kiro CLI — device-flow SSO authentication',
-  },
-  claude: {
-    label: 'Claude Code',
-    description: 'Anthropic Claude Code — AWS Bedrock authentication',
-  },
-  opencode: {
-    label: 'OpenCode',
-    description: 'OpenCode CLI — AWS Bedrock authentication',
-  },
-  codex: {
-    label: 'Codex',
-    description: 'OpenAI Codex CLI — AWS Bedrock authentication (OpenAI models)',
-  },
-};
-
-const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
-  kiro: 'Kiro',
-  claude: 'Claude',
-  opencode: 'OpenCode',
-  codex: 'Codex',
-};
-
-const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
 // carries this sentinel; it maps back to '' (cleared override) on change.
 const MODEL_DEFAULT_SENTINEL = '__default__';
-
-const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
-  kiro: { label: 'Kiro model IDs', url: 'https://kiro.dev/docs/' },
-  claude: {
-    label: 'Bedrock model IDs',
-    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
-  },
-  opencode: {
-    label: 'Bedrock model IDs',
-    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
-  },
-  codex: {
-    label: 'Codex on Bedrock model IDs',
-    url: 'https://help.openai.com/en/articles/20001252-use-codex-with-amazon-bedrock',
-  },
-};
 
 interface Props {
   project: Project;
@@ -316,8 +272,8 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
         badge={
           <ConfigStatusBadge
             ok={isCliInstalled(project.agentCli ?? 'kiro')}
-            okLabel={AGENT_CLI_CONFIG[project.agentCli ?? 'kiro'].label}
-            notOkLabel={`${AGENT_CLI_CONFIG[project.agentCli ?? 'kiro'].label} · not installed`}
+            okLabel={AGENT_CLI_METADATA[project.agentCli ?? 'kiro'].label}
+            notOkLabel={`${AGENT_CLI_METADATA[project.agentCli ?? 'kiro'].label} · not installed`}
             notOkTone="warning"
           />
         }
@@ -325,9 +281,8 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       >
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">
-            {(
-              Object.entries(AGENT_CLI_CONFIG) as [AgentCli, (typeof AGENT_CLI_CONFIG)[AgentCli]][]
-            ).map(([key, cfg]) => {
+            {AGENT_CLIS.map((key) => {
+              const cfg = AGENT_CLI_METADATA[key];
               const isAvailable = isCliAvailable(key);
               const isInstalled = isCliInstalled(key);
               const unavailableReason = cliUnavailableReason(key);
@@ -392,7 +347,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
       >
         <div className="space-y-4">
           <div className="space-y-3">
-            {MODEL_CLI_KEYS.map((cli) => {
+            {AGENT_CLIS.map((cli) => {
               const isSelected = editAgentCli === cli;
               const isEditable = canEdit && isCliInstalled(cli) && runtimeModelOverride[cli];
               const options = modelOptions[cli] ?? [];
@@ -414,7 +369,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <Label htmlFor={`model-${cli}`} className="text-xs">
-                        {MODEL_CLI_LABELS[cli]}
+                        {AGENT_CLI_METADATA[cli].modelLabel}
                       </Label>
                       {isSelected && (
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium leading-4 text-primary">
@@ -424,12 +379,12 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
                       )}
                     </div>
                     <a
-                      href={MODEL_ID_HELP[cli].url}
+                      href={AGENT_CLI_METADATA[cli].modelHelp.url}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
                     >
-                      {MODEL_ID_HELP[cli].label}
+                      {AGENT_CLI_METADATA[cli].modelHelp.label}
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   </div>
@@ -486,7 +441,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
           <div className="rounded-lg bg-muted/40 px-3.5 py-2.5 text-xs">
             <span className="text-muted-foreground">Recommended: </span>
             <span className="font-mono font-medium">
-              {AGENT_CLI_CONFIG[editAgentCli]?.label ?? editAgentCli}
+              {AGENT_CLI_METADATA[editAgentCli]?.label ?? editAgentCli}
             </span>
             <span className="text-muted-foreground"> · </span>
             <span className="font-mono">{effectiveModelFor(editAgentCli)}</span>

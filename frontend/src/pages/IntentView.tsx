@@ -9,6 +9,7 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
+import { AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -55,17 +56,6 @@ import {
 // IntentActivityPanel where output/timeline/discussions render).
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
-const AGENT_CLI_LABELS = {
-  kiro: 'Kiro',
-  claude: 'Claude Code',
-  opencode: 'OpenCode',
-  codex: 'Codex',
-} as const;
-const CREDENTIAL_SOURCE_LABELS = {
-  user: 'Personal',
-  space: 'Space',
-  platform: 'Platform',
-} as const;
 
 const credentialFailureMessage = (failureReason: string | null) => {
   if (!failureReason) return null;
@@ -275,9 +265,9 @@ export default function IntentView() {
           {intent.agentCli && (
             <Badge variant="outline" className="gap-1 text-[10px] shrink-0">
               <Bot className="h-3 w-3" />
-              {AGENT_CLI_LABELS[intent.agentCli]}
+              {AGENT_CLI_METADATA[intent.agentCli].label}
               {intent.credentialSource
-                ? ` · ${CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                ? ` · ${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
                 : ''}
             </Badge>
           )}

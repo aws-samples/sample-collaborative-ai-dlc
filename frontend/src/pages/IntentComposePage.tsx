@@ -13,6 +13,7 @@ import {
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { agentsService, type AgentCapabilities } from '@/services/agents';
 import type { AgentCli } from '@/services/projects';
+import { AGENT_CLIS, AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
@@ -70,24 +71,6 @@ const formatBytes = (bytes: number) =>
   `${(bytes / 1024 / 1024).toFixed(bytes >= 1024 * 1024 ? 1 : 2)} MB`;
 const ATTACHMENT_INGEST_POLL_MS = 500;
 const ATTACHMENT_INGEST_TIMEOUT_MS = 30_000;
-const AGENT_CLIS: AgentCli[] = ['kiro', 'claude', 'opencode', 'codex'];
-const AGENT_CLI_LABELS: Record<AgentCli, string> = {
-  kiro: 'Kiro',
-  claude: 'Claude Code',
-  opencode: 'OpenCode',
-  codex: 'Codex',
-};
-const AGENT_CLI_CREDENTIAL_PROVIDERS: Record<AgentCli, 'bedrock' | 'kiro'> = {
-  kiro: 'kiro',
-  claude: 'bedrock',
-  opencode: 'bedrock',
-  codex: 'bedrock',
-};
-const CREDENTIAL_SOURCE_LABELS = {
-  user: 'Personal',
-  space: 'Space',
-  platform: 'Platform',
-} as const;
 
 // The compose step of a DRAFT intent: the shared prompt, the projection
 // (scope or composed grid) and the per-intent stage deselection are edited
@@ -522,7 +505,7 @@ export default function IntentComposePage() {
     const status = runtimeCliStatus.get(cli);
     return Boolean(
       status?.credentialSource ??
-      agentCapabilities?.credentialSources?.[AGENT_CLI_CREDENTIAL_PROVIDERS[cli]],
+      agentCapabilities?.credentialSources?.[AGENT_CLI_METADATA[cli].credentialProvider],
     );
   });
 
@@ -682,7 +665,9 @@ export default function IntentComposePage() {
                 const selected = selectedCli === cli;
                 const source =
                   status?.credentialSource ??
-                  agentCapabilities?.credentialSources?.[AGENT_CLI_CREDENTIAL_PROVIDERS[cli]] ??
+                  agentCapabilities?.credentialSources?.[
+                    AGENT_CLI_METADATA[cli].credentialProvider
+                  ] ??
                   null;
                 const unavailableReason =
                   status?.installed === false
@@ -710,7 +695,7 @@ export default function IntentComposePage() {
                       <CheckCircle2 className="absolute right-2.5 top-2.5 h-4 w-4 text-primary" />
                     )}
                     <span className="block pr-5 text-xs font-semibold">
-                      {AGENT_CLI_LABELS[cli]}
+                      {AGENT_CLI_METADATA[cli].label}
                     </span>
                     <span className="mt-2 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
                       {project.agentCli === cli && (
@@ -720,7 +705,7 @@ export default function IntentComposePage() {
                       )}
                       {source && (
                         <span className="rounded bg-muted px-1.5 py-0.5">
-                          {CREDENTIAL_SOURCE_LABELS[source]} key
+                          {AGENT_CREDENTIAL_SOURCE_LABELS[source]} key
                         </span>
                       )}
                       {!available && <span>{unavailableReason}</span>}
