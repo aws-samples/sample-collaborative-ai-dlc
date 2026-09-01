@@ -36,6 +36,7 @@ import { fetchMembershipRole } from '../shared/trackers.js';
 import { listClaudeModels, CODEX_BEDROCK_MODELS } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
 import {
+  AGENT_CREDENTIAL_PROVIDERS,
   credentialProviderForCli,
   credentialSourcesFromBindings,
   readCredentialScopeStatus,
@@ -74,10 +75,9 @@ const AGENTCORE_RUNTIME_ARN = process.env.AGENTCORE_RUNTIME_ARN || '';
 // A session id >= 33 chars is required by InvokeAgentRuntime; the capabilities
 // command is stateless so any stable id works.
 const CAPABILITIES_SESSION_ID = 'aidlc-capabilities-probe-00000001';
-const PLATFORM_CREDENTIAL_BINDINGS = {
-  bedrock: { provider: 'bedrock', source: 'platform' },
-  kiro: { provider: 'kiro', source: 'platform' },
-};
+const PLATFORM_CREDENTIAL_BINDINGS = Object.fromEntries(
+  AGENT_CREDENTIAL_PROVIDERS.map((provider) => [provider, { provider, source: 'platform' }]),
+);
 
 // Fetch the runtime's capabilities (installed + authed CLIs, Kiro model list) by
 // invoking its `capabilities` command. Best-effort: returns null when no v2
