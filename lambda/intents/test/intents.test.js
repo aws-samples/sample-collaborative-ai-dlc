@@ -618,6 +618,7 @@ describe('POST /projects/{id}/intents', () => {
         pk: 'ENV#polyglot',
         sk: 'REV#r-7',
         ...MANAGED_ENVIRONMENT_SNAPSHOT,
+        status: 'PUBLISHED',
         runtimeCompatibilityVersion: '1',
         flattenedRecipe: { resolvedTools: MANAGED_ENVIRONMENT_SNAPSHOT.tools },
       });
@@ -686,6 +687,7 @@ describe('POST /projects/{id}/intents', () => {
             pk: 'ENV#polyglot',
             sk: 'REV#r-7',
             ...MANAGED_ENVIRONMENT_SNAPSHOT,
+            status: 'PUBLISHED',
             runtimeCompatibilityVersion: '2',
             flattenedRecipe: { resolvedTools: MANAGED_ENVIRONMENT_SNAPSHOT.tools },
             ...revisionPatch,
