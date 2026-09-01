@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  resolvePublishedEnvironment,
   resolveEnvironmentSnapshot,
   supportsCompatibilityVersion,
 } from '../environment-snapshot.js';
@@ -62,6 +63,25 @@ describe('environment snapshots', () => {
     });
   });
 
+  it('returns the validated records alongside the immutable snapshot', async () => {
+    await expect(
+      resolvePublishedEnvironment({
+        ddb: ddb(),
+        tableName: 'registry',
+        environmentId: 'custom',
+        fallback: { compatibilityVersion: '2' },
+      }),
+    ).resolves.toMatchObject({
+      environment,
+      revision,
+      snapshot: {
+        environmentId: 'custom',
+        revisionId: 'r-1',
+        compatibilityVersion: '2',
+      },
+    });
+  });
+
   it('uses the exact configured Standard runtime when the registry is not seeded yet', async () => {
     await expect(
       resolveEnvironmentSnapshot({
@@ -105,5 +125,22 @@ describe('environment snapshots', () => {
         fallback: { compatibilityVersion: '2' },
       }),
     ).rejects.toMatchObject({ code: 'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED' });
+  });
+
+  it('rejects custom fallbacks and revisions that are not published', async () => {
+    await expect(
+      resolveEnvironmentSnapshot({
+        environmentId: 'custom',
+      }),
+    ).rejects.toMatchObject({ code: 'ENVIRONMENT_NOT_PUBLISHED' });
+
+    await expect(
+      resolveEnvironmentSnapshot({
+        ddb: ddb({ ...revision, status: 'READY' }),
+        tableName: 'registry',
+        environmentId: 'custom',
+        fallback: { compatibilityVersion: '2' },
+      }),
+    ).rejects.toMatchObject({ code: 'ENVIRONMENT_NOT_PUBLISHED' });
   });
 });

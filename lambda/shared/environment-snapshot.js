@@ -6,6 +6,15 @@ const revisionKey = (environmentId, revisionId) => ({
   pk: `ENV#${environmentId}`,
   sk: `REV#${revisionId}`,
 });
+const PUBLISHED_REVISION_STATUSES = new Set(['PUBLISHED', 'SUPERSEDED']);
+const ENVIRONMENT_RESOLUTION_CODES = new Set([
+  'ENVIRONMENT_NOT_PUBLISHED',
+  'ENVIRONMENT_REVISION_INCOMPLETE',
+  'ENVIRONMENT_REVISION_UNVERIFIED',
+  'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
+]);
+
+const environmentError = (message, code) => Object.assign(new Error(message), { code });
 
 const fallbackSnapshot = (fallback = {}) => ({
   environmentId: 'standard',
@@ -20,13 +29,34 @@ const fallbackSnapshot = (fallback = {}) => ({
   tools: fallback.tools ?? [],
 });
 
-export const resolveEnvironmentSnapshot = async ({
+const fallbackEnvironment = (fallback = {}) => ({
+  environmentId: 'standard',
+  name: 'Standard Node/Python',
+  status: 'PUBLISHED',
+  publishedRevisionId: fallback.revisionId ?? 'legacy',
+});
+
+const fallbackResolution = (fallback) => ({
+  environment: fallbackEnvironment(fallback),
+  revision: null,
+  snapshot: fallbackSnapshot(fallback),
+});
+
+export const isEnvironmentResolutionError = (error) =>
+  ENVIRONMENT_RESOLUTION_CODES.has(error?.code);
+
+export const resolvePublishedEnvironment = async ({
   ddb,
   tableName,
   environmentId = 'standard',
   fallback = {},
 }) => {
-  if (!ddb || !tableName) return fallbackSnapshot(fallback);
+  if (!ddb || !tableName) {
+    if (environmentId && environmentId !== 'standard') {
+      throw environmentError('Assigned environment is not published', 'ENVIRONMENT_NOT_PUBLISHED');
+    }
+    return fallbackResolution(fallback);
+  }
   const { Item: environment } = await ddb.send(
     new GetCommand({
       TableName: tableName,
@@ -36,11 +66,9 @@ export const resolveEnvironmentSnapshot = async ({
   );
   if (!environment?.publishedRevisionId || environment.status === 'RETIRED') {
     if (environmentId && environmentId !== 'standard') {
-      throw Object.assign(new Error('Assigned environment is not published'), {
-        code: 'ENVIRONMENT_NOT_PUBLISHED',
-      });
+      throw environmentError('Assigned environment is not published', 'ENVIRONMENT_NOT_PUBLISHED');
     }
-    return fallbackSnapshot(fallback);
+    return fallbackResolution(fallback);
   }
   const { Item: revision } = await ddb.send(
     new GetCommand({
@@ -49,25 +77,31 @@ export const resolveEnvironmentSnapshot = async ({
       ConsistentRead: true,
     }),
   );
+  if (!revision || !PUBLISHED_REVISION_STATUSES.has(revision.status)) {
+    throw environmentError('Assigned environment is not published', 'ENVIRONMENT_NOT_PUBLISHED');
+  }
   if (!revision?.runtimeArn || !revision?.imageDigest) {
-    throw Object.assign(new Error('Published environment revision is incomplete'), {
-      code: 'ENVIRONMENT_REVISION_INCOMPLETE',
-    });
+    throw environmentError(
+      'Published environment revision is incomplete',
+      'ENVIRONMENT_REVISION_INCOMPLETE',
+    );
   }
   if (revision.verification?.status !== 'PASSED') {
-    throw Object.assign(new Error('Published environment revision is not verified'), {
-      code: 'ENVIRONMENT_REVISION_UNVERIFIED',
-    });
+    throw environmentError(
+      'Published environment revision is not verified',
+      'ENVIRONMENT_REVISION_UNVERIFIED',
+    );
   }
   const compatibilityVersion = revision.runtimeCompatibilityVersion ?? '1';
   const currentCompatibilityVersion =
     process.env.RUNTIME_COMPATIBILITY_VERSION ?? fallback.compatibilityVersion ?? '1';
   if (!supportsCompatibilityVersion(compatibilityVersion, currentCompatibilityVersion)) {
-    throw Object.assign(new Error('Published environment compatibility version is unsupported'), {
-      code: 'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
-    });
+    throw environmentError(
+      'Published environment compatibility version is unsupported',
+      'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
+    );
   }
-  return {
+  const snapshot = {
     environmentId: environment.environmentId,
     name: environment.name,
     revisionId: revision.revisionId,
@@ -79,7 +113,17 @@ export const resolveEnvironmentSnapshot = async ({
     verification: revision.verification ?? null,
     tools: revision.flattenedRecipe?.resolvedTools ?? [],
   };
+  return { environment, revision, snapshot };
 };
 
+export const resolveEnvironmentSnapshot = async (options) =>
+  (await resolvePublishedEnvironment(options)).snapshot;
+
 export { fallbackSnapshot, supportsCompatibilityVersion };
-export default { resolveEnvironmentSnapshot, fallbackSnapshot, supportsCompatibilityVersion };
+export default {
+  resolvePublishedEnvironment,
+  resolveEnvironmentSnapshot,
+  isEnvironmentResolutionError,
+  fallbackSnapshot,
+  supportsCompatibilityVersion,
+};

@@ -30,7 +30,10 @@ import {
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { requirePlatformAdmin } from '../shared/authz.js';
-import { resolveEnvironmentSnapshot } from '../shared/environment-snapshot.js';
+import {
+  isEnvironmentResolutionError,
+  resolveEnvironmentSnapshot,
+} from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
@@ -113,12 +116,6 @@ const attachmentCleanup = createAttachmentCleanupService({
 });
 const attachmentEventKey = /^intent-attachments\/staging\/([^/]+)\/([^.]+)(\.[a-z0-9]+)$/i;
 const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
-const ENVIRONMENT_SNAPSHOT_CONFLICT_CODES = new Set([
-  'ENVIRONMENT_NOT_PUBLISHED',
-  'ENVIRONMENT_REVISION_INCOMPLETE',
-  'ENVIRONMENT_REVISION_UNVERIFIED',
-  'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
-]);
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
 // its DynamoDB reservation, copy the exact object version from staging to the
@@ -4286,7 +4283,7 @@ export const handler = async (event) => {
           },
         });
       } catch (error) {
-        if (ENVIRONMENT_SNAPSHOT_CONFLICT_CODES.has(error?.code)) {
+        if (isEnvironmentResolutionError(error)) {
           return response(409, { error: error.message, code: error.code });
         }
         throw error;

@@ -734,7 +734,7 @@ describe('PUT /projects/:id', () => {
 });
 
 describe('GET/PUT /projects/:id/environment', () => {
-  const installPublishedEnvironment = (environmentId = 'polyglot') => {
+  const installPublishedEnvironment = (environmentId = 'polyglot', revisionPatch = {}) => {
     const revisionId = 'r-7';
     environmentRegistryItems.set(`ENV#${environmentId}|META`, {
       pk: `ENV#${environmentId}`,
@@ -755,6 +755,7 @@ describe('GET/PUT /projects/:id/environment', () => {
       runtimeEndpoint: 'revision_r_7',
       runtimeCompatibilityVersion: '1',
       verification: { status: 'PASSED' },
+      ...revisionPatch,
     });
   };
 
@@ -810,6 +811,31 @@ describe('GET/PUT /projects/:id/environment', () => {
     } finally {
       if (previousTable === undefined) delete process.env.ENVIRONMENT_REGISTRY_TABLE;
       else process.env.ENVIRONMENT_REGISTRY_TABLE = previousTable;
+    }
+  });
+
+  it('rejects an environment that intent creation would reject as incompatible', async () => {
+    const ownerSub = `u-${randomUUID()}`;
+    const { id } = await createProject(ownerSub);
+    installPublishedEnvironment('polyglot', { runtimeCompatibilityVersion: '0' });
+    const previousTable = process.env.ENVIRONMENT_REGISTRY_TABLE;
+    const previousCompatibilityVersion = process.env.RUNTIME_COMPATIBILITY_VERSION;
+    process.env.ENVIRONMENT_REGISTRY_TABLE = 'environment-registry-test';
+    process.env.RUNTIME_COMPATIBILITY_VERSION = '2';
+    try {
+      const response = await handler(event('PUT', id, ownerSub, { environmentId: 'polyglot' }));
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toMatchObject({
+        code: 'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
+      });
+    } finally {
+      if (previousTable === undefined) delete process.env.ENVIRONMENT_REGISTRY_TABLE;
+      else process.env.ENVIRONMENT_REGISTRY_TABLE = previousTable;
+      if (previousCompatibilityVersion === undefined) {
+        delete process.env.RUNTIME_COMPATIBILITY_VERSION;
+      } else {
+        process.env.RUNTIME_COMPATIBILITY_VERSION = previousCompatibilityVersion;
+      }
     }
   });
 });

@@ -992,10 +992,11 @@ module "projects_lambda" {
     # Project delete fans out into the intents' process state: the v2 process
     # table (drained per intent, incl. metrics), the intent-scoped Yjs docs, and
     # the AgentCore runtime (stop live sessions of deleted intents).
-    V2_PROCESS_TABLE           = var.v2_executions_table_name
-    YJS_DOCUMENTS_TABLE        = var.yjs_documents_table_name
-    AGENTCORE_RUNTIME_ARN      = var.agentcore_runtime_arn
-    ENVIRONMENT_REGISTRY_TABLE = var.environment_registry_table_name
+    V2_PROCESS_TABLE              = var.v2_executions_table_name
+    YJS_DOCUMENTS_TABLE           = var.yjs_documents_table_name
+    AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
+    ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
+    RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
     # MCP secrets: the base SSM prefix for per-var SecureStrings (project tier at
     # {prefix}/projects/<id>/mcp-secrets/<VAR>) + the global config read for the
     # save-time cross-tier collision check.

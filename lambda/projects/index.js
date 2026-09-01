@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { LambdaClient } from '@aws-sdk/client-lambda';
@@ -20,6 +20,10 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import nodePath from 'node:path';
 import { buildResponse } from '../shared/response.js';
+import {
+  isEnvironmentResolutionError,
+  resolvePublishedEnvironment,
+} from '../shared/environment-snapshot.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
 import { getGitConnection } from '../shared/git-connection-store.js';
@@ -960,100 +964,71 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
   return response(405, { error: 'Method not allowed' });
 };
 
-const environmentKey = (environmentId) => ({ pk: `ENV#${environmentId}`, sk: 'META' });
-const environmentRevisionKey = (environmentId, revisionId) => ({
-  pk: `ENV#${environmentId}`,
-  sk: `REV#${revisionId}`,
-});
-
-const readPublishedEnvironment = async (environmentId) => {
-  const tableName = process.env.ENVIRONMENT_REGISTRY_TABLE;
-  if (!tableName) {
-    if (environmentId === 'standard') {
-      return {
-        environment: {
-          environmentId: 'standard',
-          name: 'Standard Node/Python',
-          status: 'PUBLISHED',
-          publishedRevisionId: 'legacy',
-        },
-        revision: null,
-      };
-    }
-    return null;
-  }
-  const { Item: environment } = await ddb.send(
-    new GetCommand({
-      TableName: tableName,
-      Key: environmentKey(environmentId),
-      ConsistentRead: true,
-    }),
-  );
-  if (!environment?.publishedRevisionId || environment.status === 'RETIRED') {
-    return null;
-  }
-  const { Item: revision } = await ddb.send(
-    new GetCommand({
-      TableName: tableName,
-      Key: environmentRevisionKey(environmentId, environment.publishedRevisionId),
-      ConsistentRead: true,
-    }),
-  );
-  if (!revision || !['PUBLISHED', 'SUPERSEDED'].includes(revision.status)) return null;
-  return { environment, revision };
-};
+const readPublishedEnvironment = (environmentId) =>
+  resolvePublishedEnvironment({
+    ddb,
+    tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+    environmentId,
+    fallback: {
+      compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
+    },
+  });
 
 const handleProjectEnvironment = async (g, response, httpMethod, projectId, userId, body) => {
   if (!userId) return response(401, { error: 'Unauthorized' });
   const role = await fetchMembershipRole(g, projectId, userId);
   if (!role) return response(403, { error: 'Access denied' });
 
-  if (httpMethod === 'GET') {
-    const result = await g.V().has('Project', 'id', projectId).valueMap('environment_id').next();
-    if (result.done) return response(404, { error: 'Project not found' });
-    const environmentId = getVal(result.value, 'environment_id') || 'standard';
-    const published = await readPublishedEnvironment(environmentId);
-    return response(200, {
-      environmentId,
-      environment: published?.environment ?? null,
-      revision: published?.revision ?? null,
-    });
-  }
-
-  if (httpMethod === 'PUT') {
-    if (role !== 'owner' && role !== 'admin') {
-      return response(403, {
-        error: 'Only project owners and admins can assign environments',
+  try {
+    if (httpMethod === 'GET') {
+      const result = await g.V().has('Project', 'id', projectId).valueMap('environment_id').next();
+      if (result.done) return response(404, { error: 'Project not found' });
+      const environmentId = getVal(result.value, 'environment_id') || 'standard';
+      const published = await readPublishedEnvironment(environmentId);
+      return response(200, {
+        environmentId,
+        environment: published.environment,
+        revision: published.revision,
       });
     }
-    let data;
-    try {
-      data = JSON.parse(body || '{}');
-    } catch {
-      return response(400, { error: 'Invalid JSON body' });
-    }
-    const environmentId = String(data.environmentId || '').trim();
-    if (!environmentId) return response(400, { error: 'environmentId is required' });
-    const published = await readPublishedEnvironment(environmentId);
-    if (!published) {
-      return response(409, { error: 'Environment is not published' });
-    }
-    const updatedAt = new Date().toISOString();
-    await g
-      .V()
-      .has('Project', 'id', projectId)
-      .property(cardinality.single, 'environment_id', environmentId)
-      .property(cardinality.single, 'updated_at', updatedAt)
-      .next();
-    return response(200, {
-      environmentId,
-      environment: published.environment,
-      revision: published.revision,
-      updatedAt,
-    });
-  }
 
-  return response(405, { error: 'Method not allowed' });
+    if (httpMethod === 'PUT') {
+      if (role !== 'owner' && role !== 'admin') {
+        return response(403, {
+          error: 'Only project owners and admins can assign environments',
+        });
+      }
+      let data;
+      try {
+        data = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      const environmentId = String(data.environmentId || '').trim();
+      if (!environmentId) return response(400, { error: 'environmentId is required' });
+      const published = await readPublishedEnvironment(environmentId);
+      const updatedAt = new Date().toISOString();
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(cardinality.single, 'environment_id', environmentId)
+        .property(cardinality.single, 'updated_at', updatedAt)
+        .next();
+      return response(200, {
+        environmentId,
+        environment: published.environment,
+        revision: published.revision,
+        updatedAt,
+      });
+    }
+
+    return response(405, { error: 'Method not allowed' });
+  } catch (error) {
+    if (isEnvironmentResolutionError(error)) {
+      return response(409, { error: error.message, code: error.code });
+    }
+    throw error;
+  }
 };
 
 // ---------------------------------------------------------------------------
