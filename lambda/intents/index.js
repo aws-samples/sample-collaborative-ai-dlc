@@ -113,6 +113,12 @@ const attachmentCleanup = createAttachmentCleanupService({
 });
 const attachmentEventKey = /^intent-attachments\/staging\/([^/]+)\/([^.]+)(\.[a-z0-9]+)$/i;
 const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
+const ENVIRONMENT_SNAPSHOT_CONFLICT_CODES = new Set([
+  'ENVIRONMENT_NOT_PUBLISHED',
+  'ENVIRONMENT_REVISION_INCOMPLETE',
+  'ENVIRONMENT_REVISION_UNVERIFIED',
+  'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
+]);
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
 // its DynamoDB reservation, copy the exact object version from staging to the
@@ -4264,6 +4270,27 @@ export const handler = async (event) => {
           taken,
         });
       }
+      let environment;
+      try {
+        environment = await resolveEnvironmentSnapshot({
+          ddb,
+          tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+          environmentId: cfg.environmentId,
+          fallback: {
+            revisionId: `core-${process.env.CORE_RUNTIME_VERSION || '1'}`,
+            runtimeArn: AGENTCORE_RUNTIME_ARN(),
+            runtimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
+            imageDigest: process.env.CORE_IMAGE_DIGEST || null,
+            compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
+            verification: { status: 'PASSED', source: 'core-runtime' },
+          },
+        });
+      } catch (error) {
+        if (ENVIRONMENT_SNAPSHOT_CONFLICT_CODES.has(error?.code)) {
+          return response(409, { error: error.message, code: error.code });
+        }
+        throw error;
+      }
       const meta = await store.createExecution({
         executionId: newIntentId,
         projectId,
@@ -4286,19 +4313,7 @@ export const handler = async (event) => {
         tierModels: cfg.tierModels,
         mcpServersByTier: cfg.mcpServersByTier,
         customRules: cfg.customRules,
-        environment: await resolveEnvironmentSnapshot({
-          ddb,
-          tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
-          environmentId: cfg.environmentId,
-          fallback: {
-            revisionId: `core-${process.env.CORE_RUNTIME_VERSION || '1'}`,
-            runtimeArn: AGENTCORE_RUNTIME_ARN(),
-            runtimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
-            imageDigest: process.env.CORE_IMAGE_DIGEST || null,
-            compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
-            verification: { status: 'PASSED', source: 'core-runtime' },
-          },
-        }),
+        environment,
         deriveEnrichment: await fetchDeriveEnrichment(),
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,

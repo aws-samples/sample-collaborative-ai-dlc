@@ -635,6 +635,77 @@ describe('POST /projects/{id}/intents', () => {
     }
   });
 
+  it.each([
+    {
+      label: 'not published',
+      code: 'ENVIRONMENT_NOT_PUBLISHED',
+      seedEnvironment: false,
+      revisionPatch: {},
+    },
+    {
+      label: 'incomplete',
+      code: 'ENVIRONMENT_REVISION_INCOMPLETE',
+      seedEnvironment: true,
+      revisionPatch: { runtimeArn: null },
+    },
+    {
+      label: 'unverified',
+      code: 'ENVIRONMENT_REVISION_UNVERIFIED',
+      seedEnvironment: true,
+      revisionPatch: { verification: { status: 'FAILED' } },
+    },
+    {
+      label: 'incompatible',
+      code: 'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
+      seedEnvironment: true,
+      revisionPatch: { runtimeCompatibilityVersion: '0' },
+    },
+  ])(
+    '409s when the assigned environment is $label',
+    async ({ code, seedEnvironment, revisionPatch }) => {
+      vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', 'environment-registry-test');
+      vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', '2');
+      try {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        await g
+          .V()
+          .has('Project', 'id', projectId)
+          .property(gremlin.process.cardinality.single, 'environment_id', 'polyglot')
+          .next();
+        if (seedEnvironment) {
+          procStore.set(keyOf('ENV#polyglot', 'META'), {
+            pk: 'ENV#polyglot',
+            sk: 'META',
+            environmentId: 'polyglot',
+            name: 'Polyglot',
+            status: 'PUBLISHED',
+            publishedRevisionId: 'r-7',
+          });
+          procStore.set(keyOf('ENV#polyglot', 'REV#r-7'), {
+            pk: 'ENV#polyglot',
+            sk: 'REV#r-7',
+            ...MANAGED_ENVIRONMENT_SNAPSHOT,
+            runtimeCompatibilityVersion: '2',
+            flattenedRecipe: { resolvedTools: MANAGED_ENVIRONMENT_SNAPSHOT.tools },
+            ...revisionPatch,
+          });
+        }
+
+        const res = await createIntent(sub, projectId);
+
+        expect(res.statusCode).toBe(409);
+        expect(JSON.parse(res.body)).toMatchObject({
+          code,
+          error: expect.any(String),
+        });
+      } finally {
+        vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', undefined);
+        vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', undefined);
+      }
+    },
+  );
+
   it('derives the branch from the title slug (single hyphens, no `--`)', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
