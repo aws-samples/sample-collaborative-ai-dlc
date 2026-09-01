@@ -1,18 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import {
-  GetCommand,
-  PutCommand,
-  QueryCommand,
-  ScanCommand,
-  TransactWriteCommand,
-  UpdateCommand,
-} from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import {
   SYSTEM_TOOL_TEMPLATE_REVISION,
   SYSTEM_TOOL_TEMPLATES,
   TOOL_VERSION_STATUSES,
   normalizeToolVersionDefinition,
 } from './tool-catalog.js';
+import { queryAll, scanAll } from './registry.js';
 
 const toolPk = (toolId) => `TOOL#${toolId}`;
 const toolKey = (toolId) => ({ pk: toolPk(toolId), sk: 'META' });
@@ -29,28 +23,6 @@ const versionStatusIndex = (status, updatedAt, toolId, versionId) => ({
   GSI1PK: `TOOL_VERSION_STATUS#${status}`,
   GSI1SK: `${updatedAt}#${toolId}#${versionId}`,
 });
-
-const queryAll = async (ddb, input) => {
-  const items = [];
-  let ExclusiveStartKey;
-  do {
-    const page = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
-    items.push(...(page.Items ?? []));
-    ExclusiveStartKey = page.LastEvaluatedKey;
-  } while (ExclusiveStartKey);
-  return items;
-};
-
-const scanAll = async (ddb, input) => {
-  const items = [];
-  let ExclusiveStartKey;
-  do {
-    const page = await ddb.send(new ScanCommand({ ...input, ExclusiveStartKey }));
-    items.push(...(page.Items ?? []));
-    ExclusiveStartKey = page.LastEvaluatedKey;
-  } while (ExclusiveStartKey);
-  return items;
-};
 
 const ALLOWED_TRANSITIONS = {
   DRAFT: new Set(['QUEUED', 'FAILED']),

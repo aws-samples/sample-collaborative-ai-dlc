@@ -1,7 +1,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { S3Client } from '@aws-sdk/client-s3';
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import {
@@ -10,6 +10,15 @@ import {
   normalizeToolVersionDefinition,
   toolVersionSnapshot,
 } from './tool-catalog.js';
+import { uploadBuildContext } from './build-lifecycle.js';
+import {
+  actorFrom,
+  createRetryableInitializer,
+  parseBody,
+  pathParts,
+  requireUser,
+  responseError,
+} from './request.js';
 import { createEnvironmentStore } from './store.js';
 import { createToolStore } from './tool-store.js';
 
@@ -18,25 +27,6 @@ const s3 = new S3Client({});
 const codebuild = new CodeBuildClient({});
 const defaultStore = createToolStore({ ddb });
 const defaultEnvironmentStore = createEnvironmentStore({ ddb });
-
-const actorFrom = (event) => {
-  const claims = event?.requestContext?.authorizer?.claims ?? {};
-  return claims.email || claims.sub || 'unknown';
-};
-
-const requireUser = (event) => {
-  if (event?.requestContext?.authorizer?.claims?.sub) return null;
-  return { statusCode: 401, error: 'Unauthorized' };
-};
-
-const parseBody = (event) => {
-  if (!event.body) return {};
-  try {
-    return JSON.parse(event.body);
-  } catch {
-    throw Object.assign(new Error('Invalid JSON body'), { statusCode: 400 });
-  }
-};
 
 const toolMetadata = (data, { partial = false } = {}) => {
   const values = {};
@@ -76,18 +66,6 @@ const toolMetadata = (data, { partial = false } = {}) => {
   }
   return values;
 };
-
-const pathParts = (event) =>
-  String(event.path ?? '')
-    .split('/')
-    .filter(Boolean);
-
-const responseError = (response, error) =>
-  response(error.statusCode ?? 500, {
-    error: error.statusCode ? error.message : 'Internal server error',
-    ...(error.code ? { code: error.code } : {}),
-    ...(error.issues ? { issues: error.issues } : {}),
-  });
 
 const assertKnownDependencies = async (store, toolId, definition) => {
   for (const dependencyId of definition.dependencies ?? []) {
@@ -147,22 +125,6 @@ const assertRecommendationGraph = async (store, tool, candidate) => {
   };
 
   visit(tool.toolId);
-};
-
-const uploadContext = async ({ files, prefix, s3Client }) => {
-  await Promise.all(
-    Object.entries(files).map(([name, body]) =>
-      s3Client.send(
-        new PutObjectCommand({
-          Bucket: process.env.BUILD_CONTEXT_BUCKET,
-          Key: `${prefix}/${name}`,
-          Body: body,
-          ContentType: name.endsWith('.json') ? 'application/json' : 'text/plain',
-          ServerSideEncryption: 'AES256',
-        }),
-      ),
-    ),
-  );
 };
 
 const resolveBuildDependencies = async (store, version) => {
@@ -231,7 +193,7 @@ export const startToolBuild = async ({
     runtimeCompatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
   });
   const prefix = `managed-tools/contexts/${tool.toolId}/${version.versionId}/a${buildAttempt}`;
-  await uploadContext({ files: context.files, prefix, s3Client });
+  await uploadBuildContext({ files: context.files, prefix, s3Client });
   await store.updateVersion(
     tool.toolId,
     version.versionId,
@@ -324,38 +286,31 @@ export const createToolsHandler = ({
   s3Client = s3,
   codebuildClient = codebuild,
 } = {}) => {
-  let initialization;
-  const initialize = () => {
-    initialization ??= (async () => {
-      await store.seedSystemTools();
-      const candidates = [
-        ...(await store.listVersionsByStatus('DRAFT')),
-        ...(await store.listVersionsByStatus('FAILED')),
-      ];
-      const autoBuilds = candidates.filter((version) => version.autoBuild);
-      for (const version of autoBuilds) {
-        const tool = await store.getTool(version.toolId);
-        if (!tool) continue;
-        try {
-          await startToolBuild({
-            store,
-            tool,
-            version,
-            actor: 'platform',
-            s3Client,
-            codebuildClient,
-          });
-        } catch (error) {
-          if (error.code === 'TOOL_RECOMMENDED_DEPENDENCY_MISSING') continue;
-          console.error(`Unable to start seeded tool build ${version.versionId}:`, error.message);
-        }
+  const initialize = createRetryableInitializer(async () => {
+    await store.seedSystemTools();
+    const candidates = [
+      ...(await store.listVersionsByStatus('DRAFT')),
+      ...(await store.listVersionsByStatus('FAILED')),
+    ];
+    const autoBuilds = candidates.filter((version) => version.autoBuild);
+    for (const version of autoBuilds) {
+      const tool = await store.getTool(version.toolId);
+      if (!tool) continue;
+      try {
+        await startToolBuild({
+          store,
+          tool,
+          version,
+          actor: 'platform',
+          s3Client,
+          codebuildClient,
+        });
+      } catch (error) {
+        if (error.code === 'TOOL_RECOMMENDED_DEPENDENCY_MISSING') continue;
+        console.error(`Unable to start seeded tool build ${version.versionId}:`, error.message);
       }
-    })().catch((error) => {
-      initialization = null;
-      throw error;
-    });
-    return initialization;
-  };
+    }
+  });
 
   return async (event) => {
     if (event?.action === 'bootstrap') {

@@ -3,8 +3,6 @@ import {
   DeleteCommand,
   GetCommand,
   PutCommand,
-  QueryCommand,
-  ScanCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -20,6 +18,7 @@ import {
   generateCatalogEnvironmentDockerfile,
   projectedEnvironmentImageSize,
 } from './catalog-recipe.js';
+import { queryAll, scanAll } from './registry.js';
 
 const environmentPk = (environmentId) => `ENV#${environmentId}`;
 const environmentKey = (environmentId) => ({ pk: environmentPk(environmentId), sk: 'META' });
@@ -32,17 +31,6 @@ const revisionStatusIndex = (status, updatedAt, environmentId, revisionId) => ({
   GSI1PK: `REVISION_STATUS#${status}`,
   GSI1SK: `${updatedAt}#${environmentId}#${revisionId}`,
 });
-
-const queryAll = async (ddb, input) => {
-  const items = [];
-  let ExclusiveStartKey;
-  do {
-    const page = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
-    items.push(...(page.Items ?? []));
-    ExclusiveStartKey = page.LastEvaluatedKey;
-  } while (ExclusiveStartKey);
-  return items;
-};
 
 export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   if (!ddb) throw new Error('createEnvironmentStore requires a DynamoDB DocumentClient');
@@ -571,18 +559,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     await ddb.send(new DeleteCommand({ TableName: table(), Key: lookupKey(kind, id) }));
   };
 
-  const scanRegistry = async () => {
-    const items = [];
-    let ExclusiveStartKey;
-    do {
-      const result = await ddb.send(
-        new ScanCommand({ TableName: table(), ExclusiveStartKey, ConsistentRead: true }),
-      );
-      items.push(...(result.Items ?? []));
-      ExclusiveStartKey = result.LastEvaluatedKey;
-    } while (ExclusiveStartKey);
-    return items;
-  };
+  const scanRegistry = () => scanAll(ddb, { TableName: table(), ConsistentRead: true });
 
   const seedSystemEnvironments = async ({
     coreImageUri,

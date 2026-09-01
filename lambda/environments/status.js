@@ -18,6 +18,12 @@ import {
   InvokeAgentRuntimeCommand,
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import {
+  RETRYABLE_ECR_ERRORS,
+  createBuildLifecycleHandler,
+  streamToString,
+  summarizeScanFindings,
+} from './build-lifecycle.js';
 import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
 
@@ -54,14 +60,6 @@ const endpointNameFor = (revisionId) =>
 
 const clientTokenFor = (...parts) => createHash('sha256').update(parts.join('\0')).digest('hex');
 
-const RETRYABLE_ECR_ERRORS = new Set([
-  'ImageNotFoundException',
-  'ScanNotFoundException',
-  'ServerException',
-  'ThrottlingException',
-  'TooManyRequestsException',
-]);
-
 const RETRYABLE_CONTROL_ERRORS = new Set([
   'ConflictException',
   'InternalServerException',
@@ -76,33 +74,6 @@ const isConditionalFailure = (error) => error?.name === 'ConditionalCheckFailedE
 const securityFindingsAcceptedAt = (revision) =>
   revision.securityFindingsAcceptedAt ?? revision.highFindingsAcknowledgedAt ?? null;
 
-const findingAttribute = (finding, key) =>
-  finding.attributes?.find((attribute) => attribute.key === key)?.value ?? null;
-
-const summarizeScanFindings = (scan) => {
-  const severityOrder = new Map([
-    ['CRITICAL', 0],
-    ['HIGH', 1],
-    ['MEDIUM', 2],
-    ['LOW', 3],
-    ['INFORMATIONAL', 4],
-    ['UNDEFINED', 5],
-  ]);
-  return (scan.imageScanFindings?.findings ?? [])
-    .map((finding) => ({
-      id: finding.name ?? 'Unknown finding',
-      severity: finding.severity ?? 'UNDEFINED',
-      packageName: findingAttribute(finding, 'package_name'),
-      packageVersion: findingAttribute(finding, 'package_version'),
-      uri: finding.uri ?? null,
-    }))
-    .toSorted(
-      (left, right) =>
-        (severityOrder.get(left.severity) ?? 99) - (severityOrder.get(right.severity) ?? 99) ||
-        left.id.localeCompare(right.id),
-    );
-};
-
 const updateEnvironmentForRevision = async (store, environmentId, revisionId, patch) => {
   try {
     return await store.updateEnvironment(environmentId, patch, {
@@ -113,14 +84,6 @@ const updateEnvironmentForRevision = async (store, environmentId, revisionId, pa
     if (isConditionalFailure(error)) return null;
     throw error;
   }
-};
-
-const streamToString = async (body) => {
-  if (!body) return '';
-  if (typeof body.transformToString === 'function') return body.transformToString();
-  const chunks = [];
-  for await (const chunk of body) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8');
 };
 
 const invokeValidationCommand = async ({ runtimeClient, revision, payload, sessionId }) => {
@@ -724,30 +687,31 @@ export const createStatusHandler = ({
   ecrClient = ecr,
   controlClient = control,
   runtimeClient = runtime,
-} = {}) => {
-  return async (event) => {
-    try {
-      if (event.action === 'poll') {
-        return pollManagedEnvironmentStatus({
-          store,
-          ecrClient,
-          controlClient,
-          runtimeClient,
-        });
-      }
-      if (event.source === 'aws.codebuild') {
-        return handleBuildEvent({ store, event, ecrClient, controlClient });
-      }
-      if (event.source === 'aws.ecr') {
-        return handleScanEvent({ store, event, ecrClient, controlClient });
-      }
-      return { ignored: true };
-    } catch (error) {
-      console.error('Managed environment status handling failed:', error.message);
-      throw error;
-    }
-  };
-};
+} = {}) =>
+  createBuildLifecycleHandler({
+    label: 'Managed environment',
+    poll: () =>
+      pollManagedEnvironmentStatus({
+        store,
+        ecrClient,
+        controlClient,
+        runtimeClient,
+      }),
+    handleBuildEvent: (event) =>
+      handleBuildEvent({
+        store,
+        event,
+        ecrClient,
+        controlClient,
+      }),
+    handleScanEvent: (event) =>
+      handleScanEvent({
+        store,
+        event,
+        ecrClient,
+        controlClient,
+      }),
+  });
 
 export const handler = createStatusHandler();
 

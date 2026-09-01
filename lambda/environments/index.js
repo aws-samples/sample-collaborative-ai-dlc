@@ -1,6 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { S3Client } from '@aws-sdk/client-s3';
 import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
 import { buildResponse } from '../shared/response.js';
 import { isPlatformAdmin, requirePlatformAdmin } from '../shared/authz.js';
@@ -16,6 +16,15 @@ import {
   rebuildCatalogEnvironmentRecipe,
   resolveCatalogEnvironmentRecipe,
 } from './catalog-recipe.js';
+import { uploadBuildContext } from './build-lifecycle.js';
+import {
+  actorFrom,
+  createRetryableInitializer,
+  parseBody,
+  pathParts,
+  requireUser,
+  responseError,
+} from './request.js';
 import { createEnvironmentStore } from './store.js';
 import { createToolStore } from './tool-store.js';
 
@@ -25,25 +34,6 @@ const codebuild = new CodeBuildClient({});
 const defaultStore = createEnvironmentStore({ ddb });
 const defaultToolStore = createToolStore({ ddb });
 
-const actorFrom = (event) => {
-  const claims = event?.requestContext?.authorizer?.claims ?? {};
-  return claims.email || claims.sub || 'unknown';
-};
-
-const parseBody = (event) => {
-  if (!event.body) return {};
-  try {
-    return JSON.parse(event.body);
-  } catch {
-    throw Object.assign(new Error('Invalid JSON body'), { statusCode: 400 });
-  }
-};
-
-const pathParts = (event) =>
-  String(event.path ?? '')
-    .split('/')
-    .filter(Boolean);
-
 const configuredCore = () => ({
   coreImageUri: process.env.CORE_IMAGE_URI,
   coreImageDigest: process.env.CORE_IMAGE_DIGEST,
@@ -51,18 +41,6 @@ const configuredCore = () => ({
   coreRuntimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
   coreImageSizeBytes: Number(process.env.CORE_IMAGE_SIZE_BYTES || 0) || null,
 });
-
-const responseError = (response, error) =>
-  response(error.statusCode ?? 500, {
-    error: error.statusCode ? error.message : 'Internal server error',
-    ...(error.code ? { code: error.code } : {}),
-    ...(error.issues ? { issues: error.issues } : {}),
-  });
-
-const requireUser = (event) => {
-  if (event?.requestContext?.authorizer?.claims?.sub) return null;
-  return { statusCode: 401, error: 'Unauthorized' };
-};
 
 const ensureSeeded = async (store) => {
   const core = configuredCore();
@@ -76,7 +54,7 @@ const ensureSeeded = async (store) => {
   await store.reconcileBaseUpdates();
 };
 
-const publishedBase = async (store, environmentId) => {
+const requirePublishedBaseImage = async (store, environmentId) => {
   const environment = await store.getEnvironment(environmentId);
   if (!environment || environment.status === 'RETIRED' || !environment.publishedRevisionId) {
     throw Object.assign(new Error('Base environment must have a published revision'), {
@@ -113,7 +91,7 @@ const assertAcyclicBase = async (store, environmentId, baseEnvironmentId) => {
 };
 
 const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId) => {
-  const { revision: baseRevision } = await publishedBase(store, baseEnvironmentId);
+  const { revision: baseRevision } = await requirePublishedBaseImage(store, baseEnvironmentId);
   return resolveCatalogEnvironmentRecipe({
     input: {
       ...input,
@@ -178,19 +156,7 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
         flattenedRecipe,
       });
   const prefix = `managed-environments/contexts/${environment.environmentId}/${revision.revisionId}`;
-  await Promise.all(
-    Object.entries(context.files).map(([name, body]) =>
-      deps.s3.send(
-        new PutObjectCommand({
-          Bucket: process.env.BUILD_CONTEXT_BUCKET,
-          Key: `${prefix}/${name}`,
-          Body: body,
-          ContentType: name.endsWith('.json') ? 'application/json' : 'text/plain',
-          ServerSideEncryption: 'AES256',
-        }),
-      ),
-    ),
-  );
+  await uploadBuildContext({ files: context.files, prefix, s3Client: deps.s3 });
   await store.updateRevision(
     environment.environmentId,
     revision.revisionId,
@@ -326,7 +292,10 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
       statusCode: 409,
     });
   }
-  const { revision: latestBase } = await publishedBase(store, environment.baseEnvironmentId);
+  const { revision: latestBase } = await requirePublishedBaseImage(
+    store,
+    environment.baseEnvironmentId,
+  );
   const { recipe, flattenedRecipe } = rebuildCatalogEnvironmentRecipe({
     sourceRecipe: sourceRevision.recipe,
     baseEnvironmentId: environment.baseEnvironmentId,
@@ -349,14 +318,7 @@ export const createHandler = ({
   codebuildClient = codebuild,
 } = {}) => {
   const deps = { s3: s3Client, codebuild: codebuildClient };
-  let initialization;
-  const initialize = () => {
-    initialization ??= ensureSeeded(store).catch((error) => {
-      initialization = null;
-      throw error;
-    });
-    return initialization;
-  };
+  const initialize = createRetryableInitializer(() => ensureSeeded(store));
   return async (event) => {
     const response = buildResponse(event);
     if (event.httpMethod === 'OPTIONS') return response(200, {});
