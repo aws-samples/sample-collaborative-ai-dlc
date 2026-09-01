@@ -129,20 +129,30 @@ export const getSecret = async () => {
 const discussionSessionIdFor = (intentId, discussionId) =>
   `aidlc-discuss-${intentId}-${discussionId}`.padEnd(33, '0');
 
-export const invokeDiscussionAssist = async ({ intentId, payload }) => {
-  const fallbackRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
+const discussionRuntimeTargetFor = async (intentId, fallbackRuntimeArn) => {
+  const fallbackTarget = runtimeTargetInput(null, fallbackRuntimeArn);
   const processTable = process.env.V2_PROCESS_TABLE;
-  let target = runtimeTargetInput(null, fallbackRuntimeArn);
-  if (processTable) {
+  if (!processTable) return fallbackTarget;
+  try {
     const { Item: meta } = await ddb.send(
       new GetCommand({
         TableName: processTable,
         Key: { pk: `EXEC#${intentId}`, sk: 'META' },
       }),
     );
-    if (!meta) throw new Error('Intent execution snapshot was not found');
-    target = runtimeTargetInput(meta, fallbackRuntimeArn);
+    if (meta) return runtimeTargetInput(meta, fallbackRuntimeArn);
+    console.warn(`Discussion assist runtime snapshot missing for ${intentId}; using core runtime`);
+  } catch (error) {
+    console.warn(
+      `Discussion assist runtime snapshot lookup failed for ${intentId}; using core runtime: ${error?.message ?? error}`,
+    );
   }
+  return fallbackTarget;
+};
+
+export const invokeDiscussionAssist = async ({ intentId, payload }) => {
+  const fallbackRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
+  const target = await discussionRuntimeTargetFor(intentId, fallbackRuntimeArn);
   if (!target.agentRuntimeArn) throw new Error('AGENTCORE_RUNTIME_ARN is not configured');
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
