@@ -1665,6 +1665,10 @@ describe('intent-scoped discussions', () => {
       true,
     );
     expect(invoke.runtimeSessionId.length).toBeGreaterThanOrEqual(33);
+    const executionRead = ddbMock
+      .commandCalls(GetCommand)
+      .find((entry) => entry.args[0].input.TableName === EXECUTIONS_TABLE);
+    expect(executionRead.args[0].input).not.toHaveProperty('ConsistentRead');
     const payload = JSON.parse(Buffer.from(invoke.payload).toString('utf8'));
     expect(payload).toMatchObject({
       command: 'discussion-assist-start',

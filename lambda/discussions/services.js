@@ -138,7 +138,6 @@ export const invokeDiscussionAssist = async ({ intentId, payload }) => {
       new GetCommand({
         TableName: processTable,
         Key: { pk: `EXEC#${intentId}`, sk: 'META' },
-        ConsistentRead: true,
       }),
     );
     if (!meta) throw new Error('Intent execution snapshot was not found');
