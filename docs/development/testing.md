@@ -51,6 +51,18 @@ Environments**. The deployment publishes only Standard. Within five minutes,
 the catalog bootstrap creates Java, Go, Rust, Maven, and Gradle tool families
 and queues their initial versions for import.
 
+This test covers three distinct paths:
+
+1. **Protected baseline:** Standard supplies Node.js and Python without catalog
+   imports.
+2. **Shipped catalog tools:** Java, Go, Rust, Maven, and Gradle exercise the
+   bootstrap and import path.
+3. **Administrator-created tools:** `.NET SDK` is a representative custom tool
+   used to exercise tool creation and presets. It is not otherwise privileged
+   or required by the platform.
+
+### Verify shipped catalog tools
+
 For each shipped tool:
 
 1. Follow its CodeBuild log.
@@ -65,21 +77,26 @@ For each shipped tool:
 5. Publish the version. Mark Java as recommended before publishing Maven or
    Gradle.
 
+### Verify custom tool creation
+
 Create a `.NET SDK` tool using an official Linux ARM64 SDK archive and the
 `.NET` preset. Confirm source inspection, normalization, scanning, `dotnet
 --version`, and a real console build succeed, then publish it.
 
-Create catalog-backed environments based on Standard:
+### Verify environment composition
 
-1. Select Go and publish the resulting environment.
-2. Select Maven and confirm the recommended Java version is added
-   automatically.
-3. Select `.NET SDK` and publish the resulting environment.
-4. Confirm every generated Dockerfile copies tools from exact OCI digests and
-   retains the protected base entrypoint, command, user, port, and health
-   behavior.
-5. Confirm the projected and actual compressed image sizes stay below the
-   configured AgentCore image limit.
+Create and publish the following environments based on Standard:
+
+| Environment | Selected tools                                 | Path under test            |
+| ----------- | ---------------------------------------------- | -------------------------- |
+| Go          | Go                                             | A standalone shipped tool  |
+| Maven       | Maven; recommended Java is added automatically | Tool dependency resolution |
+| .NET        | The administrator-created `.NET SDK`           | Custom tool composition    |
+
+For each environment, confirm the generated Dockerfile copies tools from exact
+OCI digests and retains the protected base entrypoint, command, user, port, and
+health behavior. Confirm the projected and actual compressed image sizes stay
+below the configured AgentCore image limit.
 
 Create projects with small repositories that exercise each selected toolchain.
 In **Project Settings -> Environment**, assign each published environment and
