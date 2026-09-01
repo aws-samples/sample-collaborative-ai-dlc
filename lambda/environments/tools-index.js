@@ -350,8 +350,9 @@ export const createToolsHandler = ({
           console.error(`Unable to start seeded tool build ${version.versionId}:`, error.message);
         }
       }
-    })().finally(() => {
+    })().catch((error) => {
       initialization = null;
+      throw error;
     });
     return initialization;
   };

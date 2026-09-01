@@ -47,6 +47,35 @@ describe('managed tool control API', () => {
     });
   });
 
+  it('caches successful initialization across handler invocations', async () => {
+    const store = baseStore();
+    const handler = createToolsHandler({ store });
+
+    await expect(handler({ action: 'bootstrap' })).resolves.toEqual({ initialized: true });
+    await expect(handler({ action: 'bootstrap' })).resolves.toEqual({ initialized: true });
+
+    expect(store.seedSystemTools).toHaveBeenCalledOnce();
+    expect(store.listVersionsByStatus).toHaveBeenCalledTimes(2);
+    expect(store.listVersionsByStatus).toHaveBeenNthCalledWith(1, 'DRAFT');
+    expect(store.listVersionsByStatus).toHaveBeenNthCalledWith(2, 'FAILED');
+  });
+
+  it('retries initialization after a failure', async () => {
+    const store = {
+      ...baseStore(),
+      seedSystemTools: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('registry unavailable'))
+        .mockResolvedValueOnce([]),
+    };
+    const handler = createToolsHandler({ store });
+
+    await expect(handler({ action: 'bootstrap' })).rejects.toThrow('registry unavailable');
+    await expect(handler({ action: 'bootstrap' })).resolves.toEqual({ initialized: true });
+
+    expect(store.seedSystemTools).toHaveBeenCalledTimes(2);
+  });
+
   it('automatically starts seeded tool drafts from the bootstrap event', async () => {
     const draft = {
       toolId: 'java',
