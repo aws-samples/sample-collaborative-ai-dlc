@@ -296,17 +296,24 @@ const unitStageAggregate = ({ stage, rows, unitPlan, completedUnits, activeUnit 
     unitRows.push(row);
     rowsByUnit.set(row.unitSlug, unitRows);
   }
-  const unitComplete = (unit) => {
-    if (completedUnits.has(unit.name)) return true;
+  const unitResult = (unit) => {
     const skippedStages = unitPlan.skipMatrix?.[unit.name];
-    if (Array.isArray(skippedStages) && skippedStages.includes(stage.stageId)) return true;
-    return (rowsByUnit.get(unit.name) ?? []).some((row) =>
-      ['SUCCEEDED', 'SKIPPED'].includes(row.state),
-    );
+    if (Array.isArray(skippedStages) && skippedStages.includes(stage.stageId)) return 'SKIPPED';
+    const result = stageAggregate(rowsByUnit.get(unit.name) ?? []);
+    if (result !== 'PENDING') return result;
+    return completedUnits.has(unit.name) ? 'SUCCEEDED' : result;
   };
-  if (unitPlan.units.every(unitComplete)) return 'SUCCEEDED';
+  const unitResults = unitPlan.units.map((unit) => [unit.name, unitResult(unit)]);
+  const completedUnitNames = new Set(
+    unitResults
+      .filter(([, result]) => ['SUCCEEDED', 'SKIPPED'].includes(result))
+      .map(([unitName]) => unitName),
+  );
+  if (completedUnitNames.size === unitPlan.units.length) {
+    return unitResults.some(([, result]) => result === 'SUCCEEDED') ? 'SUCCEEDED' : 'SKIPPED';
+  }
   return stageAggregate(
-    rows.filter((row) => !row.unitSlug || !unitComplete({ name: row.unitSlug })),
+    rows.filter((row) => !row.unitSlug || !completedUnitNames.has(row.unitSlug)),
   );
 };
 
