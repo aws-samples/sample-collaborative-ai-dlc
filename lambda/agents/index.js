@@ -43,6 +43,7 @@ import {
   resolveEffectiveCredentialBindings,
   writeCredentialScope,
 } from '../shared/agent-credentials.js';
+import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import {
   authorizeLegacyProjectRead,
   authorizeLegacySprintRead,
@@ -89,6 +90,14 @@ const fetchRuntimeCapabilities = async (
 ) => {
   if (!AGENTCORE_RUNTIME_ARN) return null;
   try {
+    const bindings = Object.values(credentialBindings || {}).filter(Boolean);
+    const agentCredentialGrant = bindings.length
+      ? await issueAgentCredentialGrant(ssm, {
+          purpose: 'capabilities',
+          projectId,
+          bindings,
+        })
+      : null;
     const res = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         agentRuntimeArn: AGENTCORE_RUNTIME_ARN,
@@ -100,6 +109,7 @@ const fetchRuntimeCapabilities = async (
             command: 'capabilities',
             ...(credentialBindings ? { credentialBindings } : {}),
             ...(projectId ? { projectId } : {}),
+            ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
           }),
         ),
       }),

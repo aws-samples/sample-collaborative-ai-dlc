@@ -24,6 +24,7 @@
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { SSMClient } from '@aws-sdk/client-ssm';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
@@ -31,6 +32,9 @@ import {
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
+import { credentialProviderForCli } from '../shared/agent-credentials.js';
+import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { commandDefinition } from '../shared/agent-command-registry.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
@@ -52,6 +56,7 @@ import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ssm = new SSMClient({});
 const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
@@ -178,6 +183,7 @@ const defaultDeps = () => ({
   store: defaultStore,
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
   invokeRuntime: defaultInvokeRuntime,
+  issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
   openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body }) =>
@@ -284,7 +290,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   const {
     store,
     loadPlan,
-    invokeRuntime,
+    invokeRuntime: rawInvokeRuntime,
     stopSession,
     broadcast,
     openPr,
@@ -310,6 +316,29 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   if (!meta) return { ok: false, reason: 'execution_not_found' };
 
   const { projectId, workflowId, workflowVersion, scope } = meta;
+  const credentialProvider = credentialProviderForCli(meta.agentCli);
+  const credentialBinding =
+    meta.credentialBinding ??
+    (credentialProvider ? { provider: credentialProvider, source: 'platform' } : null);
+  const invokeRuntime = async (payload, runtimeSessionId) => {
+    const authMode = commandDefinition(payload.command)?.agentAuth;
+    if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
+      return rawInvokeRuntime(payload, runtimeSessionId);
+    }
+    const agentCredentialGrant = await deps.issueAgentCredentialGrant({
+      purpose: authMode,
+      projectId,
+      executionId,
+      bindings: [credentialBinding],
+    });
+    return rawInvokeRuntime(
+      {
+        ...payload,
+        agentCredentialGrant,
+      },
+      runtimeSessionId,
+    );
+  };
   const gitProvider = meta.gitProvider || 'github';
   // Rewind relaunch (docs/v2-steering.md): start the stage loop at this stage
   // instead of the beginning (upstream stages keep their SUCCEEDED rows).

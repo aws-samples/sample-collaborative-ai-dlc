@@ -11,6 +11,8 @@ import {
   credentialProviderForCli,
   resolveEffectiveCredentialBindings,
 } from '../shared/agent-credentials.js';
+import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { executionMetaKey } from '../shared/v2-process-keys.js';
 import { ddb, ssm, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
   MESSAGE_ID_RE,
@@ -72,6 +74,7 @@ const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,160}$/;
 const MAX_ASSIST_INSTRUCTIONS = 2000;
 const MAX_SELECTED_MESSAGES = 40;
 const agentSettingsPrefix = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+const processTable = () => process.env.V2_PROCESS_TABLE || '';
 
 const assistMessageIdFor = (requestId) =>
   `dm-${createHash('sha256').update(requestId).digest('hex').slice(0, 32)}`;
@@ -596,15 +599,43 @@ export const assistDiscussion = async (event, res) => {
     });
   }
 
-  const resolveCredentialBinding = async () => {
-    if (!credentialProvider) return null;
+  const resolveCredentialContext = async () => {
+    if (processTable()) {
+      const { Item: execution } = await ddb.send(
+        new GetCommand({
+          TableName: processTable(),
+          Key: executionMetaKey(scope.rootId),
+          ConsistentRead: true,
+        }),
+      );
+      if (execution?.projectId && execution.projectId !== auth.projectId) {
+        throw Object.assign(new Error('Intent credential context does not match the project'), {
+          code: 'agent_credential_required',
+        });
+      }
+      if (execution?.agentCli) {
+        const provider = credentialProviderForCli(execution.agentCli);
+        if (!provider) {
+          throw Object.assign(new Error('The intent has an unsupported pinned agent CLI'), {
+            code: 'agent_credential_required',
+          });
+        }
+        return {
+          requestedCli: execution.agentCli,
+          credentialBinding: execution.credentialBinding ?? { provider, source: 'platform' },
+        };
+      }
+    }
+    if (!credentialProvider) {
+      return { requestedCli: null, credentialBinding: null };
+    }
     const bindings = await resolveEffectiveCredentialBindings(ssm, {
       base: agentSettingsPrefix(),
       projectId: auth.projectId,
       userId: caller.sub,
     });
     const binding = bindings[credentialProvider];
-    if (binding) return binding;
+    if (binding) return { requestedCli, credentialBinding: binding };
     throw Object.assign(
       new Error(
         `No ${credentialProvider === 'kiro' ? 'Kiro' : 'Bedrock'} credential is available for this CLI`,
@@ -642,7 +673,16 @@ export const assistDiscussion = async (event, res) => {
 
   const invokeAssist = async () => {
     try {
-      const credentialBinding = await resolveCredentialBinding();
+      const { requestedCli: effectiveRequestedCli, credentialBinding } =
+        await resolveCredentialContext();
+      const agentCredentialGrant = credentialBinding
+        ? await issueAgentCredentialGrant(ssm, {
+            purpose: 'discussion',
+            projectId: auth.projectId,
+            executionId: scope.rootId,
+            bindings: [credentialBinding],
+          })
+        : null;
       const out = await invokeDiscussionAssist({
         intentId: scope.rootId,
         payload: {
@@ -658,7 +698,10 @@ export const assistDiscussion = async (event, res) => {
           requestedBy: caller.sub,
           requestedByName: caller.displayName,
           dispatchedAt: new Date().toISOString(),
-          ...(requestedCli ? { requestedCli, credentialBinding } : {}),
+          ...(effectiveRequestedCli
+            ? { requestedCli: effectiveRequestedCli, credentialBinding }
+            : {}),
+          ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
         },
       });
       if (out?.ok === false) {

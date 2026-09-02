@@ -103,7 +103,9 @@ export const dispatchInvocation = async ({
       prepareInvocation && definition.agentAuth
         ? await prepareInvocation(payload, definition.agentAuth)
         : {};
-    const result = await handler(payload, context);
+    const handlerPayload = { ...payload };
+    delete handlerPayload.agentCredentialGrant;
+    const result = await handler(handlerPayload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception.

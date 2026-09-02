@@ -312,8 +312,8 @@ resource "aws_iam_role_policy" "agentcore" {
           Resource = "*"
         },
         {
-          # Git credentials are fetched just-in-time from the broker. Provider
-          # review operations use the token-owning source-control service.
+          # Git and agent credentials are fetched just-in-time from the broker.
+          # Provider review operations use the token-owning source-control service.
           Effect = "Allow"
           Action = ["lambda:InvokeFunction"]
           Resource = [
@@ -362,18 +362,13 @@ resource "aws_iam_role_policy" "agentcore" {
       ] : [],
       [
         {
-          # Read agent model settings plus invocation-scoped platform, space,
-          # and user credentials (no Bedrock IAM — Claude/Kiro authenticate
-          # via the bearer token / API key).
+          # Read non-secret agent model settings. Agent credentials are resolved
+          # only through the credential broker using a signed invocation grant.
           Effect = "Allow"
           Action = ["ssm:GetParameter", "ssm:GetParameters"]
           Resource = [
-            aws_ssm_parameter.bedrock_bearer_token.arn,
-            aws_ssm_parameter.kiro_api_key.arn,
             aws_ssm_parameter.cli_models.arn,
             aws_ssm_parameter.tier_models.arn,
-            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
-            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
           ]
         },
         {
@@ -671,7 +666,6 @@ resource "awscc_bedrockagentcore_runtime" "stage_executor" {
     AWS_REGION                 = var.aws_region
     CREDENTIAL_BROKER_FUNCTION = "${var.project_name}-credential-broker-${var.environment}"
     SOURCE_CONTROL_FUNCTION    = "${var.project_name}-source-control-${var.environment}"
-    AGENT_SETTINGS_SSM_PREFIX  = "/${var.project_name}/${var.environment}"
     # Base SSM prefix for MCP secret resolution ({prefix}/mcp-secrets/<VAR> and
     # {prefix}/projects/<id>/mcp-secrets/<VAR>).
     MCP_SECRETS_SSM_PREFIX = "/${var.project_name}/${var.environment}"

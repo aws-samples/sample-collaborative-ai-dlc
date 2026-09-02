@@ -331,6 +331,7 @@ beforeAll(async () => {
   vi.stubEnv('V2_ORCHESTRATOR_FUNCTION', 'orchestrator-test');
   vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control-test');
   vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
+  vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
   const imported = await import('../index.js');
@@ -1706,6 +1707,7 @@ describe('POST /compose — composer sessions', () => {
         requestedCli: 'kiro',
         credentialBinding: { provider: 'kiro', source: 'platform' },
       });
+      expect(typeof payload.agentCredentialGrant).toBe('string');
       expect(payload.prompt).toContain('Do something ambiguous');
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;

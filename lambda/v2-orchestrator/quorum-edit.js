@@ -23,6 +23,9 @@
 // as index.js. Callback names carry the editId so two edits are distinct
 // durable identities.
 
+import { credentialProviderForCli } from '../shared/agent-credentials.js';
+import { commandDefinition } from '../shared/agent-command-registry.js';
+
 const nowIso = () => new Date().toISOString();
 
 // The plan phase is one bounded LLM call over a small artifact set; the apply
@@ -50,7 +53,7 @@ const decodeCallback = (raw) => {
 };
 
 export const runQuorumEdit = async (event, ctx, deps) => {
-  const { store, invokeRuntime, stopSession, broadcast } = deps;
+  const { store, invokeRuntime: rawInvokeRuntime, stopSession, broadcast } = deps;
   const { intentId, executionId, editId } = event;
   if (!intentId || !executionId || !editId) return { ok: false, reason: 'missing_identity' };
 
@@ -60,6 +63,23 @@ export const runQuorumEdit = async (event, ctx, deps) => {
   if (!edit) return { ok: false, reason: 'quorum_edit_not_found' };
   const { projectId } = meta;
   const sessionId = quorumEditSessionIdFor(intentId);
+  const credentialProvider = credentialProviderForCli(meta.agentCli);
+  const credentialBinding =
+    meta.credentialBinding ??
+    (credentialProvider ? { provider: credentialProvider, source: 'platform' } : null);
+  const invokeRuntime = async (payload) => {
+    const authMode = commandDefinition(payload.command)?.agentAuth;
+    if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
+      return rawInvokeRuntime(payload, sessionId);
+    }
+    const agentCredentialGrant = await deps.issueAgentCredentialGrant({
+      purpose: authMode,
+      projectId,
+      executionId,
+      bindings: [credentialBinding],
+    });
+    return rawInvokeRuntime({ ...payload, agentCredentialGrant }, sessionId);
+  };
 
   // Timeline event + payload-blind reload hint, both best-effort and inside a
   // durable step (a replayed broadcast is harmless — the UI just refetches).

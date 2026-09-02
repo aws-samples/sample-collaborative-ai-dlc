@@ -125,6 +125,7 @@ beforeEach(() => {
       plan: { stages: [{ stageId: 'a' }, { stageId: 'b' }] },
     })),
     invokeRuntime: null, // bound to ctx below
+    issueAgentCredentialGrant: vi.fn(async () => 'test-agent-credential-grant'),
     stopSession: vi.fn(async () => ({ stopped: true })),
     broadcast: vi.fn(async () => {}),
     openPr: vi.fn(async () => ({ skipped: true, reason: 'no_changes' })),
@@ -172,7 +173,10 @@ describe('orchestrator durable handler', () => {
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
     const starts = stageStarts();
     expect(starts.length).toBe(2);
-    for (const s of starts) expect(s.stageCallbackId).toMatch(/^cb-stage-cb-/);
+    for (const s of starts) {
+      expect(s.stageCallbackId).toMatch(/^cb-stage-cb-/);
+      expect(s.agentCredentialGrant).toBe('test-agent-credential-grant');
+    }
     // Distinct callback per stage attempt (attribution).
     expect(new Set(starts.map((s) => s.stageCallbackId)).size).toBe(2);
   });

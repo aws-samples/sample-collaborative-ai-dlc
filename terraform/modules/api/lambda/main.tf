@@ -451,6 +451,13 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
         ]
       },
+      {
+        # Sign short-lived, binding-scoped grants for AgentCore capability
+        # probes. This key is read-only and is never exposed to AgentCore.
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = var.agent_credential_grant_secret_param_arn
+      },
       # GLOBAL-tier MCP secrets (one SecureString per referenced ${VAR}). The
       # agents lambda lists them (set-state only, no decrypt), rotates (Put) and
       # clears (Delete) them from the Admin MCP editor. Kept in a SEPARATE
@@ -901,6 +908,19 @@ resource "aws_iam_role_policy" "credential_broker" {
         Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/git-token/*"
       },
       {
+        # AgentCore presents a signed, short-lived grant; the broker alone
+        # decrypts the exact platform/space/user binding named by that grant.
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          var.agent_credential_grant_secret_param_arn,
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
+        ]
+      },
+      {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = [var.github_app_config_param_arn]
@@ -944,15 +964,17 @@ module "credential_broker_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
-    V2_PROCESS_TABLE                   = var.v2_executions_table_name
-    SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
-    GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
-    GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
-    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
-    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
-    GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
-    GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
-    BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
+    V2_PROCESS_TABLE                    = var.v2_executions_table_name
+    SOURCE_CONTROL_BINDINGS_TABLE       = var.source_control_bindings_table_name
+    GIT_CONNECTIONS_TABLE               = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE      = var.git_provider_connections_table_name
+    GITHUB_APP_CONFIG_PARAM             = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME  = var.github_app_private_key_secret_name
+    GITLAB_OAUTH_SECRET_NAME            = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI                 = var.gitlab_redirect_uri
+    BITBUCKET_OAUTH_SECRET_NAME         = var.bitbucket_oauth_secret_name
+    AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
+    AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
   }
 }
 
@@ -1718,9 +1740,12 @@ resource "aws_iam_role_policy" "discussions" {
     Statement = [
       local.neptune_statement,
       {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
-        Resource = var.realtime_doc_secret_param_arn
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          var.realtime_doc_secret_param_arn,
+          var.agent_credential_grant_secret_param_arn,
+        ]
       },
       {
         Effect = "Allow"
@@ -1739,6 +1764,13 @@ resource "aws_iam_role_policy" "discussions" {
           var.discussion_locks_table_arn,
           var.discussion_read_state_table_arn,
         ]
+      },
+      {
+        # Started discussion assists stay on the intent's pinned credential
+        # binding; read only META to sign that exact binding into the grant.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = var.v2_executions_table_arn
       },
       {
         Effect   = "Allow"
@@ -1786,16 +1818,18 @@ module "discussions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT          = var.neptune_endpoint
-    ENVIRONMENT               = var.environment
-    CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
-    REALTIME_SECRET_PARAM     = var.realtime_doc_secret_param_name
-    LOCKS_TABLE               = var.discussion_locks_table_name
-    READ_STATE_TABLE          = var.discussion_read_state_table_name
-    CONNECTIONS_TABLE         = var.connections_table_name
-    WEBSOCKET_ENDPOINT        = var.websocket_api_endpoint_https
-    AGENTCORE_RUNTIME_ARN     = var.agentcore_runtime_arn
-    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    NEPTUNE_ENDPOINT                    = var.neptune_endpoint
+    ENVIRONMENT                         = var.environment
+    CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
+    REALTIME_SECRET_PARAM               = var.realtime_doc_secret_param_name
+    LOCKS_TABLE                         = var.discussion_locks_table_name
+    READ_STATE_TABLE                    = var.discussion_read_state_table_name
+    V2_PROCESS_TABLE                    = var.v2_executions_table_name
+    CONNECTIONS_TABLE                   = var.connections_table_name
+    WEBSOCKET_ENDPOINT                  = var.websocket_api_endpoint_https
+    AGENTCORE_RUNTIME_ARN               = var.agentcore_runtime_arn
+    AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
+    AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
@@ -2120,6 +2154,7 @@ resource "aws_iam_role_policy" "intents" {
         Action = ["ssm:GetParameter"]
         Resource = [
           var.realtime_doc_secret_param_arn,
+          var.agent_credential_grant_secret_param_arn,
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           # Admin global tier-models config (agent tier → model rows + fallback
           # + quorum), merged under the project's tier_models at intent create.
@@ -2255,7 +2290,8 @@ module "intents_lambda" {
     YJS_DOCUMENTS_TABLE = var.yjs_documents_table_name
     # Admin global cli-models default lives under this SSM prefix; the intents
     # lambda merges it under the project selection at intent create.
-    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
+    AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     # The AgentCore stage-executor runtime — for the manual derive backfill
     # (POST .../intents/{id}/derive, platform admin).
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
@@ -2433,6 +2469,13 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
         Resource = [local.source_control_function_arn]
+      },
+      {
+        # Sign a fresh binding-scoped grant immediately before each AgentCore
+        # invocation. The runtime can redeem it but cannot mint another.
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = var.agent_credential_grant_secret_param_arn
       }
     ]
   })
@@ -2476,12 +2519,13 @@ module "v2_orchestrator_lambda" {
   lambda_role = aws_iam_role.v2_orchestrator.arn
 
   environment_variables = {
-    ENVIRONMENT             = var.environment
-    APPLICATION_URL         = var.application_url
-    V2_PROCESS_TABLE        = var.v2_executions_table_name
-    BLOCKS_TABLE            = var.blocks_table_name
-    AGENTCORE_RUNTIME_ARN   = var.agentcore_runtime_arn
-    SOURCE_CONTROL_FUNCTION = module.source_control_lambda.lambda_function_name
+    ENVIRONMENT                         = var.environment
+    APPLICATION_URL                     = var.application_url
+    V2_PROCESS_TABLE                    = var.v2_executions_table_name
+    BLOCKS_TABLE                        = var.blocks_table_name
+    AGENTCORE_RUNTIME_ARN               = var.agentcore_runtime_arn
+    SOURCE_CONTROL_FUNCTION             = module.source_control_lambda.lambda_function_name
+    AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts

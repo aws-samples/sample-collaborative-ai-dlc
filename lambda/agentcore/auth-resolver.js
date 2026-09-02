@@ -2,22 +2,28 @@
 //
 // AgentCore sessions are long-lived and can serve different authenticated
 // callers. Secrets must therefore never be installed into process.env. Each
-// invocation resolves the server-generated credential binding, clones the
-// non-secret base environment, and adds only the selected provider's secret.
-// A rotation at the bound SSM path is visible on the next invocation; clearing
-// it leaves the selected CLI unavailable and never falls back to another scope.
+// invocation derives the expected server-side binding, redeems a signed grant
+// through the credential broker, clones the non-secret base environment, and
+// adds only the selected provider's secret. AgentCore never reads credential
+// SSM paths directly. A rotation at the bound path is visible on the next
+// invocation; clearing it never falls back to another scope.
 
-import { SSMClient } from '@aws-sdk/client-ssm';
 import {
   AGENT_CREDENTIAL_PROVIDERS,
   credentialEnvName,
   credentialProviderForCli,
   normalizeCredentialBinding,
-  readCredentialBindingValue,
 } from '../shared/agent-credentials.js';
 import { AGENT_AUTH_MODES } from './command-registry.js';
+import { invokeCredentialBroker } from './clients.js';
 
 const AUTH_ENV_NAMES = AGENT_CREDENTIAL_PROVIDERS.map(credentialEnvName);
+const bindingKey = (binding) =>
+  `${binding.provider}:${binding.source}:${binding.source === 'user' ? binding.userId : ''}`;
+const grantMismatch = () =>
+  Object.assign(new Error('Agent credential grant does not match this invocation'), {
+    code: 'credential_grant_mismatch',
+  });
 
 const cleanBaseEnv = (env) => {
   const invocationEnv = { ...env };
@@ -104,40 +110,84 @@ export const resolveInvocationAgentAuth = async ({
   authMode = AGENT_AUTH_MODES.EXECUTION,
   store = null,
   env = process.env,
-  ssm = null,
+  broker = invokeCredentialBroker,
 } = {}) => {
   const invocationEnv = cleanBaseEnv(env);
-  const base = env.AGENT_SETTINGS_SSM_PREFIX || env.MCP_SECRETS_SSM_PREFIX || '';
-  const client = ssm ?? new SSMClient({ region: env.AWS_REGION || 'us-east-1' });
   let meta = null;
   const executionId = payload.executionId || payload.intentId || null;
   if (executionId && store?.getExecution) {
     meta = await store.getExecution(executionId);
   }
+  const projectId = meta?.projectId ?? payload.projectId ?? null;
 
   const resolveBindings =
     typeof authMode === 'string' && Object.hasOwn(bindingResolvers, authMode)
       ? bindingResolvers[authMode]
       : null;
   if (!resolveBindings) throw new Error(`Unsupported agent auth mode: ${authMode}`);
-  const bindings = resolveBindings({ payload, meta });
+  const bindings = resolveBindings({ payload, meta }).map(normalizeCredentialBinding);
 
   const credentialBindings = [];
   const resolvedProviders = [];
   const missingProviders = [];
   const missingCredentialBindings = [];
-  for (const rawBinding of bindings) {
-    const binding = normalizeCredentialBinding(rawBinding);
+  if (bindings.length === 0) {
+    return {
+      env: invocationEnv,
+      credentialBindings,
+      resolvedProviders,
+      missingProviders,
+      missingCredentialBindings,
+    };
+  }
+  if (!payload.agentCredentialGrant) {
+    throw Object.assign(new Error('Agent credential grant is required'), {
+      code: 'credential_grant_required',
+    });
+  }
+  const brokerResult = await broker({
+    action: 'resolve-agent-credentials',
+    grant: payload.agentCredentialGrant,
+  });
+  if (
+    brokerResult.purpose !== authMode ||
+    (brokerResult.projectId ?? null) !== projectId ||
+    (brokerResult.executionId ?? null) !== executionId ||
+    !Array.isArray(brokerResult.credentials)
+  ) {
+    throw grantMismatch();
+  }
+  const authorized = new Map();
+  try {
+    for (const credential of brokerResult.credentials) {
+      const binding = normalizeCredentialBinding(credential?.binding);
+      authorized.set(bindingKey(binding), {
+        binding,
+        value: typeof credential?.value === 'string' ? credential.value : '',
+      });
+    }
+  } catch {
+    throw grantMismatch();
+  }
+  if (brokerResult.credentials.length !== authorized.size) {
+    throw grantMismatch();
+  }
+  const expectedKeys = bindings.map(bindingKey).toSorted();
+  const authorizedKeys = [...authorized.keys()].toSorted();
+  if (
+    expectedKeys.length !== authorizedKeys.length ||
+    expectedKeys.some((key, index) => key !== authorizedKeys[index])
+  ) {
+    throw grantMismatch();
+  }
+
+  for (const binding of bindings) {
     const credentialBinding = {
       provider: binding.provider,
       source: binding.source,
     };
     credentialBindings.push(credentialBinding);
-    const value = await readCredentialBindingValue(client, {
-      base,
-      binding,
-      projectId: payload.projectId || meta?.projectId || null,
-    });
+    const value = authorized.get(bindingKey(binding))?.value || '';
     if (!value) {
       missingProviders.push(binding.provider);
       missingCredentialBindings.push(credentialBinding);

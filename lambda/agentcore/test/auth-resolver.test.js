@@ -4,15 +4,19 @@ import { AGENT_AUTH_MODES } from '../command-registry.js';
 
 describe('resolveInvocationAgentAuth', () => {
   it('keeps concurrent users in separate invocation environments', async () => {
-    const values = new Map([
-      ['/app/dev/users/u-1/agent-credentials/kiro-api-key', 'kiro-user-1'],
-      ['/app/dev/users/u-2/agent-credentials/kiro-api-key', 'kiro-user-2'],
-    ]);
-    const ssm = {
-      send: async ({ input }) => {
-        const value = values.get(input.Name);
-        return value ? { Parameter: { Name: input.Name, Value: value } } : {};
-      },
+    const broker = async ({ grant }) => {
+      const userId = grant === 'grant-u-1' ? 'u-1' : 'u-2';
+      return {
+        purpose: 'execution',
+        projectId: 'p-1',
+        executionId: grant === 'grant-u-1' ? 'e1' : 'e2',
+        credentials: [
+          {
+            binding: { provider: 'kiro', source: 'user', userId },
+            value: `kiro-user-${userId.slice(-1)}`,
+          },
+        ],
+      };
     };
     const metas = {
       e1: {
@@ -35,16 +39,26 @@ describe('resolveInvocationAgentAuth', () => {
 
     const [one, two] = await Promise.all([
       resolveInvocationAgentAuth({
-        payload: { command: 'run-stage', executionId: 'e1', requestedCli: 'kiro' },
+        payload: {
+          command: 'run-stage',
+          executionId: 'e1',
+          requestedCli: 'kiro',
+          agentCredentialGrant: 'grant-u-1',
+        },
         store,
         env: baseEnv,
-        ssm,
+        broker,
       }),
       resolveInvocationAgentAuth({
-        payload: { command: 'run-stage', executionId: 'e2', requestedCli: 'kiro' },
+        payload: {
+          command: 'run-stage',
+          executionId: 'e2',
+          requestedCli: 'kiro',
+          agentCredentialGrant: 'grant-u-2',
+        },
         store,
         env: baseEnv,
-        ssm,
+        broker,
       }),
     ]);
 
@@ -59,14 +73,13 @@ describe('resolveInvocationAgentAuth', () => {
   });
 
   it('does not fall back when a pinned credential was cleared', async () => {
-    const ssm = {
-      send: async ({ input }) =>
-        input.Name === '/app/dev/kiro-api-key'
-          ? { Parameter: { Name: input.Name, Value: 'platform-key' } }
-          : {},
-    };
     const result = await resolveInvocationAgentAuth({
-      payload: { command: 'run-stage', executionId: 'e1', requestedCli: 'kiro' },
+      payload: {
+        command: 'run-stage',
+        executionId: 'e1',
+        requestedCli: 'kiro',
+        agentCredentialGrant: 'grant-user',
+      },
       store: {
         getExecution: async () => ({
           projectId: 'p-1',
@@ -75,7 +88,17 @@ describe('resolveInvocationAgentAuth', () => {
         }),
       },
       env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
-      ssm,
+      broker: async () => ({
+        purpose: 'execution',
+        projectId: 'p-1',
+        executionId: 'e1',
+        credentials: [
+          {
+            binding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+            value: null,
+          },
+        ],
+      }),
     });
     expect(result.env.KIRO_API_KEY).toBeUndefined();
     expect(result.missingProviders).toEqual(['kiro']);
@@ -96,13 +119,24 @@ describe('resolveInvocationAgentAuth', () => {
           bedrock: { provider: 'bedrock', source: 'platform' },
           kiro: { provider: 'kiro', source: 'platform' },
         },
+        agentCredentialGrant: 'grant-platform',
       },
       env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
-      ssm: {
-        send: async ({ input }) => ({
-          Parameter: { Name: input.Name, Value: values.get(input.Name) },
-        }),
-      },
+      broker: async () => ({
+        purpose: 'capabilities',
+        projectId: null,
+        executionId: null,
+        credentials: [
+          {
+            binding: { provider: 'bedrock', source: 'platform' },
+            value: values.get('/app/dev/bedrock-bearer-token'),
+          },
+          {
+            binding: { provider: 'kiro', source: 'platform' },
+            value: values.get('/app/dev/kiro-api-key'),
+          },
+        ],
+      }),
     });
 
     expect(result.env).toMatchObject({
@@ -113,7 +147,9 @@ describe('resolveInvocationAgentAuth', () => {
   });
 
   it('never falls back to a platform key when pre-start compose has no binding', async () => {
-    const reads = [];
+    const broker = async () => {
+      throw new Error('broker should not be called');
+    };
     const result = await resolveInvocationAgentAuth({
       authMode: AGENT_AUTH_MODES.COMPOSE,
       payload: {
@@ -124,19 +160,12 @@ describe('resolveInvocationAgentAuth', () => {
       },
       store: { getExecution: async () => ({ projectId: 'p-1', status: 'DRAFT' }) },
       env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
-      ssm: {
-        send: async ({ input }) => {
-          reads.push(input.Name);
-          return { Parameter: { Name: input.Name, Value: 'platform-key' } };
-        },
-      },
+      broker,
     });
-    expect(reads).toEqual([]);
     expect(result.env.KIRO_API_KEY).toBeUndefined();
   });
 
   it('uses the legacy platform credential for an in-flight compose without a binding', async () => {
-    const reads = [];
     const result = await resolveInvocationAgentAuth({
       authMode: AGENT_AUTH_MODES.COMPOSE,
       payload: {
@@ -145,6 +174,7 @@ describe('resolveInvocationAgentAuth', () => {
         executionId: 'e1',
         mode: 'inflight',
         requestedCli: 'kiro',
+        agentCredentialGrant: 'grant-platform',
       },
       store: {
         getExecution: async () => ({
@@ -154,15 +184,19 @@ describe('resolveInvocationAgentAuth', () => {
         }),
       },
       env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
-      ssm: {
-        send: async ({ input }) => {
-          reads.push(input.Name);
-          return { Parameter: { Name: input.Name, Value: 'platform-key' } };
-        },
-      },
+      broker: async () => ({
+        purpose: 'compose',
+        projectId: 'p-1',
+        executionId: 'e1',
+        credentials: [
+          {
+            binding: { provider: 'kiro', source: 'platform' },
+            value: 'platform-key',
+          },
+        ],
+      }),
     });
 
-    expect(reads).toEqual(['/app/dev/kiro-api-key']);
     expect(result.env.KIRO_API_KEY).toBe('platform-key');
     expect(result.credentialBindings).toEqual([{ provider: 'kiro', source: 'platform' }]);
   });
@@ -176,6 +210,7 @@ describe('resolveInvocationAgentAuth', () => {
         intentId: 'e1',
         requestedCli: 'kiro',
         credentialBinding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+        agentCredentialGrant: 'grant-user',
       },
       store: {
         getExecution: async () => ({
@@ -186,12 +221,17 @@ describe('resolveInvocationAgentAuth', () => {
         }),
       },
       env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
-      ssm: {
-        send: async ({ input }) =>
-          input.Name === '/app/dev/users/u-1/agent-credentials/kiro-api-key'
-            ? { Parameter: { Name: input.Name, Value: 'draft-user-key' } }
-            : {},
-      },
+      broker: async () => ({
+        purpose: 'discussion',
+        projectId: 'p-1',
+        executionId: 'e1',
+        credentials: [
+          {
+            binding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+            value: 'draft-user-key',
+          },
+        ],
+      }),
     });
 
     expect(result.env.KIRO_API_KEY).toBe('draft-user-key');
@@ -202,10 +242,6 @@ describe('resolveInvocationAgentAuth', () => {
   });
 
   it('keeps a started discussion assist on the intent pinned binding', async () => {
-    const values = new Map([
-      ['/app/dev/users/starter/agent-credentials/kiro-api-key', 'starter-key'],
-      ['/app/dev/users/collaborator/agent-credentials/kiro-api-key', 'collaborator-key'],
-    ]);
     const result = await resolveInvocationAgentAuth({
       authMode: AGENT_AUTH_MODES.DISCUSSION,
       payload: {
@@ -218,6 +254,7 @@ describe('resolveInvocationAgentAuth', () => {
           source: 'user',
           userId: 'collaborator',
         },
+        agentCredentialGrant: 'grant-starter',
       },
       store: {
         getExecution: async () => ({
@@ -228,11 +265,17 @@ describe('resolveInvocationAgentAuth', () => {
         }),
       },
       env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
-      ssm: {
-        send: async ({ input }) => ({
-          Parameter: { Name: input.Name, Value: values.get(input.Name) },
-        }),
-      },
+      broker: async () => ({
+        purpose: 'discussion',
+        projectId: 'p-1',
+        executionId: 'e1',
+        credentials: [
+          {
+            binding: { provider: 'kiro', source: 'user', userId: 'starter' },
+            value: 'starter-key',
+          },
+        ],
+      }),
     });
 
     expect(result.env.KIRO_API_KEY).toBe('starter-key');
@@ -248,8 +291,121 @@ describe('resolveInvocationAgentAuth', () => {
           credentialBinding: { provider: 'bedrock', source: 'platform' },
         },
         env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
-        ssm: { send: async () => ({}) },
+        broker: async () => ({ purpose: 'compose', credentials: [] }),
       }),
     ).rejects.toMatchObject({ code: 'credential_binding_mismatch' });
+  });
+
+  it('requires a signed grant when an invocation needs a credential', async () => {
+    await expect(
+      resolveInvocationAgentAuth({
+        payload: { command: 'run-stage', executionId: 'e1', requestedCli: 'kiro' },
+        store: {
+          getExecution: async () => ({
+            projectId: 'p-1',
+            agentCli: 'kiro',
+            credentialBinding: { provider: 'kiro', source: 'space' },
+          }),
+        },
+        broker: async () => ({ purpose: 'execution', credentials: [] }),
+      }),
+    ).rejects.toMatchObject({ code: 'credential_grant_required' });
+  });
+
+  it('rejects a grant for a different binding', async () => {
+    await expect(
+      resolveInvocationAgentAuth({
+        payload: {
+          command: 'run-stage',
+          executionId: 'e1',
+          requestedCli: 'kiro',
+          agentCredentialGrant: 'grant-other-user',
+        },
+        store: {
+          getExecution: async () => ({
+            projectId: 'p-1',
+            agentCli: 'kiro',
+            credentialBinding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+          }),
+        },
+        broker: async () => ({
+          purpose: 'execution',
+          projectId: 'p-1',
+          executionId: 'e1',
+          credentials: [
+            {
+              binding: { provider: 'kiro', source: 'user', userId: 'u-2' },
+              value: 'wrong-user-key',
+            },
+          ],
+        }),
+      }),
+    ).rejects.toMatchObject({ code: 'credential_grant_mismatch' });
+  });
+
+  it('rejects a grant for another project even when the space binding shape matches', async () => {
+    await expect(
+      resolveInvocationAgentAuth({
+        payload: {
+          command: 'run-stage',
+          executionId: 'e1',
+          requestedCli: 'kiro',
+          agentCredentialGrant: 'grant-project-2',
+        },
+        store: {
+          getExecution: async () => ({
+            projectId: 'p-1',
+            agentCli: 'kiro',
+            credentialBinding: { provider: 'kiro', source: 'space' },
+          }),
+        },
+        broker: async () => ({
+          purpose: 'execution',
+          projectId: 'p-2',
+          executionId: 'e1',
+          credentials: [
+            {
+              binding: { provider: 'kiro', source: 'space' },
+              value: 'other-project-key',
+            },
+          ],
+        }),
+      }),
+    ).rejects.toMatchObject({ code: 'credential_grant_mismatch' });
+  });
+
+  it('rejects duplicate credentials returned for one granted binding', async () => {
+    await expect(
+      resolveInvocationAgentAuth({
+        payload: {
+          command: 'run-stage',
+          executionId: 'e1',
+          requestedCli: 'kiro',
+          agentCredentialGrant: 'grant-duplicate',
+        },
+        store: {
+          getExecution: async () => ({
+            projectId: 'p-1',
+            agentCli: 'kiro',
+            credentialBinding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+          }),
+        },
+        broker: async () => ({
+          purpose: 'execution',
+          projectId: 'p-1',
+          executionId: 'e1',
+          credentials: [
+            {
+              binding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+              value: 'first',
+            },
+            {
+              binding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+              value: 'second',
+            },
+          ],
+        }),
+      }),
+    ).rejects.toMatchObject({ code: 'credential_grant_mismatch' });
   });
 });

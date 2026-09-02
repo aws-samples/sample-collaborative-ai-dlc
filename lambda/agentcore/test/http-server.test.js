@@ -89,14 +89,17 @@ describe('dispatchInvocation', () => {
 
   it('prepares agent credentials for CLI-consuming commands', async () => {
     const prepareInvocation = vi.fn(async () => ({ availableClis: ['kiro'] }));
+    const runStage = vi.fn(async (_payload, context) => ({
+      ok: true,
+      availableClis: context.availableClis,
+    }));
     const result = await dispatchInvocation({
-      payload: { command: 'run-stage', stageId: 's1' },
-      handlers: {
-        runStage: async (_payload, context) => ({
-          ok: true,
-          availableClis: context.availableClis,
-        }),
+      payload: {
+        command: 'run-stage',
+        stageId: 's1',
+        agentCredentialGrant: 'signed-grant',
       },
+      handlers: { runStage },
       prepareInvocation,
     });
 
@@ -105,8 +108,16 @@ describe('dispatchInvocation', () => {
       body: { ok: true, availableClis: ['kiro'], command: 'run-stage' },
     });
     expect(prepareInvocation).toHaveBeenCalledWith(
-      { command: 'run-stage', stageId: 's1' },
+      {
+        command: 'run-stage',
+        stageId: 's1',
+        agentCredentialGrant: 'signed-grant',
+      },
       AGENT_AUTH_MODES.EXECUTION,
+    );
+    expect(runStage).toHaveBeenCalledWith(
+      { command: 'run-stage', stageId: 's1' },
+      { availableClis: ['kiro'] },
     );
   });
 

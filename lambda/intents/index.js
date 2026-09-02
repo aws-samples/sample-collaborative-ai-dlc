@@ -70,6 +70,7 @@ import {
   credentialProviderForCli,
   resolveEffectiveCredentialBindings,
 } from '../shared/agent-credentials.js';
+import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
@@ -148,6 +149,27 @@ const resolveSelectedAgentCredential = async ({ projectId, userId, agentCli }) =
     };
   }
   return { provider, credentialBinding };
+};
+
+const issueInvocationAgentCredentialGrant = async ({
+  purpose,
+  projectId,
+  executionId,
+  credentialBinding = null,
+  agentCli = null,
+}) => {
+  const binding =
+    credentialBinding ??
+    (credentialProviderForCli(agentCli)
+      ? { provider: credentialProviderForCli(agentCli), source: 'platform' }
+      : null);
+  if (!binding) return null;
+  return issueAgentCredentialGrant(ssm, {
+    purpose,
+    projectId,
+    executionId,
+    bindings: [binding],
+  });
 };
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
@@ -1720,6 +1742,13 @@ export const handler = async (event) => {
       let derived = false;
       if (AGENTCORE_RUNTIME_ARN() && artifact.artifactType) {
         try {
+          const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+            purpose: 'execution',
+            projectId,
+            executionId: intentId,
+            credentialBinding: records.meta.credentialBinding,
+            agentCli: records.meta.agentCli,
+          });
           const res = await agentcore.send(
             new InvokeAgentRuntimeCommand({
               agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
@@ -1737,6 +1766,7 @@ export const handler = async (event) => {
                   ...(records.meta.agentCli ? { requestedCli: records.meta.agentCli } : {}),
                   ...(records.meta.cliModels ? { cliModels: records.meta.cliModels } : {}),
                   ...(records.meta.tierModels ? { tierModels: records.meta.tierModels } : {}),
+                  ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
                 }),
               ),
             }),
@@ -2764,6 +2794,13 @@ export const handler = async (event) => {
         reportKey,
       });
       try {
+        const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+          purpose: 'compose',
+          projectId,
+          executionId: intentId,
+          credentialBinding,
+          agentCli: requestedCli,
+        });
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
             agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
@@ -2791,6 +2828,7 @@ export const handler = async (event) => {
                 prompt: intentText,
                 requestedCli,
                 ...(credentialBinding ? { credentialBinding } : {}),
+                ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
                 ...(instructions ? { instructions } : {}),
                 ...(repoSignals ? { repoSignals } : {}),
                 ...(reportExcerpt ? { reportExcerpt } : {}),
@@ -3037,13 +3075,25 @@ export const handler = async (event) => {
         ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
       };
       try {
+        const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+          purpose: 'execution',
+          projectId,
+          executionId: intentId,
+          credentialBinding: meta.credentialBinding,
+          agentCli: meta.agentCli,
+        });
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
             agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
             runtimeSessionId: runtimeSessionIdFor(intentId),
             contentType: 'application/json',
             accept: 'application/json',
-            payload: Buffer.from(JSON.stringify(payload)),
+            payload: Buffer.from(
+              JSON.stringify({
+                ...payload,
+                ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+              }),
+            ),
           }),
         );
         const text = res.response ? await res.response.transformToString() : '';

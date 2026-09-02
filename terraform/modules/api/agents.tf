@@ -50,11 +50,12 @@ module "agents_lambda" {
   vpc_security_group_ids = var.lambda_security_group_ids
 
   environment_variables = {
-    QUESTIONS_TABLE           = var.agent_questions_table_name
-    NEPTUNE_ENDPOINT          = var.neptune_endpoint
-    AGENT_OUTPUTS_TABLE       = var.agent_outputs_table_name
-    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-    CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
+    QUESTIONS_TABLE                     = var.agent_questions_table_name
+    NEPTUNE_ENDPOINT                    = var.neptune_endpoint
+    AGENT_OUTPUTS_TABLE                 = var.agent_outputs_table_name
+    AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
+    AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
+    CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
     # v2 model discovery: lets GET /agents/capabilities?models=1 invoke the
     # runtime's `capabilities` command for Kiro's model list + auth state.
     AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
