@@ -75,16 +75,18 @@ const readObject = async ({ s3, bucket, key, versionId = null }) => {
   return bodyToBuffer(result.Body);
 };
 
-const isNotFound = (error) =>
+const isCacheMiss = (error) =>
   error?.name === 'NoSuchKey' ||
   error?.name === 'NotFound' ||
-  error?.$metadata?.httpStatusCode === 404;
+  [403, 404].includes(error?.$metadata?.httpStatusCode);
 
 const readObjectIfPresent = async (options) => {
   try {
     return await readObject(options);
   } catch (error) {
-    if (isNotFound(error)) return null;
+    // S3 may mask a missing object as 403 when ListBucket is unavailable or
+    // its prefix condition is not present in the GetObject request context.
+    if (isCacheMiss(error)) return null;
     throw error;
   }
 };

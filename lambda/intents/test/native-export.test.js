@@ -236,7 +236,10 @@ describe('native workflow export', () => {
     ).toBe(true);
   });
 
-  it('downloads and caches a missing harness for the exact commit', async () => {
+  it.each([
+    ['NoSuchKey', { name: 'NoSuchKey' }],
+    ['a masked 403', { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }],
+  ])('downloads and caches a harness after %s cache misses', async (_name, errorFields) => {
     const { distributionFiles } = await distribution();
     fetchRepoFiles.mockResolvedValueOnce(
       new Map([...distributionFiles].map(([path, value]) => [`dist/codex/${path}`, value])),
@@ -249,7 +252,7 @@ describe('native workflow export', () => {
           return {};
         }
         const error = new Error('missing');
-        error.name = 'NoSuchKey';
+        Object.assign(error, errorFields);
         throw error;
       }),
     };
