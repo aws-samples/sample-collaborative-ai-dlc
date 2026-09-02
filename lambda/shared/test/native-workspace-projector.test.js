@@ -174,6 +174,59 @@ describe('projectNativeWorkspace', () => {
     );
   });
 
+  it('projects a stage skipped for every unit as SKIPPED without synthetic timeline entries', () => {
+    const value = input();
+    value.stageRows[1].state = 'SUCCEEDED';
+    value.stages[2].forEach = 'unit-of-work';
+    value.unitPlan = {
+      units: [
+        { slug: 'a', dependsOn: [] },
+        { slug: 'b', dependsOn: [] },
+      ],
+      skipMatrix: {
+        a: ['code-generation'],
+        b: ['code-generation'],
+      },
+    };
+
+    const result = projectNativeWorkspace(value);
+    const root = 'aidlc/spaces/default/intents/260811-payment-service';
+    expect(result.files.get(`${root}/aidlc-state.md`)).toContain('- [S] code-generation — SKIP');
+    expect(
+      JSON.parse(result.files.get(`${root}/runtime-graph.json`)).stages.some(
+        (stage) => stage.stage_slug === 'code-generation',
+      ),
+    ).toBe(false);
+    expect(result.files.get(`${root}/audit/export.md`)).not.toContain('**Stage**: code-generation');
+  });
+
+  it('projects a per-unit stage as SUCCEEDED when at least one unit succeeded', () => {
+    const value = input();
+    value.stageRows = [
+      { stageId: 'intent-capture', state: 'SUCCEEDED' },
+      { stageId: 'requirements-analysis', state: 'SUCCEEDED' },
+      { stageId: 'code-generation', state: 'SUCCEEDED', unitSlug: 'a' },
+      { stageId: 'code-generation', state: 'SKIPPED', unitSlug: 'b' },
+    ];
+    value.stages[2].forEach = 'unit-of-work';
+    value.unitPlan = {
+      units: [
+        { slug: 'a', dependsOn: [] },
+        { slug: 'b', dependsOn: [] },
+      ],
+      skipMatrix: { b: ['code-generation'] },
+    };
+
+    const result = projectNativeWorkspace(value);
+    const root = 'aidlc/spaces/default/intents/260811-payment-service';
+    expect(result.files.get(`${root}/aidlc-state.md`)).toContain('- [x] code-generation — EXECUTE');
+    expect(
+      JSON.parse(result.files.get(`${root}/runtime-graph.json`)).stages.some(
+        (stage) => stage.stage_slug === 'code-generation',
+      ),
+    ).toBe(true);
+  });
+
   it('projects a partial Construction checkpoint with the complete Bolt DAG', () => {
     const value = input();
     value.stages[2].forEach = 'unit-of-work';
