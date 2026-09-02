@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   BatchWriteCommand,
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
@@ -120,18 +121,37 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
-  // One atomic item is the latest-checkpoint pointer and its bounded process
-  // snapshot; overwriting it cannot expose a partially published checkpoint.
+  // Publish the latest checkpoint only while the originating orchestrator still
+  // owns META. The condition and put must share one transaction because they
+  // target different items in the execution partition.
   const putWorkflowCheckpoint = async (checkpoint) => {
-    if (!checkpoint?.executionId || !checkpoint?.checkpointId) {
-      throw new Error('putWorkflowCheckpoint requires executionId and checkpointId');
+    if (!checkpoint?.executionId || !checkpoint?.checkpointId || !checkpoint?.orchestratorRunId) {
+      throw new Error(
+        'putWorkflowCheckpoint requires executionId, checkpointId, and orchestratorRunId',
+      );
     }
     const item = {
       ...workflowCheckpointKey(checkpoint.executionId),
       ...checkpoint,
       updatedAt: now(),
     };
-    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            ConditionCheck: {
+              TableName: table(),
+              Key: executionMetaKey(checkpoint.executionId),
+              ConditionExpression: 'orchestratorRunId = :orchestratorRunId',
+              ExpressionAttributeValues: {
+                ':orchestratorRunId': checkpoint.orchestratorRunId,
+              },
+            },
+          },
+          { Put: { TableName: table(), Item: item } },
+        ],
+      }),
+    );
     return item;
   };
 
@@ -141,6 +161,18 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       new GetCommand({ TableName: table(), Key: workflowCheckpointKey(executionId) }),
     );
     return Item ?? null;
+  };
+
+  const deleteWorkflowCheckpoint = async (executionId) => {
+    if (!executionId) throw new Error('deleteWorkflowCheckpoint requires executionId');
+    const { Attributes } = await ddb.send(
+      new DeleteCommand({
+        TableName: table(),
+        Key: workflowCheckpointKey(executionId),
+        ReturnValues: 'ALL_OLD',
+      }),
+    );
+    return Attributes ?? null;
   };
 
   // Update the execution-level status + current phase/stage + pending gate, and
@@ -2424,6 +2456,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getExecution,
     putWorkflowCheckpoint,
     getWorkflowCheckpoint,
+    deleteWorkflowCheckpoint,
     updateExecution,
     deleteExecution,
     putStage,

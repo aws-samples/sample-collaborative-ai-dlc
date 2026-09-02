@@ -3922,6 +3922,7 @@ export const handler = async (event) => {
 
       const fromStageId = sectionStages[0].stageId;
       const durableExecutionName = durableExecutionNameForIntent(intentId);
+      await store.deleteWorkflowCheckpoint(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -4257,6 +4258,7 @@ export const handler = async (event) => {
         .catch((err) => console.error('Rewind event append failed:', err.message));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
       const durableExecutionName = durableExecutionNameForIntent(intentId);
+      await store.deleteWorkflowCheckpoint(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -4487,6 +4489,11 @@ export const handler = async (event) => {
       });
 
       // Retire only after every affected artifact was durably snapshotted.
+      await store.updateExecution({
+        executionId: intentId,
+        fromStatus: meta.status,
+        orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+      });
       await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
       await stopRuntimeSessions(intentId, meta);
       for (const stageInstanceId of resetIds) {
@@ -4502,6 +4509,7 @@ export const handler = async (event) => {
         .catch((err) => console.error('Recompose event append failed:', err.message));
       const priorStatus = meta.status;
       const durableExecutionName = durableExecutionNameForIntent(intentId);
+      await store.deleteWorkflowCheckpoint(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,

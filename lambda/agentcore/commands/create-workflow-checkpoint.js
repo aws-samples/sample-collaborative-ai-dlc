@@ -6,7 +6,13 @@ import { closeGraphSource } from '../mcp/graph-writer.js';
 // Capture the latest completed workflow boundary and atomically replace the
 // execution's latest-checkpoint pointer. Failures leave the prior checkpoint.
 const createWorkflowCheckpoint = async (payload, deps) => {
-  const { projectId, intentId, executionId, sourceStageInstanceId = null } = payload ?? {};
+  const {
+    projectId,
+    intentId,
+    executionId,
+    orchestratorRunId,
+    sourceStageInstanceId = null,
+  } = payload ?? {};
   const {
     store,
     openGraph,
@@ -15,7 +21,9 @@ const createWorkflowCheckpoint = async (payload, deps) => {
     clock = () => new Date().toISOString(),
     snapshotArtifacts = snapshotCurrentArtifactHeads,
   } = deps;
-  if (!intentId || !executionId) return { ok: false, reason: 'missing_identity' };
+  if (!intentId || !executionId || !orchestratorRunId) {
+    return { ok: false, reason: 'missing_identity' };
+  }
 
   let g;
   try {
@@ -38,7 +46,7 @@ const createWorkflowCheckpoint = async (payload, deps) => {
       artifactRefs,
       customRuleRefs,
     });
-    await store.putWorkflowCheckpoint(checkpoint);
+    await store.putWorkflowCheckpoint({ ...checkpoint, orchestratorRunId });
     return {
       ok: true,
       checkpointId: checkpoint.checkpointId,

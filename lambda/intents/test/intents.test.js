@@ -2615,6 +2615,11 @@ describe('POST /recompose — in-flight reshape', () => {
         { stageInstanceId: 'si-optional', stageId: 'optional', state: 'WAITING_FOR_HUMAN' },
       ],
     });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'CHECKPOINT',
+      checkpointId: 'stale-checkpoint',
+    });
     const res = await recomposeReq(sub, projectId, intent.id, {
       composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
       scope: 'feature-lean',
@@ -2635,6 +2640,7 @@ describe('POST /recompose — in-flight reshape', () => {
     // The parked instance was reset for its fresh attempt.
     const row = procStore.get(keyOf(`EXEC#${intent.id}`, 'STAGE#si-optional'));
     expect(row.state).toBe('PENDING');
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'))).toBe(false);
     // Audit trail carries the reshape.
     const events = [...procStore.values()].filter((i) => (i.sk || '').startsWith('EVENT#'));
     expect(events.map((e) => e.eventType)).toContain('v2.execution.recomposed');
@@ -4967,6 +4973,11 @@ describe('POST /rewind', () => {
     setStatus(intent.id, { status: 'SUCCEEDED' });
     seedStageRow(intent.id, 'design');
     seedStageRow(intent.id, 'implement');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'CHECKPOINT',
+      checkpointId: 'stale-checkpoint',
+    });
     await seedIntentAnchor(intent.id);
     const seedArtifact = async (id, stageId) => {
       await g
@@ -4998,6 +5009,7 @@ describe('POST /rewind', () => {
     expect(body.intent.status).toBe('CREATED');
     expect(body.intent.rewindFromStageId).toBe('implement');
     expect(body.steering).toMatchObject({ kind: 'rewind', targetStageId: 'implement' });
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'))).toBe(false);
 
     // The target stage is reset (attempt+1, session cleared); upstream is untouched.
     const implRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`));
@@ -5521,6 +5533,11 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       orchestratorRunId: 'old-run',
       pendingHumanTaskId: 'answered-gate',
     });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'CHECKPOINT',
+      checkpointId: 'stale-checkpoint',
+    });
     seedStageRow(intent.id, 'units-gen');
     seedStageRow(intent.id, 'cg', 'foundation', 'SUCCEEDED', 1);
     seedStageRow(intent.id, 'cg', 'asset-containment', 'WAITING_FOR_HUMAN', 1);
@@ -5579,6 +5596,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     const res = await repair(sub, projectId, intent.id);
 
     expect(res.statusCode).toBe(202);
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'))).toBe(false);
     expect(JSON.parse(res.body).repair).toMatchObject({
       sectionIndex: 1,
       laneSlugs: [
