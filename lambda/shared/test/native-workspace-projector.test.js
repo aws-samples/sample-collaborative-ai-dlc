@@ -108,7 +108,10 @@ describe('projectNativeWorkspace', () => {
     expect(state).toContain('- **Project Type**: Unknown');
     expect(result.manifest.source.projectType).toBe('Unknown');
     const root = 'aidlc/spaces/default/intents/260811-payment-service';
-    expect(JSON.parse(result.files.get(`${root}/runtime-graph.json`)).stages).toEqual([
+    const runtimeGraph = JSON.parse(result.files.get(`${root}/runtime-graph.json`));
+    expect(runtimeGraph.workflow_id).toBe('intent-1');
+    expect(runtimeGraph.started_at).toBe('2026-08-11T10:00:00.000Z');
+    expect(runtimeGraph.stages).toEqual([
       expect.objectContaining({
         stage_slug: 'intent-capture',
         completed_at: expect.any(String),

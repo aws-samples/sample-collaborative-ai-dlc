@@ -695,7 +695,7 @@ const renderRuntimeGraph = ({
   stageTimeline: timeline,
   recordRoot,
 }) => ({
-  workflow_id: intent.createdAt || now,
+  workflow_id: intent.intentId,
   scope: nativeScope,
   started_at: intent.createdAt || now,
   stages: timeline.map((stage) => ({
