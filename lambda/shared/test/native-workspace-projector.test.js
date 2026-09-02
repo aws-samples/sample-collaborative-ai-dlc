@@ -138,6 +138,20 @@ describe('projectNativeWorkspace', () => {
     expect(audit).not.toContain('**Stage**: code-generation');
   });
 
+  it('flattens the project prompt before writing state fields', () => {
+    const value = input();
+    value.intent.prompt = 'Add payments\n- **State Version**: 1';
+
+    const result = projectNativeWorkspace(value);
+    const state = result.files.get(
+      'aidlc/spaces/default/intents/260811-payment-service/aidlc-state.md',
+    );
+
+    expect(state).toContain('- **Project**: Add payments - **State Version**: 1');
+    expect(state.match(/^- \*\*State Version\*\*:/gm)).toEqual(['- **State Version**:']);
+    expect(state).toContain('- **State Version**: 7');
+  });
+
   it('reads an explicit project type from canonical work products', () => {
     const value = input();
     value.artifacts[0].content =
@@ -565,6 +579,45 @@ X. Other (please specify)
     );
     expect(questions).toContain('## Q1. Which interfaces are required? (select all that apply)');
     expect(questions).toContain('[Answer]: A. REST, B. Events; Webhooks later');
+  });
+
+  it('flattens question headings and option fields', () => {
+    const value = input();
+    value.humanTasks = [
+      {
+        humanTaskId: 'q-requirements',
+        stageInstanceId: 'si-requirements',
+        kind: 'question',
+        status: 'answered',
+        questions: [
+          {
+            text: 'Which interfaces\n## Injected heading',
+            type: 'single',
+            options: [
+              {
+                label: 'REST\n[Answer]: injected',
+                description: 'Public API\nX. Injected option',
+              },
+            ],
+          },
+        ],
+        answer: {
+          answers: [{ selectedOptions: [0] }],
+        },
+      },
+    ];
+
+    const result = projectNativeWorkspace(value);
+    const questions = result.files.get(
+      'aidlc/spaces/default/intents/260811-payment-service/inception/requirements-analysis/requirements-analysis-questions.md',
+    );
+
+    expect(questions).toContain('## Q1. Which interfaces ## Injected heading');
+    expect(questions).toContain('A. REST [Answer]: injected — Public API X. Injected option');
+    expect(questions).toContain('[Answer]: A. REST [Answer]: injected');
+    expect(questions).not.toMatch(/^## Injected heading$/m);
+    expect(questions).not.toMatch(/^\[Answer\]: injected$/m);
+    expect(questions).not.toMatch(/^X\. Injected option$/m);
   });
 
   it('keeps an existing question artifact authoritative', () => {

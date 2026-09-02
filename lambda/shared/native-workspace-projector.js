@@ -65,6 +65,11 @@ const parseJsonValue = (value, field) => {
 
 const optionLetter = (index) => String.fromCharCode(65 + index);
 
+const flattenMarkdownField = (value) =>
+  String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
 const renderQuestionAnswer = ({ answer, question, index }) => {
   const parsed = parseJsonValue(answer, 'question answer');
   const entry = Array.isArray(parsed?.answers)
@@ -79,7 +84,7 @@ const renderQuestionAnswer = ({ answer, question, index }) => {
     ? entry.selectedOptions
         .filter((selectedIndex) => Number.isInteger(selectedIndex) && selectedIndex >= 0)
         .map((selectedIndex) => {
-          const label = question.options?.[selectedIndex]?.label;
+          const label = flattenMarkdownField(question.options?.[selectedIndex]?.label);
           return label ? `${optionLetter(selectedIndex)}. ${label}` : optionLetter(selectedIndex);
         })
     : [];
@@ -108,8 +113,9 @@ const renderQuestionFile = ({ stageId, tasks }) => {
           : '';
       const options = Array.isArray(question.options) ? question.options : [];
       const optionLines = options.map((option, optionIndex) => {
-        const description = option?.description ? ` — ${option.description}` : '';
-        return `${optionLetter(optionIndex)}. ${option?.label ?? ''}${description}`;
+        const label = flattenMarkdownField(option?.label);
+        const description = flattenMarkdownField(option?.description);
+        return `${optionLetter(optionIndex)}. ${label}${description ? ` — ${description}` : ''}`;
       });
       if (!options.some((option) => /^other\b/i.test(String(option?.label ?? '').trim()))) {
         optionLines.push('X. Other (please specify)');
@@ -117,7 +123,7 @@ const renderQuestionFile = ({ stageId, tasks }) => {
       const answer = renderQuestionAnswer({ answer: task.answer, question, index });
       sections.push(
         [
-          `## Q${questionNumber}. ${question.text}${multi}`,
+          `## Q${questionNumber}. ${flattenMarkdownField(question.text)}${multi}`,
           '',
           ...optionLines,
           '',
@@ -491,7 +497,7 @@ const renderState = ({
   return `# AI-DLC State Tracking
 
 ## Project Information
-- **Project**: ${intent.prompt || intent.title || intent.intentId}
+- **Project**: ${flattenMarkdownField(intent.prompt || intent.title || intent.intentId)}
 - **Project Type**: ${projectType}
 - **Scope**: ${nativeScope}
 - **Start Date**: ${intent.createdAt || now}
