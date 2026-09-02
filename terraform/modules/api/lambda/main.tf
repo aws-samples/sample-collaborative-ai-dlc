@@ -2332,8 +2332,8 @@ resource "aws_iam_role_policy" "intents" {
         Resource = "${var.artifacts_bucket_arn}/aidlc-catalogs/*"
       },
       {
-        # S3 only returns NoSuchKey for a missing cache object when the caller
-        # can list that prefix; otherwise GetObject masks the miss as 403.
+        # Allow cache-prefix listing where S3 evaluates it; cache readers also
+        # tolerate GetObject masking a missing key as 403.
         Effect   = "Allow"
         Action   = ["s3:ListBucket"]
         Resource = var.artifacts_bucket_arn
