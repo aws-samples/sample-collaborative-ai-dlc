@@ -163,6 +163,9 @@ describe('orchestrator durable handler', () => {
     ]);
     expect(checkpointInvokes).toHaveLength(3);
     expect(checkpointInvokes.map((p) => p.sourceStageInstanceId)).toEqual([null, null, null]);
+    const checkpointRunIds = [...new Set(checkpointInvokes.map((p) => p.orchestratorRunId))];
+    expect(checkpointRunIds).toHaveLength(1);
+    expect(checkpointRunIds[0]).toMatch(/^run-/);
     // init-ws carries the provider so the runtime picks the right clone scheme.
     const initWs = invokes.find((p) => p.command === 'init-ws');
     expect(initWs).toMatchObject({

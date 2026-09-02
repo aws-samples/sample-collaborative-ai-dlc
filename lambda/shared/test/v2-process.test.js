@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   BatchWriteCommand,
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
@@ -186,19 +187,39 @@ describe('createProcessStore', () => {
   });
 
   it('stores and retrieves the latest workflow checkpoint', async () => {
-    ddb.on(PutCommand).resolves({});
+    ddb.on(TransactWriteCommand).resolves({});
     ddb.on(GetCommand).resolves({
       Item: { pk: 'EXEC#e1', sk: 'CHECKPOINT', executionId: 'e1', checkpointId: 'cp1' },
     });
-    await store.putWorkflowCheckpoint({ executionId: 'e1', checkpointId: 'cp1' });
-    expect(ddb.commandCalls(PutCommand)[0].args[0].input.Item).toMatchObject({
+    await store.putWorkflowCheckpoint({
+      executionId: 'e1',
+      checkpointId: 'cp1',
+      orchestratorRunId: 'run-1',
+    });
+    const transaction = ddb.commandCalls(TransactWriteCommand)[0].args[0].input.TransactItems;
+    expect(transaction[0].ConditionCheck).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'META' },
+      ConditionExpression: 'orchestratorRunId = :orchestratorRunId',
+      ExpressionAttributeValues: { ':orchestratorRunId': 'run-1' },
+    });
+    expect(transaction[1].Put.Item).toMatchObject({
       pk: 'EXEC#e1',
       sk: 'CHECKPOINT',
       checkpointId: 'cp1',
+      orchestratorRunId: 'run-1',
       updatedAt: 'T',
     });
     await expect(store.getWorkflowCheckpoint('e1')).resolves.toMatchObject({
       checkpointId: 'cp1',
+    });
+  });
+
+  it('deletes the latest workflow checkpoint', async () => {
+    ddb.on(DeleteCommand).resolves({ Attributes: { checkpointId: 'cp1' } });
+    await expect(store.deleteWorkflowCheckpoint('e1')).resolves.toEqual({ checkpointId: 'cp1' });
+    expect(ddb.commandCalls(DeleteCommand)[0].args[0].input).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'CHECKPOINT' },
+      ReturnValues: 'ALL_OLD',
     });
   });
 

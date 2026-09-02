@@ -467,6 +467,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               projectId,
               intentId,
               executionId,
+              orchestratorRunId: runId,
               sourceStageInstanceId,
             },
             sessionId,
