@@ -155,6 +155,102 @@ describe('commitAll', () => {
   });
 });
 
+// The engine must never execute the CLONED REPO's hooks. Two reasons:
+// correctness (hooks that shell out to npm cannot work — the runtime never
+// installs the checkout's dependencies, so a stage lost completed work to a
+// husky/lint-staged pre-commit) and security (hooks are arbitrary untrusted code
+// and pushes carry a credential in the environment).
+//
+// `--no-verify` is insufficient: it covers pre-commit and commit-msg only. These
+// cases pin the hooks via `core.hooksPath` — the strongest form, because it
+// proves the engine's own `-c core.hooksPath` overrides a hooksPath the
+// repository configured for itself, not just the default `.git/hooks`.
+describe('engine git ignores repository hooks', () => {
+  // Install a hook that records that it ran and then fails the operation.
+  const installHook = async (work, name, { viaConfig = false, body } = {}) => {
+    const dir = viaConfig ? path.join(work, '.custom-hooks') : path.join(work, '.git', 'hooks');
+    await mkdir(dir, { recursive: true });
+    const marker = path.join(work, `${name}-ran.txt`);
+    await writeFile(
+      path.join(dir, name),
+      body ?? `#!/bin/sh\necho ran > "${marker}"\necho "${name} rejected" >&2\nexit 1\n`,
+      { mode: 0o755 },
+    );
+    if (viaConfig) await git(['config', 'core.hooksPath', dir], work);
+    return marker;
+  };
+  const ran = async (marker) => {
+    try {
+      await readFile(marker, 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  for (const hook of ['pre-commit', 'commit-msg', 'prepare-commit-msg']) {
+    it(`commits with a failing ${hook} hook configured via core.hooksPath`, async () => {
+      const { work } = await initRemoteAndClone();
+      const marker = await installHook(work, hook, { viaConfig: true });
+      await writeFile(path.join(work, 'agent-work.txt'), 'artifacts the agent produced\n');
+
+      const res = await commitAll({ dir: work, message: 'aidlc(functional-design): e1' });
+
+      expect(res.committed).toBe(true);
+      expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(await ran(marker)).toBe(false);
+      const show = await git(['show', '--stat', '--format='], work);
+      expect(show.stdout).toContain('agent-work.txt');
+    });
+  }
+
+  it('does not leave a dirty tree when prepare-commit-msg would abort', async () => {
+    // prepare-commit-msg is the gap --no-verify left open: it can abort a commit,
+    // which previously returned commit_failed with the work still uncommitted.
+    const { work } = await initRemoteAndClone();
+    await installHook(work, 'prepare-commit-msg', { viaConfig: true });
+    await writeFile(path.join(work, 'agent-work.txt'), 'work\n');
+
+    const res = await commitAll({ dir: work, message: 'aidlc(x): e1' });
+
+    expect(res.committed).toBe(true);
+    expect(res.dirty).toBeFalsy();
+    const status = await git(['status', '--porcelain'], work);
+    expect(status.stdout.trim()).toBe('');
+  });
+
+  it('does not run pre-push, so a hook cannot read the push credential', async () => {
+    // A pre-push hook runs with the push environment, which carries
+    // AIDLC_GIT_PASSWORD. If it executed it could exfiltrate the token, abort the
+    // push, and surface the value in the returned error detail.
+    const { work, remote } = await initRemoteAndClone();
+    const leak = path.join(work, 'leaked-credential.txt');
+    await installHook(work, 'pre-push', {
+      viaConfig: true,
+      body: `#!/bin/sh\nprintf '%s' "$AIDLC_GIT_PASSWORD" > "${leak}"\necho "pre-push rejected" >&2\nexit 1\n`,
+    });
+    await writeFile(path.join(work, 'agent-work.txt'), 'work\n');
+    await commitAll({ dir: work, message: 'aidlc(x): e1' });
+
+    const res = await pushBranch({
+      dir: work,
+      repo: 'o/r',
+      branch: 'main',
+      urls: { clean: remote, tokenized: remote },
+      withGitCredential: async (_o, fn) =>
+        fn({ AIDLC_GIT_PASSWORD: 'super-secret-token', GIT_TERMINAL_PROMPT: '0' }),
+      log: () => {},
+    });
+
+    expect(res.pushed).toBe(true);
+    expect(await ran(leak)).toBe(false);
+    expect(JSON.stringify(res)).not.toContain('super-secret-token');
+    // The commit really reached the remote.
+    const remoteHead = await git(['rev-parse', 'refs/heads/main'], remote);
+    expect(remoteHead.stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
+  });
+});
+
 describe('seedInitialCommit', () => {
   it('roots history on the BASE branch and forks the intent branch off it (empty repo)', async () => {
     const { work } = await initRemoteAndClone({ withInitialCommit: false });
