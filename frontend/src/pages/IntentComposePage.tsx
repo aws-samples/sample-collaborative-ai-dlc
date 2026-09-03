@@ -76,7 +76,7 @@ const ATTACHMENT_INGEST_TIMEOUT_MS = 30_000;
 // (scope or composed grid) and the per-intent stage deselection are edited
 // COLLABORATIVELY (Yjs doc `intent-draft-{intentId}`; debounced PATCH persists
 // to the intent row, which is what Start launches from).
-export default function IntentComposePage() {
+function IntentComposePageContent() {
   const navigate = useNavigate();
   const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
   const { user } = useAuth();
@@ -926,4 +926,9 @@ export default function IntentComposePage() {
       </div>
     </div>
   );
+}
+
+export default function IntentComposePage() {
+  const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
+  return <IntentComposePageContent key={`${projectId ?? ''}\0${intentId ?? ''}`} />;
 }

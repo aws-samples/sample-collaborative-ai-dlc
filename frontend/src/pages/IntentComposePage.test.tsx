@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import type { ReactNode } from 'react';
+import { Link, MemoryRouter, Routes, Route } from 'react-router';
 
 beforeEach(() => {
   window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
@@ -133,9 +134,10 @@ const draftIntent = (over: Record<string, unknown> = {}) => ({
   artifacts: [],
 });
 
-const renderPage = () =>
+const renderPage = (controls?: ReactNode) =>
   render(
     <MemoryRouter initialEntries={['/space/p1/intent/i1/compose']}>
+      {controls}
       <Routes>
         <Route path="/space/:projectId/intent/:intentId/compose" element={<IntentComposePage />} />
         <Route
@@ -372,6 +374,30 @@ describe('IntentComposePage', () => {
     expect(await screen.findByTestId('compose-start')).toBeDisabled();
     expect(screen.getByTestId('start-intent')).toBeDisabled();
     expect(screen.getByText('Select an agent CLI to continue')).toBeInTheDocument();
+  });
+
+  it('requires a fresh CLI selection when switching drafts in the same space', async () => {
+    get.mockImplementation((_projectId, intentId) =>
+      Promise.resolve(draftIntent({ id: intentId, executionId: intentId })),
+    );
+    const user = userEvent.setup();
+    renderPage(
+      <Link to="/space/p1/intent/i2/compose" data-testid="switch-draft">
+        Switch draft
+      </Link>,
+    );
+
+    await user.click(await screen.findByTestId('agent-cli-kiro'));
+    await waitFor(() => expect(setAssistAgentCli).toHaveBeenLastCalledWith('kiro'));
+    expect(screen.getByTestId('start-intent')).toBeEnabled();
+
+    await user.click(screen.getByTestId('switch-draft'));
+
+    await waitFor(() => expect(get).toHaveBeenCalledWith('p1', 'i2'));
+    expect(screen.getByTestId('agent-cli-kiro')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+    expect(screen.getByText('Select an agent CLI to continue')).toBeInTheDocument();
+    await waitFor(() => expect(setAssistAgentCli).toHaveBeenLastCalledWith(null));
   });
 
   it('reports missing credentials without claiming the CLIs are not installed', async () => {
