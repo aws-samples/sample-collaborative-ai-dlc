@@ -188,6 +188,82 @@ describe('projectNativeWorkspace', () => {
     );
   });
 
+  it('renders a waiting stage as an awaiting-approval marker', () => {
+    const value = input();
+    value.stageRows[1].state = 'WAITING_FOR_HUMAN';
+    value.humanTasks = [
+      {
+        humanTaskId: 'approval-1',
+        stageInstanceId: 'si-requirements',
+        kind: 'approval',
+        status: 'pending',
+      },
+    ];
+
+    const result = projectNativeWorkspace(value);
+
+    expect(result.stages.find((stage) => stage.stageId === 'requirements-analysis').marker).toBe(
+      '?',
+    );
+    expect(
+      result.files.get('aidlc/spaces/default/intents/260811-payment-service/aidlc-state.md'),
+    ).toContain('- [?] requirements-analysis — EXECUTE');
+    expect(
+      result.files.get('aidlc/spaces/default/intents/260811-payment-service/aidlc-state.md'),
+    ).toContain('- **Current Stage**: requirements-analysis');
+    expect(
+      result.files.get('aidlc/spaces/default/intents/260811-payment-service/aidlc-state.md'),
+    ).toContain('- **Next Action**: Await approval for requirements-analysis');
+  });
+
+  it('rejects stages with phases the native workspace cannot represent', () => {
+    const value = input();
+    value.stages[1].phase = 'delivery';
+
+    expect(() => projectNativeWorkspace(value)).toThrow(
+      /stage requirements-analysis has unsupported phase delivery/,
+    );
+  });
+
+  it('rejects artifacts without a type instead of inventing intent.md', () => {
+    const value = input();
+    value.artifacts[0].artifactType = null;
+
+    expect(() => projectNativeWorkspace(value)).toThrow(/artifact artifact-1 has no artifact type/);
+  });
+
+  it('warns when native continuation cannot preserve cloud-only unit and gate semantics', () => {
+    const value = input();
+    value.unitPlan = {
+      units: [
+        { slug: 'api', kind: 'service', dependsOn: [] },
+        { slug: 'web', dependsOn: ['api'] },
+      ],
+      skipMatrix: { web: ['code-generation'] },
+    };
+    value.humanTasks = [
+      {
+        humanTaskId: 'approval-1',
+        kind: 'approval',
+        status: 'answered',
+      },
+      {
+        humanTaskId: 'validation-1',
+        kind: 'validation',
+        status: 'pending',
+      },
+    ];
+
+    const result = projectNativeWorkspace(value);
+
+    expect(result.warnings).toEqual([
+      'Unit kinds are not represented in the native Bolt DAG for: api.',
+      'Per-unit stage skips affect exported progress but are not preserved as native continuation rules for: web.',
+      'Non-question workflow gates are not represented as native question artifacts: approval, validation.',
+    ]);
+    expect(result.manifest.warnings).toEqual(result.warnings);
+  });
+
   it('projects a stage skipped for every unit as SKIPPED without synthetic timeline entries', () => {
     const value = input();
     value.stageRows[1].state = 'SUCCEEDED';

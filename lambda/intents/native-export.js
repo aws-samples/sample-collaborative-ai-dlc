@@ -40,6 +40,33 @@ const workspaceSyncCommand = ({ distributionFiles, harness }) => {
 const sha256 = (body) => createHash('sha256').update(body).digest('hex');
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
+// Typed export failures so callers classify by `code`, not message text:
+//  - `export_source_unavailable`: a transient upstream fetch the caller can
+//    retry (network/GitHub failure) -> 502.
+//  - `export_misconfigured`: a server-side invariant violation (unset bucket
+//    or ref) that no caller can fix -> 500.
+//  - untyped `native-export:`-prefixed errors: deterministic snapshot or
+//    distribution incompatibilities the caller cannot retry away -> 409.
+const EXPORT_SOURCE_UNAVAILABLE = 'export_source_unavailable';
+const EXPORT_MISCONFIGURED = 'export_misconfigured';
+const sourceUnavailable = (message, options) =>
+  Object.assign(new Error(message, options), { code: EXPORT_SOURCE_UNAVAILABLE });
+const misconfigured = (message, options) =>
+  Object.assign(new Error(message, options), { code: EXPORT_MISCONFIGURED });
+
+// Classify a repo-fetch failure. Only a network-layer failure or an upstream
+// 5xx/429 is worth retrying (502). Everything repo-fetch raises deterministically
+// -- a 4xx status, no matching distribution files, or a size-limit breach --
+// cannot change on retry and is a 409.
+const isTransientFetchError = (error) => {
+  const message = String(error?.message ?? '');
+  const status = message.match(/returned (\d{3})/)?.[1];
+  if (status) return Number(status) >= 500 || Number(status) === 429;
+  // A raw network rejection (DNS/timeout/reset) never carries the repo-fetch
+  // prefix -- fetch() threw before any response.
+  return !message.startsWith('repo-fetch:');
+};
+
 const safeArchivePath = (value) => {
   const path = String(value ?? '').replaceAll('\\', '/');
   if (
@@ -228,8 +255,17 @@ const fetchAndCacheDistribution = async ({ s3, bucket, upstreamRef, harness }) =
       maxRetainedBytes: MAX_DISTRIBUTION_BYTES,
     });
   } catch (error) {
+    // repo-fetch throws on an absent/oversized distribution AND on a missing
+    // `dist/<harness>/` (it never returns an empty map), so this is the only
+    // place either can surface. Retry only the transient class.
+    if (isTransientFetchError(error)) {
+      throw sourceUnavailable(
+        `native-export: ${harness} distribution is temporarily unavailable for ${upstreamRef}: ${error.message}`,
+        { cause: error },
+      );
+    }
     throw new Error(
-      `native-export: ${harness} distribution is unavailable for ${upstreamRef}: ${error.message}`,
+      `native-export: ${harness} distribution could not be loaded for ${upstreamRef}: ${error.message}`,
       { cause: error },
     );
   }
@@ -238,11 +274,6 @@ const fetchAndCacheDistribution = async ({ s3, bucket, upstreamRef, harness }) =
       .filter(([path]) => path.startsWith(repoPrefix))
       .map(([path, body]) => [safeArchivePath(path.slice(repoPrefix.length)), body]),
   );
-  if (files.size === 0) {
-    throw new Error(
-      `native-export: ${harness} distribution is unavailable for ${upstreamRef}: dist/${harness}/ is missing`,
-    );
-  }
   const workspaceLayout = detectWorkspaceLayout({ files, harness });
   const archive = await buildDistributionArchive(files);
   const manifest = {
@@ -315,7 +346,7 @@ const detectConstructionCapabilities = ({ distributionFiles, harness }) => {
 };
 
 const shouldShowWorkspaceSetup = (stages = []) => {
-  const activeIndex = stages.findIndex((stage) => stage.marker === '-');
+  const activeIndex = stages.findIndex((stage) => ['-', '?', 'R'].includes(stage.marker));
   if (activeIndex < 0) {
     return stages.some((stage) => stage.phase === 'construction' && stage.marker !== 'S');
   }
@@ -555,8 +586,8 @@ const createNativeExport = async ({
   sourceCheckpoint = null,
   validateSnapshot = null,
 }) => {
-  if (!bucket) throw new Error('native-export: artifacts bucket is not configured');
-  if (!upstreamRef) throw new Error('native-export: upstream ref is not configured');
+  if (!bucket) throw misconfigured('native-export: artifacts bucket is not configured');
+  if (!upstreamRef) throw misconfigured('native-export: upstream ref is not configured');
 
   const distribution = await loadDistribution({
     s3,
@@ -595,7 +626,7 @@ const createNativeExport = async ({
     now,
   });
   const nextUnit = projected.manifest.construction?.nextUnit ?? null;
-  const effectiveWarnings = [...warnings];
+  const effectiveWarnings = [...new Set([...warnings, ...(projected.warnings ?? [])])];
   if (nextUnit && !constructionCapabilities.perUnitIteration) {
     effectiveWarnings.push(
       `This pinned AI-DLC runtime predates deterministic per-unit Construction iteration. ` +
@@ -698,6 +729,8 @@ const createNativeExport = async ({
 
 export {
   DOWNLOAD_TTL_SECONDS,
+  EXPORT_MISCONFIGURED,
+  EXPORT_SOURCE_UNAVAILABLE,
   MAX_EXPORT_BYTES,
   bodyToBuffer,
   alignProjectionToDistribution,

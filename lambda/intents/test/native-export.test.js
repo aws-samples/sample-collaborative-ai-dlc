@@ -301,6 +301,64 @@ describe('native workflow export', () => {
     expect(fetchRepoFiles).toHaveBeenCalledOnce();
   });
 
+  // repo-fetch rejects (it never returns unmatched/empty results), so
+  // loadDistribution classifies its rejection into retryable vs deterministic.
+  const cacheMissS3 = () => ({
+    send: vi.fn(async () => {
+      const error = new Error('missing');
+      error.name = 'NoSuchKey';
+      throw error;
+    }),
+  });
+  const loadRejection = (s3) =>
+    loadDistribution({ s3, bucket: 'artifacts', upstreamRef: REF, harness: 'codex' }).then(
+      () => null,
+      (error) => error,
+    );
+
+  it('tags an upstream 5xx distribution-fetch failure as retryable (502)', async () => {
+    fetchRepoFiles.mockClear();
+    fetchRepoFiles.mockRejectedValueOnce(
+      new Error(`repo-fetch: https://codeload.github.com/x returned 503 Service Unavailable`),
+    );
+
+    await expect(loadRejection(cacheMissS3())).resolves.toMatchObject({
+      code: 'export_source_unavailable',
+    });
+  });
+
+  it('tags a raw network distribution-fetch failure as retryable (502)', async () => {
+    fetchRepoFiles.mockClear();
+    fetchRepoFiles.mockRejectedValueOnce(new Error('fetch failed'));
+
+    await expect(loadRejection(cacheMissS3())).resolves.toMatchObject({
+      code: 'export_source_unavailable',
+    });
+  });
+
+  it('treats a missing distribution (no matching files) as deterministic', async () => {
+    fetchRepoFiles.mockClear();
+    fetchRepoFiles.mockRejectedValueOnce(
+      new Error(`repo-fetch: no files found for prefixes dist/codex/ in tarball for ref ${REF}`),
+    );
+
+    const rejection = await loadRejection(cacheMissS3());
+    expect(rejection).toBeInstanceOf(Error);
+    expect(rejection.code).toBeUndefined();
+    expect(rejection.message).toContain('could not be loaded');
+  });
+
+  it('treats a distribution size-limit breach as deterministic', async () => {
+    fetchRepoFiles.mockClear();
+    fetchRepoFiles.mockRejectedValueOnce(
+      new Error('repo-fetch: matching files exceed 20971520 bytes'),
+    );
+
+    const rejection = await loadRejection(cacheMissS3());
+    expect(rejection).toBeInstanceOf(Error);
+    expect(rejection.code).toBeUndefined();
+  });
+
   it('creates a zip buffer', async () => {
     const zip = await buildZip(new Map([['AGENTS.md', Buffer.from('# Agent\n')]]));
     expect(zip.subarray(0, 2).toString()).toBe('PK');
@@ -435,6 +493,7 @@ describe('native workflow export', () => {
       now: '2026-08-11T12:00:00.000Z',
       presign,
       sourceCheckpoint,
+      warnings: ['Existing warning.'],
       projection: {
         intent: {
           projectId: 'project-1',
@@ -449,6 +508,13 @@ describe('native workflow export', () => {
         stages: [{ stageId: 'intent-capture', phase: 'ideation' }],
         stageRows: [],
         artifacts: [],
+        humanTasks: [
+          {
+            humanTaskId: 'approval-1',
+            kind: 'approval',
+            status: 'answered',
+          },
+        ],
         repositories: [
           {
             id: 'example/api',
@@ -468,6 +534,10 @@ describe('native workflow export', () => {
     expect(result.downloadUrl).toBe('https://download.example/export.zip');
     expect(result.filename).toBe('260811-payment-service-codex.zip');
     expect(result.checkpoint).toEqual(sourceCheckpoint);
+    expect(result.warnings).toEqual([
+      'Existing warning.',
+      'Non-question workflow gates are not represented as native question artifacts: approval.',
+    ]);
     expect(result.setup).toEqual({
       workspaceLayout: 'spaces',
       mode: 'manual-workspace',

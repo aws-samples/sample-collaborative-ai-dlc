@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { parseBoltDag } from './v2-sensor-contract.js';
 
 const PHASES = ['initialization', 'ideation', 'inception', 'construction', 'operation'];
+const ACTIVE_STAGE_MARKERS = new Set(['-', '?', 'R']);
 const PHASE_LABELS = {
   initialization: 'INITIALIZATION PHASE',
   ideation: 'IDEATION PHASE',
@@ -172,6 +173,40 @@ const normalizedUnitPlan = (unitPlan) => {
   };
 };
 
+const projectionWarnings = ({ unitPlan, humanTasks = [] }) => {
+  const warnings = [];
+  const unitsWithKinds = (unitPlan?.units ?? [])
+    .filter((unit) => unit?.kind)
+    .map((unit) => unit.slug ?? unit.name)
+    .filter(Boolean);
+  if (unitsWithKinds.length > 0) {
+    warnings.push(
+      `Unit kinds are not represented in the native Bolt DAG for: ${unitsWithKinds.join(', ')}.`,
+    );
+  }
+  const skippedUnits = Object.entries(unitPlan?.skipMatrix ?? {})
+    .filter(([, stages]) => Array.isArray(stages) && stages.length > 0)
+    .map(([unit]) => unit);
+  if (skippedUnits.length > 0) {
+    warnings.push(
+      `Per-unit stage skips affect exported progress but are not preserved as native continuation rules for: ${skippedUnits.join(', ')}.`,
+    );
+  }
+  const omittedGateKinds = [
+    ...new Set(
+      humanTasks
+        .filter((task) => task?.kind && task.kind !== 'question' && task.status !== 'superseded')
+        .map((task) => task.kind),
+    ),
+  ].toSorted();
+  if (omittedGateKinds.length > 0) {
+    warnings.push(
+      `Non-question workflow gates are not represented as native question artifacts: ${omittedGateKinds.join(', ')}.`,
+    );
+  }
+  return warnings;
+};
+
 const normalizedUnitRows = (unitRows = []) => {
   const rowsByUnit = new Map();
   for (const row of unitRows) {
@@ -240,12 +275,11 @@ const stageTimeline = ({ intent, stages, stageRows = [], now }) => {
   const timeline = [];
 
   for (const stage of stages) {
-    if (!['x', '-'].includes(stage.marker)) continue;
+    if (stage.marker !== 'x' && !ACTIVE_STAGE_MARKERS.has(stage.marker)) continue;
     const rows = rowsByStage.get(stage.stageId) ?? [];
-    const activeRows =
-      stage.marker === '-'
-        ? rows.filter((row) => !['SUCCEEDED', 'SKIPPED'].includes(row.state))
-        : rows;
+    const activeRows = ACTIVE_STAGE_MARKERS.has(stage.marker)
+      ? rows.filter((row) => !['SUCCEEDED', 'SKIPPED'].includes(row.state))
+      : rows;
     const startedCandidates = activeRows
       .flatMap((row) => [row.startedAt])
       .map(timestampMs)
@@ -329,6 +363,7 @@ const projectStageState = ({
   unitPlan = null,
   unitRows = [],
   activeUnit = null,
+  awaitingGateStageIds = new Set(),
 }) => {
   const rowsByStage = new Map();
   for (const row of stageRows ?? []) {
@@ -339,32 +374,41 @@ const projectStageState = ({
   }
   const completedUnits = completedUnitSlugs({ unitPlan, unitRows });
 
-  const projected = stages.map((stage) => ({
-    ...stage,
-    phase: normalizePhase(stage.phase),
-    cloudState: stage.excluded
-      ? 'SKIPPED'
-      : unitStageAggregate({
-          stage,
-          rows: rowsByStage.get(stage.stageId) ?? [],
-          unitPlan,
-          completedUnits,
-          activeUnit,
-        }),
-  }));
+  const projected = stages.map((stage) => {
+    const phase = normalizePhase(stage.phase);
+    if (!phase) {
+      throw new Error(
+        `native-export: stage ${stage.stageId ?? 'unknown'} has unsupported phase ${stage.phase ?? '<missing>'}`,
+      );
+    }
+    return {
+      ...stage,
+      phase,
+      cloudState: stage.excluded
+        ? 'SKIPPED'
+        : unitStageAggregate({
+            stage,
+            rows: rowsByStage.get(stage.stageId) ?? [],
+            unitPlan,
+            completedUnits,
+            activeUnit,
+          }),
+    };
+  });
   const firstUnfinished = projected.findIndex(
     (stage) => !['SUCCEEDED', 'SKIPPED'].includes(stage.cloudState),
   );
+  const markerFor = (stage, index) => {
+    if (stage.cloudState === 'SUCCEEDED') return 'x';
+    if (stage.cloudState === 'SKIPPED') return 'S';
+    if (stage.cloudState === 'WAITING_FOR_HUMAN' && awaitingGateStageIds.has(stage.stageId)) {
+      return '?';
+    }
+    return index === firstUnfinished ? '-' : ' ';
+  };
   return projected.map((stage, index) => ({
     ...stage,
-    marker:
-      stage.cloudState === 'SUCCEEDED'
-        ? 'x'
-        : stage.cloudState === 'SKIPPED'
-          ? 'S'
-          : index === firstUnfinished
-            ? '-'
-            : ' ',
+    marker: markerFor(stage, index),
   }));
 };
 
@@ -430,7 +474,7 @@ const renderState = ({
   completedUnits,
   nextUnit,
 }) => {
-  const activeIndex = stages.findIndex((stage) => stage.marker === '-');
+  const activeIndex = stages.findIndex((stage) => ACTIVE_STAGE_MARKERS.has(stage.marker));
   const current = activeIndex >= 0 ? stages[activeIndex] : null;
   const next =
     activeIndex >= 0
@@ -489,9 +533,13 @@ const renderState = ({
         ? `${lastCompletedUnitStage.stageId} for unit ${lastCompletedUnit}`
         : lastCompleted?.stageId || 'none';
   const resumeNextAction = current
-    ? constructionResume
-      ? `Execute ${current.stageId} for unit ${nextUnit}`
-      : `Execute ${current.stageId}`
+    ? current.marker === '?'
+      ? `Await approval for ${current.stageId}`
+      : current.marker === 'R'
+        ? `Revise ${current.stageId}`
+        : constructionResume
+          ? `Execute ${current.stageId} for unit ${nextUnit}`
+          : `Execute ${current.stageId}`
     : 'Workflow complete';
 
   return `# AI-DLC State Tracking
@@ -740,7 +788,11 @@ const artifactPath = ({
   repositories,
   workspaceLayout = 'spaces',
 }) => {
-  const type = assertSafeSegment(slugify(artifact.artifactType || artifact.type), 'artifact type');
+  const rawType = artifact.artifactType || artifact.type;
+  if (!rawType) {
+    throw new Error(`native-export: artifact ${artifact.id ?? 'unknown'} has no artifact type`);
+  }
+  const type = assertSafeSegment(slugify(rawType), 'artifact type');
   const stage = stageById.get(artifact.stageId);
   const phase = normalizePhase(artifact.phase || stage?.phase);
   if (!phase || !artifact.stageId) {
@@ -819,17 +871,30 @@ const projectNativeWorkspace = ({
     throw new Error('native-export: legacy flat workspaces do not support multiple repositories');
   }
   const unitPlan = normalizedUnitPlan(rawUnitPlan);
+  const warnings = projectionWarnings({ unitPlan: rawUnitPlan, humanTasks });
   const completedUnits = completedUnitSlugs({ unitPlan, unitRows });
   const unitOrder = unitPlan?.batches.flat() ?? [];
   const remainingUnits = unitOrder.filter((unit) => !completedUnits.has(unit));
   const readyUnits = dependencyReadyUnitSlugs({ unitPlan, completedUnits });
   const nextUnit = readyUnits[0] ?? remainingUnits[0] ?? null;
+  const stageIdByInstance = new Map(
+    stageRows
+      .filter((stage) => stage?.stageInstanceId)
+      .map((stage) => [stage.stageInstanceId, stage.stageId]),
+  );
+  const awaitingGateStageIds = new Set(
+    humanTasks
+      .filter((task) => task?.status === 'pending')
+      .map((task) => task.stageId ?? stageIdByInstance.get(task.stageInstanceId))
+      .filter(Boolean),
+  );
   const projectedStages = projectStageState({
     stages,
     stageRows,
     unitPlan,
     unitRows,
     activeUnit: nextUnit,
+    awaitingGateStageIds,
   });
   const timeline = stageTimeline({
     intent,
@@ -863,7 +928,7 @@ const projectNativeWorkspace = ({
             ...(normalizedRepos.length
               ? { repos: normalizedRepos.map((repo) => repo.directory) }
               : {}),
-            status: projectedStages.some((stage) => stage.marker === '-')
+            status: projectedStages.some((stage) => ACTIVE_STAGE_MARKERS.has(stage.marker))
               ? 'in-flight'
               : 'complete',
           },
@@ -1016,6 +1081,7 @@ const projectNativeWorkspace = ({
       ...(workspaceLayout === 'spaces' ? { space: safeSpace, recordDir } : {}),
     },
     repositories: normalizedRepos,
+    warnings,
     ...(unitPlan
       ? {
           construction: {
@@ -1040,7 +1106,7 @@ const projectNativeWorkspace = ({
       .toSorted((a, b) => a.path.localeCompare(b.path)),
   };
   files.set('export-manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
-  return { files, manifest, recordDir, stages: projectedStages };
+  return { files, manifest, recordDir, stages: projectedStages, warnings };
 };
 
 export {
