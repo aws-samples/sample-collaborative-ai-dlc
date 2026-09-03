@@ -181,6 +181,22 @@ describe('orchestrator durable handler', () => {
     expect(new Set(starts.map((s) => s.stageCallbackId)).size).toBe(2);
   });
 
+  it('strongly reads the credential pin before issuing grants', async () => {
+    const pinnedBinding = { provider: 'kiro', source: 'user', userId: 'starter' };
+    const staleDraft = { ...META, status: 'DRAFT', credentialBinding: null };
+    const freshMeta = { ...META, credentialBinding: pinnedBinding };
+    deps.store.getExecution = vi.fn(async (_executionId, options) =>
+      options?.consistentRead ? freshMeta : staleDraft,
+    );
+
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+    expect(deps.store.getExecution).toHaveBeenCalledWith('i1', { consistentRead: true });
+    expect(deps.issueAgentCredentialGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ bindings: [pinnedBinding] }),
+    );
+  });
+
   it('parks on WAITING_FOR_HUMAN, binds a callback, then resumes', async () => {
     deps.store.getExecution
       .mockResolvedValueOnce(META) // load-meta

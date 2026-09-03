@@ -312,7 +312,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     return { ok: false, reason: 'not_a_start' };
   }
 
-  const meta = await ctx.step('load-meta', () => store.getExecution(executionId));
+  const meta = await ctx.step('load-meta', () =>
+    store.getExecution(executionId, { consistentRead: true }),
+  );
   if (!meta) return { ok: false, reason: 'execution_not_found' };
 
   const { projectId, workflowId, workflowVersion, scope } = meta;

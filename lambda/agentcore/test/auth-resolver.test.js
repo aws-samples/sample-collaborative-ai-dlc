@@ -1,8 +1,47 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { authenticatedClisForEnv, resolveInvocationAgentAuth } from '../auth-resolver.js';
 import { AGENT_AUTH_MODES } from '../command-registry.js';
 
 describe('resolveInvocationAgentAuth', () => {
+  it('strongly reads the credential pin before verifying a grant', async () => {
+    const pinnedBinding = { provider: 'kiro', source: 'user', userId: 'starter' };
+    const getExecution = vi.fn(async (_executionId, options) =>
+      options?.consistentRead
+        ? {
+            projectId: 'p-1',
+            status: 'RUNNING',
+            agentCli: 'kiro',
+            credentialBinding: pinnedBinding,
+          }
+        : {
+            projectId: 'p-1',
+            status: 'DRAFT',
+            agentCli: 'kiro',
+            credentialBinding: null,
+          },
+    );
+
+    const result = await resolveInvocationAgentAuth({
+      payload: {
+        command: 'run-stage',
+        executionId: 'e1',
+        requestedCli: 'kiro',
+        agentCredentialGrant: 'grant-starter',
+      },
+      store: { getExecution },
+      env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+      broker: async () => ({
+        purpose: 'execution',
+        projectId: 'p-1',
+        executionId: 'e1',
+        credentials: [{ binding: pinnedBinding, value: 'starter-key' }],
+      }),
+    });
+
+    expect(getExecution).toHaveBeenCalledWith('e1', { consistentRead: true });
+    expect(result.env.KIRO_API_KEY).toBe('starter-key');
+  });
+
   it('keeps concurrent users in separate invocation environments', async () => {
     const broker = async ({ grant }) => {
       const userId = grant === 'grant-u-1' ? 'u-1' : 'u-2';

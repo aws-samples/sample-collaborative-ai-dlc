@@ -116,7 +116,7 @@ export const resolveInvocationAgentAuth = async ({
   let meta = null;
   const executionId = payload.executionId || payload.intentId || null;
   if (executionId && store?.getExecution) {
-    meta = await store.getExecution(executionId);
+    meta = await store.getExecution(executionId, { consistentRead: true });
   }
   const projectId = meta?.projectId ?? payload.projectId ?? null;
 

@@ -167,6 +167,22 @@ describe('createProcessStore', () => {
     expect(call.ConditionExpression).toContain('attribute_not_exists(pk)');
   });
 
+  it('opts into strongly consistent META reads only when requested', async () => {
+    ddb.on(GetCommand).resolves({ Item: { executionId: 'e1' } });
+
+    await expect(store.getExecution('e1')).resolves.toEqual({ executionId: 'e1' });
+    await expect(store.getExecution('e1', { consistentRead: true })).resolves.toEqual({
+      executionId: 'e1',
+    });
+
+    const [eventual, consistent] = ddb.commandCalls(GetCommand).map((call) => call.args[0].input);
+    expect(eventual).not.toHaveProperty('ConsistentRead');
+    expect(consistent).toMatchObject({
+      Key: executionMetaKey('e1'),
+      ConsistentRead: true,
+    });
+  });
+
   it('updateExecution sets status + re-stamps both indexes', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'RUNNING' } });
     await store.updateExecution({
