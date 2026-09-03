@@ -33,6 +33,12 @@ const NODES = [
   { id: 'art-1', type: 'Artifact', label: 'Stories' },
   { id: 'story-1', type: 'Story', label: 'Login', graphLayer: 'derived' },
   { id: 'unit-1', type: 'UnitOfWork', label: 'u-build', graphLayer: 'derived' },
+  {
+    id: 'codefile-1',
+    type: 'CodeFile',
+    label: 'src/auth.ts',
+    graphLayer: 'implementation',
+  },
 ];
 
 const EDGES = [
@@ -42,7 +48,13 @@ const EDGES = [
 ];
 
 beforeEach(() => {
-  graphMock.mockReturnValue({ nodes: NODES, edges: EDGES, loading: false, error: null });
+  graphMock.mockReturnValue({
+    nodes: NODES,
+    edges: EDGES,
+    loading: false,
+    error: null,
+    hasCodeTraceability: true,
+  });
 });
 
 function renderPage() {
@@ -64,7 +76,7 @@ describe('IntentGraphPage layer switching', () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(screen.getByRole('button', { name: /items and units/i }));
-    expect(screen.getByTestId('graph-canvas')).toHaveAttribute('data-node-count', '4');
+    expect(screen.getByTestId('graph-canvas')).toHaveAttribute('data-node-count', '5');
   });
 
   it('switches back to artifacts layer', async () => {
@@ -73,6 +85,24 @@ describe('IntentGraphPage layer switching', () => {
     await user.click(screen.getByRole('button', { name: /items and units/i }));
     await user.click(screen.getByRole('button', { name: /artifacts layer/i }));
     expect(screen.getByTestId('graph-canvas')).toHaveAttribute('data-node-count', '2');
+  });
+
+  it('labels the all-capabilities layer with Code when CodeFile nodes are present', () => {
+    renderPage();
+    expect(screen.getByText('+ Items, Units & Code')).toBeInTheDocument();
+  });
+
+  it('retains the legacy Items & Units label when CodeFile capability is absent', () => {
+    graphMock.mockReturnValue({
+      nodes: NODES.filter((node) => node.type !== 'CodeFile'),
+      edges: EDGES,
+      loading: false,
+      error: null,
+      hasCodeTraceability: false,
+    });
+    renderPage();
+    expect(screen.getByText('+ Items & Units')).toBeInTheDocument();
+    expect(screen.queryByText('+ Items, Units & Code')).not.toBeInTheDocument();
   });
 
   it('marks the active button with aria-pressed', () => {

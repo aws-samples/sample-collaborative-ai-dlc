@@ -247,8 +247,9 @@ const deleteIntentCascade = async ({
     .next();
 
   // Pass 2 — the anchor + its direct children (one union, the proven pattern):
-  // CONTAINS → Artifact | Question | Steering | UnitOfWork (intent_id-guarded),
-  // the discussion threads and their messages, and the Intent itself.
+  // CONTAINS → Artifact | Question | Steering | UnitOfWork | CodeFile
+  // (intent_id-guarded), the discussion threads and their messages, and the
+  // Intent itself.
   // Project-scoped TeamKnowledge / LearningRule vertices are cross-intent by
   // design and stay. Edges drop with their vertices. A DRAFT intent has no
   // anchor — matches nothing.

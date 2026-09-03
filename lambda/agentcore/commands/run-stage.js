@@ -78,6 +78,7 @@ import {
 import { commitAndPushAll as defaultCommitAndPushAll, freeDiskBytes } from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner } from '../sensor-runner.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
@@ -994,6 +995,10 @@ export const runStage = async (
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
+    // Project committed files into Neptune after all stage gates pass. The
+    // adapter detects traceability capability from a valid produced artifact,
+    // never from workflowVersion, and is deliberately best-effort.
+    ingestStageCodeTraceability = defaultIngestStageCodeTraceability,
     compileContextPack = defaultCompileContextPack,
     // Fetch project custom agent rules (.md bodies) from S3 → written into the
     // selected CLI's native rules dir by the materializer. Injected for tests.
@@ -2515,6 +2520,68 @@ export const runStage = async (
         verdict?.detail?.findings ?? `${reviewerAgent} returned NOT-READY`,
       );
     }
+  }
+
+  // Git topology is universal; structured evidence is capability-detected from
+  // a valid traceability.json produced by this exact stage/unit. Projection is
+  // intentionally best-effort: legacy/malformed evidence and Neptune outages
+  // must not turn successful implementation work into an execution failure.
+  try {
+    const projected = await ingestStageCodeTraceability({
+      openGraph,
+      scope: {
+        projectId,
+        intentId,
+        executionId,
+        stageInstanceId,
+        sectionIndex,
+        unitSlug,
+      },
+      gitResult,
+      repos,
+      workspaceDir,
+      stageId,
+      stageInstanceId,
+      unitSlug,
+    });
+    if (projected.codeFiles > 0) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.code_files.ingested',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Projected ${projected.codeFiles} code file revision(s) with ${projected.evidenceEdges} evidence edge(s)`,
+        })
+        .catch(() => {});
+    }
+    if (projected.statuses.includes('invalid')) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.traceability.degraded',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Stage ${stageLabel} produced invalid traceability.json; Git code topology was retained without evidence links`,
+        })
+        .catch(() => {});
+    }
+  } catch (error) {
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.traceability.degraded',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: `Code traceability projection skipped: ${error?.message ?? String(error)}`,
+      })
+      .catch(() => {});
   }
 
   // 7. Terminal success.

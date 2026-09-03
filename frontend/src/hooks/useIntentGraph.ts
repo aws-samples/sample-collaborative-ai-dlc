@@ -63,7 +63,7 @@ export interface GraphNeighbor {
   label: string;
   edgeLabel: string;
   direction: 'outgoing' | 'incoming';
-  graphLayer?: 'derived';
+  graphLayer?: 'derived' | 'implementation';
 }
 
 export interface IntentGraphView {
@@ -73,6 +73,8 @@ export interface IntentGraphView {
   error: string | null;
   /** Neighbors of a node id (empty array for unknown ids). */
   getNeighbors: (id: string) => GraphNeighbor[];
+  /** True when this graph actually exposes CodeFile topology (never version-gated). */
+  hasCodeTraceability: boolean;
   /** Current derived typed items (graphLayer='derived', excl. units). */
   derivedItems: IntentGraphNode[];
   /** Derived items joined to their source artifact (node.artifactId). */
@@ -154,13 +156,15 @@ export function useIntentGraph(projectId: string, intentId: string): IntentGraph
           label: node.label,
           edgeLabel: e.label,
           direction: e.source === id ? 'outgoing' : 'incoming',
-          ...(node.graphLayer === 'derived' ? { graphLayer: 'derived' as const } : {}),
+          ...(node.graphLayer ? { graphLayer: node.graphLayer } : {}),
         });
       }
       return out;
     },
     [nodeIndex, edgesByNode],
   );
+
+  const hasCodeTraceability = useMemo(() => nodes.some((n) => n.type === 'CodeFile'), [nodes]);
 
   const derivedItems = useMemo(
     () => nodes.filter((n) => n.graphLayer === 'derived' && n.type !== 'UnitOfWork'),
@@ -181,5 +185,15 @@ export function useIntentGraph(projectId: string, intentId: string): IntentGraph
     invalidateIntentGraph(projectId, intentId);
   }, [projectId, intentId]);
 
-  return { nodes, edges, loading, error, getNeighbors, derivedItems, itemsByArtifact, reload };
+  return {
+    nodes,
+    edges,
+    loading,
+    error,
+    getNeighbors,
+    hasCodeTraceability,
+    derivedItems,
+    itemsByArtifact,
+    reload,
+  };
 }

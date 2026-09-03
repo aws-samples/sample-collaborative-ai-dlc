@@ -17,6 +17,7 @@
 // stamped from the TRUSTED container ENV scope, never from agent tool args. Any
 // caller-supplied reserved prop is dropped.
 
+import { createHash } from 'node:crypto';
 import gremlin from 'gremlin';
 import {
   DERIVED_ITEM_LABELS,
@@ -86,6 +87,12 @@ export const SECTION_LABEL = 'Section';
 // Anchored Intent --CONTAINS--> UnitOfWork; dependencies as DEPENDS_ON edges
 // between UnitOfWork vertices (already an allowlisted business edge).
 export const UNIT_OF_WORK_LABEL = 'UnitOfWork';
+
+// Revision-scoped implementation provenance (restored v1 vocabulary). Git
+// creates the universal Intent/Unit topology; validated traceability evidence
+// may additionally link a known derived element to the exact file revision.
+export const CODE_FILE_LABEL = 'CodeFile';
+export const IMPLEMENTED_BY_EDGE = 'IMPLEMENTED_BY';
 
 // Pull-request record: the run-level output opened at fan-in, anchored
 // Intent --HAS_PR--> PullRequest. One vertex per repo. The id embeds the
@@ -249,6 +256,13 @@ const artifactToc = (artifact = {}) => {
 
 const derivedId = ({ label, intentId, slug }) =>
   `${String(label).toLowerCase()}:${intentId}:${String(slug)}`;
+
+export const codeFileIdentity = ({ intentId, repository, commitRef, filePath }) => {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([intentId, repository, commitRef, filePath]))
+    .digest('hex');
+  return `codefile:${digest}`;
+};
 
 // The searchable text of an artifact row: title/body/type plus enrichment
 // summaries, so a query phrased in the summary's wording still hits.
@@ -1156,6 +1170,116 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     return { mirrored: units.length, superseded };
   };
 
+  // Ingest the files committed for one repository/stage result. The identity
+  // includes commitRef, so a later revision creates a new provenance node while
+  // replaying the same result converges on the existing vertex and edges.
+  const ingestCodeFiles = async ({
+    repository,
+    commitRef,
+    files = [],
+    stageInstanceId = null,
+    unitSlug = null,
+  }) => {
+    if (!repository || !commitRef) {
+      throw new GraphWriteError('repository and commitRef are required for CodeFile ingestion');
+    }
+    const intentExists = await g.V().has(INTENT_LABEL, 'id', scope.intentId).hasNext();
+    if (!intentExists) {
+      throw new GraphWriteError(`Intent "${scope.intentId}" not found — run init-ws first`);
+    }
+
+    const effectiveUnitSlug = unitSlug ?? scope.unitSlug ?? '';
+    const effectiveStageInstanceId = stageInstanceId ?? scope.stageInstanceId ?? '';
+    const unitId = effectiveUnitSlug ? `unit:${scope.intentId}:${effectiveUnitSlug}` : null;
+    const unitExists = unitId
+      ? await g.V().has(UNIT_OF_WORK_LABEL, 'id', unitId).has('intent_id', scope.intentId).hasNext()
+      : false;
+    const evidenceLabels = new Set([ARTIFACT_LABEL, UNIT_OF_WORK_LABEL, ...DERIVED_ITEM_LABELS]);
+    const evidenceVertices = async (evidenceId) => {
+      const slug = String(evidenceId)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      const rows = [
+        ...(await g
+          .V()
+          .has('intent_id', scope.intentId)
+          .has('id', String(evidenceId))
+          .valueMap(true)
+          .toList()),
+        ...(slug
+          ? await g.V().has('intent_id', scope.intentId).has('slug', slug).valueMap(true).toList()
+          : []),
+      ].map(flattenValueMap);
+      return [
+        ...new Map(
+          rows.filter((row) => evidenceLabels.has(row.label)).map((row) => [row.id, row]),
+        ).values(),
+      ];
+    };
+
+    let evidenceEdges = 0;
+    for (const file of files) {
+      const id = codeFileIdentity({
+        intentId: scope.intentId,
+        repository,
+        commitRef,
+        filePath: file.filePath,
+      });
+      const existed = await g.V().has(CODE_FILE_LABEL, 'id', id).hasNext();
+      await upsertVertex(CODE_FILE_LABEL, id);
+      const props = {
+        id,
+        file_path: file.filePath,
+        repository,
+        commit_ref: commitRef,
+        summary: file.summary ?? '',
+        intent_id: scope.intentId,
+        unit_slug: effectiveUnitSlug,
+        stage_instance_id: effectiveStageInstanceId,
+        file_kind: file.fileKind ?? 'implementation',
+        traceability_source: file.traceabilitySource ?? 'git',
+        updated_at: now(),
+        ...(!existed ? { created_at: now() } : {}),
+      };
+      let q = g.V().has(CODE_FILE_LABEL, 'id', id);
+      for (const [key, value] of Object.entries(props)) {
+        q = q.property(cardinality.single, key, value);
+      }
+      await q.next();
+      await ensureEdge({
+        fromLabel: INTENT_LABEL,
+        fromId: scope.intentId,
+        toLabel: CODE_FILE_LABEL,
+        toId: id,
+        edge: ANCHOR_EDGE,
+      });
+      if (unitExists) {
+        await ensureEdge({
+          fromLabel: UNIT_OF_WORK_LABEL,
+          fromId: unitId,
+          toLabel: CODE_FILE_LABEL,
+          toId: id,
+          edge: IMPLEMENTED_BY_EDGE,
+        });
+      }
+      for (const evidenceId of file.evidenceIds ?? []) {
+        for (const source of await evidenceVertices(evidenceId)) {
+          await ensureEdge({
+            fromLabel: source.label,
+            fromId: source.id,
+            toLabel: CODE_FILE_LABEL,
+            toId: id,
+            edge: IMPLEMENTED_BY_EDGE,
+          });
+          evidenceEdges += 1;
+        }
+      }
+    }
+    return { codeFiles: files.length, evidenceEdges };
+  };
+
   const upsertDerivedVertex = async ({ label, id, props = {} }) => {
     await upsertVertex(label, id);
     const stamped = { ...props, id, updated_at: now() };
@@ -1652,6 +1776,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     recordQuestion,
     linkSteeringInfluences,
     mirrorUnitDag,
+    ingestCodeFiles,
     mirrorArtifactDerivations,
     resolveDerivedItemEdges,
     applyArtifactEnrichment,
