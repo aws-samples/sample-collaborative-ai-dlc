@@ -441,7 +441,7 @@ describe('IntentView', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
     );
-    expect(screen.queryByText('Create a project directory')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Create a project directory/)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Done' }));
     expect(screen.queryByText('Workspace downloaded with warnings')).not.toBeInTheDocument();
@@ -523,6 +523,61 @@ describe('IntentView', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Done' }));
     expect(screen.queryByText('Set up your local workspace')).not.toBeInTheDocument();
+    downloadClick.mockRestore();
+  });
+
+  it('renders and copies workspace-sync setup instructions', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        agentCli: 'codex',
+        currentPhase: 'CONSTRUCTION',
+      }),
+    );
+    exportWorkflow.mockResolvedValue({
+      exportId: 'export-sync',
+      filename: 'workspace.zip',
+      downloadUrl: 'https://download.example/workspace.zip',
+      expiresAt: '2026-08-12T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'workspace-sync',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        syncCommand: 'bun .codex/tools/aidlc-workspace-sync.ts',
+        showWorkspaceSetup: true,
+        repositories: [
+          {
+            id: 'example/plant-finder',
+            directory: 'plant-finder',
+            url: 'git@github.com:example/plant-finder.git',
+            branch: 'aidlc/intent-1',
+          },
+        ],
+      },
+    });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
+
+    expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
+    expect(screen.getByText('bun .codex/tools/aidlc-workspace-sync.ts')).toBeInTheDocument();
+    expect(screen.getByText('repos.json').closest('p')).toHaveTextContent(
+      'This reads repos.json and clones the repository on their declared intent branches.',
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy workspace sync command' }));
+    expect(writeText).toHaveBeenCalledWith('bun .codex/tools/aidlc-workspace-sync.ts');
+    expect(
+      screen.getByRole('button', { name: 'Copy workspace sync command copied' }),
+    ).toBeInTheDocument();
+
     downloadClick.mockRestore();
   });
 
