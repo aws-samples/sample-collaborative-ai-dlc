@@ -181,6 +181,7 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     .filter(isCurrent)
     .filter((i) => !i.artifact_id || currentArtifactIds.has(i.artifact_id));
   const units = (await flatRows(anchored('UnitOfWork'))).filter(isCurrent);
+  const codeFiles = await flatRows(anchored('CodeFile'));
   // Fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
   const prs = await flatRows(anchored('PullRequest', 'HAS_PR'));
   const unitPrs = await flatRows(anchored('UnitPullRequest', 'HAS_UNIT_PR'));
@@ -278,6 +279,23 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
       slug: u.slug ?? null,
       createdAt: u.created_at ?? null,
     })),
+    ...codeFiles.map((file) => ({
+      id: file.id,
+      type: 'CodeFile',
+      graphLayer: 'implementation',
+      label: file.file_path || file.id,
+      file_path: file.file_path ?? null,
+      repository: file.repository ?? null,
+      commit_ref: file.commit_ref ?? null,
+      summary: file.summary ?? null,
+      intent_id: file.intent_id ?? null,
+      unit_slug: file.unit_slug ?? null,
+      stage_instance_id: file.stage_instance_id ?? null,
+      file_kind: file.file_kind ?? null,
+      traceability_source: file.traceability_source ?? null,
+      createdAt: file.created_at ?? null,
+      updatedAt: file.updated_at ?? null,
+    })),
     ...prs.map((p) => ({
       id: p.id,
       type: 'PullRequest',
@@ -332,6 +350,9 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
   const unitEdges = await project(units.length > 0, () =>
     anchored('UnitOfWork').outE('DEPENDS_ON', 'DERIVED_FROM', ...UNIT_CONTRACT_EDGES),
   );
+  const implementationEdges = await project(codeFiles.length > 0, () =>
+    g.V().has('intent_id', intentId).outE('IMPLEMENTED_BY'),
+  );
   const discussEdges = await project(discussions.length > 0, () =>
     anchored('Discussion', 'HAS_DISCUSSION').outE('DISCUSSES'),
   );
@@ -350,11 +371,13 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     ...questions.map((q) => ({ source: intentId, target: q.id, label: 'CONTAINS' })),
     ...steering.map((s) => ({ source: intentId, target: s.id, label: 'CONTAINS' })),
     ...units.map((u) => ({ source: intentId, target: u.id, label: 'CONTAINS' })),
+    ...codeFiles.map((file) => ({ source: intentId, target: file.id, label: 'CONTAINS' })),
     ...prs.map((p) => ({ source: intentId, target: p.id, label: 'HAS_PR' })),
     ...unitPrs.map((p) => ({ source: intentId, target: p.id, label: 'HAS_UNIT_PR' })),
     ...businessEdges,
     ...derivedEdges,
     ...unitEdges,
+    ...implementationEdges,
     ...influenceEdges,
     ...steeringEdges,
     ...discussEdges,
