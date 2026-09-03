@@ -264,7 +264,9 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
 
   return (
     <div className="space-y-6">
-      {canEdit && <AgentCredentialScopeCard scope="space" projectId={project.id} />}
+      {canEdit && (
+        <AgentCredentialScopeCard key={project.id} scope="space" projectId={project.id} />
+      )}
 
       <SettingsCard
         icon={<Bot />}

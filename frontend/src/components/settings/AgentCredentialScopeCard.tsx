@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AlertCircle, KeyRound } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,16 @@ const COPY: Record<Scope, { title: string; description: string }> = {
 };
 
 export function AgentCredentialScopeCard({ scope, projectId }: Props) {
+  const identity = `${scope}\0${projectId ?? ''}`;
+  const activeIdentityRef = useRef<string | null>(null);
+  const isCurrentIdentity = useCallback(() => activeIdentityRef.current === identity, [identity]);
+  useLayoutEffect(() => {
+    activeIdentityRef.current = identity;
+    return () => {
+      if (activeIdentityRef.current === identity) activeIdentityRef.current = null;
+    };
+  }, [identity]);
+
   const [settings, setSettings] = useState<AgentCredentialStatus | null>(null);
   const [platformFallback, setPlatformFallback] = useState<AgentCredentialStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,37 +59,51 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    if (!isCurrentIdentity()) return false;
     if (scope === 'platform') {
       const result = await agentsService.getSettings();
+      if (!isCurrentIdentity()) return false;
       setSettings(result);
       setPlatformFallback(null);
-      return;
+      return true;
     }
     if (scope === 'personal') {
-      setSettings(await agentsService.getPersonalCredentials());
+      const result = await agentsService.getPersonalCredentials();
+      if (!isCurrentIdentity()) return false;
+      setSettings(result);
       setPlatformFallback(null);
-      return;
+      return true;
     }
     if (!projectId) throw new Error('projectId is required for space credentials');
     const result: SpaceAgentCredentialStatus = await agentsService.getProjectCredentials(projectId);
+    if (!isCurrentIdentity()) return false;
     setSettings(result);
     setPlatformFallback(result.platformFallback);
-  }, [projectId, scope]);
+    return true;
+  }, [isCurrentIdentity, projectId, scope]);
 
   useEffect(() => {
     setLoading(true);
     setSettings(null);
     setPlatformFallback(null);
+    setBearerToken('');
+    setKiroApiKey('');
+    setSaving(false);
+    setClearingSecret(null);
+    setSaveResult(null);
     setErrorMessage(null);
     load()
       .catch((error) => {
+        if (!isCurrentIdentity()) return;
         console.error(`Failed to load ${scope} agent credentials:`, error);
         setErrorMessage(
           error instanceof Error ? error.message : 'Failed to load agent credentials',
         );
       })
-      .finally(() => setLoading(false));
-  }, [load, scope]);
+      .finally(() => {
+        if (isCurrentIdentity()) setLoading(false);
+      });
+  }, [identity, isCurrentIdentity, load, scope]);
 
   const update = async (value: { bedrockBearerToken?: string; kiroApiKey?: string }) => {
     if (scope === 'platform') return agentsService.updateSettings(value);
@@ -99,20 +123,24 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       if (bearerToken !== '') value.bedrockBearerToken = bearerToken;
       if (kiroApiKey !== '') value.kiroApiKey = kiroApiKey;
       await update(value);
-      await load();
+      if (!isCurrentIdentity() || !(await load())) return;
       setBearerToken('');
       setKiroApiKey('');
       setSaveResult('saved');
     } catch (error) {
+      if (!isCurrentIdentity()) return;
       console.error(`Failed to save ${scope} agent credentials:`, error);
       setErrorMessage(error instanceof Error ? error.message : 'Failed to save agent credentials');
       setSaveResult('error');
     } finally {
-      setSaving(false);
-      window.setTimeout(
-        () => setSaveResult((current) => (current === 'saved' ? null : current)),
-        4000,
-      );
+      if (isCurrentIdentity()) {
+        setSaving(false);
+        window.setTimeout(() => {
+          if (isCurrentIdentity()) {
+            setSaveResult((current) => (current === 'saved' ? null : current));
+          }
+        }, 4000);
+      }
     }
   };
 
@@ -122,20 +150,24 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     setErrorMessage(null);
     try {
       await update({ [field]: '' });
-      await load();
+      if (!isCurrentIdentity() || !(await load())) return;
       if (field === 'bedrockBearerToken') setBearerToken('');
       else setKiroApiKey('');
       setSaveResult('saved');
     } catch (error) {
+      if (!isCurrentIdentity()) return;
       console.error(`Failed to clear ${scope} agent credential:`, error);
       setErrorMessage(error instanceof Error ? error.message : 'Failed to clear agent credential');
       setSaveResult('error');
     } finally {
-      setClearingSecret(null);
-      window.setTimeout(
-        () => setSaveResult((current) => (current === 'saved' ? null : current)),
-        4000,
-      );
+      if (isCurrentIdentity()) {
+        setClearingSecret(null);
+        window.setTimeout(() => {
+          if (isCurrentIdentity()) {
+            setSaveResult((current) => (current === 'saved' ? null : current));
+          }
+        }, 4000);
+      }
     }
   };
 
@@ -190,12 +222,15 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
               setLoading(true);
               setErrorMessage(null);
               load()
-                .catch((error) =>
+                .catch((error) => {
+                  if (!isCurrentIdentity()) return;
                   setErrorMessage(
                     error instanceof Error ? error.message : 'Failed to load agent credentials',
-                  ),
-                )
-                .finally(() => setLoading(false));
+                  );
+                })
+                .finally(() => {
+                  if (isCurrentIdentity()) setLoading(false);
+                });
             }}
           >
             Retry
