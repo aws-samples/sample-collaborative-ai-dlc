@@ -7,7 +7,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
-import { ddb, query, cardinality, TextP, __, locksTable } from './clients.js';
+import { credentialProviderForCli } from '../shared/agent-credentials.js';
+import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
+import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { executionMetaKey } from '../shared/v2-process-keys.js';
+import { ddb, ssm, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
   MESSAGE_ID_RE,
   MAX_CONTENT_LENGTH,
@@ -67,6 +71,9 @@ const ASSIST_COMMANDS = new Set(['summarize', 'explain', 'brainstorm', 'ask']);
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,160}$/;
 const MAX_ASSIST_INSTRUCTIONS = 2000;
 const MAX_SELECTED_MESSAGES = 40;
+const processTable = () => process.env.V2_PROCESS_TABLE || '';
+const pinnedAgentCli = (execution) =>
+  execution?.status === 'DRAFT' ? null : (execution?.agentCli ?? null);
 
 const assistMessageIdFor = (requestId) =>
   `dm-${createHash('sha256').update(requestId).digest('hex').slice(0, 32)}`;
@@ -582,6 +589,68 @@ export const assistDiscussion = async (event, res) => {
         .filter((id) => typeof id === 'string' && MESSAGE_ID_RE.test(id))
         .slice(0, MAX_SELECTED_MESSAGES)
     : [];
+  const requestedCli = typeof body.agentCli === 'string' ? body.agentCli.trim() : '';
+  const credentialProvider = requestedCli ? credentialProviderForCli(requestedCli) : null;
+  if (requestedCli && !credentialProvider) {
+    return res(400, {
+      error: `Unsupported agent CLI "${requestedCli}"`,
+      code: 'unsupported_agent_cli',
+    });
+  }
+
+  let executionPromise = null;
+  const loadExecution = async () => {
+    if (!processTable()) return null;
+    executionPromise ??= ddb
+      .send(
+        new GetCommand({
+          TableName: processTable(),
+          Key: executionMetaKey(scope.rootId),
+          ConsistentRead: true,
+        }),
+      )
+      .then(({ Item }) => Item ?? null);
+    return executionPromise;
+  };
+
+  const resolveCredentialContext = async () => {
+    const execution = await loadExecution();
+    if (execution) {
+      if (execution?.projectId && execution.projectId !== auth.projectId) {
+        throw Object.assign(new Error('Intent credential context does not match the project'), {
+          code: 'agent_credential_required',
+        });
+      }
+      const pinnedCli = pinnedAgentCli(execution);
+      if (pinnedCli) {
+        const provider = credentialProviderForCli(pinnedCli);
+        if (!provider) {
+          throw Object.assign(new Error('The intent has an unsupported pinned agent CLI'), {
+            code: 'agent_credential_required',
+          });
+        }
+        return {
+          requestedCli: pinnedCli,
+          credentialBinding: execution.credentialBinding ?? { provider, source: 'platform' },
+        };
+      }
+    }
+    if (!credentialProvider) {
+      return { requestedCli: null, credentialBinding: null };
+    }
+    const bindings = await resolveEffectiveCredentialBindingsViaBroker({
+      projectId: auth.projectId,
+      userId: caller.sub,
+    });
+    const binding = bindings[credentialProvider];
+    if (binding) return { requestedCli, credentialBinding: binding };
+    throw Object.assign(
+      new Error(
+        `No ${credentialProvider === 'kiro' ? 'Kiro' : 'Bedrock'} credential is available for this CLI`,
+      ),
+      { code: 'agent_credential_required' },
+    );
+  };
 
   const messageId = assistMessageIdFor(requestId);
   const failMessage = async (detail = '') => {
@@ -612,6 +681,16 @@ export const assistDiscussion = async (event, res) => {
 
   const invokeAssist = async () => {
     try {
+      const { requestedCli: effectiveRequestedCli, credentialBinding } =
+        await resolveCredentialContext();
+      const agentCredentialGrant = credentialBinding
+        ? await issueAgentCredentialGrant(ssm, {
+            purpose: 'discussion',
+            projectId: auth.projectId,
+            executionId: scope.rootId,
+            bindings: [credentialBinding],
+          })
+        : null;
       const out = await invokeDiscussionAssist({
         intentId: scope.rootId,
         payload: {
@@ -627,6 +706,10 @@ export const assistDiscussion = async (event, res) => {
           requestedBy: caller.sub,
           requestedByName: caller.displayName,
           dispatchedAt: new Date().toISOString(),
+          ...(effectiveRequestedCli
+            ? { requestedCli: effectiveRequestedCli, credentialBinding }
+            : {}),
+          ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
         },
       });
       if (out?.ok === false) {
@@ -634,7 +717,9 @@ export const assistDiscussion = async (event, res) => {
       }
     } catch (err) {
       console.error('discussion assist invoke failed:', err.message);
-      return await failMessage('');
+      return await failMessage(
+        err?.code === 'agent_credential_required' ? `Reason: ${err.message}` : '',
+      );
     }
     return null;
   };
@@ -645,6 +730,16 @@ export const assistDiscussion = async (event, res) => {
     if (existingMessage.assistStatus !== 'failed') {
       return res(202, { requestId, message: existingMessage });
     }
+  }
+
+  if (!requestedCli && !pinnedAgentCli(await loadExecution())) {
+    return res(400, {
+      error: 'Select an agent CLI before requesting Quorum assist',
+      code: 'agent_cli_required',
+    });
+  }
+
+  if (existing) {
     const updatedAt = new Date().toISOString();
     await query((g) =>
       updateAssistMessageVertex(g, {

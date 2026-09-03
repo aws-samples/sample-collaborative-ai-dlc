@@ -38,6 +38,7 @@ import {
   parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
+import { isCredentialFailure } from '../cli/credential-errors.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
@@ -86,6 +87,7 @@ import {
   stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
+import { credentialProviderForCli } from '../../shared/agent-credentials.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
@@ -150,6 +152,42 @@ export const OFF_MOUNT_CACHE_ENV = {
 // Free-space floor for the disk preflight — below this, installs and even the
 // engine commit are at ENOSPC risk on the 1 GiB mount.
 export const DISK_LOW_FLOOR_BYTES = 100 * 1024 * 1024;
+
+const CREDENTIAL_PROVIDER_LABELS = {
+  bedrock: 'Bedrock',
+  kiro: 'Kiro',
+};
+
+const CREDENTIAL_SOURCE_LABELS = {
+  user: 'Personal',
+  space: 'Space',
+  platform: 'Platform',
+};
+
+const credentialBindingForCli = (bindings, cli) => {
+  const provider = credentialProviderForCli(cli);
+  if (!provider) return null;
+  return bindings.find((binding) => binding?.provider === provider) ?? null;
+};
+
+const credentialFailureDetail = ({ binding, state }) => {
+  if (!binding) return null;
+  const provider = CREDENTIAL_PROVIDER_LABELS[binding.provider] ?? binding.provider;
+  const source = CREDENTIAL_SOURCE_LABELS[binding.source] ?? binding.source;
+  const condition = state === 'rejected' ? 'was rejected' : 'is no longer available';
+  const remediation = {
+    user: 'Restore or rotate it in Account Settings, then restart the run.',
+    space:
+      'A Space owner or admin must restore or rotate it in Space Settings, then restart the run.',
+    platform: 'A platform administrator must restore or rotate it, then restart the run.',
+  }[binding.source];
+  const fallback = {
+    user: 'Active runs do not fall back to Space or Platform credentials.',
+    space: 'Active runs do not fall back to Platform credentials.',
+    platform: 'No fallback credential scope is available for this run.',
+  }[binding.source];
+  return `The ${source} ${provider} credential pinned to this run ${condition}. ${remediation} ${fallback}`;
+};
 
 // Resolve the plan and locate the stage instance for `stageId`. The optional
 // `skipStageIds` overlay (per-intent + gate-time skips, forwarded by the
@@ -970,6 +1008,8 @@ export const runStage = async (
     mcpEntry,
     openGraph = null,
     availableClis = [],
+    credentialBindings = [],
+    missingCredentialBindings = [],
     env = process.env,
     spawnFn,
     broadcast = async () => {},
@@ -1380,6 +1420,11 @@ export const runStage = async (
       return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
     }
     if (cli && !availableClis.includes(cli)) {
+      const detail = credentialFailureDetail({
+        binding: credentialBindingForCli(missingCredentialBindings, cli),
+        state: 'missing',
+      });
+      if (detail) return fail(stageInstanceId, 'credential_unavailable', detail);
       if (!reviewFeedback)
         return fail(stageInstanceId, 'no_cli', `resume CLI "${cli}" not installed`);
       cli = null;
@@ -1425,6 +1470,18 @@ export const runStage = async (
   } else {
     cli = selectCli({ requested: requestedCli, availableClis });
     if (!cli) {
+      const missingBinding =
+        credentialBindingForCli(missingCredentialBindings, requestedCli) ??
+        (!requestedCli && missingCredentialBindings.length === 1
+          ? missingCredentialBindings[0]
+          : null);
+      const credentialDetail = credentialFailureDetail({
+        binding: missingBinding,
+        state: 'missing',
+      });
+      if (credentialDetail) {
+        return fail(stageInstanceId, 'credential_unavailable', credentialDetail);
+      }
       // An explicit request that didn't match a usable CLI is a config problem
       // (the selected CLI isn't installed/authed) — say so rather than just
       // listing what's available.
@@ -1881,12 +1938,11 @@ export const runStage = async (
   // runtime key (auth/AWS creds/cache): the resolver fails closed on such names
   // (mcp-secret-resolver RESERVED_MCP_ENV_KEYS), so mcpSecretEnv and the auth env
   // below are disjoint by construction. Auth env is still spread LAST as
-  // defense-in-depth — even a resolver bug cannot let an MCP value shadow a
-  // platform auth token. NOTE (threat model): the resolved values DO live in this
-  // child process env, so the agent itself can read them and every stdio MCP
-  // server inherits them all (flat namespace). That is an accepted trade-off of
-  // CLI-native `${VAR}` expansion — see the header of mcp-secret-resolver.js for
-  // the full "what this does / does not protect" note.
+  // defense-in-depth — even a resolver bug cannot let an MCP value shadow the
+  // selected credential. The generated custom stdio server definitions override
+  // every model-auth variable with an empty value, so those children do NOT
+  // inherit the selected user's token. Resolved custom MCP secrets remain a flat
+  // namespace shared by custom stdio servers; see mcp-secret-resolver.js.
   const childEnv = {
     ...OFF_MOUNT_CACHE_ENV,
     ...mcpSecretEnv,
@@ -1966,10 +2022,10 @@ export const runStage = async (
       // (promptViaStdin) — never on argv, which would overflow ARG_MAX (E2BIG).
       prompt: prompt ?? invocation.prompt,
       promptViaStdin: invocation.promptViaStdin,
-      // Kiro only: tee the stderr tail so we can recognise its benign
-      // empty-final-completion crash (see isBenignKiroEmptyCompletion). Claude
-      // needs no such inspection, so we leave its stderr purely inherited.
-      captureStderrTail: cli === 'kiro' ? 16_384 : 0,
+      // Keep a bounded stderr tail for typed failure classification. runChild
+      // still tees stderr to the container log; the captured value is never
+      // persisted verbatim.
+      captureStderrTail: 16_384,
       onStdout: (chunk) => cliOutput.write(chunk),
       spawnFn,
     });
@@ -2319,6 +2375,14 @@ export const runStage = async (
           summary: `Kiro exited ${exitCode} with an empty final message after completing work; treated as success (ACP empty-completion).`,
         })
         .catch(() => {});
+    } else if (isCredentialFailure(result?.stderrTail)) {
+      const detail =
+        credentialFailureDetail({
+          binding: credentialBindingForCli(credentialBindings, cli),
+          state: 'rejected',
+        }) ??
+        'The pinned agent credential was rejected; rotate it at the selected credential scope';
+      return fail(stageInstanceId, 'credential_invalid', detail);
     } else {
       return fail(stageInstanceId, 'cli_nonzero_exit', String(exitCode));
     }

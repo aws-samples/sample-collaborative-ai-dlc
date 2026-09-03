@@ -22,14 +22,7 @@ import {
 } from '@/components/ui/select';
 import type { AgentModel } from '@/services/agents';
 import type { CliModels, RuntimeModelCli, TierModels, TierModelRow } from '@/services/projects';
-
-const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
-  kiro: 'Kiro',
-  claude: 'Claude',
-  opencode: 'OpenCode',
-  codex: 'Codex',
-};
-const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
 
 // Radix Select can't hold an empty-string value, so the "unset" choice carries
 // this sentinel; it maps back to '' (cleared) on change.
@@ -50,7 +43,7 @@ export function canonicalTierModels(models: TierModels = {}): TierModels {
   const rows: TierModelRow[] = ['judgment', 'balanced', 'templated', 'fallback', 'quorum'];
   return rows.reduce<TierModels>((acc, row) => {
     const rowValue = models[row] ?? {};
-    const cleaned = MODEL_CLI_KEYS.reduce<CliModels>((rowAcc, cli) => {
+    const cleaned = AGENT_CLIS.reduce<CliModels>((rowAcc, cli) => {
       const value = rowValue[cli]?.trim();
       if (value) rowAcc[cli] = value;
       return rowAcc;
@@ -100,12 +93,12 @@ export function TierModelsSection({
         <thead>
           <tr>
             <th className="w-40 pr-3 text-left text-[11px] font-medium text-muted-foreground" />
-            {MODEL_CLI_KEYS.map((cli) => (
+            {AGENT_CLIS.map((cli) => (
               <th
                 key={cli}
                 className="pr-2 text-left text-[11px] font-medium text-muted-foreground"
               >
-                {MODEL_CLI_LABELS[cli]}
+                {AGENT_CLI_METADATA[cli].modelLabel}
               </th>
             ))}
           </tr>
@@ -119,7 +112,7 @@ export function TierModelsSection({
                   {description}
                 </span>
               </td>
-              {MODEL_CLI_KEYS.map((cli) => {
+              {AGENT_CLIS.map((cli) => {
                 const options = modelOptions[cli] ?? [];
                 const current = value[row]?.[cli] || '';
                 const optionIds = new Set(options.map((o) => o.id));

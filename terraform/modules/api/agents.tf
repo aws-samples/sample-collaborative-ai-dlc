@@ -50,11 +50,13 @@ module "agents_lambda" {
   vpc_security_group_ids = var.lambda_security_group_ids
 
   environment_variables = {
-    QUESTIONS_TABLE           = var.agent_questions_table_name
-    NEPTUNE_ENDPOINT          = var.neptune_endpoint
-    AGENT_OUTPUTS_TABLE       = var.agent_outputs_table_name
-    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-    CORS_ALLOWED_ORIGINS      = var.cors_allowed_origins
+    QUESTIONS_TABLE                     = var.agent_questions_table_name
+    NEPTUNE_ENDPOINT                    = var.neptune_endpoint
+    AGENT_OUTPUTS_TABLE                 = var.agent_outputs_table_name
+    AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
+    AGENT_CREDENTIAL_METADATA_FUNCTION  = "${var.project_name}-credential-metadata-${var.environment}"
+    AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
+    CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
     # v2 model discovery: lets GET /agents/capabilities?models=1 invoke the
     # runtime's `capabilities` command for Kiro's model list + auth state.
     AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
@@ -94,6 +96,83 @@ resource "aws_api_gateway_integration" "project_agents_get" {
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+# /projects/{projectId}/agent-credentials
+resource "aws_api_gateway_resource" "project_agent_credentials" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "agent-credentials"
+}
+
+resource "aws_api_gateway_method" "project_agent_credentials_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_agent_credentials.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "project_agent_credentials_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_agent_credentials.id
+  http_method             = aws_api_gateway_method.project_agent_credentials_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+resource "aws_api_gateway_method" "project_agent_credentials_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_agent_credentials.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "project_agent_credentials_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_agent_credentials.id
+  http_method             = aws_api_gateway_method.project_agent_credentials_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+module "cors_project_agent_credentials" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_agent_credentials.id
+}
+
+# /projects/{projectId}/agent-capabilities
+resource "aws_api_gateway_resource" "project_agent_capabilities" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.project.id
+  path_part   = "agent-capabilities"
+}
+
+resource "aws_api_gateway_method" "project_agent_capabilities_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.project_agent_capabilities.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "project_agent_capabilities_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.project_agent_capabilities.id
+  http_method             = aws_api_gateway_method.project_agent_capabilities_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+module "cors_project_agent_capabilities" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.project_agent_capabilities.id
 }
 
 # /projects/{projectId}/agents/tasks
@@ -280,6 +359,59 @@ module "cors_agent_settings" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.agent_settings.id
+}
+
+# /users/me/agent-credentials
+resource "aws_api_gateway_resource" "users_me" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.cognito_users.id
+  path_part   = "me"
+}
+
+resource "aws_api_gateway_resource" "user_agent_credentials" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.users_me.id
+  path_part   = "agent-credentials"
+}
+
+resource "aws_api_gateway_method" "user_agent_credentials_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.user_agent_credentials.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "user_agent_credentials_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.user_agent_credentials.id
+  http_method             = aws_api_gateway_method.user_agent_credentials_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+resource "aws_api_gateway_method" "user_agent_credentials_put" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.user_agent_credentials.id
+  http_method   = "PUT"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "user_agent_credentials_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.user_agent_credentials.id
+  http_method             = aws_api_gateway_method.user_agent_credentials_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+module "cors_user_agent_credentials" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.user_agent_credentials.id
 }
 
 # CORS for agents endpoints

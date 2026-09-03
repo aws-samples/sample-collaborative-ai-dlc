@@ -90,6 +90,7 @@ export function DiscussionPanel() {
     discussionId: discussion?.id || null,
     open: !!ctx?.isOpen,
     user: currentUser,
+    agentCli: ctx?.assistAgentCli ?? null,
   });
 
   const [resolveOpen, setResolveOpen] = useState(false);

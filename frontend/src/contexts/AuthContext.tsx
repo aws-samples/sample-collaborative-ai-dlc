@@ -1,7 +1,16 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+} from 'react';
 import type { ReactNode } from 'react';
 import { authService } from '../services/auth';
 import type { User } from '../services/auth';
+import { armSessionExpiry, onSessionExpired, resetSessionExpiry } from '../services/sessionExpiry';
 
 interface AuthContextType {
   user: User | null;
@@ -39,11 +48,34 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [needsNewPassword, setNeedsNewPassword] = useState(false);
   const [needsDisplayName, setNeedsDisplayName] = useState(false);
+  const userRef = useRef<User | null>(null);
+  userRef.current = user;
+
+  useEffect(
+    () =>
+      onSessionExpired(() => {
+        const wasSignedIn = userRef.current !== null;
+        setUser(null);
+        setNeedsNewPassword(false);
+        setNeedsDisplayName(false);
+        // Nobody was signed in (e.g. an API call from a public route): there is
+        // no Amplify state or persisted cache to tear down.
+        if (!wasSignedIn) return;
+        // Best-effort: the session may already be invalid server-side.
+        void authService.logout().catch((error) => {
+          console.error('Sign-out after session expiry failed:', error);
+        });
+      }),
+    [],
+  );
 
   const checkAuthState = useCallback(async () => {
     try {
       const isAuth = await authService.isAuthenticated();
       if (isAuth) {
+        // Re-arm without a new epoch: requests fired at mount carry the current
+        // one and their 401s must still be able to report an expiry.
+        armSessionExpiry();
         const currentUser = await authService.getCurrentUser();
         setUser(currentUser);
         setNeedsDisplayName(!currentUser.displayName);
@@ -63,6 +95,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setIsLoading(true);
     try {
       const result = await authService.login(username, password);
+      resetSessionExpiry();
       if (result.nextStep === 'NEW_PASSWORD_REQUIRED') {
         setNeedsNewPassword(true);
       } else if (result.user) {
@@ -81,6 +114,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setIsLoading(true);
     try {
       const authedUser = await authService.completeNewPassword(newPassword);
+      resetSessionExpiry();
       setNeedsNewPassword(false);
       setUser(authedUser);
       setNeedsDisplayName(!authedUser.displayName);
@@ -105,6 +139,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setIsLoading(true);
     try {
       const authedUser = await authService.completeSsoLogin();
+      resetSessionExpiry();
       setUser(authedUser);
       setNeedsDisplayName(!authedUser.displayName);
       return authService.consumeReturnTo();

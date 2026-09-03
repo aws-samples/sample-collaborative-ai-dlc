@@ -43,6 +43,7 @@ import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { isSafeRepo } from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
+import { deleteCredentialScope } from '../shared/agent-credentials.js';
 import {
   PROJECT_PR_STRATEGIES,
   DEFAULT_PR_STRATEGY,
@@ -1892,6 +1893,15 @@ export const handler = async (event) => {
               intents: failures,
             });
           }
+
+          // Space-scoped agent credentials are independent SecureStrings.
+          // Delete both provider parameters before graph teardown so a failed
+          // cleanup leaves the Project vertex available for a safe retry.
+          await deleteCredentialScope(ssm, {
+            base: process.env.AGENT_SETTINGS_SSM_PREFIX || '',
+            source: 'space',
+            projectId,
+          });
 
           // Project-scoped Neptune vertices the per-intent cascade deliberately
           // spares (they are cross-intent by design): the team knowledge corpus

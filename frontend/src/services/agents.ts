@@ -63,6 +63,18 @@ export interface RuntimeCliStatus {
   installed: boolean;
   authed: boolean;
   available: boolean;
+  credentialSource?: AgentCredentialSource | null;
+}
+
+export type AgentCredentialSource = 'user' | 'space' | 'platform';
+
+export interface AgentCredentialStatus {
+  bedrockBearerTokenSet: boolean;
+  kiroApiKeySet: boolean;
+}
+
+export interface SpaceAgentCredentialStatus extends AgentCredentialStatus {
+  platformFallback: AgentCredentialStatus;
 }
 
 export interface AgentCapabilities {
@@ -70,6 +82,7 @@ export interface AgentCapabilities {
   runtimeModelOverride?: Record<AgentCli, boolean>;
   /** Present only with `?models=1`: per-CLI availability from the v2 runtime. */
   runtimeClis?: RuntimeCliStatus[] | null;
+  credentialSources?: Partial<Record<'bedrock' | 'kiro', AgentCredentialSource | null>>;
   /** Present only with `?models=1`: selectable models per CLI. Claude/OpenCode
    *  are region-valid Bedrock inference profiles; Kiro uses its own namespace. */
   models?: Partial<Record<AgentCli, AgentModel[]>>;
@@ -187,6 +200,31 @@ export const agentsService = {
 
   async updateSettings(update: AgentSettingsUpdate): Promise<{ saved: boolean }> {
     return api.put('/agents/settings', update);
+  },
+
+  async getPersonalCredentials(): Promise<AgentCredentialStatus> {
+    return api.get('/users/me/agent-credentials');
+  },
+
+  async updatePersonalCredentials(
+    update: Pick<AgentSettingsUpdate, 'bedrockBearerToken' | 'kiroApiKey'>,
+  ): Promise<{ saved: boolean }> {
+    return api.put('/users/me/agent-credentials', update);
+  },
+
+  async getProjectCredentials(projectId: string): Promise<SpaceAgentCredentialStatus> {
+    return api.get(`/projects/${projectId}/agent-credentials`);
+  },
+
+  async updateProjectCredentials(
+    projectId: string,
+    update: Pick<AgentSettingsUpdate, 'bedrockBearerToken' | 'kiroApiKey'>,
+  ): Promise<{ saved: boolean }> {
+    return api.put(`/projects/${projectId}/agent-credentials`, update);
+  },
+
+  async getProjectCapabilities(projectId: string, withModels = false): Promise<AgentCapabilities> {
+    return api.get(`/projects/${projectId}/agent-capabilities${withModels ? '?models=1' : ''}`);
   },
 
   // Probe custom MCP servers inside the AgentCore container (same image/egress

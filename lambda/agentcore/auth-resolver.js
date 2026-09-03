@@ -1,49 +1,207 @@
-// Auth resolver — at container startup, fetch the agent CLI's Bedrock bearer
-// token + Kiro API key from SSM and expose them as the env vars the CLI drivers
-// read (AWS_BEARER_TOKEN_BEDROCK / KIRO_API_KEY).
+// Invocation-scoped agent authentication.
 //
-// Why: terraform passes the SSM *paths* (BEDROCK_BEARER_TOKEN_SSM_PATH /
-// KIRO_API_KEY_SSM_PATH), not the secrets. The drivers' envForAuth() only forward
-// AWS_BEARER_TOKEN_BEDROCK / KIRO_API_KEY if already present — so without this
-// step the token is never set and Claude Code silently falls back to task-role
-// SigV4 (which the execution role is not granted), yielding a 403.
-//
-// Best-effort + idempotent: a missing path or an SSM miss is skipped (the CLI may
-// be configured another way, or only one CLI is installed); an already-populated
-// env var is never overwritten. Pure-ish: the SSM getter is injected for tests.
+// AgentCore sessions are long-lived and can serve different authenticated
+// callers. Secrets must therefore never be installed into process.env. Each
+// invocation derives the expected server-side binding, redeems a signed grant
+// through the credential broker, clones the non-secret base environment, and
+// adds only the selected provider's secret. AgentCore never reads credential
+// SSM paths directly. A rotation at the bound path is visible on the next
+// invocation; clearing it never falls back to another scope.
 
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  AGENT_CREDENTIAL_ENV_NAMES,
+  AGENT_CREDENTIAL_PROVIDERS,
+  credentialEnvName,
+  credentialProviderForCli,
+  normalizeCredentialBinding,
+} from '../shared/agent-credentials.js';
+import { AGENT_AUTH_MODES } from './command-registry.js';
+import { invokeCredentialBroker } from './clients.js';
 
-// Map of target env var → the env var holding its SSM path.
-const SSM_PATH_ENV = {
-  AWS_BEARER_TOKEN_BEDROCK: 'BEDROCK_BEARER_TOKEN_SSM_PATH',
-  KIRO_API_KEY: 'KIRO_API_KEY_SSM_PATH',
+const bindingKey = (binding) =>
+  `${binding.provider}:${binding.source}:${binding.source === 'user' ? binding.userId : ''}`;
+const grantMismatch = () =>
+  Object.assign(new Error('Agent credential grant does not match this invocation'), {
+    code: 'credential_grant_mismatch',
+  });
+
+const cleanBaseEnv = (env) => {
+  const invocationEnv = { ...env };
+  for (const name of AGENT_CREDENTIAL_ENV_NAMES) delete invocationEnv[name];
+  return invocationEnv;
 };
 
-// Fetch one decrypted SSM SecureString; returns '' on any miss/error.
-const defaultGetParam = (client) => async (name) => {
+const legacyPlatformBinding = (requestedCli) => {
+  const provider = credentialProviderForCli(requestedCli);
+  return provider ? { provider, source: 'platform' } : null;
+};
+
+const bindingMatchesCli = (binding, requestedCli) => {
+  if (!binding || !requestedCli) return true;
+  return binding.provider === credentialProviderForCli(requestedCli);
+};
+
+const singleBinding = ({ binding, requestedCli, mismatchMessage }) => {
+  if (!binding) return [];
+  if (!bindingMatchesCli(binding, requestedCli)) {
+    throw Object.assign(new Error(mismatchMessage), {
+      code: 'credential_binding_mismatch',
+    });
+  }
+  return [binding];
+};
+
+const bindingResolvers = Object.freeze({
+  [AGENT_AUTH_MODES.CAPABILITIES]: ({ payload }) =>
+    payload.credentialBindings
+      ? AGENT_CREDENTIAL_PROVIDERS.map((provider) => payload.credentialBindings[provider]).filter(
+          Boolean,
+        )
+      : [],
+  [AGENT_AUTH_MODES.COMPOSE]: ({ payload, meta }) => {
+    const requestedCli = payload.requestedCli || meta?.agentCli || null;
+    // Fresh DRAFT composes must carry the binding resolved for the caller.
+    // Older in-flight intents predate credentialBinding, so preserve their
+    // historical platform credential without allowing a draft to fall back.
+    const binding =
+      payload.credentialBinding ??
+      (payload.mode === 'inflight'
+        ? (meta?.credentialBinding ?? legacyPlatformBinding(requestedCli))
+        : null);
+    return singleBinding({
+      binding,
+      requestedCli,
+      mismatchMessage: 'Agent credential does not match the selected CLI',
+    });
+  },
+  [AGENT_AUTH_MODES.DISCUSSION]: ({ payload, meta }) => {
+    const requestedCli = meta?.agentCli || payload.requestedCli || null;
+    // Started intents keep their pinned binding (or the historical platform
+    // binding). A DRAFT has no pinned CLI yet, so it must carry the binding
+    // resolved for the caller alongside their selected CLI.
+    const binding =
+      meta?.credentialBinding ??
+      (meta?.agentCli ? legacyPlatformBinding(requestedCli) : (payload.credentialBinding ?? null));
+    return singleBinding({
+      binding,
+      requestedCli,
+      mismatchMessage: 'Agent credential does not match the selected CLI',
+    });
+  },
+  [AGENT_AUTH_MODES.EXECUTION]: ({ payload, meta }) => {
+    const requestedCli = payload.requestedCli || meta?.agentCli || null;
+    const binding = meta?.credentialBinding || legacyPlatformBinding(requestedCli);
+    return singleBinding({
+      binding,
+      requestedCli,
+      mismatchMessage: 'Pinned agent credential does not match the selected CLI',
+    });
+  },
+});
+
+export const authenticatedClisForEnv = ({ installed = [], env = {} } = {}) =>
+  installed.filter((cli) => {
+    const provider = credentialProviderForCli(cli);
+    return provider && Boolean(env[credentialEnvName(provider)]);
+  });
+
+export const resolveInvocationAgentAuth = async ({
+  payload = {},
+  authMode = AGENT_AUTH_MODES.EXECUTION,
+  store = null,
+  env = process.env,
+  broker = invokeCredentialBroker,
+} = {}) => {
+  const invocationEnv = cleanBaseEnv(env);
+  let meta = null;
+  const executionId = payload.executionId || payload.intentId || null;
+  if (executionId && store?.getExecution) {
+    meta = await store.getExecution(executionId, { consistentRead: true });
+  }
+  const projectId = meta?.projectId ?? payload.projectId ?? null;
+
+  const resolveBindings =
+    typeof authMode === 'string' && Object.hasOwn(bindingResolvers, authMode)
+      ? bindingResolvers[authMode]
+      : null;
+  if (!resolveBindings) throw new Error(`Unsupported agent auth mode: ${authMode}`);
+  const bindings = resolveBindings({ payload, meta }).map(normalizeCredentialBinding);
+
+  const credentialBindings = [];
+  const resolvedProviders = [];
+  const missingProviders = [];
+  const missingCredentialBindings = [];
+  if (bindings.length === 0) {
+    return {
+      env: invocationEnv,
+      credentialBindings,
+      resolvedProviders,
+      missingProviders,
+      missingCredentialBindings,
+    };
+  }
+  if (!payload.agentCredentialGrant) {
+    throw Object.assign(new Error('Agent credential grant is required'), {
+      code: 'credential_grant_required',
+    });
+  }
+  const brokerResult = await broker({
+    action: 'resolve-agent-credentials',
+    grant: payload.agentCredentialGrant,
+  });
+  if (
+    brokerResult.purpose !== authMode ||
+    (brokerResult.projectId ?? null) !== projectId ||
+    (brokerResult.executionId ?? null) !== executionId ||
+    !Array.isArray(brokerResult.credentials)
+  ) {
+    throw grantMismatch();
+  }
+  const authorized = new Map();
   try {
-    const res = await client.send(new GetParameterCommand({ Name: name, WithDecryption: true }));
-    return res.Parameter?.Value ?? '';
-  } catch {
-    return '';
-  }
-};
-
-// Resolve the auth secrets into `env` in place. Returns the list of target env
-// vars that were populated (for a startup log line — never the values).
-export const resolveAgentAuth = async ({ env = process.env, getParam } = {}) => {
-  const get = getParam ?? defaultGetParam(new SSMClient({ region: env.AWS_REGION || 'us-east-1' }));
-  const resolved = [];
-  for (const [target, pathEnv] of Object.entries(SSM_PATH_ENV)) {
-    if (env[target]) continue; // already set — never overwrite
-    const path = env[pathEnv];
-    if (!path) continue; // no path configured for this CLI
-    const value = await get(path);
-    if (value) {
-      env[target] = value;
-      resolved.push(target);
+    for (const credential of brokerResult.credentials) {
+      const binding = normalizeCredentialBinding(credential?.binding);
+      authorized.set(bindingKey(binding), {
+        binding,
+        value: typeof credential?.value === 'string' ? credential.value : '',
+      });
     }
+  } catch {
+    throw grantMismatch();
   }
-  return resolved;
+  if (brokerResult.credentials.length !== authorized.size) {
+    throw grantMismatch();
+  }
+  const expectedKeys = bindings.map(bindingKey).toSorted();
+  const authorizedKeys = [...authorized.keys()].toSorted();
+  if (
+    expectedKeys.length !== authorizedKeys.length ||
+    expectedKeys.some((key, index) => key !== authorizedKeys[index])
+  ) {
+    throw grantMismatch();
+  }
+
+  for (const binding of bindings) {
+    const credentialBinding = {
+      provider: binding.provider,
+      source: binding.source,
+    };
+    credentialBindings.push(credentialBinding);
+    const value = authorized.get(bindingKey(binding))?.value || '';
+    if (!value) {
+      missingProviders.push(binding.provider);
+      missingCredentialBindings.push(credentialBinding);
+      continue;
+    }
+    invocationEnv[credentialEnvName(binding.provider)] = value;
+    resolvedProviders.push(binding.provider);
+  }
+
+  return {
+    env: invocationEnv,
+    credentialBindings,
+    resolvedProviders,
+    missingProviders,
+    missingCredentialBindings,
+  };
 };

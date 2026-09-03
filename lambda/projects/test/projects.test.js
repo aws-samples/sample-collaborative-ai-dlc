@@ -862,6 +862,48 @@ describe('DELETE /projects/:id', () => {
     expect(JSON.parse(fetched.body)).toEqual({ error: 'Access denied' });
   });
 
+  it('deletes both space agent credentials and tolerates an idempotent retry', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const bedrockPath = `/collab/dev/projects/${id}/agent-credentials/bedrock-bearer-token`;
+    const kiroPath = `/collab/dev/projects/${id}/agent-credentials/kiro-api-key`;
+    ssmParams.set(bedrockPath, 'space-bedrock');
+    ssmParams.set(kiroPath, 'space-kiro');
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(204);
+    expect(ssmParams.has(bedrockPath)).toBe(false);
+    expect(ssmParams.has(kiroPath)).toBe(false);
+    expect(
+      ssmMock
+        .commandCalls(DeleteParameterCommand)
+        .map((call) => call.args[0].input.Name)
+        .filter((name) => name.includes(`projects/${id}/agent-credentials/`)),
+    ).toEqual([bedrockPath, kiroPath]);
+  });
+
+  it('keeps the project retryable when space credential cleanup fails', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const denied = new Error('denied');
+    denied.name = 'AccessDeniedException';
+    ssmMock.on(DeleteParameterCommand).rejects(denied);
+
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
+  });
+
   it('returns 403 when the caller is not the owner', async () => {
     const sub = `u-${randomUUID()}`;
     const otherSub = `u-${randomUUID()}`;

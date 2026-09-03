@@ -108,9 +108,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
-  const getExecution = async (executionId) => {
+  const getExecution = async (executionId, { consistentRead = false } = {}) => {
     const { Item } = await ddb.send(
-      new GetCommand({ TableName: table(), Key: executionMetaKey(executionId) }),
+      new GetCommand({
+        TableName: table(),
+        Key: executionMetaKey(executionId),
+        ...(consistentRead ? { ConsistentRead: true } : {}),
+      }),
     );
     return Item ?? null;
   };
@@ -138,9 +142,12 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     startedAt,
     completedAt,
     failureReason,
+    failure,
     startedBy,
     starterName,
     starterEmail,
+    agentCli,
+    credentialBinding,
     constructionAutonomyMode,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
@@ -225,6 +232,23 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('failureReason = :fr');
       values[':fr'] = failureReason;
     }
+    if (failure !== undefined) {
+      if (
+        failure !== null &&
+        (typeof failure !== 'object' ||
+          Array.isArray(failure) ||
+          typeof failure.code !== 'string' ||
+          !failure.code ||
+          typeof failure.message !== 'string' ||
+          !failure.message)
+      ) {
+        throw new Error('failure must be {code, message} or null');
+      }
+      sets.push('#failure = :failure');
+      names['#failure'] = 'failure';
+      values[':failure'] =
+        failure === null ? null : { code: failure.code, message: failure.message };
+    }
     if (startedBy !== undefined) {
       sets.push('startedBy = :sby');
       values[':sby'] = startedBy;
@@ -236,6 +260,23 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (starterEmail !== undefined) {
       sets.push('starterEmail = :sem');
       values[':sem'] = starterEmail;
+    }
+    if (agentCli !== undefined) {
+      if (agentCli !== null && typeof agentCli !== 'string') {
+        throw new Error('agentCli must be a string or null');
+      }
+      sets.push('agentCli = :acl');
+      values[':acl'] = agentCli;
+    }
+    if (credentialBinding !== undefined) {
+      if (
+        credentialBinding !== null &&
+        (typeof credentialBinding !== 'object' || Array.isArray(credentialBinding))
+      ) {
+        throw new Error('credentialBinding must be an object or null');
+      }
+      sets.push('credentialBinding = :acb');
+      values[':acb'] = credentialBinding;
     }
     if (orchestratorRunId !== undefined) {
       sets.push('orchestratorRunId = :orid');

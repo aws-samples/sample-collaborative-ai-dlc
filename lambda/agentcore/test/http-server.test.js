@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
+import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
 
 describe('createBusyTracker', () => {
   it('reports HealthyBusy while work is in flight, Healthy otherwise', () => {
@@ -32,6 +33,18 @@ describe('dispatchInvocation', () => {
     expect(r.statusCode).toBe(400);
   });
 
+  it('keeps routing and authentication metadata in one command registry', () => {
+    expect(COMMANDS['init-ws']).toEqual({ handler: 'initWs', agentAuth: false });
+    expect(COMMANDS['run-stage']).toEqual({
+      handler: 'runStage',
+      agentAuth: AGENT_AUTH_MODES.EXECUTION,
+    });
+    expect(COMMANDS['compose-plan-start'].agentAuth).toBe(AGENT_AUTH_MODES.COMPOSE);
+    expect(COMMANDS['discussion-assist-start'].agentAuth).toBe(AGENT_AUTH_MODES.DISCUSSION);
+    expect(COMMANDS.capabilities.agentAuth).toBe(AGENT_AUTH_MODES.CAPABILITIES);
+    expect(commandDefinition('toString')).toBeNull();
+  });
+
   it('routes init-ws and run-stage', async () => {
     const a = await dispatchInvocation({
       payload: { command: 'init-ws', intentId: 'i1' },
@@ -55,6 +68,57 @@ describe('dispatchInvocation', () => {
       statusCode: 200,
       body: { ok: true, intentId: 'i1', command: 'inspect' },
     });
+  });
+
+  it('does not prepare agent credentials for engine-only commands', async () => {
+    const prepareInvocation = vi.fn(async () => {
+      throw new Error('SSM unavailable');
+    });
+    const result = await dispatchInvocation({
+      payload: { command: 'init-ws', intentId: 'i1' },
+      handlers,
+      prepareInvocation,
+    });
+
+    expect(result).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, intentId: 'i1', command: 'init-ws' },
+    });
+    expect(prepareInvocation).not.toHaveBeenCalled();
+  });
+
+  it('prepares agent credentials for CLI-consuming commands', async () => {
+    const prepareInvocation = vi.fn(async () => ({ availableClis: ['kiro'] }));
+    const runStage = vi.fn(async (_payload, context) => ({
+      ok: true,
+      availableClis: context.availableClis,
+    }));
+    const result = await dispatchInvocation({
+      payload: {
+        command: 'run-stage',
+        stageId: 's1',
+        agentCredentialGrant: 'signed-grant',
+      },
+      handlers: { runStage },
+      prepareInvocation,
+    });
+
+    expect(result).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, availableClis: ['kiro'], command: 'run-stage' },
+    });
+    expect(prepareInvocation).toHaveBeenCalledWith(
+      {
+        command: 'run-stage',
+        stageId: 's1',
+        agentCredentialGrant: 'signed-grant',
+      },
+      AGENT_AUTH_MODES.EXECUTION,
+    );
+    expect(runStage).toHaveBeenCalledWith(
+      { command: 'run-stage', stageId: 's1' },
+      { availableClis: ['kiro'] },
+    );
   });
 
   it('routes promote-units (WP3 unit DAG promotion)', async () => {

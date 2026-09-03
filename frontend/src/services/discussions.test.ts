@@ -71,11 +71,13 @@ describe('discussionsService routes both scopes through the base path', () => {
       requestId: 'assist-12345678',
       command: 'ask',
       instructions: 'focus',
+      agentCli: 'kiro',
     });
     expect(post).toHaveBeenCalledWith('/projects/p1/intents/i1/discussions/d1/assist', {
       requestId: 'assist-12345678',
       command: 'ask',
       instructions: 'focus',
+      agentCli: 'kiro',
     });
   });
 

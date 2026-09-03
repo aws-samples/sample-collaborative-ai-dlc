@@ -41,6 +41,7 @@ describe('agent utility runtime routing', () => {
     vi.stubEnv('AGENTCORE_RUNTIME_ARN', CORE_RUNTIME_ARN);
     vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', REGISTRY_TABLE);
     vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', '1');
+    vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
   });
 
   afterEach(() => {

@@ -856,6 +856,34 @@ describe('runStage — failure paths (always records terminal state)', () => {
     ).toBe(true);
   });
 
+  it.each([
+    {
+      source: 'user',
+      sourceLabel: 'Personal',
+      remediation: 'Restore or rotate it in Account Settings',
+      fallback: 'do not fall back to Space or Platform credentials',
+    },
+    {
+      source: 'space',
+      sourceLabel: 'Space',
+      remediation: 'A Space owner or admin must restore or rotate it in Space Settings',
+      fallback: 'do not fall back to Platform credentials',
+    },
+  ])(
+    'explains when the pinned $source credential was removed',
+    async ({ source, sourceLabel, remediation, fallback }) => {
+      const deps = baseDeps({
+        availableClis: [],
+        missingCredentialBindings: [{ provider: 'kiro', source }],
+      });
+      const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
+      expect(res).toMatchObject({ ok: false, reason: 'credential_unavailable' });
+      expect(res.detail).toContain(`The ${sourceLabel} Kiro credential pinned to this run`);
+      expect(res.detail).toContain(remediation);
+      expect(res.detail).toContain(fallback);
+    },
+  );
+
   it('fails when the workflow is not found', async () => {
     const deps = baseDeps({ loadLibrary: async () => ({ workflow: null, library: null }) });
     const res = await runStage(baseArgs, deps);
@@ -1535,6 +1563,31 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit', detail: '2' });
   });
 
+  it('classifies rejected credentials without persisting the CLI output', async () => {
+    const deps = baseDeps({
+      spawnFn: () => ({
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),
+        stdin: { end() {} },
+        stderr: {
+          on: (ev, cb) => {
+            if (ev === 'data') cb(Buffer.from('HTTP 401 Unauthorized: invalid API key secret'));
+          },
+        },
+      }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({
+      ok: false,
+      reason: 'credential_invalid',
+      detail:
+        'The pinned agent credential was rejected; rotate it at the selected credential scope',
+    });
+    const failedEvent = deps.store.calls.find(
+      ([operation, input]) => operation === 'appendEvent' && input.type === 'v2.stage.failed',
+    );
+    expect(failedEvent?.[1].summary).not.toContain('secret');
+  });
+
   it('treats a Kiro empty-final-completion crash as success (work already done)', async () => {
     // kiro-cli exits non-zero after the turn's work because it ended with an
     // empty final message; its ACP reports "Kiro failed to generate a response".
@@ -1722,6 +1775,22 @@ describe('runStage — resume mode', () => {
     });
     const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
     expect(res).toMatchObject({ ok: false, reason: 'resume_no_session' });
+  });
+
+  it('explains a removed pinned credential when resuming a parked stage', async () => {
+    const deps = baseDeps({
+      availableClis: [],
+      missingCredentialBindings: [{ provider: 'kiro', source: 'space' }],
+      spawnFn: okSpawn,
+      store: spyStore({
+        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
+        stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'credential_unavailable' });
+    expect(res.detail).toContain('The Space Kiro credential pinned to this run');
+    expect(res.detail).toContain('do not fall back to Platform credentials');
   });
 });
 

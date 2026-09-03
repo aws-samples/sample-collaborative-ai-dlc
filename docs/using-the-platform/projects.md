@@ -61,7 +61,8 @@ separate identities that share an email address remain distinguishable.
 
 ### Agent
 
-- **Agent CLI** — which headless CLI executes stages: **Kiro**, **Claude Code**, **OpenCode**, or **Codex** (OpenAI models on Bedrock). Availability reflects which credentials the operator has configured in [Platform Admin → Agents](platform-settings.md#agents).
+- **Space Agent Credentials** — optional shared Bedrock and Kiro credentials for members without personal credentials. Personal credentials take precedence; platform credentials remain the fallback.
+- **Recommended CLI** — marks **Kiro**, **Claude Code**, **OpenCode**, or **Codex** as the space recommendation on the intent compose page. Each user still explicitly selects an available CLI for every new intent.
 - **Model Override** — pin a specific model per CLI for this project. When unset, the platform-wide default model from **Admin → Agents → Default Models** applies. Project overrides take precedence over the stage/agent-level model hints in the workflow.
 
 ### Environment

@@ -24,6 +24,8 @@
 // durable identities.
 
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
+import { credentialProviderForCli } from '../shared/agent-credentials.js';
+import { commandDefinition } from '../shared/agent-command-registry.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -52,19 +54,37 @@ const decodeCallback = (raw) => {
 };
 
 export const runQuorumEdit = async (event, ctx, deps) => {
-  const { store, invokeRuntime, stopSession, broadcast } = deps;
+  const { store, invokeRuntime: rawInvokeRuntime, stopSession, broadcast } = deps;
   const { intentId, executionId, editId } = event;
   if (!intentId || !executionId || !editId) return { ok: false, reason: 'missing_identity' };
 
   const meta = await ctx.step('qe-load-meta', () => store.getExecution(executionId));
   if (!meta) return { ok: false, reason: 'execution_not_found' };
-  const runtimeTarget = resolveRuntimeTarget(meta, process.env.AGENTCORE_RUNTIME_ARN);
-  const invokeIntentRuntime = (payload, session) => invokeRuntime(payload, session, runtimeTarget);
-  const stopIntentSession = (session) => stopSession?.(session, runtimeTarget);
   const edit = await ctx.step('qe-load-edit', () => store.getQuorumEdit(executionId, editId));
   if (!edit) return { ok: false, reason: 'quorum_edit_not_found' };
   const { projectId } = meta;
   const sessionId = quorumEditSessionIdFor(intentId);
+  const runtimeTarget = resolveRuntimeTarget(meta, process.env.AGENTCORE_RUNTIME_ARN);
+  const stopIntentSession = (session) => stopSession?.(session, runtimeTarget);
+  const credentialProvider = credentialProviderForCli(meta.agentCli);
+  const credentialBinding =
+    meta.credentialBinding ??
+    (credentialProvider ? { provider: credentialProvider, source: 'platform' } : null);
+  const invokeIntentRuntime = async (payload, session = sessionId) => {
+    const authMode = commandDefinition(payload.command)?.agentAuth;
+    let invocationPayload = payload;
+    if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
+      return rawInvokeRuntime(invocationPayload, session, runtimeTarget);
+    }
+    const agentCredentialGrant = await deps.issueAgentCredentialGrant({
+      purpose: authMode,
+      projectId,
+      executionId,
+      bindings: [credentialBinding],
+    });
+    invocationPayload = { ...payload, agentCredentialGrant };
+    return rawInvokeRuntime(invocationPayload, session, runtimeTarget);
+  };
 
   // Timeline event + payload-blind reload hint, both best-effort and inside a
   // durable step (a replayed broadcast is harmless — the UI just refetches).

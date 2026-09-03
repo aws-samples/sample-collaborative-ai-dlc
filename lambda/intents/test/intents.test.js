@@ -22,7 +22,7 @@ import {
   SendDurableExecutionCallbackSuccessCommand,
   StopDurableExecutionCommand,
 } from '@aws-sdk/client-lambda';
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { SSMClient, GetParameterCommand, GetParametersCommand } from '@aws-sdk/client-ssm';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -63,6 +63,7 @@ let sourceControlValidationResponse = { ready: true, repositories: [] };
 const s3Mock = mockClient(S3Client);
 let attachmentUpdateConflict = null;
 let sourceControlOperationHandler = null;
+let credentialMetadataHandler = null;
 
 const MANAGED_ENVIRONMENT_SNAPSHOT = {
   environmentId: 'polyglot',
@@ -283,6 +284,17 @@ const installDdbFakes = () => {
   });
   lambdaMock.reset();
   lambdaMock.on(InvokeCommand).callsFake((input) => {
+    if (input.FunctionName === 'credential-metadata-test') {
+      const request = JSON.parse(Buffer.from(input.Payload).toString());
+      const response = credentialMetadataHandler?.(request) ?? {
+        ok: true,
+        bindings: {
+          bedrock: { provider: 'bedrock', source: 'platform' },
+          kiro: { provider: 'kiro', source: 'platform' },
+        },
+      };
+      return { StatusCode: 200, Payload: Buffer.from(JSON.stringify(response)) };
+    }
     if (input.FunctionName === 'source-control-test') {
       const request = JSON.parse(Buffer.from(input.Payload).toString());
       const response =
@@ -342,10 +354,13 @@ beforeAll(async () => {
   vi.stubEnv('BLOCKS_TABLE', 'blocks-test');
   vi.stubEnv('V2_ORCHESTRATOR_FUNCTION', 'orchestrator-test');
   vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control-test');
+  vi.stubEnv('AGENT_CREDENTIAL_METADATA_FUNCTION', 'credential-metadata-test');
   vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
+  vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
-  ({ handler } = await import('../index.js'));
+  const imported = await import('../index.js');
+  handler = imported.handler;
 
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
   conn = new gremlin.driver.DriverRemoteConnection(url);
@@ -370,7 +385,16 @@ beforeEach(() => {
   sourceControlReviewComments = [];
   sourceControlValidationResponse = { ready: true, repositories: [] };
   sourceControlOperationHandler = null;
+  credentialMetadataHandler = null;
   ssmMock.reset();
+  vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+  ssmMock.on(GetParametersCommand).callsFake((input) => ({
+    Parameters: (input.Names ?? [])
+      .filter((name) =>
+        ['/collab/dev/bedrock-bearer-token', '/collab/dev/kiro-api-key'].includes(name),
+      )
+      .map((Name) => ({ Name, Value: `${Name}-value` })),
+  }));
   agentcoreMock.reset();
   attachmentUpdateConflict = null;
   archiveArtifactsSpy.mockClear();
@@ -584,8 +608,9 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.prompt).toBe('Build X');
     expect(intent.repos).toEqual(['owner/repo']);
     expect(intent.branch).toBe('aidlc/i'); // slug of the title 'I'
-    // Project run-config snapshotted onto the intent at create.
-    expect(intent.agentCli).toBe('kiro');
+    // CLI selection is deferred until Start; model config is still pinned at create.
+    expect(intent.agentCli).toBeNull();
+    expect(intent.credentialSource).toBeNull();
     expect(intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(intent.parkReleaseSeconds).toBe(120);
     // WP5: lane concurrency cap snapshotted; the ladder decision starts unset.
@@ -1508,6 +1533,7 @@ describe('composed grids + DRAFT PATCH', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     const res = await patchIntent(sub, projectId, intent.id, { title: 'Too late' });
@@ -1534,7 +1560,10 @@ describe('composed grids + DRAFT PATCH', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
-      body: JSON.stringify({ composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' } }),
+      body: JSON.stringify({
+        agentCli: 'kiro',
+        composedGrid: { analyze: 'EXECUTE', build: 'EXECUTE' },
+      }),
       ...claims(sub),
     });
     expect(res.statusCode).toBe(202);
@@ -1553,6 +1582,7 @@ describe('composed grids + DRAFT PATCH', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     // Flip to FAILED so it is startable again, then try to smuggle a grid in.
@@ -1684,6 +1714,7 @@ describe('composed grids + DRAFT PATCH', () => {
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
       body: JSON.stringify({
+        agentCli: 'kiro',
         composedGrid: { analyze: 'SKIP', extra: 'EXECUTE', build: 'EXECUTE' },
       }),
       ...claims(sub),
@@ -1758,7 +1789,7 @@ describe('POST /compose — composer sessions', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intentId}/compose`,
       pathParameters: { projectId, intentId },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ agentCli: 'kiro', ...body }),
       ...claims(sub),
     });
 
@@ -1812,7 +1843,10 @@ describe('POST /compose — composer sessions', () => {
         mode: 'front',
         workflowId: 'aidlc-v2',
         instructions: 'be lean',
+        requestedCli: 'kiro',
+        credentialBinding: { provider: 'kiro', source: 'platform' },
       });
+      expect(typeof payload.agentCredentialGrant).toBe('string');
       expect(payload.prompt).toContain('Do something ambiguous');
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;
@@ -1872,6 +1906,7 @@ describe('POST /compose — composer sessions', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     const res = await composeReq(sub, projectId, intent.id);
@@ -1994,7 +2029,13 @@ describe('POST /recompose — in-flight reshape', () => {
       (await createIntent(sub, projectId, { title: 'I', prompt: 'X', scope: 'feature' })).body,
     );
     const k = keyOf(`EXEC#${intent.id}`, 'META');
-    procStore.set(k, { ...procStore.get(k), status, ...metaOver });
+    procStore.set(k, {
+      ...procStore.get(k),
+      status,
+      agentCli: 'kiro',
+      credentialBinding: { provider: 'kiro', source: 'platform' },
+      ...metaOver,
+    });
     for (const row of rows) {
       procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${row.stageInstanceId}`), {
         pk: `EXEC#${intent.id}`,
@@ -2240,6 +2281,21 @@ describe('POST /recompose — in-flight reshape', () => {
 });
 
 describe('POST /start', () => {
+  it('requires an explicit CLI for a fresh DRAFT', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: '{}',
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('agent_cli_required');
+  });
+
   it('returns typed SOURCE_CONTROL_NOT_READY before mutating intent state', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -2261,6 +2317,7 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(res.statusCode).toBe(409);
@@ -2282,6 +2339,7 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(res.statusCode).toBe(202);
@@ -2296,10 +2354,19 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(res.statusCode).toBe(202);
-    expect(JSON.parse(res.body).status).toBe('CREATED');
+    expect(JSON.parse(res.body)).toMatchObject({
+      status: 'CREATED',
+      agentCli: 'kiro',
+      credentialSource: 'platform',
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).credentialBinding).toEqual({
+      provider: 'kiro',
+      source: 'platform',
+    });
     const calls = orchestratorInvokes();
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
@@ -2324,6 +2391,7 @@ describe('POST /start', () => {
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(failed.statusCode).toBe(500);
@@ -2339,15 +2407,99 @@ describe('POST /start', () => {
       ).body,
     );
     expect(after.intent.status).toBe('DRAFT');
+    expect(after.intent.agentCli).toBeNull();
+    expect(after.intent.credentialSource).toBeNull();
     // Retry now succeeds (invoke mock is back to resolving).
     const retry = await handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
       pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
       ...claims(sub),
     });
     expect(retry.statusCode).toBe(202);
     expect(JSON.parse(retry.body).status).toBe('CREATED');
+  });
+
+  it('pins the starter personal credential over space and platform', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: { provider: 'kiro', source: 'user', userId: sub },
+      },
+    });
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).credentialSource).toBe('user');
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).credentialBinding).toEqual({
+      provider: 'kiro',
+      source: 'user',
+      userId: sub,
+    });
+  });
+
+  it('falls back to a space credential when the personal credential was cleared before start', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: { provider: 'kiro', source: 'space' },
+      },
+    });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).credentialSource).toBe('space');
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).credentialBinding).toEqual({
+      provider: 'kiro',
+      source: 'space',
+    });
+  });
+
+  it('blocks a draft start after its only credential was cleared', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: { bedrock: null, kiro: null },
+    });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'agent_credential_required',
+      provider: 'kiro',
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('DRAFT');
+    expect(orchestratorInvokes()).toHaveLength(0);
   });
 
   const setStatus = (intentId, status) => {
@@ -2373,14 +2525,19 @@ describe('POST /start', () => {
   );
 
   it.each(['FAILED', 'CREATED'])(
-    'restarts a %s intent (re-enters the pipeline, clears failureReason)',
+    'restarts a %s intent (re-enters the pipeline, clears its failure)',
     async (status) => {
       const sub = `u-${randomUUID()}`;
       const projectId = await seedV2Project(sub);
       const intent = JSON.parse((await createIntent(sub, projectId)).body);
       // Simulate a stranded/failed prior run.
       const k = keyOf(`EXEC#${intent.id}`, 'META');
-      procStore.set(k, { ...procStore.get(k), status, failureReason: 'boom' });
+      procStore.set(k, {
+        ...procStore.get(k),
+        status,
+        failureReason: 'boom',
+        failure: { code: 'credential_unavailable', message: 'Old failure.' },
+      });
       const res = await handler({
         httpMethod: 'POST',
         path: `/projects/${projectId}/intents/${intent.id}/start`,
@@ -2391,6 +2548,10 @@ describe('POST /start', () => {
       expect(JSON.parse(res.body).status).toBe('CREATED');
       // Orchestrator was (re-)invoked.
       expect(orchestratorInvokes()).toHaveLength(1);
+      expect(procStore.get(k)).toMatchObject({
+        failureReason: null,
+        failure: null,
+      });
     },
   );
 });
@@ -2470,6 +2631,66 @@ describe('GET list + detail', () => {
     }
     expect(detail.intent.cliModels).toEqual({ claude: 'us.anthropic.claude-opus-4-8' });
     expect(detail.intent.parkReleaseSeconds).toBe(120);
+  });
+
+  it('returns the structured execution failure independently of legacy wording', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const k = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(k, {
+      ...procStore.get(k),
+      status: 'FAILED',
+      failureReason: 'stage_failed: backend wording may change independently',
+      failure: {
+        code: 'credential_unavailable',
+        message: 'Restore or rotate the Space credential.',
+      },
+    });
+
+    const detail = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents/${intent.id}`,
+          pathParameters: { projectId, intentId: intent.id },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(detail.intent.failure).toEqual({
+      code: 'credential_unavailable',
+      message: 'Restore or rotate the Space credential.',
+    });
+  });
+
+  it('normalizes legacy credential failures once at the API boundary', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const k = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(k, {
+      ...procStore.get(k),
+      status: 'FAILED',
+      failureReason:
+        'stage_failed: requirements-analysis: credential_invalid: The credential expired.',
+      failure: null,
+    });
+
+    const list = JSON.parse(
+      (
+        await handler({
+          httpMethod: 'GET',
+          path: `/projects/${projectId}/intents`,
+          pathParameters: { projectId },
+          ...claims(sub),
+        })
+      ).body,
+    );
+    expect(list[0].failure).toEqual({
+      code: 'credential_invalid',
+      message: 'The credential expired.',
+    });
   });
 
   const seedOutput = (
@@ -5882,7 +6103,7 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
       .property(gremlin.process.cardinality.single, 'stage_skipping', 'enabled')
       .next();
 
-  const startIntent = (sub, projectId, intentId, bodyObj = {}) =>
+  const startIntent = (sub, projectId, intentId, bodyObj) =>
     handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intentId}/start`,
@@ -5898,7 +6119,10 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
     await enableProjectSkipping(projectId);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
 
-    const res = await startIntent(sub, projectId, intent.id, { skipStageIds: ['optional'] });
+    const res = await startIntent(sub, projectId, intent.id, {
+      agentCli: 'kiro',
+      skipStageIds: ['optional'],
+    });
     expect(res.statusCode).toBe(202);
     expect(JSON.parse(res.body).skipStageIds).toEqual(['optional']);
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toEqual(['optional']);
@@ -5919,7 +6143,10 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
         })
       ).body,
     );
-    const res = await startIntent(sub, projectId, intent.id, { skipStageIds: [] });
+    const res = await startIntent(sub, projectId, intent.id, {
+      agentCli: 'kiro',
+      skipStageIds: [],
+    });
     expect(res.statusCode).toBe(202);
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toBeNull();
   });
@@ -5939,7 +6166,7 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
         })
       ).body,
     );
-    const res = await startIntent(sub, projectId, intent.id);
+    const res = await startIntent(sub, projectId, intent.id, { agentCli: 'kiro' });
     expect(res.statusCode).toBe(202);
     expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).skipStageIds).toEqual(['optional']);
   });
@@ -5950,13 +6177,19 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
     seedSkippablePlan();
     // Disabled run (no override, platform default = disabled).
     const plain = JSON.parse((await createIntent(sub, projectId)).body);
-    const denied = await startIntent(sub, projectId, plain.id, { skipStageIds: ['optional'] });
+    const denied = await startIntent(sub, projectId, plain.id, {
+      agentCli: 'kiro',
+      skipStageIds: ['optional'],
+    });
     expect(denied.statusCode).toBe(400);
     expect(JSON.parse(denied.body).error).toMatch(/disabled/);
     // Enabled run, but an ALWAYS stage → structured plan error.
     await enableProjectSkipping(projectId);
     const enabled = JSON.parse((await createIntent(sub, projectId)).body);
-    const bad = await startIntent(sub, projectId, enabled.id, { skipStageIds: ['main'] });
+    const bad = await startIntent(sub, projectId, enabled.id, {
+      agentCli: 'kiro',
+      skipStageIds: ['main'],
+    });
     expect(bad.statusCode).toBe(400);
     expect(JSON.parse(bad.body).errors.map((e) => e.code)).toContain('skip_not_allowed');
   });
@@ -5972,7 +6205,7 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toMatch(/DRAFT/);
     // A plain restart still works.
-    const retry = await startIntent(sub, projectId, intent.id);
+    const retry = await startIntent(sub, projectId, intent.id, {});
     expect(retry.statusCode).toBe(202);
   });
 });

@@ -1,4 +1,6 @@
 import { api } from './api';
+import type { AgentCli } from './projects';
+import type { AgentCredentialSource } from './agents';
 
 // AI-DLC v2 intents — the v2 unit of work (the v1 sprint analog). An intent
 // runs a compiled workflow's stages through dynamic phases. Process/runtime
@@ -46,6 +48,11 @@ export interface IntentEnvironmentSnapshot {
   verification: Record<string, unknown> | null;
 }
 
+export interface IntentFailure {
+  code: string;
+  message: string;
+}
+
 export interface Intent {
   id: string;
   executionId: string;
@@ -70,8 +77,11 @@ export interface Intent {
   currentStage: string | null;
   pendingHumanTaskId: string | null;
   failureReason: string | null;
+  failure?: IntentFailure | null;
   // Set when the run was relaunched from a mid-plan stage (steering rewind).
   rewindFromStageId?: string | null;
+  agentCli?: AgentCli | null;
+  credentialSource?: AgentCredentialSource | null;
   cliModels: Record<string, string> | null;
   environment: IntentEnvironmentSnapshot | null;
   parkReleaseSeconds: number | null;
@@ -963,6 +973,7 @@ export const intentsService = {
       reportKey?: string;
       repoSignals?: Record<string, unknown>;
       mode?: 'inflight';
+      agentCli?: AgentCli;
     } = {},
   ) => api.post<ComposeSession>(`/projects/${projectId}/intents/${intentId}/compose`, input),
   listComposes: (projectId: string, intentId: string) =>
@@ -1007,6 +1018,7 @@ export const intentsService = {
     projectId: string,
     intentId: string,
     input?: {
+      agentCli?: AgentCli;
       skipStageIds?: string[];
       composedGrid?: Record<string, 'EXECUTE' | 'SKIP'> | null;
     },

@@ -3,6 +3,7 @@ import { useYjsDocument } from './useYjsDocument';
 import { realtimeService } from '../services/realtime';
 import { discussionsService } from '../services/discussions';
 import type { AssistCommand, DiscussionMessage, DiscussionScope } from '../services/discussions';
+import type { AgentCli } from '../services/projects';
 import {
   changeCursorOf,
   displayCursorOf,
@@ -36,6 +37,7 @@ interface UseDiscussionArgs {
   /** Connect only while the sheet is open. */
   open: boolean;
   user: { id: string; name: string };
+  agentCli?: AgentCli | null;
 }
 
 const SEED_PAGE_SIZE = 100;
@@ -53,7 +55,13 @@ const discussionDocId = (scope: DiscussionScope, discussionId: string): string =
     ? `intent-discussion-${scope.intentId}-${discussionId}`
     : `discussion-${scope.sprintId}-${discussionId}`;
 
-export function useDiscussion({ scope, discussionId, open, user }: UseDiscussionArgs) {
+export function useDiscussion({
+  scope,
+  discussionId,
+  open,
+  user,
+  agentCli = null,
+}: UseDiscussionArgs) {
   const docId = open && discussionId && scope ? discussionDocId(scope, discussionId) : null;
   const scopeTarget = !scope
     ? undefined
@@ -276,13 +284,14 @@ export function useDiscussion({ scope, discussionId, open, user }: UseDiscussion
           command,
           instructions,
           selectedMessageIds: opts.selectedMessageIds || [],
+          ...(agentCli ? { agentCli } : {}),
         });
         upsertMessages([message]);
       } catch (err) {
         console.error('Discussion assist failed:', err);
       }
     },
-    [discussionId, scope, upsertMessages],
+    [agentCli, discussionId, scope, upsertMessages],
   );
 
   // ── Typing awareness ──

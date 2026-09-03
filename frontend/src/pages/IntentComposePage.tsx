@@ -11,6 +11,10 @@ import {
   type IntentAttachment,
 } from '@/services/intents';
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
+import { agentsService, type AgentCapabilities } from '@/services/agents';
+import type { AgentCli } from '@/services/projects';
+import { AGENT_CLIS, AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
+import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
@@ -27,9 +31,12 @@ import {
 import {
   AlertCircle,
   ArrowLeft,
+  Bot,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Info,
+  KeyRound,
   Loader2,
   MousePointerClick,
   Paperclip,
@@ -69,11 +76,12 @@ const ATTACHMENT_INGEST_TIMEOUT_MS = 30_000;
 // (scope or composed grid) and the per-intent stage deselection are edited
 // COLLABORATIVELY (Yjs doc `intent-draft-{intentId}`; debounced PATCH persists
 // to the intent row, which is what Start launches from).
-export default function IntentComposePage() {
+function IntentComposePageContent() {
   const navigate = useNavigate();
   const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
   const { user } = useAuth();
   const { reload } = useIntent();
+  const setAssistAgentCli = useDiscussions()?.setAssistAgentCli;
   const userName = user?.displayName || user?.email || '';
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
 
@@ -86,11 +94,48 @@ export default function IntentComposePage() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
+  const [agentCapabilities, setAgentCapabilities] = useState<AgentCapabilities | null>(null);
+  const [capabilitiesLoading, setCapabilitiesLoading] = useState(true);
+  const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
+  const [selectedCli, setSelectedCli] = useState<AgentCli | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!setAssistAgentCli) return;
+    setAssistAgentCli(selectedCli);
+    return () => setAssistAgentCli(null);
+  }, [selectedCli, setAssistAgentCli]);
 
   const draft = useCollaborativeIntentDraft(projectId ?? '', intentId ?? null, userName);
   const { initFromIntent } = draft;
   const draftReady = draft.synced && draft.hydrated;
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    setSelectedCli(null);
+    setCapabilitiesLoading(true);
+    setCapabilitiesError(null);
+    agentsService
+      .getProjectCapabilities(projectId, true)
+      .then((result) => {
+        if (!cancelled) setAgentCapabilities(result);
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setAgentCapabilities(null);
+          setCapabilitiesError(
+            cause instanceof Error ? cause.message : 'Failed to load agent CLIs',
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCapabilitiesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   // Load the intent; non-DRAFT intents have left the compose step — show them
   // in the regular intent view instead.
@@ -422,7 +467,8 @@ export default function IntentComposePage() {
       // Persist the last shared edits BEFORE launching — Start reads the
       // intent row, not the Yjs doc.
       await draft.flushDraft();
-      await intentsService.start(projectId, intentId);
+      if (!selectedCli) return;
+      await intentsService.start(projectId, intentId, { agentCli: selectedCli });
       // IntentProvider stays mounted across /compose -> /intent and is keyed
       // by the same ids. Refresh it before navigation so IntentView never sees
       // the cached DRAFT and redirects back to compose.
@@ -449,9 +495,22 @@ export default function IntentComposePage() {
   }
 
   const remoteCount = draft.remoteUsers.size;
+  const runtimeCliStatus = new Map(
+    (agentCapabilities?.runtimeClis ?? []).map((status) => [status.cli, status]),
+  );
+  const cliAvailable = (cli: AgentCli) =>
+    runtimeCliStatus.get(cli)?.available ?? agentCapabilities?.available.includes(cli) ?? false;
+  const availableCliCount = AGENT_CLIS.filter(cliAvailable).length;
+  const hasEffectiveCredential = AGENT_CLIS.some((cli) => {
+    const status = runtimeCliStatus.get(cli);
+    return Boolean(
+      status?.credentialSource ??
+      agentCapabilities?.credentialSources?.[AGENT_CLI_METADATA[cli].credentialProvider],
+    );
+  });
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="min-h-full">
       <div className="space-y-6">
         <div className="flex items-center gap-3">
           <Button
@@ -595,6 +654,89 @@ export default function IntentComposePage() {
           </div>
 
           <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-muted-foreground" />
+              <Label className="text-sm font-medium">Agent CLI</Label>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              {AGENT_CLIS.map((cli) => {
+                const status = runtimeCliStatus.get(cli);
+                const available = cliAvailable(cli);
+                const selected = selectedCli === cli;
+                const source =
+                  status?.credentialSource ??
+                  agentCapabilities?.credentialSources?.[
+                    AGENT_CLI_METADATA[cli].credentialProvider
+                  ] ??
+                  null;
+                const unavailableReason =
+                  status?.installed === false
+                    ? 'not installed'
+                    : status?.authed === false || !source
+                      ? 'no credential'
+                      : 'unavailable';
+                return (
+                  <button
+                    key={cli}
+                    type="button"
+                    aria-pressed={selected}
+                    disabled={!draftReady || starting || capabilitiesLoading || !available}
+                    onClick={() => setSelectedCli(cli)}
+                    className={`relative min-h-20 rounded-md border px-3 py-2.5 text-left transition-colors ${
+                      selected
+                        ? 'border-primary bg-primary/[0.04] ring-1 ring-primary'
+                        : available
+                          ? 'hover:border-primary/40 hover:bg-muted/30'
+                          : 'cursor-not-allowed bg-muted/30 opacity-60'
+                    }`}
+                    data-testid={`agent-cli-${cli}`}
+                  >
+                    {selected && (
+                      <CheckCircle2 className="absolute right-2.5 top-2.5 h-4 w-4 text-primary" />
+                    )}
+                    <span className="block pr-5 text-xs font-semibold">
+                      {AGENT_CLI_METADATA[cli].label}
+                    </span>
+                    <span className="mt-2 flex flex-wrap gap-1 text-[10px] text-muted-foreground">
+                      {project.agentCli === cli && (
+                        <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                          recommended
+                        </span>
+                      )}
+                      {source && (
+                        <span className="rounded bg-muted px-1.5 py-0.5">
+                          {AGENT_CREDENTIAL_SOURCE_LABELS[source]} key
+                        </span>
+                      )}
+                      {!available && <span>{unavailableReason}</span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {!capabilitiesLoading && availableCliCount === 0 && (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-agent-warning/30 bg-agent-warning/[0.06] px-3 py-2">
+                <p className="text-xs text-muted-foreground">
+                  {capabilitiesError ??
+                    (hasEffectiveCredential
+                      ? 'No configured agent CLI is currently available.'
+                      : 'No agent credential is currently available. Add one before starting this draft.')}
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => navigate('/account/settings')}
+                >
+                  <KeyRound className="mr-1.5 h-3.5 w-3.5" />
+                  Add credential
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
             <Label className="text-sm font-medium">Scope</Label>
             <div className="grid gap-3 lg:grid-cols-3">
               {/* Predefined — pick a built-in scope (1/3) */}
@@ -637,6 +779,7 @@ export default function IntentComposePage() {
                   <ComposePanel
                     projectId={projectId}
                     intentId={intentId}
+                    agentCli={selectedCli}
                     disabled={starting || !draftReady}
                     onApply={applyProposal}
                   />
@@ -756,6 +899,7 @@ export default function IntentComposePage() {
                 uploadProgress !== null ||
                 !draft.prompt.trim() ||
                 !scope ||
+                !selectedCli ||
                 previewErrors.length > 0
               }
               data-testid="start-intent"
@@ -769,6 +913,9 @@ export default function IntentComposePage() {
             {!starting && draft.prompt.trim() && !scope && (
               <span className="text-xs text-muted-foreground">Pick a scope to continue</span>
             )}
+            {!starting && draft.prompt.trim() && scope && !selectedCli && (
+              <span className="text-xs text-muted-foreground">Select an agent CLI to continue</span>
+            )}
             {!draftReady && (
               <span className="text-xs text-muted-foreground">
                 {draft.synced ? 'loading shared draft…' : 'connecting live session…'}
@@ -779,4 +926,9 @@ export default function IntentComposePage() {
       </div>
     </div>
   );
+}
+
+export default function IntentComposePage() {
+  const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
+  return <IntentComposePageContent key={`${projectId ?? ''}\0${intentId ?? ''}`} />;
 }

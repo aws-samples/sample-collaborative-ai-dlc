@@ -243,6 +243,16 @@ variable "realtime_doc_secret_param_name" {
   type        = string
 }
 
+variable "agent_credential_grant_secret_param_arn" {
+  description = "SSM parameter ARN of the HMAC secret used to authorize AgentCore credential-broker requests"
+  type        = string
+}
+
+variable "agent_credential_grant_secret_param_name" {
+  description = "SSM parameter name of the HMAC secret used to authorize AgentCore credential-broker requests"
+  type        = string
+}
+
 variable "discussion_locks_table_name" {
   description = "DynamoDB table name for discussion creation guards / message guards / assist locks"
   type        = string

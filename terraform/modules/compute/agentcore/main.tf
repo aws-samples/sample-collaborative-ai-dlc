@@ -329,8 +329,8 @@ resource "aws_iam_role_policy" "agentcore" {
           Resource = "*"
         },
         {
-          # Git credentials are fetched just-in-time from the broker. Provider
-          # review operations use the token-owning source-control service.
+          # Git and agent credentials are fetched just-in-time from the broker.
+          # Provider review operations use the token-owning source-control service.
           Effect = "Allow"
           Action = ["lambda:InvokeFunction"]
           Resource = [
@@ -379,13 +379,11 @@ resource "aws_iam_role_policy" "agentcore" {
       ] : [],
       [
         {
-          # Read agent model + bearer/api-key settings at startup (no Bedrock IAM —
-          # Claude/Kiro authenticate via the bearer token / API key, as in v1).
+          # Read non-secret agent model settings. Agent credentials are resolved
+          # only through the credential broker using a signed invocation grant.
           Effect = "Allow"
           Action = ["ssm:GetParameter", "ssm:GetParameters"]
           Resource = [
-            aws_ssm_parameter.bedrock_bearer_token.arn,
-            aws_ssm_parameter.kiro_api_key.arn,
             aws_ssm_parameter.cli_models.arn,
             aws_ssm_parameter.tier_models.arn,
           ]
@@ -643,8 +641,6 @@ locals {
     AWS_REGION                    = var.aws_region
     CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
     SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
-    BEDROCK_BEARER_TOKEN_SSM_PATH = aws_ssm_parameter.bedrock_bearer_token.name
-    KIRO_API_KEY_SSM_PATH         = aws_ssm_parameter.kiro_api_key.name
     MCP_SECRETS_SSM_PREFIX        = "/${var.project_name}/${var.environment}"
     RUNTIME_COMPATIBILITY_VERSION = "1"
   }

@@ -251,8 +251,51 @@ describe('buildMcpConfig', () => {
       scope: { executionId: 'e', intentId: 'i' },
       customServers: { fetch: { command: 'uvx', args: ['mcp-server-fetch'] } },
     });
-    expect(cfg.mcpServers.fetch).toEqual({ command: 'uvx', args: ['mcp-server-fetch'] });
+    expect(cfg.mcpServers.fetch).toEqual({
+      command: 'uvx',
+      args: ['mcp-server-fetch'],
+      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+    });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
+  });
+
+  it("prevents custom stdio servers from observing the selected user's model credential", () => {
+    const parentEnv = {
+      AWS_BEARER_TOKEN_BEDROCK: 'personal-bedrock-token',
+      KIRO_API_KEY: 'personal-kiro-key',
+    };
+    const cfg = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i' },
+      customServers: {
+        passive: { command: 'node', args: ['passive.js'] },
+        hostile: {
+          command: 'node',
+          args: ['hostile.js'],
+          env: {
+            SAFE_SERVER_KEY: '${SAFE_SERVER_KEY}',
+            AWS_BEARER_TOKEN_BEDROCK: 'try-to-restore-it',
+            KIRO_API_KEY: 'try-to-restore-it',
+          },
+        },
+        remote: { type: 'http', url: 'https://mcp.example' },
+      },
+    });
+
+    for (const name of ['passive', 'hostile']) {
+      // Claude/Kiro/OpenCode merge this explicit server env over the CLI env.
+      // The selected credential is therefore replaced before the custom child
+      // starts, even if its authored config tried to set a reserved key.
+      const observedChildEnv = { ...parentEnv, ...cfg.mcpServers[name].env };
+      expect(observedChildEnv.AWS_BEARER_TOKEN_BEDROCK).toBe('');
+      expect(observedChildEnv.KIRO_API_KEY).toBe('');
+    }
+    expect(cfg.mcpServers.hostile.env.SAFE_SERVER_KEY).toBe('${SAFE_SERVER_KEY}');
+    // Remote servers do not spawn a child and keep their original shape.
+    expect(cfg.mcpServers.remote).toEqual({ type: 'http', url: 'https://mcp.example' });
+    // The runtime-owned bridge is trusted and receives only its scoped env.
+    expect(cfg.mcpServers.aidlc.env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+    expect(cfg.mcpServers.aidlc.env.KIRO_API_KEY).toBeUndefined();
   });
 
   it('never lets a custom server override the reserved aidlc entry', () => {
@@ -336,7 +379,11 @@ describe('materializeStage (workspace write)', () => {
       customRules: [{ filename: 'standards.md', body: 'Always use tabs.' }],
     });
     const cfg = JSON.parse(await readFile(out.mcpConfigPath, 'utf8'));
-    expect(cfg.mcpServers.fetch).toEqual({ command: 'uvx', args: ['mcp-server-fetch'] });
+    expect(cfg.mcpServers.fetch).toEqual({
+      command: 'uvx',
+      args: ['mcp-server-fetch'],
+      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+    });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
     // Custom rules go into the CLI's NATIVE rules dir (auto-loaded), NOT the prompt.
     expect(out.prompt).not.toContain('Custom project rules');
@@ -427,7 +474,11 @@ describe('buildKiroAgentConfig', () => {
       env: { V2_PROCESS_TABLE: 'proc' },
       customServers: { git: { command: 'uvx', args: ['mcp-server-git'] } },
     });
-    expect(cfg.mcpServers.git).toEqual({ command: 'uvx', args: ['mcp-server-git'] });
+    expect(cfg.mcpServers.git).toEqual({
+      command: 'uvx',
+      args: ['mcp-server-git'],
+      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+    });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
   });
 });
@@ -471,7 +522,12 @@ describe('OpenCode inline config', () => {
     expect(cfg.mcp.local).toEqual({
       type: 'local',
       command: ['uvx', 'server'],
-      environment: { API_KEY: '{env:LOCAL_KEY}', MIXED: 'Bearer {env:LOCAL_KEY}' },
+      environment: {
+        API_KEY: '{env:LOCAL_KEY}',
+        MIXED: 'Bearer {env:LOCAL_KEY}',
+        AWS_BEARER_TOKEN_BEDROCK: '',
+        KIRO_API_KEY: '',
+      },
     });
     expect(cfg.mcp.remote).toEqual({
       type: 'remote',
