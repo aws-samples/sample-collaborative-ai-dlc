@@ -82,7 +82,11 @@ import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
-import { createNativeExport } from './native-export.js';
+import {
+  createNativeExport,
+  EXPORT_MISCONFIGURED,
+  EXPORT_SOURCE_UNAVAILABLE,
+} from './native-export.js';
 import {
   ATTACHMENT_UPLOAD_TTL_SECONDS,
   MAX_ATTACHMENTS,
@@ -1891,6 +1895,15 @@ export const handler = async (event) => {
                 );
               },
         });
+        const exporter = getResponder(event);
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.execution.exported',
+            actor: exporter.displayName || exporter.sub,
+            summary: `${exporter.displayName || 'Someone'} exported the ${harness} native workspace (export ${exported.exportId})`,
+          })
+          .catch((err) => console.error('Export event append failed:', err.message));
         return response(201, exported);
       } catch (error) {
         console.error('Native workflow export failed:', error);
@@ -1906,8 +1919,44 @@ export const handler = async (event) => {
             code: error.code,
           });
         }
-        return response(409, {
-          error: 'This workflow snapshot is not compatible with native AI-DLC export',
+        // A configured AI-DLC ref that cannot be resolved is a deployment
+        // misconfiguration; name it rather than blaming the workflow snapshot.
+        if (/AI-DLC repository ref/.test(String(error.message ?? ''))) {
+          return response(409, {
+            error: 'The deployment AI-DLC repository ref is misconfigured',
+            detail: error.message,
+          });
+        }
+        // A transient upstream fetch failure is retryable and not the caller's
+        // fault, so surface it as 502 rather than an un-exportable workflow.
+        if (error.code === EXPORT_SOURCE_UNAVAILABLE) {
+          return response(502, {
+            error: 'The AI-DLC distribution source is temporarily unavailable',
+            code: error.code,
+            detail: error.message,
+          });
+        }
+        // A server-side invariant violation (unset bucket/ref) is a deployment
+        // bug the caller cannot fix -- surface it as 500.
+        if (error.code === EXPORT_MISCONFIGURED) {
+          return response(500, {
+            error: 'The native workspace export is misconfigured',
+            code: error.code,
+            detail: error.message,
+          });
+        }
+        // `native-export:`-prefixed errors are deterministic snapshot/distribution
+        // incompatibilities the caller cannot retry away (409). Anything else is an
+        // unexpected runtime failure (S3, bug) and must surface as 500 so it is not
+        // mistaken for an un-exportable workflow.
+        if (String(error.message ?? '').startsWith('native-export:')) {
+          return response(409, {
+            error: 'This workflow snapshot is not compatible with native AI-DLC export',
+            detail: error.message,
+          });
+        }
+        return response(500, {
+          error: 'The native workspace export failed unexpectedly',
           detail: error.message,
         });
       }

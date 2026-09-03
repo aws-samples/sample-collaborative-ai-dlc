@@ -595,6 +595,25 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
           StringLike = { "s3:prefix" = ["intent-attachments/*"] }
         }
       },
+      # The intent cascade (reused by project deletion) also purges each child
+      # intent's native workspace export archives, all versions.
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:DeleteObjectVersion",
+        ]
+        Resource = ["${var.artifacts_bucket_arn}/workflow-exports/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucketVersions"]
+        Resource = [var.artifacts_bucket_arn]
+        Condition = {
+          StringLike = { "s3:prefix" = ["workflow-exports/*"] }
+        }
+      },
       # Project-tier MCP secrets: the projects lambda lists (set-state only),
       # rotates (Put) and clears (Delete) per-var SecureStrings under
       # projects/<id>/mcp-secrets/*. It also READS the GLOBAL custom-mcp-servers
@@ -2344,8 +2363,15 @@ resource "aws_iam_role_policy" "intents" {
         }
       },
       {
-        Effect   = "Allow"
-        Action   = ["s3:PutObject", "s3:GetObject"]
+        # Native workspace export archives: written on export, and purged (all
+        # versions) when the owning intent is deleted.
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:DeleteObjectVersion",
+        ]
         Resource = "${var.artifacts_bucket_arn}/workflow-exports/*"
       },
       {

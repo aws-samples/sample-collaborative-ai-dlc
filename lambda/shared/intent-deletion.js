@@ -176,6 +176,7 @@ const deleteIntentCascade = async ({
   await Promise.all([
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/committed/${intentId}/`),
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/staging/${intentId}/`),
+    purgeAttachmentPrefix(artifactsBucket, `workflow-exports/${intentId}/`),
   ]);
   const discussionIds = await g
     .V()

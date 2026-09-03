@@ -31,8 +31,10 @@ import {
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectVersionsCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 // Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
@@ -62,6 +64,8 @@ vi.mock('../../shared/artifact-versioning.js', async (importOriginal) => {
 });
 vi.mock('../native-export.js', () => ({
   createNativeExport: createNativeExportSpy,
+  EXPORT_SOURCE_UNAVAILABLE: 'export_source_unavailable',
+  EXPORT_MISCONFIGURED: 'export_misconfigured',
 }));
 
 const PARTITION = `t-${randomUUID()}`;
@@ -317,6 +321,9 @@ const installDdbFakes = () => {
     StopTimestamp: new Date('2026-07-17T00:00:00.000Z'),
   });
   s3Mock.reset();
+  // Deletion purges each attachment/export prefix; default to an empty listing
+  // so the cascade is a safe no-op unless a test opts into seeded versions.
+  s3Mock.on(ListObjectVersionsCommand).resolves({});
 };
 
 // Seed a HUMAN# gate row straight into the fake table (the runtime writes these;
@@ -1470,6 +1477,84 @@ describe('POST /projects/{id}/intents/{intentId}/export', () => {
     }
   });
 
+  it('returns 500 when the export fails for an unexpected reason', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockRejectedValueOnce(new Error('S3 ServiceUnavailable'));
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).detail).toBe('S3 ServiceUnavailable');
+  });
+
+  it('returns 409 when the workflow snapshot is not natively exportable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockRejectedValueOnce(
+      new Error('native-export: projected plan is missing native stage foo'),
+    );
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).detail).toBe(
+      'native-export: projected plan is missing native stage foo',
+    );
+  });
+
+  it('returns 502 when the distribution source is unavailable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockRejectedValueOnce(
+      Object.assign(
+        new Error('native-export: codex distribution is unavailable for abc: timeout'),
+        {
+          code: 'export_source_unavailable',
+        },
+      ),
+    );
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body).code).toBe('export_source_unavailable');
+  });
+
+  it('returns 500 when the export is misconfigured', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockRejectedValueOnce(
+      Object.assign(new Error('native-export: artifacts bucket is not configured'), {
+        code: 'export_misconfigured',
+      }),
+    );
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).code).toBe('export_misconfigured');
+  });
+
+  it('records an audit event for a successful export', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockResolvedValueOnce({
+      exportId: 'export-xyz',
+      downloadUrl: 'https://example.test/export.zip',
+      expiresAt: '2026-08-14T16:00:00.000Z',
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    const events = [...procStore.values()].filter((i) => (i.sk || '').startsWith('EVENT#'));
+    const exported = events.find((e) => e.eventType === 'v2.execution.exported');
+    expect(exported).toBeDefined();
+    expect(exported.summary).toContain('export-xyz');
+    expect(exported.actor).toBe(`${sub}@x`);
+  });
+
   it('preserves repository identities and assigns collision-safe export directories', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
@@ -2379,7 +2464,9 @@ describe('POST /compose — composer sessions', () => {
       expect(key).toMatch(new RegExp(`^compose-reports/${intent.id}/`));
       expect(uploadUrl).toContain('artifacts-test');
     } finally {
-      vi.stubEnv('ARTIFACTS_BUCKET', undefined);
+      // Restore the beforeAll default; leaving it undefined leaks an unset
+      // bucket into every later test (e.g. the deletion S3 purge).
+      vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
     }
   });
 
@@ -4457,6 +4544,35 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
     expect(leftover).toEqual([]);
     // Yjs: only the intent-scoped docs are removed.
     expect([...yjsStore.keys()]).toEqual(['unrelated-doc']);
+  });
+
+  it('purges every version of the intent native workspace exports from S3', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const intentId = intent.id;
+    await seedIntentAnchor(intentId);
+    setStatus(intentId, { status: 'SUCCEEDED' });
+
+    const exportPrefix = `workflow-exports/${intentId}/`;
+    const exportVersions = [
+      { Key: `${exportPrefix}e1.zip`, VersionId: 'v1' },
+      { Key: `${exportPrefix}e1.zip`, VersionId: 'v2' },
+    ];
+    s3Mock
+      .on(ListObjectVersionsCommand)
+      .callsFake((input) => (input.Prefix === exportPrefix ? { Versions: exportVersions } : {}));
+    s3Mock.on(DeleteObjectsCommand).resolves({});
+
+    const res = await del(sub, projectId, intentId);
+    expect(res.statusCode).toBe(204);
+
+    const deletes = s3Mock.commandCalls(DeleteObjectsCommand).map((call) => call.args[0].input);
+    const exportDelete = deletes.find((input) =>
+      input.Delete.Objects.some((object) => object.Key.startsWith(exportPrefix)),
+    );
+    expect(exportDelete).toBeDefined();
+    expect(exportDelete.Delete.Objects).toEqual(exportVersions);
   });
 
   it('cascade sweeps the derived layer AND spares a sibling intent that shares an artifact id', async () => {
