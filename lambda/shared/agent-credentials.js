@@ -116,6 +116,16 @@ const scopePaths = ({ base, source, projectId, userId }) =>
     ]),
   );
 
+const deleteParameterIfPresent = async (ssm, path) => {
+  try {
+    await ssm.send(new DeleteParameterCommand({ Name: path }));
+    return true;
+  } catch (error) {
+    if (error?.name === 'ParameterNotFound') return false;
+    throw error;
+  }
+};
+
 // Broker-only read path. API Lambdas call the metadata broker and deliberately
 // have no ssm:GetParameter(s) permission on agent credential paths.
 const fetchValues = async (ssm, paths) => {
@@ -180,15 +190,35 @@ export const writeCredentialScope = async (
         }),
       );
     } else {
-      try {
-        await ssm.send(new DeleteParameterCommand({ Name: path }));
-      } catch (error) {
-        if (error?.name !== 'ParameterNotFound') throw error;
-      }
+      await deleteParameterIfPresent(ssm, path);
     }
     cleared.push(provider);
   }
   return { saved: true, written, cleared };
+};
+
+export const deleteCredentialScope = async (
+  ssm,
+  { base, source, projectId = null, userId = null },
+) => {
+  const normalizedSource = assertSource(source);
+  if (normalizedSource === 'platform') {
+    throw new Error('Platform agent credentials cannot be deleted as a scope');
+  }
+  const deleted = [];
+  const missing = [];
+  for (const provider of AGENT_CREDENTIAL_PROVIDERS) {
+    const path = agentCredentialPath({
+      base,
+      source: normalizedSource,
+      provider,
+      projectId,
+      userId,
+    });
+    if (await deleteParameterIfPresent(ssm, path)) deleted.push(provider);
+    else missing.push(provider);
+  }
+  return { deleted, missing };
 };
 
 export const resolveEffectiveCredentialBindings = async (ssm, { base, projectId, userId }) => {
@@ -262,6 +292,7 @@ export default {
   credentialEnvName,
   credentialProviderForCli,
   credentialSourcesFromBindings,
+  deleteCredentialScope,
   isConfiguredCredentialValue,
   normalizeCredentialBinding,
   readCredentialBindingValue,

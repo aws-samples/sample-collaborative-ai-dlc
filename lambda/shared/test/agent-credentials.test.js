@@ -1,10 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { GetParametersCommand, SSMClient } from '@aws-sdk/client-ssm';
+import {
+  DeleteParameterCommand,
+  GetParameterCommand,
+  GetParametersCommand,
+  PutParameterCommand,
+  SSMClient,
+} from '@aws-sdk/client-ssm';
 import {
   agentCredentialPath,
   availableClisForBindings,
   credentialSourcesFromBindings,
+  deleteCredentialScope,
   readCredentialBindingValue,
   readCredentialScopeStatus,
   resolveEffectiveCredentialBindings,
@@ -18,26 +25,29 @@ describe('agent credentials', () => {
   beforeEach(() => {
     ssm.reset();
     values.clear();
-    ssm.callsFake(async (input) => {
-      if ('Names' in input) {
-        return {
-          Parameters: input.Names.filter((name) => values.has(name)).map((name) => ({
-            Name: name,
-            Value: values.get(name),
-          })),
-        };
-      }
-      if ('Name' in input && input.constructor.name === 'GetParameterCommand') {
-        if (!values.has(input.Name)) {
-          const error = new Error('missing');
-          error.name = 'ParameterNotFound';
-          throw error;
-        }
+    ssm.on(GetParametersCommand).callsFake((input) => ({
+      Parameters: input.Names.filter((name) => values.has(name)).map((name) => ({
+        Name: name,
+        Value: values.get(name),
+      })),
+    }));
+    ssm.on(GetParameterCommand).callsFake((input) => {
+      if (values.has(input.Name)) {
         return { Parameter: { Name: input.Name, Value: values.get(input.Name) } };
       }
-      if ('Value' in input) {
-        values.set(input.Name, input.Value);
-        return {};
+      const error = new Error('missing');
+      error.name = 'ParameterNotFound';
+      throw error;
+    });
+    ssm.on(PutParameterCommand).callsFake((input) => {
+      values.set(input.Name, input.Value);
+      return {};
+    });
+    ssm.on(DeleteParameterCommand).callsFake((input) => {
+      if (!values.has(input.Name)) {
+        const error = new Error('missing');
+        error.name = 'ParameterNotFound';
+        throw error;
       }
       values.delete(input.Name);
       return {};
@@ -151,5 +161,30 @@ describe('agent credentials', () => {
       update: { kiroApiKey: '' },
     });
     expect(values.get('/app/dev/kiro-api-key')).toBe('placeholder');
+  });
+
+  it('deletes a non-platform scope idempotently', async () => {
+    const bedrockPath = '/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token';
+    const kiroPath = '/app/dev/projects/p-1/agent-credentials/kiro-api-key';
+    values.set(bedrockPath, 'space-bedrock');
+    values.set(kiroPath, 'space-kiro');
+
+    await expect(
+      deleteCredentialScope(ssm, {
+        base: '/app/dev',
+        source: 'space',
+        projectId: 'p-1',
+      }),
+    ).resolves.toEqual({ deleted: ['bedrock', 'kiro'], missing: [] });
+    expect(values.has(bedrockPath)).toBe(false);
+    expect(values.has(kiroPath)).toBe(false);
+
+    await expect(
+      deleteCredentialScope(ssm, {
+        base: '/app/dev',
+        source: 'space',
+        projectId: 'p-1',
+      }),
+    ).resolves.toEqual({ deleted: [], missing: ['bedrock', 'kiro'] });
   });
 });

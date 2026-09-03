@@ -608,6 +608,13 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
         ]
       },
+      # Project teardown deletes the two Space credential SecureStrings. Keep
+      # this delete-only so the Projects Lambda cannot read or rotate values.
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:DeleteParameter"]
+        Resource = ["arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*"]
+      },
     ]
   })
 }
