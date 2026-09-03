@@ -767,13 +767,15 @@ const maxEvidenceBytes = 4 * 1024 * 1024;
 
 const privateAddress = (address) => {
   const normalized = address.toLowerCase();
+  const mappedIpv4 = normalized.startsWith('::ffff:') ? normalized.slice(7) : normalized;
   if (normalized === '::1' || normalized.startsWith('fe80:') || normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-  const parts = normalized.split('.').map(Number);
+  const parts = mappedIpv4.split('.').map(Number);
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return false;
   return (
     parts[0] === 10 ||
     parts[0] === 127 ||
     parts[0] === 0 ||
+    (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) ||
     (parts[0] === 169 && parts[1] === 254) ||
     (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
     (parts[0] === 192 && parts[1] === 168)
@@ -790,6 +792,8 @@ const assertPublic = async (url, allowQuery = false) => {
   ) {
     throw new Error('source URL must be credential-free HTTPS without query data');
   }
+  // This lookup improves diagnostics but cannot pin fetch's later DNS resolution. The parent
+  // build disables IPv6 and enforces destination blocking with DOCKER-USER rules at connect time.
   const addresses = await dns.lookup(url.hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some(({ address }) => privateAddress(address))) {
     throw new Error('source URL resolved to a non-public address');
@@ -1021,6 +1025,8 @@ core_ref="\${CORE_IMAGE_URI}@\${CORE_IMAGE_DIGEST}"
 tool_ref="\${TOOL_REPOSITORY_URI}:\${TOOL_IMAGE_TAG}"
 validation_ref="managed-tool-validation:\${TOOL_IMAGE_TAG}"
 
+# These connect-time rules are the SSRF enforcement boundary; fetch-source.mjs also performs
+# an advisory DNS check so invalid source definitions fail with a clearer error.
 iptables -I DOCKER-USER 1 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 readarray -t dns_resolvers < <(
   awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ && $2 !~ /^127\\./ { print $2 }' /etc/resolv.conf

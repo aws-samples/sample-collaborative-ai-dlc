@@ -127,12 +127,20 @@ describe('managed tool catalog', () => {
     expect(context.files['build-tool.sh']).toContain('dns_args+=(--dns "$resolver")');
     expect(context.files['build-tool.sh']).toContain('-p udp -d "$resolver" --dport 53 -j ACCEPT');
     expect(context.files['build-tool.sh']).toContain('-p tcp -d "$resolver" --dport 53 -j ACCEPT');
+    expect(context.files['build-tool.sh']).toContain(
+      'These connect-time rules are the SSRF enforcement boundary',
+    );
     expect(context.files['build-tool.sh']).not.toContain('--env AWS_ACCESS_KEY_ID');
     expect(context.files['build-tool.sh']).toContain('--user 65534:65534');
     expect(context.files['build-tool.sh']).toContain('"$core_ref" /workspace/fetch-source.mjs');
     expect(context.files['build-tool.sh']).not.toContain('\n  node fetch-source.mjs\n');
     expect(context.files['build-tool.sh']).toContain('normalized tool output exceeds 1536 MiB');
     expect(context.files['build-tool.sh']).toContain('managed-tools/sources/${retained_sha}');
+    expect(context.files['fetch-source.mjs']).toContain("normalized.startsWith('::ffff:')");
+    expect(context.files['fetch-source.mjs']).toContain(
+      'parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127',
+    );
+    expect(context.files['fetch-source.mjs']).toContain("cannot pin fetch's later DNS resolution");
     expect(context.files['fetch-source.mjs']).toContain(
       'publisher checksum evidence exceeds 4 MiB',
     );
