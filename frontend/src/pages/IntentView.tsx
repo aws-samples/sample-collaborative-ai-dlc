@@ -9,6 +9,7 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
+import { AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -40,6 +41,8 @@ import {
 import {
   Loader2,
   MoreHorizontal,
+  Bot,
+  KeyRound,
   Play,
   RotateCcw,
   Trash2,
@@ -53,6 +56,7 @@ import {
 // IntentActivityPanel where output/timeline/discussions render).
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
+const CREDENTIAL_FAILURE_CODES = new Set(['credential_unavailable', 'credential_invalid']);
 
 export default function IntentView() {
   const {
@@ -225,6 +229,16 @@ export default function IntentView() {
     intent.status === 'CREATED' &&
     !!lastTouch &&
     Date.now() - new Date(lastTouch).getTime() > 120_000;
+  const isCredentialFailure =
+    isFailed && Boolean(intent.failure?.code && CREDENTIAL_FAILURE_CODES.has(intent.failure.code));
+  const credentialSettingsPath = isCredentialFailure
+    ? intent.credentialSource === 'user'
+      ? '/account/settings'
+      : intent.credentialSource === 'space'
+        ? `/space/${projectId}/settings?tab=agent`
+        : null
+    : null;
+  const failureMessage = intent.failure?.message ?? intent.failureReason;
 
   return (
     <div className="space-y-6">
@@ -235,6 +249,15 @@ export default function IntentView() {
             {intent.title || 'Intent'}
           </h1>
           {intent.scope && <ScopeBadge scope={intent.scope} className="shrink-0" />}
+          {intent.agentCli && (
+            <Badge variant="outline" className="gap-1 text-[10px] shrink-0">
+              <Bot className="h-3 w-3" />
+              {AGENT_CLI_METADATA[intent.agentCli].label}
+              {intent.credentialSource
+                ? ` · ${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                : ''}
+            </Badge>
+          )}
           {TERMINAL_STATUSES.has(intent.status) && (
             <Badge variant="outline" className="text-[10px] shrink-0">
               {intent.status}
@@ -346,10 +369,8 @@ export default function IntentView() {
                 <XCircle className="h-4 w-4" />
                 {isFailed ? 'Run failed' : 'Run stalled — never started'}
               </div>
-              {isFailed && intent.failureReason && (
-                <p className="mt-1 break-words font-mono text-[12px] text-agent-error/90">
-                  {intent.failureReason}
-                </p>
+              {isFailed && failureMessage && (
+                <p className="mt-1 break-words text-[12px] text-agent-error/90">{failureMessage}</p>
               )}
               {isStalled && (
                 <p className="mt-1 text-[12px] text-agent-error/90">
@@ -357,28 +378,42 @@ export default function IntentView() {
                 </p>
               )}
             </div>
-            <Button
-              onClick={handleRecovery}
-              disabled={starting}
-              size="sm"
-              variant="outline"
-              className="shrink-0 gap-1.5"
-            >
-              {starting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : failedStage ? (
-                <RotateCcw className="h-3.5 w-3.5" />
-              ) : (
-                <Play className="h-3.5 w-3.5" />
+            <div className="flex shrink-0 gap-2">
+              {credentialSettingsPath && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={() => navigate(credentialSettingsPath)}
+                >
+                  <KeyRound className="h-3.5 w-3.5" />
+                  Credential settings
+                </Button>
               )}
-              {starting
-                ? failedStage
-                  ? 'Retrying…'
-                  : 'Restarting…'
-                : failedStage
-                  ? `Retry ${humanizeStageId(failedStage.stageId)}`
-                  : 'Restart workflow'}
-            </Button>
+              <Button
+                onClick={handleRecovery}
+                disabled={starting}
+                size="sm"
+                variant="outline"
+                className="shrink-0 gap-1.5"
+              >
+                {starting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : failedStage ? (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                ) : (
+                  <Play className="h-3.5 w-3.5" />
+                )}
+                {starting
+                  ? failedStage
+                    ? 'Retrying…'
+                    : 'Restarting…'
+                  : failedStage
+                    ? `Retry ${humanizeStageId(failedStage.stageId)}`
+                    : 'Restart workflow'}
+              </Button>
+            </div>
           </div>
         </div>
       )}

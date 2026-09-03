@@ -19,7 +19,10 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
+import { SSMClient, GetParametersCommand } from '@aws-sdk/client-ssm';
 import shared from '../../shared/realtime-token.js';
+import { verifyAgentCredentialGrant } from '../../shared/agent-credential-grants.js';
 
 const { verifyRealtimeToken } = shared;
 
@@ -28,6 +31,7 @@ const SECRET = 'test-doc-secret';
 const LOCKS_TABLE = 'discussion-locks-test';
 const CONNECTIONS_TABLE = 'connections-test';
 const READ_STATE_TABLE = 'discussion-read-state-test';
+const PROCESS_TABLE = 'v2-process-test';
 
 // File-level partition: every test in this file shares it.
 const PARTITION = `t-${randomUUID()}`;
@@ -35,6 +39,9 @@ const PARTITION = `t-${randomUUID()}`;
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const apiMock = mockClient(ApiGatewayManagementApiClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
+const lambdaMock = mockClient(LambdaClient);
+const ssmMock = mockClient(SSMClient);
+let credentialMetadataHandler = null;
 
 // ─── In-memory DynamoDB conditional-write fake for the locks table ───
 //
@@ -44,6 +51,7 @@ const agentcoreMock = mockClient(BedrockAgentCoreClient);
 // DynamoDB container. Connections-table queries are mocked separately.
 const lockStore = new Map();
 const readStateStore = new Map();
+const processStore = new Map();
 let connectionItems = [];
 
 const condFail = () => {
@@ -76,6 +84,10 @@ const installDdbFake = () => {
     return {};
   });
   ddbMock.on(GetCommand).callsFake(async (input) => {
+    if (input.TableName === PROCESS_TABLE) {
+      const item = processStore.get(input.Key.pk);
+      return item ? { Item: { ...item } } : {};
+    }
     if (input.TableName !== LOCKS_TABLE) return {};
     const item = lockStore.get(input.Key.lockId);
     return item ? { Item: { ...item } } : {};
@@ -149,15 +161,34 @@ beforeEach(async () => {
   ddbMock.reset();
   apiMock.reset();
   agentcoreMock.reset();
+  lambdaMock.reset();
+  ssmMock.reset();
   lockStore.clear();
   readStateStore.clear();
+  processStore.clear();
   connectionItems = [];
   installDdbFake();
   apiMock.on(PostToConnectionCommand).resolves({});
   vi.stubEnv('REALTIME_DOC_SECRET', SECRET);
   vi.stubEnv('LOCKS_TABLE', LOCKS_TABLE);
   vi.stubEnv('READ_STATE_TABLE', READ_STATE_TABLE);
+  vi.stubEnv('V2_PROCESS_TABLE', PROCESS_TABLE);
   vi.stubEnv('AGENTCORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/test');
+  vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/app/dev');
+  vi.stubEnv('AGENT_CREDENTIAL_METADATA_FUNCTION', 'credential-metadata-test');
+  vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
+  credentialMetadataHandler = null;
+  lambdaMock.on(InvokeCommand).callsFake((input) => {
+    const request = JSON.parse(Buffer.from(input.Payload).toString());
+    const response = credentialMetadataHandler?.(request) ?? {
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: { provider: 'kiro', source: 'platform' },
+      },
+    };
+    return { StatusCode: 200, Payload: Buffer.from(JSON.stringify(response)) };
+  });
   // Pin Date so timestamps/expiries are assertable. Don't fake setTimeout —
   // the guard-poll loops and gremlin's WebSocket driver need real timers.
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -1611,6 +1642,19 @@ describe('intent-scoped discussions', () => {
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
     });
+    const forbiddenCredentialValue = 'personal-kiro-secret';
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: {
+          provider: 'kiro',
+          source: 'user',
+          userId: MEMBER_SUB,
+          value: forbiddenCredentialValue,
+        },
+      },
+    });
     const { projectId, intentId } = await seedIntent();
     const created = json(
       await call('POST', intentPath('/discussions'), {
@@ -1625,6 +1669,7 @@ describe('intent-scoped discussions', () => {
         requestId: 'assist-request-1',
         command: 'summarize',
         instructions: 'Focus on decisions',
+        agentCli: 'kiro',
       },
     });
     expect(res.statusCode).toBe(202);
@@ -1654,7 +1699,15 @@ describe('intent-scoped discussions', () => {
       requestId: 'assist-request-1',
       assistCommand: 'summarize',
       instructions: 'Focus on decisions',
+      requestedCli: 'kiro',
+      credentialBinding: {
+        provider: 'kiro',
+        source: 'user',
+        userId: MEMBER_SUB,
+      },
     });
+    expect(typeof payload.agentCredentialGrant).toBe('string');
+    expect(JSON.stringify(payload)).not.toContain(forbiddenCredentialValue);
 
     const again = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
       pathParameters: { projectId, intentId, discussionId: created.id },
@@ -1663,6 +1716,95 @@ describe('intent-scoped discussions', () => {
     expect(again.statusCode).toBe(202);
     expect(json(again).message.id).toBe(body.message.id);
     expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
+  });
+
+  it('authorizes a started intent assist with the pinned binding, not the caller binding', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    const { projectId, intentId } = await seedIntent();
+    processStore.set(`EXEC#${intentId}`, {
+      projectId,
+      status: 'RUNNING',
+      agentCli: 'kiro',
+      credentialBinding: {
+        provider: 'kiro',
+        source: 'user',
+        userId: 'starter-user',
+      },
+    });
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: {
+        requestId: 'assist-request-pinned',
+        command: 'summarize',
+      },
+    });
+
+    expect(res.statusCode).toBe(202);
+    const invoke = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    const payload = JSON.parse(Buffer.from(invoke.payload).toString('utf8'));
+    expect(payload.credentialBinding).toEqual({
+      provider: 'kiro',
+      source: 'user',
+      userId: 'starter-user',
+    });
+    expect(
+      verifyAgentCredentialGrant(payload.agentCredentialGrant, 'g'.repeat(48), {
+        now: () => NOW.getTime(),
+      }).bindings,
+    ).toEqual([
+      {
+        provider: 'kiro',
+        source: 'user',
+        userId: 'starter-user',
+      },
+    ]);
+    expect(ssmMock.commandCalls(GetParametersCommand)).toHaveLength(0);
+  });
+
+  it('requires an explicit CLI for a DRAFT assist before creating a Quorum message', async () => {
+    const { projectId, intentId } = await seedIntent();
+    processStore.set(`EXEC#${intentId}`, {
+      projectId,
+      status: 'DRAFT',
+      agentCli: null,
+      credentialBinding: null,
+    });
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: {
+        requestId: 'assist-request-no-cli',
+        command: 'summarize',
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(json(res)).toMatchObject({
+      error: 'Select an agent CLI before requesting Quorum assist',
+      code: 'agent_cli_required',
+    });
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+
+    const messages = await call('GET', intentPath('/discussions/{discussionId}/messages'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+    });
+    expect(json(messages).messages).toEqual([]);
   });
 
   it('accepts ask as the free-form Quorum assist command', async () => {
@@ -1683,6 +1825,7 @@ describe('intent-scoped discussions', () => {
         requestId: 'assist-request-ask',
         command: 'ask',
         instructions: 'Check the risks',
+        agentCli: 'kiro',
       },
     });
     expect(res.statusCode).toBe(202);
@@ -1712,7 +1855,7 @@ describe('intent-scoped discussions', () => {
 
     const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
       pathParameters: { projectId, intentId, discussionId: created.id },
-      body: { requestId: 'assist-request-failed', command: 'brainstorm' },
+      body: { requestId: 'assist-request-failed', command: 'brainstorm', agentCli: 'kiro' },
     });
     expect(res.statusCode).toBe(202);
     expect(json(res).message.assistStatus).toBe('failed');
@@ -1731,7 +1874,7 @@ describe('intent-scoped discussions', () => {
     });
     const retry = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
       pathParameters: { projectId, intentId, discussionId: created.id },
-      body: { requestId: 'assist-request-failed', command: 'brainstorm' },
+      body: { requestId: 'assist-request-failed', command: 'brainstorm', agentCli: 'kiro' },
     });
     expect(retry.statusCode).toBe(202);
     expect(json(retry).message.id).toBe(stored.id);

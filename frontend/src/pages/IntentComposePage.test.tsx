@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import type { ReactNode } from 'react';
+import { Link, MemoryRouter, Routes, Route } from 'react-router';
 
 beforeEach(() => {
   window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
@@ -24,6 +25,11 @@ vi.mock('@/contexts/IntentContext', () => ({
   useIntent: () => ({ reload: (...a: unknown[]) => reloadIntent(...a) }),
 }));
 
+const setAssistAgentCli = vi.fn();
+vi.mock('@/components/discussion/DiscussionProvider', () => ({
+  useDiscussions: () => ({ setAssistAgentCli }),
+}));
+
 const get = vi.fn();
 const start = vi.fn();
 const update = vi.fn();
@@ -40,6 +46,13 @@ vi.mock('@/services/intents', () => ({
     listComposes: (...a: unknown[]) => listComposes(...a),
     composeReportUpload: (...a: unknown[]) => composeReportUpload(...a),
     attachments: (...a: unknown[]) => attachments(...a),
+  },
+}));
+
+const getProjectCapabilities = vi.fn();
+vi.mock('@/services/agents', () => ({
+  agentsService: {
+    getProjectCapabilities: (...a: unknown[]) => getProjectCapabilities(...a),
   },
 }));
 
@@ -121,9 +134,10 @@ const draftIntent = (over: Record<string, unknown> = {}) => ({
   artifacts: [],
 });
 
-const renderPage = () =>
+const renderPage = (controls?: ReactNode) =>
   render(
     <MemoryRouter initialEntries={['/space/p1/intent/i1/compose']}>
+      {controls}
       <Routes>
         <Route path="/space/:projectId/intent/:intentId/compose" element={<IntentComposePage />} />
         <Route
@@ -153,8 +167,30 @@ describe('IntentComposePage', () => {
     listComposes.mockReset().mockResolvedValue({ composes: [] });
     composeReportUpload.mockReset();
     attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
+    getProjectCapabilities.mockReset().mockResolvedValue({
+      available: ['kiro', 'claude'],
+      runtimeClis: [
+        {
+          cli: 'kiro',
+          installed: true,
+          authed: true,
+          available: true,
+          credentialSource: 'user',
+        },
+        {
+          cli: 'claude',
+          installed: true,
+          authed: true,
+          available: true,
+          credentialSource: 'space',
+        },
+        { cli: 'opencode', installed: true, authed: false, available: false },
+        { cli: 'codex', installed: false, authed: false, available: false },
+      ],
+    });
     flushDraft.mockReset().mockResolvedValue(undefined);
     reloadIntent.mockReset().mockResolvedValue(undefined);
+    setAssistAgentCli.mockReset();
     setSkipStageIds.mockReset();
     setScope.mockReset();
     setComposedGrid.mockReset();
@@ -299,10 +335,12 @@ describe('IntentComposePage', () => {
   it('Start flushes the shared draft first, then launches and navigates', async () => {
     const user = userEvent.setup();
     renderPage();
+    await user.click(await screen.findByTestId('agent-cli-kiro'));
+    await waitFor(() => expect(setAssistAgentCli).toHaveBeenLastCalledWith('kiro'));
     const startBtn = await screen.findByTestId('start-intent');
     await waitFor(() => expect(startBtn).toBeEnabled());
     await user.click(startBtn);
-    await waitFor(() => expect(start).toHaveBeenCalledWith('p1', 'i1'));
+    await waitFor(() => expect(start).toHaveBeenCalledWith('p1', 'i1', { agentCli: 'kiro' }));
     expect(flushDraft.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]);
     expect(start.mock.invocationCallOrder[0]).toBeLessThan(
       reloadIntent.mock.invocationCallOrder[0],
@@ -320,11 +358,65 @@ describe('IntentComposePage', () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByTestId('compose-panel');
+    await user.click(screen.getByTestId('agent-cli-kiro'));
     await user.type(screen.getByTestId('compose-instructions'), 'keep it lean');
     await user.click(screen.getByTestId('compose-start'));
     await waitFor(() =>
-      expect(compose).toHaveBeenCalledWith('p1', 'i1', { instructions: 'keep it lean' }),
+      expect(compose).toHaveBeenCalledWith('p1', 'i1', {
+        agentCli: 'kiro',
+        instructions: 'keep it lean',
+      }),
     );
+  });
+
+  it('requires an explicit CLI selection before Compose or Start', async () => {
+    renderPage();
+    expect(await screen.findByTestId('compose-start')).toBeDisabled();
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+    expect(screen.getByText('Select an agent CLI to continue')).toBeInTheDocument();
+  });
+
+  it('requires a fresh CLI selection when switching drafts in the same space', async () => {
+    get.mockImplementation((_projectId, intentId) =>
+      Promise.resolve(draftIntent({ id: intentId, executionId: intentId })),
+    );
+    const user = userEvent.setup();
+    renderPage(
+      <Link to="/space/p1/intent/i2/compose" data-testid="switch-draft">
+        Switch draft
+      </Link>,
+    );
+
+    await user.click(await screen.findByTestId('agent-cli-kiro'));
+    await waitFor(() => expect(setAssistAgentCli).toHaveBeenLastCalledWith('kiro'));
+    expect(screen.getByTestId('start-intent')).toBeEnabled();
+
+    await user.click(screen.getByTestId('switch-draft'));
+
+    await waitFor(() => expect(get).toHaveBeenCalledWith('p1', 'i2'));
+    expect(screen.getByTestId('agent-cli-kiro')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
+    expect(screen.getByText('Select an agent CLI to continue')).toBeInTheDocument();
+    await waitFor(() => expect(setAssistAgentCli).toHaveBeenLastCalledWith(null));
+  });
+
+  it('reports missing credentials without claiming the CLIs are not installed', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: [],
+      runtimeClis: [],
+      credentialSources: { bedrock: null, kiro: null },
+    });
+
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        'No agent credential is currently available. Add one before starting this draft.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('no credential')).toHaveLength(4);
+    expect(screen.queryByText('not installed')).not.toBeInTheDocument();
+    expect(screen.getByTestId('start-intent')).toBeDisabled();
   });
 
   it('applying a matched proposal writes the scope into the shared draft and clears any grid', async () => {

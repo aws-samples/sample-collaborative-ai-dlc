@@ -913,6 +913,9 @@ export const runParallelSection = async (segment, toolkit) => {
         },
       });
       if (revision.state !== 'SUCCEEDED') {
+        const revisionFailure = `${revision.reason ?? 'feedback_revision_failed'}${
+          revision.detail ? `: ${revision.detail}` : ''
+        }`;
         await laneCtx.step(`feedback-failed-${sk}-${slug}-${next.batchId}`, () =>
           store.updateFeedbackBatch({
             executionId,
@@ -921,17 +924,17 @@ export const runParallelSection = async (segment, toolkit) => {
             batchId: next.batchId,
             state: 'FAILED',
             fromStates: ['RUNNING'],
-            fields: { failureReason: revision.reason ?? 'feedback_revision_failed' },
+            fields: { failureReason: revisionFailure },
           }),
         );
         await emitEvent(
           laneCtx,
           `feedback-failed-event-${sk}-${slug}-${next.batchId}`,
           'v2.feedback.failed',
-          `Feedback revision failed for unit ${slug}: ${revision.reason ?? 'unknown'}`,
+          `Feedback revision failed for unit ${slug}: ${revisionFailure}`,
           { unitSlug: slug, sectionIndex: segment.index, state: 'FAILED' },
         );
-        return { processed: true, failed: revision.reason ?? 'feedback_revision_failed' };
+        return { processed: true, failed: revisionFailure };
       }
 
       const after = await laneCtx.step(
@@ -1773,6 +1776,7 @@ export const runParallelSection = async (segment, toolkit) => {
           return await laneFailed(laneCtx, slug, round, {
             stageId: stage.stageId,
             reason: outcome.reason,
+            detail: outcome.detail,
           });
         }
 
@@ -2028,10 +2032,10 @@ export const runParallelSection = async (segment, toolkit) => {
       laneCtx,
       `unit-failed-event-${sk}-${slug}${rTag}`,
       'v2.unit.failed',
-      `Unit ${slug} failed at ${stageId}: ${reason}`,
+      `Unit ${slug} failed at ${stageId}: ${reason}${detail ? `: ${detail}` : ''}`,
       { unitSlug: slug, sectionIndex: segment.index, state: 'FAILED' },
     );
-    return { slug, state: 'FAILED', stageId, reason };
+    return { slug, state: 'FAILED', stageId, reason, detail };
   };
 
   // Run a set of lanes concurrently (the wavefront/barrier core). Returns

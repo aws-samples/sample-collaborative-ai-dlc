@@ -2,7 +2,7 @@
 
 This guide walks you through creating a project and running your first intent end to end — from a one-line prompt to a pull request.
 
-Before starting, make sure you have completed the [Setup](setup.md) steps, configured agent credentials in **Admin → Agents**, and can access your deployed application.
+Before starting, make sure you have completed the [Setup](setup.md) steps, have an effective personal, space, or platform agent credential, and can access your deployed application.
 
 ## Sign in
 
@@ -25,6 +25,7 @@ Inside your project, choose **New Intent**. The full-page form asks for:
 
 - **Title** — for example, "Add user authentication". This also names the git branch (`aidlc/add-user-authentication`).
 - **Prompt** — what you want built, in free-form text. If the project has a tracker bound, you can instead pick an issue from the **Import from tracker** panel; its title, body, and comments are imported for you.
+- **Agent CLI** — explicitly choose one of the installed CLIs supported by your effective personal, space, or platform credentials. The space recommendation is labeled but is not selected for you.
 - **Scope** — decides which workflow stages execute. Pick `feature` for a typical change, `bugfix` for a small fix, or a larger scope for greenfield work.
 - **Base branch** (optional) — defaults to each repository's default branch; expand the section to pick a different base per repository.
 
@@ -41,7 +42,7 @@ For example:
 
 ## Start the intent
 
-The intent opens as a **draft** on the workbench. Review the prompt, scope, and branch on the "Review & start" card, then start it.
+The intent opens as a **draft** on the workbench. Review the prompt, selected CLI, scope, and branch, then start it. The selected CLI and opaque credential binding are pinned for the run; later collaborators do not change its credential source.
 
 The orchestrator compiles the workflow, checks out your repository, creates the intent branch, and begins walking the stages. The pipeline bar at the top shows the phases; the activity panel on the right streams the agent's output live.
 

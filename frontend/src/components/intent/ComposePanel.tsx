@@ -10,10 +10,12 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { AlertCircle, Check, FileUp, Info, Loader2, Sparkles } from 'lucide-react';
+import type { AgentCli } from '@/services/projects';
 
 interface Props {
   projectId: string;
   intentId: string;
+  agentCli: AgentCli | null;
   disabled?: boolean;
   /** Human accepts the proposal — write it into the shared draft selection. */
   onApply: (proposal: NonNullable<ComposeSession['proposal']>) => void;
@@ -31,7 +33,7 @@ const summaryLine = (s: NonNullable<ComposeSession['validation']>['summary']) =>
   return parts.join(' · ');
 };
 
-export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) {
+export function ComposePanel({ projectId, intentId, agentCli, disabled, onApply }: Props) {
   const [sessions, setSessions] = useState<ComposeSession[]>([]);
   const [instructions, setInstructions] = useState('');
   const [busy, setBusy] = useState(false);
@@ -70,6 +72,7 @@ export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) 
     setError(null);
     try {
       const session = await intentsService.compose(projectId, intentId, {
+        ...(agentCli ? { agentCli } : {}),
         ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
         ...input,
       });
@@ -120,7 +123,7 @@ export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) 
           onChange={(e) => setInstructions(e.target.value)}
           placeholder="Optional steering, e.g. keep it lean, no infra changes…"
           className="text-sm"
-          disabled={disabled || busy || pending}
+          disabled={disabled || !agentCli || busy || pending}
           data-testid="compose-instructions"
         />
         <input
@@ -138,7 +141,7 @@ export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) 
           type="button"
           variant="outline"
           onClick={() => fileRef.current?.click()}
-          disabled={disabled || busy || pending || uploading}
+          disabled={disabled || !agentCli || busy || pending || uploading}
           title="Compose from an analysis report (JSON, e.g. a scanner export)"
           data-testid="compose-report"
         >
@@ -152,7 +155,7 @@ export function ComposePanel({ projectId, intentId, disabled, onApply }: Props) 
           type="button"
           variant="secondary"
           onClick={() => startCompose()}
-          disabled={disabled || busy || pending || uploading}
+          disabled={disabled || !agentCli || busy || pending || uploading}
           data-testid="compose-start"
         >
           {busy || pending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : null}

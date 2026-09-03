@@ -174,6 +174,8 @@ export const createComposePlanStart = ({
       reportExcerpt = null,
       progressContext = null,
       frozenGrid = null,
+      requestedCli: explicitlyRequestedCli = null,
+      cliModels: explicitlySelectedModels = null,
     } = payload;
     if (!projectId || !intentId || !composeId || !workflowId || !workflowVersion) {
       return { ok: false, reason: 'missing_compose_identity' };
@@ -258,12 +260,14 @@ export const createComposePlanStart = ({
         });
 
         g = await openGraph();
-        const { requestedCli, cliModels } = await resolveCliSelection({
+        const inheritedSelection = await resolveCliSelection({
           store,
           g,
           projectId,
           intentId,
         });
+        const requestedCli = explicitlyRequestedCli ?? inheritedSelection.requestedCli;
+        const cliModels = explicitlySelectedModels ?? inheritedSelection.cliModels;
         // The throwaway working directory MUST exist before the spawn — Node
         // fires the child's 'error' event on a missing cwd, which surfaces as
         // an instant cli_failed with no output (field incident: every compose

@@ -92,6 +92,7 @@ beforeEach(() => {
       }
       return { ok: false, reason: 'unknown_command' };
     }),
+    issueAgentCredentialGrant: vi.fn(async () => 'test-agent-credential-grant'),
     stopSession: vi.fn(async () => ({ stopped: true })),
     broadcast: vi.fn(async () => {}),
   };
@@ -124,6 +125,10 @@ describe('runQuorumEdit', () => {
     expect(invokes.map((p) => p.command)).toEqual([
       'quorum-edit-plan-start',
       'quorum-edit-apply-start',
+    ]);
+    expect(invokes.map((p) => p.agentCredentialGrant)).toEqual([
+      'test-agent-credential-grant',
+      'test-agent-credential-grant',
     ]);
     // The plan dispatch carries the change description + model selection.
     expect(invokes[0]).toMatchObject({

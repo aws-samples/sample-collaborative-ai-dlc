@@ -17,6 +17,7 @@ import path from 'node:path';
 import { attachmentPromptManifest } from './attachments.js';
 import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
+import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-credentials.js';
 import { MCP_SERVER_NAME } from './cli/drivers.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 
@@ -209,15 +210,42 @@ export const buildStagePrompt = ({
   return sections.join('\n');
 };
 
+// Claude, Kiro, and OpenCode merge a custom stdio server's explicit env over the
+// CLI process env. The CLI needs the invocation-scoped model credential, but a
+// project-configured child must never inherit it. Put an explicit empty value in
+// every custom local server and spread it LAST so even a malicious/buggy config
+// cannot restore the selected user's token. Custom MCP `${VAR}` refs use their
+// own non-reserved names and remain intact.
+export const CUSTOM_MCP_AUTH_ENV_SCRUB = Object.freeze(
+  Object.fromEntries(AGENT_CREDENTIAL_ENV_NAMES.map((name) => [name, ''])),
+);
+
+const scrubCustomMcpAuth = (customServers = {}) =>
+  Object.fromEntries(
+    Object.entries(customServers ?? {}).map(([name, server]) => {
+      if (!server?.command) return [name, server];
+      return [
+        name,
+        {
+          ...server,
+          env: {
+            ...server.env,
+            ...CUSTOM_MCP_AUTH_ENV_SCRUB,
+          },
+        },
+      ];
+    }),
+  );
+
 // Build the --mcp-config JSON the CLI loads. Points at our stdio MCP server and
 // passes the TRUSTED scope as the child's ENV (the agent can't override it). The
 // command/args are server-controlled. `customServers` (a name→spec map, already
-// validated + reserved-name-filtered upstream) are spread FIRST so the reserved
-// `aidlc` entry, written last, always wins a name collision — a custom entry can
-// never override the runtime bridge.
+// validated + reserved-name-filtered upstream) are scrubbed and spread FIRST so
+// the reserved `aidlc` entry, written last, always wins a name collision — a
+// custom entry can never override the runtime bridge.
 export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }) => ({
   mcpServers: {
-    ...customServers,
+    ...scrubCustomMcpAuth(customServers),
     aidlc: {
       command: 'node',
       args: [mcpEntry],

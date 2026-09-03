@@ -318,11 +318,15 @@ const buildExecutionMeta = ({
   // `gitProvider` as the fallback; this map preserves mixed-provider projects
   // without changing the long-standing string shape of `repos`.
   repoProviders = null,
-  // The project's selected agent CLI (claude|kiro|…) snapshotted at create; the
-  // orchestrator forwards it to run-stage as `requestedCli` so the run honours the
-  // project's explicit choice (selection depends on which CLI is authed). null =
-  // let run-stage pick the first installed CLI (the test-harness path).
+  // The CLI selected by the user when the DRAFT is started. null while the
+  // draft is being composed, or for legacy/test-harness executions that let
+  // run-stage pick the first installed CLI.
   agentCli = null,
+  // Immutable source binding for the selected CLI credential. The secret never
+  // enters DynamoDB; the runtime resolves this scope from SSM per invocation so
+  // rotation takes effect immediately and a cleared key never falls through to
+  // a lower-precedence scope.
+  credentialBinding = null,
   // Per-CLI model selection ({ claude, kiro }) snapshotted from the project at
   // create; the orchestrator forwards it to run-stage (cliModels[cli] is the
   // authoritative model knob — see v2-agent.md). null = use run-stage defaults.
@@ -444,6 +448,7 @@ const buildExecutionMeta = ({
   repoProviders,
   gitProvider,
   agentCli,
+  credentialBinding,
   cliModels,
   tierModels,
   mcpServersByTier,
@@ -471,6 +476,8 @@ const buildExecutionMeta = ({
   pendingAttachmentDeletions,
   updatedAt: startedAt,
   completedAt: null,
+  failureReason: null,
+  failure: null,
 });
 
 const buildStageRow = ({

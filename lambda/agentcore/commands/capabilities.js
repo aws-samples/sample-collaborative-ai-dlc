@@ -1,8 +1,8 @@
 // capabilities — report what this runtime can actually run, for the project
 // settings UI. Three facts the control plane can't get any other way:
 //   1. which supported CLIs are INSTALLED in the image (discoverInstalledClis),
-//   2. which of them are AUTHED (the auth secret resolved into env at startup —
-//      claude needs AWS_BEARER_TOKEN_BEDROCK, kiro needs KIRO_API_KEY),
+//   2. which of them are AUTHED for this invocation (claude needs
+//      AWS_BEARER_TOKEN_BEDROCK, kiro needs KIRO_API_KEY),
 //   3. Kiro's available MODELS — Kiro uses its own model namespace (not Bedrock
 //      inference profiles), so the only source is `kiro-cli --list-models`, which
 //      must run inside this container where the binary lives.

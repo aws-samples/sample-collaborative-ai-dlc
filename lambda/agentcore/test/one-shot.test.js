@@ -285,6 +285,27 @@ describe('runOneShotPrompt', () => {
     expect(out.sample).toContain('boom: credentials missing');
   });
 
+  it('maps rejected credentials to credential_invalid without returning provider output', async () => {
+    const spawnFn = vi.fn(() =>
+      fakeChild({
+        exitCode: 1,
+        stderr: 'HTTP 403 Forbidden: bearer token rejected secret-value',
+      }),
+    );
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['kiro'],
+      spawnFn,
+    });
+    expect(out).toMatchObject({
+      ok: false,
+      reason: 'credential_invalid',
+      exitCode: 1,
+      metrics: null,
+    });
+    expect(out).not.toHaveProperty('sample');
+  });
+
   it('maps an empty answer to empty_answer with the raw sample + result subtype', async () => {
     const spawnFn = vi.fn(() =>
       fakeChild({

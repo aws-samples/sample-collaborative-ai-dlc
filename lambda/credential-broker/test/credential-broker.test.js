@@ -6,9 +6,11 @@ import { SSMClient, GetParameterCommand, PutParameterCommand } from '@aws-sdk/cl
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import {
   CREDENTIAL_ACTIVE_EXECUTION_STATUSES,
+  authorizeAgentCredentialRequest,
   authorizeCredentialRequest,
   executionIncludesRepository,
 } from '../index.js';
+import { signAgentCredentialGrant } from '../../shared/agent-credential-grants.js';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const ssmMock = mockClient(SSMClient);
@@ -99,6 +101,103 @@ describe('credential broker authorization', () => {
       ),
     ).rejects.toMatchObject({ code: 'REPOSITORY_NOT_ON_EXECUTION' });
     expect(ddbMock.commandCalls(GetCommand)).toHaveLength(1);
+  });
+});
+
+describe('agent credential grant authorization', () => {
+  const SECRET = 'g'.repeat(48);
+  const NOW = Date.parse('2026-09-01T12:00:00.000Z');
+
+  beforeEach(() => {
+    ssmMock.reset();
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/app/dev');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('resolves only the bindings carried by a valid signed grant', async () => {
+    const grant = signAgentCredentialGrant(
+      {
+        purpose: 'capabilities',
+        projectId: 'p-1',
+        bindings: [
+          { provider: 'bedrock', source: 'space' },
+          { provider: 'kiro', source: 'user', userId: 'u-1' },
+        ],
+      },
+      SECRET,
+      { now: () => NOW, randomId: () => 'grant-1234567890' },
+    );
+    const values = new Map([
+      ['/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token', 'bedrock-space'],
+      ['/app/dev/users/u-1/agent-credentials/kiro-api-key', 'kiro-user'],
+    ]);
+    ssmMock.on(GetParameterCommand).callsFake((input) => ({
+      Parameter: values.has(input.Name)
+        ? { Name: input.Name, Value: values.get(input.Name) }
+        : undefined,
+    }));
+
+    await expect(
+      authorizeAgentCredentialRequest(
+        { grant },
+        {
+          ssmClient: ssm,
+          secret: SECRET,
+          env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+          now: () => NOW,
+        },
+      ),
+    ).resolves.toEqual({
+      purpose: 'capabilities',
+      projectId: 'p-1',
+      executionId: null,
+      credentials: [
+        {
+          binding: { provider: 'bedrock', source: 'space' },
+          value: 'bedrock-space',
+        },
+        {
+          binding: { provider: 'kiro', source: 'user', userId: 'u-1' },
+          value: 'kiro-user',
+        },
+      ],
+    });
+    expect(
+      ssmMock.commandCalls(GetParameterCommand).map((call) => call.args[0].input.Name),
+    ).toEqual([
+      '/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token',
+      '/app/dev/users/u-1/agent-credentials/kiro-api-key',
+    ]);
+  });
+
+  it('rejects a tampered grant before reading any credential', async () => {
+    const grant = signAgentCredentialGrant(
+      {
+        purpose: 'execution',
+        projectId: 'p-1',
+        executionId: 'e-1',
+        bindings: [{ provider: 'kiro', source: 'space' }],
+      },
+      SECRET,
+      { now: () => NOW, randomId: () => 'grant-1234567890' },
+    );
+    const [claims, signature] = grant.split('.');
+
+    await expect(
+      authorizeAgentCredentialRequest(
+        { grant: `${claims.slice(0, -1)}A.${signature}` },
+        {
+          ssmClient: ssm,
+          secret: SECRET,
+          env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+          now: () => NOW,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'AGENT_CREDENTIAL_GRANT_INVALID' });
+    expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(0);
   });
 });
 

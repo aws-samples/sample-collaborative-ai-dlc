@@ -20,48 +20,14 @@ import type { CliModels, RuntimeModelCli, TierModels } from '@/services/projects
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { TierModelsSection, canonicalTierModels } from '@/components/settings/TierModelsSection';
-
-const MODEL_CLI_LABELS: Record<RuntimeModelCli, string> = {
-  kiro: 'Kiro',
-  claude: 'Claude',
-  opencode: 'OpenCode',
-  codex: 'Codex',
-};
-
-const MODEL_CLI_KEYS = Object.keys(MODEL_CLI_LABELS) as RuntimeModelCli[];
+import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
 // carries this sentinel; it maps back to '' (cleared override) on change.
 const MODEL_DEFAULT_SENTINEL = '__default__';
 
-const MODEL_ID_HELP: Record<RuntimeModelCli, { label: string; url: string }> = {
-  kiro: {
-    label: 'Kiro model IDs',
-    url: 'https://kiro.dev/docs/',
-  },
-  claude: {
-    label: 'Bedrock model IDs',
-    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
-  },
-  opencode: {
-    label: 'Bedrock model IDs',
-    url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html',
-  },
-  codex: {
-    label: 'Codex on Bedrock model IDs',
-    url: 'https://help.openai.com/en/articles/20001252-use-codex-with-amazon-bedrock',
-  },
-};
-
-const MODEL_PLACEHOLDERS: Record<RuntimeModelCli, string> = {
-  kiro: 'Model ID',
-  claude: 'us.anthropic.claude-sonnet-4-6',
-  opencode: 'amazon-bedrock/us.anthropic.claude-sonnet-4-6',
-  codex: 'openai.gpt-5.5',
-};
-
 function canonicalCliModels(models: CliModels = {}) {
-  return MODEL_CLI_KEYS.reduce<CliModels>((acc, cli) => {
+  return AGENT_CLIS.reduce<CliModels>((acc, cli) => {
     const value = models[cli]?.trim();
     if (value) acc[cli] = value;
     return acc;
@@ -161,7 +127,7 @@ export function DefaultModelsCard() {
       ) : (
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            {MODEL_CLI_KEYS.map((cli) => {
+            {AGENT_CLIS.map((cli) => {
               const options = modelOptions[cli] ?? [];
               const current = cliModels[cli] || '';
               // If a previously-saved model ID isn't in the discovered list,
@@ -180,15 +146,15 @@ export function DefaultModelsCard() {
                       htmlFor={`default-model-${cli}`}
                       className="text-xs font-medium text-foreground"
                     >
-                      {MODEL_CLI_LABELS[cli]}
+                      {AGENT_CLI_METADATA[cli].modelLabel}
                     </label>
                     <a
-                      href={MODEL_ID_HELP[cli].url}
+                      href={AGENT_CLI_METADATA[cli].modelHelp.url}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
                     >
-                      {MODEL_ID_HELP[cli].label}
+                      {AGENT_CLI_METADATA[cli].modelHelp.label}
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   </div>
@@ -225,7 +191,7 @@ export function DefaultModelsCard() {
                       data-testid={`default-model-input-${cli}`}
                       value={current}
                       onChange={(e) => setCliModels((cur) => ({ ...cur, [cli]: e.target.value }))}
-                      placeholder={MODEL_PLACEHOLDERS[cli]}
+                      placeholder={AGENT_CLI_METADATA[cli].modelPlaceholder}
                       className="font-mono text-sm h-9"
                       disabled={!modelsLoaded || saving}
                     />

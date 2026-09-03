@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createDiscussionAssistStart } from '../commands/discussion-assist-start.js';
+import {
+  createDiscussionAssistStart,
+  resolveCliSelection,
+} from '../commands/discussion-assist-start.js';
 
 const basePayload = {
   command: 'discussion-assist-start',
@@ -51,5 +54,23 @@ describe('createDiscussionAssistStart', () => {
       requestId: 'assist-12345678',
     });
     expect(openGraph).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the payload CLI for a DRAFT that already has snapshotted model settings', async () => {
+    const result = await resolveCliSelection({
+      store: {
+        getExecution: async () => ({
+          status: 'DRAFT',
+          agentCli: null,
+          cliModels: { kiro: 'kiro-model' },
+        }),
+      },
+      g: null,
+      projectId: 'p1',
+      intentId: 'i1',
+      requestedCli: 'kiro',
+    });
+
+    expect(result.requestedCli).toBe('kiro');
   });
 });

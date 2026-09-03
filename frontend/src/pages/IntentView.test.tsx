@@ -106,6 +106,8 @@ const renderAt = (initialEntry = '/space/p1/intent/i1') =>
             </IntentProvider>
           }
         />
+        <Route path="/space/:projectId/settings" element={<div data-testid="space-settings" />} />
+        <Route path="/account/settings" element={<div data-testid="account-settings" />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -180,6 +182,33 @@ describe('IntentView', () => {
       </MemoryRouter>,
     );
     expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
+  });
+
+  it('explains a removed pinned credential and links to its settings', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'FAILED',
+        agentCli: 'kiro',
+        credentialSource: 'space',
+        failureReason: 'stage_failed: backend wording may change independently',
+        failure: {
+          code: 'credential_unavailable',
+          message:
+            'The Space Kiro credential pinned to this run is no longer available. A Space owner or admin must restore or rotate it in Space Settings, then restart the run. Active runs do not fall back to Platform credentials.',
+        },
+      }),
+    );
+    renderAt();
+
+    expect(
+      await screen.findByText(
+        /The Space Kiro credential pinned to this run is no longer available/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/stage_failed:/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Credential settings' }));
+    expect(await screen.findByTestId('space-settings')).toBeInTheDocument();
   });
 
   it('retries a failed run from its earliest failed stage', async () => {

@@ -36,6 +36,17 @@ import { fetchMembershipRole } from '../shared/trackers.js';
 import { listClaudeModels, CODEX_BEDROCK_MODELS } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
 import {
+  AGENT_CREDENTIAL_PROVIDERS,
+  credentialProviderForCli,
+  credentialSourcesFromBindings,
+  writeCredentialScope,
+} from '../shared/agent-credentials.js';
+import {
+  readCredentialScopeStatusViaBroker,
+  resolveEffectiveCredentialBindingsViaBroker,
+} from '../shared/agent-credential-metadata.js';
+import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
   authorizeLegacyProjectRead,
   authorizeLegacySprintRead,
   fetchProjectIdForExecution,
@@ -67,21 +78,42 @@ const AGENTCORE_RUNTIME_ARN = process.env.AGENTCORE_RUNTIME_ARN || '';
 // A session id >= 33 chars is required by InvokeAgentRuntime; the capabilities
 // command is stateless so any stable id works.
 const CAPABILITIES_SESSION_ID = 'aidlc-capabilities-probe-00000001';
+const PLATFORM_CREDENTIAL_BINDINGS = Object.fromEntries(
+  AGENT_CREDENTIAL_PROVIDERS.map((provider) => [provider, { provider, source: 'platform' }]),
+);
 
 // Fetch the runtime's capabilities (installed + authed CLIs, Kiro model list) by
 // invoking its `capabilities` command. Best-effort: returns null when no v2
 // runtime is configured or the invoke fails, so the endpoint still returns
 // Bedrock models + SSM auth state.
-const fetchRuntimeCapabilities = async () => {
+const fetchRuntimeCapabilities = async (
+  credentialBindings = PLATFORM_CREDENTIAL_BINDINGS,
+  projectId = null,
+) => {
   if (!AGENTCORE_RUNTIME_ARN) return null;
   try {
+    const bindings = Object.values(credentialBindings || {}).filter(Boolean);
+    const agentCredentialGrant = bindings.length
+      ? await issueAgentCredentialGrant(ssm, {
+          purpose: 'capabilities',
+          projectId,
+          bindings,
+        })
+      : null;
     const res = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         agentRuntimeArn: AGENTCORE_RUNTIME_ARN,
         runtimeSessionId: CAPABILITIES_SESSION_ID,
         contentType: 'application/json',
         accept: 'application/json',
-        payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+        payload: Buffer.from(
+          JSON.stringify({
+            command: 'capabilities',
+            ...(credentialBindings ? { credentialBindings } : {}),
+            ...(projectId ? { projectId } : {}),
+            ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+          }),
+        ),
       }),
     );
     const text = res.response ? await res.response.transformToString() : '';
@@ -263,13 +295,171 @@ export const handler = async (event) => {
   const taskId = pathParameters?.taskId ? decodeURIComponent(pathParameters.taskId) : null;
 
   try {
+    const credentialUserId = event.requestContext?.authorizer?.claims?.sub || '';
+    const credentialBase = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+
+    // ===== HIERARCHICAL AGENT CREDENTIALS =====
+
+    // GET/PUT /users/me/agent-credentials — the authenticated user's personal
+    // credentials. The user id always comes from Cognito claims, never input.
+    if (path.endsWith('/users/me/agent-credentials')) {
+      if (!credentialUserId) return response(401, { error: 'Unauthorized' });
+      if (httpMethod === 'GET') {
+        try {
+          return response(
+            200,
+            await readCredentialScopeStatusViaBroker({
+              source: 'user',
+              userId: credentialUserId,
+            }),
+          );
+        } catch (error) {
+          console.error('[user agent credentials] GET failed:', error.message);
+          return response(500, { error: 'Failed to load personal agent credentials' });
+        }
+      }
+      if (httpMethod === 'PUT') {
+        let input;
+        try {
+          input = JSON.parse(body || '{}');
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+        try {
+          await writeCredentialScope(ssm, {
+            base: credentialBase,
+            source: 'user',
+            userId: credentialUserId,
+            update: input,
+          });
+          return response(200, { saved: true });
+        } catch (error) {
+          console.error('[user agent credentials] PUT failed:', error.message);
+          return response(500, { error: 'Failed to save personal agent credentials' });
+        }
+      }
+      return response(405, { error: 'Method not allowed' });
+    }
+
+    // GET/PUT /projects/{projectId}/agent-credentials — space credentials.
+    // Owners/admins may inspect set-state and rotate/clear; values never return.
+    if (projectId && path.endsWith('/agent-credentials')) {
+      if (!credentialUserId) return response(401, { error: 'Unauthorized' });
+      const role = await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
+      if (role !== 'owner' && role !== 'admin') {
+        return response(403, {
+          error: 'Only space owners and admins can manage agent credentials',
+        });
+      }
+      if (httpMethod === 'GET') {
+        try {
+          const [space, platformFallback] = await Promise.all([
+            readCredentialScopeStatusViaBroker({
+              source: 'space',
+              projectId,
+            }),
+            readCredentialScopeStatusViaBroker({
+              source: 'platform',
+            }),
+          ]);
+          return response(200, { ...space, platformFallback });
+        } catch (error) {
+          console.error('[space agent credentials] GET failed:', error.message);
+          return response(500, { error: 'Failed to load space agent credentials' });
+        }
+      }
+      if (httpMethod === 'PUT') {
+        let input;
+        try {
+          input = JSON.parse(body || '{}');
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+        try {
+          await writeCredentialScope(ssm, {
+            base: credentialBase,
+            source: 'space',
+            projectId,
+            update: input,
+          });
+          return response(200, { saved: true });
+        } catch (error) {
+          console.error('[space agent credentials] PUT failed:', error.message);
+          return response(500, { error: 'Failed to save space agent credentials' });
+        }
+      }
+      return response(405, { error: 'Method not allowed' });
+    }
+
+    // GET /projects/{projectId}/agent-capabilities — installed runtime CLIs
+    // intersected with this member's effective user > space > platform keys.
+    if (projectId && httpMethod === 'GET' && path.endsWith('/agent-capabilities')) {
+      if (!credentialUserId) return response(401, { error: 'Unauthorized' });
+      const role = await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
+      if (!role) return response(403, { error: 'Not a space member' });
+      let credentialBindings;
+      try {
+        credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
+          projectId,
+          userId: credentialUserId,
+        });
+      } catch (error) {
+        console.error('[effective agent credentials] resolve failed:', error.message);
+        return response(500, { error: 'Failed to resolve agent credentials' });
+      }
+      const withModels = event.queryStringParameters?.models === '1';
+      if (withModels) refreshModelPricing().catch(() => {});
+      const [claudeModels, runtimeCaps] = await Promise.all([
+        withModels
+          ? listClaudeModels({
+              listInferenceProfiles: async () => {
+                const out = await bedrock.send(
+                  new ListInferenceProfilesCommand({ maxResults: 100 }),
+                );
+                return out.inferenceProfileSummaries ?? [];
+              },
+            })
+          : [],
+        fetchRuntimeCapabilities(credentialBindings, projectId),
+      ]);
+      const credentialSources = credentialSourcesFromBindings(credentialBindings);
+      const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
+        ...cli,
+        credentialSource: credentialSources[credentialProviderForCli(cli.cli)] ?? null,
+      }));
+      const available = runtimeClis.filter((cli) => cli.available).map((cli) => cli.cli);
+      if (!withModels) {
+        return response(200, {
+          available,
+          runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
+          runtimeClis,
+          credentialSources,
+        });
+      }
+      const opencodeModels = claudeModels.map((model) => ({
+        ...model,
+        id: `amazon-bedrock/${model.id}`,
+      }));
+      return response(200, {
+        available,
+        runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
+        runtimeClis,
+        credentialSources,
+        models: {
+          claude: claudeModels,
+          opencode: opencodeModels,
+          kiro: runtimeCaps?.kiroModels?.models ?? [],
+          codex: CODEX_BEDROCK_MODELS,
+        },
+      });
+    }
+
     // ===== AGENT SETTINGS (SSM-backed, editable via Admin UI) =====
 
-    // GET /agents/settings — read bearer token, Kiro API key, and model defaults from SSM
+    // GET /agents/settings — read credential set-state through the metadata
+    // broker and the remaining non-secret/model settings directly from SSM.
     if (httpMethod === 'GET' && path.endsWith('/settings')) {
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-      const bearerPath = `${prefix}/bedrock-bearer-token`;
-      const kiroApiKeyPath = `${prefix}/kiro-api-key`;
       const cliModelsPath = `${prefix}/cli-models`;
       const tierModelsPath = `${prefix}/tier-models`;
       const deriveEnrichmentPath = `${prefix}/derive-enrichment`;
@@ -278,26 +468,25 @@ export const handler = async (event) => {
       const composeLlmBypassPath = `${prefix}/compose-llm-bypass`;
       const prStrategyPath = `${prefix}/pr-strategy`;
       try {
-        const result = await ssm.send(
-          new GetParametersCommand({
-            Names: [
-              bearerPath,
-              kiroApiKeyPath,
-              cliModelsPath,
-              tierModelsPath,
-              deriveEnrichmentPath,
-              customMcpServersPath,
-              stageSkippingPath,
-              composeLlmBypassPath,
-              prStrategyPath,
-            ],
-            WithDecryption: true,
-          }),
-        );
+        const [result, platformCredentialStatus] = await Promise.all([
+          ssm.send(
+            new GetParametersCommand({
+              Names: [
+                cliModelsPath,
+                tierModelsPath,
+                deriveEnrichmentPath,
+                customMcpServersPath,
+                stageSkippingPath,
+                composeLlmBypassPath,
+                prStrategyPath,
+              ],
+              WithDecryption: true,
+            }),
+          ),
+          readCredentialScopeStatusViaBroker({ source: 'platform' }),
+        ]);
         const byName = {};
         for (const p of result.Parameters || []) byName[p.Name] = p.Value;
-        const bearerToken = byName[bearerPath] || '';
-        const kiroApiKey = byName[kiroApiKeyPath] || '';
         const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
         // Tier-model config: per-agent-tier model rows (judgment/balanced/
         // templated) + the fallback and Quorum rows (shared/tier-models.js).
@@ -362,8 +551,7 @@ export const handler = async (event) => {
         }
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
-          bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
-          kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
+          ...platformCredentialStatus,
           cliModels,
           tierModels,
           deriveEnrichment,

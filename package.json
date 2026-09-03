@@ -8,6 +8,7 @@
     "lambda/building-blocks",
     "lambda/code-files",
     "lambda/credential-broker",
+    "lambda/credential-metadata",
     "lambda/cognito-users",
     "lambda/discussions",
     "lambda/general-info",

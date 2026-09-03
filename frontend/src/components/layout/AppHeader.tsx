@@ -7,6 +7,7 @@ import {
   Search,
   ChevronRight,
   Settings,
+  UserRoundCog,
   LogOut,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -190,6 +191,10 @@ export function AppHeader({
             <p className="text-xs text-muted-foreground">{user?.email}</p>
           </div>
           <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => navigate('/account/settings')}>
+            <UserRoundCog className="mr-2 h-4 w-4" />
+            Account Settings
+          </DropdownMenuItem>
           {isPlatformAdmin && (
             <>
               <DropdownMenuItem onClick={() => navigate('/admin')}>
@@ -224,6 +229,10 @@ function buildBreadcrumbs(
   // Admin panel - just "Platform Admin"
   if (pathname === '/admin') {
     return [{ label: 'Platform Admin' }];
+  }
+
+  if (pathname === '/account/settings') {
+    return [{ label: 'Account Settings' }];
   }
 
   // Dashboard - just "Projects"

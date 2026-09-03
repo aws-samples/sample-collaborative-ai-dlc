@@ -167,6 +167,22 @@ describe('createProcessStore', () => {
     expect(call.ConditionExpression).toContain('attribute_not_exists(pk)');
   });
 
+  it('opts into strongly consistent META reads only when requested', async () => {
+    ddb.on(GetCommand).resolves({ Item: { executionId: 'e1' } });
+
+    await expect(store.getExecution('e1')).resolves.toEqual({ executionId: 'e1' });
+    await expect(store.getExecution('e1', { consistentRead: true })).resolves.toEqual({
+      executionId: 'e1',
+    });
+
+    const [eventual, consistent] = ddb.commandCalls(GetCommand).map((call) => call.args[0].input);
+    expect(eventual).not.toHaveProperty('ConsistentRead');
+    expect(consistent).toMatchObject({
+      Key: executionMetaKey('e1'),
+      ConsistentRead: true,
+    });
+  });
+
   it('updateExecution sets status + re-stamps both indexes', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'RUNNING' } });
     await store.updateExecution({
@@ -181,6 +197,30 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':g1pk']).toBe('PROJECT#p1');
     expect(input.ExpressionAttributeValues[':cs']).toBe('req');
     expect(input.ExpressionAttributeValues[':g3pk']).toBe('ACTIVE_EXECUTIONS');
+  });
+
+  it('updateExecution persists a validated structured failure', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.updateExecution({
+      executionId: 'e1',
+      failure: {
+        code: 'credential_unavailable',
+        message: 'Rotate the Space credential.',
+      },
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeNames['#failure']).toBe('failure');
+    expect(input.ExpressionAttributeValues[':failure']).toEqual({
+      code: 'credential_unavailable',
+      message: 'Rotate the Space credential.',
+    });
+
+    await expect(
+      store.updateExecution({
+        executionId: 'e1',
+        failure: { code: '', message: 'Missing code.' },
+      }),
+    ).rejects.toThrow('failure must be {code, message} or null');
   });
 
   it('removes the sparse active projection on a terminal execution state', async () => {
@@ -771,6 +811,8 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
       deriveEnrichment: null,
       parkReleaseSeconds: null,
       source: null,
+      failureReason: null,
+      failure: null,
     });
   });
 
