@@ -37,15 +37,19 @@
 //   • Tier isolation — a project ref can only resolve from its own project prefix;
 //     no cross-tier fallback, and a name used by both a surviving global and a
 //     surviving project server fails closed.
+//   • Agent-auth isolation — generated custom stdio server configs explicitly
+//     override every selected model credential with an empty value. The CLI can
+//     authenticate, but its custom MCP children cannot inherit that credential.
 //   • Per-secret rotate / clear / audit; least-privilege IAM per path family.
 //
 // What you do NOT get — runtime confidentiality FROM the agent process itself:
 //   • (a) The agent can read the values. They live in the agent CLI's process
 //     env, so a shell/tool call the agent makes (e.g. `echo $CONTEXT7_API_KEY`)
 //     can observe them. The agent is inside the trust boundary here.
-//   • (b) No per-server scoping. The child env is ONE flat namespace, so every
-//     stdio MCP server the CLI spawns inherits EVERY resolved secret — not just
-//     its own. Server A can read server B's key.
+//   • (b) No per-server scoping for custom MCP secrets. The CLI env is ONE flat
+//     namespace, so every custom stdio MCP server can inherit EVERY resolved MCP
+//     secret — not just its own. Server A can read server B's key. Selected model
+//     credentials are different: stage-materializer scrubs those per server.
 //   This is inherent to CLI-native `${VAR}` expansion: the only way to scope a
 //   secret per-server would be to substitute the literal value back INTO the
 //   config file (or per-process env we control), which would defeat the
@@ -58,6 +62,7 @@
 
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import mcpValidatorPkg from '../shared/mcp-validator.js';
+import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-credentials.js';
 
 const { extractSecretRefs } = mcpValidatorPkg;
 
@@ -75,8 +80,7 @@ const { extractSecretRefs } = mcpValidatorPkg;
 // so this is a hard security boundary, not a convenience check.
 export const RESERVED_MCP_ENV_KEYS = new Set([
   // Agent CLI auth (the tokens that must never reach a custom MCP server).
-  'AWS_BEARER_TOKEN_BEDROCK',
-  'KIRO_API_KEY',
+  ...AGENT_CREDENTIAL_ENV_NAMES,
   // Bedrock / region control the drivers set.
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',

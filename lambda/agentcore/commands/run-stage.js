@@ -1938,12 +1938,11 @@ export const runStage = async (
   // runtime key (auth/AWS creds/cache): the resolver fails closed on such names
   // (mcp-secret-resolver RESERVED_MCP_ENV_KEYS), so mcpSecretEnv and the auth env
   // below are disjoint by construction. Auth env is still spread LAST as
-  // defense-in-depth — even a resolver bug cannot let an MCP value shadow a
-  // platform auth token. NOTE (threat model): the resolved values DO live in this
-  // child process env, so the agent itself can read them and every stdio MCP
-  // server inherits them all (flat namespace). That is an accepted trade-off of
-  // CLI-native `${VAR}` expansion — see the header of mcp-secret-resolver.js for
-  // the full "what this does / does not protect" note.
+  // defense-in-depth — even a resolver bug cannot let an MCP value shadow the
+  // selected credential. The generated custom stdio server definitions override
+  // every model-auth variable with an empty value, so those children do NOT
+  // inherit the selected user's token. Resolved custom MCP secrets remain a flat
+  // namespace shared by custom stdio servers; see mcp-secret-resolver.js.
   const childEnv = {
     ...OFF_MOUNT_CACHE_ENV,
     ...mcpSecretEnv,

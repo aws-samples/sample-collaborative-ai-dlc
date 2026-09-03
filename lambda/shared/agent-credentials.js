@@ -30,6 +30,10 @@ const PROVIDER_CONFIG = {
   },
 };
 
+export const AGENT_CREDENTIAL_ENV_NAMES = Object.freeze(
+  AGENT_CREDENTIAL_PROVIDERS.map((provider) => PROVIDER_CONFIG[provider].envName),
+);
+
 const normalizeBase = (base) => String(base || '').replace(/\/+$/, '');
 
 const assertIdentifier = (value, label) => {

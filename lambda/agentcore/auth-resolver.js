@@ -9,6 +9,7 @@
 // invocation; clearing it never falls back to another scope.
 
 import {
+  AGENT_CREDENTIAL_ENV_NAMES,
   AGENT_CREDENTIAL_PROVIDERS,
   credentialEnvName,
   credentialProviderForCli,
@@ -17,7 +18,6 @@ import {
 import { AGENT_AUTH_MODES } from './command-registry.js';
 import { invokeCredentialBroker } from './clients.js';
 
-const AUTH_ENV_NAMES = AGENT_CREDENTIAL_PROVIDERS.map(credentialEnvName);
 const bindingKey = (binding) =>
   `${binding.provider}:${binding.source}:${binding.source === 'user' ? binding.userId : ''}`;
 const grantMismatch = () =>
@@ -27,7 +27,7 @@ const grantMismatch = () =>
 
 const cleanBaseEnv = (env) => {
   const invocationEnv = { ...env };
-  for (const name of AUTH_ENV_NAMES) delete invocationEnv[name];
+  for (const name of AGENT_CREDENTIAL_ENV_NAMES) delete invocationEnv[name];
   return invocationEnv;
 };
 
