@@ -1214,7 +1214,9 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       ].map(flattenValueMap);
       return [
         ...new Map(
-          rows.filter((row) => evidenceLabels.has(row.label)).map((row) => [row.id, row]),
+          rows
+            .filter((row) => evidenceLabels.has(row.label) && isCurrentRow(row))
+            .map((row) => [row.id, row]),
         ).values(),
       ];
     };

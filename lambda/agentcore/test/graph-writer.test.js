@@ -1599,6 +1599,28 @@ describe('ingestCodeFiles (revision-scoped implementation traceability)', () => 
         .hasNext(),
     ).toBe(true);
   });
+
+  it('does NOT create an evidence edge to a superseded requirement/story', async () => {
+    await seedTopology();
+    // The re-derive marked this requirement superseded; it must not receive
+    // an IMPLEMENTED_BY edge, and no edge may accumulate on the dead vertex.
+    await g
+      .V()
+      .has('Requirement', 'id', 'requirement:intent-1:ac1-1-1')
+      .property('superseded_at', '2026-01-02T00:00:00.000Z')
+      .next();
+    const result = await writer.ingestCodeFiles(batch());
+    expect(result).toEqual({ codeFiles: 1, evidenceEdges: 0 });
+    expect(
+      await g
+        .V()
+        .has('Requirement', 'id', 'requirement:intent-1:ac1-1-1')
+        .outE('IMPLEMENTED_BY')
+        .hasNext(),
+    ).toBe(false);
+    // The CodeFile + Intent/Unit topology is still created (Git remains authoritative).
+    expect((await g.V().hasLabel('CodeFile').count().next()).value).toBe(1);
+  });
 });
 
 describe('resolveDerivedItemEdges (item↔item traceability sweep)', () => {
