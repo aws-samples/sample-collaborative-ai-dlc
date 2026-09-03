@@ -366,6 +366,8 @@ export const generateCatalogEnvironmentDockerfile = (recipe) => {
   )) {
     lines.push(`ENV ${name}=${JSON.stringify(value)}`);
   }
+  // Administrator-authored commands run as root. The denylist and in-image checksum are
+  // guardrails; verification.sh independently diffs protected trees against the pinned base.
   for (const command of recipe.buildCommands) lines.push(`RUN ${command}`);
   lines.push(
     'RUN sha256sum -c /opt/managed/protected-runtime.sha256',
