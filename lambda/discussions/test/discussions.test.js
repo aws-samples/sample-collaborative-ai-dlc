@@ -19,6 +19,7 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParametersCommand } from '@aws-sdk/client-ssm';
 import shared from '../../shared/realtime-token.js';
 import { verifyAgentCredentialGrant } from '../../shared/agent-credential-grants.js';
@@ -38,7 +39,9 @@ const PARTITION = `t-${randomUUID()}`;
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const apiMock = mockClient(ApiGatewayManagementApiClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
+const lambdaMock = mockClient(LambdaClient);
 const ssmMock = mockClient(SSMClient);
+let credentialMetadataHandler = null;
 
 // ─── In-memory DynamoDB conditional-write fake for the locks table ───
 //
@@ -158,6 +161,7 @@ beforeEach(async () => {
   ddbMock.reset();
   apiMock.reset();
   agentcoreMock.reset();
+  lambdaMock.reset();
   ssmMock.reset();
   lockStore.clear();
   readStateStore.clear();
@@ -171,7 +175,20 @@ beforeEach(async () => {
   vi.stubEnv('V2_PROCESS_TABLE', PROCESS_TABLE);
   vi.stubEnv('AGENTCORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/test');
   vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/app/dev');
+  vi.stubEnv('AGENT_CREDENTIAL_METADATA_FUNCTION', 'credential-metadata-test');
   vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
+  credentialMetadataHandler = null;
+  lambdaMock.on(InvokeCommand).callsFake((input) => {
+    const request = JSON.parse(Buffer.from(input.Payload).toString());
+    const response = credentialMetadataHandler?.(request) ?? {
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: { provider: 'kiro', source: 'platform' },
+      },
+    };
+    return { StatusCode: 200, Payload: Buffer.from(JSON.stringify(response)) };
+  });
   // Pin Date so timestamps/expiries are assertable. Don't fake setTimeout —
   // the guard-poll loops and gremlin's WebSocket driver need real timers.
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -1625,12 +1642,19 @@ describe('intent-scoped discussions', () => {
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
     });
-    const personalKiroPath = '/app/dev/users/member-user/agent-credentials/kiro-api-key';
-    ssmMock.on(GetParametersCommand).callsFake((input) => ({
-      Parameters: input.Names.includes(personalKiroPath)
-        ? [{ Name: personalKiroPath, Value: 'personal-kiro-secret' }]
-        : [],
-    }));
+    const forbiddenCredentialValue = 'personal-kiro-secret';
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: {
+          provider: 'kiro',
+          source: 'user',
+          userId: MEMBER_SUB,
+          value: forbiddenCredentialValue,
+        },
+      },
+    });
     const { projectId, intentId } = await seedIntent();
     const created = json(
       await call('POST', intentPath('/discussions'), {
@@ -1683,7 +1707,7 @@ describe('intent-scoped discussions', () => {
       },
     });
     expect(typeof payload.agentCredentialGrant).toBe('string');
-    expect(JSON.stringify(payload)).not.toContain('personal-kiro-secret');
+    expect(JSON.stringify(payload)).not.toContain(forbiddenCredentialValue);
 
     const again = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
       pathParameters: { projectId, intentId, discussionId: created.id },

@@ -7,10 +7,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
-import {
-  credentialProviderForCli,
-  resolveEffectiveCredentialBindings,
-} from '../shared/agent-credentials.js';
+import { credentialProviderForCli } from '../shared/agent-credentials.js';
+import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import { executionMetaKey } from '../shared/v2-process-keys.js';
 import { ddb, ssm, query, cardinality, TextP, __, locksTable } from './clients.js';
@@ -73,7 +71,6 @@ const ASSIST_COMMANDS = new Set(['summarize', 'explain', 'brainstorm', 'ask']);
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,160}$/;
 const MAX_ASSIST_INSTRUCTIONS = 2000;
 const MAX_SELECTED_MESSAGES = 40;
-const agentSettingsPrefix = () => process.env.AGENT_SETTINGS_SSM_PREFIX || '';
 const processTable = () => process.env.V2_PROCESS_TABLE || '';
 
 const assistMessageIdFor = (requestId) =>
@@ -629,8 +626,7 @@ export const assistDiscussion = async (event, res) => {
     if (!credentialProvider) {
       return { requestedCli: null, credentialBinding: null };
     }
-    const bindings = await resolveEffectiveCredentialBindings(ssm, {
-      base: agentSettingsPrefix(),
+    const bindings = await resolveEffectiveCredentialBindingsViaBroker({
       projectId: auth.projectId,
       userId: caller.sub,
     });

@@ -12,6 +12,7 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "@aws-sdk/client-bedrock-agentcore": "^3.1092.0"
+    "@aws-sdk/client-bedrock-agentcore": "^3.1092.0",
+    "@aws-sdk/client-lambda": "^3.1092.0"
   }
 }

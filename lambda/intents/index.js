@@ -66,10 +66,8 @@ import {
 } from '../shared/artifact-versioning.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
-import {
-  credentialProviderForCli,
-  resolveEffectiveCredentialBindings,
-} from '../shared/agent-credentials.js';
+import { credentialProviderForCli } from '../shared/agent-credentials.js';
+import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
@@ -130,8 +128,7 @@ const resolveSelectedAgentCredential = async ({ projectId, userId, agentCli }) =
       },
     };
   }
-  const bindings = await resolveEffectiveCredentialBindings(ssm, {
-    base: AGENT_SETTINGS_SSM_PREFIX(),
+  const bindings = await resolveEffectiveCredentialBindingsViaBroker({
     projectId,
     userId,
   });

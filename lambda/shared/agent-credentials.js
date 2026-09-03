@@ -7,6 +7,10 @@ import {
 
 export const AGENT_CREDENTIAL_PROVIDERS = ['bedrock', 'kiro'];
 export const AGENT_CREDENTIAL_SOURCES = ['user', 'space', 'platform'];
+export const AGENT_CREDENTIAL_METADATA_ACTIONS = Object.freeze({
+  READ_SCOPE_STATUS: 'read-agent-credential-scope-status',
+  RESOLVE_EFFECTIVE_BINDINGS: 'resolve-effective-agent-credential-bindings',
+});
 
 export const AGENT_CLI_PROVIDER = {
   kiro: 'kiro',
@@ -112,6 +116,8 @@ const scopePaths = ({ base, source, projectId, userId }) =>
     ]),
   );
 
+// Broker-only read path. API Lambdas call the metadata broker and deliberately
+// have no ssm:GetParameter(s) permission on agent credential paths.
 const fetchValues = async (ssm, paths) => {
   const names = [...new Set(Object.values(paths))];
   if (names.length === 0) return {};

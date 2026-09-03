@@ -28,8 +28,9 @@ locals {
     "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
   ]
 
-  source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
-  credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
+  source_control_function_arn      = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
+  credential_broker_function_arn   = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
+  credential_metadata_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-metadata-${var.environment}"
 
   # Reusable assume-role policy for Lambda services
   lambda_assume_role_policy = jsonencode({
@@ -403,8 +404,7 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           [for arn in var.dynamodb_table_arns : "${arn}/index/*"],
         )
       },
-      # SSM: read and write agent settings (bearer token, CLI models, Kiro API
-      # key, derive enrichment mode, model pricing) via Admin UI
+      # Non-credential agent settings read/write via the Admin UI.
       {
         Effect = "Allow"
         Action = [
@@ -413,12 +413,10 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           "ssm:PutParameter",
         ]
         Resource = [
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/cli-models",
           # Agent tier → model configuration (incl. fallback + quorum rows),
           # merged under a project's tier_models at intent create.
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/tier-models",
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/derive-enrichment",
           # Platform stage-skipping toggle (per-intent stage skipping;
           # snapshotted onto the execution META row at intent create).
@@ -436,20 +434,32 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         ]
       },
       {
-        # User and space agent credentials. These are the only agent settings
-        # deleted when cleared; platform parameters retain their Terraform-
-        # managed path and use the existing placeholder sentinel.
+        # Platform credentials retain their Terraform-managed parameters and
+        # are write-only from the Admin UI.
         Effect = "Allow"
-        Action = [
-          "ssm:GetParameter",
-          "ssm:GetParameters",
-          "ssm:PutParameter",
-          "ssm:DeleteParameter",
+        Action = ["ssm:PutParameter"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
         ]
+      },
+      {
+        # User and space credentials are write/delete-only from this management
+        # surface. Reads go through the metadata-only broker, so this broad API
+        # role cannot decrypt their values.
+        Effect = "Allow"
+        Action = ["ssm:PutParameter", "ssm:DeleteParameter"]
         Resource = [
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
         ]
+      },
+      {
+        # Metadata-only broker: set-state and effective source bindings, never
+        # values. The value-redemption broker remains AgentCore-only.
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = local.credential_metadata_function_arn
       },
       {
         # Sign short-lived, binding-scoped grants for AgentCore capability
@@ -911,7 +921,7 @@ resource "aws_iam_role_policy" "credential_broker" {
         # AgentCore presents a signed, short-lived grant; the broker alone
         # decrypts the exact platform/space/user binding named by that grant.
         Effect = "Allow"
-        Action = ["ssm:GetParameter"]
+        Action = ["ssm:GetParameter", "ssm:GetParameters"]
         Resource = [
           var.agent_credential_grant_secret_param_arn,
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
@@ -975,6 +985,39 @@ module "credential_broker_lambda" {
     BITBUCKET_OAUTH_SECRET_NAME         = var.bitbucket_oauth_secret_name
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
+  }
+}
+
+# Metadata-only companion to the value-redemption broker. It runs under the
+# SAME dedicated credential_broker role (the sole IAM principal with read access
+# to agent credential paths) but exposes only set-state/effective bindings.
+module "credential_metadata_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-credential-metadata-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/credential-metadata"
+      commands = [
+        "cd ../.. && npm run build -w credential-metadata",
+        ":zip lambda/credential-metadata/.build",
+      ]
+    }
+  ]
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.credential_broker.arn
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  environment_variables = {
+    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
   }
 }
 
@@ -1748,14 +1791,10 @@ resource "aws_iam_role_policy" "discussions" {
         ]
       },
       {
-        Effect = "Allow"
-        Action = ["ssm:GetParameters"]
-        Resource = [
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
-        ]
+        # Resolve DRAFT assist credential source without access to values.
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = local.credential_metadata_function_arn
       },
       {
         Effect = "Allow"
@@ -1829,6 +1868,7 @@ module "discussions_lambda" {
     WEBSOCKET_ENDPOINT                  = var.websocket_api_endpoint_https
     AGENTCORE_RUNTIME_ARN               = var.agentcore_runtime_arn
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
+    AGENT_CREDENTIAL_METADATA_FUNCTION  = local.credential_metadata_function_arn
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
@@ -2176,16 +2216,11 @@ resource "aws_iam_role_policy" "intents" {
         ]
       },
       {
-        # Resolve user > space > platform agent credentials for pre-start
-        # composition and bind the selected source when an intent starts.
-        Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = [
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
-          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
-        ]
+        # Resolve user > space > platform credential source without access to
+        # the underlying values.
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = local.credential_metadata_function_arn
       },
       {
         # Start the orchestrator (Event invoke) + complete a parked durable
@@ -2291,6 +2326,7 @@ module "intents_lambda" {
     # Admin global cli-models default lives under this SSM prefix; the intents
     # lambda merges it under the project selection at intent create.
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
+    AGENT_CREDENTIAL_METADATA_FUNCTION  = local.credential_metadata_function_arn
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     # The AgentCore stage-executor runtime — for the manual derive backfill
     # (POST .../intents/{id}/derive, platform admin).

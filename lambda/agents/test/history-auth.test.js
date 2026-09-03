@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { SSMClient, GetParametersCommand } from '@aws-sdk/client-ssm';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -12,8 +12,9 @@ import { mockClient } from 'aws-sdk-client-mock';
 
 const PARTITION = `t-${randomUUID()}`;
 const ddbMock = mockClient(DynamoDBDocumentClient);
-const ssmMock = mockClient(SSMClient);
+const lambdaMock = mockClient(LambdaClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
+let credentialMetadataHandler;
 
 let handler;
 let conn;
@@ -25,6 +26,7 @@ beforeAll(async () => {
   vi.stubEnv('AGENT_OUTPUTS_TABLE', 'agent-outputs-test');
   vi.stubEnv('QUESTIONS_TABLE', 'agent-questions-test');
   vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+  vi.stubEnv('AGENT_CREDENTIAL_METADATA_FUNCTION', 'credential-metadata-test');
   vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
   vi.stubEnv('AGENTCORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu:1:runtime/test');
   ({ handler } = await import('../index.js'));
@@ -49,8 +51,19 @@ afterAll(async () => {
 
 beforeEach(async () => {
   ddbMock.reset();
-  ssmMock.reset();
+  lambdaMock.reset();
   agentcoreMock.reset();
+  credentialMetadataHandler = () => ({
+    ok: true,
+    bindings: {
+      bedrock: { provider: 'bedrock', source: 'platform' },
+      kiro: { provider: 'kiro', source: 'platform' },
+    },
+  });
+  lambdaMock.on(InvokeCommand).callsFake((input) => {
+    const request = JSON.parse(Buffer.from(input.Payload).toString());
+    return { Payload: Buffer.from(JSON.stringify(credentialMetadataHandler(request))) };
+  });
   await g.V().drop().next();
 });
 
@@ -172,13 +185,13 @@ describe('project agent capabilities', () => {
   it('passes the project id so AgentCore can resolve space-scoped credentials', async () => {
     const caller = `u-${randomUUID()}`;
     const { projectId } = await seedProject(caller);
-    const bedrockPath = `/collab/dev/projects/${projectId}/agent-credentials/bedrock-bearer-token`;
-    const kiroPath = `/collab/dev/projects/${projectId}/agent-credentials/kiro-api-key`;
-    ssmMock.on(GetParametersCommand).callsFake((input) => ({
-      Parameters: (input.Names ?? [])
-        .filter((name) => name === bedrockPath || name === kiroPath)
-        .map((Name) => ({ Name, Value: `${Name}-value` })),
-    }));
+    credentialMetadataHandler = (request) => ({
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: request.projectId ? 'space' : 'platform' },
+        kiro: { provider: 'kiro', source: request.projectId ? 'space' : 'platform' },
+      },
+    });
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: {
         transformToString: async () =>

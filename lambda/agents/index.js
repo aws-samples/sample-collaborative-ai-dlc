@@ -39,10 +39,12 @@ import {
   AGENT_CREDENTIAL_PROVIDERS,
   credentialProviderForCli,
   credentialSourcesFromBindings,
-  readCredentialScopeStatus,
-  resolveEffectiveCredentialBindings,
   writeCredentialScope,
 } from '../shared/agent-credentials.js';
+import {
+  readCredentialScopeStatusViaBroker,
+  resolveEffectiveCredentialBindingsViaBroker,
+} from '../shared/agent-credential-metadata.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import {
   authorizeLegacyProjectRead,
@@ -306,8 +308,7 @@ export const handler = async (event) => {
         try {
           return response(
             200,
-            await readCredentialScopeStatus(ssm, {
-              base: credentialBase,
+            await readCredentialScopeStatusViaBroker({
               source: 'user',
               userId: credentialUserId,
             }),
@@ -353,13 +354,11 @@ export const handler = async (event) => {
       if (httpMethod === 'GET') {
         try {
           const [space, platformFallback] = await Promise.all([
-            readCredentialScopeStatus(ssm, {
-              base: credentialBase,
+            readCredentialScopeStatusViaBroker({
               source: 'space',
               projectId,
             }),
-            readCredentialScopeStatus(ssm, {
-              base: credentialBase,
+            readCredentialScopeStatusViaBroker({
               source: 'platform',
             }),
           ]);
@@ -400,8 +399,7 @@ export const handler = async (event) => {
       if (!role) return response(403, { error: 'Not a space member' });
       let credentialBindings;
       try {
-        credentialBindings = await resolveEffectiveCredentialBindings(ssm, {
-          base: credentialBase,
+        credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
           projectId,
           userId: credentialUserId,
         });
@@ -458,11 +456,10 @@ export const handler = async (event) => {
 
     // ===== AGENT SETTINGS (SSM-backed, editable via Admin UI) =====
 
-    // GET /agents/settings — read bearer token, Kiro API key, and model defaults from SSM
+    // GET /agents/settings — read credential set-state through the metadata
+    // broker and the remaining non-secret/model settings directly from SSM.
     if (httpMethod === 'GET' && path.endsWith('/settings')) {
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-      const bearerPath = `${prefix}/bedrock-bearer-token`;
-      const kiroApiKeyPath = `${prefix}/kiro-api-key`;
       const cliModelsPath = `${prefix}/cli-models`;
       const tierModelsPath = `${prefix}/tier-models`;
       const deriveEnrichmentPath = `${prefix}/derive-enrichment`;
@@ -471,26 +468,25 @@ export const handler = async (event) => {
       const composeLlmBypassPath = `${prefix}/compose-llm-bypass`;
       const prStrategyPath = `${prefix}/pr-strategy`;
       try {
-        const result = await ssm.send(
-          new GetParametersCommand({
-            Names: [
-              bearerPath,
-              kiroApiKeyPath,
-              cliModelsPath,
-              tierModelsPath,
-              deriveEnrichmentPath,
-              customMcpServersPath,
-              stageSkippingPath,
-              composeLlmBypassPath,
-              prStrategyPath,
-            ],
-            WithDecryption: true,
-          }),
-        );
+        const [result, platformCredentialStatus] = await Promise.all([
+          ssm.send(
+            new GetParametersCommand({
+              Names: [
+                cliModelsPath,
+                tierModelsPath,
+                deriveEnrichmentPath,
+                customMcpServersPath,
+                stageSkippingPath,
+                composeLlmBypassPath,
+                prStrategyPath,
+              ],
+              WithDecryption: true,
+            }),
+          ),
+          readCredentialScopeStatusViaBroker({ source: 'platform' }),
+        ]);
         const byName = {};
         for (const p of result.Parameters || []) byName[p.Name] = p.Value;
-        const bearerToken = byName[bearerPath] || '';
-        const kiroApiKey = byName[kiroApiKeyPath] || '';
         const cliModels = parseCliModels(byName[cliModelsPath] || '{}');
         // Tier-model config: per-agent-tier model rows (judgment/balanced/
         // templated) + the fallback and Quorum rows (shared/tier-models.js).
@@ -555,8 +551,7 @@ export const handler = async (event) => {
         }
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
-          bedrockBearerTokenSet: bearerToken !== '' && bearerToken !== 'placeholder',
-          kiroApiKeySet: kiroApiKey !== '' && kiroApiKey !== 'placeholder',
+          ...platformCredentialStatus,
           cliModels,
           tierModels,
           deriveEnrichment,

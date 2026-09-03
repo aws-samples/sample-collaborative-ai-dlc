@@ -6,8 +6,11 @@ import {
   GetParametersCommand,
   PutParameterCommand,
 } from '@aws-sdk/client-ssm';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 
 const ssmMock = mockClient(SSMClient);
+const lambdaMock = mockClient(LambdaClient);
+let credentialMetadataHandler;
 let handler;
 
 const event = (method, body, groups = null) => ({
@@ -26,11 +29,23 @@ const event = (method, body, groups = null) => ({
 
 beforeAll(async () => {
   process.env.AGENT_SETTINGS_SSM_PREFIX = '/collab/dev';
+  process.env.AGENT_CREDENTIAL_METADATA_FUNCTION = 'credential-metadata-test';
   ({ handler } = await import('../index.js'));
 });
 
 beforeEach(() => {
   ssmMock.reset();
+  lambdaMock.reset();
+  credentialMetadataHandler = () => ({
+    ok: true,
+    status: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+  });
+  lambdaMock.on(InvokeCommand).callsFake((input) => {
+    const request = JSON.parse(Buffer.from(input.Payload).toString());
+    return {
+      Payload: Buffer.from(JSON.stringify(credentialMetadataHandler(request))),
+    };
+  });
 });
 
 describe('platform PR strategy settings', () => {
@@ -41,6 +56,12 @@ describe('platform PR strategy settings', () => {
     const configured = await handler(event('GET'));
     expect(configured.statusCode).toBe(200);
     expect(JSON.parse(configured.body).prStrategy).toBe('pr-per-unit');
+    expect(
+      ssmMock
+        .commandCalls(GetParametersCommand)
+        .flatMap((call) => call.args[0].input.Names ?? [])
+        .filter((name) => name.endsWith('/bedrock-bearer-token') || name.endsWith('/kiro-api-key')),
+    ).toEqual([]);
 
     ssmMock.on(GetParametersCommand).resolves({
       Parameters: [{ Name: '/collab/dev/pr-strategy', Value: 'stacked' }],
@@ -79,17 +100,12 @@ describe('personal agent credentials', () => {
   });
 
   it('returns set-state only for the authenticated user', async () => {
-    ssmMock.on(GetParametersCommand).resolves({
-      Parameters: [
-        {
-          Name: '/collab/dev/users/user-1/agent-credentials/bedrock-bearer-token',
-          Value: 'secret-value',
-        },
-        {
-          Name: '/collab/dev/users/user-1/agent-credentials/kiro-api-key',
-          Value: 'placeholder',
-        },
-      ],
+    credentialMetadataHandler = (request) => ({
+      ok: true,
+      status: {
+        bedrockBearerTokenSet: request.source === 'user',
+        kiroApiKeySet: false,
+      },
     });
     const response = await handler(personalEvent('GET'));
     expect(response.statusCode).toBe(200);
@@ -97,7 +113,7 @@ describe('personal agent credentials', () => {
       bedrockBearerTokenSet: true,
       kiroApiKeySet: false,
     });
-    expect(response.body).not.toContain('secret-value');
+    expect(ssmMock.commandCalls(GetParametersCommand)).toHaveLength(0);
   });
 
   it('writes and clears only the caller-scoped parameters', async () => {

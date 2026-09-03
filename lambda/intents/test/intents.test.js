@@ -63,6 +63,7 @@ let sourceControlValidationResponse = { ready: true, repositories: [] };
 const s3Mock = mockClient(S3Client);
 let attachmentUpdateConflict = null;
 let sourceControlOperationHandler = null;
+let credentialMetadataHandler = null;
 
 // In-memory single-table fake for the v2 process table + blocks table.
 const procStore = new Map();
@@ -271,6 +272,17 @@ const installDdbFakes = () => {
   });
   lambdaMock.reset();
   lambdaMock.on(InvokeCommand).callsFake((input) => {
+    if (input.FunctionName === 'credential-metadata-test') {
+      const request = JSON.parse(Buffer.from(input.Payload).toString());
+      const response = credentialMetadataHandler?.(request) ?? {
+        ok: true,
+        bindings: {
+          bedrock: { provider: 'bedrock', source: 'platform' },
+          kiro: { provider: 'kiro', source: 'platform' },
+        },
+      };
+      return { StatusCode: 200, Payload: Buffer.from(JSON.stringify(response)) };
+    }
     if (input.FunctionName === 'source-control-test') {
       const request = JSON.parse(Buffer.from(input.Payload).toString());
       const response =
@@ -330,6 +342,7 @@ beforeAll(async () => {
   vi.stubEnv('BLOCKS_TABLE', 'blocks-test');
   vi.stubEnv('V2_ORCHESTRATOR_FUNCTION', 'orchestrator-test');
   vi.stubEnv('SOURCE_CONTROL_FUNCTION', 'source-control-test');
+  vi.stubEnv('AGENT_CREDENTIAL_METADATA_FUNCTION', 'credential-metadata-test');
   vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
   vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
@@ -360,6 +373,7 @@ beforeEach(() => {
   sourceControlReviewComments = [];
   sourceControlValidationResponse = { ready: true, repositories: [] };
   sourceControlOperationHandler = null;
+  credentialMetadataHandler = null;
   ssmMock.reset();
   vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
   ssmMock.on(GetParametersCommand).callsFake((input) => ({
@@ -2286,17 +2300,13 @@ describe('POST /start', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    ssmMock.on(GetParametersCommand).callsFake((input) => ({
-      Parameters: (input.Names ?? [])
-        .filter((name) =>
-          [
-            '/collab/dev/kiro-api-key',
-            `/collab/dev/projects/${projectId}/agent-credentials/kiro-api-key`,
-            `/collab/dev/users/${sub}/agent-credentials/kiro-api-key`,
-          ].includes(name),
-        )
-        .map((Name) => ({ Name, Value: `${Name}-value` })),
-    }));
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: { provider: 'kiro', source: 'user', userId: sub },
+      },
+    });
     const res = await handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intent.id}/start`,
@@ -2317,12 +2327,13 @@ describe('POST /start', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    const spacePath = `/collab/dev/projects/${projectId}/agent-credentials/kiro-api-key`;
-    ssmMock.on(GetParametersCommand).callsFake((input) => ({
-      Parameters: (input.Names ?? [])
-        .filter((name) => name === spacePath)
-        .map((Name) => ({ Name, Value: 'space-kiro-key' })),
-    }));
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: { provider: 'kiro', source: 'space' },
+      },
+    });
 
     const res = await handler({
       httpMethod: 'POST',
@@ -2344,7 +2355,10 @@ describe('POST /start', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    ssmMock.on(GetParametersCommand).resolves({ Parameters: [] });
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: { bedrock: null, kiro: null },
+    });
 
     const res = await handler({
       httpMethod: 'POST',
