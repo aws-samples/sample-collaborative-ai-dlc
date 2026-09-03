@@ -78,7 +78,9 @@ export default function IntentGraphPage() {
               <TooltipTrigger asChild>
                 <button
                   onClick={() => setLayer('all')}
-                  aria-label="Items and Units layer"
+                  aria-label={
+                    hasCodeTraceability ? 'Items, Units and Code layer' : 'Items and Units layer'
+                  }
                   aria-pressed={layer === 'all'}
                   className={cn(
                     'flex items-center gap-1 rounded-sm px-1.5 sm:px-2 py-1 text-[10px] font-medium transition-all',

@@ -75,14 +75,14 @@ describe('IntentGraphPage layer switching', () => {
   it('switches to all layer when "+ Items & Units" is pressed', async () => {
     const user = userEvent.setup();
     renderPage();
-    await user.click(screen.getByRole('button', { name: /items and units/i }));
+    await user.click(screen.getByRole('button', { name: /items, units and code layer/i }));
     expect(screen.getByTestId('graph-canvas')).toHaveAttribute('data-node-count', '5');
   });
 
   it('switches back to artifacts layer', async () => {
     const user = userEvent.setup();
     renderPage();
-    await user.click(screen.getByRole('button', { name: /items and units/i }));
+    await user.click(screen.getByRole('button', { name: /items, units and code layer/i }));
     await user.click(screen.getByRole('button', { name: /artifacts layer/i }));
     expect(screen.getByTestId('graph-canvas')).toHaveAttribute('data-node-count', '2');
   });
@@ -90,6 +90,23 @@ describe('IntentGraphPage layer switching', () => {
   it('labels the all-capabilities layer with Code when CodeFile nodes are present', () => {
     renderPage();
     expect(screen.getByText('+ Items, Units & Code')).toBeInTheDocument();
+  });
+
+  it('reflects CodeFile capability in the all-layer aria-label (small-screen a11y)', () => {
+    renderPage();
+    expect(screen.getByRole('button', { name: 'Items, Units and Code layer' })).toBeInTheDocument();
+  });
+
+  it('falls back to the Items and Units aria-label when code capability is absent', () => {
+    graphMock.mockReturnValue({
+      nodes: NODES.filter((node) => node.type !== 'CodeFile'),
+      edges: EDGES,
+      loading: false,
+      error: null,
+      hasCodeTraceability: false,
+    });
+    renderPage();
+    expect(screen.getByRole('button', { name: 'Items and Units layer' })).toBeInTheDocument();
   });
 
   it('retains the legacy Items & Units label when CodeFile capability is absent', () => {
@@ -111,7 +128,7 @@ describe('IntentGraphPage layer switching', () => {
       'aria-pressed',
       'true',
     );
-    expect(screen.getByRole('button', { name: /items and units/i })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /items, units and code layer/i })).toHaveAttribute(
       'aria-pressed',
       'false',
     );

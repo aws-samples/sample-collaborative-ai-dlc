@@ -380,7 +380,14 @@ function NodeDetailContent({ node }: { node: GraphNode }) {
               </code>
             </DetailField>
           )}
-          {!filePath && !summary && <EmptyContent />}
+          {!filePath &&
+            !summary &&
+            !repository &&
+            !commitRef &&
+            !unitSlug &&
+            !stageInstanceId &&
+            !fileKind &&
+            !traceabilitySource && <EmptyContent />}
         </div>
       );
     }

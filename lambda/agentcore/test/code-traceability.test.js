@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
   classifyFileKind,
   collectCodeTraceabilityBatches,
+  ingestStageCodeTraceability,
+  isConcurrentModification,
   normalizeWorkspacePath,
   validateTraceabilityDocument,
 } from '../code-traceability.js';
@@ -168,5 +170,141 @@ describe('classifyFileKind', () => {
     ['docs/guide.md', 'documentation'],
   ])('classifies %s as %s', (file, expected) => {
     expect(classifyFileKind(file)).toBe(expected);
+  });
+});
+
+describe('collectCodeTraceabilityBatches — multi-repo layout', () => {
+  // Layout MUST match workspace.js#repoTargetDir: multi-repo lays each repo out
+  // under <workspaceDir>/<owner>/<repo> (the full "owner/repo" url), single-repo
+  // clones straight into <workspaceDir>. Proven by init-ws.test.js:743.
+  it('resolves files under <ws>/<owner>/<repo> for each repo in a multi-repo run', async () => {
+    const root = await workspace();
+    await put(root, 'acme/api/src/handler.ts', 'export const h = 1;\n');
+    await put(root, 'acme/web/src/App.tsx', 'export const App = () => null;\n');
+    const multiGit = {
+      ok: true,
+      committed: true,
+      results: [
+        {
+          repo: 'acme/api',
+          committed: true,
+          pushed: true,
+          sha: 'a'.repeat(40),
+          files: ['src/handler.ts'],
+        },
+        {
+          repo: 'acme/web',
+          committed: true,
+          pushed: true,
+          sha: 'b'.repeat(40),
+          files: ['src/App.tsx'],
+        },
+      ],
+    };
+    const batches = await collectCodeTraceabilityBatches({
+      gitResult: multiGit,
+      repos: ['acme/api', 'acme/web'],
+      workspaceDir: root,
+      stageId: 'code-generation',
+      stageInstanceId: 'si-code',
+      unitSlug: 'u1',
+    });
+    expect(batches.map((b) => b.repository).toSorted()).toEqual(['acme/api', 'acme/web']);
+    const api = batches.find((b) => b.repository === 'acme/api');
+    const web = batches.find((b) => b.repository === 'acme/web');
+    expect(api.files.map((f) => f.filePath)).toEqual(['src/handler.ts']);
+    expect(web.files.map((f) => f.filePath)).toEqual(['src/App.tsx']);
+    // Wrong layout (bare name) would resolve zero files — guard against regression.
+    expect(api.files.length + web.files.length).toBe(2);
+  });
+});
+
+describe('loadProducedTraceability — size cap', () => {
+  it('treats an oversized traceability.json as degraded (no OOM, no throw)', async () => {
+    const root = await workspace();
+    await put(root, 'src/kept.ts', 'export {};\n');
+    // > 5 MiB of valid JSON; must be skipped and degrade to invalid.
+    const huge = `{"stage":"code-generation","unit":"u1","coverage":[],"pad":"${'x'.repeat(6 * 1024 * 1024)}"}`;
+    await put(root, 'traceability.json', huge);
+    const [batch] = await collectCodeTraceabilityBatches({
+      gitResult: gitResult(['src/kept.ts', 'traceability.json']),
+      repos: ['owner/repo'],
+      workspaceDir: root,
+      stageId: 'code-generation',
+      stageInstanceId: 'si-code',
+      unitSlug: 'u1',
+    });
+    expect(batch.traceabilityStatus).toBe('invalid');
+    expect(batch.files.every((file) => file.traceabilitySource === 'git')).toBe(true);
+  });
+});
+
+describe('ingestStageCodeTraceability — concurrent-modification retry', () => {
+  it('recognizes a Neptune ConcurrentModificationException', () => {
+    expect(isConcurrentModification({ name: 'ConcurrentModificationException' })).toBe(true);
+    expect(isConcurrentModification(new Error('concurrently modified'))).toBe(true);
+    expect(isConcurrentModification(new Error('bad edge'))).toBe(false);
+  });
+
+  it('retries a transient CME and then succeeds (no topology loss)', async () => {
+    const root = await workspace();
+    await put(root, 'src/handler.ts', 'export const h = 1;\n');
+    let calls = 0;
+    const ingestCodeFiles = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error('cme'), { name: 'ConcurrentModificationException' });
+      }
+      return { codeFiles: 1, evidenceEdges: 0 };
+    });
+    let closed = false;
+    const sleeps = [];
+    const result = await ingestStageCodeTraceability({
+      openGraph: async () => ({
+        remoteConnection: {
+          close: async () => {
+            closed = true;
+          },
+        },
+      }),
+      createWriter: () => ({ ingestCodeFiles }),
+      scope: { intentId: 'i1', projectId: 'p1', executionId: 'e1' },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      gitResult: gitResult(['src/handler.ts']),
+      repos: ['owner/repo'],
+      workspaceDir: root,
+      stageId: 'code-generation',
+      stageInstanceId: 'si-code',
+      unitSlug: 'u1',
+    });
+    expect(ingestCodeFiles).toHaveBeenCalledTimes(2); // one CME, one success
+    expect(sleeps).toEqual([100]); // first linear-backoff delay before retry
+    expect(result).toMatchObject({ codeFiles: 1, evidenceEdges: 0 });
+    expect(closed).toBe(true); // graph source always released
+  });
+
+  it('propagates a persistent CME after exhausting retries (caller degrades)', async () => {
+    const root = await workspace();
+    await put(root, 'src/handler.ts', 'export const h = 1;\n');
+    const ingestCodeFiles = vi.fn(async () => {
+      throw Object.assign(new Error('cme'), { name: 'ConcurrentModificationException' });
+    });
+    await expect(
+      ingestStageCodeTraceability({
+        openGraph: async () => ({ remoteConnection: { close: async () => {} } }),
+        createWriter: () => ({ ingestCodeFiles }),
+        scope: { intentId: 'i1' },
+        sleep: async () => {},
+        gitResult: gitResult(['src/handler.ts']),
+        repos: ['owner/repo'],
+        workspaceDir: root,
+        stageId: 'code-generation',
+        stageInstanceId: 'si-code',
+        unitSlug: 'u1',
+      }),
+    ).rejects.toThrow(/cme/);
+    expect(ingestCodeFiles).toHaveBeenCalledTimes(4); // initial + 3 retries
   });
 });

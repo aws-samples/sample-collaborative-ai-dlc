@@ -9,6 +9,21 @@ import { createGraphWriter, closeGraphSource } from './mcp/graph-writer.js';
 
 const TRACEABILITY_FILE = 'traceability.json';
 
+// Agent-produced traceability.json is untrusted input. Cap the size before
+// readFile+JSON.parse so a pathological artifact degrades (treated as invalid)
+// instead of risking OOM. 5 MiB is far above any legitimate coverage manifest.
+const MAX_TRACEABILITY_BYTES = 5 * 1024 * 1024;
+
+// Neptune serializes concurrent vertex/edge writes optimistically; parallel unit
+// lanes committing at once can collide with a ConcurrentModificationException.
+// Reuse the codebase's attempt-loop-with-linear-backoff shape (cli/codex-store.js)
+// so a transient collision is retried before the projection degrades.
+const CME_RETRY_DELAYS_MS = [100, 250, 500];
+export const isConcurrentModification = (error) =>
+  /ConcurrentModification|ConcurrentModificationException|concurrent(?:ly)? modif/i.test(
+    `${error?.name ?? ''} ${error?.message ?? ''} ${error?.code ?? ''}`,
+  );
+
 export const normalizeWorkspacePath = (value) => {
   if (typeof value !== 'string' || !value.trim()) return null;
   const portable = value.trim().replaceAll('\\', '/');
@@ -103,7 +118,8 @@ export const loadProducedTraceability = async ({ repoDir, changedFiles, stageId,
   for (const file of candidates) {
     try {
       const artifactPath = path.resolve(repoDir, file);
-      if (!(await lstat(artifactPath)).isFile()) continue;
+      const stat = await lstat(artifactPath);
+      if (!stat.isFile() || stat.size > MAX_TRACEABILITY_BYTES) continue;
       const parsed = JSON.parse(await readFile(artifactPath, 'utf8'));
       const result = validateTraceabilityDocument(parsed, {
         expectedStage: stageId,
@@ -184,7 +200,13 @@ export const collectCodeTraceabilityBatches = async ({
   return batches;
 };
 
-export const ingestStageCodeTraceability = async ({ openGraph, scope, ...input }) => {
+export const ingestStageCodeTraceability = async ({
+  openGraph,
+  scope,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  createWriter = createGraphWriter,
+  ...input
+}) => {
   const batches = await collectCodeTraceabilityBatches(input);
   if (!batches.length || !openGraph) {
     return { batches: batches.length, codeFiles: 0, evidenceEdges: 0, statuses: [] };
@@ -193,11 +215,23 @@ export const ingestStageCodeTraceability = async ({ openGraph, scope, ...input }
   let g = null;
   try {
     g = await openGraph();
-    const writer = createGraphWriter({ g, scope });
+    const writer = createWriter({ g, scope });
     let codeFiles = 0;
     let evidenceEdges = 0;
     for (const batch of batches) {
-      const result = await writer.ingestCodeFiles(batch);
+      // Retry a transient CME (parallel unit lanes colliding on the shared
+      // Intent anchor); only a persistent failure propagates to degrade.
+      let result;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          result = await writer.ingestCodeFiles(batch);
+          break;
+        } catch (error) {
+          if (!isConcurrentModification(error) || attempt >= CME_RETRY_DELAYS_MS.length)
+            throw error;
+          await sleep(CME_RETRY_DELAYS_MS[attempt]);
+        }
+      }
       codeFiles += result.codeFiles;
       evidenceEdges += result.evidenceEdges;
     }
