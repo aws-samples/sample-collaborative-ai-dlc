@@ -72,6 +72,8 @@ const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,160}$/;
 const MAX_ASSIST_INSTRUCTIONS = 2000;
 const MAX_SELECTED_MESSAGES = 40;
 const processTable = () => process.env.V2_PROCESS_TABLE || '';
+const pinnedAgentCli = (execution) =>
+  execution?.status === 'DRAFT' ? null : (execution?.agentCli ?? null);
 
 const assistMessageIdFor = (requestId) =>
   `dm-${createHash('sha256').update(requestId).digest('hex').slice(0, 32)}`;
@@ -596,29 +598,39 @@ export const assistDiscussion = async (event, res) => {
     });
   }
 
-  const resolveCredentialContext = async () => {
-    if (processTable()) {
-      const { Item: execution } = await ddb.send(
+  let executionPromise = null;
+  const loadExecution = async () => {
+    if (!processTable()) return null;
+    executionPromise ??= ddb
+      .send(
         new GetCommand({
           TableName: processTable(),
           Key: executionMetaKey(scope.rootId),
           ConsistentRead: true,
         }),
-      );
+      )
+      .then(({ Item }) => Item ?? null);
+    return executionPromise;
+  };
+
+  const resolveCredentialContext = async () => {
+    const execution = await loadExecution();
+    if (execution) {
       if (execution?.projectId && execution.projectId !== auth.projectId) {
         throw Object.assign(new Error('Intent credential context does not match the project'), {
           code: 'agent_credential_required',
         });
       }
-      if (execution?.agentCli) {
-        const provider = credentialProviderForCli(execution.agentCli);
+      const pinnedCli = pinnedAgentCli(execution);
+      if (pinnedCli) {
+        const provider = credentialProviderForCli(pinnedCli);
         if (!provider) {
           throw Object.assign(new Error('The intent has an unsupported pinned agent CLI'), {
             code: 'agent_credential_required',
           });
         }
         return {
-          requestedCli: execution.agentCli,
+          requestedCli: pinnedCli,
           credentialBinding: execution.credentialBinding ?? { provider, source: 'platform' },
         };
       }
@@ -718,6 +730,16 @@ export const assistDiscussion = async (event, res) => {
     if (existingMessage.assistStatus !== 'failed') {
       return res(202, { requestId, message: existingMessage });
     }
+  }
+
+  if (!requestedCli && !pinnedAgentCli(await loadExecution())) {
+    return res(400, {
+      error: 'Select an agent CLI before requesting Quorum assist',
+      code: 'agent_cli_required',
+    });
+  }
+
+  if (existing) {
     const updatedAt = new Date().toISOString();
     await query((g) =>
       updateAssistMessageVertex(g, {

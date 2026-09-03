@@ -1725,6 +1725,7 @@ describe('intent-scoped discussions', () => {
     const { projectId, intentId } = await seedIntent();
     processStore.set(`EXEC#${intentId}`, {
       projectId,
+      status: 'RUNNING',
       agentCli: 'kiro',
       credentialBinding: {
         provider: 'kiro',
@@ -1744,7 +1745,6 @@ describe('intent-scoped discussions', () => {
       body: {
         requestId: 'assist-request-pinned',
         command: 'summarize',
-        agentCli: 'kiro',
       },
     });
 
@@ -1770,6 +1770,43 @@ describe('intent-scoped discussions', () => {
     expect(ssmMock.commandCalls(GetParametersCommand)).toHaveLength(0);
   });
 
+  it('requires an explicit CLI for a DRAFT assist before creating a Quorum message', async () => {
+    const { projectId, intentId } = await seedIntent();
+    processStore.set(`EXEC#${intentId}`, {
+      projectId,
+      status: 'DRAFT',
+      agentCli: null,
+      credentialBinding: null,
+    });
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+
+    const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+      body: {
+        requestId: 'assist-request-no-cli',
+        command: 'summarize',
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(json(res)).toMatchObject({
+      error: 'Select an agent CLI before requesting Quorum assist',
+      code: 'agent_cli_required',
+    });
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(0);
+
+    const messages = await call('GET', intentPath('/discussions/{discussionId}/messages'), {
+      pathParameters: { projectId, intentId, discussionId: created.id },
+    });
+    expect(json(messages).messages).toEqual([]);
+  });
+
   it('accepts ask as the free-form Quorum assist command', async () => {
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
@@ -1788,6 +1825,7 @@ describe('intent-scoped discussions', () => {
         requestId: 'assist-request-ask',
         command: 'ask',
         instructions: 'Check the risks',
+        agentCli: 'kiro',
       },
     });
     expect(res.statusCode).toBe(202);
@@ -1817,7 +1855,7 @@ describe('intent-scoped discussions', () => {
 
     const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
       pathParameters: { projectId, intentId, discussionId: created.id },
-      body: { requestId: 'assist-request-failed', command: 'brainstorm' },
+      body: { requestId: 'assist-request-failed', command: 'brainstorm', agentCli: 'kiro' },
     });
     expect(res.statusCode).toBe(202);
     expect(json(res).message.assistStatus).toBe('failed');
@@ -1836,7 +1874,7 @@ describe('intent-scoped discussions', () => {
     });
     const retry = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
       pathParameters: { projectId, intentId, discussionId: created.id },
-      body: { requestId: 'assist-request-failed', command: 'brainstorm' },
+      body: { requestId: 'assist-request-failed', command: 'brainstorm', agentCli: 'kiro' },
     });
     expect(retry.statusCode).toBe(202);
     expect(json(retry).message.id).toBe(stored.id);
