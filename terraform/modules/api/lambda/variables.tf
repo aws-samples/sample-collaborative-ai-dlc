@@ -23,6 +23,11 @@ variable "private_subnet_ids" {
   type        = list(string)
 }
 
+variable "lambda_vpc_scope" {
+  description = "Lambda VPC placement scope"
+  type        = string
+}
+
 variable "neptune_endpoint" {
   description = "Neptune cluster endpoint"
   type        = string

@@ -15,6 +15,14 @@ Before users can connect their accounts, an administrator registers OAuth apps w
 
 The status of each provider is visible in **Admin → Trackers**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
 
+### Static egress IPs
+
+`lambda_vpc_scope` defaults to `"required"`. In this mode, only Lambdas that require access to private resources are attached to the VPC. Repository and tracker operations from `source-control` and `trackers`, along with the AgentCore runtime in its default VPC mode, already use NAT egress regardless of this setting.
+
+Deployments that require provider IP allow-listing can set it to `"public-egress"` in the environment's `.tfvars` file. This also routes the OAuth connectors, credential broker, and seed-blocks through the NAT gateways.
+
+Development environments have one address; production environments have two, and both must be allow-listed to avoid intermittent provider failures. These addresses are printed after applying the Terraform configuration.
+
 ### Project-bound authentication
 
 GitHub OAuth and GitHub App configuration remain available at the same time. There is no platform-wide runtime mode:

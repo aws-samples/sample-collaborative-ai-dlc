@@ -28,6 +28,11 @@ output "nat_gateway_ids" {
   value       = aws_nat_gateway.main[*].id
 }
 
+output "nat_public_ips" {
+  description = "Static public IPv4 addresses used for private-subnet egress"
+  value       = aws_eip.nat[*].public_ip
+}
+
 output "default_security_group_id" {
   description = "ID of the default security group"
   value       = aws_security_group.default.id

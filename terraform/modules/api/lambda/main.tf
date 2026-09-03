@@ -3,8 +3,9 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  partition  = data.aws_partition.current.partition
-  dns_suffix = data.aws_partition.current.dns_suffix
+  partition            = data.aws_partition.current.partition
+  dns_suffix           = data.aws_partition.current.dns_suffix
+  enable_public_egress = var.lambda_vpc_scope == "public-egress"
 
   # Lambdas that bundle code from lambda/shared/** via esbuild are packaged by
   # the terraform-aws-modules/lambda module,
@@ -182,6 +183,13 @@ resource "aws_iam_role" "github_connector" {
 resource "aws_iam_role_policy_attachment" "github_connector_basic" {
   role       = aws_iam_role.github_connector.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "github_connector_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.github_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "github_connector" {
@@ -704,7 +712,8 @@ resource "aws_iam_role_policy" "neptune_tasks" {
 # DynamoDB RW on the blocks table + its GSI1, plus S3 RW scoped to the blocks/
 # prefix (content-addressed block bodies/scripts) and the aidlc-runtime/ prefix
 # (the seed job's commit-pinned internal runtime snapshot) of the artifacts
-# bucket. No Neptune, no VPC — pure DDB + S3.
+# bucket. No Neptune; seed-blocks optionally uses VPC NAT egress to download the
+# pinned workflow source from codeload.github.com.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "blocks" {
   name               = "${var.project_name}-blocks-${var.environment}"
@@ -714,6 +723,13 @@ resource "aws_iam_role" "blocks" {
 resource "aws_iam_role_policy_attachment" "blocks_basic" {
   role       = aws_iam_role.blocks.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "blocks_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.blocks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "blocks" {
@@ -900,6 +916,13 @@ resource "aws_iam_role_policy_attachment" "credential_broker_basic" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "credential_broker_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.credential_broker.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role_policy" "credential_broker" {
   name = "agentcore-credential-resolution"
   role = aws_iam_role.credential_broker.id
@@ -977,6 +1000,9 @@ module "credential_broker_lambda" {
 
   create_role = false
   lambda_role = aws_iam_role.credential_broker.arn
+
+  vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
@@ -1461,6 +1487,9 @@ module "github_lambda" {
   create_role = false
   lambda_role = aws_iam_role.github_connector.arn
 
+  vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
     GITHUB_OAUTH_SECRET_NAME           = var.github_oauth_secret_name
     GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
@@ -1486,6 +1515,13 @@ resource "aws_iam_role" "gitlab_connector" {
 resource "aws_iam_role_policy_attachment" "gitlab_connector_basic" {
   role       = aws_iam_role.gitlab_connector.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "gitlab_connector_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.gitlab_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "gitlab_connector" {
@@ -1550,6 +1586,9 @@ module "gitlab_lambda" {
   create_role = false
   lambda_role = aws_iam_role.gitlab_connector.arn
 
+  vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
@@ -1575,6 +1614,13 @@ resource "aws_iam_role" "bitbucket_connector" {
 resource "aws_iam_role_policy_attachment" "bitbucket_connector_basic" {
   role       = aws_iam_role.bitbucket_connector.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "bitbucket_connector_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.bitbucket_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "bitbucket_connector" {
@@ -1638,6 +1684,9 @@ module "bitbucket_lambda" {
 
   create_role = false
   lambda_role = aws_iam_role.bitbucket_connector.arn
+
+  vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
     BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
@@ -2046,6 +2095,9 @@ module "seed_blocks_lambda" {
 
   create_role = false
   lambda_role = aws_iam_role.blocks.arn
+
+  vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
     BLOCKS_TABLE     = var.blocks_table_name

@@ -16,6 +16,17 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "lambda_vpc_scope" {
+  description = "Lambda VPC placement scope: required keeps only private-resource Lambdas in the VPC; public-egress also routes selected public-service traffic through NAT"
+  type        = string
+  default     = "required"
+
+  validation {
+    condition     = contains(["required", "public-egress"], var.lambda_vpc_scope)
+    error_message = "lambda_vpc_scope must be one of: required, public-egress."
+  }
+}
+
 variable "bedrock_model" {
   description = "Bedrock inference profile ID for the primary model. E.g. us.anthropic.claude-sonnet-4-6"
   type        = string
