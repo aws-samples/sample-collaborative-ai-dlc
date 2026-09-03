@@ -176,6 +176,7 @@ const deleteIntentCascade = async ({
   await Promise.all([
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/committed/${intentId}/`),
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/staging/${intentId}/`),
+    purgeAttachmentPrefix(artifactsBucket, `workflow-exports/${intentId}/`),
   ]);
   const discussionIds = await g
     .V()
@@ -223,6 +224,15 @@ const deleteIntentCascade = async ({
   // Pass 1 — immutable artifact versions plus the derived layer. Versions are
   // reached through their stable head and must be removed before that head;
   // sections/items are similarly reached through the artifact.
+  await g
+    .V()
+    .has('Intent', 'id', intentId)
+    .out('HAS_CHECKPOINT_VERSION')
+    .hasLabel('ArtifactVersion')
+    .has('intent_id', intentId)
+    .drop()
+    .next();
+
   await g
     .V()
     .has('Intent', 'id', intentId)

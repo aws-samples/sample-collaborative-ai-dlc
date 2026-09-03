@@ -24,6 +24,7 @@ nav = [
   { "Using the Platform" = [
     "using-the-platform/projects.md",
     "using-the-platform/creating-intents.md",
+    "using-the-platform/exporting-workspaces.md",
     "using-the-platform/intent-observability.md",
     "using-the-platform/workflows.md",
     "using-the-platform/platform-settings.md",

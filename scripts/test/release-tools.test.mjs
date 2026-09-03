@@ -114,6 +114,15 @@ test('Yjs image pins readable ownership and modes for non-root runtime files', (
   );
 });
 
+test('baseline seeding waits for Lambda without retrying the invocation', () => {
+  const terraformDeployment = readFileSync(deployTerraform, 'utf8');
+
+  assert.match(terraformDeployment, /AWS_MAX_ATTEMPTS=1 aws lambda invoke/);
+  assert.match(terraformDeployment, /--cli-read-timeout 0/);
+  assert.match(terraformDeployment, /--skip-seed/);
+  assert.match(terraformDeployment, /Skipping AI-DLC default workflow/);
+});
+
 test('release check accepts prerelease metadata but final mode requires a date', () => {
   const fixture = mkdtempSync(join(tmpdir(), 'aidlc-release-check-'));
   const version = '2.0.0-preview0';
@@ -323,6 +332,7 @@ const standaloneDeployEnv = (dir, { customDomain = false } = {}) => {
   const bin = join(dir, 'bin');
   const config = join(dir, 'config/environments');
   const terraformLog = join(dir, 'terraform.log');
+  const awsLog = join(dir, 'aws.log');
   mkdirSync(bin, { recursive: true });
   mkdirSync(config, { recursive: true });
   writeFileSync(
@@ -370,6 +380,7 @@ esac
   writeFileSync(
     join(bin, 'aws'),
     `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$AIDLC_AWS_LOG"
 if [[ "$*" == *"ecs describe-clusters"* ]]; then
   printf 'None\\n'
   exit 0
@@ -390,6 +401,7 @@ fi
       AIDLC_CONFIG_DIR: join(dir, 'config'),
       AIDLC_SKIP_NPM_CI: '1',
       AIDLC_TERRAFORM_LOG: terraformLog,
+      AIDLC_AWS_LOG: awsLog,
       ...(customDomain
         ? {
             AIDLC_FAKE_CUSTOM_DOMAIN: 'true',
@@ -400,6 +412,7 @@ fi
         : {}),
     },
     terraformLog,
+    awsLog,
     planFile: join(dir, 'summary.tfplan'),
   };
 };
@@ -446,6 +459,21 @@ test('standalone deployment omits --var entirely when none are given', () => {
     .split('\n')
     .find((line) => line.startsWith('plan '));
   assert.doesNotMatch(planLine, /-var /);
+});
+
+test('standalone deployment can skip the post-apply baseline seed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-skip-seed-'));
+  const { env, awsLog, planFile } = standaloneDeployEnv(dir);
+
+  const deployed = run(
+    'bash',
+    [deployTerraform, 'summary', '--plan-file', planFile, '--skip-seed'],
+    { env },
+  );
+
+  assert.equal(deployed.status, 0, deployed.stderr);
+  assert.match(deployed.stdout, /Skipping AI-DLC default workflow/);
+  assert.doesNotMatch(readFileSync(awsLog, 'utf8'), /lambda invoke/);
 });
 
 test('standalone deployment rejects malformed and misplaced --var', () => {

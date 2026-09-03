@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
-import { intentsService } from '@/services/intents';
+import {
+  intentsService,
+  type NativeExportHarness,
+  type NativeWorkflowExport,
+} from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
@@ -18,6 +22,7 @@ import { AgentProgressCard } from '@/components/intent/AgentProgressCard';
 import { GateCard } from '@/components/intent/GateCard';
 import { StageReviewPanel } from '@/components/intent/StageReviewPanel';
 import { WorkProductsSection } from '@/components/intent/WorkProductsSection';
+import { NativeExportSetupDialog } from '@/components/intent/NativeExportSetupDialog';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -38,7 +43,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
+  Check,
+  ChevronDown,
+  Download,
   Loader2,
   MoreHorizontal,
   Bot,
@@ -48,6 +57,7 @@ import {
   Trash2,
   TriangleAlert,
   Wrench,
+  X,
   XCircle,
 } from 'lucide-react';
 
@@ -57,6 +67,28 @@ import {
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
 const CREDENTIAL_FAILURE_CODES = new Set(['credential_unavailable', 'credential_invalid']);
+const NON_EXPORTABLE_STATUSES = new Set(['DRAFT', 'CREATED']);
+const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
+  { value: 'claude', label: 'Claude' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'kiro', label: 'Kiro CLI' },
+  { value: 'kiro-ide', label: 'Kiro IDE' },
+  { value: 'opencode', label: 'OpenCode' },
+];
+
+const errorMessage = (value: string) => {
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed === 'string') return parsed;
+    if (parsed && typeof parsed === 'object') {
+      if ('message' in parsed && typeof parsed.message === 'string') return parsed.message;
+      if ('error' in parsed && typeof parsed.error === 'string') return parsed.error;
+    }
+  } catch {
+    // Plain-text errors are already display-ready.
+  }
+  return value;
+};
 
 export default function IntentView() {
   const {
@@ -92,7 +124,17 @@ export default function IntentView() {
   const [deleting, setDeleting] = useState(false);
   const [confirmRepair, setConfirmRepair] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  const [confirmExport, setConfirmExport] = useState(false);
+  const [selectedExportHarness, setSelectedExportHarness] = useState<
+    NativeExportHarness | undefined
+  >();
+  const [requestedExportHarness, setRequestedExportHarness] = useState<
+    NativeExportHarness | undefined
+  >();
+  const [exporting, setExporting] = useState(false);
+  const [constructionExport, setConstructionExport] = useState<NativeWorkflowExport | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
 
   // A stage failure retries from the earliest failed stage, preserving all
   // completed upstream work. Failures before any stage row exists (init-ws,
@@ -113,6 +155,7 @@ export default function IntentView() {
         await reload();
       }
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to recover intent');
     } finally {
       setStarting(false);
@@ -131,6 +174,7 @@ export default function IntentView() {
     try {
       await cancelIntent();
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to cancel intent');
     } finally {
       setCancelling(false);
@@ -147,6 +191,7 @@ export default function IntentView() {
       await deleteIntent();
       navigate(`/space/${projectId}`);
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to delete intent');
       setConfirmDelete(false);
       setDeleting(false);
@@ -161,10 +206,40 @@ export default function IntentView() {
       setConfirmRepair(false);
       await reload();
     } catch (err) {
+      setDismissedError(null);
       setActionError(err instanceof Error ? err.message : 'Failed to repair intent');
     } finally {
       setRepairing(false);
     }
+  };
+
+  const handleExport = async (harness?: NativeExportHarness) => {
+    setConfirmExport(false);
+    setExporting(true);
+    setActionError(null);
+    try {
+      const result = await intentsService.exportWorkflow(projectId, intentId, harness);
+      const download = document.createElement('a');
+      download.href = result.downloadUrl;
+      download.download = result.filename;
+      download.rel = 'noopener';
+      document.body.append(download);
+      download.click();
+      download.remove();
+      if (result.setup.showWorkspaceSetup || result.warnings.length > 0) {
+        setConstructionExport(result);
+      }
+    } catch (err) {
+      setDismissedError(null);
+      setActionError(err instanceof Error ? err.message : 'Failed to export workflow');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const requestExport = (harness?: NativeExportHarness) => {
+    setRequestedExportHarness(harness);
+    setConfirmExport(true);
   };
 
   if (!projectId || !intentId) return <div className="p-6">Intent not found</div>;
@@ -200,6 +275,7 @@ export default function IntentView() {
   const needsLaneRepair =
     recoveryWaits.length > 0 && ['RUNNING', 'WAITING', 'FAILED'].includes(intent.status);
   const error = actionError ?? loadError;
+  const visibleError = error && error !== dismissedError ? errorMessage(error) : null;
   const isDraft = intent.status === 'DRAFT';
   // A DRAFT belongs on the collaborative compose page — one canonical draft
   // experience (shared prompt + projection selection) instead of two UIs.
@@ -212,6 +288,18 @@ export default function IntentView() {
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Deletable (destructive): owner/admin, any status except mid-RUNNING.
   const isDeletable = canDelete && intent.status !== 'RUNNING';
+  const isExportable = !NON_EXPORTABLE_STATUSES.has(intent.status);
+  const exportUnavailableReason = 'Not available before the workflow starts';
+  const exportDisabled = exporting || !isExportable;
+  const defaultExportHarness = intent.agentCli ?? undefined;
+  const activeExportHarness = selectedExportHarness ?? defaultExportHarness;
+  const exportCli =
+    EXPORT_HARNESSES.find((option) => option.value === activeExportHarness)?.label ??
+    'native AI-DLC';
+  const exportButtonLabel =
+    intent.status === 'RUNNING'
+      ? `Download ${exportCli} workspace from latest completed checkpoint`
+      : `Download ${exportCli} workspace`;
   // Pre-stage progress: before any stage row exists, init-ws lifecycle events
   // are the only signal the run is doing something (they stream into the
   // sidebar Timeline); this strip keeps the main pane from looking dead.
@@ -270,6 +358,78 @@ export default function IntentView() {
             />
           )}
           <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
+          <div className="inline-flex h-7 shrink-0 overflow-hidden rounded-md border border-border/60">
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex" data-testid="workspace-export-harness">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-7 w-5 rounded-none border-r border-border/60 px-0"
+                          disabled={exportDisabled}
+                          aria-label="Choose workspace harness"
+                        >
+                          <ChevronDown className="h-3 w-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        {EXPORT_HARNESSES.map((option) => (
+                          <DropdownMenuItem
+                            key={option.value}
+                            disabled={exporting}
+                            onClick={() => setSelectedExportHarness(option.value)}
+                          >
+                            <span>{option.label}</span>
+                            {option.value === activeExportHarness && (
+                              <Check className="ml-auto h-4 w-4" aria-label="Current harness" />
+                            )}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {exporting
+                    ? 'Preparing workspace…'
+                    : isExportable
+                      ? 'Choose workspace harness'
+                      : exportUnavailableReason}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex" data-testid="workspace-export-download">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 rounded-none"
+                      disabled={exportDisabled}
+                      onClick={() => requestExport(activeExportHarness)}
+                      aria-label={exportButtonLabel}
+                    >
+                      {exporting ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {exporting
+                    ? 'Preparing workspace…'
+                    : isExportable
+                      ? exportButtonLabel
+                      : exportUnavailableReason}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {intent.source && (
@@ -318,9 +478,22 @@ export default function IntentView() {
         </div>
       </div>
 
-      {error && (
-        <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
+      {visibleError && (
+        <div
+          className="flex items-center gap-2 rounded border border-destructive/20 bg-destructive/10 py-2 pl-3 pr-1 text-sm text-destructive"
+          role="alert"
+        >
+          <span className="min-w-0 flex-1 break-words">{visibleError}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
+            aria-label="Dismiss error"
+            onClick={() => setDismissedError(error)}
+          >
+            <X className="h-4 w-4" />
+          </Button>
         </div>
       )}
 
@@ -513,6 +686,46 @@ export default function IntentView() {
           <WorkProductsSection detail={detail} gates={gates} />
         </>
       )}
+
+      <AlertDialog
+        open={confirmExport}
+        onOpenChange={(open) => {
+          if (exporting) return;
+          setConfirmExport(open);
+          if (!open) setRequestedExportHarness(undefined);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Continue outside Collaborative AI-DLC?</AlertDialogTitle>
+            <AlertDialogDescription className="break-words">
+              {intent.status === 'RUNNING'
+                ? 'This download uses the latest completed workflow checkpoint and excludes the stage currently in progress. '
+                : 'This download creates a point-in-time workspace. '}
+              Work completed locally, including decisions, approvals, artifacts, and code changes,
+              will not be synchronized back to this intent or included in its traceability history.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={exporting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={exporting}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleExport(requestedExportHarness);
+              }}
+            >
+              {exporting ? 'Preparing workspace…' : 'Download workspace'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <NativeExportSetupDialog
+        exportResult={constructionExport}
+        projectName={project?.name}
+        onClose={() => setConstructionExport(null)}
+      />
 
       {/* Delete confirmation */}
       <AlertDialog

@@ -31,23 +31,42 @@ import {
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
+  GetObjectCommand,
   HeadObjectCommand,
+  ListObjectVersionsCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 // Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
+import { buildFromFiles } from '../../shared/block-mappers.js';
+import {
+  buildMethodologyCatalog,
+  methodologyCatalogKey,
+} from '../../shared/methodology-catalog.js';
+import { CORE_FILES } from '../../shared/test/fixtures/repo-files.js';
 
-const { archiveArtifactsSpy } = vi.hoisted(() => ({
-  archiveArtifactsSpy: vi.fn(),
-}));
+const { archiveArtifactsSpy, createNativeExportSpy, readCheckpointArtifactVersionsSpy } =
+  vi.hoisted(() => ({
+    archiveArtifactsSpy: vi.fn(),
+    createNativeExportSpy: vi.fn(),
+    readCheckpointArtifactVersionsSpy: vi.fn(),
+  }));
 vi.mock('../../shared/artifact-versioning.js', async (importOriginal) => {
   const actual = await importOriginal();
   archiveArtifactsSpy.mockImplementation(actual.archiveArtifactsForStages);
+  readCheckpointArtifactVersionsSpy.mockImplementation(actual.readCheckpointArtifactVersions);
   return {
     ...actual,
     archiveArtifactsForStages: archiveArtifactsSpy,
+    readCheckpointArtifactVersions: readCheckpointArtifactVersionsSpy,
   };
 });
+vi.mock('../native-export.js', () => ({
+  createNativeExport: createNativeExportSpy,
+  EXPORT_SOURCE_UNAVAILABLE: 'export_source_unavailable',
+  EXPORT_MISCONFIGURED: 'export_misconfigured',
+}));
 
 const PARTITION = `t-${randomUUID()}`;
 
@@ -302,6 +321,9 @@ const installDdbFakes = () => {
     StopTimestamp: new Date('2026-07-17T00:00:00.000Z'),
   });
   s3Mock.reset();
+  // Deletion purges each attachment/export prefix; default to an empty listing
+  // so the cascade is a safe no-op unless a test opts into seeded versions.
+  s3Mock.on(ListObjectVersionsCommand).resolves({});
 };
 
 // Seed a HUMAN# gate row straight into the fake table (the runtime writes these;
@@ -386,6 +408,12 @@ beforeEach(() => {
   agentcoreMock.reset();
   attachmentUpdateConflict = null;
   archiveArtifactsSpy.mockClear();
+  readCheckpointArtifactVersionsSpy.mockClear();
+  createNativeExportSpy.mockReset();
+  createNativeExportSpy.mockResolvedValue({
+    downloadUrl: 'https://example.test/export.zip',
+    expiresAt: '2026-08-14T16:00:00.000Z',
+  });
 });
 
 const claims = (sub) => ({
@@ -908,6 +936,32 @@ describe('POST /projects/{id}/intents', () => {
     expect(JSON.parse(res.body).scope).toBe('feature');
   });
 
+  it('resolves and persists an immutable AI-DLC commit when creating an intent', async () => {
+    const sha = 'a'.repeat(40);
+    process.env.AIDLC_REPO_REF = 'release/v2';
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, json: async () => ({ sha }) });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+      });
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+      expect(meta.aidlcRepoRef).toBe(sha);
+      expect(meta.methodologyPins).toBeTruthy();
+      expect(fetchSpy.mock.calls[0][0]).toContain('/commits/release%2Fv2');
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.AIDLC_REPO_REF;
+    }
+  });
+
   it('rejects a scope not offered by the workflow', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -1042,6 +1096,584 @@ describe('POST /projects/{id}/intents', () => {
       .next();
     const res = await createIntent(sub, projectId);
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /projects/{id}/intents/{intentId}/export', () => {
+  const exportRef = 'a'.repeat(40);
+
+  const seedExportPlan = () => {
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#META'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#META',
+      sourceRef: exportRef,
+    });
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#requirements-analysis'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#PLACEMENT#requirements-analysis',
+      stageId: 'requirements-analysis',
+      order: 1,
+      scopeMembership: { feature: 'EXECUTE' },
+    });
+    procStore.set(keyOf('BLOCK#requirements-analysis', 'META'), {
+      pk: 'BLOCK#requirements-analysis',
+      sk: 'META',
+      GSI1PK: 'TENANT#default#STAGE',
+      GSI1SK: 'NAME#requirements-analysis',
+      id: 'requirements-analysis',
+      blockId: 'requirements-analysis',
+      type: 'STAGE',
+      version: 1,
+      phase: 'inception',
+      mode: 'inline',
+      leadAgent: 'orchestrator',
+      produces: [],
+      consumes: [],
+      sensors: [],
+      humanValidation: 'none',
+      sourceRef: exportRef,
+    });
+  };
+
+  const exportIntent = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/export`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify({ harness: 'codex' }),
+      ...claims(sub),
+    });
+
+  const createExportableIntent = async (sub, status) => {
+    const projectId = await seedV2Project(sub);
+    seedExportPlan();
+    const configuredRef = process.env.AIDLC_REPO_REF;
+    process.env.AIDLC_REPO_REF = exportRef;
+    let intent;
+    try {
+      intent = JSON.parse((await createIntent(sub, projectId)).body);
+    } finally {
+      if (configuredRef === undefined) delete process.env.AIDLC_REPO_REF;
+      else process.env.AIDLC_REPO_REF = configuredRef;
+    }
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const meta = {
+      ...procStore.get(metaKey),
+      status,
+      title: 'Live title',
+      startedAt: '2026-08-14T10:00:00.000Z',
+    };
+    procStore.set(metaKey, meta);
+    return { projectId, intent, meta };
+  };
+
+  const seedCheckpoint = (intentId, meta) => {
+    const checkpoint = {
+      pk: `EXEC#${intentId}`,
+      sk: 'CHECKPOINT',
+      type: 'WorkflowCheckpoint',
+      executionId: intentId,
+      checkpointId: 'checkpoint-1',
+      createdAt: '2026-08-14T10:05:00.000Z',
+      sourceStageInstanceId: 'requirements-analysis@1',
+      process: {
+        meta: { ...meta, title: 'Checkpoint title' },
+        stages: [],
+        humanTasks: [],
+        unitPlan: null,
+        units: [],
+      },
+      artifactRefs: [
+        {
+          artifactId: 'requirements',
+          versionId: 'requirements:sha256:abc',
+          snapshotHash: 'abc',
+        },
+      ],
+      customRuleRefs: [],
+    };
+    procStore.set(keyOf(`EXEC#${intentId}`, 'CHECKPOINT'), checkpoint);
+    return checkpoint;
+  };
+
+  it.each(['DRAFT', 'CREATED'])('blocks %s intents before archive construction', async (status) => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, status);
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('The intent is not in an exportable state');
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it('requires a completed checkpoint while RUNNING', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'RUNNING');
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'No completed workflow checkpoint is available yet',
+      code: 'export_checkpoint_unavailable',
+    });
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it('exports live state when a RUNNING parallel lane is globally parked', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'RUNNING');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'STAGE#si-code'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-code',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-code',
+      stageId: 'code-generation',
+      sectionIndex: 1,
+      unitSlug: 'identification',
+      state: 'WAITING_FOR_HUMAN',
+      aidlcRepoRef: exportRef,
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#q-code-plan'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'HUMAN#q-code-plan',
+      type: 'HumanTask',
+      executionId: intent.id,
+      humanTaskId: 'q-code-plan',
+      stageInstanceId: 'si-code',
+      sectionIndex: 1,
+      unitSlug: 'identification',
+      status: 'pending',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#identification'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNIT#S1#identification',
+      type: 'Unit',
+      executionId: intent.id,
+      sectionIndex: 1,
+      slug: 'identification',
+      state: 'RUNNING',
+    });
+    createNativeExportSpy.mockImplementationOnce(async ({ validateSnapshot }) => {
+      await expect(validateSnapshot()).resolves.toBe(true);
+      return {
+        downloadUrl: 'https://example.test/export.zip',
+        expiresAt: '2026-08-14T16:00:00.000Z',
+      };
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceCheckpoint: null,
+        validateSnapshot: expect.any(Function),
+      }),
+    );
+  });
+
+  it('requires a checkpoint when a sibling lane is still running', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'RUNNING');
+    for (const [slug, state, stageState] of [
+      ['identification', 'RUNNING', 'WAITING_FOR_HUMAN'],
+      ['display-results', 'RUNNING', 'RUNNING'],
+    ]) {
+      const stageInstanceId = `si-${slug}`;
+      procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#${stageInstanceId}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `STAGE#${stageInstanceId}`,
+        type: 'Stage',
+        executionId: intent.id,
+        stageInstanceId,
+        stageId: 'code-generation',
+        sectionIndex: 1,
+        unitSlug: slug,
+        state: stageState,
+      });
+      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `UNIT#S1#${slug}`,
+        type: 'Unit',
+        executionId: intent.id,
+        sectionIndex: 1,
+        slug,
+        state,
+      });
+    }
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'HUMAN#q-code-plan'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'HUMAN#q-code-plan',
+      type: 'HumanTask',
+      executionId: intent.id,
+      humanTaskId: 'q-code-plan',
+      stageInstanceId: 'si-identification',
+      sectionIndex: 1,
+      unitSlug: 'identification',
+      status: 'pending',
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('export_checkpoint_unavailable');
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it('exports the immutable checkpoint while RUNNING', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'RUNNING');
+    seedCheckpoint(intent.id, meta);
+    readCheckpointArtifactVersionsSpy.mockResolvedValueOnce([
+      {
+        artifact_id: 'requirements',
+        artifact_type: 'requirements',
+        content: '# Checkpoint requirements',
+        created_by_stage_instance_id: 'requirements-analysis@1',
+        snapshot_hash: 'abc',
+      },
+    ]);
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projection: expect.objectContaining({
+          intent: expect.objectContaining({ title: 'Checkpoint title' }),
+          artifacts: [
+            expect.objectContaining({
+              id: 'requirements',
+              content: '# Checkpoint requirements',
+            }),
+          ],
+        }),
+        sourceCheckpoint: {
+          checkpointId: 'checkpoint-1',
+          createdAt: '2026-08-14T10:05:00.000Z',
+          sourceStageInstanceId: 'requirements-analysis@1',
+        },
+        validateSnapshot: null,
+      }),
+    );
+  });
+
+  it('exports and revalidates live state for stable statuses', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    seedCheckpoint(intent.id, meta);
+    createNativeExportSpy.mockImplementationOnce(async ({ projection, validateSnapshot }) => {
+      expect(projection.intent.title).toBe('Live title');
+      await expect(validateSnapshot()).resolves.toBe(true);
+      return {
+        downloadUrl: 'https://example.test/export.zip',
+        expiresAt: '2026-08-14T16:00:00.000Z',
+      };
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(readCheckpointArtifactVersionsSpy).not.toHaveBeenCalled();
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceCheckpoint: null,
+        validateSnapshot: expect.any(Function),
+      }),
+    );
+  });
+
+  it('uses the intent SHA catalog when SYSTEM workflow versions were reseeded', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    const oldRef = 'a'.repeat(40);
+    const catalog = buildMethodologyCatalog({
+      ref: oldRef,
+      ...buildFromFiles(CORE_FILES),
+    });
+    const updatedMeta = {
+      ...meta,
+      workflowVersion: 1,
+      aidlcRepoRef: oldRef,
+      methodologyPins: null,
+      scope: 'mvp',
+    };
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), updatedMeta);
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (input.Key === methodologyCatalogKey(oldRef)) {
+        return { Body: Buffer.from(JSON.stringify(catalog)) };
+      }
+      const error = new Error('missing');
+      error.name = 'NoSuchKey';
+      throw error;
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(s3Mock.commandCalls(GetObjectCommand)[0].args[0].input.Key).toBe(
+      methodologyCatalogKey(oldRef),
+    );
+    expect(createNativeExportSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        upstreamRef: oldRef,
+        projection: expect.objectContaining({
+          stages: expect.arrayContaining([expect.objectContaining({ stageId: 'intent-capture' })]),
+        }),
+      }),
+    );
+  });
+
+  it('resolves the configured tag before exporting a legacy intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    const sha = 'c'.repeat(40);
+    meta.aidlcRepoRef = null;
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    process.env.AIDLC_REPO_REF = 'release/v2';
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, json: async () => ({ sha }) });
+    try {
+      const res = await exportIntent(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(201);
+      expect(fetchSpy.mock.calls[0][0]).toContain('/commits/release%2Fv2');
+      expect(createNativeExportSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          upstreamRef: sha,
+          warnings: [
+            'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+          ],
+        }),
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.AIDLC_REPO_REF;
+    }
+  });
+
+  it('names a configured legacy ref that cannot be resolved', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    meta.aidlcRepoRef = null;
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    process.env.AIDLC_REPO_REF = 'missing-tag';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: false, status: 404 });
+    try {
+      const res = await exportIntent(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).detail).toBe(
+        'Unable to resolve AI-DLC repository ref "missing-tag" (404)',
+      );
+      expect(createNativeExportSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.AIDLC_REPO_REF;
+    }
+  });
+
+  it('returns 500 when the export fails for an unexpected reason', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockRejectedValueOnce(new Error('S3 ServiceUnavailable'));
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).detail).toBe('S3 ServiceUnavailable');
+  });
+
+  it('returns 409 when the workflow snapshot is not natively exportable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockRejectedValueOnce(
+      new Error('native-export: projected plan is missing native stage foo'),
+    );
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).detail).toBe(
+      'native-export: projected plan is missing native stage foo',
+    );
+  });
+
+  it('returns 502 when the distribution source is unavailable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockRejectedValueOnce(
+      Object.assign(
+        new Error('native-export: codex distribution is unavailable for abc: timeout'),
+        {
+          code: 'export_source_unavailable',
+        },
+      ),
+    );
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body).code).toBe('export_source_unavailable');
+  });
+
+  it('returns 500 when the export is misconfigured', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockRejectedValueOnce(
+      Object.assign(new Error('native-export: artifacts bucket is not configured'), {
+        code: 'export_misconfigured',
+      }),
+    );
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).code).toBe('export_misconfigured');
+  });
+
+  it('records an audit event for a successful export', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await createExportableIntent(sub, 'WAITING');
+    createNativeExportSpy.mockResolvedValueOnce({
+      exportId: 'export-xyz',
+      downloadUrl: 'https://example.test/export.zip',
+      expiresAt: '2026-08-14T16:00:00.000Z',
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    const events = [...procStore.values()].filter((i) => (i.sk || '').startsWith('EVENT#'));
+    const exported = events.find((e) => e.eventType === 'v2.execution.exported');
+    expect(exported).toBeDefined();
+    expect(exported.summary).toContain('export-xyz');
+    expect(exported.actor).toBe(`${sub}@x`);
+  });
+
+  it('preserves repository identities and assigns collision-safe export directories', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    meta.repos = ['org-a/api', 'org-b/api'];
+    meta.repoProviders = { 'org-a/api': 'github', 'org-b/api': 'github' };
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    createNativeExportSpy.mockImplementationOnce(async ({ projection }) => {
+      expect(projection.repositories.map((repository) => repository.id)).toEqual([
+        'org-a/api',
+        'org-b/api',
+      ]);
+      expect(projection.repositories.map((repository) => repository.directory)).toEqual([
+        'org-a_api',
+        'org-b_api',
+      ]);
+      return {
+        downloadUrl: 'https://example.test/export.zip',
+        expiresAt: '2026-08-14T16:00:00.000Z',
+      };
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('rejects an export whose stages record a different AI-DLC revision', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    meta.aidlcRepoRef = 'a'.repeat(40);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'STAGE#si-requirements'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-requirements',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-requirements',
+      stageId: 'requirements-analysis',
+      state: 'SUCCEEDED',
+      aidlcRepoRef: 'b'.repeat(40),
+    });
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('export_mixed_aidlc_refs');
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
+  });
+
+  it.each(['SUCCEEDED', 'FAILED', 'RUNNING', 'WAITING_FOR_HUMAN'])(
+    'rejects a pinned export when a %s stage has no AI-DLC revision',
+    async (state) => {
+      const sub = `u-${randomUUID()}`;
+      const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+      meta.aidlcRepoRef = exportRef;
+      procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+      procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#si-${state}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `STAGE#si-${state}`,
+        type: 'Stage',
+        executionId: intent.id,
+        stageInstanceId: `si-${state}`,
+        stageId: 'requirements-analysis',
+        state,
+      });
+
+      const res = await exportIntent(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('export_mixed_aidlc_refs');
+      expect(createNativeExportSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it('ignores PENDING and SKIPPED stage revision attribution', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'WAITING');
+    meta.aidlcRepoRef = exportRef;
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'META'), meta);
+    for (const [state, aidlcRepoRef] of [
+      ['PENDING', null],
+      ['SKIPPED', 'b'.repeat(40)],
+    ]) {
+      procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#si-${state}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `STAGE#si-${state}`,
+        type: 'Stage',
+        executionId: intent.id,
+        stageInstanceId: `si-${state}`,
+        stageId: 'requirements-analysis',
+        state,
+        aidlcRepoRef,
+      });
+    }
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(201);
+    expect(createNativeExportSpy).toHaveBeenCalled();
+  });
+
+  it('maps checkpoint artifact integrity failures to a specific response', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, meta } = await createExportableIntent(sub, 'RUNNING');
+    seedCheckpoint(intent.id, meta);
+    readCheckpointArtifactVersionsSpy.mockRejectedValueOnce(
+      Object.assign(new Error('checkpoint version missing'), {
+        code: 'export_checkpoint_unavailable',
+      }),
+    );
+
+    const res = await exportIntent(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'The latest completed checkpoint is incomplete or unavailable',
+      code: 'export_checkpoint_unavailable',
+    });
+    expect(createNativeExportSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -1832,7 +2464,9 @@ describe('POST /compose — composer sessions', () => {
       expect(key).toMatch(new RegExp(`^compose-reports/${intent.id}/`));
       expect(uploadUrl).toContain('artifacts-test');
     } finally {
-      vi.stubEnv('ARTIFACTS_BUCKET', undefined);
+      // Restore the beforeAll default; leaving it undefined leaks an unset
+      // bucket into every later test (e.g. the deletion S3 purge).
+      vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
     }
   });
 
@@ -1943,6 +2577,11 @@ describe('POST /recompose — in-flight reshape', () => {
         { stageInstanceId: 'si-optional', stageId: 'optional', state: 'WAITING_FOR_HUMAN' },
       ],
     });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'CHECKPOINT',
+      checkpointId: 'stale-checkpoint',
+    });
     const res = await recomposeReq(sub, projectId, intent.id, {
       composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
       scope: 'feature-lean',
@@ -1963,6 +2602,7 @@ describe('POST /recompose — in-flight reshape', () => {
     // The parked instance was reset for its fresh attempt.
     const row = procStore.get(keyOf(`EXEC#${intent.id}`, 'STAGE#si-optional'));
     expect(row.state).toBe('PENDING');
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'))).toBe(false);
     // Audit trail carries the reshape.
     const events = [...procStore.values()].filter((i) => (i.sk || '').startsWith('EVENT#'));
     expect(events.map((e) => e.eventType)).toContain('v2.execution.recomposed');
@@ -3906,6 +4546,35 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
     expect([...yjsStore.keys()]).toEqual(['unrelated-doc']);
   });
 
+  it('purges every version of the intent native workspace exports from S3', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const intentId = intent.id;
+    await seedIntentAnchor(intentId);
+    setStatus(intentId, { status: 'SUCCEEDED' });
+
+    const exportPrefix = `workflow-exports/${intentId}/`;
+    const exportVersions = [
+      { Key: `${exportPrefix}e1.zip`, VersionId: 'v1' },
+      { Key: `${exportPrefix}e1.zip`, VersionId: 'v2' },
+    ];
+    s3Mock
+      .on(ListObjectVersionsCommand)
+      .callsFake((input) => (input.Prefix === exportPrefix ? { Versions: exportVersions } : {}));
+    s3Mock.on(DeleteObjectsCommand).resolves({});
+
+    const res = await del(sub, projectId, intentId);
+    expect(res.statusCode).toBe(204);
+
+    const deletes = s3Mock.commandCalls(DeleteObjectsCommand).map((call) => call.args[0].input);
+    const exportDelete = deletes.find((input) =>
+      input.Delete.Objects.some((object) => object.Key.startsWith(exportPrefix)),
+    );
+    expect(exportDelete).toBeDefined();
+    expect(exportDelete.Delete.Objects).toEqual(exportVersions);
+  });
+
   it('cascade sweeps the derived layer AND spares a sibling intent that shares an artifact id', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -4223,6 +4892,11 @@ describe('POST /rewind', () => {
     setStatus(intent.id, { status: 'SUCCEEDED' });
     seedStageRow(intent.id, 'design');
     seedStageRow(intent.id, 'implement');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'CHECKPOINT',
+      checkpointId: 'stale-checkpoint',
+    });
     await seedIntentAnchor(intent.id);
     const seedArtifact = async (id, stageId) => {
       await g
@@ -4254,6 +4928,7 @@ describe('POST /rewind', () => {
     expect(body.intent.status).toBe('CREATED');
     expect(body.intent.rewindFromStageId).toBe('implement');
     expect(body.steering).toMatchObject({ kind: 'rewind', targetStageId: 'implement' });
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'))).toBe(false);
 
     // The target stage is reset (attempt+1, session cleared); upstream is untouched.
     const implRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`));
@@ -4770,6 +5445,11 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       orchestratorRunId: 'old-run',
       pendingHumanTaskId: 'answered-gate',
     });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'CHECKPOINT',
+      checkpointId: 'stale-checkpoint',
+    });
     seedStageRow(intent.id, 'units-gen');
     seedStageRow(intent.id, 'cg', 'foundation', 'SUCCEEDED', 1);
     seedStageRow(intent.id, 'cg', 'asset-containment', 'WAITING_FOR_HUMAN', 1);
@@ -4828,6 +5508,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     const res = await repair(sub, projectId, intent.id);
 
     expect(res.statusCode).toBe(202);
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'))).toBe(false);
     expect(JSON.parse(res.body).repair).toMatchObject({
       sectionIndex: 1,
       laneSlugs: [

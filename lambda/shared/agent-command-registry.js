@@ -18,6 +18,7 @@ export const COMMANDS = Object.freeze({
   'run-stage-start': command('runStageStart', AGENT_AUTH_MODES.EXECUTION),
   'promote-units': command('promoteUnits'),
   'derive-artifacts': command('deriveArtifacts', AGENT_AUTH_MODES.EXECUTION),
+  'create-workflow-checkpoint': command('createWorkflowCheckpoint'),
   'record-pr': command('recordPr'),
   'record-unit-pr': command('recordUnitPr'),
   'init-lane': command('initLane'),

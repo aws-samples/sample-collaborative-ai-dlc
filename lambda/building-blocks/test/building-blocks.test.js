@@ -147,6 +147,21 @@ describe('building-blocks handler', () => {
     expect(tableStore.has('BLOCK#default#AGENT#architect|V#1')).toBe(true);
   });
 
+  it('strips the managed sourceRef from caller input', async () => {
+    const res = parse(
+      await handler(
+        event({
+          method: 'POST',
+          type: 'agent',
+          body: { id: 'pinned', name: 'Pinned', sourceRef: 'attacker-controlled' },
+        }),
+      ),
+    );
+    expect(res.status).toBe(201);
+    const stored = tableStore.get('BLOCK#default#AGENT#pinned|V#1');
+    expect(stored.sourceRef).toBeUndefined();
+  });
+
   it('rejects a duplicate id with 409', async () => {
     const make = () =>
       handler(event({ method: 'POST', type: 'agent', body: { id: 'dup', name: 'Dup' } }));
