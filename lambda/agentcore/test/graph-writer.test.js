@@ -1470,6 +1470,174 @@ describe('mirrorUnitDag (traceability mirror of the promoted unit DAG)', () => {
   });
 });
 
+describe('ingestCodeFiles (revision-scoped implementation traceability)', () => {
+  const batch = (overrides = {}) => ({
+    repository: 'owner/repo',
+    commitRef: 'a'.repeat(40),
+    stageInstanceId: 'si-code-auth',
+    unitSlug: 'u-auth',
+    files: [
+      {
+        filePath: 'src/auth/login.ts',
+        fileKind: 'implementation',
+        traceabilitySource: 'aidlc-traceability',
+        summary: 'Implements AC1.1.1',
+        evidenceIds: ['AC1.1.1'],
+      },
+    ],
+    ...overrides,
+  });
+
+  const seedTopology = async () => {
+    await seedIntent();
+    await writer.mirrorUnitDag({ units: [{ slug: 'u-auth', dependsOn: [] }] });
+    await g
+      .addV('Requirement')
+      .property('id', 'requirement:intent-1:ac1-1-1')
+      .property('intent_id', SCOPE.intentId)
+      .property('slug', 'ac1-1-1')
+      .property('title', 'Authenticate users')
+      .next();
+  };
+
+  it('creates CodeFile provenance plus Intent, UnitOfWork, and evidence edges', async () => {
+    await seedTopology();
+    expect(await writer.ingestCodeFiles(batch())).toEqual({ codeFiles: 1, evidenceEdges: 1 });
+
+    const row = flattenValueMap((await g.V().hasLabel('CodeFile').valueMap(true).next()).value);
+    expect(row).toMatchObject({
+      file_path: 'src/auth/login.ts',
+      repository: 'owner/repo',
+      commit_ref: 'a'.repeat(40),
+      intent_id: SCOPE.intentId,
+      unit_slug: 'u-auth',
+      stage_instance_id: 'si-code-auth',
+      file_kind: 'implementation',
+      traceability_source: 'aidlc-traceability',
+    });
+    expect(
+      await g
+        .V()
+        .has('Intent', 'id', SCOPE.intentId)
+        .out('CONTAINS')
+        .has('CodeFile', 'id', row.id)
+        .hasNext(),
+    ).toBe(true);
+    expect(
+      await g
+        .V()
+        .has('UnitOfWork', 'id', 'unit:intent-1:u-auth')
+        .out('IMPLEMENTED_BY')
+        .has('CodeFile', 'id', row.id)
+        .hasNext(),
+    ).toBe(true);
+    expect(
+      await g
+        .V()
+        .has('Requirement', 'id', 'requirement:intent-1:ac1-1-1')
+        .out('IMPLEMENTED_BY')
+        .has('CodeFile', 'id', row.id)
+        .hasNext(),
+    ).toBe(true);
+  });
+
+  it('is idempotent for the same revision and creates a distinct node for a new commit', async () => {
+    await seedTopology();
+    await writer.ingestCodeFiles(batch());
+    await writer.ingestCodeFiles(batch());
+    expect((await g.V().hasLabel('CodeFile').count().next()).value).toBe(1);
+    expect(
+      (
+        await g
+          .V()
+          .has('UnitOfWork', 'id', 'unit:intent-1:u-auth')
+          .outE('IMPLEMENTED_BY')
+          .count()
+          .next()
+      ).value,
+    ).toBe(1);
+
+    await writer.ingestCodeFiles(batch({ commitRef: 'b'.repeat(40) }));
+    const rows = (await g.V().hasLabel('CodeFile').valueMap(true).toList()).map(flattenValueMap);
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+    expect(new Set(rows.map((row) => row.commit_ref))).toEqual(
+      new Set(['a'.repeat(40), 'b'.repeat(40)]),
+    );
+  });
+
+  it('supersedes a prior revision so only the latest renders per file_path', async () => {
+    await seedTopology();
+    await writer.ingestCodeFiles(batch());
+    await writer.ingestCodeFiles(batch({ commitRef: 'b'.repeat(40) }));
+
+    const byCommit = new Map(
+      (await g.V().hasLabel('CodeFile').valueMap(true).toList())
+        .map(flattenValueMap)
+        .map((row) => [row.commit_ref, row]),
+    );
+    // Both revisions persist (full history), but only the newest is current.
+    expect(byCommit.get('a'.repeat(40)).superseded_at).toBeTruthy();
+    expect(byCommit.get('b'.repeat(40)).superseded_at ?? '').toBe('');
+  });
+
+  it('keeps legacy Git topology without fabricating requirement edges', async () => {
+    await seedTopology();
+    await writer.ingestCodeFiles(
+      batch({
+        files: [
+          {
+            filePath: 'src/legacy.ts',
+            fileKind: 'implementation',
+            traceabilitySource: 'git',
+            summary: '',
+            evidenceIds: [],
+          },
+        ],
+      }),
+    );
+    const row = flattenValueMap((await g.V().hasLabel('CodeFile').valueMap(true).next()).value);
+    expect(row.traceability_source).toBe('git');
+    expect(
+      await g
+        .V()
+        .has('Requirement', 'id', 'requirement:intent-1:ac1-1-1')
+        .outE('IMPLEMENTED_BY')
+        .hasNext(),
+    ).toBe(false);
+    expect(
+      await g
+        .V()
+        .has('UnitOfWork', 'id', 'unit:intent-1:u-auth')
+        .out('IMPLEMENTED_BY')
+        .has('CodeFile', 'id', row.id)
+        .hasNext(),
+    ).toBe(true);
+  });
+
+  it('does NOT create an evidence edge to a superseded requirement/story', async () => {
+    await seedTopology();
+    // The re-derive marked this requirement superseded; it must not receive
+    // an IMPLEMENTED_BY edge, and no edge may accumulate on the dead vertex.
+    await g
+      .V()
+      .has('Requirement', 'id', 'requirement:intent-1:ac1-1-1')
+      .property('superseded_at', '2026-01-02T00:00:00.000Z')
+      .next();
+    const result = await writer.ingestCodeFiles(batch());
+    expect(result).toEqual({ codeFiles: 1, evidenceEdges: 0 });
+    expect(
+      await g
+        .V()
+        .has('Requirement', 'id', 'requirement:intent-1:ac1-1-1')
+        .outE('IMPLEMENTED_BY')
+        .hasNext(),
+    ).toBe(false);
+    // The CodeFile + Intent/Unit topology is still created (Git remains authoritative).
+    expect((await g.V().hasLabel('CodeFile').count().next()).value).toBe(1);
+  });
+});
+
 describe('resolveDerivedItemEdges (item↔item traceability sweep)', () => {
   // Mirror an artifact through the real extractor — the same path derive uses.
   const mirror = async (artifactType, id, content) => {

@@ -746,7 +746,7 @@ export interface IntentGraphNode {
   // Derived-layer fields (typed items mirrored from artifact structured
   // blocks — docs/v2-granular-graph.md). `artifactId` joins an item back to
   // its source artifact node/card.
-  graphLayer?: 'derived';
+  graphLayer?: 'derived' | 'implementation';
   slug?: string | null;
   artifactId?: string | null;
   artifactType?: string | null;

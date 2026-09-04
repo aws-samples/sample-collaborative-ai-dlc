@@ -17,6 +17,7 @@
 // stamped from the TRUSTED container ENV scope, never from agent tool args. Any
 // caller-supplied reserved prop is dropped.
 
+import { createHash } from 'node:crypto';
 import gremlin from 'gremlin';
 import {
   DERIVED_ITEM_LABELS,
@@ -86,6 +87,22 @@ export const SECTION_LABEL = 'Section';
 // Anchored Intent --CONTAINS--> UnitOfWork; dependencies as DEPENDS_ON edges
 // between UnitOfWork vertices (already an allowlisted business edge).
 export const UNIT_OF_WORK_LABEL = 'UnitOfWork';
+
+// Revision-scoped implementation provenance (restored v1 vocabulary). Git
+// creates the universal Intent/Unit topology; validated traceability evidence
+// may additionally link a known derived element to the exact file revision.
+export const CODE_FILE_LABEL = 'CodeFile';
+export const IMPLEMENTED_BY_EDGE = 'IMPLEMENTED_BY';
+
+// Deterministic slug used to match a coverage evidence id to a graph vertex's
+// `slug` property. Single implementation shared with code-traceability.js so
+// the collection and persistence sides can never drift out of agreement.
+export const traceabilitySlug = (value) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 
 // Pull-request record: the run-level output opened at fan-in, anchored
 // Intent --HAS_PR--> PullRequest. One vertex per repo. The id embeds the
@@ -250,6 +267,13 @@ const artifactToc = (artifact = {}) => {
 const derivedId = ({ label, intentId, slug }) =>
   `${String(label).toLowerCase()}:${intentId}:${String(slug)}`;
 
+export const codeFileIdentity = ({ intentId, repository, commitRef, filePath }) => {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([intentId, repository, commitRef, filePath]))
+    .digest('hex');
+  return `codefile:${digest}`;
+};
+
 // The searchable text of an artifact row: title/body/type plus enrichment
 // summaries, so a query phrased in the summary's wording still hits.
 const searchCorpus = (a) =>
@@ -391,6 +415,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         .to(scopeByIntent(__.V().has(toLabel, 'id', toId), toLabel))
         .next();
     }
+    return !exists;
   };
 
   const ensureVertexEdge = async ({ fromVertexId, toVertexId, edge }) => {
@@ -1156,6 +1181,148 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     return { mirrored: units.length, superseded };
   };
 
+  // Ingest the files committed for one repository/stage result. The identity
+  // includes commitRef, so a later revision creates a new provenance node while
+  // replaying the same result converges on the existing vertex and edges.
+  const ingestCodeFiles = async ({
+    repository,
+    commitRef,
+    files = [],
+    stageInstanceId = null,
+    unitSlug = null,
+  }) => {
+    if (!repository || !commitRef) {
+      throw new GraphWriteError('repository and commitRef are required for CodeFile ingestion');
+    }
+    const intentExists = await g.V().has(INTENT_LABEL, 'id', scope.intentId).hasNext();
+    if (!intentExists) {
+      throw new GraphWriteError(`Intent "${scope.intentId}" not found — run init-ws first`);
+    }
+
+    const effectiveUnitSlug = unitSlug ?? scope.unitSlug ?? '';
+    const effectiveStageInstanceId = stageInstanceId ?? scope.stageInstanceId ?? '';
+    const unitId = effectiveUnitSlug ? `unit:${scope.intentId}:${effectiveUnitSlug}` : null;
+    const unitExists = unitId
+      ? await g.V().has(UNIT_OF_WORK_LABEL, 'id', unitId).has('intent_id', scope.intentId).hasNext()
+      : false;
+    const evidenceLabels = new Set([ARTIFACT_LABEL, UNIT_OF_WORK_LABEL, ...DERIVED_ITEM_LABELS]);
+    const eligible = (rows) =>
+      rows.map(flattenValueMap).filter((row) => evidenceLabels.has(row.label) && isCurrentRow(row));
+    // The evidence-labeled vertex set is stable across the whole ingestion, so
+    // resolve each id at most once instead of re-scanning per (file × id).
+    const evidenceCache = new Map();
+    const evidenceVertices = async (evidenceId) => {
+      const key = String(evidenceId);
+      if (evidenceCache.has(key)) return evidenceCache.get(key);
+      const idMatches = eligible(
+        await g.V().has('intent_id', scope.intentId).has('id', key).valueMap(true).toList(),
+      );
+      // Fall back to the slug match only when no exact-id evidence vertex
+      // exists, so a generic slug shared across item types can't over-link the
+      // CodeFile when the precise id is already present.
+      const slug = traceabilitySlug(key);
+      const matches =
+        idMatches.length || !slug
+          ? idMatches
+          : eligible(
+              await g
+                .V()
+                .has('intent_id', scope.intentId)
+                .has('slug', slug)
+                .valueMap(true)
+                .toList(),
+            );
+      const resolved = [...new Map(matches.map((row) => [row.id, row])).values()];
+      evidenceCache.set(key, resolved);
+      return resolved;
+    };
+
+    let evidenceEdges = 0;
+    for (const file of files) {
+      const id = codeFileIdentity({
+        intentId: scope.intentId,
+        repository,
+        commitRef,
+        filePath: file.filePath,
+      });
+      const existed = await g.V().has(CODE_FILE_LABEL, 'id', id).hasNext();
+      await upsertVertex(CODE_FILE_LABEL, id);
+      const props = {
+        id,
+        file_path: file.filePath,
+        repository,
+        commit_ref: commitRef,
+        summary: file.summary ?? '',
+        intent_id: scope.intentId,
+        unit_slug: effectiveUnitSlug,
+        stage_instance_id: effectiveStageInstanceId,
+        file_kind: file.fileKind ?? 'implementation',
+        traceability_source: file.traceabilitySource ?? 'git',
+        updated_at: now(),
+        // This revision is the current node for its file_path. Empty marker =
+        // current (see isCurrentRow); re-ingesting a rewound revision clears any
+        // stale mark it carried from a prior supersede.
+        superseded_at: '',
+        ...(!existed ? { created_at: now() } : {}),
+      };
+      let q = g.V().has(CODE_FILE_LABEL, 'id', id);
+      for (const [key, value] of Object.entries(props)) {
+        q = q.property(cardinality.single, key, value);
+      }
+      await q.next();
+      // Only the latest revision per (intent, repo, file_path) renders: mark
+      // prior revisions superseded so a rewind or re-run doesn't stack multiple
+      // CodeFile nodes for one file. History stays queryable in Neptune — this
+      // mirrors the re-derive/rewind supersede pattern used for every other node.
+      const priorRevisions = (
+        await g
+          .V()
+          .has(CODE_FILE_LABEL, 'intent_id', scope.intentId)
+          .has('repository', repository)
+          .has('file_path', file.filePath)
+          .valueMap(true)
+          .toList()
+      ).map(flattenValueMap);
+      for (const prior of priorRevisions) {
+        if (prior.id === id || !isCurrentRow(prior)) continue;
+        await g
+          .V()
+          .has(CODE_FILE_LABEL, 'id', prior.id)
+          .property(cardinality.single, 'superseded_at', now())
+          .next();
+      }
+      await ensureEdge({
+        fromLabel: INTENT_LABEL,
+        fromId: scope.intentId,
+        toLabel: CODE_FILE_LABEL,
+        toId: id,
+        edge: ANCHOR_EDGE,
+      });
+      if (unitExists) {
+        await ensureEdge({
+          fromLabel: UNIT_OF_WORK_LABEL,
+          fromId: unitId,
+          toLabel: CODE_FILE_LABEL,
+          toId: id,
+          edge: IMPLEMENTED_BY_EDGE,
+        });
+      }
+      for (const evidenceId of file.evidenceIds ?? []) {
+        for (const source of await evidenceVertices(evidenceId)) {
+          const created = await ensureEdge({
+            fromLabel: source.label,
+            fromId: source.id,
+            toLabel: CODE_FILE_LABEL,
+            toId: id,
+            edge: IMPLEMENTED_BY_EDGE,
+          });
+          if (created) evidenceEdges += 1;
+        }
+      }
+    }
+    return { codeFiles: files.length, evidenceEdges };
+  };
+
   const upsertDerivedVertex = async ({ label, id, props = {} }) => {
     await upsertVertex(label, id);
     const stamped = { ...props, id, updated_at: now() };
@@ -1652,6 +1819,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     recordQuestion,
     linkSteeringInfluences,
     mirrorUnitDag,
+    ingestCodeFiles,
     mirrorArtifactDerivations,
     resolveDerivedItemEdges,
     applyArtifactEnrichment,

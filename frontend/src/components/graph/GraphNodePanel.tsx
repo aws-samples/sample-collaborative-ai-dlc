@@ -334,7 +334,12 @@ function NodeDetailContent({ node }: { node: GraphNode }) {
     case 'CodeFile': {
       const filePath = str(node, 'file_path');
       const summary = str(node, 'summary');
+      const repository = str(node, 'repository');
       const commitRef = str(node, 'commit_ref');
+      const unitSlug = str(node, 'unit_slug');
+      const stageInstanceId = str(node, 'stage_instance_id');
+      const fileKind = str(node, 'file_kind');
+      const traceabilitySource = str(node, 'traceability_source');
       return (
         <div className="space-y-3">
           {filePath && (
@@ -344,9 +349,30 @@ function NodeDetailContent({ node }: { node: GraphNode }) {
               </code>
             </DetailField>
           )}
+          {repository && (
+            <DetailField label="Repository">
+              <code className="text-[11px] font-mono break-all">{repository}</code>
+            </DetailField>
+          )}
           {summary && (
             <DetailField label="Summary">
               <DetailText value={summary} />
+            </DetailField>
+          )}
+          {(fileKind || traceabilitySource) && (
+            <div className="flex flex-wrap gap-1.5">
+              {fileKind && <Badge variant="outline">{fileKind}</Badge>}
+              {traceabilitySource && <Badge variant="secondary">{traceabilitySource}</Badge>}
+            </div>
+          )}
+          {unitSlug && (
+            <DetailField label="Unit">
+              <span className="text-xs">{unitSlug}</span>
+            </DetailField>
+          )}
+          {stageInstanceId && (
+            <DetailField label="Stage Instance">
+              <code className="text-[10px] font-mono break-all">{stageInstanceId}</code>
             </DetailField>
           )}
           {commitRef && (
@@ -356,7 +382,14 @@ function NodeDetailContent({ node }: { node: GraphNode }) {
               </code>
             </DetailField>
           )}
-          {!filePath && !summary && <EmptyContent />}
+          {!filePath &&
+            !summary &&
+            !repository &&
+            !commitRef &&
+            !unitSlug &&
+            !stageInstanceId &&
+            !fileKind &&
+            !traceabilitySource && <EmptyContent />}
         </div>
       );
     }
