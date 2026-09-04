@@ -1259,6 +1259,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         file_kind: file.fileKind ?? 'implementation',
         traceability_source: file.traceabilitySource ?? 'git',
         updated_at: now(),
+        // This revision is the current node for its file_path. Empty marker =
+        // current (see isCurrentRow); re-ingesting a rewound revision clears any
+        // stale mark it carried from a prior supersede.
+        superseded_at: '',
         ...(!existed ? { created_at: now() } : {}),
       };
       let q = g.V().has(CODE_FILE_LABEL, 'id', id);
@@ -1266,6 +1270,27 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         q = q.property(cardinality.single, key, value);
       }
       await q.next();
+      // Only the latest revision per (intent, repo, file_path) renders: mark
+      // prior revisions superseded so a rewind or re-run doesn't stack multiple
+      // CodeFile nodes for one file. History stays queryable in Neptune — this
+      // mirrors the re-derive/rewind supersede pattern used for every other node.
+      const priorRevisions = (
+        await g
+          .V()
+          .has(CODE_FILE_LABEL, 'intent_id', scope.intentId)
+          .has('repository', repository)
+          .has('file_path', file.filePath)
+          .valueMap(true)
+          .toList()
+      ).map(flattenValueMap);
+      for (const prior of priorRevisions) {
+        if (prior.id === id || !isCurrentRow(prior)) continue;
+        await g
+          .V()
+          .has(CODE_FILE_LABEL, 'id', prior.id)
+          .property(cardinality.single, 'superseded_at', now())
+          .next();
+      }
       await ensureEdge({
         fromLabel: INTENT_LABEL,
         fromId: scope.intentId,

@@ -1566,6 +1566,21 @@ describe('ingestCodeFiles (revision-scoped implementation traceability)', () => 
     );
   });
 
+  it('supersedes a prior revision so only the latest renders per file_path', async () => {
+    await seedTopology();
+    await writer.ingestCodeFiles(batch());
+    await writer.ingestCodeFiles(batch({ commitRef: 'b'.repeat(40) }));
+
+    const byCommit = new Map(
+      (await g.V().hasLabel('CodeFile').valueMap(true).toList())
+        .map(flattenValueMap)
+        .map((row) => [row.commit_ref, row]),
+    );
+    // Both revisions persist (full history), but only the newest is current.
+    expect(byCommit.get('a'.repeat(40)).superseded_at).toBeTruthy();
+    expect(byCommit.get('b'.repeat(40)).superseded_at ?? '').toBe('');
+  });
+
   it('keeps legacy Git topology without fabricating requirement edges', async () => {
     await seedTopology();
     await writer.ingestCodeFiles(
