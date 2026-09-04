@@ -1,4 +1,15 @@
 import { createHash } from 'node:crypto';
+import {
+  FORBIDDEN_COMMAND,
+  PROTECTED_VARIABLE_NAME,
+  SECRET_COMMAND,
+  SECRET_NAME,
+  SECRET_VALUE,
+  protectedManifestLine,
+  protectedRuntimeEpilogueLines,
+  verificationEpilogue,
+  verificationPrologue,
+} from './build-guardrails.js';
 
 export { supportsCompatibilityVersion as isSupportedCompatibilityVersion } from '../shared/runtime-compatibility.js';
 
@@ -53,15 +64,6 @@ const ARCHIVE_HOSTS = new Set([
   'services.gradle.org',
   'static.rust-lang.org',
 ]);
-const SECRET_NAME = /(secret|password|passwd|token|credential|private[_-]?key|api[_-]?key)/i;
-const SECRET_VALUE =
-  /(-----BEGIN [A-Z ]+PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,})/;
-const SECRET_COMMAND =
-  /(?:^|\s)(?:export\s+)?[A-Za-z0-9_]*(?:secret|password|passwd|token|credential|private[_-]?key|api[_-]?key)[A-Za-z0-9_]*\s*=|(?:^|\s)--?[A-Za-z0-9_-]*(?:secret|password|passwd|token|credential|private-key|api-key)[A-Za-z0-9_-]*(?:=|\s)/i;
-const PROTECTED_VARIABLE_NAME =
-  /^(AWS_|AIDLC_|AGENTCORE_|BEDROCK_|V2_|MCP_|CREDENTIAL_BROKER_|SOURCE_CONTROL_|CLAUDE_|KIRO_|OPENCODE_|CODEX_|XDG_|LD_|PATH$|HOME$|NODE_OPTIONS$|NODE_PATH$|BASH_ENV$|ENV$|SHELLOPTS$|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$|RUNTIME_COMPATIBILITY_VERSION$)/;
-const FORBIDDEN_COMMAND =
-  /(^|\s)(from|entrypoint|cmd|user|expose|sudo|su|rm|mv|cp|ln|chmod|chown)\b|\/opt\/(agentcore|shared|managed)|\/mnt\/workspace|docker\s|podman\s|curl\b[^|]*\|\s*(sh|bash)|wget\b[^|]*\|\s*(sh|bash)/i;
 const ID_PATTERN = /^[a-z][a-z0-9-]{1,62}$/;
 const PACKAGE_PATTERN = /^[a-z0-9][a-z0-9+.-]*$/;
 const VERSION_PATTERN = /^[0-9][0-9A-Za-z.+:~_-]*$/;
@@ -353,7 +355,7 @@ export const generateDockerfile = (inputRecipe) => {
     'COPY installers/ /opt/managed/installers/',
     'COPY manifest.json checksums.json sbom.spdx.json verification.sh /opt/managed/',
     'RUN chmod 0555 /opt/managed/installers/*.sh /opt/managed/verification.sh',
-    'RUN find /opt/agentcore /opt/shared -type f -print0 | sort -z | xargs -0 sha256sum > /opt/managed/protected-runtime.sha256',
+    protectedManifestLine(),
   ];
   if (recipe.aptPackages.length) {
     const packages = recipe.aptPackages.map((pkg) => `${pkg.name}=${pkg.version}`).join(' ');
@@ -378,15 +380,9 @@ export const generateDockerfile = (inputRecipe) => {
   }
   // Administrator-authored commands run as root. The denylist and in-image checksum are
   // guardrails; verification.sh independently diffs protected trees against the pinned base.
+  // Both guardrails live in build-guardrails.js so this engine cannot drift from the other.
   for (const command of recipe.buildCommands) lines.push(`RUN ${command}`);
-  lines.push(
-    'RUN sha256sum -c /opt/managed/protected-runtime.sha256',
-    'USER node',
-    'WORKDIR /mnt/workspace',
-    'EXPOSE 8080',
-    'ENTRYPOINT ["node", "/opt/agentcore/http-server.js"]',
-    'CMD []',
-  );
+  lines.push(...protectedRuntimeEpilogueLines());
   return `${lines.join('\n')}\n`;
 };
 
@@ -476,46 +472,7 @@ docker exec "$container" sh -lc 'cd /tmp/managed-environment-go; go build -o app
       'docker exec "$container" sh -lc \'d=$(mktemp -d); cd "$d"; cargo init --bin --name managed-environment-check -q; cargo build -q; ./target/debug/managed-environment-check >/dev/null\'',
     );
   }
-  return `#!/usr/bin/env bash
-set -Eeuo pipefail
-
-image_ref="\${1:?image reference is required}"
-container="managed-environment-check-\${CODEBUILD_BUILD_NUMBER:-local}"
-base_container="\${container}-base"
-protected_dir=""
-cleanup() {
-  if test -n "$container"; then docker rm -f "$container" >/dev/null 2>&1 || true; fi
-  if test -n "$base_container"; then docker rm -f "$base_container" >/dev/null 2>&1 || true; fi
-  if test -n "$protected_dir"; then rm -rf "$protected_dir"; fi
-}
-trap cleanup EXIT
-
-arch="$(docker image inspect "$image_ref" --format '{{.Architecture}}')"
-test "$arch" = "arm64"
-user="$(docker image inspect "$image_ref" --format '{{.Config.User}}')"
-test "$user" = "node"
-entrypoint="$(docker image inspect "$image_ref" --format '{{json .Config.Entrypoint}}')"
-test "$entrypoint" = '["node","/opt/agentcore/http-server.js"]'
-
-docker run -d --name "$container" -p 18080:8080 "$image_ref" >/dev/null
-for attempt in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:18080/ping | grep -q '"status":"Healthy'; then break; fi
-  test "$attempt" -lt 30
-  sleep 2
-done
-docker exec "$container" sh -lc 'test "$(id -u)" -ne 0 && test -w /mnt/workspace'
-docker exec "$container" sh -lc 'sha256sum -c /opt/managed/protected-runtime.sha256'
-docker exec "$container" node -e 'const fs=require("fs"); const doc=JSON.parse(fs.readFileSync("/opt/managed/sbom.spdx.json","utf8")); if (doc.spdxVersion !== "SPDX-2.3" || !Array.isArray(doc.packages)) process.exit(1)'
-
-base_ref="$(jq -r '.base.imageUri + "@" + .base.imageDigest' manifest.json)"
-docker create --name "$base_container" "$base_ref" >/dev/null
-protected_dir="$(mktemp -d)"
-for path in agentcore shared; do
-  docker cp "$base_container:/opt/$path" "$protected_dir/base-$path"
-  docker cp "$container:/opt/$path" "$protected_dir/built-$path"
-  diff -qr --no-dereference "$protected_dir/base-$path" "$protected_dir/built-$path"
-done
-
+  return `${verificationPrologue()}
 check_version() {
   name="$1"; expected="$2"; command="$3"; argument="$4"
   output="$(docker exec "$container" "$command" "$argument" 2>&1)"
@@ -527,12 +484,7 @@ check_version() {
 
 ${checks.join('\n')}
 ${realBuilds.join('\n')}
-
-docker stop "$container" >/dev/null
-docker rm "$container" >/dev/null
-container=""
-printf '{"architecture":"PASS","baseDigest":"PASS","runtimeFiles":"PASS","nonRoot":"PASS","sbom":"PASS","startup":"PASS","workspace":"PASS","shutdown":"PASS","tools":"PASS","builds":"PASS"}\\n' > verification.json
-`;
+${verificationEpilogue()}`;
 };
 
 const INSTALL_ARCHIVE = `#!/usr/bin/env bash

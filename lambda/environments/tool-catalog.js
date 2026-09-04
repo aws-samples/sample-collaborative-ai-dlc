@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { PROTECTED_VARIABLE_NAME, SECRET_NAME, SECRET_VALUE } from './build-guardrails.js';
 
 export const TOOL_SCHEMA_VERSION = 1;
 export const SYSTEM_TOOL_TEMPLATE_REVISION = 3;
@@ -20,11 +21,6 @@ const VARIABLE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const EXECUTABLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 const RELATIVE_PATH_PATTERN = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._+/-]+$/;
 const FIXTURE_PATH_PATTERN = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/;
-const SECRET_VALUE =
-  /(-----BEGIN [A-Z ]+PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,})/;
-const SECRET_NAME = /(secret|password|passwd|token|credential|private[_-]?key|api[_-]?key)/i;
-const PROTECTED_VARIABLE_NAME =
-  /^(AWS_|AIDLC_|AGENTCORE_|BEDROCK_|V2_|MCP_|CREDENTIAL_BROKER_|SOURCE_CONTROL_|CLAUDE_|KIRO_|OPENCODE_|CODEX_|XDG_|LD_|PATH$|HOME$|NODE_OPTIONS$|NODE_PATH$|BASH_ENV$|ENV$|SHELLOPTS$|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$|RUNTIME_COMPATIBILITY_VERSION$)/;
 
 const exactChecksum = (value, evidenceUrl, algorithm = 'sha256') => ({
   algorithm,
