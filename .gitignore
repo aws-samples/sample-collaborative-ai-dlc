@@ -46,6 +46,12 @@ coverage/
 *.png
 # Curated public README screenshots
 !docs/assets/readme/*.png
+
+# Full-length README media is published externally, never committed.
+docs/assets/readme/*.mp4
+docs/assets/readme/*.mp3
+docs/assets/readme/*.wav
+
 ideas.txt
 mise.toml
 
