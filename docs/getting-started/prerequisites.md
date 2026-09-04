@@ -24,10 +24,10 @@ git --version    # Expected output: 2.x
 
 To deploy AIDLC Collaborative to AWS, install the following additional tools. For detailed deployment instructions, see [Setup](setup.md).
 
-| Tool                                                                                                                  | Version        | Purpose                                                                            |
-| --------------------------------------------------------------------------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------- |
-| [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.4 or later   | Infrastructure provisioning                                                        |
-| [AWS Command Line Interface (AWS CLI)](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | v2             | AWS resource management and credential handling                                    |
+| Tool                                                                                                                  | Version        | Purpose                                                                               |
+| --------------------------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------- |
+| [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.4 or later   | Infrastructure provisioning                                                           |
+| [AWS Command Line Interface (AWS CLI)](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | v2             | AWS resource management and credential handling                                       |
 | [Docker](https://docs.docker.com/get-docker/) (default)                                                               | 20.10 or later | Lambda packaging and container builds; alternatives use the override documented below |
 
 Run the following commands to confirm the default Docker-based deployment tools are installed. If you use an alternative container runtime, follow the section below instead of the Docker verification command.
@@ -47,13 +47,13 @@ Docker is the default container runtime; no configuration is needed when the `do
 
 Because the image build talks to the Docker Engine API socket (rather than shelling out to a CLI), **any runtime that exposes such a socket works**. Point `DOCKER_HOST` at the runtime's socket and the build behaves exactly as it does with Docker.
 
-| Runtime | Docker API socket | Status |
-| --- | --- | --- |
-| Docker (default) | standard `/var/run/docker.sock` | Supported |
-| Podman | derived at runtime (see below) | Verified end-to-end |
-| Rancher Desktop (dockerd/moby mode) | `~/.rd/docker.sock` | Verified end-to-end |
-| Colima | `~/.colima/default/docker.sock` | Compatible (same mechanism) |
-| OrbStack | `~/.orbstack/run/docker.sock` | Compatible (same mechanism) |
+| Runtime                             | Docker API socket               | Status                      |
+| ----------------------------------- | ------------------------------- | --------------------------- |
+| Docker (default)                    | standard `/var/run/docker.sock` | Supported                   |
+| Podman                              | derived at runtime (see below)  | Verified end-to-end         |
+| Rancher Desktop (dockerd/moby mode) | `~/.rd/docker.sock`             | Verified end-to-end         |
+| Colima                              | `~/.colima/default/docker.sock` | Compatible (same mechanism) |
+| OrbStack                            | `~/.orbstack/run/docker.sock`   | Compatible (same mechanism) |
 
 Podman example:
 
