@@ -1,0 +1,319 @@
+import { useNavigate, useParams, useLocation } from 'react-router';
+import {
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Search,
+  ChevronRight,
+  Settings,
+  UserRoundCog,
+  LogOut,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import { ThemeToggle } from '@/components/theme/ThemeToggle';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useAuth } from '@/contexts/AuthContext';
+import { PresenceAvatars } from '@/components/domain/PresenceAvatars';
+import { type Project } from '@/services/projects';
+import { type Sprint } from '@/services/sprints';
+import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
+import { useIntent } from '@/contexts/IntentContext';
+
+interface AppHeaderProps {
+  onToggleSidebar: () => void;
+  onToggleActivity: () => void;
+  onOpenCommand: () => void;
+  sidebarCollapsed: boolean;
+  activityPanelOpen: boolean;
+}
+
+export function AppHeader({
+  onToggleSidebar,
+  onToggleActivity,
+  onOpenCommand,
+  sidebarCollapsed,
+  activityPanelOpen,
+}: AppHeaderProps) {
+  const { user, logout, isPlatformAdmin } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const params = useParams();
+  const { project } = useProjectCache(params.projectId ?? null);
+  const { sprints } = useProjectSprintsCache(
+    params.projectId && params.sprintId ? params.projectId : null,
+  );
+  const sprint = params.sprintId ? (sprints.find((s) => s.id === params.sprintId) ?? null) : null;
+  const { detail: intentDetail } = useIntent();
+  const intentTitle = intentDetail?.intent.title ?? null;
+
+  const breadcrumbs = buildBreadcrumbs(location.pathname, params, project, sprint, intentTitle);
+
+  const initials = user?.displayName
+    ? user.displayName
+        .split(' ')
+        .map((n: string) => n[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 2)
+    : user?.username?.slice(0, 2).toUpperCase() || '??';
+
+  return (
+    <header className="flex h-12 shrink-0 items-center border-b bg-background px-3 gap-2">
+      {/* Sidebar toggle */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={onToggleSidebar}
+            aria-label="Toggle sidebar"
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}</TooltipContent>
+      </Tooltip>
+
+      <Separator orientation="vertical" className="h-5" />
+
+      {/* Logo */}
+      <button
+        onClick={() => navigate('/dashboard')}
+        className="flex items-center gap-1.5 shrink-0 group"
+      >
+        <img src="/logo.svg" alt="AI-DLC" className="h-6 w-6" />
+        <span className="text-sm font-semibold tracking-wide group-hover:text-foreground text-foreground/80 transition-colors">
+          AI-DLC
+        </span>
+      </button>
+
+      <Separator orientation="vertical" className="h-5" />
+
+      {/* Breadcrumbs */}
+      <nav className="flex items-center gap-1 text-sm min-w-0 flex-1">
+        {breadcrumbs.map((crumb, i) => (
+          <div key={i} className="flex items-center gap-1 min-w-0">
+            {i > 0 && <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
+            {crumb.href ? (
+              <button
+                onClick={() => navigate(crumb.href!)}
+                className="text-muted-foreground hover:text-foreground transition-colors truncate max-w-[120px]"
+              >
+                {crumb.label}
+              </button>
+            ) : (
+              <span className="text-foreground font-medium truncate max-w-[180px]">
+                {crumb.label}
+              </span>
+            )}
+          </div>
+        ))}
+      </nav>
+
+      {/* Center: presence + search */}
+      <div className="flex items-center gap-2">
+        <PresenceAvatars />
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-2 text-muted-foreground text-xs px-2 min-w-[160px] justify-start"
+              onClick={onOpenCommand}
+            >
+              <Search className="h-3 w-3" />
+              <span>Search...</span>
+              <kbd className="ml-auto pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
+                <span className="text-xs">&#8984;</span>K
+              </kbd>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Command palette</TooltipContent>
+        </Tooltip>
+      </div>
+
+      <Separator orientation="vertical" className="h-5" />
+
+      {/* Right: theme + activity toggle + user */}
+      <ThemeToggle />
+
+      {(params.sprintId || params.intentId) && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onToggleActivity}
+              aria-label="Toggle activity panel"
+            >
+              {activityPanelOpen ? (
+                <PanelRightClose className="h-4 w-4" />
+              ) : (
+                <PanelRightOpen className="h-4 w-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{activityPanelOpen ? 'Hide activity' : 'Show activity'}</TooltipContent>
+        </Tooltip>
+      )}
+
+      {/* User menu */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" className="h-7 w-7 rounded-full p-0" aria-label="User menu">
+            <Avatar className="h-7 w-7">
+              <AvatarFallback className="text-[10px] bg-primary text-primary-foreground">
+                {initials}
+              </AvatarFallback>
+            </Avatar>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          <div className="px-2 py-1.5">
+            <p className="text-sm font-medium">{user?.displayName || user?.username}</p>
+            <p className="text-xs text-muted-foreground">{user?.email}</p>
+          </div>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => navigate('/account/settings')}>
+            <UserRoundCog className="mr-2 h-4 w-4" />
+            Account Settings
+          </DropdownMenuItem>
+          {isPlatformAdmin && (
+            <>
+              <DropdownMenuItem onClick={() => navigate('/admin')}>
+                <Settings className="mr-2 h-4 w-4" />
+                Admin Panel
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
+          <DropdownMenuItem onClick={logout} className="text-destructive">
+            <LogOut className="mr-2 h-4 w-4" />
+            Log out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </header>
+  );
+}
+
+interface Breadcrumb {
+  label: string;
+  href?: string;
+}
+
+function buildBreadcrumbs(
+  pathname: string,
+  params: Record<string, string | undefined>,
+  project: Project | null,
+  sprint: Sprint | null,
+  intentTitle: string | null,
+): Breadcrumb[] {
+  // Admin panel - just "Platform Admin"
+  if (pathname === '/admin') {
+    return [{ label: 'Platform Admin' }];
+  }
+
+  if (pathname === '/account/settings') {
+    return [{ label: 'Account Settings' }];
+  }
+
+  // Dashboard - just "Projects"
+  if (pathname === '/dashboard') {
+    return [{ label: 'Spaces' }];
+  }
+
+  // Observability
+  if (pathname === '/observability') {
+    return [{ label: 'Spaces', href: '/dashboard' }, { label: 'Observability' }];
+  }
+
+  // Block Library
+  if (pathname.startsWith('/blocks')) {
+    return [{ label: 'Block Library' }];
+  }
+
+  // Workflows
+  if (pathname.startsWith('/workflows')) {
+    const base = { label: 'Workflows', href: '/workflows' };
+    return pathname === '/workflows' ? [{ label: 'Workflows' }] : [base, { label: 'Composer' }];
+  }
+
+  const crumbs: Breadcrumb[] = [{ label: 'Spaces', href: '/dashboard' }];
+
+  // Add project name if available
+  if (params.projectId && project) {
+    crumbs.push({ label: project.name, href: `/space/${params.projectId}` });
+  }
+
+  // Intent routes: Spaces > Space > Intent > section
+  if (params.intentId && params.projectId) {
+    const intentLabel = intentTitle || 'Intent';
+    const intentHref = `/space/${params.projectId}/intent/${params.intentId}`;
+
+    if (pathname.endsWith('/observability')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Overview' });
+    } else if (pathname.endsWith('/audit')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Audit' });
+    } else if (pathname.endsWith('/graph')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Graph' });
+    } else if (pathname.endsWith('/compose')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Compose' });
+    } else if (pathname.includes('/review/')) {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Review' });
+    } else {
+      crumbs.push({ label: intentLabel, href: intentHref });
+      crumbs.push({ label: 'Work' });
+    }
+    return crumbs;
+  }
+
+  // Add sprint name and phase if available
+  if (params.sprintId && params.projectId && sprint) {
+    crumbs.push({
+      label: sprint.name,
+      href: `/space/${params.projectId}/sprint/${params.sprintId}`,
+    });
+
+    // Add phase as final crumb
+    if (pathname.includes('/construction')) {
+      crumbs.push({ label: 'Construction' });
+    } else if (pathname.includes('/review')) {
+      crumbs.push({ label: 'Review' });
+    } else if (pathname.includes('/graph')) {
+      crumbs.push({ label: 'Graph' });
+    } else if (pathname.includes('/agent')) {
+      crumbs.push({ label: 'Agent History' });
+    } else {
+      crumbs.push({ label: 'Inception' });
+    }
+  }
+
+  if (pathname.includes('/settings')) {
+    crumbs.push({ label: 'Settings' });
+  }
+
+  return crumbs;
+}

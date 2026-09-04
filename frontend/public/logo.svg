@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none">
+  <defs>
+    <linearGradient id="aidlc-hexFill" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="aidlc-hexStroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#c084fc"/>
+    </linearGradient>
+    <linearGradient id="aidlc-circuit" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c4b5fd" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.3"/>
+    </linearGradient>
+    <radialGradient id="aidlc-coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#e9d5ff" stop-opacity="0.9"/>
+      <stop offset="60%" stop-color="#a78bfa" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="aidlc-nodeGrad" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#e9d5ff"/>
+      <stop offset="70%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </radialGradient>
+    <linearGradient id="aidlc-connGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <radialGradient id="aidlc-depthShadow" cx="50%" cy="60%" r="50%">
+      <stop offset="0%" stop-color="#1e1b4b" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#1e1b4b" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="aidlc-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Depth shadow under hex -->
+  <ellipse cx="102" cy="108" rx="38" ry="12" fill="url(#aidlc-depthShadow)"/>
+
+  <!-- Outer dashed orbit ring -->
+  <circle cx="100" cy="100" r="78" stroke="url(#aidlc-hexStroke)" stroke-width="1.5" stroke-dasharray="10 5 3 5" opacity="0.4" fill="none"/>
+
+  <!-- Connection lines from hex center to collaborator nodes -->
+  <line x1="100" y1="100" x2="100" y2="26" stroke="url(#aidlc-connGrad)" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+  <line x1="100" y1="100" x2="36" y2="137" stroke="url(#aidlc-connGrad)" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+  <line x1="100" y1="100" x2="164" y2="137" stroke="url(#aidlc-connGrad)" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+
+  <!-- Interconnection arcs between collaborator nodes (dashed) -->
+  <path d="M100,26 A78,78 0 0,1 164,137" stroke="url(#aidlc-connGrad)" stroke-width="1.2" stroke-dasharray="4 4" fill="none" opacity="0.35"/>
+  <path d="M164,137 A78,78 0 0,1 36,137" stroke="url(#aidlc-connGrad)" stroke-width="1.2" stroke-dasharray="4 4" fill="none" opacity="0.35"/>
+  <path d="M36,137 A78,78 0 0,1 100,26" stroke="url(#aidlc-connGrad)" stroke-width="1.2" stroke-dasharray="4 4" fill="none" opacity="0.35"/>
+
+  <!-- Central glow behind hexagon -->
+  <circle cx="100" cy="100" r="44" fill="url(#aidlc-coreGlow)" opacity="0.6"/>
+
+  <!-- Hexagon body (AI core) -->
+  <polygon points="100,62 133,81 133,119 100,138 67,119 67,81" fill="url(#aidlc-hexFill)" stroke="url(#aidlc-hexStroke)" stroke-width="2.5" stroke-linejoin="round"/>
+
+  <!-- Inner depth hex outline -->
+  <polygon points="100,70 126,85 126,115 100,130 74,115 74,85" fill="none" stroke="#a78bfa" stroke-width="1" stroke-linejoin="round" opacity="0.5"/>
+
+  <!-- Circuit traces inside hex -->
+  <path d="M100,78 L100,92 M100,108 L100,122" stroke="url(#aidlc-circuit)" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M82,88 L92,94 M108,106 L118,112" stroke="url(#aidlc-circuit)" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M82,112 L92,106 M108,94 L118,88" stroke="url(#aidlc-circuit)" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Circuit junction dots -->
+  <circle cx="100" cy="92" r="2" fill="#c4b5fd" opacity="0.7"/>
+  <circle cx="100" cy="108" r="2" fill="#c4b5fd" opacity="0.7"/>
+  <circle cx="92" cy="94" r="1.5" fill="#c4b5fd" opacity="0.6"/>
+  <circle cx="108" cy="106" r="1.5" fill="#c4b5fd" opacity="0.6"/>
+  <circle cx="92" cy="106" r="1.5" fill="#c4b5fd" opacity="0.6"/>
+  <circle cx="108" cy="94" r="1.5" fill="#c4b5fd" opacity="0.6"/>
+
+  <!-- Central AI "eye" / core point -->
+  <circle cx="100" cy="100" r="6" fill="#1e1b4b" opacity="0.85"/>
+  <circle cx="100" cy="100" r="3.5" fill="#e9d5ff" filter="url(#aidlc-glow)"/>
+
+  <!-- Collaborator node: top (120° apart on orbit r=78) -->
+  <circle cx="100" cy="26" r="11" fill="url(#aidlc-nodeGrad)" stroke="#c084fc" stroke-width="1.5"/>
+  <circle cx="100" cy="26" r="5.5" fill="#1e1b4b"/>
+  <circle cx="100" cy="26" r="2.5" fill="#e9d5ff" opacity="0.9"/>
+
+  <!-- Collaborator node: bottom-left -->
+  <circle cx="36" cy="137" r="11" fill="url(#aidlc-nodeGrad)" stroke="#c084fc" stroke-width="1.5"/>
+  <circle cx="36" cy="137" r="5.5" fill="#1e1b4b"/>
+  <circle cx="36" cy="137" r="2.5" fill="#e9d5ff" opacity="0.9"/>
+
+  <!-- Collaborator node: bottom-right -->
+  <circle cx="164" cy="137" r="11" fill="url(#aidlc-nodeGrad)" stroke="#c084fc" stroke-width="1.5"/>
+  <circle cx="164" cy="137" r="5.5" fill="#1e1b4b"/>
+  <circle cx="164" cy="137" r="2.5" fill="#e9d5ff" opacity="0.9"/>
+</svg>

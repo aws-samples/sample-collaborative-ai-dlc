@@ -1,0 +1,71 @@
+# Platform Settings
+
+The **Admin** page holds all platform-wide settings: users, agents, source control, and issue trackers. It is visible in the sidebar only to members of the Cognito **`platform-admin`** group (see [Setup](../getting-started/setup.md#bootstrap-the-first-platform-administrator) for bootstrapping the first admin); every underlying API is independently gated on the same group.
+
+The page is organized into four tabs.
+
+A read-only **Deployment** strip sits above the tabs, showing the canonical application URL, environment, and region. The hostname it reports is the one the backend puts in its OAuth redirect URIs, so it is what every provider's callback URL must match. If you are browsing a hostname other than the canonical one — a deployment with a custom domain still answers on the CloudFront domain and on every alias — the strip says so, because the callback URLs shown further down deliberately use the canonical hostname rather than the one in the address bar.
+
+The hostname itself is not editable here. It is set by the `app_domain` Terraform variable, and changing it needs a certificate, a CloudFront update, and a frontend rebuild. See [Setup → Custom domain](../getting-started/setup.md#custom-domain).
+
+## Users
+
+**User Management** — grant or revoke the platform-admin role for local Cognito
+users. Changes apply at the user's next sign-in. Self-demotion is blocked, so
+an installation cannot remove its current local administrator by accident.
+Federated users show their identity provider and effective mapped roles, but
+their role control is read-only because the external IdP is authoritative. See
+[Enterprise SSO](../getting-started/enterprise-sso.md#role-and-access-mapping).
+
+Day-to-day project access is _not_ managed here — it lives in each project's [Members tab](projects.md#members).
+
+## Agents
+
+Everything the agent runtime needs to run:
+
+- **Platform Agent Credentials** — fallback **Bedrock Bearer Token** (used by Claude Code, OpenCode, and Codex) and **Kiro API Key** values. Platform admins manage these SecureString parameters; a personal or space credential takes precedence. See [Credential hierarchy](#credential-hierarchy) and [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
+- **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. Projects can override these per-CLI in [Project Settings → Agent](projects.md#agent).
+- **Graph Enrichment** — a switch controlling whether the platform adds LLM-generated summaries to derived artifacts in the knowledge graph (`llm` or `off`). The setting takes effect for the _next_ intent, never mid-run; enrichment spend is metered and surfaced on each intent's Audit page.
+
+### Credential hierarchy
+
+Bedrock and Kiro credentials are resolved independently with this precedence:
+
+```text
+personal > space > platform
+```
+
+- Users manage personal credentials in **Account Settings**.
+- Space owners and admins manage shared credentials in **Space Settings → Agent**.
+- Platform admins manage fallback credentials in **Admin → Agents**.
+
+The APIs return configured state and the effective source, never secret values. When a user selects a CLI for draft AI composition, a Quorum discussion assist, or intent start, the backend resolves that user's effective credential and sends only an opaque binding to AgentCore. AgentCore reads the bound SecureString for each invocation rather than retaining secrets in the long-lived process environment.
+
+Starting an intent pins the selected CLI and credential binding for the run's lifetime. Rotating the value at that same scope takes effect on the next invocation; clearing or invalidating it fails the run instead of falling through to another scope.
+
+There is no intent-level credential store in this feature. An intent binds to one of the three managed scopes above but never owns a separate API key. Dedicated per-intent secrets would require a separate lifecycle and authorization design.
+
+## Source Control
+
+Platform-wide code-host configuration:
+
+- **GitHub** — GitHub OAuth app status and GitHub App identity/private-key configuration are shown simultaneously. Projects choose OAuth or App independently; there is no global mode or installation ID. See [Git integration → Project-bound authentication](git-integration.md#project-bound-authentication).
+- **GitLab** — the GitLab OAuth app credentials.
+- **Default PR strategy** — **Intent PR** opens only the final intent-to-base review; **PR per unit** also opens draft unit-to-intent reviews and integrates them in dependency order. Projects may inherit or override this default. The default is **Intent PR**.
+
+## Trackers
+
+Issue-tracker OAuth apps and data migrations:
+
+- **Jira Cloud** — the Atlassian OAuth 2.0 integration credentials.
+- **Source-control trackers** — configuration status of GitHub Issues and GitLab Issues (these reuse the Source Control OAuth apps).
+- **Tracker Migration** — the one-time bulk migration for installs with pre-#194 data; shows a live count of legacy records and a **Migrate all** action. See [Git integration → Migrating from legacy issue integration](git-integration.md#migrating-from-legacy-issue-integration).
+
+Until a provider shows **Configured** here, its **Connect** buttons across the product stay disabled with a hint pointing back to this page.
+
+## Related operator surfaces
+
+Not everything operator-facing lives on the Admin page:
+
+- **Workflow and block authoring** — the [Workflows](workflows.md) area, also gated on `platform-admin`.
+- **Infrastructure-level settings** — the upstream methodology pin (`aidlc_repo_ref`), the custom domain (`app_domain`), and the rest of the deployment configuration live in Terraform; see [Setup](../getting-started/setup.md).

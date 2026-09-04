@@ -1,0 +1,64 @@
+version: 2
+
+# Version-update PRs are disabled (open-pull-requests-limit: 0) — we only want
+# PRs for real security advisories. Those come from the repo-level "Dependabot
+# security updates" feature (enabled in repo settings), which is NOT affected
+# by the limit. The `applies-to: security-updates` groups below batch security
+# PRs into one PR per directory instead of one per vulnerable package.
+#
+# Terraform has no Dependabot security-update support, so its entry was
+# removed; re-add a scheduled entry if provider version bumps are wanted.
+
+updates:
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 0
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'npm'
+    directory: '/frontend'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 0
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - '*'
+
+  # Standalone lambda packages only (NOT npm workspaces).
+  # Workspace members resolve through the root package-lock.json and are
+  # covered by the "directory: '/'" entry above. Listing them here would
+  # desync child package.json vs the root lock and break `npm ci`.
+  - package-ecosystem: 'npm'
+    directories:
+      - '/lambda/yjs-server'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 0
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - '*'
+
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 0
+    groups:
+      security:
+        applies-to: security-updates
+        patterns:
+          - '*'

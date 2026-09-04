@@ -1,0 +1,17 @@
+{
+  "name": "trackers",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run --project=trackers",
+    "test:watch": "vitest --project=trackers",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/index.mjs",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@aws-sdk/client-lambda": "^3.1092.0"
+  }
+}

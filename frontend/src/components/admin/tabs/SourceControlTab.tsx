@@ -1,0 +1,73 @@
+// "Source Control" tab — platform-wide git provider configuration.
+// GitHub OAuth and App credentials coexist; GitLab is OAuth-only. Projects
+// choose the credential type when their repository bindings are verified.
+
+import { Skeleton } from '@/components/ui/skeleton';
+import { GitLabIcon, BitbucketIcon } from '@/components/icons/git-providers';
+import type { TrackerProviderStatus } from '@/services/trackers';
+import { SettingsCard } from '@/components/settings/SettingsCard';
+import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
+import { GitHubSourceControlCard } from '../GitHubSourceControlCard';
+import { OAuthAppConfigForm } from '../OAuthAppConfigForm';
+import { PrStrategyCard } from '../PrStrategyCard';
+
+interface Props {
+  providers: TrackerProviderStatus[];
+  providersLoading: boolean;
+  onProvidersChanged: () => void;
+}
+
+const isConfigured = (providers: TrackerProviderStatus[], id: string) =>
+  providers.find((p) => p.id === id)?.configured ?? false;
+
+export function SourceControlTab({ providers, providersLoading, onProvidersChanged }: Props) {
+  // Skeleton only on the very first load — post-save refreshes keep the cards
+  // mounted so their "Saved" feedback survives.
+  if (providersLoading && providers.length === 0) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-48 w-full" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    );
+  }
+
+  const gitlabConfigured = isConfigured(providers, 'gitlab-issues');
+  const bitbucketConfigured = isConfigured(providers, 'bitbucket-issues');
+
+  return (
+    <div className="space-y-6">
+      <PrStrategyCard />
+      <GitHubSourceControlCard
+        oauthConfigured={isConfigured(providers, 'github-issues')}
+        onOAuthSaved={onProvidersChanged}
+      />
+
+      <SettingsCard
+        icon={<GitLabIcon />}
+        title="GitLab"
+        badge={<ConfigStatusBadge ok={gitlabConfigured} notOkTone="warning" />}
+        description="One OAuth app covers repo access (MRs) and the GitLab Issues tracker."
+      >
+        <OAuthAppConfigForm
+          providerId="gitlab-issues"
+          configured={gitlabConfigured}
+          onSaved={onProvidersChanged}
+        />
+      </SettingsCard>
+
+      <SettingsCard
+        icon={<BitbucketIcon />}
+        title="Bitbucket"
+        badge={<ConfigStatusBadge ok={bitbucketConfigured} notOkTone="warning" />}
+        description="OAuth app for Bitbucket repository access (clone, branches, pull requests)."
+      >
+        <OAuthAppConfigForm
+          providerId="bitbucket-issues"
+          configured={bitbucketConfigured}
+          onSaved={onProvidersChanged}
+        />
+      </SettingsCard>
+    </div>
+  );
+}

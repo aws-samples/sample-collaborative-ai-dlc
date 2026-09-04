@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "react-hooks/exhaustive-deps": "warn",
+    "eslint/no-underscore-dangle": [
+      "warn",
+      {
+        "allow": [
+          "__",
+          "from_",
+          "in_",
+          "__test",
+          "__resetCache",
+          "__durableHandler",
+          "_conn",
+          "_apiClients",
+          "_g",
+          "_cachedBearerToken",
+          "_cachedKiroApiKey",
+          "_preseedClaudeJson"
+        ]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["**/test/**", "**/*.test.{js,jsx,ts,tsx,mjs,cjs}"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": ["**/hooks/useYjsDocument.ts", "**/services/realtime.ts"],
+      "rules": {
+        "unicorn/prefer-add-event-listener": "off"
+      }
+    }
+  ]
+}
