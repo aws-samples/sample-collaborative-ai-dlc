@@ -6,6 +6,7 @@ repo_name = "aws-samples/sample-collaborative-ai-dlc"
 
 nav = [
   { "Home" = "index.md" },
+  { "Watch the overview" = "overview-video.md" },
   { "Getting Started" = [
     "getting-started/methodology.md",
     "getting-started/methodology-map.md",

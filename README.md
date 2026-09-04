@@ -19,6 +19,7 @@
 </p>
 
 <p>
+  <a href="#watch-collaborative-ai-dlc">Video</a> ·
   <a href="#why-collaborative-ai-dlc">Why</a> ·
   <a href="#quickstart">Quickstart</a> ·
   <a href="#how-it-works">Workflow</a> ·
@@ -31,6 +32,16 @@ Collaborative AI-DLC is where a team of humans collaborates in real time with mu
 
 > [!NOTE]
 > **[AI-DLC](https://github.com/awslabs/aidlc-workflows)** is the AI-Driven Development Life Cycle methodology: phases, stages, artifacts, agent personas, and human validation gates. **Collaborative AI-DLC** is this platform: a shared orchestration and governance layer over those existing coding agents, not another coding assistant.
+
+## Watch Collaborative AI-DLC
+
+<p align="center">
+  <a href="https://aws-samples.github.io/sample-collaborative-ai-dlc/overview-video/">
+    <img src="docs/assets/readme/collaborative-ai-dlc-overview-poster.png" alt="Scenes from the Collaborative AI-DLC overview: intent creation, collaboration, pull request delivery, and the traceability graph" width="800" />
+  </a>
+  <br /><strong>See humans and remote coding agents build together in under five minutes.</strong>
+  <br /><sub>Click the preview to watch the full overview on the documentation site.</sub>
+</p>
 
 When an agent session ends, the reasoning goes with it. Requirements sit in one document, the "why" scrolls away in chat, and the pull request shows the diff rather than the decisions behind it. Collaborative AI-DLC keeps intent, questions, approvals, design decisions, code, and cost linked in one graph for the whole team.
 
