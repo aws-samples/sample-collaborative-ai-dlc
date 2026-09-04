@@ -5,7 +5,11 @@
 
 import path from 'node:path';
 import { lstat, readFile } from 'node:fs/promises';
-import { createGraphWriter, closeGraphSource } from './mcp/graph-writer.js';
+import { createGraphWriter, closeGraphSource, traceabilitySlug } from './mcp/graph-writer.js';
+
+// Re-exported from the persistence module so collection and persistence share
+// ONE slug implementation (they must agree to match evidence to vertices).
+export { traceabilitySlug };
 
 const TRACEABILITY_FILE = 'traceability.json';
 
@@ -34,13 +38,6 @@ export const normalizeWorkspacePath = (value) => {
   }
   return normalized;
 };
-
-export const traceabilitySlug = (value) =>
-  String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
 
 export const classifyFileKind = (filePath) => {
   const normalized = String(filePath ?? '').toLowerCase();
@@ -132,15 +129,20 @@ export const loadProducedTraceability = async ({ repoDir, changedFiles, stageId,
   }
   if (valid.length === 0) return { status: 'invalid', document: null, files: candidates };
 
+  // A non-unit stage passes expectedUnit=null, so two manifests declaring
+  // DIFFERENT units can both validate. Merging their coverage under the first
+  // manifest's unit would mis-stamp the batch, so keep only manifests that
+  // agree with the first unit.
   const first = valid[0].document;
+  const merged = valid.filter(({ document }) => document.unit === first.unit);
   return {
     status: 'valid',
     document: {
       stage: first.stage,
       unit: first.unit,
-      coverage: valid.flatMap(({ document }) => document.coverage),
+      coverage: merged.flatMap(({ document }) => document.coverage),
     },
-    files: valid.map(({ file }) => file),
+    files: merged.map(({ file }) => file),
   };
 };
 

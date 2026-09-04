@@ -94,6 +94,16 @@ export const UNIT_OF_WORK_LABEL = 'UnitOfWork';
 export const CODE_FILE_LABEL = 'CodeFile';
 export const IMPLEMENTED_BY_EDGE = 'IMPLEMENTED_BY';
 
+// Deterministic slug used to match a coverage evidence id to a graph vertex's
+// `slug` property. Single implementation shared with code-traceability.js so
+// the collection and persistence sides can never drift out of agreement.
+export const traceabilitySlug = (value) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
 // Pull-request record: the run-level output opened at fan-in, anchored
 // Intent --HAS_PR--> PullRequest. One vertex per repo. The id embeds the
 // intentId + repo, so it is globally unique (not intent-scoped).
@@ -405,6 +415,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         .to(scopeByIntent(__.V().has(toLabel, 'id', toId), toLabel))
         .next();
     }
+    return !exists;
   };
 
   const ensureVertexEdge = async ({ fromVertexId, toVertexId, edge }) => {
@@ -1195,30 +1206,35 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       ? await g.V().has(UNIT_OF_WORK_LABEL, 'id', unitId).has('intent_id', scope.intentId).hasNext()
       : false;
     const evidenceLabels = new Set([ARTIFACT_LABEL, UNIT_OF_WORK_LABEL, ...DERIVED_ITEM_LABELS]);
+    const eligible = (rows) =>
+      rows.map(flattenValueMap).filter((row) => evidenceLabels.has(row.label) && isCurrentRow(row));
+    // The evidence-labeled vertex set is stable across the whole ingestion, so
+    // resolve each id at most once instead of re-scanning per (file × id).
+    const evidenceCache = new Map();
     const evidenceVertices = async (evidenceId) => {
-      const slug = String(evidenceId)
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-      const rows = [
-        ...(await g
-          .V()
-          .has('intent_id', scope.intentId)
-          .has('id', String(evidenceId))
-          .valueMap(true)
-          .toList()),
-        ...(slug
-          ? await g.V().has('intent_id', scope.intentId).has('slug', slug).valueMap(true).toList()
-          : []),
-      ].map(flattenValueMap);
-      return [
-        ...new Map(
-          rows
-            .filter((row) => evidenceLabels.has(row.label) && isCurrentRow(row))
-            .map((row) => [row.id, row]),
-        ).values(),
-      ];
+      const key = String(evidenceId);
+      if (evidenceCache.has(key)) return evidenceCache.get(key);
+      const idMatches = eligible(
+        await g.V().has('intent_id', scope.intentId).has('id', key).valueMap(true).toList(),
+      );
+      // Fall back to the slug match only when no exact-id evidence vertex
+      // exists, so a generic slug shared across item types can't over-link the
+      // CodeFile when the precise id is already present.
+      const slug = traceabilitySlug(key);
+      const matches =
+        idMatches.length || !slug
+          ? idMatches
+          : eligible(
+              await g
+                .V()
+                .has('intent_id', scope.intentId)
+                .has('slug', slug)
+                .valueMap(true)
+                .toList(),
+            );
+      const resolved = [...new Map(matches.map((row) => [row.id, row])).values()];
+      evidenceCache.set(key, resolved);
+      return resolved;
     };
 
     let evidenceEdges = 0;
@@ -1268,14 +1284,14 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       }
       for (const evidenceId of file.evidenceIds ?? []) {
         for (const source of await evidenceVertices(evidenceId)) {
-          await ensureEdge({
+          const created = await ensureEdge({
             fromLabel: source.label,
             fromId: source.id,
             toLabel: CODE_FILE_LABEL,
             toId: id,
             edge: IMPLEMENTED_BY_EDGE,
           });
-          evidenceEdges += 1;
+          if (created) evidenceEdges += 1;
         }
       }
     }

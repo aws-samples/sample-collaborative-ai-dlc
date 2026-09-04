@@ -359,10 +359,12 @@ function NodeDetailContent({ node }: { node: GraphNode }) {
               <DetailText value={summary} />
             </DetailField>
           )}
-          <div className="flex flex-wrap gap-1.5">
-            {fileKind && <Badge variant="outline">{fileKind}</Badge>}
-            {traceabilitySource && <Badge variant="secondary">{traceabilitySource}</Badge>}
-          </div>
+          {(fileKind || traceabilitySource) && (
+            <div className="flex flex-wrap gap-1.5">
+              {fileKind && <Badge variant="outline">{fileKind}</Badge>}
+              {traceabilitySource && <Badge variant="secondary">{traceabilitySource}</Badge>}
+            </div>
+          )}
           {unitSlug && (
             <DetailField label="Unit">
               <span className="text-xs">{unitSlug}</span>
