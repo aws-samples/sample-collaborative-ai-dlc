@@ -5,7 +5,7 @@ import {
   SECRET_COMMAND,
   SECRET_NAME,
   SECRET_VALUE,
-  protectedManifestLine,
+  protectedManifestStageLines,
   protectedRuntimeEpilogueLines,
   verificationEpilogue,
   verificationPrologue,
@@ -349,13 +349,14 @@ export const generateDockerfile = (inputRecipe) => {
     throw Object.assign(new Error('Invalid environment recipe'), { issues });
   }
   if (!recipe.base) throw new Error('A pinned base revision is required');
+  const baseRef = `${recipe.base.imageUri}@sha256:${digestValue(recipe.base.imageDigest)}`;
   const lines = [
-    `FROM ${recipe.base.imageUri}@sha256:${digestValue(recipe.base.imageDigest)}`,
+    ...protectedManifestStageLines(baseRef),
+    `FROM ${baseRef}`,
     'USER root',
     'COPY installers/ /opt/managed/installers/',
     'COPY manifest.json checksums.json sbom.spdx.json verification.sh /opt/managed/',
     'RUN chmod 0555 /opt/managed/installers/*.sh /opt/managed/verification.sh',
-    protectedManifestLine(),
   ];
   if (recipe.aptPackages.length) {
     const packages = recipe.aptPackages.map((pkg) => `${pkg.name}=${pkg.version}`).join(' ');
@@ -378,9 +379,9 @@ export const generateDockerfile = (inputRecipe) => {
   )) {
     lines.push(`ENV ${name}=${JSON.stringify(value)}`);
   }
-  // Administrator-authored commands run as root. The denylist and in-image checksum are
-  // guardrails; verification.sh independently diffs protected trees against the pinned base.
-  // Both guardrails live in build-guardrails.js so this engine cannot drift from the other.
+  // Administrator-authored commands run as root; see PROTECTED_RUNTIME_TRUST_MODEL
+  // in build-guardrails.js for why the denylist is a guardrail and what actually
+  // carries the integrity guarantee.
   for (const command of recipe.buildCommands) lines.push(`RUN ${command}`);
   lines.push(...protectedRuntimeEpilogueLines());
   return `${lines.join('\n')}\n`;

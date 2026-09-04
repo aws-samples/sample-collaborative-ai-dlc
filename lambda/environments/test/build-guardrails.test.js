@@ -9,7 +9,7 @@ import {
   SECRET_COMMAND,
   SECRET_NAME,
   SECRET_VALUE,
-  protectedManifestLine,
+  protectedManifestStageLines,
   protectedRuntimeEpilogueLines,
   verificationEpilogue,
   verificationPrologue,
@@ -48,13 +48,19 @@ describe('shared build guardrails', () => {
   it('keeps one definition of the protected runtime boundary', () => {
     expect(PROTECTED_RUNTIME_PATHS).toEqual(['agentcore', 'shared']);
     expect(PROTECTED_RUNTIME_MANIFEST).toBe('/opt/managed/protected-runtime.sha256');
-    expect(protectedManifestLine()).toBe(
-      'RUN find /opt/agentcore /opt/shared -type f -print0 | sort -z | xargs -0 sha256sum > /opt/managed/protected-runtime.sha256',
-    );
+  });
+
+  it('computes the manifest in a stage the environment build cannot write to', () => {
+    expect(protectedManifestStageLines('core@sha256:abc')).toEqual([
+      'FROM core@sha256:abc AS protected_runtime_manifest',
+      'USER root',
+      'RUN find /opt/agentcore /opt/shared -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/protected-runtime.sha256',
+    ]);
   });
 
   it('restores the non-root image contract after administrator build commands', () => {
     expect(protectedRuntimeEpilogueLines()).toEqual([
+      'COPY --from=protected_runtime_manifest /tmp/protected-runtime.sha256 /opt/managed/protected-runtime.sha256',
       'RUN sha256sum -c /opt/managed/protected-runtime.sha256',
       'USER node',
       'WORKDIR /mnt/workspace',

@@ -231,6 +231,47 @@ describe('catalog-backed environment recipes', () => {
     expect(context.files['checksums.sha256']).toContain('sbom.spdx.json');
   });
 
+  it('sources the protected-runtime manifest beyond the reach of build commands', async () => {
+    const go = version({ toolId: 'go', versionId: 'tv-go-1', number: '1.24.6' });
+    const { recipe } = await resolveCatalogEnvironmentRecipe({
+      input: {
+        schemaVersion: 2,
+        toolVersionIds: [go.versionId],
+        aptPackages: [],
+        environmentVariables: {},
+        buildCommands: ['printf verified', 'printf again'],
+      },
+      baseEnvironmentId: 'standard',
+      baseRevision,
+      toolStore: createToolStore([tool('go', go.versionId)], [go]),
+    });
+    const lines = generateCatalogEnvironmentDockerfile(recipe).split('\n');
+    const at = (needle) => lines.findIndex((line) => line.includes(needle));
+
+    // The manifest is produced from the pinned base in its own stage, so no root
+    // RUN in the environment stage can regenerate the list it is checked against.
+    const environmentStage = lines.indexOf(
+      `FROM ${baseRevision.imageUri}@${baseRevision.imageDigest}`,
+    );
+    expect(
+      at(`FROM ${baseRevision.imageUri}@${baseRevision.imageDigest} AS protected_runtime_manifest`),
+    ).toBeLessThan(environmentStage);
+    expect(at('xargs -0 sha256sum > /tmp/protected-runtime.sha256')).toBeLessThan(environmentStage);
+
+    // ...and it only enters the image after every administrator command has run.
+    const lastBuildCommand = lines.lastIndexOf('RUN printf again');
+    const copyManifest = at('COPY --from=protected_runtime_manifest');
+    expect(lastBuildCommand).toBeGreaterThan(-1);
+    expect(copyManifest).toBeGreaterThan(lastBuildCommand);
+    expect(at('RUN sha256sum -c /opt/managed/protected-runtime.sha256')).toBeGreaterThan(
+      copyManifest,
+    );
+
+    // The final stage must stay the plain pinned base, because the CodeBuild
+    // buildspec asserts `grep -Fx "FROM $base_ref" Dockerfile`.
+    expect(environmentStage).toBeGreaterThan(-1);
+  });
+
   it('carries custom verification fixtures into composed images', async () => {
     const dotnet = version({
       toolId: 'dotnet-sdk',

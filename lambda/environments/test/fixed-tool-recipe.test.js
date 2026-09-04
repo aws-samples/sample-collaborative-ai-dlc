@@ -180,6 +180,35 @@ describe('fixed-tool environment recipes', () => {
     expect(dockerfile).toContain('RUN sha256sum -c /opt/managed/protected-runtime.sha256');
   });
 
+  it('sources the protected-runtime manifest beyond the reach of build commands', () => {
+    const dockerfile = generateDockerfile(
+      recipe({ buildCommands: ['printf verified', 'printf again'] }),
+    );
+    const lines = dockerfile.split('\n');
+    const at = (needle) => lines.findIndex((line) => line.includes(needle));
+
+    // The manifest is produced from the pinned base in its own stage, so no root
+    // RUN in the environment stage can regenerate the list it is checked against.
+    const environmentStage = lines.indexOf(`FROM ${BASE.imageUri}@${BASE.imageDigest}`);
+    expect(lines[0]).toBe(
+      `FROM ${BASE.imageUri}@${BASE.imageDigest} AS protected_runtime_manifest`,
+    );
+    expect(at('xargs -0 sha256sum > /tmp/protected-runtime.sha256')).toBeLessThan(environmentStage);
+
+    // ...and it only enters the image after every administrator command has run.
+    const lastBuildCommand = lines.lastIndexOf('RUN printf again');
+    const copyManifest = at('COPY --from=protected_runtime_manifest');
+    expect(lastBuildCommand).toBeGreaterThan(-1);
+    expect(copyManifest).toBeGreaterThan(lastBuildCommand);
+    expect(at('RUN sha256sum -c /opt/managed/protected-runtime.sha256')).toBeGreaterThan(
+      copyManifest,
+    );
+
+    // The final stage must stay the plain pinned base, because the CodeBuild
+    // buildspec asserts `grep -Fx "FROM $base_ref" Dockerfile`.
+    expect(environmentStage).toBeGreaterThan(-1);
+  });
+
   it('stages the Rust installer outside its final prefix', () => {
     const dockerfile = generateDockerfile(recipe({ tools: { rust: RUST } }));
 

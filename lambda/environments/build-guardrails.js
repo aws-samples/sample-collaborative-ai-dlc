@@ -29,21 +29,45 @@ export const FORBIDDEN_COMMAND =
 // byte-identical.
 export const PROTECTED_RUNTIME_PATHS = ['agentcore', 'shared'];
 export const PROTECTED_RUNTIME_MANIFEST = '/opt/managed/protected-runtime.sha256';
+const MANIFEST_STAGE = 'protected_runtime_manifest';
+const STAGE_MANIFEST_PATH = '/tmp/protected-runtime.sha256';
+
+// Trust model for the protected runtime, in one place.
+//
+// Administrator-authored build commands run as root, so FORBIDDEN_COMMAND is a
+// guardrail against mistakes, not a sandbox against a determined admin. Two
+// things the build stage cannot reach carry the actual integrity guarantee:
+//
+//  1. The manifest is computed in a separate build stage straight from the
+//     pinned base digest and COPYed in *after* the administrator commands, so a
+//     root RUN cannot regenerate the list it is later checked against.
+//  2. verification.sh re-derives the comparison outside the build entirely,
+//     diffing the protected trees in the built image against the same pinned
+//     base. That step is load-bearing and must stay unconditional.
+export const PROTECTED_RUNTIME_TRUST_MODEL =
+  'Administrator build commands run as root; integrity rests on the out-of-stage manifest and the out-of-image base diff in verification.sh.';
 
 /**
- * Records the protected-file manifest the in-image checksum is verified against.
+ * Build stage that records the protected-file manifest directly from the pinned
+ * base image. Deliberately a separate stage: the environment stage runs
+ * administrator commands as root, and anything it can write it can also forge.
  */
-export const protectedManifestLine = () =>
+export const protectedManifestStageLines = (baseRef) => [
+  `FROM ${baseRef} AS ${MANIFEST_STAGE}`,
+  'USER root',
   `RUN find ${PROTECTED_RUNTIME_PATHS.map((path) => `/opt/${path}`).join(
     ' ',
-  )} -type f -print0 | sort -z | xargs -0 sha256sum > ${PROTECTED_RUNTIME_MANIFEST}`;
+  )} -type f -print0 | sort -z | xargs -0 sha256sum > ${STAGE_MANIFEST_PATH}`,
+];
 
 /**
  * Trailing Dockerfile lines, emitted after the administrator build commands:
- * verify the protected trees, then drop back to the non-root runtime user and
- * restore the image contract AgentCore requires.
+ * bring in the manifest the build could not touch, verify the protected trees
+ * against it, then drop back to the non-root runtime user and restore the image
+ * contract AgentCore requires.
  */
 export const protectedRuntimeEpilogueLines = () => [
+  `COPY --from=${MANIFEST_STAGE} ${STAGE_MANIFEST_PATH} ${PROTECTED_RUNTIME_MANIFEST}`,
   `RUN sha256sum -c ${PROTECTED_RUNTIME_MANIFEST}`,
   'USER node',
   'WORKDIR /mnt/workspace',
