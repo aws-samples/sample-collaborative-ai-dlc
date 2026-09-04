@@ -181,7 +181,10 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     .filter(isCurrent)
     .filter((i) => !i.artifact_id || currentArtifactIds.has(i.artifact_id));
   const units = (await flatRows(anchored('UnitOfWork'))).filter(isCurrent);
-  const codeFiles = await flatRows(anchored('CodeFile'));
+  // Current revision per file only: a rewind/re-run supersedes prior CodeFile
+  // revisions (graph-writer#ingestCodeFiles), so stale ones never render. Edges
+  // to them drop out via the rendered-node guard in mapEdgeRows.
+  const codeFiles = (await flatRows(anchored('CodeFile'))).filter(isCurrent);
   // Fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
   const prs = await flatRows(anchored('PullRequest', 'HAS_PR'));
   const unitPrs = await flatRows(anchored('UnitPullRequest', 'HAS_UNIT_PR'));
