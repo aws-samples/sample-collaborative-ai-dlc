@@ -43,9 +43,15 @@ Only repositories where you explicitly picked a branch are overridden; all other
 
 Creating the intent opens it on the workbench in **DRAFT** state, with a **Review & start** card showing the prompt, scope, and branch (read-only — these are set at creation). Starting the intent:
 
-1. Pins the current workflow version and snapshots the project's runtime settings.
+1. Uses the workflow, runtime settings, and exact managed-environment revision
+   snapshotted when the intent was created.
 2. Compiles the execution plan for the chosen scope.
 3. Checks the repositories out, creates the intent branch, and begins the first stage.
+
+Select the desired published environment in **Project Settings -> Environment**
+before creating the intent. Reassigning the project or publishing a newer
+revision afterward does not change an existing intent's image, runtime, or
+endpoint. See [Managed tools and environments](managed-environments.md#select-an-environment-for-a-project).
 
 ## Intent lifecycle
 

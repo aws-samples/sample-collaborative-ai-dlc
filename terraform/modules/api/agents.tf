@@ -59,7 +59,9 @@ module "agents_lambda" {
     CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
     # v2 model discovery: lets GET /agents/capabilities?models=1 invoke the
     # runtime's `capabilities` command for Kiro's model list + auth state.
-    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
+    ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
+    RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
   }
 }
 

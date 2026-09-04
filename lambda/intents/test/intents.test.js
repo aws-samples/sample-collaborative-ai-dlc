@@ -65,6 +65,18 @@ let attachmentUpdateConflict = null;
 let sourceControlOperationHandler = null;
 let credentialMetadataHandler = null;
 
+const MANAGED_ENVIRONMENT_SNAPSHOT = {
+  environmentId: 'polyglot',
+  revisionId: 'r-7',
+  runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+  runtimeEndpoint: 'revision_r_7',
+  imageDigest: `sha256:${'a'.repeat(64)}`,
+  runtimeVersion: '7',
+  compatibilityVersion: '1',
+  verification: { status: 'PASSED' },
+  tools: [{ toolId: 'node', versionId: '22', name: 'Node.js', version: '22.17.0' }],
+};
+
 // In-memory single-table fake for the v2 process table + blocks table.
 const procStore = new Map();
 // Separate fake for the yjs-documents table (hash key `documentId` only).
@@ -607,6 +619,119 @@ describe('POST /projects/{id}/intents', () => {
     // WP6: PR strategy snapshotted (project default = intent-pr).
     expect(intent.prStrategy).toBe('intent-pr');
   });
+
+  it('snapshots the resolved tools from a published managed environment', async () => {
+    vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', 'environment-registry-test');
+    vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', '1');
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'environment_id', 'polyglot')
+        .next();
+      procStore.set(keyOf('ENV#polyglot', 'META'), {
+        pk: 'ENV#polyglot',
+        sk: 'META',
+        environmentId: 'polyglot',
+        name: 'Polyglot',
+        status: 'PUBLISHED',
+        publishedRevisionId: 'r-7',
+      });
+      procStore.set(keyOf('ENV#polyglot', 'REV#r-7'), {
+        pk: 'ENV#polyglot',
+        sk: 'REV#r-7',
+        ...MANAGED_ENVIRONMENT_SNAPSHOT,
+        status: 'PUBLISHED',
+        runtimeCompatibilityVersion: '1',
+        flattenedRecipe: { resolvedTools: MANAGED_ENVIRONMENT_SNAPSHOT.tools },
+      });
+
+      const res = await createIntent(sub, projectId);
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      expect(intent.environment.tools).toEqual(MANAGED_ENVIRONMENT_SNAPSHOT.tools);
+      expect(procStore.get(keyOf(`EXEC#${intent.executionId}`, 'META')).environment.tools).toEqual(
+        MANAGED_ENVIRONMENT_SNAPSHOT.tools,
+      );
+    } finally {
+      vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', undefined);
+      vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', undefined);
+    }
+  });
+
+  it.each([
+    {
+      label: 'not published',
+      code: 'ENVIRONMENT_NOT_PUBLISHED',
+      seedEnvironment: false,
+      revisionPatch: {},
+    },
+    {
+      label: 'incomplete',
+      code: 'ENVIRONMENT_REVISION_INCOMPLETE',
+      seedEnvironment: true,
+      revisionPatch: { runtimeArn: null },
+    },
+    {
+      label: 'unverified',
+      code: 'ENVIRONMENT_REVISION_UNVERIFIED',
+      seedEnvironment: true,
+      revisionPatch: { verification: { status: 'FAILED' } },
+    },
+    {
+      label: 'incompatible',
+      code: 'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
+      seedEnvironment: true,
+      revisionPatch: { runtimeCompatibilityVersion: '0' },
+    },
+  ])(
+    '409s when the assigned environment is $label',
+    async ({ code, seedEnvironment, revisionPatch }) => {
+      vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', 'environment-registry-test');
+      vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', '2');
+      try {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        await g
+          .V()
+          .has('Project', 'id', projectId)
+          .property(gremlin.process.cardinality.single, 'environment_id', 'polyglot')
+          .next();
+        if (seedEnvironment) {
+          procStore.set(keyOf('ENV#polyglot', 'META'), {
+            pk: 'ENV#polyglot',
+            sk: 'META',
+            environmentId: 'polyglot',
+            name: 'Polyglot',
+            status: 'PUBLISHED',
+            publishedRevisionId: 'r-7',
+          });
+          procStore.set(keyOf('ENV#polyglot', 'REV#r-7'), {
+            pk: 'ENV#polyglot',
+            sk: 'REV#r-7',
+            ...MANAGED_ENVIRONMENT_SNAPSHOT,
+            status: 'PUBLISHED',
+            runtimeCompatibilityVersion: '2',
+            flattenedRecipe: { resolvedTools: MANAGED_ENVIRONMENT_SNAPSHOT.tools },
+            ...revisionPatch,
+          });
+        }
+
+        const res = await createIntent(sub, projectId);
+
+        expect(res.statusCode).toBe(409);
+        expect(JSON.parse(res.body)).toMatchObject({
+          code,
+          error: expect.any(String),
+        });
+      } finally {
+        vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', undefined);
+        vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', undefined);
+      }
+    },
+  );
 
   it('derives the branch from the title slug (single hyphens, no `--`)', async () => {
     const sub = `u-${randomUUID()}`;
@@ -3797,11 +3922,18 @@ describe('POST /cancel', () => {
       const sub = `u-${randomUUID()}`;
       const projectId = await seedV2Project(sub);
       const intent = JSON.parse((await createIntent(sub, projectId)).body);
-      setStatus(intent.id, { status: 'WAITING' });
+      setStatus(intent.id, {
+        status: 'WAITING',
+        environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+      });
       const res = await cancel(sub, projectId, intent.id);
       expect(res.statusCode).toBe(200);
       const stops = agentcoreMock.commandCalls(StopRuntimeSessionCommand);
       expect(stops).toHaveLength(1);
+      expect(stops[0].args[0].input).toMatchObject({
+        agentRuntimeArn: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn,
+        qualifier: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+      });
       expect(stops[0].args[0].input.runtimeSessionId.startsWith(`aidlc-intent-${intent.id}`)).toBe(
         true,
       );
@@ -4103,6 +4235,7 @@ describe('POST /derive — manual graph-projection backfill', () => {
       deriveEnrichment: 'llm',
       agentCli: 'claude',
       cliModels: { claude: 'us.anthropic.claude-haiku-4-5' },
+      environment: MANAGED_ENVIRONMENT_SNAPSHOT,
     });
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: {
@@ -4126,6 +4259,10 @@ describe('POST /derive — manual graph-projection backfill', () => {
       enriched: 1,
     });
     const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    expect(call).toMatchObject({
+      agentRuntimeArn: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn,
+      qualifier: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+    });
     expect(call.runtimeSessionId.startsWith('aidlc-intent-i-done')).toBe(true);
     expect(call.runtimeSessionId.length).toBeGreaterThanOrEqual(33);
     expect(JSON.parse(Buffer.from(call.payload).toString('utf8'))).toMatchObject({
@@ -4478,12 +4615,19 @@ describe('POST /rewind', () => {
       const projectId = await seedV2Project(sub);
       seedPlan();
       const intent = JSON.parse((await createIntent(sub, projectId)).body);
-      setStatus(intent.id, { status: 'FAILED' });
+      setStatus(intent.id, {
+        status: 'FAILED',
+        environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+      });
       seedStageRow(intent.id, 'implement', 'FAILED');
       const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
       expect(res.statusCode).toBe(202);
       const stops = agentcoreMock.commandCalls(StopRuntimeSessionCommand);
       expect(stops).toHaveLength(1);
+      expect(stops[0].args[0].input).toMatchObject({
+        agentRuntimeArn: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn,
+        qualifier: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+      });
       expect(stops[0].args[0].input.runtimeSessionId.startsWith(`aidlc-intent-${intent.id}`)).toBe(
         true,
       );
@@ -5205,7 +5349,10 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       const projectId = await seedV2Project(sub);
       seedSectionPlan();
       const intent = JSON.parse((await createIntent(sub, projectId)).body);
-      setStatus(intent.id, { status: 'FAILED' });
+      setStatus(intent.id, {
+        status: 'FAILED',
+        environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+      });
       seedStageRow(intent.id, 'units-gen');
       seedStageRow(intent.id, 'cg', 'auth', 'SUCCEEDED', 1);
       seedStageRow(intent.id, 'cg', 'billing', 'FAILED', 1);
@@ -5229,7 +5376,15 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       });
 
       expect(res.statusCode).toBe(202);
-      expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(3);
+      const stops = agentcoreMock.commandCalls(StopRuntimeSessionCommand);
+      expect(stops).toHaveLength(3);
+      expect(
+        stops.every(
+          (call) =>
+            call.args[0].input.agentRuntimeArn === MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn &&
+            call.args[0].input.qualifier === MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+        ),
+      ).toBe(true);
       expect(maxInFlight).toBeGreaterThan(1);
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;

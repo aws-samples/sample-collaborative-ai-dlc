@@ -23,6 +23,7 @@
 // as index.js. Callback names carry the editId so two edits are distinct
 // durable identities.
 
+import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
 
@@ -63,14 +64,17 @@ export const runQuorumEdit = async (event, ctx, deps) => {
   if (!edit) return { ok: false, reason: 'quorum_edit_not_found' };
   const { projectId } = meta;
   const sessionId = quorumEditSessionIdFor(intentId);
+  const runtimeTarget = resolveRuntimeTarget(meta, process.env.AGENTCORE_RUNTIME_ARN);
+  const stopIntentSession = (session) => stopSession?.(session, runtimeTarget);
   const credentialProvider = credentialProviderForCli(meta.agentCli);
   const credentialBinding =
     meta.credentialBinding ??
     (credentialProvider ? { provider: credentialProvider, source: 'platform' } : null);
-  const invokeRuntime = async (payload) => {
+  const invokeIntentRuntime = async (payload, session = sessionId) => {
     const authMode = commandDefinition(payload.command)?.agentAuth;
+    let invocationPayload = payload;
     if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
-      return rawInvokeRuntime(payload, sessionId);
+      return rawInvokeRuntime(invocationPayload, session, runtimeTarget);
     }
     const agentCredentialGrant = await deps.issueAgentCredentialGrant({
       purpose: authMode,
@@ -78,7 +82,8 @@ export const runQuorumEdit = async (event, ctx, deps) => {
       executionId,
       bindings: [credentialBinding],
     });
-    return rawInvokeRuntime({ ...payload, agentCredentialGrant }, sessionId);
+    invocationPayload = { ...payload, agentCredentialGrant };
+    return rawInvokeRuntime(invocationPayload, session, runtimeTarget);
   };
 
   // Timeline event + payload-blind reload hint, both best-effort and inside a
@@ -127,7 +132,7 @@ export const runQuorumEdit = async (event, ctx, deps) => {
       heartbeatTimeout: CALLBACK_HEARTBEAT_TIMEOUT,
     });
     const planDispatch = await ctx.step(`qe-plan-dispatch-${editId}`, () =>
-      invokeRuntime(
+      invokeIntentRuntime(
         {
           command: 'quorum-edit-plan-start',
           projectId,
@@ -239,7 +244,7 @@ export const runQuorumEdit = async (event, ctx, deps) => {
       heartbeatTimeout: CALLBACK_HEARTBEAT_TIMEOUT,
     });
     const applyDispatch = await ctx.step(`qe-apply-dispatch-${editId}`, () =>
-      invokeRuntime(
+      invokeIntentRuntime(
         {
           command: 'quorum-edit-apply-start',
           projectId,
@@ -333,7 +338,7 @@ export const runQuorumEdit = async (event, ctx, deps) => {
     );
     // Free the dedicated microVM — the session's work is done.
     await ctx.step(`qe-stop-session-${editId}`, () =>
-      stopSession ? stopSession(sessionId) : { stopped: false },
+      stopSession ? stopIntentSession(sessionId) : { stopped: false },
     );
     return { ok: succeeded, editId };
   } catch (err) {

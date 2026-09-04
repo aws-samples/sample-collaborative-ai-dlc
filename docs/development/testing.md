@@ -3,6 +3,149 @@
 This guide covers contributor-facing integration tests that are intentionally
 separate from the managed installation documentation.
 
+## Managed build environment deployed-stack test
+
+Use a disposable AWS account or logical environment for this test. Managed
+environment image builds use CodeBuild, ECR scanning, S3, DynamoDB, Lambda,
+EventBridge, and Bedrock AgentCore resources that incur charges until they are
+removed.
+
+Start from a checkout with AWS credentials for the test account. Create the
+backend and variable files if this logical environment does not already exist.
+The example below uses `managed-env-demo`; substitute your configured name
+consistently:
+
+```bash
+export AIDLC_TEST_ENV=managed-env-demo
+./scripts/bootstrap.sh "$AIDLC_TEST_ENV"
+cp terraform/environments/dev.tfvars.example \
+  "terraform/environments/$AIDLC_TEST_ENV.tfvars"
+```
+
+Set `environment` and `aws_region` in the new tfvars file, then deploy the
+infrastructure and frontend:
+
+```bash
+./scripts/deploy-terraform.sh "$AIDLC_TEST_ENV"
+./scripts/deploy-frontend.sh "$AIDLC_TEST_ENV"
+```
+
+The following outputs identify the managed environment resources used during
+diagnosis:
+
+```bash
+terraform -chdir=terraform output -raw environment_registry_table_name
+terraform -chdir=terraform output -raw managed_environment_repository_name
+terraform -chdir=terraform output -raw managed_environment_codebuild_project_name
+terraform -chdir=terraform output -raw managed_environment_control_lambda_name
+terraform -chdir=terraform output -raw managed_environment_status_lambda_name
+terraform -chdir=terraform output -raw managed_environment_build_context_bucket_name
+terraform -chdir=terraform output -raw managed_tool_repository_name
+terraform -chdir=terraform output -raw managed_tool_codebuild_project_name
+terraform -chdir=terraform output -raw managed_tool_control_lambda_name
+terraform -chdir=terraform output -raw managed_tool_status_lambda_name
+```
+
+Sign in as a platform administrator and open **Platform Settings ->
+Environments**. The deployment publishes only Standard. Within five minutes,
+the catalog bootstrap creates Java, Go, Rust, Maven, and Gradle tool families
+and queues their initial versions for import.
+
+This test covers three distinct paths:
+
+1. **Protected baseline:** Standard supplies Node.js and Python without catalog
+   imports.
+2. **Shipped catalog tools:** Java, Go, Rust, Maven, and Gradle exercise the
+   bootstrap and import path.
+3. **Administrator-created tools:** `.NET SDK` is a representative custom tool
+   used to exercise tool creation and presets. It is not otherwise privileged
+   or required by the platform.
+
+### Verify shipped catalog tools
+
+For each shipped tool:
+
+1. Follow its CodeBuild log.
+2. Confirm the source URL, retained source digest, publisher evidence, OCI
+   digest, SBOM, compressed size, and core compatibility evidence are visible.
+3. Confirm the version command and representative build run as the non-root
+   runtime user.
+4. Review ECR findings. Accept Critical or High findings only for this
+   disposable deployment. If ECR reports the normalized artifact as
+   unsupported, explicitly accept that scan limitation and confirm the
+   acceptance remains visible.
+5. Publish the version. Mark Java as recommended before publishing Maven or
+   Gradle.
+
+### Verify custom tool creation
+
+Create a `.NET SDK` tool using an official Linux ARM64 SDK archive and the
+`.NET` preset. Confirm source inspection, normalization, scanning, `dotnet
+--version`, and a real console build succeed, then publish it.
+
+### Verify environment composition
+
+Create and publish the following environments based on Standard:
+
+| Environment | Selected tools                                 | Path under test            |
+| ----------- | ---------------------------------------------- | -------------------------- |
+| Go          | Go                                             | A standalone shipped tool  |
+| Maven       | Maven; recommended Java is added automatically | Tool dependency resolution |
+| .NET        | The administrator-created `.NET SDK`           | Custom tool composition    |
+
+For each environment, confirm the generated Dockerfile copies tools from exact
+OCI digests and retains the protected base entrypoint, command, user, port, and
+health behavior. Confirm the projected and actual compressed image sizes stay
+below the configured AgentCore image limit.
+
+Create projects with small repositories that exercise each selected toolchain.
+In **Project Settings -> Environment**, assign each published environment and
+start a new intent. Confirm the intent detail and audit views show the exact
+environment revision, image digest, runtime version, endpoint, compatibility
+version, tool snapshots, and passed verification result.
+
+To verify immutable intent targeting:
+
+1. Start an intent and record its environment revision and runtime endpoint.
+2. Change the project's environment assignment.
+3. Resume, rewind, cancel, and stop the original intent.
+4. Confirm its detail and audit views retain the original revision and
+   endpoint, while a newly created intent uses the new assignment.
+
+To verify updates:
+
+1. Publish a second Go tool version and leave the original recommended.
+2. Confirm existing environments remain unchanged.
+3. Mark the new Go version recommended and confirm affected environments show a
+   structured tool update warning.
+4. Edit one affected environment to select the new exact version, then build
+   and publish it.
+5. Publish a new Standard revision and confirm dependent environments retain
+   their published revisions until **Rebuild on latest base** is used.
+
+Inspect failures through the UI or the resource outputs above. Critical and
+High findings must stop at security review until a platform administrator
+accepts them. The findings and acceptance record must remain visible after
+publication. Image build, container validation, and AgentCore endpoint failures
+must leave the previous published revision and project assignments unchanged.
+
+When testing is complete, delete the test intents and retire the catalog-backed
+test environments in the UI. Environment and tool images are retained while
+the stack exists; the non-production repositories are force-deleted with the
+stack. Managed AgentCore runtimes and endpoints are created by the control
+plane rather than Terraform, so delete remaining test endpoints and runtimes
+in the AgentCore console before destroying the logical deployment. Use the
+revision details in **Platform Settings -> Environments** to identify the
+runtime ID, version, and endpoint. The resources are also tagged with
+`ManagedEnvironment` and `ManagedEnvironmentRevision`.
+
+After those resources are removed, destroy the logical deployment:
+
+```bash
+./scripts/destroy.sh "$AIDLC_TEST_ENV"
+unset AIDLC_TEST_ENV
+```
+
 ## Enterprise SSO integration test
 
 The repository includes a disposable Cognito User Pool that behaves as an

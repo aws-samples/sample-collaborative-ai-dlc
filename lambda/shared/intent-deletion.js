@@ -75,11 +75,15 @@ class IntentRunningError extends Error {
 // tolerance as the orchestrator's stopRuntimeSession).
 const stopRuntimeSessions = async (
   agentcore,
-  agentcoreRuntimeArn,
+  agentcoreRuntimeTarget,
   intentId,
   { sectionIndexes = [], unitSlugs = [] } = {},
 ) => {
-  if (!agentcore || !agentcoreRuntimeArn) return;
+  const target =
+    typeof agentcoreRuntimeTarget === 'string'
+      ? { agentRuntimeArn: agentcoreRuntimeTarget }
+      : agentcoreRuntimeTarget;
+  if (!agentcore || !target?.agentRuntimeArn) return;
   const ids = [runtimeSessionIdFor(intentId)];
   for (const idx of sectionIndexes) {
     for (const slug of unitSlugs) ids.push(laneSessionIdFor(intentId, idx, slug));
@@ -88,7 +92,7 @@ const stopRuntimeSessions = async (
     try {
       await agentcore.send(
         new StopRuntimeSessionCommand({
-          agentRuntimeArn: agentcoreRuntimeArn,
+          ...target,
           runtimeSessionId: id,
         }),
       );
@@ -144,7 +148,7 @@ const retireParkedRun = async ({ store, lambdaClient, executionId, reason }) => 
 //   intentId             – the intent/execution id (they are equal)
 //   meta                 – the execution META row (for status)
 //   yjsTable             – Yjs documents table name (optional)
-//   agentcoreRuntimeArn  – runtime ARN for session stop (optional)
+//   agentcoreRuntimeTarget – runtime ARN and endpoint for session stop (optional)
 //   actor                – human-readable actor for the retire reason
 //   force                – when true, a RUNNING run is retired+stopped and
 //                          deleted anyway (project delete); when false a RUNNING
@@ -158,6 +162,7 @@ const deleteIntentCascade = async ({
   intentId,
   meta,
   yjsTable = null,
+  agentcoreRuntimeTarget = null,
   agentcoreRuntimeArn = null,
   actor = 'a project member',
   artifactsBucket = null,
@@ -199,7 +204,7 @@ const deleteIntentCascade = async ({
   if (!['DRAFT', 'SUCCEEDED', 'CANCELLED'].includes(meta?.status)) {
     await retireParkedRun({ store, lambdaClient, executionId: intentId, reason });
   }
-  await stopRuntimeSessions(agentcore, agentcoreRuntimeArn, intentId);
+  await stopRuntimeSessions(agentcore, agentcoreRuntimeTarget ?? agentcoreRuntimeArn, intentId);
 
   // Yjs docs — best-effort: they are unreachable once the intent is gone (doc
   // ids are derived from the intent id), so a failed delete here only leaves

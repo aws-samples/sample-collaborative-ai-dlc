@@ -5,10 +5,11 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { InvokeAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore';
 import { isTokenLive } from '../shared/realtime-token.js';
+import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { agentcore, ddb, ssm, query } from './clients.js';
 import { fetchProjectIdForSprint, fetchProjectIdForIntent } from './data-access.js';
@@ -128,12 +129,34 @@ export const getSecret = async () => {
 const discussionSessionIdFor = (intentId, discussionId) =>
   `aidlc-discuss-${intentId}-${discussionId}`.padEnd(33, '0');
 
+const discussionRuntimeTargetFor = async (intentId, fallbackRuntimeArn) => {
+  const fallbackTarget = runtimeTargetInput(null, fallbackRuntimeArn);
+  const processTable = process.env.V2_PROCESS_TABLE;
+  if (!processTable) return fallbackTarget;
+  try {
+    const { Item: meta } = await ddb.send(
+      new GetCommand({
+        TableName: processTable,
+        Key: { pk: `EXEC#${intentId}`, sk: 'META' },
+      }),
+    );
+    if (meta) return runtimeTargetInput(meta, fallbackRuntimeArn);
+    console.warn(`Discussion assist runtime snapshot missing for ${intentId}; using core runtime`);
+  } catch (error) {
+    console.warn(
+      `Discussion assist runtime snapshot lookup failed for ${intentId}; using core runtime: ${error?.message ?? error}`,
+    );
+  }
+  return fallbackTarget;
+};
+
 export const invokeDiscussionAssist = async ({ intentId, payload }) => {
-  const runtimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
-  if (!runtimeArn) throw new Error('AGENTCORE_RUNTIME_ARN is not configured');
+  const fallbackRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
+  const target = await discussionRuntimeTargetFor(intentId, fallbackRuntimeArn);
+  if (!target.agentRuntimeArn) throw new Error('AGENTCORE_RUNTIME_ARN is not configured');
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
-      agentRuntimeArn: runtimeArn,
+      ...target,
       runtimeSessionId: discussionSessionIdFor(intentId, payload.discussionId),
       contentType: 'application/json',
       accept: 'application/json',

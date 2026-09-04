@@ -5,6 +5,7 @@ A project is the workspace where intents run. It represents a product, service, 
 - One or more **git repositories** (the code host backing the agents' workspace)
 - **Members** with project-level roles
 - **Tracker bindings** (GitHub Issues, GitLab Issues, Jira Cloud)
+- A published **managed environment** for new intents
 - **Runtime settings** — which agent CLI runs, which models, how parallel construction behaves
 - The project's **intents** and their history
 
@@ -64,6 +65,21 @@ separate identities that share an email address remain distinguishable.
 - **Recommended CLI** — marks **Kiro**, **Claude Code**, **OpenCode**, or **Codex** as the space recommendation on the intent compose page. Each user still explicitly selects an available CLI for every new intent.
 - **Model Override** — pin a specific model per CLI for this project. When unset, the platform-wide default model from **Admin → Agents → Default Models** applies. Project overrides take precedence over the stage/agent-level model hints in the workflow.
 
+### Environment
+
+- **Environment** — select the published toolchain used by newly created
+  intents. The panel shows the exact published revision, image digest, runtime
+  compatibility version, and included tools.
+- **Compatibility warnings** — detected repository stacks are compared with
+  the selected tools. Warnings are advisory and do not block assignment.
+- **Standard fallback** — projects without an explicit assignment use the
+  protected Standard Node.js/Python environment.
+
+Choose **Assign Environment** before creating the intent that should use it.
+Changing the assignment does not move an existing intent to another runtime.
+See [Managed tools and environments](managed-environments.md#select-an-environment-for-a-project)
+for publication, selection, and snapshot behavior.
+
 ### Source Control
 
 - **Repositories** — add or remove the repositories that agents check out. Multi-repository projects are supported; at intent creation you can pick a base branch per repository.
@@ -75,7 +91,10 @@ separate identities that share an email address remain distinguishable.
 
 ## Settings snapshots
 
-Runtime-relevant settings (CLI, models, park release, max parallel units, PR strategy) are **snapshotted onto each intent when it is created**. Changing a setting affects the next intent, never a run already in flight.
+Runtime-relevant settings (CLI, models, environment revision, park release,
+max parallel units, and PR strategy) are **snapshotted onto each intent when it
+is created**. Changing a setting affects the next intent, never a run already
+in flight.
 
 ## Deleting
 

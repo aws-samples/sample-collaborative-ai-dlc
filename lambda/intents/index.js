@@ -30,6 +30,11 @@ import {
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { requirePlatformAdmin } from '../shared/authz.js';
+import {
+  isEnvironmentResolutionError,
+  resolveEnvironmentSnapshot,
+} from '../shared/environment-snapshot.js';
+import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
@@ -410,8 +415,13 @@ const feedbackBatchId = (comments) =>
 // re-attached by session id, so no checkout/conversation state is lost.
 // Never throws: an already-stopped/never-started session must not block the
 // caller (same tolerance as the orchestrator's stopRuntimeSession).
-const stopRuntimeSessions = async (intentId, { sectionIndexes = [], unitSlugs = [] } = {}) => {
-  if (!AGENTCORE_RUNTIME_ARN()) return;
+const stopRuntimeSessions = async (
+  intentId,
+  meta,
+  { sectionIndexes = [], unitSlugs = [] } = {},
+) => {
+  const target = runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN());
+  if (!target.agentRuntimeArn) return;
   const ids = [runtimeSessionIdFor(intentId)];
   for (const idx of sectionIndexes) {
     for (const slug of unitSlugs) ids.push(laneSessionIdFor(intentId, idx, slug));
@@ -420,7 +430,7 @@ const stopRuntimeSessions = async (intentId, { sectionIndexes = [], unitSlugs = 
     try {
       await agentcore.send(
         new StopRuntimeSessionCommand({
-          agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+          ...target,
           runtimeSessionId: id,
         }),
       );
@@ -817,6 +827,7 @@ const fetchProjectConfig = async (g, projectId) => {
     tierModels: Object.keys(tierModels).length ? tierModels : null,
     mcpServersByTier: hasMcpServers ? mcpServersByTier : null,
     customRules: customRules.length ? customRules : null,
+    environmentId: getVal(v, 'environment_id') || 'standard',
     repos: ordered,
     repoProviders,
     trackers,
@@ -1225,6 +1236,7 @@ const mapIntent = (meta) => ({
   credentialSource: meta.credentialBinding?.source ?? null,
   cliModels: meta.cliModels ?? null,
   tierModels: meta.tierModels ?? null,
+  environment: meta.environment ?? null,
   parkReleaseSeconds: meta.parkReleaseSeconds ?? null,
   maxParallelUnits: meta.maxParallelUnits ?? null,
   constructionAutonomyMode: meta.constructionAutonomyMode ?? null,
@@ -1737,7 +1749,10 @@ export const handler = async (event) => {
       // content is already saved; a failed derive is picked up by the next
       // stage-exit derive or the admin backfill.
       let derived = false;
-      if (AGENTCORE_RUNTIME_ARN() && artifact.artifactType) {
+      if (
+        runtimeTargetInput(records.meta, AGENTCORE_RUNTIME_ARN()).agentRuntimeArn &&
+        artifact.artifactType
+      ) {
         try {
           const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
             purpose: 'execution',
@@ -1748,7 +1763,7 @@ export const handler = async (event) => {
           });
           const res = await agentcore.send(
             new InvokeAgentRuntimeCommand({
-              agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+              ...runtimeTargetInput(records.meta, AGENTCORE_RUNTIME_ARN()),
               runtimeSessionId: runtimeSessionIdFor(intentId),
               contentType: 'application/json',
               accept: 'application/json',
@@ -2385,7 +2400,7 @@ export const handler = async (event) => {
       await retireParkedRun(intentId, `cancelled by ${responder.displayName || responder.sub}`);
       // The run is over — free the warm microVM now instead of waiting for the
       // idle reap (the persistent mount survives for a later rewind relaunch).
-      await stopRuntimeSessions(intentId);
+      await stopRuntimeSessions(intentId, meta);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -2737,7 +2752,8 @@ export const handler = async (event) => {
         }
       }
 
-      if (!AGENTCORE_RUNTIME_ARN()) {
+      const composeRuntimeTarget = runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN());
+      if (!composeRuntimeTarget.agentRuntimeArn) {
         return response(503, { error: 'Composer runtime is not configured' });
       }
       // Report excerpt: read + bound the uploaded report server-side so the
@@ -2800,7 +2816,7 @@ export const handler = async (event) => {
         });
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
-            agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+            ...composeRuntimeTarget,
             // A FRESH throwaway session per compose, never the intent's own
             // session. Compose is stateless (no workspace/conversation to
             // preserve), and dispatching it to `aidlc-intent-<id>` had two
@@ -3019,7 +3035,7 @@ export const handler = async (event) => {
           intentId,
           meta,
           yjsTable: process.env.YJS_DOCUMENTS_TABLE,
-          agentcoreRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+          agentcoreRuntimeTarget: runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN()),
           artifactsBucket: ARTIFACTS_BUCKET(),
           actor: responder.displayName || responder.sub,
           force: false,
@@ -3050,12 +3066,13 @@ export const handler = async (event) => {
     if (intentId && httpMethod === 'POST' && path?.endsWith('/derive')) {
       const denied = requirePlatformAdmin(event);
       if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
-      if (!AGENTCORE_RUNTIME_ARN()) {
-        return response(500, { error: 'AGENTCORE_RUNTIME_ARN not configured' });
-      }
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
+      }
+      const deriveRuntimeTarget = runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN());
+      if (!deriveRuntimeTarget.agentRuntimeArn) {
+        return response(500, { error: 'Agent runtime is not configured' });
       }
       if (meta.status === 'RUNNING') {
         return response(409, { error: 'Intent is RUNNING — the run derives after each stage' });
@@ -3081,7 +3098,7 @@ export const handler = async (event) => {
         });
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
-            agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+            ...deriveRuntimeTarget,
             runtimeSessionId: runtimeSessionIdFor(intentId),
             contentType: 'application/json',
             accept: 'application/json',
@@ -3370,7 +3387,7 @@ export const handler = async (event) => {
         actor: responder.displayName || responder.sub,
       });
       await retireParkedRun(intentId, repairReason);
-      await stopRuntimeSessions(intentId, {
+      await stopRuntimeSessions(intentId, meta, {
         sectionIndexes: [sectionIndex],
         unitSlugs: repairSlugs,
       });
@@ -3741,7 +3758,7 @@ export const handler = async (event) => {
       // Stop the live session(s) so the relaunch gets a fresh microVM on the
       // CURRENT runtime image (zombie-session field incident) — the persistent
       // workspace mount survives and is re-attached by session id.
-      await stopRuntimeSessions(intentId, {
+      await stopRuntimeSessions(intentId, meta, {
         sectionIndexes: [...new Set(sectionStages.map((s) => s.parallelSection))],
         unitSlugs,
       });
@@ -4049,7 +4066,7 @@ export const handler = async (event) => {
 
       // Retire only after every affected artifact was durably snapshotted.
       await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
-      await stopRuntimeSessions(intentId);
+      await stopRuntimeSessions(intentId, meta);
       for (const stageInstanceId of resetIds) {
         await store.resetStageRow({ executionId: intentId, stageInstanceId }).catch(() => {});
       }
@@ -4435,6 +4452,27 @@ export const handler = async (event) => {
           taken,
         });
       }
+      let environment;
+      try {
+        environment = await resolveEnvironmentSnapshot({
+          ddb,
+          tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+          environmentId: cfg.environmentId,
+          fallback: {
+            revisionId: `core-${process.env.CORE_RUNTIME_VERSION || '1'}`,
+            runtimeArn: AGENTCORE_RUNTIME_ARN(),
+            runtimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
+            imageDigest: process.env.CORE_IMAGE_DIGEST || null,
+            compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
+            verification: { status: 'PASSED', source: 'core-runtime' },
+          },
+        });
+      } catch (error) {
+        if (isEnvironmentResolutionError(error)) {
+          return response(409, { error: error.message, code: error.code });
+        }
+        throw error;
+      }
       const meta = await store.createExecution({
         executionId: newIntentId,
         projectId,
@@ -4456,6 +4494,7 @@ export const handler = async (event) => {
         tierModels: cfg.tierModels,
         mcpServersByTier: cfg.mcpServersByTier,
         customRules: cfg.customRules,
+        environment,
         deriveEnrichment: await fetchDeriveEnrichment(),
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,

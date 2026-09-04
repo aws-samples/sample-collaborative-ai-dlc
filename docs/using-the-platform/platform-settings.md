@@ -2,7 +2,7 @@
 
 The **Admin** page holds all platform-wide settings: users, agents, source control, and issue trackers. It is visible in the sidebar only to members of the Cognito **`platform-admin`** group (see [Setup](../getting-started/setup.md#bootstrap-the-first-platform-administrator) for bootstrapping the first admin); every underlying API is independently gated on the same group.
 
-The page is organized into four tabs.
+The page is organized into five tabs.
 
 A read-only **Deployment** strip sits above the tabs, showing the canonical application URL, environment, and region. The hostname it reports is the one the backend puts in its OAuth redirect URIs, so it is what every provider's callback URL must match. If you are browsing a hostname other than the canonical one — a deployment with a custom domain still answers on the CloudFront domain and on every alias — the strip says so, because the callback URLs shown further down deliberately use the canonical hostname rather than the one in the address bar.
 
@@ -44,6 +44,26 @@ The APIs return configured state and the effective source, never secret values. 
 Starting an intent pins the selected CLI and credential binding for the run's lifetime. Rotating the value at that same scope takes effect on the next invocation; clearing or invalidating it fails the run instead of falling through to another scope.
 
 There is no intent-level credential store in this feature. An intent binds to one of the three managed scopes above but never owns a separate API key. Dedicated per-intent secrets would require a separate lifecycle and authorization design.
+
+## Environments
+
+The environment area contains two administrator views:
+
+- **Environments** — compose exact published tool versions over a protected
+  base, build and scan the resulting ARM64 image, validate its AgentCore
+  runtime, and publish it for project assignment.
+- **Tools** — import, verify, publish, and recommend immutable tool versions.
+  Java, Go, Rust, Maven, and Gradle are shipped as tool definitions rather than
+  predefined environments. Administrators can add other tools such as .NET.
+
+Only Standard is published as a system environment. Existing intents remain
+pinned to their exact environment revision when assignments, bases, or
+recommended tool versions change.
+
+See [Managed tools and environments](managed-environments.md) for the complete
+administrator workflow: adding a tool, source provenance, build verification,
+security review, publication and recommendation, environment composition and
+updates, project assignment, and intent pinning.
 
 ## Source Control
 

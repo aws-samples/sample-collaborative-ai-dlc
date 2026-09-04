@@ -129,6 +129,26 @@ variable "intents_lambda_name" {
   type        = string
 }
 
+variable "environments_lambda_invoke_arn" {
+  description = "Invoke ARN of the managed environment control Lambda"
+  type        = string
+}
+
+variable "environments_lambda_name" {
+  description = "Name of the managed environment control Lambda"
+  type        = string
+}
+
+variable "tools_lambda_invoke_arn" {
+  description = "Invoke ARN of the managed tool control Lambda"
+  type        = string
+}
+
+variable "tools_lambda_name" {
+  description = "Name of the managed tool control Lambda"
+  type        = string
+}
+
 variable "agent_questions_table_name" {
   description = "Name of the agent questions DynamoDB table"
   type        = string
@@ -152,7 +172,15 @@ variable "agentcore_runtime_arn" {
   default     = ""
 }
 
+variable "environment_registry_table_name" {
+  description = "Managed environment registry table used to resolve project runtime targets"
+  type        = string
+}
 
+variable "runtime_compatibility_version" {
+  description = "Runtime contract version supported by the protected core runtime"
+  type        = string
+}
 
 
 

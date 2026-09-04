@@ -32,6 +32,7 @@ locals {
   source_control_function_arn      = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
   credential_broker_function_arn   = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   credential_metadata_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-metadata-${var.environment}"
+  managed_agentcore_runtime_arn    = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:runtime/*"
 
   # Reusable assume-role policy for Lambda services
   lambda_assume_role_policy = jsonencode({
@@ -516,9 +517,19 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = "*"
       },
       {
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = [
+          var.agentcore_runtime_arn,
+          "${var.agentcore_runtime_arn}/*",
+          local.managed_agentcore_runtime_arn,
+          "${local.managed_agentcore_runtime_arn}/*",
+        ]
+      },
+      {
         Effect   = "Allow"
-        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
-        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
+        Action   = ["dynamodb:GetItem"]
+        Resource = var.environment_registry_table_arn
       }
     ]
   })
@@ -670,9 +681,19 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
       },
       {
         # Stop a deleted intent's live AgentCore session(s).
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:StopRuntimeSession"]
+        Resource = [
+          var.agentcore_runtime_arn,
+          "${var.agentcore_runtime_arn}/*",
+          local.managed_agentcore_runtime_arn,
+          "${local.managed_agentcore_runtime_arn}/*",
+        ]
+      },
+      {
         Effect   = "Allow"
-        Action   = ["bedrock-agentcore:StopRuntimeSession"]
-        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
+        Action   = ["dynamodb:GetItem"]
+        Resource = var.environment_registry_table_arn
       },
     ]
   })
@@ -1099,9 +1120,11 @@ module "projects_lambda" {
     # Project delete fans out into the intents' process state: the v2 process
     # table (drained per intent, incl. metrics), the intent-scoped Yjs docs, and
     # the AgentCore runtime (stop live sessions of deleted intents).
-    V2_PROCESS_TABLE      = var.v2_executions_table_name
-    YJS_DOCUMENTS_TABLE   = var.yjs_documents_table_name
-    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    V2_PROCESS_TABLE              = var.v2_executions_table_name
+    YJS_DOCUMENTS_TABLE           = var.yjs_documents_table_name
+    AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
+    ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
+    RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
     # MCP secrets: the base SSM prefix for per-var SecureStrings (project tier at
     # {prefix}/projects/<id>/mcp-secrets/<VAR>) + the global config read for the
     # save-time cross-tier collision check.
@@ -1878,9 +1901,14 @@ resource "aws_iam_role_policy" "discussions" {
         Resource = "${var.websocket_execution_arn}/*"
       },
       {
-        Effect   = "Allow"
-        Action   = ["bedrock-agentcore:InvokeAgentRuntime"]
-        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Resource = [
+          var.agentcore_runtime_arn,
+          "${var.agentcore_runtime_arn}/*",
+          local.managed_agentcore_runtime_arn,
+          "${local.managed_agentcore_runtime_arn}/*",
+        ]
       }
     ]
   })
@@ -1905,6 +1933,7 @@ module "discussions_lambda" {
       ]
     }
   ]
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.discussions.arn
@@ -2244,6 +2273,11 @@ resource "aws_iam_role_policy" "intents" {
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = var.environment_registry_table_arn
+      },
+      {
         # Realtime scope-token signing secret + the Admin global cli-models
         # default (merged under the project selection at intent create, so the
         # runtime model precedence is project > global > agentBlock > env) +
@@ -2339,9 +2373,14 @@ resource "aws_iam_role_policy" "intents" {
         # StopRuntimeSession: rewind/cancel/delete stop the intent's live
         # session so a relaunch starts a fresh microVM on the CURRENT image
         # (zombie-session field incident) and a cancelled run frees compute.
-        Effect   = "Allow"
-        Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
-        Resource = [var.agentcore_runtime_arn, "${var.agentcore_runtime_arn}/*"]
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
+        Resource = [
+          var.agentcore_runtime_arn,
+          "${var.agentcore_runtime_arn}/*",
+          local.managed_agentcore_runtime_arn,
+          "${local.managed_agentcore_runtime_arn}/*",
+        ]
       }
     ]
   })
@@ -2389,7 +2428,11 @@ module "intents_lambda" {
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     # The AgentCore stage-executor runtime — for the manual derive backfill
     # (POST .../intents/{id}/derive, platform admin).
-    AGENTCORE_RUNTIME_ARN = var.agentcore_runtime_arn
+    AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
+    ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
+    CORE_IMAGE_DIGEST             = var.core_image_digest
+    CORE_RUNTIME_VERSION          = var.core_runtime_version
+    RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
     # Compose report uploads (presigned PUT + bounded read-back at dispatch).
     ARTIFACTS_BUCKET = var.artifacts_bucket_name
     # Server-origin realtime reload hints (artifact edited/verified, quorum
@@ -2540,9 +2583,14 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
       {
         # Invoke the AgentCore stage-executor runtime (init-ws / run-stage) and
         # release a parked session's warm compute (D1 release-on-park).
-        Effect   = "Allow"
-        Action   = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
-        Resource = ["${var.agentcore_runtime_arn}", "${var.agentcore_runtime_arn}/*"]
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
+        Resource = [
+          var.agentcore_runtime_arn,
+          "${var.agentcore_runtime_arn}/*",
+          local.managed_agentcore_runtime_arn,
+          "${local.managed_agentcore_runtime_arn}/*",
+        ]
       },
       {
         # v2 process table: drive execution + stage + gate state.

@@ -15,6 +15,11 @@ const PLAN = {
   ],
 };
 
+const MANAGED_RUNTIME_TARGET = {
+  agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+  qualifier: 'revision_r_1',
+};
+
 const META = {
   executionId: 'i1',
   intentId: 'i1',
@@ -23,6 +28,10 @@ const META = {
   deriveEnrichment: 'llm',
   agentCli: 'kiro',
   cliModels: { claude: 'us.anthropic.claude-opus-4-8' },
+  environment: {
+    runtimeArn: MANAGED_RUNTIME_TARGET.agentRuntimeArn,
+    runtimeEndpoint: MANAGED_RUNTIME_TARGET.qualifier,
+  },
 };
 
 const EDIT = {
@@ -142,6 +151,10 @@ describe('runQuorumEdit', () => {
       enrichment: 'llm',
       decidedBy: 'u1',
     });
+    expect(deps.invokeRuntime.mock.calls.map(([, , target]) => target)).toEqual([
+      MANAGED_RUNTIME_TARGET,
+      MANAGED_RUNTIME_TARGET,
+    ]);
 
     // AWAITING_APPROVAL parked with the plan + the decision callback stamped.
     const parkCall = deps.store.updateQuorumEdit.mock.calls.find(
@@ -159,7 +172,10 @@ describe('runQuorumEdit', () => {
     expect(finalCall.fields.verifiedArtifactIds).toEqual(['a3']);
 
     // The dedicated session (never the stage session) was used and freed.
-    expect(deps.stopSession).toHaveBeenCalledWith(quorumEditSessionIdFor('i1'));
+    expect(deps.stopSession).toHaveBeenCalledWith(
+      quorumEditSessionIdFor('i1'),
+      MANAGED_RUNTIME_TARGET,
+    );
     // The run is terminal (SUCCEEDED meta) — no parked conversation to warn.
     expect(deps.store.createSteering).not.toHaveBeenCalled();
   });

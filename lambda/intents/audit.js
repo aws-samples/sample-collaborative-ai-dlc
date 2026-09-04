@@ -215,6 +215,7 @@ export const buildIntentAudit = ({ records = {} } = {}) => {
   const units = [...unitRollup.values()].toSorted((a, b) => a.unitSlug.localeCompare(b.unitSlug));
 
   return {
+    environment: records.meta?.environment ?? null,
     summary: {
       stageCount: stages.length,
       eventCount: events.length,

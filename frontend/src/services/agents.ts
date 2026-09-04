@@ -184,8 +184,12 @@ export const agentsService = {
   // Agent CLI capabilities — which CLIs are installed in the current image.
   // Pass `withModels` to also fetch the per-CLI model lists + v2 runtime CLI
   // availability (drives the project-settings model/CLI pickers).
-  async getCapabilities(withModels = false): Promise<AgentCapabilities> {
-    return api.get(`/agents/capabilities${withModels ? '?models=1' : ''}`);
+  async getCapabilities(withModels = false, projectId?: string): Promise<AgentCapabilities> {
+    const params = new URLSearchParams();
+    if (withModels) params.set('models', '1');
+    if (projectId) params.set('projectId', projectId);
+    const query = params.toString();
+    return api.get(`/agents/capabilities${query ? `?${query}` : ''}`);
   },
 
   // Agent settings — Bedrock bearer token, Kiro API key + default CLI models

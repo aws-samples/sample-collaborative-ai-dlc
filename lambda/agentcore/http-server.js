@@ -199,6 +199,7 @@ const main = async () => {
   const { resolveConflict } = await import('./commands/resolve-conflict.js');
   const { inspect } = await import('./commands/inspect.js');
   const { capabilities } = await import('./commands/capabilities.js');
+  const { managedRuntimeCheck } = await import('./commands/managed-runtime-check.js');
   const { verifyMcp } = await import('./commands/verify-mcp.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
@@ -258,6 +259,7 @@ const main = async () => {
         env: context.env,
         discoverInstalledClis: async () => installedClis,
       }),
+    managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),
     verifyMcp: (p) => verifyMcp(p),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage

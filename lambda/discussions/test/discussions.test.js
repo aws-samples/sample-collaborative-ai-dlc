@@ -1656,6 +1656,14 @@ describe('intent-scoped discussions', () => {
       },
     });
     const { projectId, intentId } = await seedIntent();
+    processStore.set(`EXEC#${intentId}`, {
+      pk: `EXEC#${intentId}`,
+      sk: 'META',
+      environment: {
+        runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+        runtimeEndpoint: 'revision_r_1',
+      },
+    });
     const created = json(
       await call('POST', intentPath('/discussions'), {
         pathParameters: { projectId, intentId },
@@ -1686,10 +1694,21 @@ describe('intent-scoped discussions', () => {
     });
 
     const invoke = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+    expect(invoke).toMatchObject({
+      agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+      qualifier: 'revision_r_1',
+    });
     expect(invoke.runtimeSessionId.startsWith(`aidlc-discuss-${intentId}-${created.id}`)).toBe(
       true,
     );
     expect(invoke.runtimeSessionId.length).toBeGreaterThanOrEqual(33);
+    const executionRead = ddbMock
+      .commandCalls(GetCommand)
+      .find(
+        (entry) =>
+          entry.args[0].input.TableName === PROCESS_TABLE && !entry.args[0].input.ConsistentRead,
+      );
+    expect(executionRead.args[0].input).not.toHaveProperty('ConsistentRead');
     const payload = JSON.parse(Buffer.from(invoke.payload).toString('utf8'));
     expect(payload).toMatchObject({
       command: 'discussion-assist-start',

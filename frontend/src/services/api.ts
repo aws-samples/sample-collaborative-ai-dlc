@@ -68,7 +68,9 @@ async function fetchWithAuth(path: string, options: RequestInit = {}): Promise<R
     const message =
       parsed && typeof parsed.message === 'string' && parsed.message
         ? parsed.message
-        : rawText || 'Request failed';
+        : parsed && typeof parsed.error === 'string' && parsed.error
+          ? parsed.error
+          : rawText || 'Request failed';
     throw new ApiError(response.status, message, parsed);
   }
 

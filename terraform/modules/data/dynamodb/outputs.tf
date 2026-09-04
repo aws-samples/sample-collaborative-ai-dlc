@@ -84,3 +84,13 @@ output "blocks_table_arn" {
   description = "ARN of the building-blocks table"
   value       = aws_dynamodb_table.blocks.arn
 }
+
+output "environment_registry_table_name" {
+  description = "Name of the managed environment registry table"
+  value       = aws_dynamodb_table.environment_registry.name
+}
+
+output "environment_registry_table_arn" {
+  description = "ARN of the managed environment registry table"
+  value       = aws_dynamodb_table.environment_registry.arn
+}

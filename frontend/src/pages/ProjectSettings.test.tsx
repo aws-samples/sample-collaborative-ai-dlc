@@ -15,6 +15,9 @@ vi.mock('@/components/project-settings/MembersTab', () => ({
 vi.mock('@/components/project-settings/AgentTab', () => ({
   AgentTab: () => <div data-testid="agent-tab" />,
 }));
+vi.mock('@/components/project-settings/EnvironmentTab', () => ({
+  EnvironmentTab: () => <div data-testid="environment-tab" />,
+}));
 vi.mock('@/components/project-settings/RepositoriesTab', () => ({
   RepositoriesTab: () => <div data-testid="repositories-tab" />,
 }));
@@ -60,11 +63,18 @@ beforeEach(() => {
 });
 
 describe('ProjectSettings', () => {
-  it('renders the project name, role badge and all five tabs', async () => {
+  it('renders the project name, role badge and all six tabs', async () => {
     renderAt();
     expect(await screen.findByRole('heading', { name: 'My Project' })).toBeInTheDocument();
     expect(screen.getByText('Owner')).toBeInTheDocument();
-    for (const name of ['General', 'Members', 'Agent', 'Source Control', 'Trackers']) {
+    for (const name of [
+      'General',
+      'Members',
+      'Agent',
+      'Environment',
+      'Source Control',
+      'Trackers',
+    ]) {
       expect(screen.getByRole('tab', { name })).toBeInTheDocument();
     }
   });
@@ -85,6 +95,11 @@ describe('ProjectSettings', () => {
     renderAt('/space/p1/settings?tab=trackers');
     expect(await screen.findByTestId('trackers-tab')).toBeInTheDocument();
     expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
+  });
+
+  it('opens the environment tab from the query parameter', async () => {
+    renderAt('/space/p1/settings?tab=environment');
+    expect(await screen.findByTestId('environment-tab')).toBeInTheDocument();
   });
 
   it('falls back to General for an unknown ?tab= value', async () => {

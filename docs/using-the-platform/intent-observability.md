@@ -61,7 +61,14 @@ Selecting a node shares the same drill-down as the observability page.
 
 ## The audit page
 
-The **Audit** button opens the graph-usage audit: how agents read the graph (compact reads vs. full documents), enrichment spend, derivation health, structure-contract compliance, and coverage findings (for example, must-have requirements not covered by any story). It is the measurement surface for tuning context efficiency.
+The **Audit** button opens the graph-usage audit: how agents read the graph
+(compact reads vs. full documents), enrichment spend, derivation health,
+structure-contract compliance, and coverage findings (for example, must-have
+requirements not covered by any story). It also records the exact managed
+environment revision, image digest, runtime version, endpoint, compatibility
+version, and verification result used by the intent. It is the measurement
+surface for tuning context efficiency and confirming which immutable runtime
+executed a run.
 
 ## Project-level metrics
 

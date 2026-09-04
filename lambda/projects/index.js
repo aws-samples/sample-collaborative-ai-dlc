@@ -20,6 +20,10 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import nodePath from 'node:path';
 import { buildResponse } from '../shared/response.js';
+import {
+  isEnvironmentResolutionError,
+  resolvePublishedEnvironment,
+} from '../shared/environment-snapshot.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
 import { getGitConnection } from '../shared/git-connection-store.js';
@@ -35,6 +39,7 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
+import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { isSafeRepo } from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
@@ -176,6 +181,7 @@ const readV2Settings = (v) => {
       normalizeProjectPrStrategy(getVal(v, 'pr_strategy'), { legacyDefault: true }) ||
       DEFAULT_PR_STRATEGY,
     stageSkipping: getVal(v, 'stage_skipping') || DEFAULT_STAGE_SKIPPING,
+    environmentId: getVal(v, 'environment_id') || 'standard',
   };
 };
 
@@ -959,6 +965,73 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
   return response(405, { error: 'Method not allowed' });
 };
 
+const readPublishedEnvironment = (environmentId) =>
+  resolvePublishedEnvironment({
+    ddb,
+    tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+    environmentId,
+    fallback: {
+      compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
+    },
+  });
+
+const handleProjectEnvironment = async (g, response, httpMethod, projectId, userId, body) => {
+  if (!userId) return response(401, { error: 'Unauthorized' });
+  const role = await fetchMembershipRole(g, projectId, userId);
+  if (!role) return response(403, { error: 'Access denied' });
+
+  try {
+    if (httpMethod === 'GET') {
+      const result = await g.V().has('Project', 'id', projectId).valueMap('environment_id').next();
+      if (result.done) return response(404, { error: 'Project not found' });
+      const environmentId = getVal(result.value, 'environment_id') || 'standard';
+      const published = await readPublishedEnvironment(environmentId);
+      return response(200, {
+        environmentId,
+        environment: published.environment,
+        revision: published.revision,
+      });
+    }
+
+    if (httpMethod === 'PUT') {
+      if (role !== 'owner' && role !== 'admin') {
+        return response(403, {
+          error: 'Only project owners and admins can assign environments',
+        });
+      }
+      let data;
+      try {
+        data = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      const environmentId = String(data.environmentId || '').trim();
+      if (!environmentId) return response(400, { error: 'environmentId is required' });
+      const published = await readPublishedEnvironment(environmentId);
+      const updatedAt = new Date().toISOString();
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(cardinality.single, 'environment_id', environmentId)
+        .property(cardinality.single, 'updated_at', updatedAt)
+        .next();
+      return response(200, {
+        environmentId,
+        environment: published.environment,
+        revision: published.revision,
+        updatedAt,
+      });
+    }
+
+    return response(405, { error: 'Method not allowed' });
+  } catch (error) {
+    if (isEnvironmentResolutionError(error)) {
+      return response(409, { error: error.message, code: error.code });
+    }
+    throw error;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Route: /projects/{projectId}/repos
 // ---------------------------------------------------------------------------
@@ -1250,6 +1323,9 @@ export const handler = async (event) => {
     if (projectId && /\/custom-rules(\/|$)/.test(requestPath)) {
       return await handleProjectCustomRules(g, response, httpMethod, projectId, userId, body);
     }
+    if (projectId && /\/environment\/?$/.test(requestPath)) {
+      return await handleProjectEnvironment(g, response, httpMethod, projectId, userId, body);
+    }
 
     switch (httpMethod) {
       case 'GET':
@@ -1480,7 +1556,8 @@ export const handler = async (event) => {
           .property('park_release_seconds', String(v2Settings.parkReleaseSeconds))
           .property('max_parallel_units', String(v2Settings.maxParallelUnits))
           .property('pr_strategy', v2Settings.prStrategy)
-          .property('stage_skipping', v2Settings.stageSkipping);
+          .property('stage_skipping', v2Settings.stageSkipping)
+          .property('environment_id', 'standard');
         await createV.next();
 
         // Create Repository vertices and HAS_REPO edges. Normalize so at most
@@ -1547,6 +1624,7 @@ export const handler = async (event) => {
           createdAt,
           updatedAt: createdAt,
           repos: reposOut,
+          environmentId: 'standard',
           ...v2Settings,
         });
       }
@@ -1793,7 +1871,10 @@ export const handler = async (event) => {
                 intentId,
                 meta: execMeta,
                 yjsTable: process.env.YJS_DOCUMENTS_TABLE,
-                agentcoreRuntimeArn: process.env.AGENTCORE_RUNTIME_ARN || '',
+                agentcoreRuntimeTarget: runtimeTargetInput(
+                  execMeta,
+                  process.env.AGENTCORE_RUNTIME_ARN || '',
+                ),
                 artifactsBucket: process.env.ARTIFACTS_BUCKET || '',
                 actor,
                 force: true,

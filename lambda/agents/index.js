@@ -32,9 +32,14 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
-import { fetchMembershipRole } from '../shared/trackers.js';
+import { fetchMembershipRole, getVal } from '../shared/trackers.js';
 import { listClaudeModels, CODEX_BEDROCK_MODELS } from '../shared/bedrock-models.js';
 import { refreshPricing } from '../shared/model-pricing.js';
+import {
+  isEnvironmentResolutionError,
+  resolveEnvironmentSnapshot,
+} from '../shared/environment-snapshot.js';
+import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   AGENT_CREDENTIAL_PROVIDERS,
   credentialProviderForCli,
@@ -71,10 +76,9 @@ const RUNTIME_MODEL_OVERRIDE = {
   opencode: true,
   codex: true,
 };
-// The v2 AgentCore runtime ARN — the models endpoint invokes its `capabilities`
-// command (the only source of Kiro's model list, which is CLI-native, not
-// Bedrock, plus per-CLI install/auth state).
-const AGENTCORE_RUNTIME_ARN = process.env.AGENTCORE_RUNTIME_ARN || '';
+// The protected core runtime remains the target for global Admin discovery.
+// Project-scoped probes resolve the project's published environment below.
+const coreRuntimeTarget = () => runtimeTargetInput(null, process.env.AGENTCORE_RUNTIME_ARN || '');
 // A session id >= 33 chars is required by InvokeAgentRuntime; the capabilities
 // command is stateless so any stable id works.
 const CAPABILITIES_SESSION_ID = 'aidlc-capabilities-probe-00000001';
@@ -86,11 +90,12 @@ const PLATFORM_CREDENTIAL_BINDINGS = Object.fromEntries(
 // invoking its `capabilities` command. Best-effort: returns null when no v2
 // runtime is configured or the invoke fails, so the endpoint still returns
 // Bedrock models + SSM auth state.
-const fetchRuntimeCapabilities = async (
+export const fetchRuntimeCapabilities = async (
+  runtimeTarget = coreRuntimeTarget(),
   credentialBindings = PLATFORM_CREDENTIAL_BINDINGS,
   projectId = null,
 ) => {
-  if (!AGENTCORE_RUNTIME_ARN) return null;
+  if (!runtimeTarget.agentRuntimeArn) return null;
   try {
     const bindings = Object.values(credentialBindings || {}).filter(Boolean);
     const agentCredentialGrant = bindings.length
@@ -102,7 +107,7 @@ const fetchRuntimeCapabilities = async (
       : null;
     const res = await agentcore.send(
       new InvokeAgentRuntimeCommand({
-        agentRuntimeArn: AGENTCORE_RUNTIME_ARN,
+        ...runtimeTarget,
         runtimeSessionId: CAPABILITIES_SESSION_ID,
         contentType: 'application/json',
         accept: 'application/json',
@@ -130,14 +135,19 @@ const fetchRuntimeCapabilities = async (
 // so the runtime resolves `${VAR}` refs (tier-bound, fail-closed) exactly as the
 // real agent would. Returns the runtime's { results } | { error, issues }, or a
 // { error } when no runtime is configured / the invoke fails.
-const verifyMcpServers = async ({ mcpServersByTier, projectId, unsavedSecrets }) => {
-  if (!AGENTCORE_RUNTIME_ARN) {
+export const verifyMcpServers = async ({
+  mcpServersByTier,
+  projectId,
+  unsavedSecrets,
+  runtimeTarget = coreRuntimeTarget(),
+}) => {
+  if (!runtimeTarget.agentRuntimeArn) {
     return { error: 'AgentCore runtime not configured' };
   }
   try {
     const res = await agentcore.send(
       new InvokeAgentRuntimeCommand({
-        agentRuntimeArn: AGENTCORE_RUNTIME_ARN,
+        ...runtimeTarget,
         runtimeSessionId: randomUUID(),
         contentType: 'application/json',
         accept: 'application/json',
@@ -209,6 +219,47 @@ async function withNeptune(fn) {
     await conn.close();
   }
 }
+
+export const resolveProjectRuntimeTarget = async (g, projectId) => {
+  const result = await g.V().has('Project', 'id', projectId).valueMap('environment_id').next();
+  if (result.done) return null;
+
+  const environmentId = getVal(result.value, 'environment_id') || 'standard';
+  const fallbackRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
+  const environment = await resolveEnvironmentSnapshot({
+    ddb,
+    tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+    environmentId,
+    fallback: {
+      runtimeArn: fallbackRuntimeArn,
+      compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
+    },
+  });
+  return runtimeTargetInput({ environment }, fallbackRuntimeArn);
+};
+
+const projectRuntimeAccess = async (event, projectId, { requireEditor = false } = {}) => {
+  const userId = event.requestContext?.authorizer?.claims?.sub;
+  if (!userId) return { denied: true, statusCode: 401, error: 'Unauthorized' };
+
+  return withNeptune(async (g) => {
+    const role = await fetchMembershipRole(g, projectId, userId);
+    if (!role) return { denied: true, statusCode: 403, error: 'Not a project member' };
+    if (requireEditor && role !== 'owner' && role !== 'admin') {
+      return {
+        denied: true,
+        statusCode: 403,
+        error: 'Only project owners and admins can verify MCP servers',
+      };
+    }
+
+    const runtimeTarget = await resolveProjectRuntimeTarget(g, projectId);
+    if (!runtimeTarget) {
+      return { denied: true, statusCode: 404, error: 'Project not found' };
+    }
+    return { runtimeTarget };
+  });
+};
 
 const authorizeExecutionRead = async (event, storedProjectId, executionIds) =>
   withNeptune(async (g) => {
@@ -394,9 +445,8 @@ export const handler = async (event) => {
     // GET /projects/{projectId}/agent-capabilities — installed runtime CLIs
     // intersected with this member's effective user > space > platform keys.
     if (projectId && httpMethod === 'GET' && path.endsWith('/agent-capabilities')) {
-      if (!credentialUserId) return response(401, { error: 'Unauthorized' });
-      const role = await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
-      if (!role) return response(403, { error: 'Not a space member' });
+      const access = await projectRuntimeAccess(event, projectId);
+      if (access.denied) return response(access.statusCode, { error: access.error });
       let credentialBindings;
       try {
         credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
@@ -420,7 +470,7 @@ export const handler = async (event) => {
               },
             })
           : [],
-        fetchRuntimeCapabilities(credentialBindings, projectId),
+        fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
       ]);
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
       const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
@@ -842,15 +892,13 @@ export const handler = async (event) => {
       //   projectId present → must be owner/admin of that project
       //   projectId absent  → global config → platform admin
       const verifyProjectId = input.projectId;
+      let runtimeTarget = coreRuntimeTarget();
       if (verifyProjectId) {
-        const userId = event.requestContext?.authorizer?.claims?.sub;
-        if (!userId) return response(401, { error: 'Unauthorized' });
-        const role = await withNeptune((g) => fetchMembershipRole(g, verifyProjectId, userId));
-        if (role !== 'owner' && role !== 'admin') {
-          return response(403, {
-            error: 'Only project owners and admins can verify MCP servers',
-          });
-        }
+        const access = await projectRuntimeAccess(event, verifyProjectId, {
+          requireEditor: true,
+        });
+        if (access.denied) return response(access.statusCode, { error: access.error });
+        runtimeTarget = access.runtimeTarget;
       } else {
         const denied = requirePlatformAdmin(event);
         if (denied) {
@@ -895,14 +943,37 @@ export const handler = async (event) => {
         mcpServersByTier,
         projectId: verifyProjectId,
         unsavedSecrets,
+        runtimeTarget,
       });
       if (result.error) return response(502, result);
       return response(200, result);
     }
 
     if (httpMethod === 'GET' && path.endsWith('/capabilities')) {
+      const capabilitiesProjectId = event.queryStringParameters?.projectId;
+      let runtimeTarget = coreRuntimeTarget();
+      let credentialBindings = PLATFORM_CREDENTIAL_BINDINGS;
+      if (capabilitiesProjectId) {
+        const access = await projectRuntimeAccess(event, capabilitiesProjectId);
+        if (access.denied) return response(access.statusCode, { error: access.error });
+        runtimeTarget = access.runtimeTarget;
+        try {
+          credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
+            projectId: capabilitiesProjectId,
+            userId: credentialUserId,
+          });
+        } catch (error) {
+          console.error('[effective agent credentials] resolve failed:', error.message);
+          return response(500, { error: 'Failed to resolve agent credentials' });
+        }
+      }
+
       if (event.queryStringParameters?.models !== '1') {
-        const caps = await fetchRuntimeCapabilities();
+        const caps = await fetchRuntimeCapabilities(
+          runtimeTarget,
+          credentialBindings,
+          capabilitiesProjectId || null,
+        );
         const available = (caps?.clis ?? [])
           .filter((c) => c.available)
           .map((c) => c.cli)
@@ -924,7 +995,7 @@ export const handler = async (event) => {
             return out.inferenceProfileSummaries ?? [];
           },
         }),
-        fetchRuntimeCapabilities(),
+        fetchRuntimeCapabilities(runtimeTarget, credentialBindings, capabilitiesProjectId || null),
       ]);
       const kiroModels = runtimeCaps?.kiroModels?.models ?? [];
       // OpenCode drives the SAME Bedrock profiles as claude but requires the
@@ -1156,6 +1227,9 @@ export const handler = async (event) => {
 
     return response(404, { error: 'Not found' });
   } catch (err) {
+    if (isEnvironmentResolutionError(err)) {
+      return response(409, { error: err.message, code: err.code });
+    }
     console.error('Handler error:', err);
     return response(500, { error: 'Internal server error' });
   }

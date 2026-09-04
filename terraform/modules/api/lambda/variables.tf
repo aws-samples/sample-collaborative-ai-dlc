@@ -324,3 +324,28 @@ variable "agentcore_runtime_arn" {
   description = "AgentCore stage-executor runtime ARN the orchestrator invokes"
   type        = string
 }
+
+variable "environment_registry_table_name" {
+  description = "Managed environment registry table name"
+  type        = string
+}
+
+variable "environment_registry_table_arn" {
+  description = "Managed environment registry table ARN"
+  type        = string
+}
+
+variable "core_image_digest" {
+  description = "Immutable digest of the protected AgentCore image"
+  type        = string
+}
+
+variable "core_runtime_version" {
+  description = "Protected AgentCore runtime version"
+  type        = string
+}
+
+variable "runtime_compatibility_version" {
+  description = "Protected runtime contract version"
+  type        = string
+}

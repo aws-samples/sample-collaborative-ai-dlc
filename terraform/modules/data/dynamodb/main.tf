@@ -254,6 +254,58 @@ resource "aws_dynamodb_table" "blocks" {
   tags = var.tags
 }
 
+resource "aws_dynamodb_table" "environment_registry" {
+  name           = "${var.project_name}-environment-registry-${var.environment}"
+  billing_mode   = local.billing_mode
+  hash_key       = "pk"
+  range_key      = "sk"
+  read_capacity  = local.read_capacity
+  write_capacity = local.write_capacity
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1SK"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "GSI1"
+    projection_type = "ALL"
+    read_capacity   = local.read_capacity
+    write_capacity  = local.write_capacity
+
+    key_schema {
+      attribute_name = "GSI1PK"
+      key_type       = "HASH"
+    }
+
+    key_schema {
+      attribute_name = "GSI1SK"
+      key_type       = "RANGE"
+    }
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = var.tags
+}
+
 # Per-user composite read cursors: {lastReadAt,
 # lastReadMessageId, sprintId}. High-churn per-user KV — wrong shape for the
 # graph.
