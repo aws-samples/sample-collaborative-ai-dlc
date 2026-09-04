@@ -147,6 +147,12 @@ Full documentation lives at [aws-samples.github.io/sample-collaborative-ai-dlc](
 | AWS CLI   | v2            |
 | Docker    | Recent stable |
 
+### Using an alternative container runtime
+
+Docker is the default container runtime and needs no configuration. The image build connects to a Docker Engine API socket via `DOCKER_HOST`, so **any runtime that exposes such a socket works** — Podman and Rancher Desktop are validated end-to-end, and Colima and OrbStack use the same mechanism. Finch and other CLI-only/daemonless build tools (Buildah, nerdctl, Kaniko, BuildKit) do not expose a Docker-API socket and are not supported for the builds.
+
+See [Using an alternative container runtime](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/#using-an-alternative-container-runtime) for the socket paths, per-runtime setup, and the `CONTAINER_RUNTIME` / `DOCKER_HOST` contract.
+
 You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, Bedrock AgentCore, Secrets Manager, Systems Manager Parameter Store, and IAM. See [Prerequisites](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/) for the full service list and verification commands.
 
 Agent CLIs authenticate through credentials you configure after install, in **Admin → Agents**:

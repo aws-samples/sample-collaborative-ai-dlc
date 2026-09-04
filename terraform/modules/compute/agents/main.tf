@@ -13,6 +13,8 @@ data "aws_partition" "current" {}
 data "aws_ecr_authorization_token" "token" {}
 
 provider "docker" {
+  # Support for Podman via DOCKER_HOST environment variable (e.g., unix:///path/to/podman.sock)
+  # If DOCKER_HOST is not set, defaults to the standard Docker socket
   # Compatibility shim for destroying orphaned v1 agent image-build state.
   registry_auth {
     address  = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, data.aws_partition.current.dns_suffix)
