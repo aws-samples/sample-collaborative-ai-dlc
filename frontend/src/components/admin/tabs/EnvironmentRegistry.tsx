@@ -971,8 +971,8 @@ export function EnvironmentRegistry() {
                     )}
                     {fixedToolEnvironment && (
                       <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                        This fixed-tool environment is read-only. Use Reset to remove it, then
-                        recreate it from published catalog tools.
+                        This fixed-tool environment is read-only. Retire it, then create a new
+                        environment from published catalog tools.
                       </p>
                     )}
                   </div>

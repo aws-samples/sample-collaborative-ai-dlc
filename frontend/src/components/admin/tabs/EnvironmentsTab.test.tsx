@@ -523,4 +523,28 @@ describe('EnvironmentsTab', () => {
       screen.queryByRole('button', { name: 'Accept Findings & Continue' }),
     ).not.toBeInTheDocument();
   });
+
+  it('points a read-only fixed-tool environment at an action the UI actually offers', async () => {
+    const fixedToolRevision = {
+      ...revision,
+      status: 'PUBLISHED',
+      recipe: standardRecipe,
+      flattenedRecipe: standardRecipe,
+    };
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : {
+            environment: { ...custom, status: 'PUBLISHED', publishedRevisionId: 'r-1' },
+            revisions: [fixedToolRevision],
+            publishedRevision: fixedToolRevision,
+          },
+    );
+
+    render(<EnvironmentsTab />);
+
+    expect(await screen.findByText(/This fixed-tool environment is read-only/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retire' })).toBeInTheDocument();
+    expect(screen.queryByText(/Reset/)).not.toBeInTheDocument();
+  });
 });
