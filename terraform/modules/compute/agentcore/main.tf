@@ -157,8 +157,36 @@ resource "aws_ecr_repository" "managed_environments" {
   tags = var.tags
 }
 
-# Environment revisions and active intents pin core image digests, so core
-# images remain available until registry-aware cleanup can prove they are unused.
+# The core repository intentionally has no lifecycle policy, not even an
+# UNTAGGED rule. Its tags are MUTABLE and derived from a content hash, so a
+# non-reproducible rebuild under the same tag leaves the previous digest
+# untagged while published environment revisions and active intents still pin
+# it by sha256 - an UNTAGGED expiry would delete exactly that digest and break
+# the reproducibility invariant. Registry-aware cleanup that resolves the live
+# digest set first is tracked in issue #427.
+
+# Environment images are safe to bound this way: tags are IMMUTABLE so a tag can
+# never move off a digest a revision pins, and every push is tagged with its
+# revision id, so an untagged image here is only aborted-push garbage.
+resource "aws_ecr_lifecycle_policy" "managed_environments" {
+  repository = aws_ecr_repository.managed_environments.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Expire untagged images left behind by failed or partial pushes"
+      selection = {
+        tagStatus   = "untagged"
+        countType   = "sinceImagePushed"
+        countUnit   = "days"
+        countNumber = 7
+      }
+      action = {
+        type = "expire"
+      }
+    }]
+  })
+}
 
 module "agentcore_docker_build" {
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"

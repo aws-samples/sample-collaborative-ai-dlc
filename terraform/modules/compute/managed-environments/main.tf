@@ -109,6 +109,31 @@ resource "aws_ecr_repository" "managed_tools" {
   tags = var.tags
 }
 
+# Tool images are pinned by digest in every environment recipe snapshot, so no
+# count- or age-based expiry may touch a tagged image. Untagged images are safe:
+# tags are IMMUTABLE so a tag can never move off a pinned digest, and every push
+# is tagged, so an untagged image here is only aborted-push garbage. Digest-aware
+# cleanup for the tagged images is tracked in issue #427.
+resource "aws_ecr_lifecycle_policy" "managed_tools" {
+  repository = aws_ecr_repository.managed_tools.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Expire untagged images left behind by failed or partial pushes"
+      selection = {
+        tagStatus   = "untagged"
+        countType   = "sinceImagePushed"
+        countUnit   = "days"
+        countNumber = 7
+      }
+      action = {
+        type = "expire"
+      }
+    }]
+  })
+}
+
 resource "aws_cloudwatch_log_group" "codebuild" {
   name              = "/aws/codebuild/${var.project_name}-managed-environments-${var.environment}"
   retention_in_days = var.environment == "prod" ? 30 : 7
