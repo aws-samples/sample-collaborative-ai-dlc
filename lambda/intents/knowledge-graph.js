@@ -351,7 +351,7 @@ export const fetchKnowledgeGraph = async (g, { projectId, intentId }) => {
     anchored('UnitOfWork').outE('DEPENDS_ON', 'DERIVED_FROM', ...UNIT_CONTRACT_EDGES),
   );
   const implementationEdges = await project(codeFiles.length > 0, () =>
-    g.V().has('intent_id', intentId).outE('IMPLEMENTED_BY'),
+    anchored('CodeFile').inE('IMPLEMENTED_BY'),
   );
   const discussEdges = await project(discussions.length > 0, () =>
     anchored('Discussion', 'HAS_DISCUSSION').outE('DISCUSSES'),

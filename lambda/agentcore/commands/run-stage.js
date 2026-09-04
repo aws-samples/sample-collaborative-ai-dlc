@@ -2522,10 +2522,13 @@ export const runStage = async (
     }
   }
 
-  // Git topology is universal; structured evidence is capability-detected from
-  // a valid traceability.json produced by this exact stage/unit. Projection is
-  // intentionally best-effort: legacy/malformed evidence and Neptune outages
-  // must not turn successful implementation work into an execution failure.
+  // The set of changed files comes from this stage's git commit — a source
+  // every workflow has, so we always create CodeFile nodes + their Intent/Unit
+  // topology from it. A valid, stage/unit-produced traceability.json is an
+  // OPTIONAL extra source (capability-detected) that only adds requirement→file
+  // evidence edges on top. Projection is intentionally best-effort: missing or
+  // malformed evidence and Neptune outages must not turn successful
+  // implementation work into an execution failure.
   try {
     const projected = await ingestStageCodeTraceability({
       openGraph,
