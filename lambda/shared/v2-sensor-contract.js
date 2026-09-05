@@ -107,13 +107,73 @@ const validateScriptSpec = (sensor) => {
   };
 };
 
+// The upstream per-sensor scripts reserve 127 for "the underlying tool could not
+// be resolved" — they probe (e.g. `bunx tsc --version`) at startup and exit 127
+// on ANY non-zero probe, because `bunx` returns assorted non-127 codes for
+// network-fetch / package-resolution / registry-timeout failures. Upstream a
+// dispatcher branch reclassified this to a tool-unavailable note; we own that
+// reclassification here instead.
+const TOOL_UNAVAILABLE_EXIT = 127;
+
+// ── Verdict contract ──
+// How a script sensor reports its result.
+//   'stdout-json' — the script prints {"pass": bool, ...} and exits 0. A NON-ZERO
+//                   exit therefore means the script itself failed (missing tool,
+//                   unreadable config), NOT that the code is bad. This is the
+//                   contract the upstream per-sensor scripts follow.
+//   'exit-code'   — the classic convention: exit 0 pass, non-zero fail. Custom
+//                   scripts authored in the sensor editor rely on this, so it
+//                   stays the DEFAULT for anything that does not declare a mode.
+const SENSOR_VERDICT_MODES = Object.freeze(['stdout-json', 'exit-code']);
+
+// Sensors known to ship the upstream stdout-JSON scripts. Used only as a
+// fallback when a sensor row predates `verdictMode`; an explicit declaration on
+// the row always wins.
+const STDOUT_JSON_SENSORS = Object.freeze(['linter', 'type-check']);
+
+const sensorVerdictMode = (sensor) => {
+  const declared = sensor?.verdictMode;
+  if (SENSOR_VERDICT_MODES.includes(declared)) return declared;
+  return STDOUT_JSON_SENSORS.includes(sensor?.sensorId ?? sensor?.id) ? 'stdout-json' : 'exit-code';
+};
+
+// ── Change scope ──
+// What a script sensor must inspect once the stage's changed files are known.
+//   'file'    — the sensor judges each file independently (a linter). Inspecting
+//               only the changed files is sound.
+//   'project' — the sensor compiles a whole PROJECT and attributes diagnostics
+//               back to one file (`tsc --project`). Scoping to changed files is
+//               UNSOUND there: a changed provider that breaks an untouched
+//               consumer reports the error against the consumer, which is not in
+//               the changed set, so the sensor would return a false PASS. Such a
+//               sensor must be widened to every matching file in each affected
+//               project.
+const SENSOR_SCOPES = Object.freeze(['file', 'project']);
+const PROJECT_SCOPED_SENSORS = Object.freeze(['type-check']);
+
+const sensorScope = (sensor) => {
+  const declared = sensor?.scope;
+  if (SENSOR_SCOPES.includes(declared)) return declared;
+  return PROJECT_SCOPED_SENSORS.includes(sensor?.sensorId ?? sensor?.id) ? 'project' : 'file';
+};
+
+// The file whose presence marks a project root for a `project`-scoped sensor. A
+// change to this file alone must widen the sensor to the whole project, since a
+// config change can break compilation without any source file changing.
+const projectConfigFile = (sensor) => sensor?.projectConfig ?? 'tsconfig.json';
+
 // Map a script's exit code to a result. Convention (matches upstream per-sensor
 // scripts): 0 → PASS/FAIL is decided by the script's stdout JSON `pass` field;
 // the runner reads that. When stdout JSON is unavailable we fall back to the
-// exit code alone: 0 PASS, 2 INCONCLUSIVE, null BLOCKED, else FAIL.
+// exit code alone: 0 PASS, 2 INCONCLUSIVE, 127 INCONCLUSIVE (tool unavailable,
+// NOT a code defect), null BLOCKED, else FAIL.
 const resultFromExit = (exitCode) => {
   if (exitCode === 0) return SENSOR_RESULT.PASS;
   if (exitCode === 2) return SENSOR_RESULT.INCONCLUSIVE;
+  // A missing/unresolvable tool is "ran but couldn't decide", never a FAIL — an
+  // advisory tool-unavailable reported as FAIL is indistinguishable from real
+  // type/lint errors, and a BLOCKING one would wedge the stage.
+  if (exitCode === TOOL_UNAVAILABLE_EXIT) return SENSOR_RESULT.INCONCLUSIVE;
   if (exitCode === null || exitCode === undefined) return SENSOR_RESULT.BLOCKED;
   return SENSOR_RESULT.FAIL;
 };
@@ -446,6 +506,12 @@ export {
   ALLOWED_SCRIPT_RUNTIMES,
   MAX_TIMEOUT_SECONDS,
   DEFAULT_TIMEOUT_SECONDS,
+  TOOL_UNAVAILABLE_EXIT,
+  SENSOR_VERDICT_MODES,
+  SENSOR_SCOPES,
+  sensorVerdictMode,
+  sensorScope,
+  projectConfigFile,
   GRAPH_SENSORS,
   sensorKind,
   severityGate,
@@ -463,6 +529,12 @@ export default {
   ALLOWED_SCRIPT_RUNTIMES,
   MAX_TIMEOUT_SECONDS,
   DEFAULT_TIMEOUT_SECONDS,
+  TOOL_UNAVAILABLE_EXIT,
+  SENSOR_VERDICT_MODES,
+  SENSOR_SCOPES,
+  sensorVerdictMode,
+  sensorScope,
+  projectConfigFile,
   GRAPH_SENSORS,
   sensorKind,
   severityGate,

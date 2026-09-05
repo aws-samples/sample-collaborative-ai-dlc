@@ -8,10 +8,13 @@ import {
   scrubRemote,
   commitAll,
   isAheadOfRemote,
+  aheadFiles,
   pushBranch,
   remoteBranchExists,
   commitAndPushAll,
   seedInitialCommit,
+  parsePorcelainZ,
+  toWorkspaceRelative,
 } from '../git-engine.js';
 
 // Real git spawns (~10 per test) can be slow on busy CI machines.
@@ -90,6 +93,40 @@ describe('scrubRemote', () => {
   });
 });
 
+describe('parsePorcelainZ', () => {
+  it('returns unquoted paths for names with spaces and non-ASCII', () => {
+    // Plain --porcelain C-quotes these ("\"src/a b.ts\""), which would never
+    // match the raw paths listFiles reports to the sensors.
+    const out = parsePorcelainZ(' M src/a b.ts\0?? src/caf\u00e9.ts\0');
+    expect(out).toEqual(['src/a b.ts', 'src/café.ts']);
+  });
+
+  it('keeps the destination of a rename and drops the origin field', () => {
+    // R entries are followed by a SEPARATE NUL-terminated origin path.
+    expect(parsePorcelainZ('R  new.ts\0old.ts\0 M other.ts\0')).toEqual(['new.ts', 'other.ts']);
+  });
+
+  it('tolerates empty output', () => {
+    expect(parsePorcelainZ('')).toEqual([]);
+  });
+});
+
+describe('toWorkspaceRelative', () => {
+  it('prefixes with the repo on a multi-repo checkout', () => {
+    // Two repos can both contain src/index.ts; the sensors glob relative to the
+    // workspace, so only the prefixed form identifies a file unambiguously.
+    expect(toWorkspaceRelative(['src/index.ts'], { url: 'acme/shop', multi: true })).toEqual([
+      'acme/shop/src/index.ts',
+    ]);
+  });
+
+  it('leaves paths alone for a single repo, whose dir IS the workspace', () => {
+    expect(toWorkspaceRelative(['src/index.ts'], { url: 'acme/shop', multi: false })).toEqual([
+      'src/index.ts',
+    ]);
+  });
+});
+
 describe('commitAll', () => {
   it('commits the whole tree with the engine identity and returns the sha', async () => {
     const { work } = await initRemoteAndClone();
@@ -141,6 +178,20 @@ describe('commitAll', () => {
         else process.env[k] = v;
       }
     }
+  });
+
+  it('captures filenames with spaces and non-ASCII verbatim', async () => {
+    // The sensors match these paths against listFiles output, so any C-quoting
+    // from plain --porcelain would silently prevent a match.
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'a file.ts'), 'x\n');
+    await writeFile(path.join(work, 'café.ts'), 'y\n');
+
+    const res = await commitAll({ dir: work, message: 'aidlc(x): e1' });
+
+    expect(res.committed).toBe(true);
+    expect(res.files).toContain('a file.ts');
+    expect(res.files).toContain('café.ts');
   });
 
   it('captures untracked, modified AND deleted files (add -A semantics)', async () => {
@@ -1375,5 +1426,55 @@ describe('runtime excludes', () => {
     await ensureRuntimeExcludes({ dir: work });
     const again = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
     expect(again.match(/runtime excludes v3/g)).toHaveLength(1);
+  });
+});
+
+describe('aheadFiles', () => {
+  it('returns files changed between remote tracking branch and HEAD', async () => {
+    const { work } = await initRemoteAndClone();
+    // Commit a new file but do NOT push — HEAD is ahead.
+    await mkdir(path.join(work, 'src'), { recursive: true });
+    await writeFile(path.join(work, 'src', 'new.ts'), 'export const x = 1;');
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'add new'], work);
+
+    const files = await aheadFiles({ dir: work, branch: 'main' });
+    expect(files).toContain('src/new.ts');
+  });
+
+  it('returns empty when HEAD matches the remote', async () => {
+    const { work } = await initRemoteAndClone();
+    const files = await aheadFiles({ dir: work, branch: 'main' });
+    expect(files).toEqual([]);
+  });
+});
+
+describe('commitAndPushAll — retry carries files from ahead commit', () => {
+  it('derives file list from remote-to-HEAD diff on a clean retry', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    // Stage 1: commit succeeds, push fails (simulate by making remote refuse).
+    await mkdir(path.join(work, 'src'), { recursive: true });
+    await writeFile(path.join(work, 'src', 'index.ts'), 'export const a = 1;');
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'stage work'], work);
+    // HEAD is now ahead of remote.
+
+    // Stage 2: retry — no new edits, tree is clean. commitAndPushAll should
+    // still report the files from the ahead commit.
+    const remoteUrl = `file://${remote}`;
+    const result = await commitAndPushAll({
+      repos: [remoteUrl],
+      workspaceDir: work,
+      branch: 'main',
+      gitProvider: 'github',
+      projectId: 'test',
+      executionId: 'ex1',
+      message: 'retry',
+      urlsFor: () => ({ clean: remoteUrl, auth: remoteUrl }),
+    });
+    expect(result.ok).toBe(true);
+    // The result should carry the files from the ahead commit.
+    const files = result.results.flatMap((r) => r.files ?? []);
+    expect(files.some((f) => f.endsWith('src/index.ts'))).toBe(true);
   });
 });

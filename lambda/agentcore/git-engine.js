@@ -240,6 +240,29 @@ const resolveCommitterFor = async ({
 //     losing a commit is strictly worse than a dependency re-install,
 //   - a terminal failure reports `dirty` (does the tree hold uncommitted
 //     work?) so run-stage can fail the stage when real work is at risk.
+// Parse `git status --porcelain -z` into repo-relative paths.
+//
+// The -z form is NUL-delimited and does NOT C-quote paths, so filenames with
+// spaces or non-ASCII bytes come through verbatim and match what `listFiles`
+// reports. Each entry is `XY <path>`; a rename/copy (R/C) is followed by a
+// SEPARATE NUL-terminated field holding the ORIGIN path. We keep the
+// destination (the file that now exists) and drop the origin.
+export const parsePorcelainZ = (stdout = '') => {
+  const fields = String(stdout).split('\0');
+  const out = [];
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (!entry) continue;
+    const status = entry.slice(0, 2);
+    const p = entry.slice(3);
+    if (p) out.push(p);
+    // R/C entries carry the origin path in the next field — consume it so it is
+    // not mistaken for a status entry of its own.
+    if (status.includes('R') || status.includes('C')) i += 1;
+  }
+  return out;
+};
+
 export const commitAll = async ({
   dir,
   message,
@@ -256,15 +279,11 @@ export const commitAll = async ({
   await ensureRuntimeExcludes({ dir });
 
   const attemptOnce = async () => {
-    const before = await git(['status', '--porcelain'], { cwd: dir });
-    const files =
-      before.exitCode === 0
-        ? before.stdout
-            .split('\n')
-            .filter(Boolean)
-            .map((line) => line.slice(3).trim().split(' -> ').pop())
-            .filter(Boolean)
-        : [];
+    // `-z` gives NUL-delimited, UNQUOTED paths. Plain `--porcelain` C-quotes any
+    // path containing a space or non-ASCII byte ("src/a b.ts" -> "\"src/a b.ts\""),
+    // which would never match the raw paths `listFiles` reports to the sensors.
+    const before = await git(['status', '--porcelain', '-z'], { cwd: dir });
+    const files = before.exitCode === 0 ? parsePorcelainZ(before.stdout) : [];
     const add = await git(['add', '-A'], { cwd: dir });
     if (add.exitCode !== 0) {
       return { committed: false, reason: 'add_failed', detail: add.stderr.trim(), files };
@@ -439,6 +458,17 @@ export const isAheadOfRemote = async ({ dir, branch, git = runGit }) => {
   return remoteRef.stdout.trim() !== head.stdout.trim();
 };
 
+// List the files changed between the remote tracking branch and HEAD. Used on a
+// clean retry: the working tree has no changes but the local HEAD is ahead of
+// the remote (a previous run committed but failed to push). Returns the
+// repo-relative paths that the ahead commit(s) touched, or [] on failure.
+export const aheadFiles = async ({ dir, branch, git = runGit }) => {
+  const remoteRef = `refs/remotes/origin/${branch}`;
+  const diff = await git(['diff', '--name-only', '-z', remoteRef, 'HEAD'], { cwd: dir });
+  if (diff.exitCode !== 0) return [];
+  return diff.stdout.split('\0').filter((p) => p.length > 0);
+};
+
 // Push HEAD to the branch with v1 pushBranchWithRetry semantics. Returns:
 //   { pushed: 'empty' }               — no commits at all (new/empty repo)
 //   { pushed: true, sha, verified }   — on the remote (verified: ls-remote head
@@ -531,6 +561,15 @@ export const pushBranch = async ({
 // The on-disk target dir for a repo — MUST match workspace.js#repoTargetDir
 // (single repo → workspaceDir; multi → workspaceDir/<owner>/<repo>). Exported
 // for the lane commands (init-lane / merge-lane) that loop repos themselves.
+// Re-base a repo's own relative paths onto the WORKSPACE root, mirroring
+// repoTargetDir. On a multi-repo checkout each repo lives at
+// <workspaceDir>/<owner>/<repo>, so `src/index.ts` in two different repos are
+// two DIFFERENT workspace paths. Consumers (the sensors) glob relative to the
+// workspace, so they need the prefixed form to match exactly — a bare suffix
+// comparison would conflate identically-named files across repos.
+export const toWorkspaceRelative = (files = [], { url, multi }) =>
+  multi ? files.map((f) => `${url}/${f}`) : [...files];
+
 export const repoTargetDir = ({ url, workspaceDir, multi }) =>
   multi ? path.join(workspaceDir, url) : workspaceDir;
 
@@ -1171,6 +1210,11 @@ export const commitAndPushAll = async ({
         sleep,
         log,
       });
+      // Report changed files relative to the WORKSPACE, not the repo, so a
+      // multi-repo checkout cannot conflate same-named files across repos.
+      if (Array.isArray(commit.files)) {
+        commit.files = toWorkspaceRelative(commit.files, { url, multi });
+      }
       if (commit.reason === 'add_failed' || commit.reason === 'commit_failed') {
         results.push({ repo: url, ...commit, pushed: false });
         continue;
@@ -1181,6 +1225,16 @@ export const commitAndPushAll = async ({
       if (!commit.committed && !(await isAheadOfRemote({ dir, branch, git }))) {
         results.push({ repo: url, ...commit, pushed: 'up_to_date' });
         continue;
+      }
+      // On a clean retry (no new commit but HEAD is ahead), derive the changed
+      // file list from the remote-to-HEAD diff so sensors can still inspect the
+      // never-checked commit. Without this, `files` would be undefined and
+      // sensors would skip the commit entirely.
+      if (!commit.committed && !commit.files) {
+        commit.files = await aheadFiles({ dir, branch, git });
+      }
+      if (Array.isArray(commit.files)) {
+        commit.files = toWorkspaceRelative(commit.files, { url, multi });
       }
       const push = await pushBranch({
         dir,

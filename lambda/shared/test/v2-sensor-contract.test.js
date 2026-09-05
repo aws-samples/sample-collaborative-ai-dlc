@@ -5,6 +5,10 @@ import {
   severityGate,
   validateScriptSpec,
   resultFromExit,
+  TOOL_UNAVAILABLE_EXIT,
+  sensorVerdictMode,
+  sensorScope,
+  projectConfigFile,
   buildScriptArgv,
   evalRequiredSections,
   evalUpstreamCoverage,
@@ -78,6 +82,62 @@ describe('resultFromExit', () => {
     expect(resultFromExit(2)).toBe(SENSOR_RESULT.INCONCLUSIVE);
     expect(resultFromExit(1)).toBe(SENSOR_RESULT.FAIL);
     expect(resultFromExit(null)).toBe(SENSOR_RESULT.BLOCKED);
+  });
+
+  it('treats 127 (tool unresolvable) as INCONCLUSIVE, never FAIL', () => {
+    // The per-sensor scripts exit 127 when their underlying tool cannot be
+    // resolved. Reporting that as FAIL made a broken harness look identical to
+    // real type/lint errors — and would wedge a blocking sensor.
+    expect(resultFromExit(TOOL_UNAVAILABLE_EXIT)).toBe(SENSOR_RESULT.INCONCLUSIVE);
+    expect(TOOL_UNAVAILABLE_EXIT).toBe(127);
+  });
+});
+
+describe('sensorVerdictMode', () => {
+  it('honours an explicit declaration', () => {
+    expect(sensorVerdictMode({ sensorId: 'custom', verdictMode: 'stdout-json' })).toBe(
+      'stdout-json',
+    );
+    expect(sensorVerdictMode({ sensorId: 'linter', verdictMode: 'exit-code' })).toBe('exit-code');
+  });
+
+  it('defaults UNMARKED sensors to exit-code semantics', () => {
+    // Custom scripts from the sensor editor signal FAIL by exit status. Keying
+    // off runtime instead would silently reclassify them as INCONCLUSIVE.
+    expect(sensorVerdictMode({ sensorId: 'my-custom-check', runtime: 'bun' })).toBe('exit-code');
+    expect(sensorVerdictMode({})).toBe('exit-code');
+  });
+
+  it('falls back to stdout-json for the known upstream sensors', () => {
+    expect(sensorVerdictMode({ sensorId: 'linter' })).toBe('stdout-json');
+    expect(sensorVerdictMode({ sensorId: 'type-check' })).toBe('stdout-json');
+  });
+
+  it('ignores an unrecognised declaration', () => {
+    expect(sensorVerdictMode({ sensorId: 'custom', verdictMode: 'nonsense' })).toBe('exit-code');
+  });
+});
+
+describe('sensorScope', () => {
+  it('treats type-check as project-scoped and everything else as file-scoped', () => {
+    // tsc compiles a whole project, so scoping it to changed files yields false
+    // PASSes when a changed provider breaks an untouched consumer.
+    expect(sensorScope({ sensorId: 'type-check' })).toBe('project');
+    expect(sensorScope({ sensorId: 'linter' })).toBe('file');
+    expect(sensorScope({})).toBe('file');
+  });
+
+  it('honours an explicit scope', () => {
+    expect(sensorScope({ sensorId: 'linter', scope: 'project' })).toBe('project');
+    expect(sensorScope({ sensorId: 'type-check', scope: 'file' })).toBe('file');
+    expect(sensorScope({ sensorId: 'x', scope: 'nonsense' })).toBe('file');
+  });
+});
+
+describe('projectConfigFile', () => {
+  it('defaults to tsconfig.json and is overridable', () => {
+    expect(projectConfigFile({})).toBe('tsconfig.json');
+    expect(projectConfigFile({ projectConfig: 'jsconfig.json' })).toBe('jsconfig.json');
   });
 });
 
