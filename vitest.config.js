@@ -16,20 +16,46 @@ const globalSetup = [
   fileURLToPath(new URL('./test/dynamodb-setup.js', import.meta.url)),
 ];
 
+// These projects contain integration tests that connect to the shared local
+// Gremlin or DynamoDB services. Mutation runs for all other projects stay unit-only.
+const infrastructureLambdas = new Set([
+  'agentcore',
+  'agents',
+  'discussions',
+  'intents',
+  'migrate-tracker-fields',
+  'projects',
+  'purge-neptune',
+  'questions',
+  'sprint-graph',
+  'sprints',
+  'tasks',
+  'timeline-events',
+  'trackers',
+]);
+
+export const backendProjects = lambdas.map((name) => ({
+  name,
+  requiresInfrastructure: infrastructureLambdas.has(name),
+  config: {
+    test: {
+      name,
+      root: fileURLToPath(new URL(name, lambdaRoot)),
+      include: ['test/**/*.test.js'],
+      setupFiles,
+    },
+  },
+}));
+
+export { globalSetup as backendGlobalSetup };
+
 export default defineConfig({
   test: {
-    projects: lambdas.map((name) => ({
-      test: {
-        name,
-        root: fileURLToPath(new URL(name, lambdaRoot)),
-        include: ['test/**/*.test.js'],
-        setupFiles,
-      },
-    })),
+    projects: backendProjects.map((project) => project.config),
     globalSetup,
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'html', 'lcov'],
+      reporter: ['text', 'html', 'lcov', 'json-summary', 'json'],
       reportsDirectory: './coverage',
       include: ['lambda/**/*.js'],
       exclude: ['lambda/**/test/**', 'lambda/**/*.config.js', 'lambda/**/node_modules/**'],
