@@ -50,6 +50,8 @@ PERSISTED_AUTH_MODE="local"
 SOURCE=""
 ASSUME_YES="${AIDLC_YES:-0}"
 ALLOW_DOWNGRADE="${AIDLC_ALLOW_DOWNGRADE:-0}"
+# Binary checked by require_commands; image builds select their daemon with DOCKER_HOST.
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 
 usage() {
     cat <<'EOF'
@@ -586,7 +588,7 @@ require_terraform_version() {
 
 require_commands() {
     local missing=0 command
-    local commands="git node npm terraform aws docker"
+    local commands="git node npm terraform aws $CONTAINER_RUNTIME"
     [[ "${AIDLC_TEST_MODE:-0}" == 1 ]] && commands="git node"
     for command in $commands; do
         if ! command -v "$command" >/dev/null 2>&1; then

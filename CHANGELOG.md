@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Optional static egress for OAuth connectors, credential resolution, and seed-blocks through `lambda_vpc_scope = "public-egress"`, with NAT public IP outputs and addresses printed in the deployment summary for external allow-lists.
+- Configurable container runtime via `CONTAINER_RUNTIME` / `DOCKER_HOST` — any Docker-API-socket runtime works (Podman, Rancher Desktop verified); Finch unsupported ([#420](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/420)).
 
 ## [2.0.0] - 2026-08-06
 

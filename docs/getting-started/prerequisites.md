@@ -24,19 +24,60 @@ git --version    # Expected output: 2.x
 
 To deploy AIDLC Collaborative to AWS, install the following additional tools. For detailed deployment instructions, see [Setup](setup.md).
 
-| Tool                                                                                                                  | Version        | Purpose                                         |
-| --------------------------------------------------------------------------------------------------------------------- | -------------- | ----------------------------------------------- |
-| [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.4 or later   | Infrastructure provisioning                     |
-| [AWS Command Line Interface (AWS CLI)](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | v2             | AWS resource management and credential handling |
-| [Docker](https://docs.docker.com/get-docker/)                                                                         | 20.10 or later | Lambda packaging and container builds           |
+| Tool                                                                                                                  | Version        | Purpose                                                                               |
+| --------------------------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------- |
+| [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.4 or later   | Infrastructure provisioning                                                           |
+| [AWS Command Line Interface (AWS CLI)](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | v2             | AWS resource management and credential handling                                       |
+| [Docker](https://docs.docker.com/get-docker/) (default)                                                               | 20.10 or later | Lambda packaging and container builds; alternatives use the override documented below |
 
-Run the following commands to confirm your deployment tools are installed.
+Run the following commands to confirm the default Docker-based deployment tools are installed. If you use an alternative container runtime, follow the section below instead of the Docker verification command.
 
 ```bash
 terraform --version  # Expected output: v1.4 or later
 aws --version        # Expected output: aws-cli/2.x
 docker --version     # Expected output: Docker version 20.10 or later
 ```
+
+### Using an alternative container runtime
+
+Docker is the default container runtime; no configuration is needed when the `docker` CLI and standard Docker socket are available. Two independent settings control the runtime:
+
+- `CONTAINER_RUNTIME` (default: `docker`) — the CLI name the installer's prerequisite check looks for.
+- `DOCKER_HOST` — the Docker Engine API socket that Terraform's `kreuzwerker/docker` provider connects to when it builds and pushes the container images.
+
+Because the image build talks to the Docker Engine API socket (rather than shelling out to a CLI), **any runtime that exposes such a socket works**. Point `DOCKER_HOST` at the runtime's socket and the build behaves exactly as it does with Docker.
+
+| Runtime                             | Docker API socket               | Status                      |
+| ----------------------------------- | ------------------------------- | --------------------------- |
+| Docker (default)                    | standard `/var/run/docker.sock` | Supported                   |
+| Podman                              | derived at runtime (see below)  | Verified end-to-end         |
+| Rancher Desktop (dockerd/moby mode) | `~/.rd/docker.sock`             | Verified end-to-end         |
+| Colima                              | `~/.colima/default/docker.sock` | Compatible (same mechanism) |
+| OrbStack                            | `~/.orbstack/run/docker.sock`   | Compatible (same mechanism) |
+
+Podman example:
+
+```bash
+# macOS
+podman machine start
+export CONTAINER_RUNTIME=podman
+export DOCKER_HOST="unix://$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')"
+
+# Rootless Linux (after starting `podman system service`)
+export CONTAINER_RUNTIME=podman
+export DOCKER_HOST="unix://$(podman info --format '{{.Host.RemoteSocket.Path}}')"
+```
+
+Rancher Desktop example (set the container engine to **dockerd (moby)** in Rancher Desktop settings):
+
+```bash
+export CONTAINER_RUNTIME=docker      # Rancher provides a docker-compatible CLI
+export DOCKER_HOST="unix://$HOME/.rd/docker.sock"
+```
+
+!!! warning "Finch and CLI-only build tools are not supported"
+
+    Setting `CONTAINER_RUNTIME=finch` only makes the installer's prerequisite check look for the `finch` CLI. Finch does not expose a Docker Engine API socket by default, so there is no socket for `DOCKER_HOST` to use and the Terraform image build cannot run. The same applies to daemonless/CLI-only build tools such as Buildah, nerdctl, Kaniko, and BuildKit. Use Docker, Podman, or another socket-based runtime from the table above.
 
 You must also have an AWS account with permissions to manage the following services.
 
