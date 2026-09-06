@@ -973,7 +973,7 @@ describe('IntentView', () => {
 
     renderAt();
     // Phases and stages render expanded by default, in workflow order.
-    expect(await screen.findByText('Construction')).toBeInTheDocument();
+    expect((await screen.findAllByText('Construction')).length).toBeGreaterThan(0);
     expect(await screen.findByText('Code Gen Doc')).toBeInTheDocument();
 
     // Collect phase headers + document titles in DOM order and assert the full
@@ -987,7 +987,10 @@ describe('IntentView', () => {
       'Requirements Doc Old',
       'Requirements Doc New',
     ];
-    const positions = labels.map((t) => ({ t, el: screen.getByText(t) }));
+    const positions = labels.map((t) => {
+      const matches = screen.getAllByText(t);
+      return { t, el: matches[matches.length - 1] };
+    });
     const domOrder = positions
       .toSorted((a, b) =>
         a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,

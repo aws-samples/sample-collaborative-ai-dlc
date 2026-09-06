@@ -11,7 +11,7 @@ import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
 import { AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
-import { ScopeBadge } from '@/components/intent/ScopeBadge';
+import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
 import { AgentProgressCard } from '@/components/intent/AgentProgressCard';
@@ -253,7 +253,6 @@ export default function IntentView() {
           <h1 className="text-lg font-bold tracking-tight truncate min-w-0">
             {intent.title || 'Intent'}
           </h1>
-          {intent.scope && <ScopeBadge scope={intent.scope} className="shrink-0" />}
           {intent.agentCli && (
             <Badge variant="outline" className="gap-1 text-[10px] shrink-0">
               <Bot className="h-3 w-3" />
@@ -322,6 +321,8 @@ export default function IntentView() {
           )}
         </div>
       </div>
+
+      <IntentPhaseBreadcrumb />
 
       {intent.environment && (
         <div className="grid gap-3 border-y py-3 text-[11px] sm:grid-cols-2 lg:grid-cols-[auto_1fr_1fr_1fr_auto] lg:items-center">

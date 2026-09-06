@@ -1,12 +1,14 @@
-import { useEffect, useMemo } from 'react';
-import { useLocation } from 'react-router';
-import { CheckCircle2, ChevronRight } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Check, Circle, LoaderCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Progress } from '@/components/ui/progress';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useIntent } from '@/contexts/IntentContext';
-import { groupByPhase, derivePhaseState } from '@/lib/intentPhases';
-import { setLastIntentSection, type IntentSection } from '@/lib/intentSectionPreference';
+import { ScopeBadge } from '@/components/intent/ScopeBadge';
+import { humanizeStageId } from '@/components/intent/documentHelpers';
+import { getIntentStageSelection } from '@/lib/intentStageSelection';
+import type { IntentSection } from '@/lib/intentSectionPreference';
+import type { IntentStage } from '@/services/intents';
 
 function detectSection(pathname: string): IntentSection {
   if (pathname.endsWith('/graph')) return 'graph';
@@ -14,103 +16,191 @@ function detectSection(pathname: string): IntentSection {
   return 'work';
 }
 
-export function IntentPipelineBar() {
-  const location = useLocation();
+type StepState = 'done' | 'running' | 'failed' | 'pending';
+
+function stepState(rows: IntentStage[]): StepState {
+  if (rows.length === 0) return 'pending';
+  if (rows.some((row) => row.state === 'RUNNING' || row.state === 'WAITING_FOR_HUMAN')) {
+    return 'running';
+  }
+  if (rows.some((row) => row.state === 'FAILED')) return 'failed';
+  if (rows.every((row) => row.state === 'SUCCEEDED' || row.state === 'SKIPPED')) return 'done';
+  return 'pending';
+}
+
+export function IntentPhaseBreadcrumb() {
   const {
-    projectId,
-    intentId,
     detail,
     compiled,
-    stageRows,
-    loading,
     phaseNameOf,
     initializationPhasePaths,
     workflowPhases,
     currentPhasePath,
   } = useIntent();
+  const [openPhase, setOpenPhase] = useState<string | null>(null);
 
-  const planReady = !!compiled && !!workflowPhases;
+  const phases = useMemo(() => {
+    if (!detail || !compiled || !workflowPhases) return [];
+    const intent = detail.intent;
+    const rowsByStage = new Map<string, IntentStage[]>();
+    for (const row of detail.stages) {
+      if (!row.stageId) continue;
+      const rows = rowsByStage.get(row.stageId) ?? [];
+      rows.push(row);
+      rowsByStage.set(row.stageId, rows);
+    }
 
-  const phases = useMemo(
-    () =>
-      planReady
-        ? groupByPhase(stageRows).filter((g) => !initializationPhasePaths.has(g.phase))
-        : [],
-    [planReady, stageRows, initializationPhasePaths],
-  );
+    const selection = getIntentStageSelection(intent, compiled, initializationPhasePaths);
+    const selected = selection.selected.toSorted((a, b) => a.order - b.order);
 
-  const activeIndex = useMemo(() => {
-    const idx = phases.findIndex((g) => derivePhaseState(g, currentPhasePath) === 'active');
-    return idx >= 0 ? idx : phases.length - 1;
-  }, [phases, currentPhasePath]);
+    const allByPhase = new Map<string, number>();
+    for (const node of selection.available) {
+      const phase = node.phasePath ?? '(ungrouped)';
+      allByPhase.set(phase, (allByPhase.get(phase) ?? 0) + 1);
+    }
 
-  const currentSection = detectSection(location.pathname);
+    const groups = new Map<
+      string,
+      {
+        phase: string;
+        steps: { stageId: string; state: StepState }[];
+        excluded: number;
+      }
+    >();
+    for (const node of selected) {
+      const phase = node.phasePath ?? '(ungrouped)';
+      const group = groups.get(phase) ?? { phase, steps: [], excluded: 0 };
+      group.steps.push({
+        stageId: node.stageId,
+        state: stepState(rowsByStage.get(node.stageId) ?? []),
+      });
+      groups.set(phase, group);
+    }
+    for (const group of groups.values()) {
+      group.excluded = Math.max(
+        0,
+        (allByPhase.get(group.phase) ?? group.steps.length) - group.steps.length,
+      );
+    }
+    return [...groups.values()];
+  }, [compiled, detail, initializationPhasePaths, workflowPhases]);
 
-  useEffect(() => {
-    if (intentId) setLastIntentSection(intentId, currentSection);
-  }, [intentId, currentSection]);
-
-  if (!detail && loading) return null;
-  if (!projectId || !intentId) return null;
-  if (phases.length === 0) return null;
+  const intent = detail?.intent;
+  if (intent && (!compiled || !workflowPhases)) {
+    return (
+      <div
+        className="space-y-2"
+        data-testid="intent-phase-breadcrumb-placeholder"
+        aria-hidden="true"
+      >
+        {intent.scope && <Skeleton className="h-4 w-24 rounded-full" />}
+        <Skeleton className="h-12 w-full rounded-none" />
+      </div>
+    );
+  }
+  if (!intent || phases.length === 0) return null;
 
   return (
-    <div className="h-11 border-b bg-background flex items-center px-3 gap-1 overflow-x-auto md:overflow-visible">
-      <div className="flex items-center gap-0.5 shrink-0">
+    <div className="space-y-2" data-testid="intent-phase-breadcrumb">
+      {intent.scope && (
+        <div className="flex items-center">
+          <ScopeBadge scope={intent.scope} className="px-2 py-0 text-[10px]" />
+        </div>
+      )}
+      <div className="flex w-full min-w-max overflow-x-auto pr-4">
         {phases.map((group, index) => {
-          const state = derivePhaseState(group, currentPhasePath);
-          const progress = group.total > 0 ? Math.round((group.done / group.total) * 100) : null;
-          const distance = Math.abs(index - activeIndex);
-          const isNear = distance <= 1;
+          const done = group.steps.filter((step) => step.state === 'done').length;
+          const active =
+            group.phase === currentPhasePath ||
+            group.steps.some((step) => step.state === 'running' || step.state === 'failed');
+          const complete = done === group.steps.length && group.steps.length > 0;
+          const open = openPhase === group.phase;
 
           return (
-            <div key={group.phase} className="flex items-center">
-              {index > 0 && (
-                <ChevronRight className="h-3 w-3 text-muted-foreground/50 mx-0.5 shrink-0" />
-              )}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div
+            <Popover
+              key={group.phase}
+              open={open}
+              onOpenChange={(next) => setOpenPhase(next ? group.phase : null)}
+            >
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className={cn(
+                    'group relative flex min-h-12 min-w-48 flex-1 items-center gap-2.5 px-8 py-2 text-left transition-[filter] focus-visible:outline-none',
+                    index > 0 && '-ml-4',
+                    complete && 'bg-agent-success/10 text-agent-success',
+                    active && !complete && 'bg-agent-running/10 text-agent-running',
+                    !active && !complete && 'bg-muted text-muted-foreground',
+                    open && 'brightness-[0.97]',
+                  )}
+                  style={{
+                    clipPath:
+                      index === 0
+                        ? 'polygon(0 0, calc(100% - 18px) 0, 100% 50%, calc(100% - 18px) 100%, 0 100%)'
+                        : 'polygon(0 0, calc(100% - 18px) 0, 100% 50%, calc(100% - 18px) 100%, 0 100%, 18px 50%)',
+                  }}
+                >
+                  <span
                     className={cn(
-                      'flex flex-col gap-1 rounded-md font-medium whitespace-nowrap transition-all',
-                      isNear ? 'px-3 py-1.5 text-xs' : 'px-1.5 py-1 text-[10px] opacity-60',
-                      state === 'active' && 'bg-sidebar-accent text-foreground',
-                      state === 'done' && 'text-muted-foreground',
-                      state === 'pending' && 'text-muted-foreground/40',
+                      'grid h-6 w-6 shrink-0 place-items-center rounded-full bg-background/80',
+                      'group-focus-visible:ring-2 group-focus-visible:ring-current group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-transparent',
+                      open && 'ring-2 ring-current ring-offset-2 ring-offset-transparent',
                     )}
                   >
-                    <span className="flex items-center gap-1.5">
-                      {state === 'done' ? (
-                        <CheckCircle2 className="h-3.5 w-3.5 text-agent-success shrink-0" />
-                      ) : state === 'active' ? (
-                        <span className="h-2 w-2 rounded-full bg-agent-running animate-pulse shrink-0" />
-                      ) : (
-                        <span className="h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
-                      )}
-                      <span>{phaseNameOf(group.phase)}</span>
-                      {isNear && (
-                        <span className="hidden xl:inline text-[10px] text-muted-foreground font-normal">
-                          {group.done}/{group.total}
-                        </span>
-                      )}
-                    </span>
-                    {isNear && progress !== null && (
-                      <Progress
-                        value={progress}
-                        className={cn(
-                          'h-1 w-full',
-                          state === 'done' && '[&>div]:bg-agent-success',
-                          state === 'active' && '[&>div]:bg-agent-running',
-                        )}
-                      />
+                    {complete ? (
+                      <Check className="h-3.5 w-3.5" />
+                    ) : active ? (
+                      <span className="h-2 w-2 rounded-full bg-current" />
+                    ) : (
+                      <Circle className="h-3.5 w-3.5" />
                     )}
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {phaseNameOf(group.phase)} — {group.done}/{group.total}
-                </TooltipContent>
-              </Tooltip>
-            </div>
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-bold">
+                      {phaseNameOf(group.phase)}
+                    </span>
+                    <span className="block text-[10px] font-medium opacity-80">
+                      {done}/{group.steps.length} selected steps
+                    </span>
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-[min(26rem,calc(100vw-2rem))] p-0">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold">{phaseNameOf(group.phase)}</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {done} resolved ·{' '}
+                    {group.steps.filter((step) => step.state === 'running').length} running ·{' '}
+                    {group.steps.filter((step) => step.state === 'pending').length} pending
+                  </p>
+                </div>
+                <div className="space-y-1 bg-muted/30 p-2">
+                  {group.steps.map((step) => (
+                    <div
+                      key={step.stageId}
+                      className="flex items-center gap-2 rounded-md bg-background px-2.5 py-2 text-xs"
+                    >
+                      {step.state === 'done' ? (
+                        <Check className="h-3.5 w-3.5 text-agent-success" />
+                      ) : step.state === 'running' ? (
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin text-agent-running" />
+                      ) : (
+                        <Circle className="h-3.5 w-3.5 text-muted-foreground" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate font-medium">
+                        {humanizeStageId(step.stageId)}
+                      </span>
+                      <span className="capitalize text-muted-foreground">{step.state}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="px-4 py-2.5 text-[11px] text-muted-foreground">
+                  {group.excluded > 0
+                    ? `${group.excluded} ${group.excluded === 1 ? 'step is' : 'steps are'} outside this selection.`
+                    : 'All workflow steps in this phase are selected.'}
+                </div>
+              </PopoverContent>
+            </Popover>
           );
         })}
       </div>
@@ -118,4 +208,5 @@ export function IntentPipelineBar() {
   );
 }
 
+export const IntentPipelineBar = IntentPhaseBreadcrumb;
 export { detectSection };
