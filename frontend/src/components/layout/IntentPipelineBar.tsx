@@ -28,7 +28,11 @@ function stepState(rows: IntentStage[]): StepState {
   return 'pending';
 }
 
-export function IntentPhaseBreadcrumb() {
+export function IntentPhaseBreadcrumb({
+  onOpenConfiguration,
+}: {
+  onOpenConfiguration?: () => void;
+}) {
   const {
     detail,
     compiled,
@@ -194,10 +198,24 @@ export function IntentPhaseBreadcrumb() {
                     </div>
                   ))}
                 </div>
-                <div className="px-4 py-2.5 text-[11px] text-muted-foreground">
-                  {group.excluded > 0
-                    ? `${group.excluded} ${group.excluded === 1 ? 'step is' : 'steps are'} outside this selection.`
-                    : 'All workflow steps in this phase are selected.'}
+                <div className="flex items-center justify-between gap-3 px-4 py-2.5 text-[11px] text-muted-foreground">
+                  <span>
+                    {group.excluded > 0
+                      ? `${group.excluded} ${group.excluded === 1 ? 'step is' : 'steps are'} outside this selection.`
+                      : 'All workflow steps in this phase are selected.'}
+                  </span>
+                  {group.excluded > 0 && onOpenConfiguration && (
+                    <button
+                      type="button"
+                      className="shrink-0 font-medium text-foreground underline-offset-4 hover:underline"
+                      onClick={() => {
+                        setOpenPhase(null);
+                        onOpenConfiguration();
+                      }}
+                    >
+                      View configuration
+                    </button>
+                  )}
                 </div>
               </PopoverContent>
             </Popover>

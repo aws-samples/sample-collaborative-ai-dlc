@@ -349,10 +349,14 @@ describe('IntentView', () => {
     expect(editors[0].getAttribute('data-gate')).toBe('h1');
   });
 
-  it('renders the immutable environment revision and verification result', async () => {
+  it('moves the immutable environment snapshot into the run configuration dialog', async () => {
+    const user = userEvent.setup();
     get.mockResolvedValue(
       baseDetail({
         status: 'RUNNING',
+        agentCli: 'claude',
+        credentialSource: 'space',
+        cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
         environment: {
           environmentId: 'polyglot',
           name: 'Polyglot',
@@ -367,10 +371,23 @@ describe('IntentView', () => {
       }),
     );
     renderAt();
-    expect(await screen.findByText('Polyglot')).toBeInTheDocument();
+
+    expect(await screen.findByText('My intent')).toBeInTheDocument();
+    expect(screen.queryByText('Polyglot')).not.toBeInTheDocument();
+    expect(screen.queryByText('Claude Code')).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText('Intent actions'));
+    await user.click(screen.getByText('Intent configuration'));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Intent configuration' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Polyglot')).toBeInTheDocument();
+    expect(screen.getByText('Claude Code')).toBeInTheDocument();
+    expect(screen.getByText(/us\.anthropic\.claude-sonnet-4-6/)).toBeInTheDocument();
     expect(screen.getByText('r-7')).toBeInTheDocument();
     expect(screen.getByText('revision_r_7')).toBeInTheDocument();
-    expect(screen.getByText('verification PASSED')).toBeInTheDocument();
+    expect(screen.getAllByText('PASSED')).toHaveLength(2);
   });
 
   it('shows resume progress after a gate is answered but before the stage is running again', async () => {

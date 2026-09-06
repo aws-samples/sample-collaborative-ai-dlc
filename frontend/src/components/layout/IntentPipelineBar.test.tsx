@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 const { mockUseIntent } = vi.hoisted(() => ({
   mockUseIntent: vi.fn(),
@@ -62,6 +63,19 @@ describe('IntentPhaseBreadcrumb', () => {
     expect(placeholder).toHaveClass('space-y-2');
     expect(placeholder.children).toHaveLength(2);
     expect(screen.queryByTestId('intent-phase-breadcrumb')).not.toBeInTheDocument();
+  });
+
+  it('opens the run configuration from a phase with excluded steps', async () => {
+    const user = userEvent.setup();
+    const onOpenConfiguration = vi.fn();
+    mockUseIntent.mockReturnValue(readyContext);
+
+    render(<IntentPhaseBreadcrumb onOpenConfiguration={onOpenConfiguration} />);
+
+    await user.click(screen.getByRole('button', { name: /Inception/ }));
+    await user.click(screen.getByRole('button', { name: 'View configuration' }));
+
+    expect(onOpenConfiguration).toHaveBeenCalledOnce();
   });
 });
 

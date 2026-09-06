@@ -5,11 +5,11 @@ import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { RecomposePanel } from '@/components/intent/RecomposePanel';
+import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
 import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
-import { AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -36,16 +36,16 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
-  Bot,
-  Boxes,
   KeyRound,
   Loader2,
   MoreHorizontal,
   Play,
   RotateCcw,
+  Settings2,
   Trash2,
   TriangleAlert,
   Wrench,
@@ -93,6 +93,7 @@ export default function IntentView() {
   const [deleting, setDeleting] = useState(false);
   const [confirmRepair, setConfirmRepair] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  const [configurationOpen, setConfigurationOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // A stage failure retries from the earliest failed stage, preserving all
@@ -196,10 +197,6 @@ export default function IntentView() {
   }
 
   const intent = detail.intent;
-  const environmentVerification =
-    typeof intent.environment?.verification?.status === 'string'
-      ? intent.environment.verification.status
-      : 'UNKNOWN';
   const laneWaits = deriveLaneWaits(detail.stages, gates);
   const recoveryWaits = Object.values(laneWaits).filter((wait) => wait.kind === 'recovery');
   const needsLaneRepair =
@@ -253,15 +250,6 @@ export default function IntentView() {
           <h1 className="text-lg font-bold tracking-tight truncate min-w-0">
             {intent.title || 'Intent'}
           </h1>
-          {intent.agentCli && (
-            <Badge variant="outline" className="gap-1 text-[10px] shrink-0">
-              <Bot className="h-3 w-3" />
-              {AGENT_CLI_METADATA[intent.agentCli].label}
-              {intent.credentialSource
-                ? ` · ${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
-                : ''}
-            </Badge>
-          )}
           {TERMINAL_STATUSES.has(intent.status) && (
             <Badge variant="outline" className="text-[10px] shrink-0">
               {intent.status}
@@ -292,73 +280,40 @@ export default function IntentView() {
               )}
             </span>
           )}
-          {(isCancellable || isDeletable) && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {isCancellable && (
-                  <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
-                    <XCircle className="mr-2 h-4 w-4" />
-                    {cancelling ? 'Cancelling…' : 'Cancel run'}
-                  </DropdownMenuItem>
-                )}
-                {isDeletable && (
-                  <DropdownMenuItem
-                    disabled={deleting}
-                    onClick={() => setConfirmDelete(true)}
-                    className="text-destructive"
-                  >
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    {deleting ? 'Deleting…' : 'Delete'}
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setConfigurationOpen(true)}>
+                <Settings2 className="mr-2 h-4 w-4" />
+                Intent configuration
+              </DropdownMenuItem>
+              {(isCancellable || isDeletable) && <DropdownMenuSeparator />}
+              {isCancellable && (
+                <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
+                  <XCircle className="mr-2 h-4 w-4" />
+                  {cancelling ? 'Cancelling…' : 'Cancel run'}
+                </DropdownMenuItem>
+              )}
+              {isDeletable && (
+                <DropdownMenuItem
+                  disabled={deleting}
+                  onClick={() => setConfirmDelete(true)}
+                  className="text-destructive"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  {deleting ? 'Deleting…' : 'Delete'}
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
-      <IntentPhaseBreadcrumb />
-
-      {intent.environment && (
-        <div className="grid gap-3 border-y py-3 text-[11px] sm:grid-cols-2 lg:grid-cols-[auto_1fr_1fr_1fr_auto] lg:items-center">
-          <div className="flex items-center gap-1.5 font-medium">
-            <Boxes className="h-3.5 w-3.5" />
-            {intent.environment.name}
-          </div>
-          <div>
-            <span className="text-muted-foreground">Revision </span>
-            <span className="break-all font-mono">{intent.environment.revisionId}</span>
-          </div>
-          <div>
-            <span className="text-muted-foreground">Image </span>
-            <span className="break-all font-mono">
-              {intent.environment.imageDigest ?? 'Unavailable'}
-            </span>
-          </div>
-          <div>
-            <span className="text-muted-foreground">Endpoint </span>
-            <span className="break-all font-mono">
-              {intent.environment.runtimeEndpoint ?? 'Default'}
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5 lg:justify-end">
-            <Badge variant="outline" className="font-mono text-[10px]">
-              runtime {intent.environment.runtimeVersion ?? 'legacy'}
-            </Badge>
-            <Badge variant="outline" className="font-mono text-[10px]">
-              compatibility {intent.environment.compatibilityVersion}
-            </Badge>
-            <Badge variant="outline" className="font-mono text-[10px]">
-              verification {environmentVerification}
-            </Badge>
-          </div>
-        </div>
-      )}
+      <IntentPhaseBreadcrumb onOpenConfiguration={() => setConfigurationOpen(true)} />
 
       {error && (
         <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -620,6 +575,8 @@ export default function IntentView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <IntentConfigurationDialog open={configurationOpen} onOpenChange={setConfigurationOpen} />
     </div>
   );
 }
