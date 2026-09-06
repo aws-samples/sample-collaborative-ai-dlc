@@ -46,6 +46,8 @@ const stageRow = (stageId: string, state: string): IntentStage =>
 const renderPanel = (over: Partial<Parameters<typeof RecomposePanel>[0]> = {}) =>
   render(
     <RecomposePanel
+      open
+      onOpenChange={vi.fn()}
       projectId="p1"
       intentId="i1"
       intent={intent()}
@@ -63,15 +65,22 @@ describe('RecomposePanel', () => {
     recompose.mockReset().mockResolvedValue({});
     compiled.mockReset().mockResolvedValue({
       scopeGrid: {
-        feature: { init: 'EXECUTE', analyze: 'EXECUTE', optional: 'EXECUTE', build: 'EXECUTE' },
+        feature: {
+          init: 'EXECUTE',
+          ideation: 'SKIP',
+          analyze: 'EXECUTE',
+          optional: 'EXECUTE',
+          build: 'EXECUTE',
+        },
       },
       autonomy: { perStage: {}, rollup: { selfHalting: 0, mixed: 0, humanGated: 0, total: 0 } },
       graph: {
         nodes: [
           { stageId: 'init', phasePath: '01', order: 0 },
-          { stageId: 'analyze', phasePath: '03', order: 1 },
-          { stageId: 'optional', phasePath: '03', order: 2 },
-          { stageId: 'build', phasePath: '04', order: 3 },
+          { stageId: 'ideation', phasePath: '02', order: 1 },
+          { stageId: 'analyze', phasePath: '03', order: 2 },
+          { stageId: 'optional', phasePath: '03', order: 3 },
+          { stageId: 'build', phasePath: '04', order: 4 },
         ],
         edges: [],
         cycles: [],
@@ -93,6 +102,14 @@ describe('RecomposePanel', () => {
           order: 0,
         },
         {
+          phaseId: 'ideation',
+          name: 'Ideation',
+          kind: 'phase',
+          path: '02',
+          parentPath: null,
+          order: 1,
+        },
+        {
           phaseId: 'inception',
           name: 'Inception',
           kind: 'phase',
@@ -112,18 +129,31 @@ describe('RecomposePanel', () => {
     });
   });
 
-  it('is collapsed by default and fetches the workflow only when opened', async () => {
-    renderPanel();
+  it('fetches the workflow only when the dialog opens', async () => {
+    const onOpenChange = vi.fn();
+    const view = renderPanel({ open: false, onOpenChange });
     expect(compiled).not.toHaveBeenCalled();
-    await userEvent.setup().click(screen.getByTestId('recompose-toggle'));
+    view.rerender(
+      <RecomposePanel
+        open
+        onOpenChange={onOpenChange}
+        projectId="p1"
+        intentId="i1"
+        intent={intent()}
+        stageRows={[stageRow('analyze', 'SUCCEEDED'), stageRow('optional', 'WAITING_FOR_HUMAN')]}
+        workflowVersion={4}
+        onRelaunched={vi.fn()}
+      />,
+    );
     await waitFor(() => expect(compiled).toHaveBeenCalled());
+    expect(screen.getByRole('heading', { name: 'Reshape remaining stages' })).toBeInTheDocument();
     expect(await screen.findByTestId('stage-grid-editor')).toBeInTheDocument();
   });
 
   it('locks frozen (ran) stages and initialization; a manual flip applies via /recompose', async () => {
     const user = userEvent.setup();
-    renderPanel();
-    await user.click(screen.getByTestId('recompose-toggle'));
+    const onOpenChange = vi.fn();
+    renderPanel({ onOpenChange });
     await screen.findByTestId('stage-grid-editor');
     // analyze ran, init is initialization — both locked.
     expect(screen.getByTestId('grid-stage-analyze').querySelector('input')!.disabled).toBe(true);
@@ -142,13 +172,28 @@ describe('RecomposePanel', () => {
         scope: 'feature-recomposed',
       }),
     );
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('locks earlier phases while preserving their skipped values', async () => {
+    renderPanel({
+      intent: intent({ currentPhase: 'inception', currentStage: null }),
+      stageRows: [],
+    });
+    await screen.findByTestId('stage-grid-editor');
+
+    const earlierStage = screen.getByTestId('grid-stage-ideation').querySelector('input')!;
+    const currentStage = screen.getByTestId('grid-stage-analyze').querySelector('input')!;
+
+    expect(earlierStage.disabled).toBe(true);
+    expect(earlierStage.checked).toBe(false);
+    expect(currentStage.disabled).toBe(false);
   });
 
   it('asks the composer in inflight mode and applies its proposal', async () => {
     const user = userEvent.setup();
     listComposes.mockResolvedValue({ composes: [] });
     renderPanel();
-    await user.click(screen.getByTestId('recompose-toggle'));
     await user.type(screen.getByTestId('recompose-instructions'), 'trim it');
     await user.click(screen.getByTestId('recompose-ask-composer'));
     await waitFor(() =>

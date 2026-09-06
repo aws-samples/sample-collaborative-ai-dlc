@@ -40,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
+  GitBranch,
   KeyRound,
   Loader2,
   MoreHorizontal,
@@ -94,6 +95,7 @@ export default function IntentView() {
   const [confirmRepair, setConfirmRepair] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [reshapeOpen, setReshapeOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // A stage failure retries from the earliest failed stage, preserving all
@@ -210,6 +212,8 @@ export default function IntentView() {
   }
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
   const isFailed = intent.status === 'FAILED';
+  const canReshape =
+    (intent.status === 'WAITING' || isFailed) && intent.constructionAutonomyMode !== 'autonomous';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Deletable (destructive): owner/admin, any status except mid-RUNNING.
@@ -291,6 +295,12 @@ export default function IntentView() {
                 <Settings2 className="mr-2 h-4 w-4" />
                 Intent configuration
               </DropdownMenuItem>
+              {canReshape && (
+                <DropdownMenuItem onSelect={() => setReshapeOpen(true)}>
+                  <GitBranch className="mr-2 h-4 w-4" />
+                  Reshape remaining stages
+                </DropdownMenuItem>
+              )}
               {(isCancellable || isDeletable) && <DropdownMenuSeparator />}
               {isCancellable && (
                 <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
@@ -414,24 +424,6 @@ export default function IntentView() {
           </div>
         </div>
       )}
-
-      {/* In-flight reshape (Adaptive Workflows): skip/add PENDING stages on a
-          parked or failed run — composer-assisted or manual, always applied
-          through the validated recompose relaunch. Hidden mid-RUN and while
-          construction runs autonomously (the endpoint rejects both anyway). */}
-      {(intent.status === 'WAITING' || isFailed) &&
-        intent.constructionAutonomyMode !== 'autonomous' &&
-        projectId &&
-        intentId && (
-          <RecomposePanel
-            projectId={projectId}
-            intentId={intentId}
-            intent={intent}
-            stageRows={detail.stages}
-            workflowVersion={intent.workflowVersion ?? undefined}
-            onRelaunched={reload}
-          />
-        )}
 
       {/* DRAFT never renders here — it redirects to the compose page above. */}
       {reviewGate ? (
@@ -577,6 +569,19 @@ export default function IntentView() {
       </AlertDialog>
 
       <IntentConfigurationDialog open={configurationOpen} onOpenChange={setConfigurationOpen} />
+
+      {canReshape && (
+        <RecomposePanel
+          open={reshapeOpen}
+          onOpenChange={setReshapeOpen}
+          projectId={projectId}
+          intentId={intentId}
+          intent={intent}
+          stageRows={detail.stages}
+          workflowVersion={intent.workflowVersion ?? undefined}
+          onRelaunched={reload}
+        />
+      )}
     </div>
   );
 }

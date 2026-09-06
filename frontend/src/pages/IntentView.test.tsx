@@ -390,6 +390,28 @@ describe('IntentView', () => {
     expect(screen.getAllByText('PASSED')).toHaveLength(2);
   });
 
+  it('opens the reshape controls from the intent actions menu', async () => {
+    const user = userEvent.setup();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        constructionAutonomyMode: 'gated',
+      }),
+    );
+    renderAt();
+
+    expect(await screen.findByText('My intent')).toBeInTheDocument();
+    expect(screen.queryByTestId('recompose-dialog')).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText('Intent actions'));
+    await user.click(screen.getByText('Reshape remaining stages'));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('recompose-dialog')).toBeInTheDocument();
+  });
+
   it('shows resume progress after a gate is answered but before the stage is running again', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
