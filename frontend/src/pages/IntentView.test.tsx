@@ -357,6 +357,14 @@ describe('IntentView', () => {
         agentCli: 'claude',
         credentialSource: 'space',
         cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
+        source: {
+          bindingId: 'github',
+          provider: 'github',
+          instance: null,
+          resourceType: 'issue',
+          resourceId: '3',
+          resourceUrl: 'https://github.com/example/repository/issues/3',
+        },
         environment: {
           environmentId: 'polyglot',
           name: 'Polyglot',
@@ -375,6 +383,7 @@ describe('IntentView', () => {
     expect(await screen.findByText('My intent')).toBeInTheDocument();
     expect(screen.queryByText('Polyglot')).not.toBeInTheDocument();
     expect(screen.queryByText('Claude Code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Source: issue #3')).not.toBeInTheDocument();
 
     await user.click(screen.getByLabelText('Intent actions'));
     await user.click(screen.getByText('Intent configuration'));
@@ -385,9 +394,25 @@ describe('IntentView', () => {
     expect(screen.getByText('Polyglot')).toBeInTheDocument();
     expect(screen.getByText('Claude Code')).toBeInTheDocument();
     expect(screen.getByText(/us\.anthropic\.claude-sonnet-4-6/)).toBeInTheDocument();
+    const sourceLabel = screen.getByText('Source: issue #3');
+    expect(sourceLabel).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'GitHub' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute(
+      'href',
+      'https://github.com/example/repository/issues/3',
+    );
+    const executionHeading = screen.getByRole('heading', { name: 'Execution' });
+    expect(
+      sourceLabel.compareDocumentPosition(executionHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     expect(screen.getByText('r-7')).toBeInTheDocument();
     expect(screen.getByText('revision_r_7')).toBeInTheDocument();
-    expect(screen.getAllByText('PASSED')).toHaveLength(2);
+    expect(screen.getAllByText('PASSED')).toHaveLength(1);
+    const passedBadge = screen
+      .getAllByText('PASSED')
+      .find((element) => element.classList.contains('text-agent-success'));
+    expect(passedBadge).toBeDefined();
+    expect(passedBadge?.querySelector('svg')).toBeInTheDocument();
   });
 
   it('opens the reshape controls from the intent actions menu', async () => {
@@ -410,6 +435,80 @@ describe('IntentView', () => {
       await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
     ).toBeInTheDocument();
     expect(screen.getByTestId('recompose-dialog')).toBeInTheDocument();
+  });
+
+  it('switches from intent configuration to reshape', async () => {
+    const user = userEvent.setup();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        constructionAutonomyMode: 'gated',
+      }),
+    );
+    renderAt();
+
+    await screen.findByText('My intent');
+    await user.click(screen.getByLabelText('Intent actions'));
+    await user.click(screen.getByText('Intent configuration'));
+    expect(
+      await screen.findByRole('heading', { name: 'Intent configuration' }),
+    ).toBeInTheDocument();
+    const waitingBadge = screen.getByText('WAITING');
+    expect(waitingBadge).toHaveClass('text-agent-waiting');
+    expect(waitingBadge.querySelector('.animate-spin')).not.toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Reshape' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Intent configuration' })).not.toBeInTheDocument();
+  });
+
+  it('opens reshape from the scope definition link', async () => {
+    const user = userEvent.setup();
+    compiled.mockResolvedValue({
+      scopeGrid: {
+        feature: {
+          requirements: 'EXECUTE',
+          optional: 'SKIP',
+        },
+      },
+      graph: {
+        nodes: [
+          { stageId: 'requirements', phasePath: '01', order: 1 },
+          { stageId: 'optional', phasePath: '01', order: 2 },
+        ],
+        edges: [],
+      },
+    });
+    workflowGet.mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'inception',
+          name: 'Inception',
+          kind: 'phase',
+          path: '01',
+          parentPath: null,
+          order: 1,
+        },
+      ],
+    });
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        currentPhase: 'inception',
+        constructionAutonomyMode: 'gated',
+      }),
+    );
+    renderAt();
+
+    await user.click(await screen.findByRole('button', { name: /Inception/ }));
+    await user.click(screen.getByRole('button', { name: 'Scope definition' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
+    ).toBeInTheDocument();
   });
 
   it('shows resume progress after a gate is answered but before the stage is running again', async () => {

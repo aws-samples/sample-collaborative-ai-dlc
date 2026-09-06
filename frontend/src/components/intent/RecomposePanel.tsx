@@ -235,7 +235,7 @@ export function RecomposePanel({
         <DialogHeader className="border-b px-6 py-5">
           <DialogTitle>Reshape remaining stages</DialogTitle>
           <DialogDescription>
-            Completed and running steps stay locked. Pending steps can be added or removed.
+            Completed and running stages stay locked. Pending stages can be added or removed.
           </DialogDescription>
         </DialogHeader>
 

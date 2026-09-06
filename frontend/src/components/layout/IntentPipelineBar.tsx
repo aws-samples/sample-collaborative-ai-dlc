@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Check, Circle, LoaderCircle } from 'lucide-react';
+import { Check, Circle, LoaderCircle, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -10,7 +10,7 @@ import { getIntentStageSelection } from '@/lib/intentStageSelection';
 import type { IntentSection } from '@/lib/intentSectionPreference';
 import type { IntentStage } from '@/services/intents';
 
-function detectSection(pathname: string): IntentSection {
+export function detectSection(pathname: string): IntentSection {
   if (pathname.endsWith('/graph')) return 'graph';
   if (pathname.endsWith('/observability') || pathname.endsWith('/audit')) return 'overview';
   return 'work';
@@ -29,9 +29,9 @@ function stepState(rows: IntentStage[]): StepState {
 }
 
 export function IntentPhaseBreadcrumb({
-  onOpenConfiguration,
+  onOpenScopeDefinition,
 }: {
-  onOpenConfiguration?: () => void;
+  onOpenScopeDefinition?: () => void;
 }) {
   const {
     detail,
@@ -56,7 +56,6 @@ export function IntentPhaseBreadcrumb({
 
     const selection = getIntentStageSelection(intent, compiled, initializationPhasePaths);
     const selected = selection.selected.toSorted((a, b) => a.order - b.order);
-
     const allByPhase = new Map<string, number>();
     for (const node of selection.available) {
       const phase = node.phasePath ?? '(ungrouped)';
@@ -114,9 +113,12 @@ export function IntentPhaseBreadcrumb({
       <div className="flex w-full min-w-max overflow-x-auto pr-4">
         {phases.map((group, index) => {
           const done = group.steps.filter((step) => step.state === 'done').length;
+          const running = group.steps.filter((step) => step.state === 'running').length;
+          const failed = group.steps.filter((step) => step.state === 'failed').length;
+          const pending = group.steps.filter((step) => step.state === 'pending').length;
           const active =
-            group.phase === currentPhasePath ||
-            group.steps.some((step) => step.state === 'running' || step.state === 'failed');
+            group.steps.length > 0 &&
+            (group.phase === currentPhasePath || running > 0 || failed > 0);
           const complete = done === group.steps.length && group.steps.length > 0;
           const open = openPhase === group.phase;
 
@@ -133,7 +135,8 @@ export function IntentPhaseBreadcrumb({
                     'group relative flex min-h-12 min-w-48 flex-1 items-center gap-2.5 px-8 py-2 text-left transition-[filter] focus-visible:outline-none',
                     index > 0 && '-ml-4',
                     complete && 'bg-agent-success/10 text-agent-success',
-                    active && !complete && 'bg-agent-running/10 text-agent-running',
+                    failed > 0 && !complete && 'bg-destructive/10 text-destructive',
+                    active && failed === 0 && !complete && 'bg-agent-running/10 text-agent-running',
                     !active && !complete && 'bg-muted text-muted-foreground',
                     open && 'brightness-[0.97]',
                   )}
@@ -153,6 +156,8 @@ export function IntentPhaseBreadcrumb({
                   >
                     {complete ? (
                       <Check className="h-3.5 w-3.5" />
+                    ) : failed > 0 ? (
+                      <XCircle className="h-3.5 w-3.5" />
                     ) : active ? (
                       <span className="h-2 w-2 rounded-full bg-current" />
                     ) : (
@@ -164,7 +169,7 @@ export function IntentPhaseBreadcrumb({
                       {phaseNameOf(group.phase)}
                     </span>
                     <span className="block text-[10px] font-medium opacity-80">
-                      {done}/{group.steps.length} selected steps
+                      {done}/{group.steps.length} selected stages
                     </span>
                   </span>
                 </button>
@@ -173,9 +178,8 @@ export function IntentPhaseBreadcrumb({
                 <div className="border-b px-4 py-3">
                   <h3 className="text-sm font-semibold">{phaseNameOf(group.phase)}</h3>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {done} resolved ·{' '}
-                    {group.steps.filter((step) => step.state === 'running').length} running ·{' '}
-                    {group.steps.filter((step) => step.state === 'pending').length} pending
+                    {done} resolved · {running} running
+                    {failed > 0 && ` · ${failed} failed`} · {pending} pending
                   </p>
                 </div>
                 <div className="space-y-1 bg-muted/30 p-2">
@@ -188,32 +192,41 @@ export function IntentPhaseBreadcrumb({
                         <Check className="h-3.5 w-3.5 text-agent-success" />
                       ) : step.state === 'running' ? (
                         <LoaderCircle className="h-3.5 w-3.5 animate-spin text-agent-running" />
+                      ) : step.state === 'failed' ? (
+                        <XCircle className="h-3.5 w-3.5 text-destructive" />
                       ) : (
                         <Circle className="h-3.5 w-3.5 text-muted-foreground" />
                       )}
                       <span className="min-w-0 flex-1 truncate font-medium">
                         {humanizeStageId(step.stageId)}
                       </span>
-                      <span className="capitalize text-muted-foreground">{step.state}</span>
+                      <span
+                        className={cn(
+                          'capitalize text-muted-foreground',
+                          step.state === 'failed' && 'text-destructive',
+                        )}
+                      >
+                        {step.state}
+                      </span>
                     </div>
                   ))}
                 </div>
                 <div className="flex items-center justify-between gap-3 px-4 py-2.5 text-[11px] text-muted-foreground">
                   <span>
                     {group.excluded > 0
-                      ? `${group.excluded} ${group.excluded === 1 ? 'step is' : 'steps are'} outside this selection.`
-                      : 'All workflow steps in this phase are selected.'}
+                      ? `${group.excluded} ${group.excluded === 1 ? 'stage is' : 'stages are'} outside this selection.`
+                      : 'All workflow stages in this phase are selected.'}
                   </span>
-                  {group.excluded > 0 && onOpenConfiguration && (
+                  {group.excluded > 0 && onOpenScopeDefinition && (
                     <button
                       type="button"
                       className="shrink-0 font-medium text-foreground underline-offset-4 hover:underline"
                       onClick={() => {
                         setOpenPhase(null);
-                        onOpenConfiguration();
+                        onOpenScopeDefinition();
                       }}
                     >
-                      View configuration
+                      Scope definition
                     </button>
                   )}
                 </div>
@@ -225,6 +238,3 @@ export function IntentPhaseBreadcrumb({
     </div>
   );
 }
-
-export const IntentPipelineBar = IntentPhaseBreadcrumb;
-export { detectSection };

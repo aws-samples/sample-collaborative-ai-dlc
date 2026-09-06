@@ -1,8 +1,16 @@
-import { Boxes, ExternalLink } from 'lucide-react';
+import {
+  Boxes,
+  Check,
+  ExternalLink,
+  GitBranch,
+  LoaderCircle,
+  Workflow,
+  XCircle,
+} from 'lucide-react';
 import { useIntent } from '@/contexts/IntentContext';
 import { AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
 import { getIntentStageSelection } from '@/lib/intentStageSelection';
-import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
+import { getTrackerProvider } from '@/lib/trackerProviders';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -15,10 +23,27 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import type { IntentSource } from '@/services/intents';
 
 interface IntentConfigurationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onOpenReshape?: () => void;
+}
+
+function trackerProviderId(provider: string) {
+  if (provider === 'github') return 'github-issues';
+  if (provider === 'gitlab') return 'gitlab-issues';
+  if (provider === 'bitbucket') return 'bitbucket-issues';
+  return provider;
+}
+
+function formatSourceReference(source: IntentSource) {
+  const resourceType = (source.resourceType || 'issue').toLowerCase();
+  const resourceId = source.resourceId.startsWith('#')
+    ? source.resourceId
+    : `#${source.resourceId}`;
+  return `${resourceType} ${resourceId}`;
 }
 
 function Definition({
@@ -51,7 +76,11 @@ function Definition({
   );
 }
 
-export function IntentConfigurationDialog({ open, onOpenChange }: IntentConfigurationDialogProps) {
+export function IntentConfigurationDialog({
+  open,
+  onOpenChange,
+  onOpenReshape,
+}: IntentConfigurationDialogProps) {
   const { detail, compiled, initializationPhasePaths } = useIntent();
   if (!detail) return null;
 
@@ -66,6 +95,13 @@ export function IntentConfigurationDialog({ open, onOpenChange }: IntentConfigur
       : 'UNKNOWN';
   const intentModel =
     intent.agentCli && intent.cliModels ? intent.cliModels[intent.agentCli] : undefined;
+  const sourceProvider = intent.source
+    ? getTrackerProvider(trackerProviderId(intent.source.provider))
+    : null;
+  const waiting = intent.status === 'WAITING';
+  const running = intent.status === 'RUNNING' || intent.status === 'CREATED';
+  const succeeded = intent.status === 'SUCCEEDED';
+  const failed = intent.status === 'FAILED';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -76,57 +112,16 @@ export function IntentConfigurationDialog({ open, onOpenChange }: IntentConfigur
         </DialogHeader>
 
         <div className="divide-y">
-          <section className="space-y-4 px-6 py-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-sm font-semibold">Execution</h3>
-              </div>
-              <Badge variant="outline" className="shrink-0 text-[10px]">
-                {intent.status}
-              </Badge>
-            </div>
-            <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-              <Definition label="Scope" value={intent.scope ?? 'Default'} />
-              <Definition
-                label="Selected steps"
-                value={
-                  selection
-                    ? `${selection.selected.length} of ${selection.available.length}`
-                    : 'Unavailable'
-                }
-              />
-              <Definition
-                label="Agent"
-                value={intent.agentCli ? AGENT_CLI_METADATA[intent.agentCli].label : 'Default'}
-                secondaryValue={intentModel ?? 'CLI default'}
-              />
-              <Definition
-                label="Credentials"
-                value={
-                  intent.credentialSource
-                    ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
-                    : 'Default'
-                }
-              />
-            </dl>
-          </section>
-
           {intent.source && (
-            <section className="space-y-4 px-6 py-5">
-              <div>
-                <h3 className="text-sm font-semibold">Source</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  The tracker item that created the intent.
-                </p>
-              </div>
-              <div className="flex items-center gap-3 rounded-md border bg-muted/20 p-3">
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-background text-sm font-semibold">
-                  #
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold">{formatTrackerSourceLabel(intent.source)}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {intent.title || intent.source.provider}
+            <section className="px-6 py-4" aria-label="Source">
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-2 text-sm font-semibold">
+                    {sourceProvider?.icon({ className: 'h-4 w-4 shrink-0' })}
+                    <span>Source: {formatSourceReference(intent.source)}</span>
+                  </p>
+                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                    {intent.title || sourceProvider?.displayName || intent.source.provider}
                   </p>
                 </div>
                 {intent.source.resourceUrl && (
@@ -145,6 +140,75 @@ export function IntentConfigurationDialog({ open, onOpenChange }: IntentConfigur
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                  <Workflow className="h-4 w-4" />
+                  Execution
+                </h3>
+              </div>
+              <Badge
+                variant="outline"
+                className={cn(
+                  'shrink-0 gap-1.5 text-[10px]',
+                  waiting && 'border-agent-waiting/30 bg-agent-waiting/10 text-agent-waiting',
+                  running && 'border-agent-running/30 bg-agent-running/10 text-agent-running',
+                  succeeded && 'border-agent-success/30 bg-agent-success/10 text-agent-success',
+                  failed && 'border-destructive/30 bg-destructive/10 text-destructive',
+                )}
+              >
+                {(waiting || running) && <LoaderCircle className="h-3 w-3 animate-spin" />}
+                {succeeded && <Check className="h-3 w-3" />}
+                {failed && <XCircle className="h-3 w-3" />}
+                {intent.status}
+              </Badge>
+            </div>
+            <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+              <Definition label="Scope" value={intent.scope ?? 'Default'} />
+              <div className="min-w-0 space-y-1">
+                <dt className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Selected stages
+                </dt>
+                <dd className="flex items-center gap-2">
+                  <span className="text-sm font-medium">
+                    {selection
+                      ? `${selection.selected.length} of ${selection.available.length}`
+                      : 'Unavailable'}
+                  </span>
+                  {onOpenReshape && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 gap-1.5 px-2.5 text-xs"
+                      onClick={() => {
+                        onOpenChange(false);
+                        onOpenReshape();
+                      }}
+                    >
+                      <GitBranch className="h-3.5 w-3.5" />
+                      Reshape
+                    </Button>
+                  )}
+                </dd>
+              </div>
+              <Definition
+                label="Agent"
+                value={intent.agentCli ? AGENT_CLI_METADATA[intent.agentCli].label : 'Default'}
+                secondaryValue={intentModel ?? 'CLI default'}
+              />
+              <Definition
+                label="Credentials"
+                value={
+                  intent.credentialSource
+                    ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                    : 'Default'
+                }
+              />
+            </dl>
+          </section>
+
+          <section className="space-y-4 px-6 py-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="flex items-center gap-1.5 text-sm font-semibold">
                   <Boxes className="h-4 w-4" />
                   Environment
                 </h3>
@@ -153,11 +217,12 @@ export function IntentConfigurationDialog({ open, onOpenChange }: IntentConfigur
                 <Badge
                   variant="outline"
                   className={cn(
-                    'shrink-0 font-mono text-[10px]',
+                    'shrink-0 gap-1.5 font-mono text-[10px]',
                     verification === 'PASSED' &&
                       'border-agent-success/30 bg-agent-success/10 text-agent-success',
                   )}
                 >
+                  {verification === 'PASSED' && <Check className="h-3 w-3" />}
                   {verification}
                 </Badge>
               )}
@@ -180,7 +245,6 @@ export function IntentConfigurationDialog({ open, onOpenChange }: IntentConfigur
                 />
                 <Definition label="Runtime" value={environment.runtimeVersion ?? 'Legacy'} code />
                 <Definition label="Compatibility" value={environment.compatibilityVersion} code />
-                <Definition label="Verification" value={verification} code />
               </dl>
             ) : (
               <p className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">

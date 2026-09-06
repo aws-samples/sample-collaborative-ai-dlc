@@ -9,7 +9,6 @@ import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurati
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
-import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -265,25 +264,9 @@ export default function IntentView() {
               aria-label="live"
             />
           )}
-          <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {intent.source && (
-            <span className="text-xs text-muted-foreground">
-              {intent.source.resourceUrl ? (
-                <a
-                  href={intent.source.resourceUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline hover:no-underline"
-                >
-                  from {formatTrackerSourceLabel(intent.source)}
-                </a>
-              ) : (
-                <>from {formatTrackerSourceLabel(intent.source)}</>
-              )}
-            </span>
-          )}
+          <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
@@ -323,7 +306,9 @@ export default function IntentView() {
         </div>
       </div>
 
-      <IntentPhaseBreadcrumb onOpenConfiguration={() => setConfigurationOpen(true)} />
+      <IntentPhaseBreadcrumb
+        onOpenScopeDefinition={canReshape ? () => setReshapeOpen(true) : undefined}
+      />
 
       {error && (
         <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -568,7 +553,11 @@ export default function IntentView() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <IntentConfigurationDialog open={configurationOpen} onOpenChange={setConfigurationOpen} />
+      <IntentConfigurationDialog
+        open={configurationOpen}
+        onOpenChange={setConfigurationOpen}
+        onOpenReshape={canReshape ? () => setReshapeOpen(true) : undefined}
+      />
 
       {canReshape && (
         <RecomposePanel

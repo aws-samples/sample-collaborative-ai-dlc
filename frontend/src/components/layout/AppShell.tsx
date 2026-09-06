@@ -4,6 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
+import { detectSection } from '@/components/layout/IntentPipelineBar';
 // Lazy: the activity panels pull react-markdown (+ transitively heavy deps)
 // that don't belong in the eager main chunk — they only render when a side
 // panel is open on sprint/intent routes.
@@ -23,7 +24,7 @@ import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
 import { useState, useCallback, useMemo, useEffect, useRef, lazy, Suspense } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useResizablePanel } from '@/hooks/useResizablePanel';
-import { setLastIntentSection, type IntentSection } from '@/lib/intentSectionPreference';
+import { setLastIntentSection } from '@/lib/intentSectionPreference';
 
 // ---------------------------------------------------------------------------
 // Route classification: determines whether the activity panel should default
@@ -32,12 +33,6 @@ import { setLastIntentSection, type IntentSection } from '@/lib/intentSectionPre
 // ---------------------------------------------------------------------------
 
 const NON_WORK_SUFFIXES = ['/graph', '/audit', '/compose', '/observability'];
-
-function intentSection(pathname: string): IntentSection {
-  if (pathname.endsWith('/graph')) return 'graph';
-  if (pathname.endsWith('/observability') || pathname.endsWith('/audit')) return 'overview';
-  return 'work';
-}
 
 /** True when the given pathname represents a "work" route where the panel opens. */
 export function shouldDefaultOpen(pathname: string): boolean {
@@ -90,7 +85,7 @@ export function AppShell() {
   const onGraphPage = location.pathname.endsWith('/graph');
 
   useEffect(() => {
-    if (intentId) setLastIntentSection(intentId, intentSection(location.pathname));
+    if (intentId) setLastIntentSection(intentId, detectSection(location.pathname));
   }, [intentId, location.pathname]);
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
