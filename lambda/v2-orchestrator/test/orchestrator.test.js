@@ -184,11 +184,9 @@ describe('orchestrator durable handler', () => {
       repos: ['owner/repo'],
     });
     expect(initWs).not.toHaveProperty('gitToken');
-    expect(deps.invokeRuntime.mock.calls.map(([, , target]) => target)).toEqual([
-      MANAGED_RUNTIME_TARGET,
-      MANAGED_RUNTIME_TARGET,
-      MANAGED_RUNTIME_TARGET,
-    ]);
+    expect(deps.invokeRuntime.mock.calls.map(([, , target]) => target)).toEqual(
+      Array.from({ length: 6 }, () => MANAGED_RUNTIME_TARGET),
+    );
     const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status);
     expect(statuses).toContain('RUNNING');
     expect(statuses).toContain('SUCCEEDED');

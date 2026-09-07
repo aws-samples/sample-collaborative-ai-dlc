@@ -469,7 +469,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     const publishCheckpoint = async (stepName, sourceStageInstanceId = null) => {
       const result = await ctx.step(stepName, async () => {
         try {
-          return await invokeRuntime(
+          return await invokeIntentRuntime(
             {
               command: 'create-workflow-checkpoint',
               projectId,
