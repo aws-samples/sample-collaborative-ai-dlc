@@ -1,24 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Archive, Boxes, Plus, RotateCw, Search, TriangleAlert } from 'lucide-react';
 import {
-  Archive,
-  Boxes,
-  CircleCheck,
-  ExternalLink,
-  Hammer,
-  Loader2,
-  Plus,
-  RefreshCw,
-  Rocket,
-  RotateCw,
-  Save,
-  ShieldAlert,
-  ShieldCheck,
-  TriangleAlert,
-} from 'lucide-react';
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
@@ -27,641 +21,60 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/components/ui/switch';
-import { Textarea } from '@/components/ui/textarea';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import {
   environmentsService,
   toolsService,
   type EnvironmentDetail,
-  type EnvironmentRecipeInput,
   type EnvironmentRevision,
-  type EnvironmentToolSnapshot,
   type ManagedEnvironment,
-  type CatalogEnvironmentRecipe,
   type ManagedTool,
-  type ManagedToolVersion,
 } from '@/services/environments';
 import { cn } from '@/lib/utils';
+import { EnvironmentBuilder } from './environment-builder/EnvironmentBuilder';
+import {
+  EnvironmentRevisionWorkspace,
+  isActiveRevision,
+} from './environment-builder/EnvironmentRevisionWorkspace';
+import {
+  emptyEnvironmentForm,
+  formFingerprint,
+  formFromRevision,
+  isCatalogRecipe,
+  recipeFromForm,
+  type EnvironmentForm,
+} from './environment-builder/model';
+import { StatusBadge, statusClass } from './environment-builder/ui';
 
-const ACTIVE_REVISION_STATUSES = new Set(['QUEUED', 'BUILDING', 'SCANNING', 'VERIFYING']);
-const RUNTIME_IMAGE_LIMIT_BYTES = 2048 * 1024 * 1024;
+type Workspace = 'definition' | 'revisions';
+type EnvironmentFilter = 'all' | 'attention' | 'drafts' | 'published' | 'retired';
 
-interface EnvironmentForm {
-  environmentId: string;
-  name: string;
+interface Confirmation {
+  title: string;
   description: string;
-  baseEnvironmentId: string;
-  toolVersionIds: string[];
-  aptPackages: string;
-  environmentVariables: string;
-  buildCommands: string;
+  actionLabel: string;
+  destructive?: boolean;
+  onConfirm: () => void;
 }
 
-const emptyForm = (): EnvironmentForm => ({
-  environmentId: '',
-  name: '',
-  description: '',
-  baseEnvironmentId: 'standard',
-  toolVersionIds: [],
-  aptPackages: '',
-  environmentVariables: '',
-  buildCommands: '',
-});
-
-const isCatalogRecipe = (
-  recipe: EnvironmentRevision['recipe'] | undefined,
-): recipe is CatalogEnvironmentRecipe => recipe?.schemaVersion === 2;
-
-const resolvedTools = (revision: EnvironmentRevision | null): EnvironmentToolSnapshot[] => {
-  const recipe = revision?.flattenedRecipe;
-  if (!isCatalogRecipe(recipe)) return [];
-  return recipe.resolvedTools ?? recipe.tools;
-};
-
-const directToolVersionIds = (revision: EnvironmentRevision | null) =>
-  isCatalogRecipe(revision?.recipe) ? revision.recipe.toolVersionIds : [];
-
-const protectedRuntimeVersions = (revision: EnvironmentRevision | null) => {
-  const recipe = revision?.flattenedRecipe;
-  if (!recipe || recipe.schemaVersion !== 1) return { node: null, python: null };
-  return {
-    node: recipe.tools.node?.version ?? null,
-    python: recipe.tools.python?.version ?? null,
-  };
-};
-
-const formFromRevision = (
-  environment: ManagedEnvironment,
-  revision: EnvironmentRevision | null,
-): EnvironmentForm => {
-  const recipe = revision?.recipe;
-  return {
-    environmentId: environment.environmentId,
-    name: environment.name,
-    description: environment.description ?? '',
-    baseEnvironmentId:
-      environment.environmentId === 'standard'
-        ? ''
-        : (recipe?.base?.environmentId ?? environment.baseEnvironmentId ?? 'standard'),
-    toolVersionIds: directToolVersionIds(revision),
-    aptPackages: (recipe?.aptPackages ?? []).map((pkg) => `${pkg.name}=${pkg.version}`).join('\n'),
-    environmentVariables: Object.entries(recipe?.environmentVariables ?? {})
-      .map(([name, value]) => `${name}=${value}`)
-      .join('\n'),
-    buildCommands: (recipe?.buildCommands ?? []).join('\n'),
-  };
-};
-
-const parsePairs = (value: string) =>
-  value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const separator = line.indexOf('=');
-      return separator > 0
-        ? [line.slice(0, separator).trim(), line.slice(separator + 1).trim()]
-        : [line, ''];
-    });
-
-const recipeFromForm = (form: EnvironmentForm): EnvironmentRecipeInput => ({
-  schemaVersion: 2,
-  toolVersionIds: form.toolVersionIds,
-  aptPackages: parsePairs(form.aptPackages).map(([name, version]) => ({ name, version })),
-  environmentVariables: Object.fromEntries(parsePairs(form.environmentVariables)),
-  buildCommands: form.buildCommands
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean),
-});
-
-const statusClass = (status: string) => {
-  if (status === 'FAILED') return 'border-destructive/30 bg-destructive/10 text-destructive';
-  if (status === 'PUBLISHED' || status === 'READY')
-    return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
-  if (status === 'SECURITY_REVIEW' || status === 'UPDATE_AVAILABLE')
-    return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300';
-  if (ACTIVE_REVISION_STATUSES.has(status))
-    return 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300';
-  return 'bg-muted/50 text-muted-foreground';
-};
-
-const severityClass = (severity: string) => {
-  if (severity === 'CRITICAL') return 'border-destructive/40 bg-destructive/10 text-destructive';
-  if (severity === 'HIGH')
-    return 'border-orange-500/40 bg-orange-500/10 text-orange-700 dark:text-orange-300';
-  if (severity === 'MEDIUM')
-    return 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300';
-  return 'bg-muted/50 text-muted-foreground';
-};
-
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <Badge variant="outline" className={cn('font-mono text-[10px]', statusClass(status))}>
-      {status.replaceAll('_', ' ')}
-    </Badge>
-  );
-}
-
-const publishedVersions = (tool: ManagedTool) =>
-  tool.versions.filter((version) => version.status === 'PUBLISHED');
-
-const recommendedVersion = (tool: ManagedTool) =>
-  publishedVersions(tool).find((version) => version.versionId === tool.recommendedVersionId) ??
-  publishedVersions(tool)[0] ??
-  null;
-
-function RecipeEditor({
-  form,
-  onChange,
-  baseOptions,
-  baseEnvironment,
-  baseRevision,
-  baseLoading,
-  tools,
-  disabled,
-  showId,
-}: {
-  form: EnvironmentForm;
-  onChange: (next: EnvironmentForm) => void;
-  baseOptions: ManagedEnvironment[];
-  baseEnvironment: ManagedEnvironment | null;
-  baseRevision: EnvironmentRevision | null;
-  baseLoading: boolean;
-  tools: ManagedTool[];
-  disabled: boolean;
-  showId: boolean;
-}) {
-  const inherited = resolvedTools(baseRevision);
-  const protectedVersions = protectedRuntimeVersions(baseRevision);
-  const inheritedById = new Map(inherited.map((tool) => [tool.toolId, tool]));
-  const selectedVersions = new Map<string, ManagedToolVersion>();
-  for (const tool of tools) {
-    const selected = tool.versions.find((version) =>
-      form.toolVersionIds.includes(version.versionId),
+const filterEnvironment = (environment: ManagedEnvironment, filter: EnvironmentFilter) => {
+  if (filter === 'all') return true;
+  if (filter === 'attention') {
+    return (
+      environment.updateAvailable ||
+      environment.status === 'FAILED' ||
+      environment.status === 'SECURITY_REVIEW'
     );
-    if (selected) selectedVersions.set(tool.toolId, selected);
   }
-  const toolById = new Map(tools.map((tool) => [tool.toolId, tool]));
-  const effectiveSelectedVersions = new Map(selectedVersions);
-  const requiredBy = new Map<string, Set<string>>();
-  const resolving = new Set<string>();
-  const includeDependencies = (version: ManagedToolVersion) => {
-    if (resolving.has(version.toolId)) return;
-    resolving.add(version.toolId);
-    for (const dependencyId of version.definition.dependencies) {
-      if (inheritedById.has(dependencyId)) continue;
-      const owners = requiredBy.get(dependencyId) ?? new Set<string>();
-      owners.add(toolById.get(version.toolId)?.name ?? version.toolId);
-      requiredBy.set(dependencyId, owners);
-      let dependency = effectiveSelectedVersions.get(dependencyId);
-      if (!dependency) {
-        const family = toolById.get(dependencyId);
-        dependency = family ? (recommendedVersion(family) ?? undefined) : undefined;
-        if (dependency) effectiveSelectedVersions.set(dependencyId, dependency);
-      }
-      if (dependency) includeDependencies(dependency);
-    }
-    resolving.delete(version.toolId);
-  };
-  for (const version of selectedVersions.values()) includeDependencies(version);
-
-  const selectedSize = [...effectiveSelectedVersions.values()].reduce(
-    (total, version) => total + Number(version.imageSizeBytes ?? 0),
-    0,
-  );
-  const sizesKnown =
-    Number(baseRevision?.imageSizeBytes ?? 0) > 0 &&
-    [...effectiveSelectedVersions.values()].every(
-      (version) => Number(version.imageSizeBytes ?? 0) > 0,
+  if (filter === 'drafts') {
+    return ['DRAFT', 'BUILDING', 'SECURITY_REVIEW', 'VERIFYING', 'READY', 'FAILED'].includes(
+      environment.status,
     );
-  const projectedSize = sizesKnown
-    ? Number(baseRevision?.imageSizeBytes ?? 0) + selectedSize
-    : null;
-
-  const setVersion = (tool: ManagedTool, versionId: string | null) => {
-    const familyVersionIds = new Set(tool.versions.map((version) => version.versionId));
-    const remaining = form.toolVersionIds.filter((id) => !familyVersionIds.has(id));
-    onChange({
-      ...form,
-      toolVersionIds: versionId ? [...remaining, versionId] : remaining,
-    });
-  };
-
-  return (
-    <div className="space-y-5">
-      <div className="grid gap-3 sm:grid-cols-2">
-        {showId && (
-          <div className="space-y-1.5">
-            <Label htmlFor="environment-id" className="text-xs">
-              ID
-            </Label>
-            <Input
-              id="environment-id"
-              value={form.environmentId}
-              onChange={(event) => onChange({ ...form, environmentId: event.target.value })}
-              placeholder="generated-from-name"
-              disabled={disabled}
-              className="h-9 font-mono text-sm"
-            />
-          </div>
-        )}
-        <div className="space-y-1.5">
-          <Label htmlFor="environment-name" className="text-xs">
-            Name
-          </Label>
-          <Input
-            id="environment-name"
-            value={form.name}
-            onChange={(event) => onChange({ ...form, name: event.target.value })}
-            disabled={disabled}
-            className="h-9 text-sm"
-          />
-        </div>
-        <div className="space-y-1.5 sm:col-span-2">
-          <Label htmlFor="environment-description" className="text-xs">
-            Description
-          </Label>
-          <Input
-            id="environment-description"
-            value={form.description}
-            onChange={(event) => onChange({ ...form, description: event.target.value })}
-            disabled={disabled}
-            className="h-9 text-sm"
-          />
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="environment-base" className="text-xs">
-          Base environment
-        </Label>
-        <Select
-          value={form.baseEnvironmentId}
-          onValueChange={(baseEnvironmentId) =>
-            onChange({ ...form, baseEnvironmentId, toolVersionIds: [] })
-          }
-          disabled={disabled}
-        >
-          <SelectTrigger id="environment-base" className="h-9 text-sm">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {baseOptions.map((environment) => (
-              <SelectItem key={environment.environmentId} value={environment.environmentId}>
-                {environment.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {baseLoading ? (
-          <Skeleton className="h-14" />
-        ) : baseRevision ? (
-          <div className="border-l-2 border-primary/30 pl-3">
-            <p className="text-[11px] text-muted-foreground">
-              Inherits protected Node.js and Python plus tools in{' '}
-              <span className="font-medium text-foreground">
-                {baseEnvironment?.name ?? 'the base'}
-              </span>
-              .
-            </p>
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              <Badge variant="outline" className="text-[10px]">
-                Node.js{protectedVersions.node ? ` ${protectedVersions.node}` : ''}
-              </Badge>
-              <Badge variant="outline" className="text-[10px]">
-                Python{protectedVersions.python ? ` ${protectedVersions.python}` : ''}
-              </Badge>
-              {inherited.map((tool) => (
-                <Badge key={tool.toolId} variant="outline" className="text-[10px]">
-                  {tool.name} {tool.version}
-                </Badge>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <p className="text-[11px] text-destructive">Published base revision unavailable</p>
-        )}
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h4 className="text-xs font-medium">Catalog tools</h4>
-          {projectedSize ? (
-            <Badge
-              variant="outline"
-              className={cn(
-                'font-mono text-[10px]',
-                projectedSize > RUNTIME_IMAGE_LIMIT_BYTES && statusClass('FAILED'),
-              )}
-            >
-              Projected {(projectedSize / 1024 / 1024).toFixed(0)} / 2048 MiB
-            </Badge>
-          ) : (
-            <span className="text-[11px] text-muted-foreground">
-              Size available after artifacts are built
-            </span>
-          )}
-        </div>
-        <div className="divide-y rounded border">
-          {tools.map((tool) => {
-            const versions = publishedVersions(tool);
-            const inheritedTool = inheritedById.get(tool.toolId) ?? null;
-            const selected = selectedVersions.get(tool.toolId) ?? null;
-            const effective = effectiveSelectedVersions.get(tool.toolId) ?? null;
-            const required = requiredBy.has(tool.toolId) && !inheritedTool;
-            const enabled = Boolean(effective);
-            const recommended = recommendedVersion(tool);
-            const showVersionSelect =
-              Boolean(inheritedTool && versions.length) ||
-              Boolean(effective && versions.length > 1);
-            return (
-              <div
-                key={tool.toolId}
-                className="grid min-h-20 gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-              >
-                <div className="min-w-0 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-medium">{tool.name}</span>
-                    <Badge variant="outline" className="font-mono text-[10px]">
-                      {effective?.definition.version ??
-                        inheritedTool?.version ??
-                        recommended?.definition.version ??
-                        'Unavailable'}
-                    </Badge>
-                    {effective?.versionId === tool.recommendedVersionId && (
-                      <Badge variant="secondary" className="text-[10px]">
-                        Recommended
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    {selected
-                      ? `Added by this environment · ${selected.source?.trustLevel === 'PUBLISHER_VERIFIED' ? 'publisher verified' : 'platform pinned'}`
-                      : required
-                        ? `Added automatically for ${[...(requiredBy.get(tool.toolId) ?? [])].join(', ')}`
-                        : inheritedTool
-                          ? `Inherited from ${baseEnvironment?.name ?? 'base environment'}`
-                          : versions.length
-                            ? tool.description
-                            : 'No published version'}
-                  </p>
-                  {(effective?.definition.dependencies.length ?? 0) > 0 && (
-                    <p className="text-[11px] text-muted-foreground">
-                      Requires {effective?.definition.dependencies.join(', ')}; missing dependencies
-                      are added at their recommended version.
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center justify-end gap-2">
-                  {showVersionSelect && (
-                    <Select
-                      value={effective?.versionId ?? 'inherit'}
-                      disabled={disabled}
-                      onValueChange={(value) =>
-                        setVersion(tool, value === 'inherit' ? null : value)
-                      }
-                    >
-                      <SelectTrigger
-                        aria-label={`${tool.name} version`}
-                        className="h-8 w-52 text-xs"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {inheritedTool && (
-                          <SelectItem value="inherit">Base · {inheritedTool.version}</SelectItem>
-                        )}
-                        {versions.map((version) => (
-                          <SelectItem key={version.versionId} value={version.versionId}>
-                            {version.definition.version}
-                            {version.versionId === tool.recommendedVersionId
-                              ? ' · recommended'
-                              : ''}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                  {!inheritedTool && !required && (
-                    <Switch
-                      aria-label={`Include ${tool.name}`}
-                      checked={enabled}
-                      disabled={disabled || !recommended}
-                      onCheckedChange={(checked) =>
-                        setVersion(tool, checked ? (recommended?.versionId ?? null) : null)
-                      }
-                    />
-                  )}
-                  {required && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      Required
-                    </Badge>
-                  )}
-                  {inheritedTool && !showVersionSelect && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      Included
-                    </Badge>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-          {tools.length === 0 && (
-            <div className="p-3 text-xs text-muted-foreground">
-              Publish a tool version before composing an environment.
-            </div>
-          )}
-        </div>
-        {projectedSize && projectedSize > RUNTIME_IMAGE_LIMIT_BYTES && (
-          <p className="flex items-start gap-1.5 text-xs text-destructive">
-            <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            This composition exceeds the AgentCore runtime image limit.
-          </p>
-        )}
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-1.5">
-          <Label htmlFor="environment-apt" className="text-xs">
-            Additional apt packages
-          </Label>
-          <Textarea
-            id="environment-apt"
-            value={form.aptPackages}
-            onChange={(event) => onChange({ ...form, aptPackages: event.target.value })}
-            placeholder="package=exact-version"
-            disabled={disabled}
-            className="min-h-28 font-mono text-xs"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="environment-variables" className="text-xs">
-            Environment variables
-          </Label>
-          <Textarea
-            id="environment-variables"
-            value={form.environmentVariables}
-            onChange={(event) => onChange({ ...form, environmentVariables: event.target.value })}
-            placeholder="NAME=value"
-            disabled={disabled}
-            className="min-h-28 font-mono text-xs"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="environment-commands" className="text-xs">
-            Build commands
-          </Label>
-          <Textarea
-            id="environment-commands"
-            value={form.buildCommands}
-            onChange={(event) => onChange({ ...form, buildCommands: event.target.value })}
-            placeholder="command"
-            disabled={disabled}
-            className="min-h-28 font-mono text-xs"
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const securityFindingsAcceptedAt = (revision: EnvironmentRevision) =>
-  revision.securityFindingsAcceptedAt ?? revision.highFindingsAcknowledgedAt ?? null;
-const securityFindingsAcceptedBy = (revision: EnvironmentRevision) =>
-  revision.securityFindingsAcceptedBy ?? revision.highFindingsAcknowledgedBy ?? null;
-const isActiveRevision = (revision: EnvironmentRevision) =>
-  ACTIVE_REVISION_STATUSES.has(revision.status) ||
-  (revision.status === 'SECURITY_REVIEW' && Boolean(securityFindingsAcceptedAt(revision)));
-
-function Evidence({ revision }: { revision: EnvironmentRevision }) {
-  const findings = revision.scanFindings?.findings ?? [];
-  const acceptedAt = securityFindingsAcceptedAt(revision);
-  const acceptedBy = securityFindingsAcceptedBy(revision);
-  const critical = Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0);
-  const high = Number(revision.scanFindings?.severityCounts?.HIGH ?? 0);
-  const securityOnlyFailure =
-    revision.failure?.reason === 'critical_vulnerability_findings' && Boolean(revision.imageDigest);
-  return (
-    <div className="space-y-4 border-t pt-4">
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-2">
-          <h4 className="text-xs font-medium">Image</h4>
-          {revision.imageDigest ? (
-            <Badge
-              variant="outline"
-              className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-            >
-              <CircleCheck className="h-3 w-3" />
-              Build passed
-            </Badge>
-          ) : (
-            <span className="text-[11px] text-muted-foreground">Not built</span>
-          )}
-          <p className="break-all font-mono text-[11px] text-muted-foreground">
-            {revision.imageDigest ?? 'No image digest'}
-          </p>
-          {revision.imageSizeBytes && (
-            <p className="font-mono text-[11px] text-muted-foreground">
-              {(revision.imageSizeBytes / 1024 / 1024).toFixed(1)} MiB
-            </p>
-          )}
-          {revision.buildLogUrl && (
-            <a
-              href={revision.buildLogUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-            >
-              Build logs <ExternalLink className="h-3 w-3" />
-            </a>
-          )}
-        </div>
-        <div className="space-y-2">
-          <h4 className="text-xs font-medium">Security scan</h4>
-          <Badge
-            variant="outline"
-            className={cn(
-              acceptedAt || critical + high > 0
-                ? statusClass('SECURITY_REVIEW')
-                : revision.scanFindings
-                  ? statusClass('READY')
-                  : '',
-            )}
-          >
-            {acceptedAt
-              ? 'Findings accepted'
-              : critical + high > 0
-                ? 'Review required'
-                : revision.scanFindings
-                  ? 'Passed'
-                  : 'Pending'}
-          </Badge>
-          {acceptedAt && (
-            <p className="text-[11px] text-muted-foreground">
-              Accepted{acceptedBy ? ` by ${acceptedBy}` : ''}{' '}
-              <time dateTime={acceptedAt}>{new Date(acceptedAt).toLocaleString()}</time>
-            </p>
-          )}
-        </div>
-        <div className="space-y-2">
-          <h4 className="text-xs font-medium">Runtime validation</h4>
-          <p className="text-[11px] text-muted-foreground">
-            {revision.verification ? 'Recorded with this revision' : 'Not completed'}
-          </p>
-        </div>
-      </div>
-      {findings.length > 0 && (
-        <div className="divide-y overflow-hidden rounded border">
-          {findings.map((finding, index) => (
-            <div
-              key={`${finding.id}-${index}`}
-              className="grid gap-2 px-3 py-2 sm:grid-cols-[90px_minmax(0,1fr)_auto]"
-            >
-              <Badge
-                variant="outline"
-                className={cn('w-fit font-mono text-[10px]', severityClass(finding.severity))}
-              >
-                {finding.severity}
-              </Badge>
-              {finding.uri ? (
-                <a
-                  href={finding.uri}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="truncate font-mono text-[11px] text-primary hover:underline"
-                >
-                  {finding.id}
-                </a>
-              ) : (
-                <span className="truncate font-mono text-[11px]">{finding.id}</span>
-              )}
-              <span className="font-mono text-[11px] text-muted-foreground">
-                {finding.packageName ?? 'Unknown package'}
-                {finding.packageVersion ? ` ${finding.packageVersion}` : ''}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      {revision.failure && !securityOnlyFailure && (
-        <div className="border-l-2 border-destructive/60 pl-3 text-xs text-destructive">
-          <div className="font-medium">{revision.failure.reason ?? 'Build failed'}</div>
-          {revision.failure.detail && <div className="mt-1">{revision.failure.detail}</div>}
-        </div>
-      )}
-      {revision.generatedDockerfile && (
-        <div className="space-y-2">
-          <h4 className="text-xs font-medium">Generated Dockerfile</h4>
-          <pre className="max-h-96 overflow-auto rounded border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed">
-            {revision.generatedDockerfile}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}
+  }
+  if (filter === 'published') return environment.status === 'PUBLISHED';
+  return environment.status === 'RETIRED';
+};
 
 export function EnvironmentRegistry() {
   const [environments, setEnvironments] = useState<ManagedEnvironment[]>([]);
@@ -670,13 +83,26 @@ export function EnvironmentRegistry() {
   const [detail, setDetail] = useState<EnvironmentDetail | null>(null);
   const [baseDetail, setBaseDetail] = useState<EnvironmentDetail | null>(null);
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
-  const [form, setForm] = useState<EnvironmentForm>(emptyForm);
+  const [form, setForm] = useState<EnvironmentForm>(emptyEnvironmentForm);
+  const [savedFormFingerprint, setSavedFormFingerprint] = useState(() =>
+    formFingerprint(emptyEnvironmentForm()),
+  );
   const [creating, setCreating] = useState(false);
+  const [workspace, setWorkspace] = useState<Workspace>('definition');
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [baseLoading, setBaseLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<EnvironmentFilter>('all');
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const loadedEnvironmentId = useRef<string | null>(null);
+
+  const setFormAndBaseline = useCallback((next: EnvironmentForm) => {
+    setForm(next);
+    setSavedFormFingerprint(formFingerprint(next));
+  }, []);
 
   const loadList = useCallback(async (preferredId?: string) => {
     const values = await environmentsService.list();
@@ -690,29 +116,48 @@ export function EnvironmentRegistry() {
     return values;
   }, []);
 
-  const loadDetail = useCallback(async (environmentId: string, showLoading = true) => {
-    if (showLoading) setDetailLoading(true);
-    try {
-      const value = await environmentsService.get(environmentId);
-      setDetail(value);
-      const current =
-        value.revisions.find(
-          (revision) => revision.revisionId === value.environment.currentRevisionId,
-        ) ??
-        value.publishedRevision ??
-        value.revisions[0] ??
-        null;
-      setSelectedRevisionId((selected) =>
-        selected && value.revisions.some((revision) => revision.revisionId === selected)
-          ? selected
-          : (current?.revisionId ?? null),
-      );
-      setForm(formFromRevision(value.environment, current));
-      return value;
-    } finally {
-      if (showLoading) setDetailLoading(false);
-    }
-  }, []);
+  const loadDetail = useCallback(
+    async (
+      environmentId: string,
+      options: { showLoading?: boolean; preferCurrent?: boolean; preserveForm?: boolean } = {},
+    ) => {
+      const { showLoading = true, preferCurrent = false, preserveForm = false } = options;
+      if (showLoading) setDetailLoading(true);
+      try {
+        const value = await environmentsService.get(environmentId);
+        const current =
+          value.revisions.find(
+            (revision) => revision.revisionId === value.environment.currentRevisionId,
+          ) ??
+          value.publishedRevision ??
+          value.revisions[0] ??
+          null;
+        if (loadedEnvironmentId.current !== value.environment.environmentId) {
+          const definitionAvailable =
+            value.environment.environmentId !== 'standard' &&
+            Boolean(current) &&
+            isCatalogRecipe(current?.recipe);
+          setWorkspace(
+            definitionAvailable && current?.status === 'DRAFT' ? 'definition' : 'revisions',
+          );
+          loadedEnvironmentId.current = value.environment.environmentId;
+        }
+        setDetail(value);
+        setSelectedRevisionId((selected) =>
+          preferCurrent
+            ? (current?.revisionId ?? null)
+            : selected && value.revisions.some((revision) => revision.revisionId === selected)
+              ? selected
+              : (current?.revisionId ?? null),
+        );
+        if (!preserveForm) setFormAndBaseline(formFromRevision(value.environment, current));
+        return value;
+      } finally {
+        if (showLoading) setDetailLoading(false);
+      }
+    },
+    [setFormAndBaseline],
+  );
 
   useEffect(() => {
     Promise.all([loadList(), toolsService.list(true)])
@@ -761,6 +206,22 @@ export function EnvironmentRegistry() {
     () => detail?.revisions.find((revision) => revision.revisionId === selectedRevisionId) ?? null,
     [detail, selectedRevisionId],
   );
+  const isDirty = formFingerprint(form) !== savedFormFingerprint;
+
+  useEffect(() => {
+    if (!selectedId || !selectedRevision || !isActiveRevision(selectedRevision)) return;
+    const timer = window.setInterval(() => {
+      void Promise.all([
+        loadDetail(selectedId, {
+          showLoading: false,
+          preserveForm: isDirty,
+        }),
+        loadList(selectedId),
+      ]).catch(() => undefined);
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [isDirty, loadDetail, loadList, selectedId, selectedRevision]);
+
   const currentRevision =
     detail?.revisions.find(
       (revision) => revision.revisionId === detail.environment.currentRevisionId,
@@ -769,16 +230,8 @@ export function EnvironmentRegistry() {
     detail?.environment.environmentId !== 'standard' &&
     Boolean(currentRevision) &&
     !isCatalogRecipe(currentRevision?.recipe);
-
-  useEffect(() => {
-    if (!selectedId || !selectedRevision || !isActiveRevision(selectedRevision)) return;
-    const timer = window.setInterval(() => {
-      void Promise.all([loadDetail(selectedId, false), loadList(selectedId)]).catch(
-        () => undefined,
-      );
-    }, 8000);
-    return () => window.clearInterval(timer);
-  }, [loadDetail, loadList, selectedId, selectedRevision]);
+  const definitionAvailable =
+    detail?.environment.environmentId !== 'standard' && !fixedToolEnvironment;
 
   const baseOptions = environments.filter(
     (environment) =>
@@ -795,13 +248,30 @@ export function EnvironmentRegistry() {
     null;
   const baseRevision = activeBaseDetail?.publishedRevision ?? null;
 
-  const run = async (name: string, action: () => Promise<unknown>, preferredId = selectedId) => {
+  const filteredEnvironments = environments.filter((environment) => {
+    const query = search.trim().toLowerCase();
+    return (
+      filterEnvironment(environment, filter) &&
+      (!query ||
+        environment.name.toLowerCase().includes(query) ||
+        environment.environmentId.toLowerCase().includes(query) ||
+        environment.description.toLowerCase().includes(query))
+    );
+  });
+
+  const run = async (
+    name: string,
+    action: () => Promise<unknown>,
+    preferredId = selectedId,
+    preferCurrent = false,
+    preserveForm = false,
+  ) => {
     setBusy(name);
     setError(null);
     try {
       await action();
       await loadList(preferredId ?? undefined);
-      if (preferredId) await loadDetail(preferredId);
+      if (preferredId) await loadDetail(preferredId, { preferCurrent, preserveForm });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Environment action failed');
     } finally {
@@ -823,7 +293,8 @@ export function EnvironmentRegistry() {
       setCreating(false);
       setSelectedId(result.environment.environmentId);
       await loadList(result.environment.environmentId);
-      await loadDetail(result.environment.environmentId);
+      await loadDetail(result.environment.environmentId, { preferCurrent: true });
+      setWorkspace('revisions');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Environment action failed');
     } finally {
@@ -831,351 +302,439 @@ export function EnvironmentRegistry() {
     }
   };
 
+  const requestDiscard = (action: () => void) => {
+    if (!isDirty) {
+      action();
+      return;
+    }
+    setConfirmation({
+      title: 'Discard unsaved changes?',
+      description:
+        'The environment definition has changes that have not been saved as a new revision.',
+      actionLabel: 'Discard changes',
+      destructive: true,
+      onConfirm: action,
+    });
+  };
+
+  const startCreating = () => {
+    const next = emptyEnvironmentForm();
+    setCreating(true);
+    setDetail(null);
+    loadedEnvironmentId.current = null;
+    setWorkspace('definition');
+    setFormAndBaseline(next);
+    setError(null);
+  };
+
+  const selectEnvironment = (environmentId: string) => {
+    if (!creating && selectedId === environmentId) return;
+    requestDiscard(() => {
+      setCreating(false);
+      setDetail(null);
+      setSelectedId(environmentId);
+      setError(null);
+    });
+  };
+
+  const requestRetire = (environment: ManagedEnvironment) =>
+    setConfirmation({
+      title: `Retire ${environment.name}?`,
+      description:
+        'Retired environments cannot be changed or assigned to new spaces. Existing intent snapshots remain available.',
+      actionLabel: 'Retire environment',
+      destructive: true,
+      onConfirm: () =>
+        void run('retire', () => environmentsService.retire(environment.environmentId)),
+    });
+
+  const requestAcceptFindings = (
+    environment: ManagedEnvironment,
+    revision: EnvironmentRevision,
+    critical: number,
+    high: number,
+  ) =>
+    setConfirmation({
+      title: 'Accept security findings?',
+      description: `Accept ${critical} Critical and ${high} High security findings and continue to runtime validation? The findings remain visible after publication.`,
+      actionLabel: 'Accept and continue',
+      onConfirm: () =>
+        void run(
+          'accept-findings',
+          () => environmentsService.acceptFindings(environment.environmentId, revision.revisionId),
+          environment.environmentId,
+          false,
+          isDirty,
+        ),
+    });
+
   const environment = detail?.environment ?? null;
-  const findingsAcceptedAt = selectedRevision ? securityFindingsAcceptedAt(selectedRevision) : null;
-  const legacySecurityFailure =
-    selectedRevision?.status === 'FAILED' &&
-    selectedRevision.failure?.reason === 'critical_vulnerability_findings' &&
-    Boolean(selectedRevision.imageDigest);
-  const requiresSecurityAcceptance =
-    Boolean(selectedRevision) &&
-    !findingsAcceptedAt &&
-    (selectedRevision?.status === 'SECURITY_REVIEW' || legacySecurityFailure);
-  const selectedCriticalFindings = Number(
-    selectedRevision?.scanFindings?.severityCounts?.CRITICAL ?? 0,
-  );
-  const selectedHighFindings = Number(selectedRevision?.scanFindings?.severityCounts?.HIGH ?? 0);
+  const revisionWorkspace =
+    environment && detail ? (
+      <EnvironmentRevisionWorkspace
+        environment={environment}
+        detail={detail}
+        selectedRevisionId={selectedRevisionId}
+        onSelectRevision={setSelectedRevisionId}
+        busy={busy}
+        onRefresh={() => void loadDetail(environment.environmentId, { preserveForm: isDirty })}
+        onRun={(name, action) => void run(name, action, environment.environmentId, false, isDirty)}
+        onRequestAccept={(revision, critical, high) =>
+          requestAcceptFindings(environment, revision, critical, high)
+        }
+      />
+    ) : null;
 
   return (
-    <SettingsCard
-      icon={<Boxes />}
-      title="Managed Environments"
-      badge={
-        updates.length ? (
-          <Badge variant="outline" className={statusClass('UPDATE_AVAILABLE')}>
-            {updates.length} update{updates.length === 1 ? '' : 's'}
-          </Badge>
-        ) : null
-      }
-      description="Compose published tools into versioned AgentCore runtimes."
-      headerAction={
-        <Button
-          size="sm"
-          className="gap-1.5"
-          disabled={Boolean(busy)}
-          onClick={() => {
-            setCreating(true);
-            setDetail(null);
-            setForm(emptyForm());
-            setError(null);
-          }}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New
-        </Button>
-      }
-    >
-      {loading ? (
-        <div className="grid gap-4 lg:grid-cols-[230px_minmax(0,1fr)]">
-          <Skeleton className="h-72" />
-          <Skeleton className="h-96" />
-        </div>
-      ) : (
-        <div className="grid min-w-0 gap-5 lg:grid-cols-[230px_minmax(0,1fr)]">
-          <div className="space-y-1 border-r pr-4">
-            {environments.map((item) => (
-              <button
-                key={item.environmentId}
-                type="button"
-                className={cn(
-                  'flex w-full items-start justify-between gap-2 rounded px-2.5 py-2 text-left hover:bg-muted/60',
-                  !creating && selectedId === item.environmentId && 'bg-muted',
-                )}
-                onClick={() => {
-                  setCreating(false);
-                  setSelectedId(item.environmentId);
-                }}
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-xs font-medium">{item.name}</span>
-                  <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                    {item.environmentId}
-                  </span>
-                </span>
-                {item.updateAvailable ? (
-                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
-                ) : (
-                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
-                )}
-              </button>
-            ))}
+    <>
+      <SettingsCard
+        icon={<Boxes />}
+        title="Managed Environments"
+        badge={
+          updates.length ? (
+            <Badge variant="outline" className={statusClass('UPDATE_AVAILABLE')}>
+              {updates.length} update{updates.length === 1 ? '' : 's'}
+            </Badge>
+          ) : null
+        }
+        description="Define reusable toolchains, then build and publish immutable runtime revisions."
+        headerAction={
+          <Button
+            size="sm"
+            className="gap-1.5"
+            disabled={Boolean(busy)}
+            onClick={() => requestDiscard(startCreating)}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New environment
+          </Button>
+        }
+      >
+        {error && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+            <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+            <span>{error}</span>
           </div>
+        )}
 
-          <div className="min-w-0 space-y-5">
-            {creating ? (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold">New Environment</h3>
-                  <Button variant="ghost" size="sm" onClick={() => setCreating(false)}>
-                    Cancel
-                  </Button>
+        {loading ? (
+          <div className="grid gap-4 lg:grid-cols-[250px_minmax(0,1fr)]">
+            <Skeleton className="h-[520px]" />
+            <Skeleton className="h-[620px]" />
+          </div>
+        ) : (
+          <div className="grid min-w-0 gap-5 lg:grid-cols-[250px_minmax(0,1fr)]">
+            <aside className="self-start rounded-xl border bg-muted/10 p-2 lg:sticky lg:top-0">
+              <div className="space-y-2 p-1">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    aria-label="Search environments"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search environments"
+                    className="h-9 bg-background pl-8 text-xs"
+                  />
                 </div>
-                <RecipeEditor
-                  form={form}
-                  onChange={setForm}
-                  baseOptions={baseOptions}
-                  baseEnvironment={baseEnvironment}
-                  baseRevision={baseRevision}
-                  baseLoading={baseLoading}
-                  tools={tools}
-                  disabled={Boolean(busy)}
-                  showId
-                />
-                <Button
-                  size="sm"
-                  className="gap-1.5"
-                  disabled={
-                    Boolean(busy) ||
-                    baseLoading ||
-                    !baseRevision ||
-                    !form.name.trim() ||
-                    !form.baseEnvironmentId
-                  }
-                  onClick={() => void createEnvironment()}
+                <Select
+                  value={filter}
+                  onValueChange={(value) => setFilter(value as EnvironmentFilter)}
                 >
-                  {busy === 'create' ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Save className="h-3.5 w-3.5" />
-                  )}
-                  Create Draft
-                </Button>
-              </>
-            ) : detailLoading || !environment ? (
-              <Skeleton className="h-96" />
-            ) : (
-              <>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-sm font-semibold">{environment.name}</h3>
-                      <StatusBadge status={environment.status} />
+                  <SelectTrigger
+                    aria-label="Filter environments"
+                    className="h-8 bg-background text-xs"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All environments</SelectItem>
+                    <SelectItem value="attention">Needs attention</SelectItem>
+                    <SelectItem value="drafts">In progress</SelectItem>
+                    <SelectItem value="published">Published</SelectItem>
+                    <SelectItem value="retired">Retired</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="mt-1 max-h-[680px] space-y-1 overflow-y-auto">
+                {creating && (
+                  <div className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <Plus className="h-3.5 w-3.5 text-primary" />
+                      <span className="text-xs font-semibold">New environment</span>
                     </div>
-                    <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                      {environment.environmentId}
-                    </p>
-                    {(environment.toolUpdates?.length ?? 0) > 0 && (
-                      <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                        Recommended tool updates are available. Save a new revision to select them.
-                      </p>
-                    )}
-                    {fixedToolEnvironment && (
-                      <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                        This fixed-tool environment is read-only. Retire it, then create a new
-                        environment from published catalog tools.
-                      </p>
-                    )}
+                    <p className="mt-1 text-[10px] text-muted-foreground">Unsaved definition</p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {environment.updateAvailable &&
-                      environment.baseEnvironmentId &&
-                      !(environment.toolUpdates?.length ?? 0) && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="gap-1.5"
-                          disabled={Boolean(busy)}
-                          onClick={() =>
-                            void run('rebuild', () =>
-                              environmentsService.rebuild(environment.environmentId),
-                            )
-                          }
-                        >
-                          <RotateCw className="h-3.5 w-3.5" />
-                          Rebuild on Latest Base
-                        </Button>
-                      )}
-                    {environment.environmentId !== 'standard' && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="gap-1.5 text-destructive"
-                        disabled={Boolean(busy)}
-                        onClick={() => {
-                          if (window.confirm(`Retire ${environment.name}?`)) {
-                            void run('retire', () =>
-                              environmentsService.retire(environment.environmentId),
-                            );
-                          }
-                        }}
-                      >
-                        <Archive className="h-3.5 w-3.5" />
-                        Retire
-                      </Button>
+                )}
+                {filteredEnvironments.map((item) => (
+                  <button
+                    key={item.environmentId}
+                    type="button"
+                    className={cn(
+                      'w-full rounded-lg border border-transparent px-3 py-2.5 text-left transition-colors hover:bg-muted/60',
+                      !creating &&
+                        selectedId === item.environmentId &&
+                        'border-border bg-background shadow-sm',
                     )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 border-y py-3">
-                  <Select
-                    value={selectedRevisionId ?? undefined}
-                    onValueChange={setSelectedRevisionId}
+                    aria-pressed={!creating && selectedId === item.environmentId}
+                    onClick={() => selectEnvironment(item.environmentId)}
                   >
-                    <SelectTrigger aria-label="Revision" className="h-8 w-64 font-mono text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {detail?.revisions.map((revision) => (
-                        <SelectItem key={revision.revisionId} value={revision.revisionId}>
-                          {revision.revisionId} · {revision.status}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {selectedRevision && <StatusBadge status={selectedRevision.status} />}
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-8 w-8"
-                    title="Refresh"
-                    onClick={() => void loadDetail(environment.environmentId)}
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  </Button>
-                  <div className="ml-auto flex flex-wrap gap-2">
-                    {selectedRevision?.status === 'DRAFT' &&
-                      !environment.updateAvailable &&
-                      isCatalogRecipe(selectedRevision.recipe) && (
-                        <Button
-                          size="sm"
-                          onClick={() =>
-                            void run('build', () =>
-                              environmentsService.build(
-                                environment.environmentId,
-                                selectedRevision.revisionId,
-                              ),
-                            )
-                          }
-                        >
-                          <Hammer className="h-3.5 w-3.5" />
-                          Build
-                        </Button>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="min-w-0">
+                        <span className="block truncate text-xs font-semibold">{item.name}</span>
+                        <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
+                          {item.environmentId}
+                        </span>
+                      </span>
+                      {item.updateAvailable ? (
+                        <span className="mt-0.5 shrink-0 text-amber-600">
+                          <TriangleAlert className="h-3.5 w-3.5" />
+                          <span className="sr-only">Update available</span>
+                        </span>
+                      ) : (
+                        <StatusBadge
+                          status={item.status}
+                          className="shrink-0 px-1.5 py-0 text-[8px]"
+                        />
                       )}
-                    {selectedRevision?.status === 'FAILED' &&
-                      !environment.updateAvailable &&
-                      isCatalogRecipe(selectedRevision.recipe) && (
-                        <Button
-                          size="sm"
-                          onClick={() =>
-                            void run('retry', () =>
-                              environmentsService.retry(
-                                environment.environmentId,
-                                selectedRevision.revisionId,
-                              ),
-                            )
-                          }
-                        >
-                          <RotateCw className="h-3.5 w-3.5" />
-                          Retry
-                        </Button>
-                      )}
-                    {requiresSecurityAcceptance && selectedRevision && (
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Accept ${selectedCriticalFindings} Critical and ${selectedHighFindings} High security findings and continue to runtime validation? The findings will remain visible after publication.`,
-                            )
-                          ) {
-                            void run('accept-findings', () =>
-                              environmentsService.acceptFindings(
-                                environment.environmentId,
-                                selectedRevision.revisionId,
-                              ),
-                            );
-                          }
-                        }}
-                      >
-                        <ShieldAlert className="h-3.5 w-3.5" />
-                        Accept Findings & Continue
-                      </Button>
+                    </div>
+                    {(item.toolUpdates?.length ?? 0) > 0 && (
+                      <span className="mt-1.5 block text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                        {item.toolUpdates?.length} recommended tool update
+                        {item.toolUpdates?.length === 1 ? '' : 's'}
+                      </span>
                     )}
-                    {selectedRevision?.status === 'SECURITY_REVIEW' && findingsAcceptedAt && (
-                      <Badge
-                        variant="outline"
-                        className={cn('gap-1.5', statusClass('SECURITY_REVIEW'))}
-                      >
-                        <ShieldCheck className="h-3.5 w-3.5" />
-                        Accepted · validation pending
-                      </Badge>
-                    )}
-                    {selectedRevision?.status === 'READY' &&
-                      (environment.environmentId === 'standard' ||
-                        isCatalogRecipe(selectedRevision.recipe)) && (
-                        <Button
-                          size="sm"
-                          onClick={() =>
-                            void run('publish', () =>
-                              environmentsService.publish(
-                                environment.environmentId,
-                                selectedRevision.revisionId,
-                              ),
-                            )
-                          }
-                        >
-                          <Rocket className="h-3.5 w-3.5" />
-                          Publish
-                        </Button>
-                      )}
+                  </button>
+                ))}
+                {filteredEnvironments.length === 0 && (
+                  <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                    No environments match this view.
                   </div>
-                </div>
+                )}
+              </div>
+            </aside>
 
-                {environment.environmentId !== 'standard' && !fixedToolEnvironment && (
-                  <>
-                    <RecipeEditor
-                      form={form}
-                      onChange={setForm}
-                      baseOptions={baseOptions}
-                      baseEnvironment={baseEnvironment}
-                      baseRevision={baseRevision}
-                      baseLoading={baseLoading}
-                      tools={tools}
-                      disabled={Boolean(busy)}
-                      showId={false}
-                    />
+            <div className="min-w-0">
+              {creating ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-base font-semibold">Create an environment</h3>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Choose a base, add tools, and review the composition before creating a
+                        draft.
+                      </p>
+                    </div>
                     <Button
+                      variant="ghost"
                       size="sm"
-                      variant="outline"
-                      className="gap-1.5"
-                      disabled={Boolean(busy) || baseLoading || !baseRevision || !form.name.trim()}
                       onClick={() =>
-                        void run('save', () =>
-                          environmentsService.update(environment.environmentId, {
-                            name: form.name.trim(),
-                            description: form.description.trim(),
-                            baseEnvironmentId: form.baseEnvironmentId,
-                            recipe: recipeFromForm(form),
-                          }),
-                        )
+                        requestDiscard(() => {
+                          setCreating(false);
+                          if (selectedId) void loadDetail(selectedId);
+                        })
                       }
                     >
-                      {busy === 'save' ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Save className="h-3.5 w-3.5" />
-                      )}
-                      Save as New Revision
+                      Cancel
                     </Button>
-                  </>
-                )}
-                {selectedRevision && <Evidence revision={selectedRevision} />}
-              </>
-            )}
-            {error && <p className="text-xs text-destructive">{error}</p>}
+                  </div>
+                  <EnvironmentBuilder
+                    key="new-environment"
+                    form={form}
+                    onChange={setForm}
+                    baseOptions={baseOptions}
+                    baseEnvironment={baseEnvironment}
+                    baseRevision={baseRevision}
+                    baseLoading={baseLoading}
+                    tools={tools}
+                    disabled={Boolean(busy)}
+                    showId
+                    actionLabel="Create draft"
+                    actionBusy={busy === 'create'}
+                    actionDisabled={Boolean(busy) || baseLoading || !baseRevision}
+                    onAction={() => void createEnvironment()}
+                  />
+                </div>
+              ) : detailLoading || !environment || !detail ? (
+                <Skeleton className="h-[620px]" />
+              ) : (
+                <div className="space-y-4">
+                  <div className="border-b pb-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-base font-semibold">{environment.name}</h3>
+                          <StatusBadge status={environment.status} />
+                        </div>
+                        <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                          <span className="font-mono text-[10px]">{environment.environmentId}</span>
+                          {environment.description && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>{environment.description}</span>
+                            </>
+                          )}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {environment.updateAvailable &&
+                          environment.baseEnvironmentId &&
+                          !(environment.toolUpdates?.length ?? 0) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1.5"
+                              disabled={Boolean(busy)}
+                              onClick={() =>
+                                requestDiscard(
+                                  () =>
+                                    void run(
+                                      'rebuild',
+                                      () => environmentsService.rebuild(environment.environmentId),
+                                      environment.environmentId,
+                                      true,
+                                    ),
+                                )
+                              }
+                            >
+                              <RotateCw className="h-3.5 w-3.5" />
+                              Rebuild on latest base
+                            </Button>
+                          )}
+                        {environment.environmentId !== 'standard' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="gap-1.5 text-destructive"
+                            disabled={Boolean(busy)}
+                            onClick={() => requestRetire(environment)}
+                          >
+                            <Archive className="h-3.5 w-3.5" />
+                            Retire
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {(environment.toolUpdates?.length ?? 0) > 0 && (
+                      <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-800 dark:text-amber-200">
+                        <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+                        <span>
+                          Recommended tool updates are available. Review the definition and save a
+                          new revision to select them.
+                        </span>
+                      </div>
+                    )}
+                    {fixedToolEnvironment && (
+                      <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-800 dark:text-amber-200">
+                        <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+                        <span>
+                          This fixed-tool environment is read-only. Retire it, then create a new
+                          environment from published catalog tools.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {definitionAvailable ? (
+                    <Tabs
+                      value={workspace}
+                      onValueChange={(value) => setWorkspace(value as Workspace)}
+                    >
+                      <TabsList>
+                        <TabsTrigger value="definition">
+                          Definition
+                          {isDirty && (
+                            <>
+                              <span className="ml-1 h-1.5 w-1.5 rounded-full bg-amber-500" />
+                              <span className="sr-only">Unsaved changes</span>
+                            </>
+                          )}
+                        </TabsTrigger>
+                        <TabsTrigger value="revisions">
+                          Revisions
+                          <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[9px]">
+                            {detail.revisions.length}
+                          </Badge>
+                        </TabsTrigger>
+                      </TabsList>
+
+                      <TabsContent value="definition" className="mt-4">
+                        <EnvironmentBuilder
+                          key={environment.environmentId}
+                          form={form}
+                          onChange={setForm}
+                          baseOptions={baseOptions}
+                          baseEnvironment={baseEnvironment}
+                          baseRevision={baseRevision}
+                          baseLoading={baseLoading}
+                          tools={tools}
+                          disabled={Boolean(busy)}
+                          showId={false}
+                          actionLabel="Save as new revision"
+                          actionBusy={busy === 'save'}
+                          actionDisabled={Boolean(busy) || baseLoading || !baseRevision || !isDirty}
+                          onAction={() =>
+                            void run(
+                              'save',
+                              () =>
+                                environmentsService.update(environment.environmentId, {
+                                  name: form.name.trim(),
+                                  description: form.description.trim(),
+                                  baseEnvironmentId: form.baseEnvironmentId,
+                                  recipe: recipeFromForm(form),
+                                }),
+                              environment.environmentId,
+                              true,
+                            )
+                          }
+                        />
+                      </TabsContent>
+
+                      <TabsContent value="revisions" className="mt-4">
+                        {revisionWorkspace}
+                      </TabsContent>
+                    </Tabs>
+                  ) : (
+                    revisionWorkspace
+                  )}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
-    </SettingsCard>
+        )}
+      </SettingsCard>
+
+      <AlertDialog
+        open={Boolean(confirmation)}
+        onOpenChange={(open) => {
+          if (!open) setConfirmation(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmation?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{confirmation?.description}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={
+                confirmation?.destructive
+                  ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
+                  : undefined
+              }
+              onClick={() => {
+                const action = confirmation?.onConfirm;
+                setConfirmation(null);
+                action?.();
+              }}
+            >
+              {confirmation?.actionLabel}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

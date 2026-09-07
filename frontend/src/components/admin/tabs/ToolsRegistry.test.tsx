@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const list = vi.fn();
@@ -26,6 +26,7 @@ vi.mock('@/services/environments', () => ({
 }));
 
 import { ToolsRegistry } from './ToolsRegistry';
+import { ApiError } from '@/services/api';
 
 const publishedVersion = {
   toolId: 'go',
@@ -124,17 +125,17 @@ describe('ToolsRegistry', () => {
     const user = userEvent.setup();
     render(<ToolsRegistry />);
 
-    await user.click(await screen.findByRole('button', { name: 'Add Tool' }));
+    await user.click(await screen.findByRole('button', { name: 'New tool family' }));
     await user.type(screen.getByLabelText('Name'), '.NET SDK');
     await user.type(screen.getByLabelText('Publisher'), 'Microsoft');
     await user.type(screen.getByLabelText('Exact version'), '8.0.408');
-    await user.click(screen.getByLabelText('Verification'));
-    await user.click(await screen.findByRole('option', { name: 'dotnet' }));
+    await user.click(screen.getByLabelText('Tool type'));
+    await user.click(await screen.findByRole('option', { name: '.NET SDK' }));
     await user.type(
-      screen.getByLabelText('Official ARM64 archive'),
+      screen.getByLabelText('Linux ARM64 download URL'),
       'https://download.visualstudio.microsoft.com/dotnet-sdk-8.0.408-linux-arm64.tar.gz',
     );
-    await user.click(screen.getByRole('button', { name: 'Create and Build' }));
+    await user.click(screen.getByRole('button', { name: 'Create and start build' }));
 
     expect(create).toHaveBeenCalledWith({
       name: '.NET SDK',
@@ -163,20 +164,160 @@ describe('ToolsRegistry', () => {
     expect(build).toHaveBeenCalledWith('dotnet-sdk', 'tv-dotnet-8');
   });
 
+  it('adds Amazon Corretto as a Java distribution in the existing tool family', async () => {
+    const user = userEvent.setup();
+    const temurinVersion = {
+      ...publishedVersion,
+      toolId: 'java',
+      versionId: 'tv-java-temurin',
+      definition: {
+        ...publishedVersion.definition,
+        version: '21.0.8',
+        distribution: 'Eclipse Temurin',
+        publisher: 'Eclipse Adoptium',
+        executables: [
+          { name: 'java', path: 'bin/java' },
+          { name: 'javac', path: 'bin/javac' },
+        ],
+        environmentVariables: { JAVA_HOME: '${TOOL_ROOT}' },
+        verification: {
+          preset: 'java' as const,
+          versionCommand: { argv: ['java', '-version'], expected: '21.0.8' },
+          script: '',
+          files: [],
+        },
+      },
+    };
+    const javaTool = {
+      ...goTool,
+      toolId: 'java',
+      name: 'Java JDK',
+      publisher: 'Eclipse Temurin',
+      recommendedVersionId: temurinVersion.versionId,
+      versions: [temurinVersion],
+    };
+    list.mockResolvedValue([javaTool]);
+    createVersion.mockResolvedValue({
+      tool: javaTool,
+      version: { ...temurinVersion, versionId: 'tv-java-corretto', status: 'DRAFT' },
+    });
+
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Add distribution or version' }));
+    expect(screen.getByText(/Java JDK settings are applied automatically/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Tool type')).not.toBeInTheDocument();
+    expect(screen.getByText('Recommend')).toBeInTheDocument();
+    await user.clear(screen.getByLabelText('Distribution'));
+    await user.type(screen.getByLabelText('Distribution'), 'Amazon Corretto');
+    await user.clear(screen.getByLabelText('Publisher'));
+    await user.type(screen.getByLabelText('Publisher'), 'Amazon Web Services');
+    await user.type(screen.getByLabelText('Exact version'), '21.0.8.9.1');
+    await user.type(
+      screen.getByLabelText('Linux ARM64 download URL'),
+      'https://corretto.aws/downloads/resources/21.0.8.9.1/amazon-corretto-21.0.8.9.1-linux-aarch64.tar.gz',
+    );
+    await user.click(screen.getByRole('button', { name: 'Create and start build' }));
+
+    expect(createVersion).toHaveBeenCalledWith(
+      'java',
+      expect.objectContaining({
+        version: '21.0.8.9.1',
+        distribution: 'Amazon Corretto',
+        publisher: 'Amazon Web Services',
+        verification: expect.objectContaining({ preset: 'java' }),
+      }),
+    );
+    expect(build).toHaveBeenCalledWith('java', 'tv-java-corretto');
+  });
+
+  it('does not mistake JavaScript tool families for Java JDKs', async () => {
+    const user = userEvent.setup();
+    list.mockResolvedValue([
+      {
+        ...goTool,
+        toolId: 'javascript-cli',
+        name: 'JavaScript CLI',
+        recommendedVersionId: null,
+        versions: [],
+      },
+    ]);
+
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Add distribution or version' }));
+    expect(screen.getByText(/Other CLI settings are applied automatically/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Tool type')).not.toBeInTheDocument();
+  });
+
+  it('shows field-level API validation instead of a generic definition error', async () => {
+    const user = userEvent.setup();
+    list.mockResolvedValue([goTool]);
+    createVersion.mockRejectedValue(
+      new ApiError(400, 'Invalid tool version definition', {
+        issues: [
+          {
+            path: 'executables.0.path',
+            message: 'executable path must stay inside the tool',
+          },
+        ],
+      }),
+    );
+
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Add distribution or version' }));
+    await user.type(screen.getByLabelText('Exact version'), '1.25.0');
+    await user.type(
+      screen.getByLabelText('Linux ARM64 download URL'),
+      'https://go.dev/dl/go1.25.0.linux-arm64.tar.gz',
+    );
+    await user.click(screen.getByRole('button', { name: 'Create and start build' }));
+
+    expect(await screen.findByText(/Check these fields/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Executables: executable path must stay inside the tool/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows live build progress and the CodeBuild link in the lifecycle', async () => {
+    const buildingVersion = {
+      ...publishedVersion,
+      status: 'BUILDING' as const,
+      source: null,
+      imageUri: null,
+      imageDigest: null,
+      imageSizeBytes: null,
+      buildLogUrl: 'https://console.aws.amazon.com/codesuite/codebuild/builds/example',
+      verification: null,
+    };
+    list.mockResolvedValue([{ ...goTool, versions: [buildingVersion] }]);
+
+    render(<ToolsRegistry />);
+
+    expect(await screen.findByText(/CodeBuild is downloading the source/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /CodeBuild logs/ })).toHaveAttribute(
+      'href',
+      buildingVersion.buildLogUrl,
+    );
+    expect(screen.getByText('Check')).toBeInTheDocument();
+    expect(screen.getByText('Recommend')).toBeInTheDocument();
+  });
+
   it('uses the sandboxed vendor installer and native compiler prerequisite for Rust', async () => {
     const user = userEvent.setup();
     render(<ToolsRegistry />);
 
-    await user.click(await screen.findByRole('button', { name: 'Add Tool' }));
+    await user.click(await screen.findByRole('button', { name: 'New tool family' }));
     await user.type(screen.getByLabelText('Name'), 'Rust Toolchain');
     await user.type(screen.getByLabelText('Exact version'), '1.89.0');
-    await user.click(screen.getByLabelText('Verification'));
-    await user.click(await screen.findByRole('option', { name: 'rust' }));
+    await user.click(screen.getByLabelText('Tool type'));
+    await user.click(await screen.findByRole('option', { name: 'Rust toolchain' }));
     await user.type(
-      screen.getByLabelText('Official ARM64 archive'),
+      screen.getByLabelText('Linux ARM64 download URL'),
       'https://static.rust-lang.org/dist/rust-1.89.0-aarch64-unknown-linux-gnu.tar.gz',
     );
-    await user.click(screen.getByRole('button', { name: 'Create and Build' }));
+    await user.click(screen.getByRole('button', { name: 'Create and start build' }));
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ category: 'language-sdk' }));
     expect(createVersion).toHaveBeenCalledWith(
@@ -212,7 +353,7 @@ describe('ToolsRegistry', () => {
     expect(screen.getByLabelText('Exact version')).toBeDisabled();
     await user.clear(screen.getByLabelText('Root folders to remove'));
     await user.type(screen.getByLabelText('Root folders to remove'), '0');
-    await user.click(screen.getByRole('button', { name: 'Save and Build' }));
+    await user.click(screen.getByRole('button', { name: 'Save and rebuild' }));
 
     expect(create).not.toHaveBeenCalled();
     expect(createVersion).not.toHaveBeenCalled();
@@ -234,8 +375,67 @@ describe('ToolsRegistry', () => {
 
     render(<ToolsRegistry />);
 
-    await user.click(await screen.findByRole('button', { name: 'Recommend' }));
+    expect(await screen.findByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByText('Download complete')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Recommendations are replaced/)).not.toBeInTheDocument();
+
+    await user.click(await screen.findByRole('button', { name: 'Make recommended' }));
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', {
+        name: 'Make recommended',
+      }),
+    );
     expect(recommend).toHaveBeenCalledWith('go', 'tv-go-1');
+  });
+
+  it('replaces an existing recommendation without requiring a removal step', async () => {
+    const user = userEvent.setup();
+    const current = {
+      ...publishedVersion,
+      versionId: 'tv-java-temurin',
+      definition: {
+        ...publishedVersion.definition,
+        distribution: 'Eclipse Temurin',
+        version: '21.0.8',
+      },
+    };
+    const candidate = {
+      ...publishedVersion,
+      versionId: 'tv-java-corretto',
+      definition: {
+        ...publishedVersion.definition,
+        distribution: 'Amazon Corretto',
+        publisher: 'Amazon Web Services',
+        version: '21.0.8.9.1',
+      },
+    };
+    const javaTool = {
+      ...goTool,
+      toolId: 'java',
+      name: 'Java JDK',
+      recommendedVersionId: current.versionId,
+      versions: [candidate, current],
+    };
+    list.mockResolvedValue([javaTool]);
+    recommend.mockResolvedValue({
+      tool: { ...javaTool, recommendedVersionId: candidate.versionId },
+    });
+
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Replace recommendation' }));
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog).toHaveTextContent('Replace Eclipse Temurin as recommended?');
+    await user.click(
+      within(dialog).getByRole('button', {
+        name: 'Replace recommendation',
+      }),
+    );
+
+    expect(recommend).toHaveBeenCalledWith('java', 'tv-java-corretto');
   });
 
   it('requires explicit acceptance when ECR cannot scan a tool artifact', async () => {
@@ -243,6 +443,7 @@ describe('ToolsRegistry', () => {
     const unsupportedVersion = {
       ...publishedVersion,
       status: 'SECURITY_REVIEW' as const,
+      imageUri: '123456789012.dkr.ecr.eu-west-1.amazonaws.com/managed-tools',
       scanFindings: {
         status: 'UNSUPPORTED',
         description:
@@ -252,21 +453,21 @@ describe('ToolsRegistry', () => {
       },
     };
     list.mockResolvedValue([{ ...goTool, versions: [unsupportedVersion] }]);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     render(<ToolsRegistry />);
 
-    expect(await screen.findByText('ECR scan unavailable')).toBeInTheDocument();
+    expect(await screen.findAllByText('Scan unavailable')).toHaveLength(2);
     expect(
-      screen.getByText(
-        'UnsupportedImageError: The operating system and/or package manager are not supported.',
-      ),
+      screen.getByText(/This is a scan limitation, not a detected vulnerability/),
     ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Accept Scan Limitation' }));
-
-    expect(confirm).toHaveBeenCalledWith(
-      'ECR could not scan this artifact. Accept the scan limitation and continue verification?',
+    expect(screen.getByRole('link', { name: /Open ECR/ })).toHaveAttribute(
+      'href',
+      'https://eu-west-1.console.aws.amazon.com/ecr/repositories/private/123456789012/managed-tools?region=eu-west-1',
     );
+    await user.click(screen.getByRole('button', { name: 'Continue without scan' }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(
+      'This does not mean a vulnerability was found',
+    );
+    await user.click(screen.getByRole('button', { name: 'Continue after review' }));
     expect(acceptFindings).toHaveBeenCalledWith('go', 'tv-go-1');
   });
 
@@ -292,14 +493,21 @@ describe('ToolsRegistry', () => {
 
     render(<ToolsRegistry />);
 
-    expect(await screen.findByText('ECR scan limitation accepted')).toBeInTheDocument();
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Details and evidence',
+      }),
+    );
+    expect(
+      await screen.findByText('Automated package scan was unavailable and reviewed.'),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText(
         'UnsupportedImageError: The operating system and/or package manager are not supported.',
       ),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Security scan limitation accepted by admin@example.com/),
+      screen.getByText(/Automated scan limitation reviewed by admin@example.com/),
     ).toBeInTheDocument();
   });
 
