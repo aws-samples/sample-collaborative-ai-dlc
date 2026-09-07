@@ -180,6 +180,14 @@ export function RecomposePanel({
 
   const effectiveGrid = grid ?? baseline;
 
+  const preserveLockedStages = (candidate: Record<string, 'EXECUTE' | 'SKIP'>) => {
+    const next = { ...candidate };
+    for (const stageId of lockedStageIds) {
+      next[stageId] = baseline[stageId] === 'EXECUTE' ? 'EXECUTE' : 'SKIP';
+    }
+    return next;
+  };
+
   const toggleStage = (stageId: string) => {
     if (lockedStageIds.has(stageId)) return;
     const next = { ...effectiveGrid };
@@ -212,7 +220,7 @@ export function RecomposePanel({
     setError(null);
     try {
       await intentsService.recompose(projectId, intentId, {
-        composedGrid: applyGrid,
+        composedGrid: preserveLockedStages(applyGrid),
         scope: scopeLabel,
       });
       await onRelaunched();

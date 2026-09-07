@@ -110,7 +110,10 @@ export function IntentPhaseBreadcrumb({
           <ScopeBadge scope={intent.scope} className="px-2 py-0 text-[10px]" />
         </div>
       )}
-      <div className="flex w-full min-w-max overflow-x-auto pr-4">
+      <div
+        className="flex w-full overflow-x-auto pr-4"
+        data-testid="intent-phase-breadcrumb-scroll"
+      >
         {phases.map((group, index) => {
           const done = group.steps.filter((step) => step.state === 'done').length;
           const running = group.steps.filter((step) => step.state === 'running').length;

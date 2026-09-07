@@ -213,7 +213,13 @@ describe('RecomposePanel', () => {
           proposal: {
             mode: 'custom',
             scope: 'trimmed',
-            grid: { init: 'EXECUTE', analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
+            grid: {
+              init: 'EXECUTE',
+              ideation: 'EXECUTE',
+              analyze: 'EXECUTE',
+              optional: 'EXECUTE',
+              build: 'SKIP',
+            },
             rationale: ['tail not needed'],
             confidence: 0.9,
           },
@@ -241,7 +247,13 @@ describe('RecomposePanel', () => {
     await user.click(screen.getByTestId('recompose-apply-proposal'));
     await waitFor(() =>
       expect(recompose).toHaveBeenCalledWith('p1', 'i1', {
-        composedGrid: { init: 'EXECUTE', analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
+        composedGrid: {
+          init: 'EXECUTE',
+          ideation: 'SKIP',
+          analyze: 'EXECUTE',
+          optional: 'EXECUTE',
+          build: 'SKIP',
+        },
         scope: 'trimmed',
       }),
     );

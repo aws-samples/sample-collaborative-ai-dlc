@@ -1,6 +1,7 @@
 import {
   Boxes,
   Check,
+  CirclePause,
   ExternalLink,
   GitBranch,
   LoaderCircle,
@@ -11,6 +12,7 @@ import { useIntent } from '@/contexts/IntentContext';
 import { AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
 import { getIntentStageSelection } from '@/lib/intentStageSelection';
 import { getTrackerProvider } from '@/lib/trackerProviders';
+import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -23,7 +25,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
-import type { IntentSource } from '@/services/intents';
 
 interface IntentConfigurationDialogProps {
   open: boolean;
@@ -36,14 +37,6 @@ function trackerProviderId(provider: string) {
   if (provider === 'gitlab') return 'gitlab-issues';
   if (provider === 'bitbucket') return 'bitbucket-issues';
   return provider;
-}
-
-function formatSourceReference(source: IntentSource) {
-  const resourceType = (source.resourceType || 'issue').toLowerCase();
-  const resourceId = source.resourceId.startsWith('#')
-    ? source.resourceId
-    : `#${source.resourceId}`;
-  return `${resourceType} ${resourceId}`;
 }
 
 function Definition({
@@ -98,6 +91,13 @@ export function IntentConfigurationDialog({
   const sourceProvider = intent.source
     ? getTrackerProvider(trackerProviderId(intent.source.provider))
     : null;
+  const sourceLabel = intent.source
+    ? formatTrackerSourceLabel({
+        provider: intent.source.provider,
+        resourceId: intent.source.resourceId,
+        entityType: intent.source.resourceType,
+      })
+    : null;
   const waiting = intent.status === 'WAITING';
   const running = intent.status === 'RUNNING' || intent.status === 'CREATED';
   const succeeded = intent.status === 'SUCCEEDED';
@@ -118,7 +118,7 @@ export function IntentConfigurationDialog({
                 <div className="min-w-0">
                   <p className="flex items-center gap-2 text-sm font-semibold">
                     {sourceProvider?.icon({ className: 'h-4 w-4 shrink-0' })}
-                    <span>Source: {formatSourceReference(intent.source)}</span>
+                    <span>Source: {sourceLabel}</span>
                   </p>
                   <p className="mt-1 truncate text-xs text-muted-foreground">
                     {intent.title || sourceProvider?.displayName || intent.source.provider}
@@ -154,7 +154,8 @@ export function IntentConfigurationDialog({
                   failed && 'border-destructive/30 bg-destructive/10 text-destructive',
                 )}
               >
-                {(waiting || running) && <LoaderCircle className="h-3 w-3 animate-spin" />}
+                {waiting && <CirclePause className="h-3 w-3" />}
+                {running && <LoaderCircle className="h-3 w-3 animate-spin" />}
                 {succeeded && <Check className="h-3 w-3" />}
                 {failed && <XCircle className="h-3 w-3" />}
                 {intent.status}

@@ -56,6 +56,9 @@ describe('IntentPhaseBreadcrumb', () => {
     expect(screen.getByText('1/1 selected stages')).toBeInTheDocument();
     expect(screen.getByText('0/1 selected stages')).toBeInTheDocument();
     expect(screen.queryByText('Operation')).not.toBeInTheDocument();
+    const scroller = screen.getByTestId('intent-phase-breadcrumb-scroll');
+    expect(scroller).toHaveClass('flex', 'w-full', 'overflow-x-auto');
+    expect(scroller).not.toHaveClass('min-w-max');
   });
 
   it('reserves the breadcrumb space while workflow metadata loads', () => {

@@ -383,7 +383,7 @@ describe('IntentView', () => {
     expect(await screen.findByText('My intent')).toBeInTheDocument();
     expect(screen.queryByText('Polyglot')).not.toBeInTheDocument();
     expect(screen.queryByText('Claude Code')).not.toBeInTheDocument();
-    expect(screen.queryByText('Source: issue #3')).not.toBeInTheDocument();
+    expect(screen.queryByText('Source: Issue #3')).not.toBeInTheDocument();
 
     await user.click(screen.getByLabelText('Intent actions'));
     await user.click(screen.getByText('Intent configuration'));
@@ -394,7 +394,7 @@ describe('IntentView', () => {
     expect(screen.getByText('Polyglot')).toBeInTheDocument();
     expect(screen.getByText('Claude Code')).toBeInTheDocument();
     expect(screen.getByText(/us\.anthropic\.claude-sonnet-4-6/)).toBeInTheDocument();
-    const sourceLabel = screen.getByText('Source: issue #3');
+    const sourceLabel = screen.getByText('Source: Issue #3');
     expect(sourceLabel).toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'GitHub' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute(
@@ -413,6 +413,32 @@ describe('IntentView', () => {
       .find((element) => element.classList.contains('text-agent-success'));
     expect(passedBadge).toBeDefined();
     expect(passedBadge?.querySelector('svg')).toBeInTheDocument();
+  });
+
+  it('preserves Jira source keys in the intent configuration dialog', async () => {
+    const user = userEvent.setup();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'RUNNING',
+        source: {
+          bindingId: 'jira',
+          provider: 'jira-cloud',
+          instance: 'cloud',
+          resourceType: 'task',
+          resourceId: 'TAS-01',
+          resourceUrl: 'https://example.atlassian.net/browse/TAS-01',
+        },
+      }),
+    );
+    renderAt();
+
+    await screen.findByText('My intent');
+    await user.click(screen.getByLabelText('Intent actions'));
+    await user.click(screen.getByText('Intent configuration'));
+
+    expect(await screen.findByText('Source: task TAS-01')).toBeInTheDocument();
+    expect(screen.queryByText(/#TAS-01/)).not.toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Jira' })).toBeInTheDocument();
   });
 
   it('opens the reshape controls from the intent actions menu', async () => {
@@ -455,7 +481,8 @@ describe('IntentView', () => {
     ).toBeInTheDocument();
     const waitingBadge = screen.getByText('WAITING');
     expect(waitingBadge).toHaveClass('text-agent-waiting');
-    expect(waitingBadge.querySelector('.animate-spin')).not.toBeNull();
+    expect(waitingBadge.querySelector('svg')).not.toBeNull();
+    expect(waitingBadge.querySelector('.animate-spin')).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Reshape' }));
 
