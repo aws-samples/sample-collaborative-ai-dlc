@@ -10,10 +10,11 @@ import {
   readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -962,7 +963,6 @@ exit 0
     { mode: 0o755 },
   );
   writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
-  writeFileSync(join(bin, 'docker'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
   return {
     ...env,
     PATH: `${bin}:${process.env.PATH}`,
@@ -970,6 +970,46 @@ exit 0
     AIDLC_TEST_MODE: '',
   };
 };
+
+const isolatedInstallerPath = (env) => {
+  const bin = env.PATH.split(delimiter)[0];
+  const commands = {
+    bash: '/bin/bash',
+    dirname: '/usr/bin/dirname',
+    git: '/usr/bin/git',
+    node: process.execPath,
+  };
+  for (const [command, source] of Object.entries(commands)) {
+    const destination = join(bin, command);
+    if (existsSync(destination)) continue;
+    symlinkSync(source, destination);
+  }
+  return bin;
+};
+
+test('installer accepts a non-default DOCKER_HOST without a container CLI on PATH', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-container-socket-'));
+  const env = mockedCommandEnv(dir, join(dir, 'unused-repository'));
+  const path = isolatedInstallerPath(env);
+  const runtimeEnv = {
+    ...env,
+    PATH: path,
+    DOCKER_HOST: 'unix:///tmp/podman.sock',
+  };
+  const dataRoot = join(env.XDG_DATA_HOME, 'collaborative-ai-dlc');
+  mkdirSync(dataRoot, { recursive: true });
+  symlinkSync(dir, join(dataRoot, 'current'));
+
+  const dockerLookup = run('bash', ['-c', 'command -v docker'], { env: runtimeEnv });
+  assert.notEqual(dockerLookup.status, 0, 'docker must not be available in the controlled PATH');
+
+  const installed = run('bash', [installer, 'install', '--version', '2.0.0'], {
+    env: runtimeEnv,
+  });
+  assert.equal(installed.status, 1);
+  assert.match(installed.stderr, /A managed installation already exists/);
+  assert.doesNotMatch(installed.stderr, /Missing required command: docker/);
+});
 
 test('installer rejects Terraform older than 1.4 during preflight', () => {
   const repository = createReleaseRepository();

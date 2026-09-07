@@ -40,10 +40,7 @@ docker --version     # Expected output: Docker version 20.10 or later
 
 ### Using an alternative container runtime
 
-Docker is the default container runtime; no configuration is needed when the `docker` CLI and standard Docker socket are available. Two independent settings control the runtime:
-
-- `CONTAINER_RUNTIME` (default: `docker`) — the CLI name the installer's prerequisite check looks for.
-- `DOCKER_HOST` — the Docker Engine API socket that Terraform's `kreuzwerker/docker` provider connects to when it builds and pushes the container images.
+Docker is the default container runtime; no configuration is needed when its standard socket is available. `DOCKER_HOST` selects the Docker Engine API socket that Terraform's `kreuzwerker/docker` provider connects to when it builds and pushes the container images. The installer does not invoke or require a container-runtime CLI.
 
 Because the image build talks to the Docker Engine API socket (rather than shelling out to a CLI), **any runtime that exposes such a socket works**. Point `DOCKER_HOST` at the runtime's socket and the build behaves exactly as it does with Docker.
 
@@ -60,24 +57,21 @@ Podman example:
 ```bash
 # macOS
 podman machine start
-export CONTAINER_RUNTIME=podman
 export DOCKER_HOST="unix://$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')"
 
 # Rootless Linux (after starting `podman system service`)
-export CONTAINER_RUNTIME=podman
 export DOCKER_HOST="unix://$(podman info --format '{{.Host.RemoteSocket.Path}}')"
 ```
 
 Rancher Desktop example (set the container engine to **dockerd (moby)** in Rancher Desktop settings):
 
 ```bash
-export CONTAINER_RUNTIME=docker      # Rancher provides a docker-compatible CLI
 export DOCKER_HOST="unix://$HOME/.rd/docker.sock"
 ```
 
 !!! warning "Finch and CLI-only build tools are not supported"
 
-    Setting `CONTAINER_RUNTIME=finch` only makes the installer's prerequisite check look for the `finch` CLI. Finch does not expose a Docker Engine API socket by default, so there is no socket for `DOCKER_HOST` to use and the Terraform image build cannot run. The same applies to daemonless/CLI-only build tools such as Buildah, nerdctl, Kaniko, and BuildKit. Use Docker, Podman, or another socket-based runtime from the table above.
+    Finch does not expose a Docker Engine API socket by default, so there is no socket for `DOCKER_HOST` to use and the Terraform image build cannot run. The same applies to daemonless/CLI-only build tools such as Buildah, nerdctl, Kaniko, and BuildKit. Use Docker, Podman, or another socket-based runtime from the table above.
 
 You must also have an AWS account with permissions to manage the following services.
 
