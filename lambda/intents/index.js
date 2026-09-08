@@ -4509,8 +4509,22 @@ export const handler = async (event) => {
     }
 
     return response(405, { error: 'Method not allowed' });
-  } catch {
-    console.error('intents handler error');
+  } catch (error) {
+    // Bind the caught exception and log it with request context. Prior form
+    // was `catch {}` + a static `console.error('intents handler error')`, so
+    // every 500 in CloudWatch was an identical opaque string with no stack
+    // and no way to distinguish the offending path. The 500 response
+    // contract is preserved — the body still exposes only a generic message.
+    console.error('intents handler error', {
+      message: error?.message,
+      name: error?.name,
+      code: error?.code,
+      stack: error?.stack,
+      resource: event?.resource,
+      httpMethod: event?.httpMethod,
+      projectId: event?.pathParameters?.projectId,
+      intentId: event?.pathParameters?.intentId,
+    });
     return response(500, { error: 'Internal server error' });
   } finally {
     if (conn) {
