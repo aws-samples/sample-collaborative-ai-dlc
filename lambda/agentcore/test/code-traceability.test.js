@@ -51,6 +51,25 @@ describe('traceability document validation', () => {
     });
   });
 
+  it('rejects a coverage array or id beyond the cardinality/length caps', () => {
+    const huge = Array.from({ length: 1001 }, (_, i) => ({
+      id: `AC${i}`,
+      status: 'GAP',
+      target: null,
+    }));
+    expect(validateTraceabilityDocument({ stage: 's', unit: 'u', coverage: huge })).toMatchObject({
+      valid: false,
+      reason: expect.stringContaining('coverage exceeds'),
+    });
+    expect(
+      validateTraceabilityDocument({
+        stage: 's',
+        unit: 'u',
+        coverage: [{ id: 'x'.repeat(513), status: 'GAP', target: null }],
+      }),
+    ).toMatchObject({ valid: false, reason: expect.stringContaining('id exceeds') });
+  });
+
   it('rejects absolute/traversing targets and stale stage capabilities', () => {
     expect(normalizeWorkspacePath('../outside.ts')).toBeNull();
     expect(normalizeWorkspacePath('/tmp/outside.ts')).toBeNull();
@@ -233,6 +252,45 @@ describe('loadProducedTraceability — size cap', () => {
       stageId: 'code-generation',
       stageInstanceId: 'si-code',
       unitSlug: 'u1',
+    });
+    expect(batch.traceabilityStatus).toBe('invalid');
+    expect(batch.files.every((file) => file.traceabilitySource === 'git')).toBe(true);
+  });
+});
+
+describe('loadProducedTraceability — multiple manifests', () => {
+  it('degrades to invalid when one commit carries more than one valid manifest', async () => {
+    const root = await workspace();
+    await put(root, 'src/a.ts', 'export const a = 1;\n');
+    await put(root, 'src/b.ts', 'export const b = 1;\n');
+    // A stage produces exactly one traceability.json; two (even valid, even for
+    // different units) is unexpected agent output and must degrade, not silently
+    // pick one. unitSlug=null mirrors a non-unit stage (no expectedUnit filter).
+    await put(
+      root,
+      'a/traceability.json',
+      JSON.stringify({
+        stage: 's',
+        unit: 'u1',
+        coverage: [{ id: 'R1', status: 'OK', target: 'src/a.ts' }],
+      }),
+    );
+    await put(
+      root,
+      'b/traceability.json',
+      JSON.stringify({
+        stage: 's',
+        unit: 'u2',
+        coverage: [{ id: 'R2', status: 'OK', target: 'src/b.ts' }],
+      }),
+    );
+    const [batch] = await collectCodeTraceabilityBatches({
+      gitResult: gitResult(['src/a.ts', 'src/b.ts', 'a/traceability.json', 'b/traceability.json']),
+      repos: ['owner/repo'],
+      workspaceDir: root,
+      stageId: 's',
+      stageInstanceId: 'si',
+      unitSlug: null,
     });
     expect(batch.traceabilityStatus).toBe('invalid');
     expect(batch.files.every((file) => file.traceabilitySource === 'git')).toBe(true);

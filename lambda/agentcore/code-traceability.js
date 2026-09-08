@@ -18,6 +18,15 @@ const TRACEABILITY_FILE = 'traceability.json';
 // instead of risking OOM. 5 MiB is far above any legitimate coverage manifest.
 const MAX_TRACEABILITY_BYTES = 5 * 1024 * 1024;
 
+// Byte size alone does not bound the Neptune work a manifest triggers: each
+// unique coverage id targeting a changed file drives at least one lookup in
+// ingestCodeFiles. A small-but-dense document (tens of thousands of short
+// entries) would therefore amplify into a traversal storm on the awaited
+// stage-success path. Cap the coverage cardinality and id length so an
+// oversized-by-count manifest degrades (invalid) like any other bad artifact.
+const MAX_COVERAGE_ENTRIES = 1000;
+const MAX_COVERAGE_ID_LENGTH = 512;
+
 // Neptune serializes concurrent vertex/edge writes optimistically; parallel unit
 // lanes committing at once can collide with a ConcurrentModificationException.
 // Reuse the codebase's attempt-loop-with-linear-backoff shape (cli/codex-store.js)
@@ -80,6 +89,10 @@ export const validateTraceabilityDocument = (
     return { valid: false, reason: `unit mismatch (${unit})` };
   }
 
+  if (value.coverage.length > MAX_COVERAGE_ENTRIES) {
+    return { valid: false, reason: `coverage exceeds ${MAX_COVERAGE_ENTRIES} entries` };
+  }
+
   const coverage = [];
   for (const [index, entry] of value.coverage.entries()) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -90,6 +103,12 @@ export const validateTraceabilityDocument = (
     const target = entry.target == null ? null : normalizeWorkspacePath(entry.target);
     if (!id || !status || (entry.target != null && !target) || (status === 'OK' && !target)) {
       return { valid: false, reason: `coverage[${index}] is invalid` };
+    }
+    if (id.length > MAX_COVERAGE_ID_LENGTH) {
+      return {
+        valid: false,
+        reason: `coverage[${index}] id exceeds ${MAX_COVERAGE_ID_LENGTH} chars`,
+      };
     }
     coverage.push({ id, status, target });
   }
@@ -129,21 +148,17 @@ export const loadProducedTraceability = async ({ repoDir, changedFiles, stageId,
   }
   if (valid.length === 0) return { status: 'invalid', document: null, files: candidates };
 
-  // A non-unit stage passes expectedUnit=null, so two manifests declaring
-  // DIFFERENT units can both validate. Merging their coverage under the first
-  // manifest's unit would mis-stamp the batch, so keep only manifests that
-  // agree with the first unit.
-  const first = valid[0].document;
-  const merged = valid.filter(({ document }) => document.unit === first.unit);
-  return {
-    status: 'valid',
-    document: {
-      stage: first.stage,
-      unit: first.unit,
-      coverage: merged.flatMap(({ document }) => document.coverage),
-    },
-    files: merged.map(({ file }) => file),
-  };
+  // A stage produces exactly one traceability.json: every per-unit stage writes
+  // one to its own record dir, and non-unit stages produce none. A single ingest
+  // therefore never legitimately sees more than one manifest. More than one is
+  // unexpected agent output, so degrade the whole set rather than silently keep
+  // one — picking a winner would drop the others' evidence while still reporting
+  // success.
+  if (valid.length > 1) {
+    return { status: 'invalid', document: null, files: candidates };
+  }
+  const [{ file, document }] = valid;
+  return { status: 'valid', document, files: [file] };
 };
 
 export const collectCodeTraceabilityBatches = async ({

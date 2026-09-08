@@ -1270,15 +1270,22 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         q = q.property(cardinality.single, key, value);
       }
       await q.next();
-      // Only the latest revision per (intent, repo, file_path) renders: mark
-      // prior revisions superseded so a rewind or re-run doesn't stack multiple
-      // CodeFile nodes for one file. History stays queryable in Neptune — this
+      // Only the latest revision per (intent, repo, unit, file_path) renders:
+      // mark prior revisions of the SAME unit superseded so a rewind or re-run
+      // doesn't stack multiple CodeFile nodes for one file. Scoping by unit_slug
+      // is deliberate: parallel construction lanes commit their branch-local
+      // revisions concurrently, and an unscoped supersede would let two lanes
+      // each mark the other's freshly-current revision superseded — leaving no
+      // current revision and dropping the file from the graph entirely. A file
+      // touched by several units therefore renders once per unit, reflecting the
+      // real multi-unit authorship. History stays queryable in Neptune — this
       // mirrors the re-derive/rewind supersede pattern used for every other node.
       const priorRevisions = (
         await g
           .V()
           .has(CODE_FILE_LABEL, 'intent_id', scope.intentId)
           .has('repository', repository)
+          .has('unit_slug', effectiveUnitSlug)
           .has('file_path', file.filePath)
           .valueMap(true)
           .toList()
