@@ -1,0 +1,12 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      Sid       = "AllowCollaborativeAiDlcCredentialBroker"
+      Effect    = "Allow"
+      Principal = { AWS = broker_role_arn }
+      Action    = "sts:AssumeRole"
+      Condition = condition
+    },
+  ]
+})}

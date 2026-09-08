@@ -281,9 +281,26 @@ variable "bedrock_assumable_role_arns" {
 }
 
 variable "bedrock_role_session_policy_json" {
-  description = "Mandatory session-policy ceiling attached to every Bedrock AssumeRole, rendered from the same definition as the customer grant. Missing, empty, or invalid values make role resolution fail closed before STS."
+  description = "Mandatory session-policy ceiling attached to every Bedrock AssumeRole, rendered from the same definition as the customer grant. Missing, empty, or invalid values are rejected during planning and fail closed before STS at runtime."
   type        = string
-  default     = ""
+
+  validation {
+    condition = (
+      length(trimspace(var.bedrock_role_session_policy_json)) > 0 &&
+      length(trimspace(var.bedrock_role_session_policy_json)) <= 2048
+    )
+    error_message = "bedrock_role_session_policy_json must be non-empty and no more than the STS inline-session-policy limit of 2048 characters."
+  }
+
+  validation {
+    condition = try(
+      jsondecode(var.bedrock_role_session_policy_json).Version == "2012-10-17" &&
+      length(jsondecode(var.bedrock_role_session_policy_json).Statement) > 0 &&
+      can(jsondecode(var.bedrock_role_session_policy_json).Statement[0]),
+      false,
+    )
+    error_message = "bedrock_role_session_policy_json must be a valid IAM policy JSON object with Version 2012-10-17 and at least one statement."
+  }
 }
 
 variable "agent_credential_grant_secret_param_name" {

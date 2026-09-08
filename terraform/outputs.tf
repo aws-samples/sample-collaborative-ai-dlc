@@ -405,8 +405,18 @@ output "bedrock_role_grant_policy_json" {
   value       = jsonencode(local.bedrock_role_grant_policy)
 }
 
+output "bedrock_role_same_account_trust_policy_json" {
+  description = "Ready-to-attach same-account trust policy naming only the credential broker role and admitting the configured aidlc-* sessions."
+  value       = local.bedrock_role_same_account_trust_policy_json
+}
+
+output "bedrock_role_cross_account_trust_policy_template_json" {
+  description = "Cross-account trust-policy template naming only the credential broker role. Replace $${BEDROCK_EXTERNAL_ID} with the platform-generated binding value before attaching it."
+  value       = local.bedrock_role_cross_account_trust_policy_template_json
+}
+
 output "bedrock_role_trust_policy_json" {
-  description = "Trust policy to attach to the Bedrock role the broker assumes. Shared across every space by default; set bedrock_role_trusted_space_ids to narrow it to named spaces."
+  description = "Deprecated compatibility alias for bedrock_role_same_account_trust_policy_json. Cross-account roles must use bedrock_role_cross_account_trust_policy_template_json."
   value       = local.bedrock_role_trust_policy_json
 }
 

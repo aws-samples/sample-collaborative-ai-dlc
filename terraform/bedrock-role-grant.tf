@@ -10,17 +10,18 @@
 # an account it does not manage, and it must not: the trust policy is the
 # customer's authoritative control over who may assume it.
 #
-# What this file does is render, from one place, the exact two documents an
-# operator has to paste into that account — the permission policy and the trust
-# policy, both below. Rendering them from Terraform expressions rather than a
-# copyable code block in prose means the account id, region wildcards, broker
-# principal and condition keys are derived, not retyped. A retyped trust policy
-# is how a dev deployment ended up with a single-space `sts:RoleSessionName`
-# condition under a platform-scope binding: every space but one was denied, and
-# the failure surfaced only on the first stage of a run.
+# What this file does is render, from one place, the exact documents an
+# operator needs in that account: the permission policy plus same-account and
+# cross-account trust-policy forms. Rendering them from Terraform expressions
+# rather than copyable code blocks in prose means the account id, region
+# wildcards, broker principal and condition keys are derived, not retyped. A
+# retyped trust policy is how a dev deployment ended up with a single-space
+# `sts:RoleSessionName` condition under a platform-scope binding: every space but
+# one was denied, and the failure surfaced only on the first stage of a run.
 #
 # `terraform output -raw bedrock_role_grant_policy_json`
-# `terraform output -raw bedrock_role_trust_policy_json`
+# `terraform output -raw bedrock_role_same_account_trust_policy_json`
+# `terraform output -raw bedrock_role_cross_account_trust_policy_template_json`
 # `terraform output -raw credential_broker_role_arn`
 # =============================================================================
 
@@ -119,28 +120,10 @@ locals {
           # implicit `project/default` resource IN ADDITION to the model, so without
           # this statement every call fails 401 naming that exact resource — measured,
           # with the model itself already allowed by the statements above.
-          #
-          # Not the same resource as CodexMantleInference below: that one is the
-          # legacy bedrock-mantle service's own project namespace.
           Sid      = "CodexOpenAiCompatibleProject"
           Effect   = "Allow"
           Action   = ["bedrock:InvokeModel"]
           Resource = ["arn:${data.aws_partition.current.partition}:bedrock:*:${account}:project/default"]
-        },
-        {
-          # Codex only, LEGACY. con-codex-mantle: Codex 0.145.0 called
-          # bedrock-mantle.<region>.api.aws/openai/v1/responses and needed
-          # bedrock-mantle:CreateInference; bedrock:InvokeModel does not authorize it.
-          #
-          # Retained because the Mantle endpoint remains supported and a pinned-version
-          # rollback must not also need an IAM change. The current pinned Codex uses
-          # the runtime provider above. Measured: Mantle in eu-central-1 serves NO
-          # model id (every id 404s, Anthropic included), which is why the provider
-          # moved rather than the Region.
-          Sid      = "CodexMantleInference"
-          Effect   = "Allow"
-          Action   = ["bedrock-mantle:CreateInference"]
-          Resource = ["arn:${data.aws_partition.current.partition}:bedrock-mantle:*:${account}:project/*"]
         },
       ]
     }
@@ -152,56 +135,66 @@ locals {
   # session policy is capped at 2048 characters; this renders to ~0.8 KB.
   bedrock_role_session_policy_json = jsonencode(local.bedrock_grant_policies["ceiling"])
 
-  # ── The trust policy, the customer's own control ──
+  # ── Trust policies, owned and attached by the Bedrock account operator ──
+  #
+  # Terraform renders the documents but deliberately creates no customer
+  # inference role. Both forms use one template so the principal and action
+  # cannot drift: the broker execution role is the only principal, and the
+  # only action is sts:AssumeRole.
   #
   # req-session-name-trust-condition. The `aidlc-` prefix is the SAME stability
-  # contract as ROLE_SESSION_NAME_PREFIX in lambda/shared/bedrock-role.js, which
-  # composes the name the broker actually sends. The two are asserted equal by
-  # lambda/credential-broker/test/bedrock-role-iam.test.js, because a trust policy
-  # that disagrees with the composed name denies every run — and denies it late,
-  # on the first stage, not at bind time.
-  #
-  # No sts:ExternalId condition is rendered: the external ID is generated per
-  # binding when the binding is saved, so Terraform cannot know it. A CROSS-ACCOUNT
-  # role must add it by hand from the save response (docs/getting-started/bedrock-credentials.md).
-  #
-  # One statement base, two conditions. The choice is made on the ENCODED strings,
-  # not on the two condition objects: a ternary has to unify its result types, and
-  # these conditions are deliberately different shapes (a pattern vs a list).
-  bedrock_role_trust_statement = {
-    Sid    = "AllowCollaborativeAiDlcCredentialBroker"
-    Effect = "Allow"
-    # The broker execution role is the only principal holding sts:AssumeRole for
-    # customer Bedrock roles, so it is the only principal a trust policy names.
-    Principal = { AWS = module.lambda.credential_broker_role_arn }
-    Action    = "sts:AssumeRole"
-  }
+  # contract as ROLE_SESSION_NAME_PREFIX in lambda/shared/bedrock-role.js. The
+  # default StringLike form admits every space and the `aidlc-preflight` probe
+  # needed by a platform-scope binding. Operators may instead provide a closed
+  # set of space ids, which renders StringEquals entries for those sessions.
+  bedrock_role_session_condition_json = length(var.bedrock_role_trusted_space_ids) > 0 ? jsonencode({
+    StringEquals = {
+      "sts:RoleSessionName" = [for id in var.bedrock_role_trusted_space_ids : "aidlc-${id}"]
+    }
+    }) : jsonencode({
+    StringLike = {
+      "sts:RoleSessionName" = "aidlc-*"
+    }
+  })
+  bedrock_role_session_condition = jsondecode(local.bedrock_role_session_condition_json)
 
-  # Shared by every space. The only form a PLATFORM-SCOPE binding can use, and it
-  # admits the `aidlc-preflight` session name that binding's preflight probes with.
-  bedrock_role_trust_policy_shared = {
-    Version = "2012-10-17"
-    Statement = [
-      merge(local.bedrock_role_trust_statement, {
-        Condition = { StringLike = { "sts:RoleSessionName" = "aidlc-*" } }
-      }),
-    ]
-  }
+  bedrock_role_trust_policy_template = "${path.module}/templates/bedrock-role-trust-policy.json.tftpl"
 
-  # Pinned to named spaces, for a SPACE-SCOPE binding. StringEquals on a closed set
-  # is tighter than a pattern when the set is known.
-  bedrock_role_trust_policy_spaces = {
-    Version = "2012-10-17"
-    Statement = [
-      merge(local.bedrock_role_trust_statement, {
-        Condition = {
-          StringEquals = {
-            "sts:RoleSessionName" = [for id in var.bedrock_role_trusted_space_ids : "aidlc-${id}"]
-          }
-        }
-      }),
-    ]
-  }
+  # Same-account trust does not need an external ID because the principal is a
+  # role in the same account. This render is ready to attach as-is.
+  bedrock_role_same_account_trust_policy_json = templatefile(
+    local.bedrock_role_trust_policy_template,
+    {
+      broker_role_arn = module.lambda.credential_broker_role_arn
+      condition       = local.bedrock_role_session_condition
+    },
+  )
 
-  bedrock_role_trust_policy_json = length(var.bedrock_role_trusted_space_ids) > 0 ? jsonencode(local.bedrock_role_trust_policy_spaces) : jsonencode(local.bedrock_role_trust_policy_shared)
+  # Cross-account trust must use the binding's platform-generated external ID.
+  # Terraform cannot know that runtime value and must never generate a competing
+  # one, so this is intentionally a substitution template. An authorized operator
+  # replaces ${BEDROCK_EXTERNAL_ID} with the exact value returned by the binding
+  # API/UI before attaching the policy; leaving the marker unchanged fails closed.
+  bedrock_role_external_id_placeholder = "$${BEDROCK_EXTERNAL_ID}"
+  bedrock_role_cross_account_condition = merge(
+    local.bedrock_role_session_condition,
+    {
+      StringEquals = merge(
+        try(local.bedrock_role_session_condition.StringEquals, {}),
+        { "sts:ExternalId" = local.bedrock_role_external_id_placeholder },
+      )
+    },
+  )
+  bedrock_role_cross_account_trust_policy_template_json = templatefile(
+    local.bedrock_role_trust_policy_template,
+    {
+      broker_role_arn = module.lambda.credential_broker_role_arn
+      condition       = local.bedrock_role_cross_account_condition
+    },
+  )
+
+  # Backward-compatible alias. Its old contract omitted ExternalId, so it remains
+  # the ready-to-attach same-account document; cross-account callers must use the
+  # explicitly named template output above.
+  bedrock_role_trust_policy_json = local.bedrock_role_same_account_trust_policy_json
 }

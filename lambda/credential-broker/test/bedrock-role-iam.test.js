@@ -14,6 +14,9 @@ const read = (relative) => readFileSync(fileURLToPath(new URL(relative, import.m
 const brokerTerraform = read('../../../terraform/modules/api/lambda/main.tf');
 const brokerVariables = read('../../../terraform/modules/api/lambda/variables.tf');
 const grantTerraform = read('../../../terraform/bedrock-role-grant.tf');
+const trustPolicyTemplate = read(
+  '../../../terraform/templates/bedrock-role-trust-policy.json.tftpl',
+);
 // The grant file's three inputs are declared with every other root variable.
 const rootVariables = read('../../../terraform/variables.tf');
 
@@ -116,15 +119,11 @@ describe('bedrock role grant families', () => {
     expect(grantCode).toContain('StringLike');
   });
 
-  it('includes the Codex mantle statement scoped to project/*', () => {
-    // con-codex-mantle: Codex needs bedrock-mantle:CreateInference, which
-    // bedrock:InvokeModel does not authorize. Present so Codex works the moment
-    // its own defects are fixed — no acceptance criterion depends on it
-    // succeeding (req-codex-scope, con-codex-model-missing).
-    expect(grantCode).toContain('"bedrock-mantle:CreateInference"');
-    // `${account}` is the render variable: the grant render substitutes the Bedrock
-    // account, the ceiling render substitutes `*`. One definition, two renders.
-    expect(grantCode).toContain('bedrock-mantle:*:${account}:project/*');
+  it('grants Codex Runtime access to the implicit project/default resource', () => {
+    // Supported Codex versions use the Bedrock Runtime OpenAI-compatible endpoint,
+    // which authorizes bedrock:InvokeModel against this resource in addition to the model.
+    expect(grantCode).toContain('"bedrock:InvokeModel"');
+    expect(grantCode).toContain('bedrock:*:${account}:project/default');
   });
 
   it('scopes every account-bearing ARN to the role-owning account, not the platform account', () => {
@@ -155,7 +154,6 @@ describe('bedrock role grant families', () => {
       ),
     );
     expect([...actions].toSorted()).toEqual([
-      'bedrock-mantle:CreateInference',
       'bedrock:InvokeModel',
       'bedrock:InvokeModelWithResponseStream',
     ]);
@@ -174,9 +172,9 @@ describe('bedrock role grant families', () => {
 // documented grant permits.
 //
 // That failure is not hypothetical. Moving Codex to the Bedrock Runtime provider added
-// a fourth statement (`project/default`) because the OpenAI-compatible API authorizes
-// against that implicit resource; a copied ceiling would have kept three statements and
-// 401'd every Codex call while the operator's own policy looked correct.
+// a dedicated statement (`project/default`) because the OpenAI-compatible API authorizes
+// against that implicit resource; a copied ceiling without it would 401 every Codex call
+// while the operator's own policy looked correct.
 describe('Bedrock grant and session-policy ceiling are one definition', () => {
   it('renders both from the same statements local, so neither can be a copy', () => {
     expect(grantTerraform).toContain('bedrock_grant_policies = {');
@@ -189,19 +187,17 @@ describe('Bedrock grant and session-policy ceiling are one definition', () => {
   });
 
   it('defines each statement exactly once (a second copy is the drift this prevents)', () => {
-    // Every Sid appears once. A hand-copied ceiling would duplicate all four.
+    // Every Sid appears once. A hand-copied ceiling would duplicate all three.
     for (const sid of [
       'InvokeThroughInferenceProfiles',
       'InvokeFoundationModelsOnlyViaInferenceProfile',
       'CodexOpenAiCompatibleProject',
-      'CodexMantleInference',
     ]) {
       expect(grantTerraform.match(new RegExp(`Sid\\s+=\\s+"${sid}"`, 'g'))).toHaveLength(1);
     }
-    // And the model grant has exactly ONE Statement list. The two trust-policy
-    // forms below it hold the others; counting them separately is what keeps this
-    // assertion meaningful now that the file renders more than one document.
-    expect(grantTerraform.match(/Statement = \[/g)).toHaveLength(3);
+    // The model grant itself has exactly one Statement list. Trust policies live
+    // in the shared template, outside this grant/ceiling definition.
+    expect(grantTerraform.match(/Statement = \[/g)).toHaveLength(1);
     expect(
       terraformBlock(grantTerraform, '  bedrock_grant_policies = {').match(/Statement = \[/g),
     ).toHaveLength(1);
@@ -214,50 +210,48 @@ describe('Bedrock grant and session-policy ceiling are one definition', () => {
   // surfaced only as a runtime 500 on the first stage of a run. Rendering it from
   // Terraform is the fix; these assertions are what stop the render drifting from
   // the session name the broker actually sends.
-  describe('rendered trust policy', () => {
-    const statement = terraformBlock(grantTerraform, '  bedrock_role_trust_statement = {');
-    const shared = terraformBlock(grantTerraform, '  bedrock_role_trust_policy_shared = {');
-    const spaces = terraformBlock(grantTerraform, '  bedrock_role_trust_policy_spaces = {');
-    const selector = grantTerraform.slice(
-      grantTerraform.indexOf('  bedrock_role_trust_policy_json = '),
-    );
-
-    it('names the broker role as the principal, derived not retyped', () => {
-      expect(statement).toContain('module.lambda.credential_broker_role_arn');
-      expect(statement).toContain('Action    = "sts:AssumeRole"');
-      // One statement base, so the principal cannot drift between the two forms.
-      expect(shared).toContain('merge(local.bedrock_role_trust_statement');
-      expect(spaces).toContain('merge(local.bedrock_role_trust_statement');
+  describe('rendered trust policies', () => {
+    it('uses one template that names only the derived broker role principal', () => {
+      expect(trustPolicyTemplate).toContain('Principal = { AWS = broker_role_arn }');
+      expect(trustPolicyTemplate).toContain('Action    = "sts:AssumeRole"');
+      expect(trustPolicyTemplate).not.toContain('Resource');
+      expect(
+        grantTerraform.match(/broker_role_arn = module\.lambda\.credential_broker_role_arn/g),
+      ).toHaveLength(2);
+      expect(grantTerraform).not.toMatch(/resource\s+"aws_iam_role"/);
     });
 
     it('uses the same aidlc- session-name prefix the broker composes', async () => {
-      // The prefix is a stability contract: customers author trust policies on it.
-      // If these two ever disagree, every run is denied at credential resolution.
       const { ROLE_SESSION_NAME_PREFIX, PREFLIGHT_SESSION_NAME } =
         await import('../../shared/bedrock-role.js');
-      expect(shared).toContain(`"${ROLE_SESSION_NAME_PREFIX}*"`);
-      expect(spaces).toContain(`"${ROLE_SESSION_NAME_PREFIX}\${id}"`);
-      // The shared form must admit the platform-scope preflight's session name,
-      // which is the whole reason the default is StringLike and not StringEquals.
+      expect(grantTerraform).toContain(`"${ROLE_SESSION_NAME_PREFIX}*"`);
+      expect(grantTerraform).toContain(`"${ROLE_SESSION_NAME_PREFIX}\${id}"`);
       expect(PREFLIGHT_SESSION_NAME.startsWith(ROLE_SESSION_NAME_PREFIX)).toBe(true);
     });
 
     it('defaults to the shared form and narrows only when spaces are named', () => {
       const variable = terraformBlock(rootVariables, 'variable "bedrock_role_trusted_space_ids"');
       expect(variable).toContain('default     = []');
-      expect(shared).toContain('StringLike');
-      expect(spaces).toContain('StringEquals');
-      // Selected on the encoded strings: a ternary cannot unify a pattern with a list.
-      expect(selector).toContain('length(var.bedrock_role_trusted_space_ids) > 0');
-      expect(selector).toContain('jsonencode(local.bedrock_role_trust_policy_spaces)');
-      expect(selector).toContain('jsonencode(local.bedrock_role_trust_policy_shared)');
+      expect(grantTerraform).toContain('length(var.bedrock_role_trusted_space_ids) > 0');
+      expect(grantTerraform).toContain('StringLike');
+      expect(grantTerraform).toContain('StringEquals');
     });
 
-    it('renders no sts:ExternalId condition, because Terraform cannot know it', () => {
-      // The external ID is generated per binding at save time. Rendering a
-      // placeholder would produce a policy that denies every assume.
-      expect(shared).not.toContain('sts:ExternalId');
-      expect(spaces).not.toContain('sts:ExternalId');
+    it('renders separate same-account and cross-account documents', () => {
+      expect(grantTerraform).toContain('bedrock_role_same_account_trust_policy_json');
+      expect(grantTerraform).toContain('bedrock_role_cross_account_trust_policy_template_json');
+      expect(grantTerraform).toContain(
+        '"sts:ExternalId" = local.bedrock_role_external_id_placeholder',
+      );
+      expect(grantTerraform).toContain(
+        'bedrock_role_external_id_placeholder = "$${BEDROCK_EXTERNAL_ID}"',
+      );
+      // Same-account conditions are passed directly; only the cross-account path
+      // merges the platform-generated external-ID substitution marker.
+      expect(grantTerraform).toContain('condition       = local.bedrock_role_session_condition');
+      expect(grantTerraform).toContain(
+        'condition       = local.bedrock_role_cross_account_condition',
+      );
     });
   });
 
@@ -270,12 +264,23 @@ describe('Bedrock grant and session-policy ceiling are one definition', () => {
     expect(grantTerraform).toContain('ceiling = "*"');
   });
 
-  it('reaches both brokers, so the preflight exercises the call it predicts', () => {
+  it('requires a validated ceiling and wires it to both brokers', () => {
+    const variable = terraformBlock(brokerVariables, 'variable "bedrock_role_session_policy_json"');
+    expect(variable).not.toMatch(/\bdefault\s*=/);
+    expect(variable).toContain('length(trimspace(var.bedrock_role_session_policy_json)) > 0');
+    expect(variable).toContain('<= 2048');
+    expect(variable).toContain('jsondecode(var.bedrock_role_session_policy_json).Version');
+    expect(variable).toContain(
+      'length(jsondecode(var.bedrock_role_session_policy_json).Statement) > 0',
+    );
+    expect(variable).toContain(
+      'can(jsondecode(var.bedrock_role_session_policy_json).Statement[0])',
+    );
+
     const occurrences = brokerTerraform.match(
       /BEDROCK_SESSION_POLICY\s+=\s+var\.bedrock_role_session_policy_json/g,
     );
     // Once for the value broker, once for the metadata broker running the preflight.
     expect(occurrences).toHaveLength(2);
-    expect(brokerVariables).toContain('variable "bedrock_role_session_policy_json"');
   });
 });
