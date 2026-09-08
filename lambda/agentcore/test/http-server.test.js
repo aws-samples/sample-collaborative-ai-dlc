@@ -248,7 +248,59 @@ describe('dispatchInvocation', () => {
     expect(r.body.reason).toBe('no_cli');
   });
 
-  it('maps a thrown handler to 500', async () => {
+  it.each([
+    'credential_binding_mismatch',
+    'credential_grant_mismatch',
+    'credential_grant_required',
+    'credential_resolution_failed',
+  ])('returns allowlisted application failure %s on HTTP 200', async (reason) => {
+    const prepareInvocation = vi.fn(async () => {
+      throw Object.assign(new Error('sensitive credential provider detail'), { code: reason });
+    });
+    const runStage = vi.fn();
+    const result = await dispatchInvocation({
+      payload: { command: 'run-stage' },
+      handlers: { runStage },
+      prepareInvocation,
+      now: () => '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(result).toEqual({
+      statusCode: 200,
+      body: {
+        ok: false,
+        reason,
+        command: 'run-stage',
+        at: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    expect(JSON.stringify(result.body)).not.toContain('sensitive credential provider detail');
+    expect(runStage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an unknown lower-snake-case code', 'database_timeout'],
+    ['an SDK-style code', 'ThrottlingException'],
+    ['an operating-system code', 'ENOENT'],
+  ])('keeps %s on sanitized HTTP 500', async (_label, code) => {
+    const result = await dispatchInvocation({
+      payload: { command: 'init-ws' },
+      handlers: {
+        initWs: async () => {
+          throw Object.assign(new Error('sensitive runtime detail'), { code });
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      statusCode: 500,
+      body: { error: 'Internal server error', command: 'init-ws' },
+    });
+    expect(JSON.stringify(result.body)).not.toContain('sensitive runtime detail');
+    expect(result.body).not.toHaveProperty('reason');
+  });
+
+  it('maps an uncoded thrown handler to sanitized HTTP 500', async () => {
     const r = await dispatchInvocation({
       payload: { command: 'init-ws' },
       handlers: {
@@ -257,8 +309,11 @@ describe('dispatchInvocation', () => {
         },
       },
     });
-    expect(r.statusCode).toBe(500);
-    expect(r.body.error).toBe('boom');
+    expect(r).toEqual({
+      statusCode: 500,
+      body: { error: 'Internal server error', command: 'init-ws' },
+    });
+    expect(JSON.stringify(r.body)).not.toContain('boom');
   });
 
   it('returns to Healthy after a parked run-stage dispatch (no longer pinned busy)', async () => {

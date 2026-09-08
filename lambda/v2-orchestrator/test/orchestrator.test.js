@@ -687,9 +687,19 @@ describe('orchestrator durable handler', () => {
   );
 
   // A credential failure raised while PREPARING the invocation is refused at
-  // accept time, where the body carries no `state`. Without the coded reason it
-  // would arrive as the generic stage_dispatch_failed.
-  it('reports a resolution failure refused at accept time under its own reason', async () => {
+  // accept time, where the body carries no `state`. Preserve the finite broker
+  // reason for both the current application-failure body and the legacy body
+  // seen during a rolling deployment, without persisting provider error text.
+  it.each([
+    ['current application-failure body', { ok: false, reason: 'credential_resolution_failed' }],
+    [
+      'legacy error body',
+      {
+        error: 'sensitive credential provider detail',
+        reason: 'credential_resolution_failed',
+      },
+    ],
+  ])('durably retains a broker reason from the %s', async (_label, refusal) => {
     deps.loadPlan.mockResolvedValue({
       valid: true,
       plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
@@ -697,11 +707,7 @@ describe('orchestrator durable handler', () => {
     deps.invokeRuntime = vi.fn(async (payload) => {
       invokes.push(payload);
       if (payload.command === 'init-ws') return { ok: true };
-      // What dispatchInvocation returns for a thrown coded error.
-      return {
-        error: 'Agent credential resolution failed',
-        reason: 'credential_resolution_failed',
-      };
+      return refusal;
     });
 
     const res = await __durableHandler(
@@ -718,8 +724,13 @@ describe('orchestrator durable handler', () => {
       runtimeError: 'credential_resolution_failed',
     });
     const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+    expect(failCall[0].failure).toEqual({
+      code: 'credential_resolution_failed',
+      message: 'a: credential_resolution_failed',
+    });
     expect(failCall[0].failureReason).toContain('credential_resolution_failed');
     expect(failCall[0].failureReason).not.toContain('stage_dispatch_failed');
+    expect(JSON.stringify(failCall[0])).not.toContain('sensitive credential provider detail');
   });
 
   it('fails the stage when the container REFUSES the dispatch (accept-time failure)', async () => {

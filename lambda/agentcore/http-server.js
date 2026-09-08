@@ -65,6 +65,29 @@ import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
 
+const APPLICATION_FAILURE_REASONS = new Set([
+  'credential_binding_mismatch',
+  'credential_grant_mismatch',
+  'credential_grant_required',
+  'credential_resolution_failed',
+]);
+const LOWER_SNAKE_CASE_REASON = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+
+// Only explicitly recognized application failures cross the AgentCore HTTP
+// boundary as values. A shape check in addition to the finite allowlist keeps a
+// future SDK/OS code from becoming part of the public protocol by accident.
+export const applicationFailureBody = (error) => {
+  const reason = error?.code;
+  if (
+    typeof reason !== 'string' ||
+    !LOWER_SNAKE_CASE_REASON.test(reason) ||
+    !APPLICATION_FAILURE_REASONS.has(reason)
+  ) {
+    return null;
+  }
+  return { ok: false, reason };
+};
+
 // Track whether a stage is currently running so /ping can report HealthyBusy.
 export const createBusyTracker = () => {
   let busy = 0;
@@ -110,16 +133,21 @@ export const dispatchInvocation = async ({
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception.
     return { statusCode: 200, body: { ...result, command, at: now() } };
-  } catch (e) {
-    // A coded error carries its code through as `reason`, which is the field the
-    // orchestrator reads when a dispatch is refused. Without this, a credential
-    // resolution failure arrives as the generic stage_dispatch_failed and is
-    // indistinguishable from an old container or a duplicate job
-    // (specs/bedrock-iam-role-credential-mode: req-expiry-failure-legible).
-    // Only the code travels — never provider or STS error text.
+  } catch (error) {
+    // Typed invocation-preparation failures are application outcomes. Returning
+    // them on HTTP 200 lets AgentCore preserve the JSON body for the
+    // orchestrator. Unexpected runtime, SDK, and OS failures remain transport
+    // failures, and their messages are never exposed to the caller.
+    const applicationFailure = applicationFailureBody(error);
+    if (applicationFailure) {
+      return {
+        statusCode: 200,
+        body: { ...applicationFailure, command, at: now() },
+      };
+    }
     return {
       statusCode: 500,
-      body: { error: e.message, command, ...(e.code ? { reason: e.code } : {}) },
+      body: { error: 'Internal server error', command },
     };
   } finally {
     busy?.leave();

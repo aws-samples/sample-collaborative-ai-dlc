@@ -1545,6 +1545,17 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 const STAGE_CALLBACK_TIMEOUT = { hours: 8 };
 const STAGE_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
 
+// Current AgentCore containers return these application failures as
+// { ok:false, reason }. During a rolling deployment, an older container may
+// still return { error, reason }; preserve only the same finite protocol set so
+// arbitrary SDK, OS, or provider codes cannot become durable execution state.
+const LEGACY_TYPED_DISPATCH_REASONS = new Set([
+  'credential_binding_mismatch',
+  'credential_grant_mismatch',
+  'credential_grant_required',
+  'credential_resolution_failed',
+]);
+
 const runStage = async (
   ctx,
   invokeRuntime,
@@ -1652,12 +1663,29 @@ const runStage = async (
   // The accept response only says "job started" — a refusal (unknown command on
   // an old container, duplicate job, missing fields) fails the stage HERE; the
   // verdict for an accepted job always travels through the callback.
-  if (!dispatch || dispatch.ok === false || dispatch.error) {
+  // A typed application refusal is distinct from a missing response or transport
+  // error: preserve its protocol reason through reconciliation so both the stage
+  // attempt and terminal execution expose the broker's classification.
+  if (dispatch?.ok === false) {
     return reconcileFailure({
       ok: false,
       state: 'FAILED',
-      reason: dispatch?.reason ?? 'stage_dispatch_failed',
-      detail: dispatch?.detail ?? dispatch?.error ?? null,
+      reason: dispatch.reason ?? 'stage_dispatch_failed',
+      detail: dispatch.detail ?? null,
+    });
+  }
+  if (!dispatch || dispatch.error) {
+    const typedReason = LEGACY_TYPED_DISPATCH_REASONS.has(dispatch?.reason)
+      ? dispatch.reason
+      : null;
+    return reconcileFailure({
+      ok: false,
+      state: 'FAILED',
+      reason: typedReason ?? 'stage_dispatch_failed',
+      // Legacy typed refusals may carry error.message; retain the stable reason
+      // but never persist that untrusted text. Untyped transport failures keep
+      // their already-sanitized error body for diagnosis.
+      detail: typedReason ? null : (dispatch?.error ?? null),
     });
   }
 
