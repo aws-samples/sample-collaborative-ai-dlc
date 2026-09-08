@@ -130,6 +130,50 @@ describe('init-lane', () => {
     expect(await readFile(path.join(ws, 'auth.txt'), 'utf8')).toBe('lane work\n');
   });
 
+  it('trusts a restored checkout before fetching when continuing a lane', async () => {
+    const ws = path.join(root, 'restored-lane-ws');
+    const calls = [];
+    const res = await initLane(basePayload(ws), {
+      store: spyStore(),
+      statFn: async (candidate) => {
+        expect(candidate).toBe(path.join(ws, '.git'));
+        return {};
+      },
+      checkoutRepo: async () => {
+        throw new Error('existing checkout must not be cloned');
+      },
+      trustDirectory: async ({ targetDir }) => {
+        calls.push(`trust:${targetDir}`);
+        return true;
+      },
+      ensureLaneBranch: async ({ dir }) => {
+        calls.push(`fetch:${dir}`);
+        return { ready: true, created: false, sha: 'abc123' };
+      },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual([`trust:${ws}`, `fetch:${ws}`]);
+  });
+
+  it('fails before fetching when a restored checkout cannot be trusted', async () => {
+    const ws = path.join(root, 'restored-lane-ws');
+    const ensureLaneBranch = vi.fn();
+    const res = await initLane(basePayload(ws), {
+      store: spyStore(),
+      statFn: async () => ({}),
+      trustDirectory: async () => false,
+      ensureLaneBranch,
+    });
+
+    expect(res).toMatchObject({
+      ok: false,
+      reason: 'safe_directory_config_failed',
+      detail: `o/r: could not trust restored checkout ${ws}`,
+    });
+    expect(ensureLaneBranch).not.toHaveBeenCalled();
+  });
+
   it('a repo-less project is a successful no-op', async () => {
     const res = await initLane(basePayload('/nope', { repos: [] }), { store: spyStore() });
     expect(res).toMatchObject({ ok: true, unitSlug: 'auth', repos: [] });
