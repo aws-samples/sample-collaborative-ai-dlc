@@ -7,6 +7,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import {
   agentsService,
   type AgentCredentialStatus,
+  type AgentSettingsUpdate,
   type BedrockPreflightFailure,
   type SpaceAgentCredentialStatus,
 } from '@/services/agents';
@@ -16,6 +17,7 @@ import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
 import { RevealableValue } from '@/components/settings/RevealableValue';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
+import { credentialBadgeLabel } from '@/lib/agentCli';
 
 // Credential storage scopes. Intents pin an opaque binding to one of these;
 // they do not store a separate secret.
@@ -30,15 +32,18 @@ interface Props {
 const COPY: Record<Scope, { title: string; description: string }> = {
   platform: {
     title: 'Platform Agent Credentials',
-    description: 'Fallback credentials used when no personal or space credential is configured.',
+    description:
+      'Kiro fallback and the platform Bedrock mode. A platform IAM role overrides stored Bedrock keys unless the space has its own IAM role.',
   },
   space: {
     title: 'Space Agent Credentials',
-    description: 'Used for members without a personal credential; overrides the platform fallback.',
+    description:
+      'A space IAM role overrides the platform role. While IAM applies, stored personal and space Bedrock keys remain encrypted but inactive.',
   },
   personal: {
     title: 'Personal Agent Credentials',
-    description: 'Used for your agent runs in every space and overrides space and platform keys.',
+    description:
+      'API keys use personal precedence, except a Bedrock key is inactive wherever a space or platform IAM role applies.',
   },
 };
 
@@ -115,10 +120,16 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       return true;
     }
     if (scope === 'personal') {
-      const result = await agentsService.getPersonalCredentials();
+      // Platform IAM mode is authoritative for every space that can use this
+      // personal key. Load its non-secret set-state beside the personal scope so
+      // the account form cannot offer a write the effective mode will ignore.
+      const [result, platform] = await Promise.all([
+        agentsService.getPersonalCredentials(),
+        agentsService.getSettings(),
+      ]);
       if (!isCurrentIdentity()) return false;
       applied(result);
-      setPlatformFallback(null);
+      setPlatformFallback(platform);
       return true;
     }
     if (!projectId) throw new Error('projectId is required for space credentials');
@@ -157,17 +168,42 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       });
   }, [identity, isCurrentIdentity, load, scope]);
 
-  const update = async (value: { bedrockBearerToken?: string; kiroApiKey?: string }) => {
+  type CredentialUpdate = Pick<
+    AgentSettingsUpdate,
+    'bedrockMode' | 'bedrockBearerToken' | 'kiroApiKey'
+  >;
+  const update = async (value: CredentialUpdate) => {
     if (scope === 'platform') return agentsService.updateSettings(value);
-    if (scope === 'personal') return agentsService.updatePersonalCredentials(value);
+    if (scope === 'personal') {
+      return agentsService.updatePersonalCredentials({
+        ...(value.bedrockBearerToken !== undefined
+          ? { bedrockBearerToken: value.bedrockBearerToken }
+          : {}),
+        ...(value.kiroApiKey !== undefined ? { kiroApiKey: value.kiroApiKey } : {}),
+      });
+    }
     if (!projectId) throw new Error('projectId is required for space credentials');
     return agentsService.updateProjectCredentials(projectId, value);
   };
 
   const trimmedRoleArn = roleArn.trim();
+  const bedrockMode = settings?.bedrockMode ?? null;
+  // An inherited platform role cannot be displaced by a space or personal key.
+  // A same-scope role can be switched back to API-key mode through the selector,
+  // so its input becomes editable only after that explicit selection.
+  const inheritedBedrockRole =
+    (scope === 'space' || scope === 'personal') && platformFallback?.bedrockMode === 'role';
+  const bedrockKeyControlsDisabled =
+    inheritedBedrockRole || (roleSupported && bedrockMethod === 'role');
+  const bedrockKeyLabel = roleSupported
+    ? 'Amazon Bedrock API Key'
+    : 'Amazon Bedrock API Key (deprecated)';
   // The radio makes a role ARN and a bearer token mutually exclusive by
   // construction, so only the selected method's input can contribute a change.
   const bedrockInput = bedrockMethod === 'role' ? trimmedRoleArn : bearerToken;
+  const modeChanged = roleSupported && bedrockMode !== null && bedrockMethod !== bedrockMode;
+  // The single Bedrock parameter holds either a role or a key, so every mode
+  // switch requires the replacement value shown by the selected input.
   const hasChanges = bedrockInput !== '' || kiroApiKey !== '';
 
   const save = async () => {
@@ -176,11 +212,13 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     setErrorMessage(null);
     setPreflight(null);
     try {
-      const value: { bedrockBearerToken?: string; kiroApiKey?: string } = {};
-      // The role binding travels in the SAME field as the bearer token: which shape
-      // the value holds is a property of the value, so no new field, no new
-      // parameter and no new provider (req-single-parameter-encoding). The external
-      // ID is never sent — the server generates and attaches its own.
+      const value: CredentialUpdate = {};
+      // The role binding travels in the SAME field as the bearer token. The
+      // selected mode makes the replacement value unambiguous.
+      if (roleSupported && bedrockInput !== '') {
+        value.bedrockMode = bedrockMethod;
+      }
+      // The external ID is never sent — the server generates and attaches its own.
       if (bedrockInput !== '') {
         value.bedrockBearerToken =
           bedrockMethod === 'role' ? JSON.stringify({ roleArn: trimmedRoleArn }) : bearerToken;
@@ -257,15 +295,74 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     ? settings.bedrockMode !== null
     : Boolean(settings?.bedrockBearerTokenSet);
   const configuredCount = Number(bedrockConfigured) + Number(Boolean(settings?.kiroApiKeySet));
-  const bedrockMode = settings?.bedrockMode ?? null;
+  const localBedrockKind =
+    bedrockMode ?? (settings?.bedrockBearerTokenSet ? ('bearer' as const) : null);
+  const platformBedrockKind =
+    platformFallback?.bedrockMode ??
+    (platformFallback?.bedrockBearerTokenSet ? ('bearer' as const) : null);
+  // This readout names the scope that controls the shared Bedrock mode. API keys
+  // remain ordinary fallbacks (a personal key can still win); a role is
+  // authoritative and makes covered keys inactive. Personal settings have no
+  // project context, so they intentionally do not claim a space-wide controller.
+  const bedrockControl: { source: 'space' | 'platform'; kind: 'role' | 'bearer' } | null =
+    scope === 'platform'
+      ? localBedrockKind
+        ? { source: 'platform', kind: localBedrockKind }
+        : null
+      : scope === 'space'
+        ? localBedrockKind === 'role'
+          ? { source: 'space', kind: 'role' }
+          : platformBedrockKind === 'role'
+            ? { source: 'platform', kind: 'role' }
+            : localBedrockKind === 'bearer'
+              ? { source: 'space', kind: 'bearer' }
+              : platformBedrockKind === 'bearer'
+                ? { source: 'platform', kind: 'bearer' }
+                : null
+        : null;
+  const bedrockControlLabel = bedrockControl
+    ? credentialBadgeLabel(bedrockControl.source, bedrockControl.kind)
+    : null;
+  const bedrockControlDescription = !bedrockControl
+    ? 'No shared Amazon Bedrock credential is configured for this scope.'
+    : bedrockControl.kind === 'role'
+      ? `${bedrockControlLabel} controls Amazon Bedrock${
+          bedrockControl.source === 'platform' && scope === 'platform'
+            ? ' by default; a Space IAM role can override it.'
+            : ' for this space.'
+        } Stored Bedrock API keys are inactive. Paused intents store no temporary AWS credentials and receive fresh role credentials when they resume.`
+      : `${bedrockControlLabel} is the shared fallback for Amazon Bedrock. A member's Personal API key can still take precedence until an IAM role is selected. Paused intents re-read the binding when they resume.`;
   const fallbackText = (provider: 'bedrock' | 'kiro') => {
     if (scope !== 'space') return null;
-    const available =
-      provider === 'bedrock'
-        ? Boolean(platformFallback?.bedrockMode ?? platformFallback?.bedrockBearerTokenSet)
-        : platformFallback?.kiroApiKeySet;
-    return available ? ' A platform fallback is available.' : ' No platform fallback is set.';
+    if (provider === 'bedrock') {
+      if (bedrockMode === 'role') {
+        return platformFallback?.bedrockMode === 'role'
+          ? ' This space IAM role overrides the platform IAM role.'
+          : '';
+      }
+      if (platformFallback?.bedrockMode === 'role') {
+        return ' A platform IAM role is active and overrides stored personal and space Bedrock keys.';
+      }
+      const available = Boolean(platformFallback?.bedrockBearerTokenSet);
+      return available
+        ? ' A platform Bedrock key fallback is available.'
+        : ' No platform Bedrock fallback is set.';
+    }
+    return platformFallback?.kiroApiKeySet
+      ? ' A platform Kiro fallback is available.'
+      : ' No platform Kiro fallback is set.';
   };
+  const bedrockKeyHelp = bedrockKeyControlsDisabled
+    ? inheritedBedrockRole
+      ? 'A platform IAM role is effective for Amazon Bedrock. Any stored key remains encrypted but inactive; a platform administrator must switch Bedrock to API Key mode before this key can be changed. Kiro API key controls remain available.'
+      : 'IAM Role is selected for Amazon Bedrock. Saving it replaces any API key at this scope; choose API Key mode and enter a new key to switch back. Kiro API key controls remain available.'
+    : `Enables Claude Code, OpenCode and Codex.${
+        // Personal scope has no role option (dec-user-scope-role-deferred), so
+        // the deprecation names where the supported alternative lives.
+        roleSupported
+          ? ''
+          : ' Deprecated: a long-lived key stored as a secret. An IAM role needs none, and is configured at space or platform scope.'
+      }${fallbackText('bedrock') ?? ''}`;
 
   return (
     <SettingsCard
@@ -323,65 +420,104 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         </div>
       ) : (
         <div className="space-y-5">
+          {roleSupported && (
+            <div
+              className="rounded-md border border-border bg-muted/30 px-3 py-2.5"
+              data-testid={`${scope}-bedrock-effective-status`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs font-medium text-foreground">
+                  Effective Amazon Bedrock status
+                </p>
+                {bedrockControlLabel && (
+                  <span className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                    {bedrockControlLabel}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">{bedrockControlDescription}</p>
+            </div>
+          )}
+
           {roleSupported ? (
-            <div className="space-y-2.5" data-testid={`${scope}-bedrock-auth`}>
-              <p className="text-xs font-medium text-foreground">Bedrock authentication</p>
-              {(['role', 'bearer'] as const).map((method) => {
-                const selected = bedrockMethod === method;
-                return (
-                  <label
-                    key={method}
-                    className="flex cursor-pointer items-start gap-2"
-                    htmlFor={`${scope}-bedrock-method-${method}`}
-                  >
-                    <input
-                      id={`${scope}-bedrock-method-${method}`}
-                      type="radio"
-                      name={`${scope}-bedrock-method`}
-                      // The visible label carries a badge and a description, so an
-                      // explicit accessible name keeps the control addressable.
-                      aria-label={method === 'role' ? 'IAM role' : 'Bearer token'}
-                      checked={selected}
-                      onChange={() => setBedrockMethod(method)}
-                      disabled={saving || clearingSecret !== null}
-                      className="mt-1 accent-primary"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-2 text-xs font-medium text-foreground">
-                        {method === 'role' ? 'IAM role' : 'Bearer token'}
-                        <span
-                          className={`rounded-sm px-1.5 py-0.5 text-[10px] font-medium ${
-                            method === 'role'
-                              ? 'bg-primary/10 text-primary'
-                              : 'bg-muted text-muted-foreground'
-                          }`}
-                        >
-                          {method === 'role' ? 'Recommended' : 'Deprecated'}
+            <fieldset className="space-y-2.5" data-testid={`${scope}-bedrock-auth`}>
+              <legend className="text-xs font-medium text-foreground">
+                Amazon Bedrock credential mode
+              </legend>
+              <p className="text-[11px] text-muted-foreground">
+                IAM Role is available only for Amazon Bedrock. Kiro always uses the separate API Key
+                below.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(['role', 'bearer'] as const).map((method) => {
+                  const selected = bedrockMethod === method;
+                  const label = method === 'role' ? 'IAM Role' : 'API Key';
+                  const descriptionId = `${scope}-bedrock-method-${method}-description`;
+                  return (
+                    <label
+                      key={method}
+                      className={`flex cursor-pointer items-start gap-2 rounded-md border p-3 transition-colors ${
+                        selected ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/40'
+                      }`}
+                      htmlFor={`${scope}-bedrock-method-${method}`}
+                    >
+                      <input
+                        id={`${scope}-bedrock-method-${method}`}
+                        type="radio"
+                        name={`${scope}-bedrock-method`}
+                        aria-label={label}
+                        aria-describedby={descriptionId}
+                        checked={selected}
+                        onChange={() => setBedrockMethod(method)}
+                        disabled={saving || clearingSecret !== null}
+                        className="mt-1 accent-primary"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-center gap-2 text-xs font-medium text-foreground">
+                          {label}
+                          <span
+                            className={`rounded-sm px-1.5 py-0.5 text-[10px] font-medium ${
+                              method === 'role'
+                                ? 'bg-primary/10 text-primary'
+                                : 'bg-muted text-muted-foreground'
+                            }`}
+                          >
+                            {method === 'role' ? 'Recommended' : 'Deprecated'}
+                          </span>
+                          <ConfigStatusBadge
+                            ok={
+                              bedrockMode === method &&
+                              !(method === 'bearer' && bedrockKeyControlsDisabled)
+                            }
+                            okLabel="Set"
+                            notOkLabel={
+                              method === 'bearer' && bedrockKeyControlsDisabled
+                                ? 'Inactive'
+                                : 'Not set'
+                            }
+                          />
                         </span>
-                        <ConfigStatusBadge
-                          ok={bedrockMode === method}
-                          okLabel="Set"
-                          notOkLabel="Not set"
-                        />
+                        <span
+                          id={descriptionId}
+                          className="mt-1 block text-[11px] text-muted-foreground"
+                        >
+                          {method === 'role'
+                            ? 'The role trusts only the credential broker. The broker supports roles in this AWS account or another and issues short-lived credentials per invocation; the runtime cannot assume the role.'
+                            : 'Stores a long-lived Amazon Bedrock API key as a secret. Existing deployments remain supported, but IAM avoids secret storage and rotation.'}
+                        </span>
                       </span>
-                      <span className="block text-[11px] text-muted-foreground">
-                        {method === 'role'
-                          ? 'Short-lived credentials are minted per invocation by assuming a role. No secret is stored.'
-                          : 'A long-lived key stored as a secret, where an IAM role needs none.'}
-                      </span>
-                    </span>
-                  </label>
-                );
-              })}
-              {/* One SSM parameter holds the Bedrock value, so switching method and
-                  saving REPLACES the other one. Said plainly rather than discovered. */}
-              {bedrockMode && bedrockMode !== bedrockMethod && (
+                    </label>
+                  );
+                })}
+              </div>
+              {modeChanged && (
                 <p className="text-[11px] text-amber-600 dark:text-amber-500">
-                  Saving replaces the {bedrockMode === 'role' ? 'IAM role binding' : 'bearer token'}{' '}
-                  currently in use for this scope.
+                  {bedrockMethod === 'role'
+                    ? 'Saving IAM Role replaces the API key at this scope. Keys at lower scopes remain stored but inactive while IAM applies.'
+                    : 'Switching to API Key mode replaces the IAM role; enter the new key to save the change.'}
                 </p>
               )}
-            </div>
+            </fieldset>
           ) : null}
 
           {roleSupported && bedrockMethod === 'role' && (
@@ -476,28 +612,28 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
             </div>
           )}
 
-          {(!roleSupported || bedrockMethod === 'bearer') && (
-            <SecretField
-              id={`${scope}-bedrock-bearer-token`}
-              label={roleSupported ? 'Bearer token value' : 'Bedrock Bearer Token (deprecated)'}
-              isSet={bedrockMode === 'bearer'}
-              value={bearerToken}
-              onChange={setBearerToken}
-              emptyPlaceholder="Enter AWS_BEARER_TOKEN_BEDROCK value"
-              rotatePlaceholder="Enter a new token to rotate, or leave blank"
-              onClear={() => clearSecret('bedrockBearerToken')}
-              clearing={clearingSecret === 'bedrockBearerToken'}
-              disabled={saving || clearingSecret !== null}
-              helpText={`Enables Claude Code, OpenCode and Codex.${
-                // Personal scope has no role option (dec-user-scope-role-deferred), so
-                // the deprecation is stated with WHERE the alternative lives — marking
-                // it deprecated without naming an alternative would be unactionable.
-                roleSupported
-                  ? ''
-                  : ' Deprecated: a long-lived key stored as a secret. An IAM role needs none, and is configured at space or platform scope.'
-              }${fallbackText('bedrock') ?? ''}`}
-            />
-          )}
+          <SecretField
+            id={`${scope}-bedrock-bearer-token`}
+            label={`${bedrockKeyLabel}${bedrockKeyControlsDisabled ? ' (inactive)' : ''}`}
+            isSet={Boolean(settings?.bedrockBearerTokenSet)}
+            inactive={bedrockKeyControlsDisabled}
+            value={bearerToken}
+            onChange={setBearerToken}
+            emptyPlaceholder={
+              bedrockKeyControlsDisabled
+                ? 'Unavailable while IAM role mode is active'
+                : 'Enter AWS_BEARER_TOKEN_BEDROCK value'
+            }
+            rotatePlaceholder={
+              bedrockKeyControlsDisabled
+                ? 'Unavailable while IAM role mode is active'
+                : 'Enter a new token to rotate, or leave blank'
+            }
+            onClear={() => clearSecret('bedrockBearerToken')}
+            clearing={clearingSecret === 'bedrockBearerToken'}
+            disabled={bedrockKeyControlsDisabled || saving || clearingSecret !== null}
+            helpText={bedrockKeyHelp}
+          />
           <SecretField
             id={`${scope}-kiro-api-key`}
             label="Kiro API Key"

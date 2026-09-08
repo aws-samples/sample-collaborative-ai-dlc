@@ -87,6 +87,6 @@ export const credentialBadgeLabel = (
 ): string => {
   const scope = AGENT_CREDENTIAL_SOURCE_LABELS[source];
   if (kind === 'role') return `${scope} IAM role`;
-  if (kind === 'bearer') return `${scope} key`;
+  if (kind === 'bearer') return `${scope} API key`;
   return scope;
 };

@@ -13,7 +13,7 @@ Rationale and alternatives live in [ADR-0001](../../adr/0001-bedrock-iam-role-cr
 
 ## Scope
 
-Add an **IAM role mode** to the existing `bedrock` credential provider in the `user → space → platform` hierarchy (`lambda/shared/agent-credentials.js:9`). "Central default plus per-space override" is that existing precedence; no new plane, page or hierarchy is introduced.
+Add an **IAM role mode** to the existing `bedrock` credential provider without adding a new scope (`lambda/shared/agent-credentials.js`). Kiro and Bedrock bearer keys retain `user → space → platform` precedence when no Bedrock role applies. For Bedrock, the nearest supported role (`space → platform`) is authoritative for the effective space: a space role overrides a platform role, and either role makes covered personal and space bearer keys inactive without deleting them.
 
 **In scope:** role-mode credential resolution for Claude Code and OpenCode; broker-side `AssumeRole`; same-account and cross-account; per-invocation credential delivery; deprecating the bearer path; correcting the "configured" semantics; the capabilities fix; the grant shape for both endpoint families.
 
@@ -34,10 +34,12 @@ requirements:
       of the stored binding value, not of the deployment. v1 permits role bindings at space and
       platform scope only; user scope stays bearer-only per dec-user-scope-role-deferred.
     acceptance_criteria:
-      - WHEN a space sets no binding of its own THEN the system SHALL use the platform-scope role binding for that space
-      - WHEN a space sets a space-scope role binding THEN the system SHALL override the platform binding for that space only
+      - WHEN a space has a space-scope role binding THEN the system SHALL use it instead of the platform role and every bearer key covered by that space
+      - WHEN a space has no space-scope role and a platform-scope role exists THEN the system SHALL use the platform role even if personal or space Bedrock bearer keys are stored
+      - WHEN a supported role is authoritative THEN the system SHALL leave covered personal and space bearer keys encrypted in SSM but SHALL NOT resolve them until the role no longer applies
+      - WHEN no supported role applies THEN existing plain-string bearer values SHALL resolve with user → space → platform precedence and no migration
       - WHEN a role object is written to a user-scope binding THEN the system SHALL reject it at write time with a typed error naming the unsupported scope
-      - WHEN an existing plain-string bearer value is resolved at any scope including user THEN the system SHALL continue to resolve it as a bearer token with no migration
+      - THE SYSTEM SHALL keep Kiro API-key-only and SHALL preserve its user → space → platform precedence
       - THE SYSTEM SHALL introduce no new SSM parameter path and no new IAM path pattern
       - THE SYSTEM SHALL introduce no deployment-wide auth-method selector, and none exists at baseline per con-no-auth-method-selector
   - id: req-bearer-deprecated

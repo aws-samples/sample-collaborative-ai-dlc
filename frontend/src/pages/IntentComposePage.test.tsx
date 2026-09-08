@@ -285,7 +285,7 @@ describe('IntentComposePage', () => {
     expect(claude.textContent).not.toContain('key');
 
     // Kiro authenticates with a real API key, so "key" is correct there.
-    expect((await screen.findByTestId('agent-cli-kiro')).textContent).toContain('Platform key');
+    expect((await screen.findByTestId('agent-cli-kiro')).textContent).toContain('Platform API key');
   });
 
   // The kind is descriptive, so a backend that cannot supply it (an older

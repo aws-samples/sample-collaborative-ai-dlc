@@ -56,6 +56,26 @@ export interface AgentModel {
   description?: string | null;
 }
 
+export type AgentCredentialProvider = 'bedrock' | 'kiro';
+export type AgentCredentialSource = 'user' | 'space' | 'platform';
+export type AgentCredentialOverrideStatus = 'none' | 'scope-precedence' | 'iam-role';
+
+/** Secret-free explanation of the effective credential for one CLI. Role ARN,
+ *  external ID, and credential values are intentionally not part of this type. */
+export interface EffectiveAgentCredential {
+  cli: AgentCli;
+  provider: AgentCredentialProvider;
+  kind: BedrockCredentialMode;
+  bindingScope: AgentCredentialSource | null;
+  /** Why another stored credential did not win: ordinary scope precedence,
+   *  authoritative IAM-role mode, or no override. Null means an older backend
+   *  did not report this descriptive field. */
+  overrideStatus: AgentCredentialOverrideStatus | null;
+  /** True when at least one stored API key for this provider is currently
+   *  inactive. Null means an older backend did not report the state. */
+  storedKeyInactive: boolean | null;
+}
+
 /** Per-CLI availability as reported by the v2 AgentCore runtime (not the ECS
  *  pool): installed in the image AND authed (credentials present). */
 export interface RuntimeCliStatus {
@@ -63,14 +83,17 @@ export interface RuntimeCliStatus {
   installed: boolean;
   authed: boolean;
   available: boolean;
+  credentialProvider?: AgentCredentialProvider | null;
+  /** Legacy alias of credentialBindingScope. */
   credentialSource?: AgentCredentialSource | null;
+  credentialBindingScope?: AgentCredentialSource | null;
   /** What KIND of credential the effective binding holds: an assumed IAM role or
    *  a stored key. Absent/null when the platform could not determine it, in which
    *  case the badge names the scope only rather than guessing a noun. */
   credentialKind?: BedrockCredentialMode;
+  credentialOverrideStatus?: AgentCredentialOverrideStatus | null;
+  storedKeyInactive?: boolean | null;
 }
-
-export type AgentCredentialSource = 'user' | 'space' | 'platform';
 
 export interface AgentCredentialStatus {
   bedrockBearerTokenSet: boolean;
@@ -120,7 +143,10 @@ export interface AgentCapabilities {
   /** Per-provider credential kind, the fallback for `runtimeClis[].credentialKind`
    *  when the runtime probe returned no CLI list. Derived from the same resolve, so
    *  the two can never disagree. */
-  credentialKinds?: Partial<Record<'bedrock' | 'kiro', BedrockCredentialMode>>;
+  credentialKinds?: Partial<Record<AgentCredentialProvider, BedrockCredentialMode>>;
+  /** Canonical per-CLI read contract for mode, scope, and inactive-key state.
+   *  Available even when the runtime probe returns no CLI rows. */
+  effectiveCredentials?: EffectiveAgentCredential[];
   /** Present only with `?models=1`: selectable models per CLI. Claude/OpenCode
    *  are region-valid Bedrock inference profiles; Kiro uses its own namespace. */
   models?: Partial<Record<AgentCli, AgentModel[]>>;
@@ -193,6 +219,9 @@ export interface McpVerifyResponse {
 }
 
 export interface AgentSettingsUpdate {
+  /** Selected Bedrock credential mode. Required when replacing an enforced IAM
+   *  role with an API key; omit to keep the current mode. */
+  bedrockMode?: Exclude<BedrockCredentialMode, null>;
   /** New bearer token value. Pass empty string to clear. Omit to leave unchanged. */
   bedrockBearerToken?: string;
   /** New Kiro API key value. Pass empty string to clear. Omit to leave unchanged. */
@@ -263,7 +292,7 @@ export const agentsService = {
 
   async updateProjectCredentials(
     projectId: string,
-    update: Pick<AgentSettingsUpdate, 'bedrockBearerToken' | 'kiroApiKey'>,
+    update: Pick<AgentSettingsUpdate, 'bedrockMode' | 'bedrockBearerToken' | 'kiroApiKey'>,
   ): Promise<AgentCredentialSaveResult> {
     return api.put(`/projects/${projectId}/agent-credentials`, update);
   },

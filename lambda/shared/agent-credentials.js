@@ -16,6 +16,13 @@ export const AGENT_CREDENTIAL_METADATA_ACTIONS = Object.freeze({
   PREFLIGHT_BEDROCK_ROLE: 'preflight-bedrock-role-binding',
 });
 
+export const CREDENTIAL_WRITE_VALIDATION_CODES = Object.freeze({
+  BEDROCK_IAM_MODE_ENFORCED: 'BEDROCK_IAM_MODE_ENFORCED',
+  BEDROCK_MODE_INVALID: 'BEDROCK_MODE_INVALID',
+  BEDROCK_MODE_VALUE_MISMATCH: 'BEDROCK_MODE_VALUE_MISMATCH',
+  KIRO_ROLE_UNSUPPORTED: 'KIRO_ROLE_UNSUPPORTED',
+});
+
 export const AGENT_CLI_PROVIDER = {
   kiro: 'kiro',
   claude: 'bedrock',
@@ -506,50 +513,141 @@ export const prepareBedrockBindingWrite = async (
 // stage, and req-role-credential-mode keeps role bindings out of user scope
 // (dec-user-scope-role-deferred).
 //
-// Returns null when the update is acceptable, else { error, issues } for a 400.
+// `currentBedrockMode` describes this exact scope. `inheritedBedrockMode`
+// describes a platform role covering a space. A bearer write may explicitly
+// switch an editable role scope with `bedrockMode: "bearer"`; it can never
+// override an inherited platform role. Because one existing parameter stores
+// either the role or key, switching away from a role requires a replacement key.
+//
+// Returns null when the update is acceptable, else a typed 400 response body.
 // Throws nothing: every caller is an HTTP handler.
-export const validateCredentialScopeUpdate = ({ source, update = {} }) => {
+export const validateCredentialScopeUpdate = ({
+  source,
+  update = {},
+  currentBedrockMode = null,
+  inheritedBedrockMode = null,
+}) => {
+  const requestedMode = update?.bedrockMode;
+  const kiroValue = update?.kiroApiKey;
+
+  if (update?.kiroMode === CREDENTIAL_VALUE_KINDS.ROLE || looksLikeRoleBindingValue(kiroValue)) {
+    return {
+      error: 'Kiro does not support IAM role credentials',
+      code: CREDENTIAL_WRITE_VALIDATION_CODES.KIRO_ROLE_UNSUPPORTED,
+      issues: ['Kiro credentials must be an API key. IAM role mode is available for Bedrock only.'],
+    };
+  }
+
+  if (
+    requestedMode !== undefined &&
+    requestedMode !== CREDENTIAL_VALUE_KINDS.BEARER &&
+    requestedMode !== CREDENTIAL_VALUE_KINDS.ROLE
+  ) {
+    return {
+      error: 'Invalid Bedrock credential mode',
+      code: CREDENTIAL_WRITE_VALIDATION_CODES.BEDROCK_MODE_INVALID,
+      issues: ['bedrockMode must be "bearer" or "role" when provided.'],
+    };
+  }
+
   const value = update?.bedrockBearerToken;
-  // Only a role-SHAPED value is inspected. Any other non-empty value is a bearer
-  // token and is deliberately never parsed, which is what keeps every
-  // pre-existing deployment working untouched.
-  if (typeof value !== 'string' || !looksLikeRoleBindingValue(value)) return null;
-  if (source === 'user') {
-    // PUT /users/me/agent-credentials is gated only on authentication, so any
-    // member could otherwise name a role ARN. Permitting this scope later is
-    // backwards compatible; forbidding it later would be breaking.
+  const touchesBedrockValue = typeof value === 'string';
+  const nonEmptyValue = touchesBedrockValue && isConfiguredCredentialValue(value);
+  const roleShaped = nonEmptyValue && looksLikeRoleBindingValue(value);
+
+  if (requestedMode === CREDENTIAL_VALUE_KINDS.ROLE && !roleShaped) {
+    // Re-selecting an already configured role without rotating it is a harmless
+    // no-op. Every actual switch into role mode must carry the role binding.
+    if (!(currentBedrockMode === CREDENTIAL_VALUE_KINDS.ROLE && !touchesBedrockValue)) {
+      return {
+        error: 'Bedrock IAM role mode requires a role binding',
+        code: CREDENTIAL_WRITE_VALIDATION_CODES.BEDROCK_MODE_VALUE_MISMATCH,
+        issues: ['Provide bedrockBearerToken as a JSON role binding when selecting IAM role mode.'],
+      };
+    }
+  }
+  if (requestedMode === CREDENTIAL_VALUE_KINDS.BEARER && roleShaped) {
     return {
-      error: 'A Bedrock IAM role cannot be configured at user scope',
-      code: 'BEDROCK_ROLE_SCOPE_UNSUPPORTED',
-      issues: [
-        'Role bindings are supported at space and platform scope only. Personal credentials must be a Bedrock API key.',
-      ],
+      error: 'Bedrock API-key mode cannot store a role binding',
+      code: CREDENTIAL_WRITE_VALIDATION_CODES.BEDROCK_MODE_VALUE_MISMATCH,
+      issues: ['Provide a Bedrock API key, or select IAM role mode for a role binding.'],
     };
   }
-  try {
-    parseRoleBindingValue(value);
-  } catch (error) {
-    // The message names the offending field and never echoes the value.
+  if (
+    requestedMode === CREDENTIAL_VALUE_KINDS.BEARER &&
+    currentBedrockMode === CREDENTIAL_VALUE_KINDS.ROLE &&
+    !nonEmptyValue
+  ) {
     return {
-      error: 'Invalid Bedrock role binding',
-      code: error.code || BEDROCK_ROLE_BINDING_INVALID,
-      issues: [error.message],
+      error: 'Switching Bedrock from IAM role to API-key mode requires a replacement key',
+      code: CREDENTIAL_WRITE_VALIDATION_CODES.BEDROCK_MODE_VALUE_MISMATCH,
+      issues: ['Provide bedrockBearerToken when selecting API-key mode.'],
     };
   }
-  // req-external-id-lifecycle: AWS requires the value be "generated by Example
-  // Corp and not their customers", i.e. controlled by the party doing the
-  // assuming. Accepting one here would also break per-binding uniqueness, so an
-  // operator-supplied value is refused outright rather than quietly replaced —
-  // silently overwriting it would leave them with a trust policy they believe is
-  // correct.
-  if (looksLikeClientSuppliedExternalId(value)) {
-    return {
-      error: 'A Bedrock external ID cannot be supplied by a client',
-      code: BEDROCK_EXTERNAL_ID_NOT_ACCEPTED,
-      issues: [
-        'The platform generates the external ID for a cross-account role binding and returns it for you to paste into the trust policy. Send only roleArn.',
-      ],
-    };
+
+  // Only a role-SHAPED value is parsed. Any other configured value is a bearer
+  // token and is deliberately opaque, preserving every existing key format.
+  if (roleShaped) {
+    if (source === 'user') {
+      // PUT /users/me/agent-credentials is gated only on authentication, so any
+      // member could otherwise name a role ARN. Permitting this scope later is
+      // backwards compatible; forbidding it later would be breaking.
+      return {
+        error: 'A Bedrock IAM role cannot be configured at user scope',
+        code: 'BEDROCK_ROLE_SCOPE_UNSUPPORTED',
+        issues: [
+          'Role bindings are supported at space and platform scope only. Personal credentials must be a Bedrock API key.',
+        ],
+      };
+    }
+    try {
+      parseRoleBindingValue(value);
+    } catch (error) {
+      // The message names the offending field and never echoes the value.
+      return {
+        error: 'Invalid Bedrock role binding',
+        code: error.code || BEDROCK_ROLE_BINDING_INVALID,
+        issues: [error.message],
+      };
+    }
+    // req-external-id-lifecycle: the assuming party generates this value. A
+    // client-supplied one is refused rather than silently replaced.
+    if (looksLikeClientSuppliedExternalId(value)) {
+      return {
+        error: 'A Bedrock external ID cannot be supplied by a client',
+        code: BEDROCK_EXTERNAL_ID_NOT_ACCEPTED,
+        issues: [
+          'The platform generates the external ID for a cross-account role binding and returns it for you to paste into the trust policy. Send only roleArn.',
+        ],
+      };
+    }
+    return null;
+  }
+
+  // Empty values clear/switch away from the binding and are not key writes.
+  // A configured bearer value cannot silently displace IAM. The editable scope
+  // must request an explicit switch; an inherited platform role cannot be
+  // disabled by a space credential write at all.
+  if (nonEmptyValue) {
+    if (inheritedBedrockMode === CREDENTIAL_VALUE_KINDS.ROLE) {
+      return {
+        error: 'Bedrock API keys are inactive while platform IAM role mode is enforced',
+        code: CREDENTIAL_WRITE_VALIDATION_CODES.BEDROCK_IAM_MODE_ENFORCED,
+        issues: [
+          'Configure a space IAM role, or ask a platform administrator to switch the platform Bedrock mode to API key.',
+        ],
+      };
+    }
+    if (
+      currentBedrockMode === CREDENTIAL_VALUE_KINDS.ROLE &&
+      requestedMode !== CREDENTIAL_VALUE_KINDS.BEARER
+    ) {
+      return {
+        error: 'Bedrock API keys cannot be written while IAM role mode is enforced',
+        code: CREDENTIAL_WRITE_VALIDATION_CODES.BEDROCK_IAM_MODE_ENFORCED,
+        issues: ['Explicitly switch bedrockMode to "bearer" before saving a Bedrock API key.'],
+      };
+    }
   }
   return null;
 };
@@ -762,35 +860,100 @@ export const resolveEffectiveCredentialState = async (ssm, { base, projectId, us
     space: scopePaths({ base, source: 'space', projectId }),
     platform: scopePaths({ base, source: 'platform' }),
   };
-  const bindings = {};
-  const credentialKinds = {};
-  const unresolved = new Set(AGENT_CREDENTIAL_PROVIDERS);
+  const bindingAt = (provider, source) => ({
+    provider,
+    source,
+    ...(source === 'user' ? { userId: assertIdentifier(userId, 'userId') } : {}),
+  });
+
+  // Read every candidate once so the same snapshot that chooses the effective
+  // binding can also say whether a key at another existing scope lost precedence.
+  // Values never leave this module; only booleans and enums do.
+  const stateBySource = {};
   for (const source of AGENT_CREDENTIAL_SOURCES) {
-    const paths = Object.fromEntries(
-      [...unresolved].map((provider) => [provider, sources[source][provider]]),
-    );
+    const paths = sources[source];
     const values = await fetchValues(ssm, paths);
-    for (const provider of unresolved) {
-      const path = sources[source][provider];
-      if (!isConfiguredCredentialValue(values[path])) continue;
-      bindings[provider] = {
-        provider,
-        source,
-        ...(source === 'user' ? { userId: assertIdentifier(userId, 'userId') } : {}),
-      };
-      // Non-throwing on purpose: a malformed role-shaped value must not fail a
-      // resolve that already decided the binding EXISTS. It reports 'role', which
-      // is the fail-safe direction — never mistaken for a usable bearer token.
-      credentialKinds[provider] = credentialValueKindSafe(values[path]);
-      unresolved.delete(provider);
+    stateBySource[source] = {
+      bedrock: values[paths.bedrock] ?? null,
+      kiro: values[paths.kiro] ?? null,
+    };
+  }
+
+  const candidates = { bedrock: [], kiro: [] };
+  for (const source of AGENT_CREDENTIAL_SOURCES) {
+    const kiroValue = stateBySource[source].kiro;
+    if (isConfiguredCredentialValue(kiroValue)) {
+      candidates.kiro.push({
+        binding: bindingAt('kiro', source),
+        // Kiro is API-key-only. Its opaque value must never be interpreted using
+        // Bedrock's role-object encoding, even if it happens to begin with `{`.
+        kind: CREDENTIAL_VALUE_KINDS.BEARER,
+      });
     }
-    if (unresolved.size === 0) break;
+
+    const bedrockValue = stateBySource[source].bedrock;
+    const bedrockKind = credentialValueKindSafe(bedrockValue);
+    if (bedrockKind) {
+      candidates.bedrock.push({
+        binding: bindingAt('bedrock', source),
+        kind: bedrockKind,
+      });
+    }
   }
-  for (const provider of unresolved) {
-    bindings[provider] = null;
-    credentialKinds[provider] = null;
-  }
-  return { bindings, credentialKinds };
+
+  // Kiro keeps the shipped user → space → platform API-key precedence. Bedrock
+  // bearer values use that order only as a fallback: the nearest supported role
+  // (space, then platform) is authoritative over covered bearer keys. A stale
+  // user-scope role remains unsupported and is never selected.
+  const selected = {
+    kiro: candidates.kiro[0] ?? null,
+    bedrock:
+      candidates.bedrock.find(
+        (candidate) =>
+          candidate.kind === CREDENTIAL_VALUE_KINDS.ROLE && candidate.binding.source !== 'user',
+      ) ??
+      candidates.bedrock.find((candidate) => candidate.kind === CREDENTIAL_VALUE_KINDS.BEARER) ??
+      null,
+  };
+
+  const credentialMetadata = Object.fromEntries(
+    AGENT_CREDENTIAL_PROVIDERS.map((provider) => {
+      const effective = selected[provider];
+      const suppressed = candidates[provider].filter((candidate) => candidate !== effective);
+      const storedKeyInactive = suppressed.some(
+        (candidate) => candidate.kind === CREDENTIAL_VALUE_KINDS.BEARER,
+      );
+      const overrideStatus = !effective
+        ? 'none'
+        : effective.kind === CREDENTIAL_VALUE_KINDS.ROLE && storedKeyInactive
+          ? 'iam-role'
+          : suppressed.length > 0
+            ? 'scope-precedence'
+            : 'none';
+      return [
+        provider,
+        {
+          provider,
+          kind: effective?.kind ?? null,
+          bindingScope: effective?.binding.source ?? null,
+          overrideStatus,
+          storedKeyInactive,
+        },
+      ];
+    }),
+  );
+
+  return {
+    bindings: {
+      bedrock: selected.bedrock?.binding ?? null,
+      kiro: selected.kiro?.binding ?? null,
+    },
+    credentialKinds: {
+      bedrock: selected.bedrock?.kind ?? null,
+      kiro: selected.kiro?.kind ?? null,
+    },
+    credentialMetadata,
+  };
 };
 
 export const resolveEffectiveCredentialBindings = async (ssm, options) =>

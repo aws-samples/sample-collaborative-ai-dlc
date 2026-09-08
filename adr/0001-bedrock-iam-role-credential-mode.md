@@ -14,16 +14,16 @@
 
 Upstream #405 replaced the deployment-wide Bedrock secret with a three-scope credential hierarchy:
 
-| Fact                                                                                                                                                        | Evidence                                                                                                  |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Precedence is `user → space → platform`, first configured wins per provider                                                                                 | `lambda/shared/agent-credentials.js:9` (`AGENT_CREDENTIAL_SOURCES`), `resolveEffectiveCredentialBindings` |
-| A provider is one table row: SSM parameter name, input field, "set" field, env var                                                                          | `lambda/shared/agent-credentials.js:22` (`PROVIDER_CONFIG`)                                               |
-| A **credential broker** is the sole IAM principal permitted to read credential material; API Lambdas deliberately have no `ssm:GetParameter` on those paths | `lambda/credential-broker/`, `aws_iam_role.credential_broker` in `terraform/modules/api/lambda/main.tf`   |
-| The broker validates a signed, short-lived grant and rejects a `projectId` that does not match the execution record                                         | `authorizeAgentCredentialRequest`, `verifyIssuedAgentCredentialGrant`                                     |
-| Auth is resolved **per invocation**; the base environment is scrubbed of credential variables each time                                                     | `lambda/agentcore/auth-resolver.js` header, `cleanBaseEnv`, assignment at `:196`                          |
-| The grant is destroyed before the command handler runs                                                                                                      | `lambda/agentcore/http-server.js:107` — `delete handlerPayload.agentCredentialGrant`                      |
-| Each Bedrock CLI copies the bearer token into its own environment if present                                                                                | `lambda/agentcore/cli/drivers.js:69` (claude), `:156` (opencode), `:227` (codex)                          |
-| Cost shown in-product is **not billing data** — it is token counts × Price List prices cached in SSM                                                        | `lambda/shared/model-pricing.js`; nothing under `lambda/` calls Cost Explorer or CUR                      |
+| Fact                                                                                                                                                        | Evidence                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Kiro and bearer-only Bedrock use `user → space → platform`; a Bedrock role uses `space → platform` and overrides covered bearer keys                        | `lambda/shared/agent-credentials.js` (`resolveEffectiveCredentialState`)                                |
+| A provider is one table row: SSM parameter name, input field, "set" field, env var                                                                          | `lambda/shared/agent-credentials.js:22` (`PROVIDER_CONFIG`)                                             |
+| A **credential broker** is the sole IAM principal permitted to read credential material; API Lambdas deliberately have no `ssm:GetParameter` on those paths | `lambda/credential-broker/`, `aws_iam_role.credential_broker` in `terraform/modules/api/lambda/main.tf` |
+| The broker validates a signed, short-lived grant and rejects a `projectId` that does not match the execution record                                         | `authorizeAgentCredentialRequest`, `verifyIssuedAgentCredentialGrant`                                   |
+| Auth is resolved **per invocation**; the base environment is scrubbed of credential variables each time                                                     | `lambda/agentcore/auth-resolver.js` header, `cleanBaseEnv`, assignment at `:196`                        |
+| The grant is destroyed before the command handler runs                                                                                                      | `lambda/agentcore/http-server.js:107` — `delete handlerPayload.agentCredentialGrant`                    |
+| Each Bedrock CLI copies the bearer token into its own environment if present                                                                                | `lambda/agentcore/cli/drivers.js:69` (claude), `:156` (opencode), `:227` (codex)                        |
+| Cost shown in-product is **not billing data** — it is token counts × Price List prices cached in SSM                                                        | `lambda/shared/model-pricing.js`; nothing under `lambda/` calls Cost Explorer or CUR                    |
 
 The space is a genuine tenant boundary: spaces carry `owner`/`admin`/`member` roles enforced in Neptune traversals, a space is invisible without membership, and platform-wide administration is a separate Cognito group (`lambda/shared/authz.js` — `PLATFORM_ADMIN_GROUP`).
 
@@ -43,7 +43,7 @@ An application inference profile wraps **one specific model**, so the profile co
 
 Add an **IAM role mode** to the existing `bedrock` credential provider. Nothing else.
 
-"Central default plus per-space override" is the existing `platform → space` precedence; no new plane, page or hierarchy is introduced. The feature is a second mode in the two credential cards that already exist.
+"Central default plus per-space override" uses the existing scopes but is mode-aware: the nearest supported Bedrock role (`space → platform`) is authoritative, while bearer-only Bedrock and Kiro retain `user → space → platform`. A space role overrides a platform role; a space bearer key does not. Covered bearer keys remain encrypted for rollback instead of silently overriding IAM. No new plane, page or hierarchy is introduced.
 
 Five decisions follow:
 
@@ -309,7 +309,7 @@ The worst observed stage consumed **~50–58 % of a 3600 s credential**. That re
 
 C is rejected for a reason that comes from the project's own goal: it requires every customer bringing a role to register an OIDC provider and write a federated trust policy instead of pasting one role ARN. That is a large regression in setup simplicity, and it is additionally unverified whether AgentCore exposes a usable OIDC token. It remains the correct escape hatch for anyone who genuinely needs single stages beyond 8 hours.
 
-**Role mode is strictly worse than a bearer token on reliability** — a bearer token never expires. That is the price of temporary credentials. The hierarchy mitigates it without any extra mechanism: a space that values marathon stages over short-lived credentials simply stays on a bearer token, per space, with no platform decision required.
+**Role mode adds an expiry mechanism that bearer tokens do not have.** Selecting a role is therefore an explicit authority decision, not another first-configured value in the key hierarchy. A platform role covers every space without its own role and makes stored personal and space Bedrock keys inactive; removing that role re-exposes those existing lower-scope keys. Saving a role replaces any API key at that same scope because both use the established parameter. A space that needs a different identity must bind its own role rather than silently overriding IAM with a key.
 
 ## 6. Change inventory
 
@@ -353,7 +353,7 @@ C is rejected for a reason that comes from the project's own goal: it requires e
 3. **Value encoding** — JSON in the existing parameter. Alternatives: sniffing for an `arn:` prefix (no room for an external ID), or a second parameter (new path, new IAM pattern, more change).
 4. **Bind-time preflight** — worth building in v1? It converts a class of mid-stage failure into an input-validation error.
 5. **`bedrock_assumable_role_arns` default** — `["*"]` for usability, or force operators to enumerate.
-6. **Does the user scope keep its precedence?** Left unchanged deliberately. A member with a personal role binding uses it in every space they belong to, and with cross-account roles that bills their account for another team's work. This is _not new_ — a personal bearer token already bills whatever account issued it — so role mode introduces no new defect, only a more visible one. Changing precedence would be a behaviour change to shipped functionality in service of a cost report that is descoped.
+6. **Role authority versus user precedence — resolved.** User scope remains API-key-only. Its key keeps normal precedence for Kiro and for Bedrock when no supported role applies. Once a space or platform role is selected for Bedrock, that role is authoritative for the effective space; covered personal and space bearer keys remain encrypted but inactive until the role is removed.
 
 ## 10. Verification plan
 

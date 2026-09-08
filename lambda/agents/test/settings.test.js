@@ -175,6 +175,19 @@ describe('personal agent credentials', () => {
       'ABSKQmVkcm9jaw==',
     );
   });
+
+  it('rejects role configuration in the Kiro field with a typed response', async () => {
+    const response = await handler(
+      personalEvent('PUT', {
+        kiroApiKey: JSON.stringify({
+          roleArn: 'arn:aws:iam::111122223333:role/aidlc-bedrock-inference',
+        }),
+      }),
+    );
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).code).toBe('KIRO_ROLE_UNSUPPORTED');
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
 });
 
 // specs/bedrock-iam-role-credential-mode — req-single-parameter-encoding.
@@ -225,6 +238,98 @@ describe('platform bedrock role binding', () => {
     expect(
       ssmMock.commandCalls(PutParameterCommand).map((call) => call.args[0].input.Value),
     ).toEqual(['ABSKQmVkcm9jaw==', 'placeholder']);
+  });
+
+  it('rejects an API-key write while platform IAM mode is enforced', async () => {
+    credentialMetadataHandler = (request) => ({
+      ok: true,
+      status: {
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: request.action === 'read-agent-credential-scope-status' ? 'role' : undefined,
+      },
+    });
+
+    const response = await handler(
+      event('PUT', { bedrockBearerToken: 'new-key' }, 'platform-admin'),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).code).toBe('BEDROCK_IAM_MODE_ENFORCED');
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+
+  it('accepts an explicit platform switch from IAM to a replacement API key', async () => {
+    credentialMetadataHandler = (request) => ({
+      ok: true,
+      status: {
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: request.action === 'read-agent-credential-scope-status' ? 'role' : undefined,
+      },
+    });
+    ssmMock.on(PutParameterCommand).resolves({});
+
+    const response = await handler(
+      event(
+        'PUT',
+        { bedrockMode: 'bearer', bedrockBearerToken: 'replacement-key' },
+        'platform-admin',
+      ),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input).toMatchObject({
+      Name: '/collab/dev/bedrock-bearer-token',
+      Value: 'replacement-key',
+    });
+  });
+
+  it('replaces a configured bearer with a role in the existing parameter', async () => {
+    credentialMetadataHandler = (request) => {
+      if (request.action === 'read-agent-credential-scope-status') {
+        return {
+          ok: true,
+          status: { bedrockBearerTokenSet: true, kiroApiKeySet: false, bedrockMode: 'bearer' },
+        };
+      }
+      if (request.action === 'preflight-bedrock-role-binding') {
+        return { ok: true, preflight: { ok: true, cause: 'ok', sessionName: 'aidlc-preflight' } };
+      }
+      return { ok: false, code: 'UNEXPECTED_ACTION' };
+    };
+    ssmMock.on(PutParameterCommand).resolves({});
+
+    const response = await handler(
+      event('PUT', { bedrockMode: 'role', bedrockBearerToken: ROLE_VALUE }, 'platform-admin'),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input).toMatchObject({
+      Name: '/collab/dev/bedrock-bearer-token',
+      Value: ROLE_VALUE,
+    });
+    const actions = lambdaMock
+      .commandCalls(InvokeCommand)
+      .map(({ args }) => JSON.parse(Buffer.from(args[0].input.Payload).toString()).action);
+    expect(actions).not.toContain('preserve-bedrock-bearer-for-role-mode');
+  });
+
+  it('rejects a mode-only switch away from IAM because no same-scope key is retained', async () => {
+    credentialMetadataHandler = (request) => ({
+      ok: true,
+      status: {
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: request.action === 'read-agent-credential-scope-status' ? 'role' : undefined,
+      },
+    });
+
+    const response = await handler(event('PUT', { bedrockMode: 'bearer' }, 'platform-admin'));
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).code).toBe('BEDROCK_MODE_VALUE_MISMATCH');
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
   });
 });
 

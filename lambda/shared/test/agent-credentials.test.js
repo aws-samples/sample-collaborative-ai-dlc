@@ -33,6 +33,7 @@ import {
   readCredentialBindingValue,
   readCredentialScopeStatus,
   resolveEffectiveCredentialBindings,
+  resolveEffectiveCredentialState,
   validateCredentialScopeUpdate,
   writeCredentialScope,
 } from '../agent-credentials.js';
@@ -180,10 +181,66 @@ describe('credential scope write validation', () => {
     expect(validateCredentialScopeUpdate({ source, update: { bedrockBearerToken } })).toBeNull();
   });
 
-  it('ignores an update that does not touch the bedrock field', () => {
+  it('rejects a Kiro role configuration with a provider-specific typed code', () => {
+    const invalid = validateCredentialScopeUpdate({
+      source: 'platform',
+      update: { kiroApiKey: roleValue },
+    });
+    expect(invalid).toMatchObject({ code: 'KIRO_ROLE_UNSUPPORTED' });
+    expect(invalid.issues[0]).toContain('Bedrock only');
+  });
+
+  it('rejects a Bedrock key while the same scope is in IAM mode unless the switch is explicit', () => {
     expect(
-      validateCredentialScopeUpdate({ source: 'user', update: { kiroApiKey: 'k' } }),
+      validateCredentialScopeUpdate({
+        source: 'platform',
+        currentBedrockMode: 'role',
+        update: { bedrockBearerToken: 'new-key' },
+      }),
+    ).toMatchObject({ code: 'BEDROCK_IAM_MODE_ENFORCED' });
+    expect(
+      validateCredentialScopeUpdate({
+        source: 'platform',
+        currentBedrockMode: 'role',
+        update: { bedrockMode: 'bearer', bedrockBearerToken: 'new-key' },
+      }),
     ).toBeNull();
+    expect(
+      validateCredentialScopeUpdate({
+        source: 'platform',
+        currentBedrockMode: 'role',
+        update: { bedrockMode: 'bearer' },
+      }),
+    ).toMatchObject({ code: 'BEDROCK_MODE_VALUE_MISMATCH' });
+  });
+
+  it('rejects a space key covered by a platform role even when a local mode switch is requested', () => {
+    expect(
+      validateCredentialScopeUpdate({
+        source: 'space',
+        inheritedBedrockMode: 'role',
+        update: { bedrockMode: 'bearer', bedrockBearerToken: 'new-key' },
+      }),
+    ).toMatchObject({ code: 'BEDROCK_IAM_MODE_ENFORCED' });
+  });
+
+  it('rejects mode/value contradictions and unknown modes', () => {
+    expect(
+      validateCredentialScopeUpdate({
+        source: 'platform',
+        update: { bedrockMode: 'bearer', bedrockBearerToken: roleValue },
+      }),
+    ).toMatchObject({ code: 'BEDROCK_MODE_VALUE_MISMATCH' });
+    expect(
+      validateCredentialScopeUpdate({ source: 'platform', update: { bedrockMode: 'magic' } }),
+    ).toMatchObject({ code: 'BEDROCK_MODE_INVALID' });
+  });
+
+  it('accepts ordinary Kiro keys and ignores updates that touch no credential field', () => {
+    expect(
+      validateCredentialScopeUpdate({ source: 'user', update: { kiroApiKey: 'kiro-key' } }),
+    ).toBeNull();
+    expect(validateCredentialScopeUpdate({ source: 'user', update: {} })).toBeNull();
     expect(validateCredentialScopeUpdate({ source: 'user' })).toBeNull();
   });
 });
@@ -224,7 +281,7 @@ describe('agent credentials', () => {
     });
   });
 
-  it('builds platform, space, and user paths', () => {
+  it('builds platform, space, and user credential paths', () => {
     expect(agentCredentialPath({ base: '/app/dev', source: 'platform', provider: 'bedrock' })).toBe(
       '/app/dev/bedrock-bearer-token',
     );
@@ -246,11 +303,43 @@ describe('agent credentials', () => {
     ).toBe('/app/dev/users/u-1/agent-credentials/bedrock-bearer-token');
   });
 
-  it('resolves each provider independently with user over space over platform', async () => {
+  it('keeps user over space over platform precedence when Bedrock uses API keys', async () => {
     values.set('/app/dev/bedrock-bearer-token', 'platform-bedrock');
     values.set('/app/dev/kiro-api-key', 'platform-kiro');
     values.set('/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token', 'space-bedrock');
+    values.set('/app/dev/users/u-1/agent-credentials/bedrock-bearer-token', 'user-bedrock');
     values.set('/app/dev/users/u-1/agent-credentials/kiro-api-key', 'user-kiro');
+
+    const bindings = await resolveEffectiveCredentialBindings(ssm, {
+      base: '/app/dev',
+      projectId: 'p-1',
+      userId: 'u-1',
+    });
+
+    expect(bindings).toEqual({
+      bedrock: { provider: 'bedrock', source: 'user', userId: 'u-1' },
+      kiro: { provider: 'kiro', source: 'user', userId: 'u-1' },
+    });
+    expect(credentialSourcesFromBindings(bindings)).toEqual({
+      bedrock: 'user',
+      kiro: 'user',
+    });
+    expect(
+      availableClisForBindings({
+        installed: ['kiro', 'claude', 'opencode', 'codex'],
+        bindings,
+      }),
+    ).toEqual(['kiro', 'claude', 'opencode', 'codex']);
+  });
+
+  it('makes a space IAM role authoritative over a personal Bedrock key without affecting Kiro', async () => {
+    const role = JSON.stringify({
+      roleArn: 'arn:aws:iam::111122223333:role/aidlc-bedrock-space',
+    });
+    const userBedrockPath = '/app/dev/users/u-1/agent-credentials/bedrock-bearer-token';
+    values.set(userBedrockPath, 'user-bedrock');
+    values.set('/app/dev/users/u-1/agent-credentials/kiro-api-key', 'user-kiro');
+    values.set('/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token', role);
 
     const bindings = await resolveEffectiveCredentialBindings(ssm, {
       base: '/app/dev',
@@ -262,24 +351,81 @@ describe('agent credentials', () => {
       bedrock: { provider: 'bedrock', source: 'space' },
       kiro: { provider: 'kiro', source: 'user', userId: 'u-1' },
     });
-    expect(credentialSourcesFromBindings(bindings)).toEqual({
-      bedrock: 'space',
-      kiro: 'user',
+    expect(values.get(userBedrockPath)).toBe('user-bedrock');
+    expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
+    expect(ssm.commandCalls(DeleteParameterCommand)).toHaveLength(0);
+  });
+
+  it('makes a platform IAM role authoritative while preserving covered keys and Kiro precedence', async () => {
+    const role = JSON.stringify({
+      roleArn: 'arn:aws:iam::111122223333:role/aidlc-bedrock-platform',
     });
-    expect(
-      availableClisForBindings({
-        installed: ['kiro', 'claude', 'opencode', 'codex'],
-        bindings,
-      }),
-    ).toEqual(['kiro', 'claude', 'opencode', 'codex']);
-    const reads = ssm.commandCalls(GetParametersCommand).map((call) => call.args[0].input.Names);
-    expect(reads).toEqual([
-      [
-        '/app/dev/users/u-1/agent-credentials/bedrock-bearer-token',
-        '/app/dev/users/u-1/agent-credentials/kiro-api-key',
-      ],
-      ['/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token'],
-    ]);
+    const spaceBedrockPath = '/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token';
+    const userBedrockPath = '/app/dev/users/u-1/agent-credentials/bedrock-bearer-token';
+    values.set('/app/dev/bedrock-bearer-token', role);
+    values.set(spaceBedrockPath, 'space-bedrock');
+    values.set(userBedrockPath, 'user-bedrock');
+    values.set('/app/dev/projects/p-1/agent-credentials/kiro-api-key', 'space-kiro');
+    values.set('/app/dev/users/u-1/agent-credentials/kiro-api-key', 'user-kiro');
+
+    const state = await resolveEffectiveCredentialState(ssm, {
+      base: '/app/dev',
+      projectId: 'p-1',
+      userId: 'u-1',
+    });
+
+    expect(state).toEqual({
+      bindings: {
+        bedrock: { provider: 'bedrock', source: 'platform' },
+        kiro: { provider: 'kiro', source: 'user', userId: 'u-1' },
+      },
+      credentialKinds: { bedrock: 'role', kiro: 'bearer' },
+      credentialMetadata: {
+        bedrock: {
+          provider: 'bedrock',
+          kind: 'role',
+          bindingScope: 'platform',
+          overrideStatus: 'iam-role',
+          storedKeyInactive: true,
+        },
+        kiro: {
+          provider: 'kiro',
+          kind: 'bearer',
+          bindingScope: 'user',
+          overrideStatus: 'scope-precedence',
+          storedKeyInactive: true,
+        },
+      },
+    });
+    // Covered Bedrock keys are inactive, not copied, moved, or deleted. Kiro
+    // independently keeps its normal user > space > platform precedence.
+    expect(values.get(spaceBedrockPath)).toBe('space-bedrock');
+    expect(values.get(userBedrockPath)).toBe('user-bedrock');
+    expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
+    expect(ssm.commandCalls(DeleteParameterCommand)).toHaveLength(0);
+  });
+
+  it('prefers the nearest supported IAM role and treats Kiro values as API keys only', async () => {
+    values.set(
+      '/app/dev/bedrock-bearer-token',
+      JSON.stringify({ roleArn: 'arn:aws:iam::111122223333:role/platform' }),
+    );
+    values.set(
+      '/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token',
+      JSON.stringify({ roleArn: 'arn:aws:iam::111122223333:role/space' }),
+    );
+    values.set('/app/dev/users/u-1/agent-credentials/kiro-api-key', '{opaque-kiro-api-key');
+
+    const bindings = await resolveEffectiveCredentialBindings(ssm, {
+      base: '/app/dev',
+      projectId: 'p-1',
+      userId: 'u-1',
+    });
+
+    expect(bindings).toEqual({
+      bedrock: { provider: 'bedrock', source: 'space' },
+      kiro: { provider: 'kiro', source: 'user', userId: 'u-1' },
+    });
   });
 
   it('treats placeholder and missing parameters as unset', async () => {

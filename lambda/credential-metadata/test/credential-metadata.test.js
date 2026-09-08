@@ -82,6 +82,22 @@ describe('agent credential metadata broker', () => {
       // role as a role instead of a "key". Descriptive metadata: no value, no role
       // ARN, no external ID — the assertion below still proves no secret escapes.
       credentialKinds: { bedrock: 'bearer', kiro: 'bearer' },
+      credentialMetadata: {
+        bedrock: {
+          provider: 'bedrock',
+          kind: 'bearer',
+          bindingScope: 'space',
+          overrideStatus: 'none',
+          storedKeyInactive: false,
+        },
+        kiro: {
+          provider: 'kiro',
+          kind: 'bearer',
+          bindingScope: 'user',
+          overrideStatus: 'none',
+          storedKeyInactive: false,
+        },
+      },
     });
     expect(JSON.stringify(result)).not.toContain('secret:');
   });
@@ -91,9 +107,13 @@ describe('agent credential metadata broker', () => {
       roleArn: 'arn:aws:iam::111122223333:role/aidlc-bedrock-inference',
     });
     ssmMock.on(GetParametersCommand).callsFake((input) => ({
-      Parameters: (input.Names ?? [])
-        .filter((name) => name === '/app/dev/bedrock-bearer-token')
-        .map((Name) => ({ Name, Value: ROLE_VALUE })),
+      Parameters: (input.Names ?? []).flatMap((Name) => {
+        if (Name === '/app/dev/bedrock-bearer-token') return [{ Name, Value: ROLE_VALUE }];
+        if (Name === '/app/dev/users/u-1/agent-credentials/bedrock-bearer-token') {
+          return [{ Name, Value: 'personal-secret' }];
+        }
+        return [];
+      }),
     }));
 
     const result = await inspectAgentCredentialMetadata(
@@ -111,13 +131,30 @@ describe('agent credential metadata broker', () => {
         kiro: null,
       },
       credentialKinds: { bedrock: 'role', kiro: null },
+      credentialMetadata: {
+        bedrock: {
+          provider: 'bedrock',
+          kind: 'role',
+          bindingScope: 'platform',
+          overrideStatus: 'iam-role',
+          storedKeyInactive: true,
+        },
+        kiro: {
+          provider: 'kiro',
+          kind: null,
+          bindingScope: null,
+          overrideStatus: 'none',
+          storedKeyInactive: false,
+        },
+      },
     });
-    // The role ARN is tenant-identifying and no lower-privilege surface needs it,
-    // so the kind must be the ONLY thing the mode disclosure adds here.
+    // The role ARN, external ID, and stored personal key stay inside the
+    // metadata broker; the caller receives only enums, scopes, and booleans.
     expect(JSON.stringify(result)).not.toContain('aidlc-bedrock-inference');
+    expect(JSON.stringify(result)).not.toContain('personal-secret');
   });
 
-  it('rejects every action outside the metadata-only allowlist', async () => {
+  it('rejects every action outside the credential management allowlist', async () => {
     await expect(
       inspectAgentCredentialMetadata(
         { action: 'resolve-agent-credentials', grant: 'attacker-controlled' },

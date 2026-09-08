@@ -29,9 +29,17 @@ reaching an agent is always scoped and short-lived.
 Personal scope is bearer-only by design: that endpoint is gated on authentication alone, so any
 member could otherwise name an arbitrary role ARN for the platform to assume.
 
-Resolution is `personal > space > platform`, independently per provider. One scope holds one
-Bedrock value, so **saving a role at a scope replaces the bearer token stored there**. Both cards
-warn before that happens.
+Credential resolution is mode-aware:
+
+- **Kiro** is always API-key-only and uses `personal > space > platform`.
+- **Bedrock without an IAM role** uses the same `personal > space > platform` bearer-key precedence.
+- **Bedrock with IAM selected** uses the nearest role in `space > platform` order. A space role
+  overrides a platform role; a platform role overrides stored space and personal Bedrock keys.
+
+Covered bearer keys are ignored, not deleted: they remain encrypted in Parameter Store and become
+eligible again when the authoritative role is removed. Because one scope holds one Bedrock value,
+saving a role at that same scope still replaces the bearer token stored there; both cards warn
+before that replacement.
 
 ## Before you start
 

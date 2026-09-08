@@ -23,21 +23,22 @@ Day-to-day project access is _not_ managed here — it lives in each project's [
 
 Everything the agent runtime needs to run:
 
-- **Platform Agent Credentials** — fallback Bedrock and **Kiro API Key** values. Bedrock offers two modes: an **IAM role** (preferred — the platform stores only a role ARN and assumes it per invocation for short-lived credentials) or the deprecated **Bearer token**. A scope holds one or the other, so saving a role replaces a token stored there. Platform admins manage these parameters; a personal or space credential takes precedence. See [Bedrock credential modes](../getting-started/bedrock-credentials.md), [Credential hierarchy](#credential-hierarchy) and [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
+- **Platform Agent Credentials** — the platform Kiro fallback and the platform Bedrock mode. Bedrock offers an **IAM role** (preferred — the platform stores only a role ARN and assumes it per invocation for short-lived credentials) or the deprecated **Bearer token**. A platform IAM role is authoritative for every space without its own IAM role: stored personal and space Bedrock keys remain encrypted but inactive. A space IAM role overrides it; a space bearer key does not. Kiro retains normal key precedence. See [Bedrock credential modes](../getting-started/bedrock-credentials.md), [Credential hierarchy](#credential-hierarchy) and [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
 - **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models through a cross-Region inference profile id (e.g. `global.openai.gpt-5.6-sol`); a bare `openai.*` id is refused by the endpoint Codex calls. The chosen model must be available in the deployment Region. Projects can override these per-CLI in [Project Settings → Agent](projects.md#agent).
 - **Graph Enrichment** — a switch controlling whether the platform adds LLM-generated summaries to derived artifacts in the knowledge graph (`llm` or `off`). The setting takes effect for the _next_ intent, never mid-run; enrichment spend is metered and surfaced on each intent's Audit page.
 
 ### Credential hierarchy
 
-Bedrock and Kiro credentials are resolved independently with this precedence:
+Credential resolution is provider- and mode-specific:
 
 ```text
-personal > space > platform
+Kiro and bearer-only Bedrock: personal > space > platform
+Bedrock IAM roles:               space > platform (authoritative over covered keys)
 ```
 
-- Users manage personal credentials in **Account Settings**.
-- Space owners and admins manage shared credentials in **Space Settings → Agent**.
-- Platform admins manage fallback credentials in **Admin → Agents**.
+- Users manage personal API keys in **Account Settings**. Personal Bedrock keys are inactive while IAM applies to that space.
+- Space owners and admins manage shared keys or a space IAM role in **Space Settings → Agent**. A space role overrides the platform role.
+- Platform admins manage Kiro/Bedrock key fallbacks or select the platform Bedrock IAM role in **Admin → Agents**. A platform role overrides space and personal Bedrock keys but does not delete them.
 
 The APIs return configured state and the effective source, never secret values. When a user selects a CLI for draft AI composition, a Quorum discussion assist, or intent start, the backend resolves that user's effective credential and sends only an opaque binding to AgentCore. AgentCore reads the bound SecureString for each invocation rather than retaining secrets in the long-lived process environment.
 

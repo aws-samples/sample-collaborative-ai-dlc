@@ -33,11 +33,9 @@ export const inspectAgentCredentialMetadata = async (
         }),
       };
     case AGENT_CREDENTIAL_METADATA_ACTIONS.RESOLVE_EFFECTIVE_BINDINGS:
-      // Returns the effective binding per provider PLUS the kind of value each
-      // holds ('role' | 'bearer'). The kind is not a secret — the settings read
-      // path already reports bedrockMode to any authenticated caller — and it is
-      // what lets a UI name a credential correctly instead of calling an IAM role
-      // a "key". Still metadata only: no value, no role ARN, no external ID.
+      // Returns the effective binding per provider plus secret-free descriptive
+      // metadata: kind, binding scope, override reason, and whether a stored key
+      // is inactive. No value, role ARN, or external ID crosses this boundary.
       return await resolveEffectiveCredentialState(ssmClient, {
         base,
         projectId: event.projectId,

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
 import { intentsService } from '@/services/intents';
+import { agentsService, type EffectiveAgentCredential } from '@/services/agents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
@@ -9,6 +10,11 @@ import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurati
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
+import {
+  AGENT_CLI_METADATA,
+  AGENT_CREDENTIAL_SOURCE_LABELS,
+  credentialBadgeLabel,
+} from '@/lib/agentCli';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
 import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
@@ -96,6 +102,77 @@ export default function IntentView() {
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [reshapeOpen, setReshapeOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const selectedIntentStatus = detail?.intent.status ?? null;
+  const showsCurrentCredentialStatus = Boolean(
+    selectedIntentStatus &&
+    selectedIntentStatus !== 'DRAFT' &&
+    !TERMINAL_STATUSES.has(selectedIntentStatus),
+  );
+  const selectedIntentCli = showsCurrentCredentialStatus ? (detail?.intent.agentCli ?? null) : null;
+  const credentialLookupKey =
+    projectId && selectedIntentCli ? `${projectId}\0${selectedIntentCli}` : null;
+  const [effectiveCredentialLookup, setEffectiveCredentialLookup] = useState<{
+    key: string;
+    credential: EffectiveAgentCredential | null;
+  } | null>(null);
+  const effectiveCredential =
+    credentialLookupKey && effectiveCredentialLookup?.key === credentialLookupKey
+      ? effectiveCredentialLookup.credential
+      : null;
+  const effectiveCredentialLoaded =
+    credentialLookupKey === null || effectiveCredentialLookup?.key === credentialLookupKey;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId || !selectedIntentCli || !credentialLookupKey) return () => {};
+    const finishLookup = (credential: EffectiveAgentCredential | null) => {
+      if (!cancelled) setEffectiveCredentialLookup({ key: credentialLookupKey, credential });
+    };
+
+    agentsService
+      .getProjectCapabilities(projectId)
+      .then((capabilities) => {
+        if (cancelled) return;
+        const canonical = capabilities.effectiveCredentials?.find(
+          (credential) => credential.cli === selectedIntentCli,
+        );
+        if (canonical) {
+          finishLookup(canonical);
+          return;
+        }
+
+        // Mixed-version fallback: older APIs expose the same facts only on the
+        // runtime row/legacy maps. Unknown descriptive fields stay null rather
+        // than turning a cosmetic badge into an availability failure.
+        const metadata = AGENT_CLI_METADATA[selectedIntentCli];
+        const runtime = capabilities.runtimeClis?.find((cli) => cli.cli === selectedIntentCli);
+        const bindingScope =
+          runtime?.credentialBindingScope ??
+          runtime?.credentialSource ??
+          capabilities.credentialSources?.[metadata.credentialProvider] ??
+          null;
+        if (!bindingScope) {
+          finishLookup(null);
+          return;
+        }
+        finishLookup({
+          cli: selectedIntentCli,
+          provider: metadata.credentialProvider,
+          kind:
+            runtime?.credentialKind ??
+            capabilities.credentialKinds?.[metadata.credentialProvider] ??
+            null,
+          bindingScope,
+          overrideStatus: runtime?.credentialOverrideStatus ?? null,
+          storedKeyInactive: runtime?.storedKeyInactive ?? null,
+        });
+      })
+      .catch(() => finishLookup(null));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [credentialLookupKey, projectId, selectedIntentCli]);
 
   // A stage failure retries from the earliest failed stage, preserving all
   // completed upstream work. Failures before any stage row exists (init-ws,
@@ -244,6 +321,44 @@ export default function IntentView() {
         : null
     : null;
   const failureMessage = intent.failure?.message ?? intent.failureReason;
+  const credentialScopeMatches =
+    Boolean(intent.credentialSource) &&
+    effectiveCredential?.bindingScope === intent.credentialSource;
+  // Kiro is API-key-only by contract. Bedrock's kind comes from the canonical
+  // effective read and is used only when it still names this run's pinned scope;
+  // otherwise the UI must not mislabel a changed binding.
+  const intentCredentialKind = !showsCurrentCredentialStatus
+    ? null
+    : intent.agentCli === 'kiro' && intent.credentialSource
+      ? ('bearer' as const)
+      : credentialScopeMatches
+        ? effectiveCredential?.kind
+        : null;
+  const intentCredentialLabel = intent.credentialSource
+    ? credentialBadgeLabel(intent.credentialSource, intentCredentialKind)
+    : null;
+  const currentCredentialLabel =
+    effectiveCredential?.bindingScope && effectiveCredential.kind
+      ? credentialBadgeLabel(effectiveCredential.bindingScope, effectiveCredential.kind)
+      : null;
+  const credentialStatusDescription = !intent.credentialSource
+    ? null
+    : !showsCurrentCredentialStatus
+      ? `This historical run was controlled by the ${intentCredentialLabel} scope. Its credential mode is intentionally not inferred from current settings.`
+      : effectiveCredential?.bindingScope && !credentialScopeMatches
+        ? `This run remains pinned to its ${intentCredentialLabel}. Your current ${
+            intent.agentCli ? AGENT_CLI_METADATA[intent.agentCli].label : 'agent'
+          } credential is controlled by ${
+            currentCredentialLabel ??
+            AGENT_CREDENTIAL_SOURCE_LABELS[effectiveCredential.bindingScope]
+          }; active runs never silently change scope.`
+        : intentCredentialKind === 'role'
+          ? intent.status === 'WAITING'
+            ? `Paused intents keep no temporary AWS credentials. Fresh short-lived credentials are issued from the ${intentCredentialLabel} when this intent resumes.`
+            : `Short-lived credentials are refreshed during long stages. If this intent pauses, fresh credentials are issued from the ${intentCredentialLabel} when it resumes.`
+          : intentCredentialKind === 'bearer'
+            ? `The API key is controlled by the ${intentCredentialLabel}. Paused intents re-read this binding when they resume; the secret is never shown here.`
+            : `This run is pinned to the ${intentCredentialLabel} scope. Credential type is unavailable from this deployment, so the UI does not guess.`;
 
   return (
     <div className="space-y-6">
@@ -309,6 +424,28 @@ export default function IntentView() {
       <IntentPhaseBreadcrumb
         onOpenScopeDefinition={canReshape ? () => setReshapeOpen(true) : undefined}
       />
+
+      {effectiveCredentialLoaded && intentCredentialLabel && credentialStatusDescription && (
+        <div
+          className="flex items-start gap-2.5 rounded-md border border-border bg-muted/30 px-3 py-2.5"
+          data-testid="intent-credential-status"
+        >
+          <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs font-medium text-foreground">
+                {showsCurrentCredentialStatus
+                  ? 'Current effective credential'
+                  : 'Credential scope at execution'}
+              </p>
+              <Badge variant="outline" className="text-[10px]">
+                {intentCredentialLabel}
+              </Badge>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">{credentialStatusDescription}</p>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="rounded border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">

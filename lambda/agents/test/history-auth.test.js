@@ -4,7 +4,7 @@ import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
-import { PutParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
+import { GetParameterCommand, PutParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -60,13 +60,19 @@ beforeEach(async () => {
   agentcoreMock.reset();
   ssmMock.reset();
   ssmMock.on(PutParameterCommand).resolves({});
-  credentialMetadataHandler = () => ({
-    ok: true,
-    bindings: {
-      bedrock: { provider: 'bedrock', source: 'platform' },
-      kiro: { provider: 'kiro', source: 'platform' },
-    },
-  });
+  credentialMetadataHandler = (request) =>
+    request.action === 'read-agent-credential-scope-status'
+      ? {
+          ok: true,
+          status: { bedrockBearerTokenSet: false, kiroApiKeySet: false, bedrockMode: null },
+        }
+      : {
+          ok: true,
+          bindings: {
+            bedrock: { provider: 'bedrock', source: 'platform' },
+            kiro: { provider: 'kiro', source: 'platform' },
+          },
+        };
   lambdaMock.on(InvokeCommand).callsFake((input) => {
     const request = JSON.parse(Buffer.from(input.Payload).toString());
     return { Payload: Buffer.from(JSON.stringify(credentialMetadataHandler(request))) };
@@ -136,6 +142,22 @@ const seedProject = async (memberId, { executionId = `exec-${randomUUID()}` } = 
     .to('t')
     .next();
   return { projectId, sprintId, executionId, executionArn };
+};
+
+const addProjectMember = async (projectId, memberId, role) => {
+  await g.addV('User').property('id', memberId).next();
+  await g
+    .V()
+    .has('Project', 'id', projectId)
+    .as('p')
+    .V()
+    .has('User', 'id', memberId)
+    .as('u')
+    .addE('HAS_MEMBER')
+    .from_('p')
+    .to('u')
+    .property('role', role)
+    .next();
 };
 
 describe('legacy project agent history authorization', () => {
@@ -232,6 +254,40 @@ describe('project agent capabilities', () => {
       // The kind is descriptive, so it must degrade to null and leave capabilities
       // working — never throw and 500 a route over a badge label.
       credentialKinds: { bedrock: null, kiro: null },
+      effectiveCredentials: [
+        {
+          cli: 'kiro',
+          provider: 'kiro',
+          kind: null,
+          bindingScope: 'space',
+          overrideStatus: null,
+          storedKeyInactive: null,
+        },
+        {
+          cli: 'claude',
+          provider: 'bedrock',
+          kind: null,
+          bindingScope: 'space',
+          overrideStatus: null,
+          storedKeyInactive: null,
+        },
+        {
+          cli: 'opencode',
+          provider: 'bedrock',
+          kind: null,
+          bindingScope: 'space',
+          overrideStatus: null,
+          storedKeyInactive: null,
+        },
+        {
+          cli: 'codex',
+          provider: 'bedrock',
+          kind: null,
+          bindingScope: 'space',
+          overrideStatus: null,
+          storedKeyInactive: null,
+        },
+      ],
     });
     const payload = JSON.parse(
       Buffer.from(
@@ -264,6 +320,22 @@ describe('project agent capabilities', () => {
         kiro: { provider: 'kiro', source: 'platform' },
       },
       credentialKinds: { bedrock: 'role', kiro: 'bearer' },
+      credentialMetadata: {
+        bedrock: {
+          provider: 'bedrock',
+          kind: 'role',
+          bindingScope: 'platform',
+          overrideStatus: 'iam-role',
+          storedKeyInactive: true,
+        },
+        kiro: {
+          provider: 'kiro',
+          kind: 'bearer',
+          bindingScope: 'platform',
+          overrideStatus: 'none',
+          storedKeyInactive: false,
+        },
+      },
     });
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: {
@@ -293,11 +365,84 @@ describe('project agent capabilities', () => {
     const body = JSON.parse(response.body);
     expect(body.credentialKinds).toEqual({ bedrock: 'role', kiro: 'bearer' });
     // Per-CLI, derived from the provider map: the three Bedrock CLIs report the
-    // role, Kiro reports its key. This is what makes the compose badge read
-    // "Platform IAM role" on Claude Code and "Platform key" on Kiro.
+    // role and its inactive key state; Kiro reports its independent API key.
+    expect(body.effectiveCredentials).toEqual([
+      {
+        cli: 'kiro',
+        provider: 'kiro',
+        kind: 'bearer',
+        bindingScope: 'platform',
+        overrideStatus: 'none',
+        storedKeyInactive: false,
+      },
+      {
+        cli: 'claude',
+        provider: 'bedrock',
+        kind: 'role',
+        bindingScope: 'platform',
+        overrideStatus: 'iam-role',
+        storedKeyInactive: true,
+      },
+      {
+        cli: 'opencode',
+        provider: 'bedrock',
+        kind: 'role',
+        bindingScope: 'platform',
+        overrideStatus: 'iam-role',
+        storedKeyInactive: true,
+      },
+      {
+        cli: 'codex',
+        provider: 'bedrock',
+        kind: 'role',
+        bindingScope: 'platform',
+        overrideStatus: 'iam-role',
+        storedKeyInactive: true,
+      },
+    ]);
     expect(
-      Object.fromEntries(body.runtimeClis.map((cli) => [cli.cli, cli.credentialKind])),
-    ).toEqual({ kiro: 'bearer', claude: 'role', opencode: 'role', codex: 'role' });
+      Object.fromEntries(
+        body.runtimeClis.map((cli) => [
+          cli.cli,
+          {
+            provider: cli.credentialProvider,
+            kind: cli.credentialKind,
+            scope: cli.credentialBindingScope,
+            override: cli.credentialOverrideStatus,
+            inactive: cli.storedKeyInactive,
+          },
+        ]),
+      ),
+    ).toEqual({
+      kiro: {
+        provider: 'kiro',
+        kind: 'bearer',
+        scope: 'platform',
+        override: 'none',
+        inactive: false,
+      },
+      claude: {
+        provider: 'bedrock',
+        kind: 'role',
+        scope: 'platform',
+        override: 'iam-role',
+        inactive: true,
+      },
+      opencode: {
+        provider: 'bedrock',
+        kind: 'role',
+        scope: 'platform',
+        override: 'iam-role',
+        inactive: true,
+      },
+      codex: {
+        provider: 'bedrock',
+        kind: 'role',
+        scope: 'platform',
+        override: 'iam-role',
+        inactive: true,
+      },
+    });
 
     const payload = JSON.parse(
       Buffer.from(
@@ -410,6 +555,82 @@ describe('direct agent history authorization', () => {
   });
 });
 
+// specs/bedrock-iam-role-credential-mode — req-external-id-lifecycle,
+// req-same-and-cross-account. Binding detail is tenant-identifying: space owners
+// and admins may edit the binding and need its external ID for the trust policy;
+// members and non-members must not trigger the metadata read at all.
+describe('space credential binding-detail authorization', () => {
+  it('returns space external-ID detail only to owners and admins', async () => {
+    const owner = `u-${randomUUID()}`;
+    const admin = `u-${randomUUID()}`;
+    const member = `u-${randomUUID()}`;
+    const outsider = `u-${randomUUID()}`;
+    const { projectId } = await seedProject(owner);
+    await addProjectMember(projectId, admin, 'admin');
+    await addProjectMember(projectId, member, 'member');
+
+    const spaceRoleArn = 'arn:aws:iam::444455556666:role/aidlc-bedrock-space';
+    const spaceExternalId = 'space-external-id-visible-to-editors';
+    const platformRoleArn = 'arn:aws:iam::777788889999:role/aidlc-bedrock-platform';
+    const platformExternalId = 'platform-external-id-never-visible-to-space-editors';
+    credentialMetadataHandler = (request) => ({
+      ok: true,
+      status: {
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: 'role',
+        bedrockRoleArn: request.source === 'space' ? spaceRoleArn : platformRoleArn,
+        bedrockExternalIdSet: true,
+        bedrockExternalId: request.source === 'space' ? spaceExternalId : platformExternalId,
+      },
+    });
+    ssmMock
+      .on(GetParameterCommand)
+      .rejects(Object.assign(new Error('missing'), { name: 'ParameterNotFound' }));
+
+    for (const sub of [owner, admin]) {
+      const response = await handler(
+        event({
+          path: `/projects/${projectId}/agent-credentials`,
+          projectId,
+          sub,
+        }),
+      );
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toMatchObject({
+        bedrockMode: 'role',
+        bedrockRoleArn: spaceRoleArn,
+        bedrockExternalIdSet: true,
+        bedrockExternalId: spaceExternalId,
+        platformFallback: {
+          bedrockMode: 'role',
+          bedrockExternalIdSet: true,
+        },
+      });
+      expect(body.platformFallback.bedrockRoleArn).toBeUndefined();
+      expect(body.platformFallback.bedrockExternalId).toBeUndefined();
+      expect(response.body).not.toContain(platformRoleArn);
+      expect(response.body).not.toContain(platformExternalId);
+    }
+
+    const brokerCallsBeforeDeniedReads = lambdaMock.commandCalls(InvokeCommand).length;
+    for (const sub of [member, outsider]) {
+      const response = await handler(
+        event({
+          path: `/projects/${projectId}/agent-credentials`,
+          projectId,
+          sub,
+        }),
+      );
+      expect(response.statusCode).toBe(403);
+      expect(response.body).not.toContain(spaceRoleArn);
+      expect(response.body).not.toContain(spaceExternalId);
+    }
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(brokerCallsBeforeDeniedReads);
+  });
+});
+
 // specs/bedrock-iam-role-credential-mode — req-role-credential-mode,
 // req-single-parameter-encoding. The space scope is where a role binding is
 // actually expected to be set, so its write path needs the same validation the
@@ -467,5 +688,29 @@ describe('space agent credentials write validation', () => {
     expect(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input.Value).toBe(
       'ABSKQmVkcm9jaw==',
     );
+  });
+
+  it('rejects a space bearer write while the platform IAM role is authoritative', async () => {
+    const member = `u-${randomUUID()}`;
+    const { projectId } = await seedProject(member);
+    credentialMetadataHandler = (request) => ({
+      ok: true,
+      status: {
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: request.source === 'platform' ? 'role' : null,
+      },
+    });
+
+    const response = await handler(
+      putEvent(projectId, member, {
+        bedrockMode: 'bearer',
+        bedrockBearerToken: 'ABSKQmVkcm9jaw==',
+      }),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).code).toBe('BEDROCK_IAM_MODE_ENFORCED');
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
   });
 });

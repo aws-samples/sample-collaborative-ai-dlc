@@ -64,6 +64,12 @@ const repair = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
+const getProjectCapabilities = vi.fn();
+vi.mock('@/services/agents', () => ({
+  agentsService: {
+    getProjectCapabilities: (...a: unknown[]) => getProjectCapabilities(...a),
+  },
+}));
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -159,6 +165,10 @@ describe('IntentView', () => {
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    getProjectCapabilities.mockReset().mockResolvedValue({
+      available: [],
+      effectiveCredentials: [],
+    });
     yjsMock.docs.clear();
   });
 
@@ -394,7 +404,7 @@ describe('IntentView', () => {
     expect(screen.getByText('Polyglot')).toBeInTheDocument();
     expect(screen.getByText('Claude Code')).toBeInTheDocument();
     expect(screen.getByText(/us\.anthropic\.claude-sonnet-4-6/)).toBeInTheDocument();
-    expect(screen.getByText('Space')).toBeInTheDocument();
+    expect(screen.getAllByText('Space')).toHaveLength(2);
     expect(screen.queryByText('Space key')).not.toBeInTheDocument();
     const sourceLabel = screen.getByText('Source: Issue #3');
     expect(sourceLabel).toBeInTheDocument();
@@ -415,6 +425,76 @@ describe('IntentView', () => {
       .find((element) => element.classList.contains('text-agent-success'));
     expect(passedBadge).toBeDefined();
     expect(passedBadge?.querySelector('svg')).toBeInTheDocument();
+  });
+
+  it('shows current IAM-role status for an active intent without rewriting captured configuration', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: ['claude'],
+      effectiveCredentials: [
+        {
+          cli: 'claude',
+          provider: 'bedrock',
+          kind: 'role',
+          bindingScope: 'space',
+          overrideStatus: 'iam-role',
+          storedKeyInactive: true,
+        },
+      ],
+    });
+    get.mockResolvedValue(
+      baseDetail({ status: 'WAITING', agentCli: 'claude', credentialSource: 'space' }),
+    );
+
+    renderAt();
+
+    const status = await screen.findByTestId('intent-credential-status');
+    expect(status).toHaveTextContent('Current effective credential');
+    expect(status).toHaveTextContent('Space IAM role');
+    expect(status).toHaveTextContent(/fresh short-lived credentials/i);
+
+    await userEvent.click(screen.getByLabelText('Intent actions'));
+    await userEvent.click(screen.getByText('Intent configuration'));
+    expect(
+      await screen.findByRole('heading', { name: 'Intent configuration' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Space')).toBeInTheDocument();
+  });
+
+  it('keeps a completed intent scope-only when the same-scope mode changes later', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: ['claude'],
+      effectiveCredentials: [
+        {
+          cli: 'claude',
+          provider: 'bedrock',
+          kind: 'role',
+          bindingScope: 'space',
+          overrideStatus: 'none',
+          storedKeyInactive: false,
+        },
+      ],
+    });
+    get.mockResolvedValue(
+      baseDetail({ status: 'SUCCEEDED', agentCli: 'claude', credentialSource: 'space' }),
+    );
+
+    renderAt();
+
+    const status = await screen.findByTestId('intent-credential-status');
+    expect(status).toHaveTextContent('Credential scope at execution');
+    expect(status).toHaveTextContent('Space');
+    expect(status).toHaveTextContent(/not inferred from current settings/i);
+    expect(status).not.toHaveTextContent('IAM role');
+    expect(status).not.toHaveTextContent(/fresh role credentials/i);
+    expect(getProjectCapabilities).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByLabelText('Intent actions'));
+    await userEvent.click(screen.getByText('Intent configuration'));
+    expect(
+      await screen.findByRole('heading', { name: 'Intent configuration' }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('Space')).toHaveLength(2);
+    expect(screen.queryByText('Space IAM role')).not.toBeInTheDocument();
   });
 
   it('preserves Jira source keys in the intent configuration dialog', async () => {

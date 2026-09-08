@@ -11,6 +11,9 @@ interface Props {
   id: string;
   label: string;
   isSet: boolean;
+  /** Marks a stored or empty slot as intentionally unavailable without treating
+   *  it as a missing required credential. */
+  inactive?: boolean;
   notSetLabel?: string;
   value: string;
   onChange: (value: string) => void;
@@ -29,6 +32,7 @@ export function SecretField({
   id,
   label,
   isSet,
+  inactive = false,
   notSetLabel = 'Not set',
   value,
   onChange,
@@ -44,7 +48,11 @@ export function SecretField({
       <div className="flex items-center justify-between gap-2">
         <label htmlFor={id} className="text-xs font-medium text-foreground flex items-center gap-2">
           {label}
-          <ConfigStatusBadge ok={isSet} okLabel="Set" notOkLabel={notSetLabel} />
+          <ConfigStatusBadge
+            ok={isSet && !inactive}
+            okLabel="Set"
+            notOkLabel={inactive ? 'Inactive' : notSetLabel}
+          />
         </label>
         {isSet && onClear && (
           <button

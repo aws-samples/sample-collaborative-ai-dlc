@@ -42,8 +42,8 @@ import {
 } from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
+  AGENT_CLI_PROVIDER,
   AGENT_CREDENTIAL_PROVIDERS,
-  credentialProviderForCli,
   credentialSourcesFromBindings,
   prepareBedrockBindingWrite,
   readBedrockExternalId,
@@ -163,6 +163,38 @@ const rejectBedrockBindingOnPreflight = async ({ prepared, projectId = null }) =
     // have the value, and it is stable across retries (dec-external-id-storage).
     bedrockRoleArn: prepared.roleArn,
     bedrockExternalId: prepared.externalId,
+  };
+};
+
+const touchesBedrockMode = (update = {}) =>
+  typeof update.bedrockBearerToken === 'string' || update.bedrockMode !== undefined;
+
+const validateCredentialWriteForScope = async ({ source, projectId = null, update }) => {
+  // Reject malformed bindings and Kiro role input before making a broker call.
+  // bedrockMode itself is evaluated after loading the current mode so a no-op
+  // re-selection of an existing role is not mistaken for a missing binding.
+  const structuralUpdate = { ...update };
+  delete structuralUpdate.bedrockMode;
+  const localInvalid = validateCredentialScopeUpdate({ source, update: structuralUpdate });
+  if (localInvalid || !touchesBedrockMode(update)) {
+    return { invalid: localInvalid, current: null, inherited: null };
+  }
+
+  const [current, inherited] = await Promise.all([
+    readCredentialScopeStatusViaBroker({ source, projectId }),
+    source === 'space'
+      ? readCredentialScopeStatusViaBroker({ source: 'platform' })
+      : Promise.resolve(null),
+  ]);
+  return {
+    invalid: validateCredentialScopeUpdate({
+      source,
+      update,
+      currentBedrockMode: current.bedrockMode,
+      inheritedBedrockMode: inherited?.bedrockMode ?? null,
+    }),
+    current,
+    inherited,
   };
 };
 
@@ -539,8 +571,18 @@ export const handler = async (event) => {
         } catch {
           return response(400, { error: 'Invalid JSON body' });
         }
-        const invalid = validateCredentialScopeUpdate({ source: 'space', update: input });
-        if (invalid) return response(400, invalid);
+        let modeContext;
+        try {
+          modeContext = await validateCredentialWriteForScope({
+            source: 'space',
+            projectId,
+            update: input,
+          });
+        } catch (error) {
+          console.error('[space agent credentials] mode validation failed:', error.message);
+          return response(500, { error: 'Failed to validate space agent credential mode' });
+        }
+        if (modeContext.invalid) return response(400, modeContext.invalid);
         try {
           // The server owns the external ID: it decides whether one is needed and
           // attaches its own value, so the stored binding is always canonical.
@@ -556,6 +598,8 @@ export const handler = async (event) => {
             base: credentialBase,
             source: 'space',
             projectId,
+            // One existing parameter stores either the API key or role binding.
+            // Saving the role intentionally replaces a same-scope key.
             update: prepared.update,
           });
           return response(200, {
@@ -579,18 +623,24 @@ export const handler = async (event) => {
     }
 
     // GET /projects/{projectId}/agent-capabilities — installed runtime CLIs
-    // intersected with this member's effective user > space > platform keys.
+    // intersected with this member's effective credentials. Kiro and bearer-only
+    // Bedrock use user > space > platform; a Bedrock role at space/platform scope
+    // is authoritative over covered bearer keys.
     if (projectId && httpMethod === 'GET' && path.endsWith('/agent-capabilities')) {
       const access = await projectRuntimeAccess(event, projectId);
       if (access.denied) return response(access.statusCode, { error: access.error });
       let credentialBindings;
       let credentialKinds;
+      let credentialMetadata;
       try {
-        ({ bindings: credentialBindings, credentialKinds } =
-          await resolveEffectiveCredentialMetadataViaBroker({
-            projectId,
-            userId: credentialUserId,
-          }));
+        ({
+          bindings: credentialBindings,
+          credentialKinds,
+          credentialMetadata,
+        } = await resolveEffectiveCredentialMetadataViaBroker({
+          projectId,
+          userId: credentialUserId,
+        }));
       } catch (error) {
         console.error('[effective agent credentials] resolve failed:', error.message);
         return response(500, { error: 'Failed to resolve agent credentials' });
@@ -611,15 +661,39 @@ export const handler = async (event) => {
         fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
       ]);
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
-      // Both shapes are populated deliberately. The per-CLI field is what a card
-      // reads first; the top-level map is the fallback when the runtime probe
-      // returned no CLI list. Each is DERIVED from the same provider map, so they
+      // Canonical, secret-free effective-credential read contract. It is emitted
+      // independently of the runtime probe so the UI can still explain mode and
+      // precedence when the runtime is unavailable. Role ARN, external ID, and
+      // all credential values are deliberately absent.
+      const effectiveCredentials = Object.entries(AGENT_CLI_PROVIDER).map(([cli, provider]) => {
+        const metadata = credentialMetadata[provider];
+        return {
+          cli,
+          provider,
+          kind: metadata?.kind ?? credentialKinds[provider] ?? null,
+          bindingScope: metadata?.bindingScope ?? credentialSources[provider] ?? null,
+          overrideStatus: metadata?.overrideStatus ?? null,
+          storedKeyInactive: metadata?.storedKeyInactive ?? null,
+        };
+      });
+      const effectiveByCli = Object.fromEntries(
+        effectiveCredentials.map((credential) => [credential.cli, credential]),
+      );
+      // Keep the legacy flattened fields while adding the complete descriptor.
+      // Every field is derived from the same provider metadata, so the two views
       // cannot disagree.
-      const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
-        ...cli,
-        credentialSource: credentialSources[credentialProviderForCli(cli.cli)] ?? null,
-        credentialKind: credentialKinds[credentialProviderForCli(cli.cli)] ?? null,
-      }));
+      const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => {
+        const effective = effectiveByCli[cli.cli] ?? null;
+        return {
+          ...cli,
+          credentialProvider: effective?.provider ?? null,
+          credentialSource: effective?.bindingScope ?? null,
+          credentialBindingScope: effective?.bindingScope ?? null,
+          credentialKind: effective?.kind ?? null,
+          credentialOverrideStatus: effective?.overrideStatus ?? null,
+          storedKeyInactive: effective?.storedKeyInactive ?? null,
+        };
+      });
       const available = runtimeClis.filter((cli) => cli.available).map((cli) => cli.cli);
       if (!withModels) {
         return response(200, {
@@ -628,6 +702,7 @@ export const handler = async (event) => {
           runtimeClis,
           credentialSources,
           credentialKinds,
+          effectiveCredentials,
         });
       }
       const opencodeModels = claudeModels.map((model) => ({
@@ -640,6 +715,7 @@ export const handler = async (event) => {
         runtimeClis,
         credentialSources,
         credentialKinds,
+        effectiveCredentials,
         models: {
           claude: claudeModels,
           opencode: opencodeModels,
@@ -798,44 +874,58 @@ export const handler = async (event) => {
       const denied = requirePlatformAdmin(event);
       if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-      const input = JSON.parse(body || '{}');
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
       const errors = [];
       // Set when a Bedrock role binding is written, so the response can hand the
       // operator the external ID they must paste into the trust policy.
       let bedrockBinding = null;
+      let modeContext;
+      try {
+        modeContext = await validateCredentialWriteForScope({ source: 'platform', update: input });
+      } catch (error) {
+        console.error('[settings] credential mode validation failed:', error.message);
+        return response(500, { error: 'Failed to validate platform agent credential mode' });
+      }
+      if (modeContext.invalid) return response(400, modeContext.invalid);
 
-      if (typeof input.bedrockBearerToken === 'string') {
+      if (touchesBedrockMode(input)) {
         // A role-shaped value must parse before it is stored: validation lives on
         // the write path so a malformed binding can never reach a stage
         // (specs/bedrock-iam-role-credential-mode: req-single-parameter-encoding).
-        const invalid = validateCredentialScopeUpdate({ source: 'platform', update: input });
-        if (invalid) return response(400, invalid);
         try {
           bedrockBinding = await prepareBedrockWrite({
             base: prefix,
             source: 'platform',
             update: input,
           });
+          const rejected = await rejectBedrockBindingOnPreflight({ prepared: bedrockBinding });
+          if (rejected) return response(400, rejected);
         } catch (err) {
-          console.error('[settings] Failed to prepare Bedrock binding:', err.message);
-          return response(500, { error: 'Failed to prepare the Bedrock credential binding' });
+          console.error('[settings] Failed to prepare Bedrock mode transition:', err.message);
+          return response(500, { error: 'Failed to prepare the Bedrock credential mode change' });
         }
-        const rejected = await rejectBedrockBindingOnPreflight({ prepared: bedrockBinding });
-        if (rejected) return response(400, rejected);
-        // Empty string clears the token (stored as literal "placeholder" sentinel)
-        const value = bedrockBinding.update.bedrockBearerToken.trim() || 'placeholder';
-        try {
-          await ssm.send(
-            new PutParameterCommand({
-              Name: `${prefix}/bedrock-bearer-token`,
-              Value: value,
-              Type: 'SecureString',
-              Overwrite: true,
-            }),
-          );
-        } catch (err) {
-          console.error('[settings] Failed to write bearer token:', err.message);
-          errors.push('bedrockBearerToken: ' + err.message);
+        if (typeof bedrockBinding.update.bedrockBearerToken === 'string') {
+          // The existing parameter stores either the role or API key. An empty
+          // value clears it through the established platform placeholder sentinel.
+          const value = bedrockBinding.update.bedrockBearerToken.trim() || 'placeholder';
+          try {
+            await ssm.send(
+              new PutParameterCommand({
+                Name: `${prefix}/bedrock-bearer-token`,
+                Value: value,
+                Type: 'SecureString',
+                Overwrite: true,
+              }),
+            );
+          } catch (err) {
+            console.error('[settings] Failed to write Bedrock credential:', err.message);
+            errors.push('bedrockBearerToken: ' + err.message);
+          }
         }
       }
 

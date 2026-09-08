@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+const getSettings = vi.fn();
 const getPersonalCredentials = vi.fn();
 const updatePersonalCredentials = vi.fn();
 const getProjectCredentials = vi.fn();
@@ -9,6 +10,7 @@ const updateProjectCredentials = vi.fn();
 
 vi.mock('@/services/agents', () => ({
   agentsService: {
+    getSettings: (...args: unknown[]) => getSettings(...args),
     getPersonalCredentials: (...args: unknown[]) => getPersonalCredentials(...args),
     updatePersonalCredentials: (...args: unknown[]) => updatePersonalCredentials(...args),
     getProjectCredentials: (...args: unknown[]) => getProjectCredentials(...args),
@@ -50,6 +52,11 @@ const deferred = <T,>() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getSettings.mockResolvedValue({
+    bedrockBearerTokenSet: false,
+    kiroApiKeySet: false,
+    bedrockMode: null,
+  });
   getPersonalCredentials.mockResolvedValue({
     bedrockBearerTokenSet: false,
     kiroApiKeySet: false,
@@ -71,7 +78,7 @@ describe('AgentCredentialScopeCard', () => {
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="personal" />);
 
-    const token = await screen.findByLabelText(/Bedrock Bearer Token/);
+    const token = await screen.findByLabelText(/Amazon Bedrock API Key/);
     expect(token).toHaveValue('');
     await user.type(token, 'personal-token');
     await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
@@ -84,12 +91,26 @@ describe('AgentCredentialScopeCard', () => {
     expect(getPersonalCredentials).toHaveBeenCalledTimes(2);
   });
 
-  it('shows platform inheritance and writes credentials to the requested space', async () => {
+  it('shows authoritative platform IAM status and writes credentials to the requested space', async () => {
+    getProjectCredentials.mockResolvedValueOnce({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      bedrockMode: null,
+      platformFallback: {
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: 'role',
+      },
+    });
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
 
-    expect(await screen.findByText(/A platform fallback is available/)).toBeInTheDocument();
-    expect(screen.getByText(/No platform fallback is set/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /A platform IAM role is active and overrides stored personal and space Bedrock keys/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/No platform Kiro fallback is set/)).toBeInTheDocument();
 
     await user.type(screen.getByLabelText(/Kiro API Key/), 'space-key');
     await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
@@ -129,7 +150,7 @@ describe('AgentCredentialScopeCard', () => {
 
     rerender(<AgentCredentialScopeCard scope="space" projectId="space-b" />);
 
-    const bedrockMethod = await screen.findByLabelText('IAM role');
+    const bedrockMethod = await screen.findByLabelText('IAM Role');
     const kiro = screen.getByLabelText(/Kiro API Key/);
     // space-b has no Bedrock binding, so its card opens on the recommended method.
     expect(bedrockMethod).toBeChecked();
@@ -216,10 +237,15 @@ describe('AgentCredentialScopeCard bedrock role mode', () => {
     expect(await screen.findByText('1 provider configured')).toBeInTheDocument();
     expect(screen.getByText(ROLE_ARN)).toBeInTheDocument();
     expect(screen.getByText('Recommended')).toBeInTheDocument();
-    // The bearer method is still offered, marked deprecated, so existing bearer
-    // deployments keep working — but its input is not rendered while role is chosen.
+    expect(screen.getByText('Amazon Bedrock credential mode')).toBeInTheDocument();
+    expect(screen.getByText(/IAM Role is available only for Amazon Bedrock/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/role trusts only the credential broker.*this AWS account or another/),
+    ).toBeInTheDocument();
+    // The incompatible key control remains visible instead of disappearing,
+    // so operators can tell that IAM—not missing data—disabled it.
     expect(screen.getByText('Deprecated')).toBeInTheDocument();
-    expect(screen.queryByLabelText(/Bearer token value/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Amazon Bedrock API Key \(inactive\)/)).toBeDisabled();
   });
 
   it('starts on the method the scope already uses and shows only its input', async () => {
@@ -233,14 +259,12 @@ describe('AgentCredentialScopeCard bedrock role mode', () => {
     render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
 
     // The form must describe the STORED state rather than the recommended default.
-    expect(await screen.findByLabelText('Bearer token')).toBeChecked();
-    expect(screen.getByLabelText(/Bearer token value/)).toBeInTheDocument();
+    expect(await screen.findByLabelText('API Key')).toBeChecked();
+    expect(screen.getByLabelText(/Amazon Bedrock API Key/)).toBeEnabled();
     expect(screen.queryByLabelText('Role ARN')).not.toBeInTheDocument();
   });
 
-  it('warns that switching method replaces the stored binding', async () => {
-    // One SSM parameter holds the Bedrock value, so this is a replacement rather
-    // than an addition — said plainly rather than discovered after saving.
+  it('explains that switching to IAM replaces the same-scope API key', async () => {
     getProjectCredentials.mockResolvedValue({
       bedrockBearerTokenSet: true,
       kiroApiKeySet: false,
@@ -249,12 +273,66 @@ describe('AgentCredentialScopeCard bedrock role mode', () => {
     });
 
     render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
-    await userEvent.setup().click(await screen.findByLabelText('IAM role'));
+    await userEvent.setup().click(await screen.findByLabelText('IAM Role'));
 
-    expect(screen.getByText(/Saving replaces the bearer token/)).toBeInTheDocument();
+    expect(screen.getByText(/replaces the API key at this scope/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Amazon Bedrock API Key \(inactive\)/)).toBeDisabled();
+    expect(screen.getByLabelText(/Kiro API Key/)).toBeEnabled();
+    // A switch into IAM still requires the role ARN, so mode selection alone is
+    // not a valid save in this direction.
+    expect(screen.getByRole('button', { name: 'Save Credentials' })).toBeDisabled();
   });
 
-  it('sends only the role ARN, never an external ID', async () => {
+  it('requires a replacement key when switching from IAM to API Key mode', async () => {
+    getProjectCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      bedrockMode: 'role',
+      bedrockRoleArn: ROLE_ARN,
+      platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+    });
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
+
+    const saveButton = await screen.findByRole('button', { name: 'Save Credentials' });
+    await user.click(screen.getByLabelText('API Key'));
+
+    expect(screen.getByText(/replaces the IAM role; enter the new key/)).toBeInTheDocument();
+    expect(saveButton).toBeDisabled();
+    await user.type(screen.getByLabelText(/Amazon Bedrock API Key/), 'replacement-token');
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    await waitFor(() =>
+      expect(updateProjectCredentials).toHaveBeenCalledWith('p-1', {
+        bedrockMode: 'bearer',
+        bedrockBearerToken: 'replacement-token',
+      }),
+    );
+  });
+
+  it('sends bearer mode with a replacement token', async () => {
+    getProjectCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: true,
+      kiroApiKeySet: false,
+      bedrockMode: 'bearer',
+      platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+    });
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
+
+    await user.type(await screen.findByLabelText(/Amazon Bedrock API Key/), 'replacement-token');
+    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+
+    await waitFor(() =>
+      expect(updateProjectCredentials).toHaveBeenCalledWith('p-1', {
+        bedrockMode: 'bearer',
+        bedrockBearerToken: 'replacement-token',
+      }),
+    );
+  });
+
+  it('sends the role ARN and selected mode, never an external ID', async () => {
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
 
@@ -265,6 +343,7 @@ describe('AgentCredentialScopeCard bedrock role mode', () => {
     // holds is a property of the value. The external ID is the server's to generate.
     await waitFor(() =>
       expect(updateProjectCredentials).toHaveBeenCalledWith('p-1', {
+        bedrockMode: 'role',
         bedrockBearerToken: JSON.stringify({ roleArn: ROLE_ARN }),
       }),
     );
@@ -346,30 +425,155 @@ describe('AgentCredentialScopeCard bedrock role mode', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('offers exactly one Bedrock input at a time', async () => {
+  it('keeps the Bedrock key visible but disabled while IAM is selected', async () => {
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
 
-    // A scope stores ONE Bedrock value in one parameter, so the radio makes the two
-    // methods mutually exclusive by construction rather than by validation.
     expect(await screen.findByLabelText('Role ARN')).toBeInTheDocument();
-    expect(screen.queryByLabelText(/Bearer token value/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Amazon Bedrock API Key \(inactive\)/)).toBeDisabled();
 
-    await user.click(screen.getByLabelText('IAM role'));
-    expect(screen.getByLabelText('Role ARN')).toBeInTheDocument();
-
-    await user.click(screen.getByLabelText('Bearer token'));
+    await user.click(screen.getByLabelText('API Key'));
     expect(screen.queryByLabelText('Role ARN')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Amazon Bedrock API Key/)).toBeEnabled();
+  });
+
+  it('disables a personal Bedrock key under platform IAM while leaving Kiro enabled', async () => {
+    getSettings.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      bedrockMode: 'role',
+    });
+    getPersonalCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: true,
+      kiroApiKeySet: false,
+      bedrockMode: 'bearer',
+    });
+
+    render(<AgentCredentialScopeCard scope="personal" />);
+
+    expect(
+      await screen.findByLabelText(/Amazon Bedrock API Key \(deprecated\) \(inactive\)/),
+    ).toBeDisabled();
+    expect(screen.getByText(/stored key remains encrypted but inactive/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Kiro API Key/)).toBeEnabled();
   });
 
   it('offers no role method at personal scope, but still marks the token deprecated', async () => {
     render(<AgentCredentialScopeCard scope="personal" />);
     // That endpoint is gated only on authentication, so any member could otherwise
     // name a role ARN (dec-user-scope-role-deferred) — hence no radio here.
-    expect(await screen.findByLabelText(/Bedrock Bearer Token \(deprecated\)/)).toBeInTheDocument();
-    expect(screen.queryByLabelText('IAM role')).not.toBeInTheDocument();
+    expect(
+      await screen.findByLabelText(/Amazon Bedrock API Key \(deprecated\)/),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('IAM Role')).not.toBeInTheDocument();
     // req-bearer-deprecated applies to every card. Naming WHERE the alternative
     // lives is what makes it actionable for a user who cannot choose a role here.
     expect(screen.getByText(/configured at space or platform scope/)).toBeInTheDocument();
+  });
+
+  it('exposes described radio options and supports keyboard mode selection', async () => {
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
+
+    const roleOption = await screen.findByRole('radio', { name: 'IAM Role' });
+    const apiKeyOption = screen.getByRole('radio', { name: 'API Key' });
+
+    expect(roleOption).toHaveAttribute('name', 'space-bedrock-method');
+    expect(apiKeyOption).toHaveAttribute('name', 'space-bedrock-method');
+    expect(roleOption).toHaveAccessibleDescription(
+      /credential broker.*short-lived credentials per invocation/i,
+    );
+    expect(apiKeyOption).toHaveAccessibleDescription(
+      /long-lived Amazon Bedrock API key.*IAM avoids secret storage/i,
+    );
+    expect(roleOption).toBeChecked();
+
+    apiKeyOption.focus();
+    expect(apiKeyOption).toHaveFocus();
+    await user.keyboard(' ');
+
+    expect(apiKeyOption).toBeChecked();
+    expect(roleOption).not.toBeChecked();
+    expect(screen.queryByLabelText('Role ARN')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Amazon Bedrock API Key/)).toBeEnabled();
+  });
+
+  it('keeps Kiro controls independent and saves only Kiro while IAM is active', async () => {
+    getProjectCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      bedrockMode: 'role',
+      bedrockRoleArn: ROLE_ARN,
+      platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+    });
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
+
+    expect(await screen.findByLabelText(/Amazon Bedrock API Key \(inactive\)/)).toBeDisabled();
+    const kiroKey = screen.getByLabelText(/Kiro API Key/);
+    expect(kiroKey).toBeEnabled();
+
+    await user.type(kiroKey, 'kiro-only-key');
+    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+
+    await waitFor(() =>
+      expect(updateProjectCredentials).toHaveBeenCalledWith('p-1', {
+        kiroApiKey: 'kiro-only-key',
+      }),
+    );
+  });
+
+  it('gives platform administrators explicit precedence and resume guidance', async () => {
+    getSettings.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      bedrockMode: 'role',
+      bedrockRoleArn: ROLE_ARN,
+    });
+
+    render(<AgentCredentialScopeCard scope="platform" />);
+
+    expect(await screen.findByText('Platform Agent Credentials')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /platform IAM role overrides stored Bedrock keys unless the space has its own IAM role/i,
+      ),
+    ).toBeInTheDocument();
+    const status = screen.getByTestId('platform-bedrock-effective-status');
+    expect(status).toHaveTextContent('Platform IAM role');
+    expect(status).toHaveTextContent(/a Space IAM role can override it/i);
+    expect(status).toHaveTextContent(/stored Bedrock API keys are inactive/i);
+    expect(status).toHaveTextContent(/fresh role credentials when they resume/i);
+    expect(screen.getByText(/Kiro always uses the separate API Key below/i)).toBeInTheDocument();
+  });
+
+  it('announces role validation failures and leaves the rejected binding unsaved', async () => {
+    const user = userEvent.setup();
+    const { ApiError } = await import('@/services/api');
+    updateProjectCredentials.mockRejectedValue(
+      new ApiError(400, 'The Bedrock role could not be assumed with this binding', {
+        code: 'BEDROCK_ROLE_PREFLIGHT_FAILED',
+        preflight: {
+          cause: 'session-policy-denied',
+          candidates: [
+            {
+              candidate: 'ceiling-rejected',
+              detail: 'Allow only the documented Amazon Bedrock inference actions.',
+            },
+          ],
+        },
+      }),
+    );
+
+    render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
+    await user.type(await screen.findByLabelText('Role ARN'), ROLE_ARN);
+    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/role could not be assumed \(session-policy-denied\)/i);
+    expect(alert).toHaveTextContent(/binding was not saved/i);
+    expect(alert).toHaveTextContent(/documented Amazon Bedrock inference actions/i);
+    expect(screen.getByText(/could not be assumed with this binding/i)).toBeInTheDocument();
+    expect(getProjectCredentials).toHaveBeenCalledTimes(1);
   });
 });

@@ -100,7 +100,7 @@ The following are optional. Set them up to enable additional features.
 Agents authenticate using credentials configured through the platform UI: a Kiro API key for the
 Kiro CLI, and for Bedrock either an IAM role or a Bedrock API key.
 
-An agent CLI cannot reach its model until an effective credential is configured — the Bedrock AgentCore runtime's own execution role holds no Bedrock model-invocation permission, so there is no implicit fallback to the runtime's identity. A user can provide a personal credential in **Account Settings**, a space owner/admin can provide a shared credential in **Space Settings → Agent**, or a platform admin can provide a fallback in **Admin → Agents**. Resolution is independent per provider and follows `personal > space > platform`.
+An agent CLI cannot reach its model until an effective credential is configured — the Bedrock AgentCore runtime's own execution role holds no Bedrock model-invocation permission, so there is no implicit fallback to the runtime's identity. A user can provide a personal credential in **Account Settings**, a space owner/admin can provide a shared credential in **Space Settings → Agent**, or a platform admin can configure the platform scope in **Admin → Agents**. Kiro and bearer-only Bedrock use `personal > space > platform`. If Bedrock IAM is selected, the nearest role in `space > platform` order is authoritative and covered personal/space Bedrock keys remain stored but inactive.
 
 ### Kiro CLI API key (required for the Kiro CLI driver)
 
@@ -119,8 +119,9 @@ need to write and the cross-account external-ID bootstrap.
 The **Bedrock Bearer Token** is the older mode and is deprecated. Generate an Amazon Bedrock API key
 in the AWS Console (**Amazon Bedrock → API keys → Generate long-term API key**, scoped to your
 account and region) and save it at the intended personal, space, or platform scope. AgentCore
-injects the selected value for that invocation as `AWS_BEARER_TOKEN_BEDROCK`. It remains the only
-option at **personal** scope.
+injects the selected value for that invocation as `AWS_BEARER_TOKEN_BEDROCK` only when no
+space/platform IAM role is authoritative. It remains the only option at **personal** scope, but a
+personal Bedrock key is inactive while IAM applies to that space and is preserved for rollback.
 
 One of the two is required for Claude Code, OpenCode, and Codex: the Bedrock AgentCore runtime's
 IAM role intentionally has no Amazon Bedrock model-invocation permissions, so an agent never

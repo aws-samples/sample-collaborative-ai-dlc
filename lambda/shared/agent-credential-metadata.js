@@ -137,7 +137,42 @@ export const resolveEffectiveCredentialMetadataViaBroker = async (request, deps)
         result.bindings[provider] ? normalizeCredentialBinding(result.bindings[provider]) : null,
       ]),
     );
-    return { bindings, credentialKinds };
+    const rawMetadata =
+      result.credentialMetadata &&
+      typeof result.credentialMetadata === 'object' &&
+      !Array.isArray(result.credentialMetadata)
+        ? result.credentialMetadata
+        : {};
+    const credentialMetadata = Object.fromEntries(
+      AGENT_CREDENTIAL_PROVIDERS.map((provider) => {
+        const metadata =
+          rawMetadata[provider] &&
+          typeof rawMetadata[provider] === 'object' &&
+          !Array.isArray(rawMetadata[provider])
+            ? rawMetadata[provider]
+            : {};
+        const overrideStatus = ['none', 'scope-precedence', 'iam-role'].includes(
+          metadata.overrideStatus,
+        )
+          ? metadata.overrideStatus
+          : null;
+        return [
+          provider,
+          {
+            // Provider, kind, and scope are reconstructed from allowlisted local
+            // constants and the already-normalized binding. The broker cannot
+            // create an inconsistent or tenant-identifying descriptor here.
+            provider,
+            kind: credentialKinds[provider],
+            bindingScope: bindings[provider]?.source ?? null,
+            overrideStatus,
+            storedKeyInactive:
+              typeof metadata.storedKeyInactive === 'boolean' ? metadata.storedKeyInactive : null,
+          },
+        ];
+      }),
+    );
+    return { bindings, credentialKinds, credentialMetadata };
   } catch {
     throw invalidMetadata('Agent credential metadata broker returned invalid bindings');
   }
