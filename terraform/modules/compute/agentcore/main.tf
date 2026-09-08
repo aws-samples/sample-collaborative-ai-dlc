@@ -225,6 +225,21 @@ data "aws_ecr_image" "agentcore" {
 #   GSI3 = sparse maintenance index for active executions and parked PR waits
 # ---------------------------------------------------------------------------
 
+# On-demand throughput ceilings are only meaningful on PAY_PER_REQUEST tables
+# and only when a non-zero value is supplied. `on_demand_throughput` blocks are
+# rendered conditionally so a provisioned prod table (or a caller that opts
+# out with 0) sees no diff.
+locals {
+  v2_executions_on_demand = (
+    local.billing_mode == "PAY_PER_REQUEST"
+    && var.v2_executions_max_read_request_units > 0
+    && var.v2_executions_max_write_request_units > 0
+    ) ? [{
+      max_read_request_units  = var.v2_executions_max_read_request_units
+      max_write_request_units = var.v2_executions_max_write_request_units
+  }] : []
+}
+
 resource "aws_dynamodb_table" "v2_executions" {
   name           = "${var.project_name}-v2-executions-${var.environment}"
   billing_mode   = local.billing_mode
@@ -232,6 +247,14 @@ resource "aws_dynamodb_table" "v2_executions" {
   range_key      = "sk"
   read_capacity  = local.read_capacity
   write_capacity = local.write_capacity
+
+  dynamic "on_demand_throughput" {
+    for_each = local.v2_executions_on_demand
+    content {
+      max_read_request_units  = on_demand_throughput.value.max_read_request_units
+      max_write_request_units = on_demand_throughput.value.max_write_request_units
+    }
+  }
 
   attribute {
     name = "pk"
@@ -279,6 +302,13 @@ resource "aws_dynamodb_table" "v2_executions" {
       attribute_name = "GSI1SK"
       key_type       = "RANGE"
     }
+    dynamic "on_demand_throughput" {
+      for_each = local.v2_executions_on_demand
+      content {
+        max_read_request_units  = on_demand_throughput.value.max_read_request_units
+        max_write_request_units = on_demand_throughput.value.max_write_request_units
+      }
+    }
   }
 
   global_secondary_index {
@@ -294,6 +324,13 @@ resource "aws_dynamodb_table" "v2_executions" {
       attribute_name = "GSI2SK"
       key_type       = "RANGE"
     }
+    dynamic "on_demand_throughput" {
+      for_each = local.v2_executions_on_demand
+      content {
+        max_read_request_units  = on_demand_throughput.value.max_read_request_units
+        max_write_request_units = on_demand_throughput.value.max_write_request_units
+      }
+    }
   }
 
   global_secondary_index {
@@ -308,6 +345,13 @@ resource "aws_dynamodb_table" "v2_executions" {
     key_schema {
       attribute_name = "GSI3SK"
       key_type       = "RANGE"
+    }
+    dynamic "on_demand_throughput" {
+      for_each = local.v2_executions_on_demand
+      content {
+        max_read_request_units  = on_demand_throughput.value.max_read_request_units
+        max_write_request_units = on_demand_throughput.value.max_write_request_units
+      }
     }
   }
 

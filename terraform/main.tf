@@ -564,6 +564,9 @@ module "agentcore" {
   kiro_model  = "auto"
   codex_model = var.codex_model
 
+  v2_executions_max_read_request_units  = var.v2_executions_max_read_request_units
+  v2_executions_max_write_request_units = var.v2_executions_max_write_request_units
+
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.
   vpc_id                  = module.networking.vpc_id

@@ -150,3 +150,26 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# Cold on-demand DynamoDB tables throttle bursts at 2× historical peak and at a
+# fixed 3000 RCU/s per-partition ceiling. The intent-view page (`/outputs`,
+# `/intents/{intentId}`) polls a single `EXEC#<intentId>` partition on the
+# v2-executions table, so a few concurrent viewers on one live intent can
+# trigger ProvisionedThroughputExceededException before adaptive capacity
+# catches up. `on_demand_throughput.max_read_request_units` raises the pinned
+# ceiling for that table (and each GSI) so bursts don't rely on adaptive
+# scaling. Only takes effect when the table is on PAY_PER_REQUEST — ignored on
+# provisioned (prod) where read_capacity + autoscaling governs instead.
+# 0 (default off) leaves the table unbounded / adaptive-only, matching the
+# pre-fix behaviour.
+variable "v2_executions_max_read_request_units" {
+  description = "Ceiling for on-demand ReadRequestUnits on the v2-executions table and its GSIs. 0 = no explicit ceiling (adaptive only). Ignored on PROVISIONED tables (prod)."
+  type        = number
+  default     = 4000
+}
+
+variable "v2_executions_max_write_request_units" {
+  description = "Ceiling for on-demand WriteRequestUnits on the v2-executions table and its GSIs. 0 = no explicit ceiling. Ignored on PROVISIONED tables (prod)."
+  type        = number
+  default     = 1000
+}

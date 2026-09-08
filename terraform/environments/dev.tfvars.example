@@ -49,3 +49,12 @@ route53_zone_id     = ""
 # providers here, or pass --auth-mode and --sso-config to deploy-terraform.sh.
 auth_mode     = "local"
 sso_providers = {}
+
+# On-demand DynamoDB ceiling for the v2-executions table.
+# The intent-view page polls a single `EXEC#<intentId>` partition, so a handful
+# of live viewers on one intent can trip a ProvisionedThroughputExceededException
+# before on-demand's adaptive capacity catches up. Pinning an explicit ceiling
+# absorbs bursts without waiting for adaptive scaling. Set to 0 to opt out
+# (adaptive-only). Ignored on PROVISIONED tables (environment = "prod").
+# v2_executions_max_read_request_units  = 4000
+# v2_executions_max_write_request_units = 1000

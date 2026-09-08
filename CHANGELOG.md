@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Optional static egress for OAuth connectors, credential resolution, and seed-blocks through `lambda_vpc_scope = "public-egress"`, with NAT public IP outputs and addresses printed in the deployment summary for external allow-lists.
 - Configurable container runtime via `DOCKER_HOST` — any Docker-API-socket runtime works without requiring a container CLI (Podman, Rancher Desktop verified); Finch unsupported ([#420](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/420)).
 
+### Fixed
+
+- Raised the initial on-demand throughput ceiling on the v2-executions table and its GSIs (`max_read_request_units = 4000` by default, configurable via `v2_executions_max_read_request_units`; `max_write_request_units = 1000`, configurable via `v2_executions_max_write_request_units`). Live intent-view polling can burst several concurrent `GetItem` calls on the same `EXEC#<intentId>` partition, which on-demand throttles below its 3000 RCU/s per-partition ceiling when the table is cold — this raised ceiling eliminates the `ProvisionedThroughputExceededException` spike surfaced by `GET /api/projects/*/intents/*/outputs` and `GET /api/projects/*/intents/{intentId}`. Only applies on `PAY_PER_REQUEST` (non-prod) tables; ignored on `PROVISIONED` (prod) where `read_capacity` + autoscaling governs instead.
+
 ## [2.0.0] - 2026-08-06
 
 Second and final step of the v2 release, building on `2.0.0-preview0`. Everything listed below is new since that preview; see the `2.0.0-preview0` entry for the v2 platform itself.

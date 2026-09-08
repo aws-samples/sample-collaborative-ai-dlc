@@ -157,3 +157,22 @@ variable "route53_zone_id" {
   type        = string
   default     = ""
 }
+
+# On-demand DynamoDB tables throttle bursts against a per-partition 3000 RCU/s
+# ceiling and 2× historical peak. The intent-view page polls a single
+# `EXEC#<intentId>` partition on the v2-executions table, so a handful of live
+# viewers on the same intent can trip ProvisionedThroughputExceededException
+# before adaptive capacity catches up. These variables pin an explicit ceiling
+# so short bursts don't wait for adaptive scaling. Only apply on
+# PAY_PER_REQUEST (non-prod); ignored on PROVISIONED (prod).
+variable "v2_executions_max_read_request_units" {
+  description = "Ceiling for on-demand ReadRequestUnits on the v2-executions table and its GSIs. 0 = no explicit ceiling (adaptive-only). Ignored on PROVISIONED tables (prod)."
+  type        = number
+  default     = 4000
+}
+
+variable "v2_executions_max_write_request_units" {
+  description = "Ceiling for on-demand WriteRequestUnits on the v2-executions table and its GSIs. 0 = no explicit ceiling. Ignored on PROVISIONED tables (prod)."
+  type        = number
+  default     = 1000
+}
