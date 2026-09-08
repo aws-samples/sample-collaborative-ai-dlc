@@ -27,6 +27,7 @@ const destroyTerraform = join(root, 'scripts/destroy.sh');
 const generateEnv = join(root, 'scripts/generate-env.sh');
 const releaseWorkflow = join(root, '.github/workflows/release.yml');
 const demoWorkflow = join(root, '.github/workflows/deploy-demo.yml');
+const mainDemoWorkflow = join(root, '.github/workflows/deploy-main.yml');
 const yjsDockerfile = join(root, 'lambda/yjs-server/Dockerfile');
 
 const run = (file, args, options = {}) =>
@@ -44,17 +45,33 @@ test('current release metadata is internally consistent', () => {
   assert.equal(checked.status, 0, checked.stderr);
 });
 
-test('release deployment uses the protected demo environment and GitHub OIDC', () => {
+test('release and main deployments use isolated protected environments and GitHub OIDC', () => {
   const release = readFileSync(releaseWorkflow, 'utf8');
   const deployment = readFileSync(demoWorkflow, 'utf8');
+  const mainDeployment = readFileSync(mainDemoWorkflow, 'utf8');
 
   assert.match(release, /uses: \.\/\.github\/workflows\/deploy-demo\.yml/);
   assert.match(release, /ref: v\$\{\{ inputs\.version \}\}/);
   assert.doesNotMatch(release, /apply:/);
 
-  assert.match(deployment, /name: demo/);
+  assert.match(mainDeployment, /push:\n    branches:\n      - main/);
+  assert.match(mainDeployment, /uses: \.\/\.github\/workflows\/deploy-demo\.yml/);
+  assert.match(mainDeployment, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(mainDeployment, /ref_type: commit/);
+  assert.match(mainDeployment, /deployment_target: main/);
+  assert.match(mainDeployment, /github_environment: demo-main/);
+  assert.match(mainDeployment, /terraform_project_name: collaborative-ai-dlc-main/);
+  assert.doesNotMatch(mainDeployment, /apply:/);
+
+  assert.match(deployment, /github_environment:[\s\S]*?default: demo-release/);
+  assert.match(deployment, /name: \$\{\{ inputs\.github_environment \|\| 'demo-release' \}\}/);
   assert.match(deployment, /id-token: write/);
   assert.match(deployment, /TF_ENVIRONMENT: prod/);
+  assert.match(
+    deployment,
+    /TF_PROJECT_NAME: \$\{\{ inputs\.terraform_project_name \|\| 'collaborative-ai-dlc' \}\}/,
+  );
+  assert.match(deployment, /printf 'project_name  = %s\\n'/);
   assert.match(deployment, /TF_RECREATE_MISSING_LAMBDA_PACKAGE: 'false'/);
   assert.match(deployment, /role-to-assume: \$\{\{ vars\.AWS_ROLE_ARN \}\}/);
   assert.match(deployment, /TF_STATE_BUCKET: \$\{\{ vars\.TF_STATE_BUCKET \}\}/);
@@ -64,14 +81,17 @@ test('release deployment uses the protected demo environment and GitHub OIDC', (
   assert.match(deployment, /AIDLC_SKIP_NPM_CI: '1'/);
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);
-  assert.match(deployment, /git merge-base --is-ancestor "\$tag_commit" "\$main_commit"/);
+  assert.match(deployment, /case "\$DEPLOY_REF_TYPE" in/);
+  assert.match(deployment, /release-tag\)/);
+  assert.match(deployment, /commit\)/);
+  assert.match(deployment, /git merge-base --is-ancestor "\$deploy_commit" "\$main_commit"/);
   assert.equal(deployment.match(/--phase plan/g)?.length, 2);
   assert.doesNotMatch(deployment, /inputs\.apply|plan-only/);
   assert.doesNotMatch(deployment, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.ok(
     deployment.indexOf('git merge-base --is-ancestor') <
       deployment.indexOf('aws-actions/configure-aws-credentials'),
-    'release ancestry must be verified before AWS credentials are configured',
+    'source ancestry must be verified before AWS credentials are configured',
   );
   assert.ok(
     deployment.indexOf('docker/setup-qemu-action') <
