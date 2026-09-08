@@ -2421,6 +2421,66 @@ describe('POST /start', () => {
     expect(JSON.parse(retry.body).status).toBe('CREATED');
   });
 
+  it('outer catch logs the exception and request context, not a static string', async () => {
+    // Regression test for the diagnostic contract of the top-level handler
+    // catch. The 500 body must stay generic (public contract), but the
+    // console.error payload must carry the actual Error's message/name/code/
+    // stack plus API-Gateway request context so operators can trace which
+    // path failed. A later refactor that drops this shape must fail here.
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    // Force the outer catch by making the orchestrator invoke throw with a
+    // distinctive error we can assert on.
+    class OrchestratorInvokeError extends Error {
+      constructor() {
+        super('invoke failed — orchestrator handoff blew up');
+        this.name = 'OrchestratorInvokeError';
+        this.code = 'ORCHESTRATOR_HANDOFF_FAILED';
+      }
+    }
+    lambdaMock
+      .on(InvokeCommand, { FunctionName: 'orchestrator-test' })
+      .rejectsOnce(new OrchestratorInvokeError());
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/start`,
+        resource: '/projects/{projectId}/intents/{intentId}/start',
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify({ agentCli: 'kiro' }),
+        ...claims(sub),
+      });
+      // Public 500 contract is unchanged.
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Internal server error' });
+
+      // Diagnostic payload must reach console.error.
+      const call = errorSpy.mock.calls.find(([msg]) => msg === 'intents handler error');
+      expect(call, 'expected console.error to be called with the diagnostic tag').toBeDefined();
+      const [, ctx] = call;
+      expect(ctx).toEqual(
+        expect.objectContaining({
+          message: 'invoke failed — orchestrator handoff blew up',
+          name: 'OrchestratorInvokeError',
+          code: 'ORCHESTRATOR_HANDOFF_FAILED',
+          resource: '/projects/{projectId}/intents/{intentId}/start',
+          httpMethod: 'POST',
+          projectId,
+          intentId: intent.id,
+        }),
+      );
+      // Stack must be present and reference the caught error's class.
+      expect(typeof ctx.stack).toBe('string');
+      expect(ctx.stack).toContain('OrchestratorInvokeError');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('pins the starter personal credential over space and platform', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
