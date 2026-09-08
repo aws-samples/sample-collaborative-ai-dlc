@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import nodePath from 'node:path';
 import {
   runStage,
   resetKiroCreditRateCache,
   withPlatformSensors,
   __test,
 } from '../commands/run-stage.js';
+import { commitAndPushAll as runCommitAndPushAll, runGit } from '../git-engine.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 import {
   buildExecutionPlan,
@@ -421,6 +425,38 @@ describe('runStage — realtime broadcasts (state mirrors DynamoDB writes)', () 
   });
 });
 
+describe('changedFileProvenanceFromGitResults', () => {
+  const { changedFileProvenanceFromGitResults } = __test;
+
+  it('merges known repository files deterministically', () => {
+    expect(
+      changedFileProvenanceFromGitResults([
+        { repo: 'acme/api', provenance: { state: 'known', files: ['acme/api/b.ts'] } },
+        { repo: 'acme/web', provenance: { state: 'known', files: ['acme/web/a.ts'] } },
+      ]),
+    ).toEqual({ state: 'known', files: ['acme/api/b.ts', 'acme/web/a.ts'] });
+  });
+
+  it('returns unknown with repository and failure reason when any collection failed', () => {
+    expect(
+      changedFileProvenanceFromGitResults([
+        { repo: 'acme/api', provenance: { state: 'known', files: ['acme/api/a.ts'] } },
+        {
+          repo: 'acme/web',
+          provenance: {
+            state: 'unknown',
+            reason: 'git_diff_failed',
+            detail: 'fatal: bad revision',
+          },
+        },
+      ]),
+    ).toEqual({
+      state: 'unknown',
+      reason: 'acme/web: git_diff_failed',
+      detail: 'fatal: bad revision',
+    });
+  });
+});
 describe('mergeLearningRules — feeds the existing resolver at the right precedence', () => {
   const { mergeLearningRules } = __test;
 
@@ -1076,6 +1112,224 @@ describe('runStage — deterministic sensors', () => {
     );
     return proxy;
   };
+
+  it('feeds cross-project rename provenance from commitAndPushAll into stage sensor selection', async () => {
+    const root = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-rename-selection-'));
+    const remote = nodePath.join(root, 'remote.git');
+    const workspaceDir = nodePath.join(root, 'work');
+    const git = (args, cwd) => runGit(args, { cwd });
+
+    try {
+      await git(['init', '--bare', '-b', 'main', remote], root);
+      await git(['init', '-b', 'main', workspaceDir], root);
+      for (const project of ['source', 'destination']) {
+        await mkdir(nodePath.join(workspaceDir, 'packages', project, 'src'), { recursive: true });
+        await writeFile(
+          nodePath.join(workspaceDir, 'packages', project, 'tsconfig.json'),
+          '{"compilerOptions":{}}\n',
+        );
+        await writeFile(
+          nodePath.join(workspaceDir, 'packages', project, 'src', `${project}-consumer.ts`),
+          `export const ${project}Consumer = true;\n`,
+        );
+      }
+      const sourcePath = 'packages/source/src/provider.ts';
+      const destinationPath = 'packages/destination/src/provider.ts';
+      await writeFile(nodePath.join(workspaceDir, sourcePath), 'export const provider = true;\n');
+      await git(['add', '-A'], workspaceDir);
+      await git(
+        ['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'seed projects'],
+        workspaceDir,
+      );
+      await git(['remote', 'add', 'origin', remote], workspaceDir);
+      await git(['push', '-u', 'origin', 'main'], workspaceDir);
+      await git(['mv', sourcePath, destinationPath], workspaceDir);
+
+      const lib = library();
+      lib.stagesById['requirements-analysis'].sensors = ['type-check'];
+      lib.sensorsById = {
+        'type-check': {
+          id: 'type-check',
+          command: 'bun x.ts',
+          runtime: 'bun',
+          severity: 'blocking',
+          matches: '**/*.ts',
+          verdictMode: 'stdout-json',
+          scope: 'project',
+          projectConfig: 'tsconfig.json',
+          scriptRef: { s3Key: 'blocks/scripts/sha256/type-check' },
+        },
+      };
+
+      const inspectedFiles = [];
+      const spawnFn = (command, args) => {
+        const child = new EventEmitter();
+        child.stdin = { end() {} };
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        setImmediate(() => {
+          if (command === 'bun') {
+            inspectedFiles.push(args[args.indexOf('--file-path') + 1]);
+            child.stdout.emit('data', Buffer.from('{"pass":true}'));
+          }
+          child.emit('close', 0);
+        });
+        return child;
+      };
+      const store = spyStore();
+      const result = await runStage(
+        {
+          ...baseArgs,
+          workspaceDir,
+          repos: ['acme/monorepo'],
+          branch: 'main',
+          baseBranch: 'main',
+          gitProvider: 'github',
+        },
+        baseDeps({
+          store,
+          spawnFn,
+          env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', PATH: '/usr/bin:/bin' },
+          loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+          loadBlockScript: async () => 'SENSOR_SCRIPT_BODY',
+          ensureWorkspaceSource: async () => ({ restored: false, repos: [] }),
+          redirectHeavyDirs: async () => ({ links: [] }),
+          commitAndPushAll: (args) =>
+            runCommitAndPushAll({
+              ...args,
+              urlsFor: () => ({
+                auth: remote,
+                clean: 'https://github.com/acme/monorepo.git',
+              }),
+            }),
+        }),
+      );
+
+      expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      const persisted = store.calls.find(
+        ([name, row]) => name === 'recordSensorRun' && row.sensorId === 'type-check',
+      )?.[1];
+      expect(persisted).toMatchObject({
+        result: 'PASS',
+        detail: {
+          scope: 'project',
+          applicability: 'APPLICABLE',
+          provenance: {
+            state: 'known',
+            files: expect.arrayContaining([sourcePath, destinationPath]),
+          },
+        },
+      });
+      expect(persisted.detail.provenance.files).toHaveLength(2);
+      expect(inspectedFiles).toEqual(
+        expect.arrayContaining([
+          'packages/source/src/source-consumer.ts',
+          'packages/destination/src/provider.ts',
+          'packages/destination/src/destination-consumer.ts',
+        ]),
+      );
+      expect(inspectedFiles).toHaveLength(3);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('persists and broadcasts only redacted harness diagnostics', async () => {
+    const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-sensor-redaction-'));
+    try {
+      await writeFile(nodePath.join(workspaceDir, 'a.ts'), 'export const a = true;');
+      const lib = library();
+      lib.stagesById['requirements-analysis'].sensors = ['type-check'];
+      lib.sensorsById = {
+        'type-check': {
+          id: 'type-check',
+          command: 'bun x.ts',
+          runtime: 'bun',
+          severity: 'advisory',
+          matches: '**/*.ts',
+          verdictMode: 'stdout-json',
+          scriptRef: { s3Key: 'blocks/scripts/sha256/type-check' },
+        },
+      };
+      const store = spyStore();
+      const broadcasts = [];
+      const secretValue = 'opaque-runtime-secret';
+      const credentialPath = '/runtime/private/aws-credentials';
+      const spawnFn = (command) => {
+        const child = new EventEmitter();
+        child.stdin = { end() {} };
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        setImmediate(() => {
+          if (command === 'bun') {
+            child.stderr.emit(
+              'data',
+              Buffer.from(`Authorization: Token ${secretValue}\ncredential file ${credentialPath}`),
+            );
+            child.emit('close', 1);
+          } else {
+            child.emit('close', 0);
+          }
+        });
+        return child;
+      };
+
+      const res = await runStage(
+        { ...baseArgs, workspaceDir },
+        baseDeps({
+          store,
+          spawnFn,
+          broadcast: async (payload) => broadcasts.push(payload),
+          env: {
+            BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+            PATH: '/usr/bin:/bin',
+            MCP_SERVER_TOKEN: secretValue,
+            AWS_SHARED_CREDENTIALS_FILE: credentialPath,
+          },
+          loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+          loadBlockScript: async () => 'SENSOR_SCRIPT_BODY',
+          commitAndPushAll: async () => ({
+            ok: true,
+            committed: true,
+            results: [
+              {
+                repo: 'workspace',
+                committed: true,
+                pushed: true,
+                provenance: { state: 'known', files: ['a.ts'] },
+              },
+            ],
+          }),
+        }),
+      );
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      const persisted = store.calls.find(
+        ([name, row]) => name === 'recordSensorRun' && row.sensorId === 'type-check',
+      )?.[1];
+      expect(persisted).toMatchObject({
+        result: 'INCONCLUSIVE',
+        detail: {
+          harnessFailures: [
+            expect.objectContaining({
+              stderr: 'Authorization: [REDACTED]\ncredential file [REDACTED]',
+            }),
+          ],
+        },
+      });
+      expect(store.calls).toContainEqual([
+        'appendEvent',
+        expect.objectContaining({ type: 'v2.sensor.flagged' }),
+      ]);
+      const sinkPayload = JSON.stringify({ calls: store.calls, broadcasts });
+      expect(sinkPayload).not.toContain(secretValue);
+      expect(sinkPayload).not.toContain(credentialPath);
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
 
   it('an advisory sensor that does not PASS records a verdict but never fails the stage', async () => {
     const deps = baseDeps({

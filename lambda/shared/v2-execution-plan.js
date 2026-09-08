@@ -22,6 +22,7 @@
 
 import { createHash } from 'node:crypto';
 import { compileStageGraph, compileRules } from './compile.js';
+import { validateSensorContractFields } from './v2-sensor-contract.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
 // Stage modes the runtime can actually execute. `agent-team` is known but not
@@ -206,6 +207,16 @@ const resolveSensors = (stage, stageId, sensorsById, errors) =>
           err('sensor_missing_command', `sensor "${sid}" has no command`, { stageId, ref: sid }),
         );
       }
+      const contract = validateSensorContractFields({ ...sensor, sensorId: sid });
+      for (const issue of contract.errors) {
+        errors.push(
+          err(issue.code, `sensor "${sid}" ${issue.message}`, {
+            stageId,
+            ref: sid,
+            field: issue.field,
+          }),
+        );
+      }
       return {
         sensorId: sid,
         severity: sensor.severity ?? 'advisory',
@@ -215,6 +226,7 @@ const resolveSensors = (stage, stageId, sensorsById, errors) =>
         category: sensor.category ?? null,
         matches: sensor.matches ?? null,
         scriptRef: sensor.scriptRef ?? null,
+        ...contract.fields,
       };
     })
     .filter(Boolean);

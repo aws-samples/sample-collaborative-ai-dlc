@@ -5005,6 +5005,7 @@ const mapFeedbackBatch = (batch) => ({
   requestedByName: batch.requestedByName ?? null,
   stageInstanceId: batch.stageInstanceId ?? null,
   output: batch.output ?? null,
+  changedFileProvenance: batch.changedFileProvenance ?? null,
   changedFiles: batch.changedFiles ?? null,
   verification: batch.verification ?? null,
   commitSha: batch.commitSha ?? null,

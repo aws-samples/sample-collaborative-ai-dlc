@@ -8,10 +8,13 @@ import {
   scrubRemote,
   commitAll,
   isAheadOfRemote,
+  aheadFiles,
   pushBranch,
   remoteBranchExists,
   commitAndPushAll,
   seedInitialCommit,
+  parsePorcelainZ,
+  toWorkspaceRelative,
 } from '../git-engine.js';
 
 // Real git spawns (~10 per test) can be slow on busy CI machines.
@@ -90,6 +93,66 @@ describe('scrubRemote', () => {
   });
 });
 
+describe('parsePorcelainZ', () => {
+  it('keeps spaces and non-ASCII paths unquoted', () => {
+    expect(parsePorcelainZ(' M src/a b.ts\0?? src/café.ts\0')).toEqual([
+      'src/a b.ts',
+      'src/café.ts',
+    ]);
+  });
+
+  it('preserves both destination and source fields for rename entries', () => {
+    expect(parsePorcelainZ('R  new.ts\0old.ts\0 M other.ts\0')).toEqual([
+      'new.ts',
+      'old.ts',
+      'other.ts',
+    ]);
+  });
+});
+
+describe('toWorkspaceRelative', () => {
+  it('prefixes repo-relative paths in a multi-repository workspace', () => {
+    expect(toWorkspaceRelative(['src/index.ts'], { url: 'acme/shop', multi: true })).toEqual([
+      'acme/shop/src/index.ts',
+    ]);
+  });
+
+  it('leaves single-repository paths unchanged', () => {
+    expect(toWorkspaceRelative(['src/index.ts'], { url: 'acme/shop', multi: false })).toEqual([
+      'src/index.ts',
+    ]);
+  });
+
+  it('normalizes mixed repo- and workspace-relative inputs exactly once and deterministically', () => {
+    const options = { url: 'acme/shop', multi: true };
+    const input = [
+      'src/new.ts',
+      'acme/shop/src/existing.ts',
+      'test/new.test.ts',
+      'acme/shop/test/existing.test.ts',
+    ];
+    const expected = [
+      'acme/shop/src/new.ts',
+      'acme/shop/src/existing.ts',
+      'acme/shop/test/new.test.ts',
+      'acme/shop/test/existing.test.ts',
+    ];
+
+    const first = toWorkspaceRelative(input, options);
+    const second = toWorkspaceRelative(input, options);
+
+    expect(first).toEqual(expected);
+    expect(second).toEqual(expected);
+    expect(toWorkspaceRelative(first, options)).toEqual(expected);
+    expect(input).toEqual([
+      'src/new.ts',
+      'acme/shop/src/existing.ts',
+      'test/new.test.ts',
+      'acme/shop/test/existing.test.ts',
+    ]);
+  });
+});
+
 describe('commitAll', () => {
   it('commits the whole tree with the engine identity and returns the sha', async () => {
     const { work } = await initRemoteAndClone();
@@ -109,7 +172,11 @@ describe('commitAll', () => {
   it('reports clean when there is nothing to commit', async () => {
     const { work } = await initRemoteAndClone();
     const res = await commitAll({ dir: work, message: 'aidlc(x): e1' });
-    expect(res).toEqual({ committed: false, reason: 'clean' });
+    expect(res).toEqual({
+      committed: false,
+      reason: 'clean',
+      provenance: { state: 'known', files: [] },
+    });
   });
 
   it('is immune to ambient GIT_* env (running inside a git hook must not redirect or re-identify)', async () => {
@@ -141,6 +208,53 @@ describe('commitAll', () => {
         else process.env[k] = v;
       }
     }
+  });
+
+  it.each([1, 42, null])(
+    'marks provenance unknown for an arbitrary pre-commit status failure (%s)',
+    async (exitCode) => {
+      const gitWithFailedStatus = vi.fn(async (args) => {
+        const command = args.join(' ');
+        if (command === 'status --porcelain -z') {
+          return { exitCode, stdout: '', stderr: 'status collection interrupted' };
+        }
+        if (command === 'status --porcelain') {
+          return { exitCode: 0, stdout: 'M  src/index.ts\n', stderr: '' };
+        }
+        if (command === 'rev-parse HEAD') {
+          return { exitCode: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
+        }
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+
+      const result = await commitAll({
+        dir: root,
+        message: 'aidlc(x): e1',
+        git: gitWithFailedStatus,
+      });
+
+      expect(result).toMatchObject({
+        committed: true,
+        provenance: {
+          state: 'unknown',
+          reason: 'git_status_failed',
+          detail: 'status collection interrupted',
+        },
+      });
+    },
+  );
+
+  it('captures filenames with spaces and non-ASCII verbatim', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'a file.ts'), 'x\n');
+    await writeFile(path.join(work, 'café.ts'), 'y\n');
+
+    const result = await commitAll({ dir: work, message: 'aidlc(x): e1' });
+
+    expect(result.committed).toBe(true);
+    expect(result.provenance).toMatchObject({ state: 'known' });
+    expect(result.provenance.files).toContain('a file.ts');
+    expect(result.provenance.files).toContain('café.ts');
   });
 
   it('captures untracked, modified AND deleted files (add -A semantics)', async () => {
@@ -573,6 +687,80 @@ describe('commitAndPushAll — the stage-exit hook', () => {
     expect(res.ok).toBe(true);
     expect(res.committed).toBe(false); // THIS call created no commit…
     expect(res.results[0].pushed).toBe(true); // …but the earlier one got pushed
+    expect(res.results[0].files).toEqual(['earlier.js']);
+  });
+
+  it('clean-tree retry uses the base ref to report every commit on a never-pushed branch', async () => {
+    const { work, remote } = await initRemoteAndClone();
+    await git(['checkout', '-b', 'aidlc/i1'], work);
+
+    await writeFile(path.join(work, 'first.ts'), 'export const first = true;\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'first'], work);
+    await writeFile(path.join(work, 'second.ts'), 'export const second = true;\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'second'], work);
+
+    expect(
+      (await git(['rev-parse', '--verify', 'refs/remotes/origin/aidlc/i1'], work)).exitCode,
+    ).not.toBe(0);
+
+    const result = await commitAndPushAll({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'aidlc/i1',
+      baseBranch: 'main',
+      gitProvider: 'github',
+      message: 'aidlc(retry): e1',
+      urlsFor: () => ({ auth: remote, clean: 'https://github.com/o/r.git' }),
+    });
+
+    expect(result).toMatchObject({ ok: true, committed: false });
+    expect(result.results[0]).toMatchObject({
+      committed: false,
+      pushed: true,
+      provenance: { state: 'known', files: ['first.ts', 'second.ts'] },
+      files: ['first.ts', 'second.ts'],
+    });
+    expect(
+      (await git(['rev-parse', '--verify', 'refs/heads/aidlc/i1'], remote)).stdout.trim(),
+    ).toBe(result.results[0].sha);
+  });
+
+  it('clean-tree retry recovers and pushes both endpoints of an earlier rename', async () => {
+    const { work, remote } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'legacy.ts'), 'export const value = true;\n');
+    await git(['add', '-A'], work);
+    await git(
+      ['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'add legacy path'],
+      work,
+    );
+    await git(['push', 'origin', 'main'], work);
+
+    await git(['mv', 'legacy.ts', 'current.ts'], work);
+    const earlier = await commitAll({ dir: work, message: 'aidlc(rename): e1' });
+    expect(earlier.provenance).toEqual({
+      state: 'known',
+      files: ['current.ts', 'legacy.ts'],
+    });
+
+    const result = await commitAndPushAll({
+      repos: ['o/r'],
+      workspaceDir: work,
+      branch: 'main',
+      gitProvider: 'github',
+      message: 'aidlc(retry): e1',
+      urlsFor: () => ({ auth: remote, clean: 'https://github.com/o/r.git' }),
+    });
+
+    expect(result).toMatchObject({ ok: true, committed: false });
+    expect(result.results[0]).toMatchObject({
+      committed: false,
+      pushed: true,
+      provenance: { state: 'known' },
+    });
+    expect(result.results[0].files).toEqual(expect.arrayContaining(['legacy.ts', 'current.ts']));
+    expect(result.results[0].files).toHaveLength(2);
   });
 
   it('push failure with a new commit: ok=false, committed=true (stage-failing condition)', async () => {
@@ -606,7 +794,7 @@ describe('commitAndPushAll — the stage-exit hook', () => {
     expect(res).toEqual({ ok: true, committed: false, results: [] });
   });
 
-  it('multi-repo: each repo commits/pushes in its own subdir; one failure flips ok', async () => {
+  it('multi-repo: normalizes each commit result once; one push failure flips ok', async () => {
     // repo A under <ws>/o/a (healthy), repo B under <ws>/o/b (push fails).
     const ws = path.join(root, 'ws');
     const remoteA = path.join(root, 'a.git');
@@ -633,8 +821,23 @@ describe('commitAndPushAll — the stage-exit hook', () => {
     expect(res.ok).toBe(false);
     expect(res.committed).toBe(true);
     const byRepo = Object.fromEntries(res.results.map((r) => [r.repo, r]));
-    expect(byRepo['o/a']).toMatchObject({ committed: true, pushed: true });
-    expect(byRepo['o/b']).toMatchObject({ committed: true, pushed: false });
+    expect(byRepo['o/a']).toMatchObject({
+      committed: true,
+      pushed: true,
+      provenance: { state: 'known', files: ['o/a/file.txt'] },
+      files: ['o/a/file.txt'],
+    });
+    expect(byRepo['o/b']).toMatchObject({
+      committed: true,
+      pushed: false,
+      provenance: { state: 'known', files: ['o/b/file.txt'] },
+      files: ['o/b/file.txt'],
+    });
+    const reportedFiles = res.results.flatMap((result) => result.files);
+    expect(reportedFiles).toEqual(['o/a/file.txt', 'o/b/file.txt']);
+    expect(reportedFiles).not.toEqual(
+      expect.arrayContaining(['o/a/o/a/file.txt', 'o/b/o/b/file.txt']),
+    );
   });
 
   it('never throws — a crashing git runner becomes an engine_crashed result', async () => {
@@ -1277,7 +1480,11 @@ describe('runtime excludes', () => {
     const { work } = await initRemoteAndClone();
     await seedRuntimeFiles(work);
     const res = await commitAll({ dir: work, message: 'aidlc(workspace-scaffold): e1' });
-    expect(res).toEqual({ committed: false, reason: 'clean' });
+    expect(res).toEqual({
+      committed: false,
+      reason: 'clean',
+      provenance: { state: 'known', files: [] },
+    });
     // The stage-exit hook then skips the network entirely (up_to_date).
     const hook = await commitAndPushAll({
       repos: ['o/r'],
@@ -1375,5 +1582,208 @@ describe('runtime excludes', () => {
     await ensureRuntimeExcludes({ dir: work });
     const again = await readFile(path.join(work, '.git', 'info', 'exclude'), 'utf8');
     expect(again.match(/runtime excludes v3/g)).toHaveLength(1);
+  });
+});
+
+describe('aheadFiles', () => {
+  it('returns known repo-relative files changed between the tracking ref and HEAD', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'retry.ts'), 'export const retry = true;\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'retry'], work);
+
+    expect(await aheadFiles({ dir: work, branch: 'main' })).toEqual({
+      state: 'known',
+      files: ['retry.ts'],
+    });
+  });
+
+  it('falls back to the recorded base branch when the target tracking ref is absent', async () => {
+    const { work } = await initRemoteAndClone();
+    await git(['checkout', '-b', 'aidlc/i1'], work);
+    await writeFile(path.join(work, 'intent.ts'), 'export const intent = true;\n');
+    await git(['add', '-A'], work);
+    await git(
+      ['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'intent work'],
+      work,
+    );
+
+    const targetRef = await git(['rev-parse', '--verify', 'refs/remotes/origin/aidlc/i1'], work);
+    expect(targetRef.exitCode).not.toBe(0);
+    expect(await aheadFiles({ dir: work, branch: 'aidlc/i1', baseBranch: 'main' })).toEqual({
+      state: 'known',
+      files: ['intent.ts'],
+    });
+  });
+
+  it('falls back to origin/HEAD for older payloads without a recorded base branch', async () => {
+    const { work } = await initRemoteAndClone();
+    await git(['checkout', '-b', 'aidlc/legacy'], work);
+    await writeFile(path.join(work, 'legacy.ts'), 'export const legacy = true;\n');
+    await git(['add', '-A'], work);
+    await git(
+      ['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'legacy work'],
+      work,
+    );
+
+    const defaultRef = await git(['symbolic-ref', 'refs/remotes/origin/HEAD'], work);
+    expect(defaultRef.stdout.trim()).toBe('refs/remotes/origin/main');
+    expect(await aheadFiles({ dir: work, branch: 'aidlc/legacy' })).toEqual({
+      state: 'known',
+      files: ['legacy.ts'],
+    });
+  });
+
+  it('aggregates paths across every commit in a multi-commit unpushed range', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'first.ts'), 'export const first = true;\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'first'], work);
+    await writeFile(path.join(work, 'second.ts'), 'export const second = true;\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'second'], work);
+
+    const provenance = await aheadFiles({ dir: work, branch: 'main' });
+
+    expect(provenance).toEqual({ state: 'known', files: ['first.ts', 'second.ts'] });
+  });
+
+  it('uses the merge base of a divergent stale tracking ref and excludes remote-only paths', async () => {
+    const { remote, work } = await initRemoteAndClone();
+    await git(['checkout', '-b', 'aidlc/diverged'], work);
+    await writeFile(path.join(work, 'local-only.ts'), 'export const local = true;\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'local work'], work);
+
+    await commitOnRemote(
+      remote,
+      'aidlc/diverged',
+      'remote-only.ts',
+      'export const remote = true;\n',
+    );
+    await git(['fetch', 'origin', 'aidlc/diverged'], work);
+
+    expect(await aheadFiles({ dir: work, branch: 'aidlc/diverged', baseBranch: 'main' })).toEqual({
+      state: 'known',
+      files: ['local-only.ts'],
+    });
+  });
+
+  it('returns a known empty list when HEAD matches the tracking ref', async () => {
+    const { work } = await initRemoteAndClone();
+    expect(await aheadFiles({ dir: work, branch: 'main' })).toEqual({
+      state: 'known',
+      files: [],
+    });
+  });
+
+  it.each([1, 42, null])(
+    'returns unknown provenance with the Git failure reason for an arbitrary diff failure (%s)',
+    async (exitCode) => {
+      const failedGit = async (args) => {
+        const command = args.join(' ');
+        if (command === 'rev-parse --verify refs/remotes/origin/main') {
+          return { exitCode: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
+        }
+        if (command === 'merge-base refs/remotes/origin/main HEAD') {
+          return { exitCode: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
+        }
+        return { exitCode, stdout: '', stderr: 'diff collection interrupted' };
+      };
+      expect(await aheadFiles({ dir: root, branch: 'main', git: failedGit })).toEqual({
+        state: 'unknown',
+        reason: 'git_diff_failed',
+        detail: 'diff collection interrupted',
+      });
+    },
+  );
+});
+
+describe('rename and copy endpoint provenance', () => {
+  it('preserves both endpoints of a staged rename before committing', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'old-name.ts'), 'export const renamed = true;\n');
+    await git(['add', '-A'], work);
+    await git(
+      ['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'add old name'],
+      work,
+    );
+    await git(['push', 'origin', 'main'], work);
+    await writeFile(path.join(work, 'new-name.ts'), 'export const renamed = true;\n');
+    await rm(path.join(work, 'old-name.ts'));
+    await git(['add', '-A'], work);
+
+    const result = await commitAll({ dir: work, message: 'aidlc(rename): e1' });
+
+    expect(result.committed).toBe(true);
+    expect(result.provenance).toEqual({
+      state: 'known',
+      files: ['new-name.ts', 'old-name.ts'],
+    });
+  });
+
+  it('recovers both endpoints from unpushed rename and copy history on retry', async () => {
+    const { work } = await initRemoteAndClone();
+    await writeFile(path.join(work, 'source.ts'), 'export const source = true;\n');
+    await git(['add', '-A'], work);
+    await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'add source'], work);
+    await git(['push', 'origin', 'main'], work);
+
+    await writeFile(path.join(work, 'renamed.ts'), 'export const source = true;\n');
+    await rm(path.join(work, 'source.ts'));
+    await writeFile(path.join(work, 'copied.ts'), 'export const source = true;\n');
+    await commitAll({ dir: work, message: 'aidlc(rename-and-copy): e1' });
+
+    const provenance = await aheadFiles({ dir: work, branch: 'main' });
+
+    expect(provenance.state).toBe('known');
+    expect(provenance.files).toEqual(
+      expect.arrayContaining(['source.ts', 'renamed.ts', 'copied.ts']),
+    );
+  });
+
+  it('keeps both projects in a cross-repository move through commitAndPushAll', async () => {
+    const sourceRemote = path.join(root, 'source.git');
+    const destinationRemote = path.join(root, 'destination.git');
+    const sourceSeed = path.join(root, 'source-seed');
+    const destinationSeed = path.join(root, 'destination-seed');
+    for (const [remote, seed, file] of [
+      [sourceRemote, sourceSeed, 'legacy.ts'],
+      [destinationRemote, destinationSeed, 'README.md'],
+    ]) {
+      await git(['init', '--bare', '-b', 'main', remote], root);
+      await git(['init', '-b', 'main', seed], root);
+      await writeFile(path.join(seed, file), 'shared content\n');
+      await git(['add', '-A'], seed);
+      await git(['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'seed'], seed);
+      await git(['push', remote, 'main'], seed);
+    }
+
+    const sourceDir = path.join(root, 'source');
+    const destinationDir = path.join(root, 'destination');
+    await git(['clone', sourceRemote, sourceDir], root);
+    await git(['clone', destinationRemote, destinationDir], root);
+    await writeFile(path.join(destinationDir, 'moved.ts'), 'shared content\n');
+    await rm(path.join(sourceDir, 'legacy.ts'));
+
+    const result = await commitAndPushAll({
+      repos: ['source', 'destination'],
+      workspaceDir: root,
+      branch: 'main',
+      gitProvider: 'github',
+      message: 'aidlc(cross-project-rename): e1',
+      urlsFor: (repo) => ({
+        auth: repo === 'source' ? sourceRemote : destinationRemote,
+        clean: `https://github.com/acme/${repo}.git`,
+      }),
+    });
+
+    expect(result.ok).toBe(true);
+    const byRepo = Object.fromEntries(result.results.map((entry) => [entry.repo, entry]));
+    expect(byRepo.source.files).toEqual(['source/legacy.ts']);
+    expect(byRepo.destination.files).toEqual(['destination/moved.ts']);
+    expect(result.results.flatMap((entry) => entry.files)).toEqual(
+      expect.arrayContaining(['source/legacy.ts', 'destination/moved.ts']),
+    );
   });
 });

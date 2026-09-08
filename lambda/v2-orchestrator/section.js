@@ -50,6 +50,7 @@
 // wakes: a superseded gate (cancel/rewind) retires the run with NO writes.
 
 import processKeysPkg from '../shared/v2-process-keys.js';
+import { normalizeChangedFileProvenance } from '../shared/changed-file-provenance.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from './pr-attribution.js';
 
@@ -1021,6 +1022,13 @@ export const runParallelSection = async (segment, toolkit) => {
       }
 
       const result = revision.result ?? {};
+      const changedFileProvenance = normalizeChangedFileProvenance(result.changedFileProvenance);
+      const changedFiles =
+        changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
+      const changedFilesSummary =
+        changedFileProvenance.state === 'known'
+          ? changedFiles.join(', ') || 'none'
+          : `unknown (${changedFileProvenance.reason})`;
       const refs = (next.comments ?? [])
         .map((comment) => `${comment.repository}#${comment.prNumber}:${comment.id}`)
         .join(', ');
@@ -1029,7 +1037,7 @@ export const runParallelSection = async (segment, toolkit) => {
         marker,
         '',
         `Handled comments: ${refs}`,
-        `Changed files: ${(result.changedFiles ?? []).join(', ') || 'none'}`,
+        `Changed files: ${changedFilesSummary}`,
         `Verification: ${result.verification ?? 'stage completed'}`,
         `Commit: ${result.commitSha ?? 'no new commit'}`,
       ].join('\n');
@@ -1057,7 +1065,8 @@ export const runParallelSection = async (segment, toolkit) => {
           fromStates: ['RUNNING'],
           fields: {
             output: summary,
-            changedFiles: result.changedFiles ?? [],
+            changedFileProvenance,
+            changedFiles,
             verification: result.verification ?? 'Stage completed',
             commitSha: result.commitSha ?? null,
           },

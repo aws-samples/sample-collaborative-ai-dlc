@@ -330,8 +330,32 @@ export interface IntentSensorRun {
   timestamp: string;
 }
 
+// A single bounded harness failure group. The backend redacts and de-duplicates
+// these entries before persistence; the UI renders only these allowlisted fields.
+export interface SensorHarnessFailure {
+  reason?: string;
+  result?: string;
+  exitCode?: number | null;
+  stderr?: string | null;
+  fileCount?: number;
+  sampleFiles?: string[];
+}
+
+export interface SensorFileDiagnostic {
+  file: string;
+  result?: string;
+  timedOut?: boolean;
+  detail?: {
+    reason?: string;
+    exitCode?: number | null;
+    stderr?: string | null;
+    [key: string]: unknown;
+  };
+}
+
 // Loosely-typed sensor verdict detail — the fields any evaluator may emit. All
-// optional; the UI reads whichever are present.
+// optional; the UI reads whichever are present. Script sensors additionally
+// expose a backend-bounded, pre-redacted diagnostic summary.
 export interface SensorDetail {
   artifacts?: { artifact: string; reason?: string; id?: string | null }[];
   unreferenced?: string[];
@@ -339,6 +363,10 @@ export interface SensorDetail {
   reason?: string;
   error?: string;
   findings_count?: number;
+  harnessFailures?: SensorHarnessFailure[];
+  files?: SensorFileDiagnostic[];
+  filesOmitted?: number;
+  omissionReason?: string;
   [key: string]: unknown;
 }
 
@@ -635,6 +663,10 @@ export interface UnitReviewComment {
 
 export type FeedbackBatchState = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
 
+export type ChangedFileProvenance =
+  | { state: 'known'; files: string[] }
+  | { state: 'unknown'; reason: string; detail?: string };
+
 export interface IntentFeedbackBatch {
   sectionIndex: number;
   unitSlug: string;
@@ -645,6 +677,7 @@ export interface IntentFeedbackBatch {
   requestedByName: string | null;
   stageInstanceId: string | null;
   output: string | null;
+  changedFileProvenance: ChangedFileProvenance | null;
   changedFiles: string[] | null;
   verification: string | null;
   commitSha: string | null;

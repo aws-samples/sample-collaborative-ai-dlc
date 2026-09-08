@@ -11,6 +11,7 @@ import {
   sensorNeedsAttention,
   summarizeSensorDetail,
 } from '@/components/intent/SensorChips';
+import { SensorDiagnostics } from '@/components/intent/SensorDiagnostics';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -357,10 +358,13 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
                     run.held ? 'text-agent-error' : 'text-muted-foreground',
                   )}
                 >
-                  <span className="font-medium">{run.sensorId}</span>{' '}
-                  <span className="uppercase">{run.result}</span>
-                  {run.held && <span className="font-semibold"> · blocking</span>}
-                  {explain && <span> — {explain}</span>}
+                  <div>
+                    <span className="font-medium">{run.sensorId}</span>{' '}
+                    <span className="uppercase">{run.result}</span>
+                    {run.held && <span className="font-semibold"> · blocking</span>}
+                    {explain && <span> — {explain}</span>}
+                  </div>
+                  <SensorDiagnostics detail={run.detail} sensorId={run.sensorId} />
                 </li>
               ))}
             </ul>
