@@ -135,6 +135,7 @@ beforeEach(() => {
     })),
     invokeRuntime: null, // bound to ctx below
     issueAgentCredentialGrant: vi.fn(async () => 'test-agent-credential-grant'),
+    issueBedrockRoleRefreshGrant: vi.fn(async () => 'test-bedrock-refresh-grant'),
     stopSession: vi.fn(async () => ({ stopped: true })),
     broadcast: vi.fn(async () => {}),
     openPr: vi.fn(async () => ({ skipped: true, reason: 'no_changes' })),
@@ -193,6 +194,38 @@ describe('orchestrator durable handler', () => {
     }
     // Distinct callback per stage attempt (attribution).
     expect(new Set(starts.map((s) => s.stageCallbackId)).size).toBe(2);
+  });
+
+  it('issues a bounded refresh grant for each Bedrock stage attempt', async () => {
+    const credentialBinding = { provider: 'bedrock', source: 'space' };
+    deps.store.getExecution.mockResolvedValue({
+      ...META,
+      agentCli: 'claude',
+      credentialBinding,
+    });
+
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+    const starts = stageStarts();
+    expect(starts).toHaveLength(2);
+    expect(deps.issueBedrockRoleRefreshGrant).toHaveBeenCalledTimes(2);
+    for (const [index, start] of starts.entries()) {
+      expect(start).toMatchObject({
+        stageInstanceId: expect.any(String),
+        stageCallbackId: expect.any(String),
+        bedrockRoleRefreshGrant: 'test-bedrock-refresh-grant',
+      });
+      expect(start).not.toHaveProperty('credentialRefreshExpiresAt');
+      expect(deps.issueBedrockRoleRefreshGrant.mock.calls[index][0]).toMatchObject({
+        projectId: 'p1',
+        executionId: 'i1',
+        stageInstanceId: start.stageInstanceId,
+        stageCallbackId: start.stageCallbackId,
+        binding: credentialBinding,
+        kind: 'role',
+        expiresAt: expect.any(Number),
+      });
+    }
   });
 
   it('strongly reads the credential pin before issuing grants', async () => {

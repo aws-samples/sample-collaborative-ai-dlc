@@ -48,10 +48,19 @@ export const AWS_TEMPORARY_CREDENTIAL_ENV_NAMES = Object.freeze([
   'AWS_SESSION_TOKEN',
 ]);
 
-// Every name an invocation may have written for a credential. cleanBaseEnv
+// Invocation-scoped container-provider variables used by Bedrock IAM-role mode.
+// These carry refresh authority rather than credential material, so they must be
+// excluded from untrusted child environments just as strictly as static STS keys.
+export const AWS_REFRESH_CREDENTIAL_ENV_NAMES = Object.freeze([
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+]);
+
+// Every model-credential name broker resolution may have written. cleanBaseEnv
 // scrubs all of them from the base environment on every invocation, so one
 // caller's credentials can never leak into the next one's — which is why the
-// three AWS names belong here and not only on the write side.
+// three static AWS names belong here and not only on the write side. Refresh
+// authority is installed later by createInvocationContext and remains separate.
 export const AGENT_CREDENTIAL_ENV_NAMES = Object.freeze([
   ...AGENT_CREDENTIAL_PROVIDERS.map((provider) => PROVIDER_CONFIG[provider].envName),
   ...AWS_TEMPORARY_CREDENTIAL_ENV_NAMES,

@@ -62,7 +62,14 @@
 // socket; createServer wires the real commands + clients.
 
 import http from 'node:http';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createProcessStore } from '../shared/v2-process-store.js';
+import {
+  AGENT_CREDENTIAL_ENV_NAMES,
+  AWS_REFRESH_CREDENTIAL_ENV_NAMES,
+  AWS_TEMPORARY_CREDENTIAL_ENV_NAMES,
+  CREDENTIAL_VALUE_KINDS,
+} from '../shared/agent-credentials.js';
 import { commandDefinition } from './command-registry.js';
 
 const APPLICATION_FAILURE_REASONS = new Set([
@@ -86,6 +93,300 @@ export const applicationFailureBody = (error) => {
     return null;
   }
   return { ok: false, reason };
+};
+
+const CONTAINER_CREDENTIALS_HOST = '127.0.0.1';
+const CONTAINER_CREDENTIALS_PATH_PREFIX = '/v1/credentials/';
+const REFRESH_BEDROCK_ROLE_CREDENTIALS = 'refresh-bedrock-role-credentials';
+const CONTAINER_CREDENTIAL_FIELDS = Object.freeze([
+  'AccessKeyId',
+  'SecretAccessKey',
+  'SessionToken',
+  'Token',
+  'Expiration',
+]);
+
+const scrubCredentialRecord = (value) => {
+  if (!value || typeof value !== 'object') return;
+  for (const field of CONTAINER_CREDENTIAL_FIELDS) {
+    try {
+      delete value[field];
+    } catch {
+      // A provider may return a frozen object. Dropping every mutable reference
+      // remains best-effort; frozen values leave scope immediately after send.
+    }
+  }
+};
+
+const scrubInvocationEnv = (value) => {
+  if (!value || typeof value !== 'object') return;
+  for (const name of [...AGENT_CREDENTIAL_ENV_NAMES, ...AWS_REFRESH_CREDENTIAL_ENV_NAMES]) {
+    delete value[name];
+  }
+};
+
+const sameSecret = (actual, expected) => {
+  if (typeof actual !== 'string' || typeof expected !== 'string') return false;
+  const actualDigest = createHash('sha256').update(actual).digest();
+  const expectedDigest = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(actualDigest, expectedDigest);
+};
+
+const containerCredentialBody = (credentials) => {
+  const body = {
+    AccessKeyId: credentials?.AccessKeyId,
+    SecretAccessKey: credentials?.SecretAccessKey,
+    Token: credentials?.SessionToken,
+    Expiration: credentials?.Expiration,
+  };
+  if (Object.values(body).some((value) => typeof value !== 'string' || value.length === 0)) {
+    throw new Error('Credential broker returned incomplete Bedrock role credentials');
+  }
+  return body;
+};
+
+const sendContainerCredentialResponse = (res, statusCode, body, extraHeaders = {}) => {
+  res.writeHead(statusCode, {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'application/json',
+    Pragma: 'no-cache',
+    ...extraHeaders,
+  });
+  res.end(JSON.stringify(body));
+};
+
+// AWS SDKs and agent CLIs poll this provider through
+// AWS_CONTAINER_CREDENTIALS_FULL_URI. It is a separate server from AgentCore's
+// 0.0.0.0:8080 runtime contract so the credential route is reachable only from
+// this microVM. Every stage invocation receives a distinct unguessable path and
+// authorization token; neither the refresh grant nor the token is logged.
+//
+// The provider never caches STS credentials. Every accepted GET redeems the
+// invocation's bounded refresh grant through the credential broker, which
+// revalidates the active execution, stage attempt, binding and session ceiling.
+export const createContainerCredentialsProvider = ({
+  broker,
+  port = 0,
+  randomBytesFn = randomBytes,
+} = {}) => {
+  if (typeof broker !== 'function') throw new TypeError('credential broker is required');
+
+  const invocations = new Map();
+  const opaqueValue = (size) => randomBytesFn(size).toString('base64url');
+
+  const server = http.createServer(async (req, res) => {
+    let pathname;
+    try {
+      pathname = new URL(req.url || '/', `http://${CONTAINER_CREDENTIALS_HOST}`).pathname;
+    } catch {
+      return sendContainerCredentialResponse(res, 404, { error: 'not found' });
+    }
+    if (!pathname.startsWith(CONTAINER_CREDENTIALS_PATH_PREFIX)) {
+      return sendContainerCredentialResponse(res, 404, { error: 'not found' });
+    }
+    const invocationId = pathname.slice(CONTAINER_CREDENTIALS_PATH_PREFIX.length);
+    const invocation =
+      invocationId && !invocationId.includes('/') ? invocations.get(invocationId) : null;
+    if (!invocation) return sendContainerCredentialResponse(res, 404, { error: 'not found' });
+    if (req.method !== 'GET') {
+      return sendContainerCredentialResponse(
+        res,
+        405,
+        { error: 'method not allowed' },
+        { Allow: 'GET' },
+      );
+    }
+    if (!sameSecret(req.headers.authorization, invocation.authorizationToken)) {
+      return sendContainerCredentialResponse(res, 401, { error: 'unauthorized' });
+    }
+
+    let result = null;
+    let body = null;
+    try {
+      result = await broker({
+        action: REFRESH_BEDROCK_ROLE_CREDENTIALS,
+        grant: invocation.refreshGrant,
+      });
+      // Revocation can race an already-started broker call. Never release the
+      // freshly minted credentials unless this exact invocation registration is
+      // still live after the broker returns.
+      if (!invocation.active || invocations.get(invocationId) !== invocation) {
+        return sendContainerCredentialResponse(res, 404, { error: 'not found' });
+      }
+      body = containerCredentialBody(result?.credentials);
+      return sendContainerCredentialResponse(res, 200, body);
+    } catch {
+      // Broker, AWS SDK and provider messages may contain sensitive context.
+      // The local caller needs only a retryable, sanitized failure.
+      return sendContainerCredentialResponse(res, 503, { error: 'credential refresh unavailable' });
+    } finally {
+      // The provider never caches STS material. Remove mutable references as
+      // soon as the response has been serialized into the loopback socket.
+      scrubCredentialRecord(result?.credentials);
+      scrubCredentialRecord(body);
+    }
+  });
+
+  const address = () => {
+    const value = server.address();
+    return typeof value === 'object' && value ? value : null;
+  };
+
+  return {
+    async listen() {
+      if (!server.listening) {
+        await new Promise((resolve, reject) => {
+          const onError = (error) => {
+            server.off('listening', onListening);
+            reject(error);
+          };
+          const onListening = () => {
+            server.off('error', onError);
+            resolve();
+          };
+          server.once('error', onError);
+          server.once('listening', onListening);
+          server.listen(port, CONTAINER_CREDENTIALS_HOST);
+        });
+      }
+      return address();
+    },
+    registerInvocation(refreshGrant) {
+      if (!server.listening) throw new Error('container credentials provider is not listening');
+      if (typeof refreshGrant !== 'string' || refreshGrant.length === 0) {
+        throw new TypeError('Bedrock role refresh grant is required');
+      }
+      let invocationId;
+      do invocationId = opaqueValue(18);
+      while (invocations.has(invocationId));
+      const authorizationToken = opaqueValue(32);
+      const providerAddress = address();
+      const invocation = { refreshGrant, authorizationToken, active: true, registration: null };
+      const registration = {
+        url: `http://${CONTAINER_CREDENTIALS_HOST}:${providerAddress.port}${CONTAINER_CREDENTIALS_PATH_PREFIX}${invocationId}`,
+        authorizationToken,
+        revoke() {
+          if (!invocation.active) return;
+          invocation.active = false;
+          invocations.delete(invocationId);
+          invocation.refreshGrant = null;
+          invocation.authorizationToken = null;
+          registration.url = null;
+          registration.authorizationToken = null;
+        },
+      };
+      invocation.registration = registration;
+      invocations.set(invocationId, invocation);
+      return registration;
+    },
+    async close() {
+      for (const invocation of invocations.values()) {
+        invocation.active = false;
+        invocation.refreshGrant = null;
+        invocation.authorizationToken = null;
+        if (invocation.registration) {
+          invocation.registration.url = null;
+          invocation.registration.authorizationToken = null;
+          invocation.registration = null;
+        }
+      }
+      invocations.clear();
+      if (!server.listening) return;
+      await new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    },
+    get address() {
+      return address();
+    },
+  };
+};
+
+// Bind one role-mode stage invocation to one loopback endpoint registration.
+// The initial broker resolution is authoritative for credential kind: a bearer
+// binding never receives refresh authority, even if the orchestrator supplied a
+// refresh grant during a rolling mode change.
+export const createInvocationContext = ({
+  store,
+  installedClis,
+  containerCredentials,
+  resolveAuth,
+  authenticatedClis,
+  env = process.env,
+}) => {
+  if (typeof resolveAuth !== 'function') throw new TypeError('auth resolver is required');
+  if (typeof authenticatedClis !== 'function') {
+    throw new TypeError('authenticated CLI resolver is required');
+  }
+  return async (payload, authMode) => {
+    const auth = await resolveAuth({ payload, authMode, store, env });
+    let invocationEnv = auth.env;
+    let containerCredentialRegistration = null;
+    if (
+      payload?.command === 'run-stage-start' &&
+      auth.credentialKinds?.bedrock === CREDENTIAL_VALUE_KINDS.ROLE &&
+      auth.resolvedProviders?.includes('bedrock')
+    ) {
+      if (!payload.bedrockRoleRefreshGrant) {
+        throw Object.assign(new Error('Bedrock role refresh grant is required'), {
+          code: 'credential_grant_required',
+        });
+      }
+      containerCredentialRegistration = containerCredentials.registerInvocation(
+        payload.bedrockRoleRefreshGrant,
+      );
+      invocationEnv = {
+        ...auth.env,
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: containerCredentialRegistration.url,
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: containerCredentialRegistration.authorizationToken,
+      };
+      for (const name of AWS_TEMPORARY_CREDENTIAL_ENV_NAMES) delete invocationEnv[name];
+    }
+    const context = {
+      ...auth,
+      env: invocationEnv,
+      // The initial STS session is discarded when the loopback provider is
+      // installed. Its expiry must not classify a later, unrelated CLI failure
+      // after one or more successful refreshes.
+      credentialExpiresAt: containerCredentialRegistration ? null : auth.credentialExpiresAt,
+      // A Bedrock role binding sets no bearer token, so availability must
+      // follow the providers the broker resolved rather than secret env names.
+      availableClis: authenticatedClis({
+        installed: installedClis,
+        resolvedProviders: auth.resolvedProviders,
+      }),
+    };
+    if (containerCredentialRegistration) {
+      let cleaned = false;
+      let cleanupDeferred = false;
+      Object.defineProperties(context, {
+        cleanup: {
+          enumerable: false,
+          value() {
+            if (cleaned) return;
+            cleaned = true;
+            containerCredentialRegistration.revoke();
+            scrubInvocationEnv(auth.env);
+            scrubInvocationEnv(invocationEnv);
+            containerCredentialRegistration = null;
+          },
+        },
+        deferCleanup: {
+          enumerable: false,
+          value() {
+            if (!cleaned) cleanupDeferred = true;
+          },
+        },
+        cleanupDeferred: {
+          enumerable: false,
+          get() {
+            return cleanupDeferred;
+          },
+        },
+      });
+    }
+    return context;
+  };
 };
 
 // Track whether a stage is currently running so /ping can report HealthyBusy.
@@ -120,14 +421,16 @@ export const dispatchInvocation = async ({
   const handler = definition ? handlers[definition.handler] : null;
   if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
 
+  let context = {};
   busy?.enter();
   try {
-    const context =
+    context =
       prepareInvocation && definition.agentAuth
         ? await prepareInvocation(payload, definition.agentAuth)
         : {};
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
+    delete handlerPayload.bedrockRoleRefreshGrant;
     const result = await handler(handlerPayload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
@@ -150,6 +453,7 @@ export const dispatchInvocation = async ({
       body: { error: 'Internal server error', command },
     };
   } finally {
+    if (!context?.cleanupDeferred) context?.cleanup?.();
     busy?.leave();
   }
 };
@@ -216,6 +520,7 @@ const main = async () => {
     ddb,
     openGraph,
     broadcastToIntent,
+    invokeCredentialBroker,
     sendStageCallbackSuccess,
     sendStageCallbackHeartbeat,
   } = await import('./clients.js');
@@ -250,24 +555,21 @@ const main = async () => {
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
   const store = createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
   const installedClis = await discoverInstalledClis();
-  const invocationContext = async (payload, authMode) => {
-    const auth = await resolveInvocationAgentAuth({
-      payload,
-      authMode,
-      store,
-      env: process.env,
-    });
-    return {
-      ...auth,
-      // A Bedrock role binding sets temporary AWS credentials and no bearer
-      // token, so availability must follow the RESOLVED providers, not the
-      // presence of a secret variable.
-      availableClis: authenticatedClisForProviders({
-        installed: installedClis,
-        resolvedProviders: auth.resolvedProviders,
-      }),
-    };
-  };
+  const containerCredentials = createContainerCredentialsProvider({
+    broker: invokeCredentialBroker,
+  });
+  const containerCredentialsAddress = await containerCredentials.listen();
+  console.error(
+    `[agentcore] container credentials listening on ${CONTAINER_CREDENTIALS_HOST}:${containerCredentialsAddress.port}`,
+  );
+  const invocationContext = createInvocationContext({
+    store,
+    installedClis,
+    containerCredentials,
+    resolveAuth: resolveInvocationAgentAuth,
+    authenticatedClis: authenticatedClisForProviders,
+    env: process.env,
+  });
 
   // Publish a process-state payload on the intent's realtime channel. The
   // payload carries its own intentId (the command stamps it), so fan-out is keyed
@@ -359,7 +661,7 @@ const main = async () => {
       sendCallbackHeartbeat: sendStageCallbackHeartbeat,
       busy,
       activeJobs: stageJobs,
-    })(p);
+    })(p, context);
   const discussionJobs = new Map();
   handlers.discussionAssistStart = (p, context) =>
     createDiscussionAssistStart({

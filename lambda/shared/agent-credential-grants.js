@@ -1,11 +1,17 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
-import { AGENT_CREDENTIAL_PROVIDERS, normalizeCredentialBinding } from './agent-credentials.js';
+import {
+  AGENT_CREDENTIAL_PROVIDERS,
+  CREDENTIAL_VALUE_KINDS,
+  normalizeCredentialBinding,
+} from './agent-credentials.js';
 import { AGENT_AUTH_MODES } from './agent-command-registry.js';
 
 export const AGENT_CREDENTIAL_GRANT_AUDIENCE = 'aidlc-agent-credential-broker';
 export const AGENT_CREDENTIAL_GRANT_PURPOSES = Object.freeze(Object.values(AGENT_AUTH_MODES));
 export const AGENT_CREDENTIAL_GRANT_TTL_SECONDS = 300;
+export const BEDROCK_ROLE_REFRESH_GRANT_AUDIENCE = 'aidlc-bedrock-role-refresh';
+export const BEDROCK_ROLE_REFRESH_GRANT_TTL_SECONDS = 8 * 60 * 60;
 
 const MAX_TOKEN_BYTES = 8192;
 const CLOCK_SKEW_SECONDS = 30;
@@ -71,6 +77,57 @@ const signingKey = (secret) => {
 const signatureFor = (encodedClaims, secret) =>
   createHmac('sha256', signingKey(secret)).update(encodedClaims).digest();
 
+const encodeSignedClaims = (claims, secret) => {
+  const encodedClaims = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  const signature = signatureFor(encodedClaims, secret).toString('base64url');
+  return `${encodedClaims}.${signature}`;
+};
+
+const decodeSignedClaims = (token, secret) => {
+  if (typeof token !== 'string' || !token || Buffer.byteLength(token) > MAX_TOKEN_BYTES) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+  }
+  const parts = token.split('.');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+  }
+  const [encodedClaims, encodedSignature] = parts;
+  let suppliedSignature;
+  try {
+    suppliedSignature = Buffer.from(encodedSignature, 'base64url');
+  } catch {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+  }
+  const expectedSignature = signatureFor(encodedClaims, secret);
+  if (
+    suppliedSignature.length !== expectedSignature.length ||
+    !timingSafeEqual(suppliedSignature, expectedSignature)
+  ) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+  }
+
+  try {
+    return JSON.parse(Buffer.from(encodedClaims, 'base64url').toString('utf8'));
+  } catch {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+  }
+};
+
+const validateGrantTimes = (claims, current, ttlCeilingSeconds) => {
+  if (
+    !Number.isInteger(claims.issuedAt) ||
+    !Number.isInteger(claims.expiresAt) ||
+    claims.expiresAt <= claims.issuedAt ||
+    claims.expiresAt - claims.issuedAt > ttlCeilingSeconds ||
+    claims.issuedAt > current + CLOCK_SKEW_SECONDS
+  ) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+  }
+  if (claims.expiresAt <= current) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_EXPIRED', 'Agent credential grant has expired');
+  }
+};
+
 const normalizedClaims = (claims) => {
   if (!claims || typeof claims !== 'object' || Array.isArray(claims)) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
@@ -107,6 +164,43 @@ const normalizedClaims = (claims) => {
   };
 };
 
+const normalizedBedrockRoleRefreshClaims = (claims) => {
+  if (!claims || typeof claims !== 'object' || Array.isArray(claims)) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Bedrock role refresh grant is invalid');
+  }
+  let binding;
+  try {
+    binding = normalizeCredentialBinding(claims.binding);
+  } catch {
+    binding = null;
+  }
+  if (!binding || binding.provider !== 'bedrock') {
+    throw grantError(
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'Bedrock role refresh grant binding is invalid',
+    );
+  }
+  if (claims.kind !== CREDENTIAL_VALUE_KINDS.ROLE) {
+    throw grantError(
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'Bedrock role refresh grant credential kind is invalid',
+    );
+  }
+  return {
+    version: 1,
+    audience: BEDROCK_ROLE_REFRESH_GRANT_AUDIENCE,
+    grantId: requiredString(claims.grantId, 'grantId'),
+    projectId: requiredString(claims.projectId, 'projectId'),
+    executionId: requiredString(claims.executionId, 'executionId'),
+    stageInstanceId: requiredString(claims.stageInstanceId, 'stageInstanceId'),
+    stageCallbackId: requiredString(claims.stageCallbackId, 'stageCallbackId'),
+    binding,
+    kind: CREDENTIAL_VALUE_KINDS.ROLE,
+    issuedAt: Number(claims.issuedAt),
+    expiresAt: Number(claims.expiresAt),
+  };
+};
+
 export const signAgentCredentialGrant = (
   { purpose, projectId = null, executionId = null, bindings },
   secret,
@@ -133,57 +227,52 @@ export const signAgentCredentialGrant = (
     issuedAt,
     expiresAt: issuedAt + ttlSeconds,
   });
-  const encodedClaims = Buffer.from(JSON.stringify(claims)).toString('base64url');
-  const signature = signatureFor(encodedClaims, secret).toString('base64url');
-  return `${encodedClaims}.${signature}`;
+  return encodeSignedClaims(claims, secret);
 };
 
 export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now() } = {}) => {
-  if (typeof token !== 'string' || !token || Buffer.byteLength(token) > MAX_TOKEN_BYTES) {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
-  }
-  const parts = token.split('.');
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
-  }
-  const [encodedClaims, encodedSignature] = parts;
-  let suppliedSignature;
-  try {
-    suppliedSignature = Buffer.from(encodedSignature, 'base64url');
-  } catch {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
-  }
-  const expectedSignature = signatureFor(encodedClaims, secret);
-  if (
-    suppliedSignature.length !== expectedSignature.length ||
-    !timingSafeEqual(suppliedSignature, expectedSignature)
-  ) {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(Buffer.from(encodedClaims, 'base64url').toString('utf8'));
-  } catch {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
-  }
+  const parsed = decodeSignedClaims(token, secret);
   if (parsed?.version !== 1 || parsed?.audience !== AGENT_CREDENTIAL_GRANT_AUDIENCE) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
   const claims = normalizedClaims(parsed);
-  const current = Math.floor(now() / 1000);
-  if (
-    !Number.isInteger(claims.issuedAt) ||
-    !Number.isInteger(claims.expiresAt) ||
-    claims.expiresAt <= claims.issuedAt ||
-    claims.expiresAt - claims.issuedAt > AGENT_CREDENTIAL_GRANT_TTL_SECONDS ||
-    claims.issuedAt > current + CLOCK_SKEW_SECONDS
-  ) {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+  validateGrantTimes(claims, Math.floor(now() / 1000), AGENT_CREDENTIAL_GRANT_TTL_SECONDS);
+  return claims;
+};
+
+// A refresh grant is separate authorization, not a longer-lived invocation
+// grant. Its distinct audience prevents either verifier from accepting the
+// other token class. `expiresAt` is an absolute Unix timestamp supplied from
+// the stage callback deadline; the eight-hour ceiling is a second fail-closed
+// guard and must remain aligned with the maximum stage callback timeout.
+export const signBedrockRoleRefreshGrant = (
+  { projectId, executionId, stageInstanceId, stageCallbackId, binding, kind, expiresAt },
+  secret,
+  { now = () => Date.now(), randomId = randomUUID } = {},
+) => {
+  const issuedAt = Math.floor(now() / 1000);
+  const claims = normalizedBedrockRoleRefreshClaims({
+    projectId,
+    executionId,
+    stageInstanceId,
+    stageCallbackId,
+    binding,
+    kind,
+    grantId: randomId(),
+    issuedAt,
+    expiresAt,
+  });
+  validateGrantTimes(claims, issuedAt, BEDROCK_ROLE_REFRESH_GRANT_TTL_SECONDS);
+  return encodeSignedClaims(claims, secret);
+};
+
+export const verifyBedrockRoleRefreshGrant = (token, secret, { now = () => Date.now() } = {}) => {
+  const parsed = decodeSignedClaims(token, secret);
+  if (parsed?.version !== 1 || parsed?.audience !== BEDROCK_ROLE_REFRESH_GRANT_AUDIENCE) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Bedrock role refresh grant is invalid');
   }
-  if (claims.expiresAt <= current) {
-    throw grantError('AGENT_CREDENTIAL_GRANT_EXPIRED', 'Agent credential grant has expired');
-  }
+  const claims = normalizedBedrockRoleRefreshClaims(parsed);
+  validateGrantTimes(claims, Math.floor(now() / 1000), BEDROCK_ROLE_REFRESH_GRANT_TTL_SECONDS);
   return claims;
 };
 
@@ -233,10 +322,36 @@ export const verifyIssuedAgentCredentialGrant = async (
     options,
   );
 
+export const issueBedrockRoleRefreshGrant = async (
+  ssm,
+  claims,
+  { env = process.env, secret = null, ...options } = {},
+) =>
+  signBedrockRoleRefreshGrant(
+    claims,
+    secret ?? (await loadAgentCredentialGrantSecret(ssm, { env })),
+    options,
+  );
+
+export const verifyIssuedBedrockRoleRefreshGrant = async (
+  ssm,
+  token,
+  { env = process.env, secret = null, ...options } = {},
+) =>
+  verifyBedrockRoleRefreshGrant(
+    token,
+    secret ?? (await loadAgentCredentialGrantSecret(ssm, { env })),
+    options,
+  );
+
 export default {
   issueAgentCredentialGrant,
+  issueBedrockRoleRefreshGrant,
   loadAgentCredentialGrantSecret,
   signAgentCredentialGrant,
+  signBedrockRoleRefreshGrant,
   verifyAgentCredentialGrant,
+  verifyBedrockRoleRefreshGrant,
   verifyIssuedAgentCredentialGrant,
+  verifyIssuedBedrockRoleRefreshGrant,
 };

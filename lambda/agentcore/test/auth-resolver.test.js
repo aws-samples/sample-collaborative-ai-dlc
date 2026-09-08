@@ -522,6 +522,7 @@ describe('resolveInvocationAgentAuth on the Bedrock role path', () => {
     // req-credential-safety: the bearer variable is never set on the role path.
     expect(result.env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
     expect(result.resolvedProviders).toEqual(['bedrock']);
+    expect(result.credentialKinds).toEqual({ bedrock: 'role' });
     expect(result.missingProviders).toEqual([]);
     // The base environment — and therefore process.env in production — is untouched.
     expect(baseEnv.AWS_ACCESS_KEY_ID).toBe('stale-key');
@@ -631,6 +632,7 @@ describe('resolveInvocationAgentAuth on the Bedrock role path', () => {
     expect(result.env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(result.env.AWS_SESSION_TOKEN).toBeUndefined();
     expect(result.resolvedProviders).toEqual(['bedrock']);
+    expect(result.credentialKinds).toEqual({ bedrock: 'bearer' });
   });
 });
 

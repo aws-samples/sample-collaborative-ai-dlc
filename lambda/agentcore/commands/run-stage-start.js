@@ -55,7 +55,7 @@ export const createRunStageStart = ({
   activeJobs = new Map(),
   log = (...args) => console.error('[run-stage-start]', ...args),
 }) => {
-  const start = async (payload) => {
+  const start = async (payload, invocationContext = {}) => {
     const { stageCallbackId, executionId, stageId } = payload ?? {};
     if (!stageCallbackId) {
       return { ok: false, reason: 'missing_stage_callback_id' };
@@ -106,6 +106,10 @@ export const createRunStageStart = ({
     };
     activeJobs.set(key, jobState);
     busy?.enter();
+    // The HTTP accept response ends before the stage. Keep this invocation's
+    // refresh registration and credential environment alive only for the
+    // detached job; dispatchInvocation cleans every unaccepted path itself.
+    invocationContext.deferCleanup?.();
     log(`stage callback heartbeat established for ${key}`);
 
     // Agent launching time (cold start): orchestrator dispatch → job accepted
@@ -175,8 +179,17 @@ export const createRunStageStart = ({
         return result;
       } finally {
         if (heartbeatTimer) clearTimeout(heartbeatTimer);
-        activeJobs.delete(key);
-        busy?.leave();
+        // Revoke before releasing the job slot. A retry can start only after the
+        // old attempt's endpoint/token and in-memory credential environment are
+        // no longer usable. Keep any cleanup error detail out of logs.
+        try {
+          invocationContext.cleanup?.();
+        } catch {
+          log(`FAILED to clean invocation credential state for ${key}`);
+        } finally {
+          activeJobs.delete(key);
+          busy?.leave();
+        }
       }
     })();
     // Surfacing job rejections: the job function never rejects (all paths are

@@ -121,6 +121,54 @@ describe('createRunStageStart', () => {
     expect(start.activeJobs.size).toBe(0);
   });
 
+  it('defers invocation cleanup through acceptance and runs it once when the job settles', async () => {
+    const gate = makeGate();
+    const cleanup = vi.fn();
+    let cleanupDeferred = false;
+    const invocationContext = {
+      cleanup,
+      deferCleanup: vi.fn(() => {
+        cleanupDeferred = true;
+      }),
+      get cleanupDeferred() {
+        return cleanupDeferred;
+      },
+    };
+    const { deps } = makeDeps({ runStage: vi.fn(() => gate.promise) });
+    const start = createRunStageStart(deps);
+
+    const accepted = await dispatchInvocation({
+      payload: basePayload,
+      handlers: { runStageStart: start },
+      prepareInvocation: async () => invocationContext,
+    });
+
+    expect(accepted.body).toMatchObject({ ok: true, accepted: true });
+    expect(invocationContext.deferCleanup).toHaveBeenCalledOnce();
+    expect(cleanup).not.toHaveBeenCalled();
+
+    gate.resolve({ ok: true, state: 'SUCCEEDED' });
+    await flush();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('cleans invocation state immediately when a stage is not accepted', async () => {
+    const cleanup = vi.fn();
+    const { deps } = makeDeps({
+      sendCallbackHeartbeat: vi.fn(async () => ({ delivered: false, error: 'gone' })),
+    });
+    const start = createRunStageStart({ ...deps, log: () => {} });
+    const result = await dispatchInvocation({
+      payload: basePayload,
+      handlers: { runStageStart: start },
+      prepareInvocation: async () => ({ cleanup, cleanupDeferred: false }),
+    });
+
+    expect(result.body).toMatchObject({ ok: false, reason: 'stage_callback_heartbeat_failed' });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(deps.runStage).not.toHaveBeenCalled();
+  });
+
   it('normalizes a stateless run-stage failure before completing the callback', async () => {
     const { deps, sent } = makeDeps({
       runStage: vi.fn(async () => ({ ok: false, reason: 'sensor_blocked', detail: 'lint' })),

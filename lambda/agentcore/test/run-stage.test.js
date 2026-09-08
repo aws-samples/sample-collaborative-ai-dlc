@@ -988,6 +988,33 @@ describe('runStage — MCP secret resolution + child-env injection', () => {
     expect(cap.env.MYSERVER_KEY).toBe('resolved-secret');
   });
 
+  it('passes only refresh-provider auth to a Bedrock role-mode CLI child', async () => {
+    const { cap, spawnFn } = capturingSpawn();
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn,
+        env: {
+          BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+          AWS_ACCESS_KEY_ID: 'initial-key',
+          AWS_SECRET_ACCESS_KEY: 'initial-secret',
+          AWS_SESSION_TOKEN: 'initial-session',
+          AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/invocation',
+          AWS_CONTAINER_AUTHORIZATION_TOKEN: 'invocation-token',
+        },
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(cap.env).toMatchObject({
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/invocation',
+      AWS_CONTAINER_AUTHORIZATION_TOKEN: 'invocation-token',
+    });
+    expect(cap.env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(cap.env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(cap.env.AWS_SESSION_TOKEN).toBeUndefined();
+  });
+
   it('fails the stage closed when the resolver throws (mcp_secret_error), no spawn', async () => {
     const { cap, spawnFn } = capturingSpawn();
     const deps = baseDeps({
@@ -1703,7 +1730,10 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(res.reason).toBe('cli_nonzero_exit');
   });
 
-  it('is inert for a bearer binding, which carries no deadline', async () => {
+  it('does not misclassify a non-credential failure after refresh mode clears the initial expiry', async () => {
+    // The initial STS session has expired, but refresh mode replaced it and
+    // deliberately cleared the fixed deadline before runStage was invoked.
+    // An unrelated child failure must therefore remain cli_nonzero_exit.
     const deps = baseDeps({
       spawnFn: () => ({
         on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),

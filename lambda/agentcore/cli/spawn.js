@@ -14,6 +14,34 @@
 
 import { spawn } from 'node:child_process';
 
+const COMPETING_AWS_CREDENTIAL_ENV_NAMES = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_ARN',
+  'AWS_ROLE_SESSION_NAME',
+  'AWS_PROFILE',
+  'AWS_DEFAULT_PROFILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_CONFIG_FILE',
+];
+
+// A refreshable role-mode child receives one credential source: the
+// invocation-scoped FULL_URI + authorization token. Remove every inherited
+// source the AWS SDK credential chain could prefer or fall back to, including
+// AgentCore's RELATIVE_URI runtime identity. The trusted aidlc MCP bridge gets
+// that runtime identity separately through its materialized server environment.
+export const childProcessEnv = (env = {}, baseEnv = process.env) => {
+  const merged = { ...baseEnv, ...env };
+  if (env.AWS_CONTAINER_CREDENTIALS_FULL_URI && env.AWS_CONTAINER_AUTHORIZATION_TOKEN) {
+    for (const name of COMPETING_AWS_CREDENTIAL_ENV_NAMES) delete merged[name];
+  }
+  return merged;
+};
+
 // Keep only the last `max` bytes of a growing string — the tail is where a CLI
 // prints its terminating error, and it bounds memory on a chatty child.
 const clampTail = (s, max) => (s.length > max ? s.slice(s.length - max) : s);
@@ -31,7 +59,7 @@ export const runChild = ({
 }) =>
   new Promise((resolve, reject) => {
     const capture = captureStderrTail > 0;
-    const mergedEnv = { ...process.env, ...env };
+    const mergedEnv = childProcessEnv(env);
     let child;
     try {
       child = spawnFn(command, args, {
@@ -105,7 +133,7 @@ export const captureChild = ({
   spawnFn = spawn,
 }) =>
   new Promise((resolve) => {
-    const mergedEnv = { ...process.env, ...env };
+    const mergedEnv = childProcessEnv(env);
     let child;
     try {
       child = spawnFn(command, args, {

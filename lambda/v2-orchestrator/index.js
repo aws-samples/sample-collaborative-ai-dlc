@@ -32,9 +32,12 @@ import {
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
-import { credentialProviderForCli } from '../shared/agent-credentials.js';
-import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
-import { commandDefinition } from '../shared/agent-command-registry.js';
+import { CREDENTIAL_VALUE_KINDS, credentialProviderForCli } from '../shared/agent-credentials.js';
+import {
+  issueAgentCredentialGrant,
+  issueBedrockRoleRefreshGrant,
+} from '../shared/agent-credential-grants.js';
+import { AGENT_AUTH_MODES, commandDefinition } from '../shared/agent-command-registry.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
@@ -189,6 +192,7 @@ const defaultDeps = () => ({
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
+  issueBedrockRoleRefreshGrant: (claims) => issueBedrockRoleRefreshGrant(ssm, claims),
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
   openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body }) =>
@@ -334,16 +338,42 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
       return rawInvokeRuntime(payload, runtimeSessionId, runtimeTarget);
     }
+    const { credentialRefreshExpiresAt, ...runtimePayload } = payload;
     const agentCredentialGrant = await deps.issueAgentCredentialGrant({
       purpose: authMode,
       projectId,
       executionId,
       bindings: [credentialBinding],
     });
+    let bedrockRoleRefreshGrant = null;
+    if (
+      authMode === AGENT_AUTH_MODES.EXECUTION &&
+      runtimePayload.command === 'run-stage-start' &&
+      credentialBinding.provider === 'bedrock'
+    ) {
+      if (
+        typeof deps.issueBedrockRoleRefreshGrant !== 'function' ||
+        !runtimePayload.stageInstanceId ||
+        !runtimePayload.stageCallbackId ||
+        !Number.isInteger(credentialRefreshExpiresAt)
+      ) {
+        throw new Error('Bedrock role refresh grant cannot be issued for this stage attempt');
+      }
+      bedrockRoleRefreshGrant = await deps.issueBedrockRoleRefreshGrant({
+        projectId,
+        executionId,
+        stageInstanceId: runtimePayload.stageInstanceId,
+        stageCallbackId: runtimePayload.stageCallbackId,
+        binding: credentialBinding,
+        kind: CREDENTIAL_VALUE_KINDS.ROLE,
+        expiresAt: credentialRefreshExpiresAt,
+      });
+    }
     return rawInvokeRuntime(
       {
-        ...payload,
+        ...runtimePayload,
         agentCredentialGrant,
+        ...(bedrockRoleRefreshGrant ? { bedrockRoleRefreshGrant } : {}),
       },
       runtimeSessionId,
       runtimeTarget,
@@ -1543,6 +1573,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 // dead-container detector: the background job beats every ~60s, so a container
 // that dies mid-stage surfaces here in minutes instead of hours.
 const STAGE_CALLBACK_TIMEOUT = { hours: 8 };
+const STAGE_CALLBACK_TIMEOUT_SECONDS = 8 * 60 * 60;
+const REFRESH_GRANT_CALLBACK_MARGIN_SECONDS = 60;
 const STAGE_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
 
 // Current AgentCore containers return these application failures as
@@ -1604,6 +1636,12 @@ const runStage = async (
     timeout: STAGE_CALLBACK_TIMEOUT,
     heartbeatTimeout: STAGE_CALLBACK_HEARTBEAT_TIMEOUT,
   });
+  // Keep the refresh authorization strictly inside the callback lifetime. The
+  // margin covers time between callback creation and signed-grant issuance.
+  const credentialRefreshExpiresAt =
+    Math.floor(Date.now() / 1000) +
+    STAGE_CALLBACK_TIMEOUT_SECONDS -
+    REFRESH_GRANT_CALLBACK_MARGIN_SECONDS;
 
   const reconcileFailure = async (result) => {
     if (result?.state !== 'FAILED' || !stageInstanceId) return result;
@@ -1629,6 +1667,8 @@ const runStage = async (
         dispatchedAt: nowIso(),
         ...ids,
         stageId: stage.stageId,
+        stageInstanceId,
+        credentialRefreshExpiresAt,
         // Unit lane (WP4): run-stage derives the per-unit instance id, stamps
         // the slug on every row/event/broadcast, and scopes the prompt.
         unitSlug,

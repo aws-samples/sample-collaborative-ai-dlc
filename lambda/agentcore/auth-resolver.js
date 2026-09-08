@@ -181,6 +181,7 @@ export const resolveInvocationAgentAuth = async ({
   const bindings = resolveBindings({ payload, meta }).map(normalizeCredentialBinding);
 
   const credentialBindings = [];
+  const credentialKinds = {};
   const resolvedProviders = [];
   const missingProviders = [];
   const missingCredentialBindings = [];
@@ -191,6 +192,7 @@ export const resolveInvocationAgentAuth = async ({
     return {
       env: invocationEnv,
       credentialBindings,
+      credentialKinds,
       resolvedProviders,
       missingProviders,
       missingCredentialBindings,
@@ -252,6 +254,7 @@ export const resolveInvocationAgentAuth = async ({
     };
     credentialBindings.push(credentialBinding);
     const entry = authorized.get(bindingKey(binding));
+    credentialKinds[binding.provider] = entry?.kind ?? null;
     const usable = applyAuthorizedCredential({
       entry,
       binding,
@@ -279,6 +282,7 @@ export const resolveInvocationAgentAuth = async ({
   return {
     env: invocationEnv,
     credentialBindings,
+    credentialKinds,
     resolvedProviders,
     missingProviders,
     missingCredentialBindings,

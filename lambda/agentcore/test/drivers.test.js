@@ -14,7 +14,7 @@ import {
   parseKiroCredits,
   parseKiroCreditRate,
 } from '../cli/drivers.js';
-import { runChild } from '../cli/spawn.js';
+import { childProcessEnv, runChild } from '../cli/spawn.js';
 
 describe('selectCli', () => {
   it('uses the requested CLI when installed', () => {
@@ -107,8 +107,8 @@ describe('claude driver', () => {
   });
 
   // specs/bedrock-iam-role-credential-mode — req-credential-delivery-env. One
-  // suite for all three Bedrock drivers: the point of the design is that role
-  // credentials introduce NO per-CLI wiring, so the assertion is identical.
+  // suite for all three Bedrock drivers: refreshable role credentials introduce
+  // no per-CLI wiring, so the assertion is identical.
   describe.each([
     ['claude', () => claudeDriver],
     ['opencode', () => opencodeDriver],
@@ -119,16 +119,20 @@ describe('claude driver', () => {
       AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
       AWS_SECRET_ACCESS_KEY: 'secret',
       AWS_SESSION_TOKEN: 'session',
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/invocation',
+      AWS_CONTAINER_AUTHORIZATION_TOKEN: 'invocation-token',
     };
 
-    it('forwards the three AWS credential variables when no bearer token is present', () => {
+    it('forwards only the loopback provider URI and token', () => {
       const env = driver().envForAuth(ROLE_ENV);
       expect(env).toMatchObject({
         AWS_REGION: 'eu-central-1',
-        AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
-        AWS_SECRET_ACCESS_KEY: 'secret',
-        AWS_SESSION_TOKEN: 'session',
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/invocation',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'invocation-token',
       });
+      expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+      expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+      expect(env.AWS_SESSION_TOKEN).toBeUndefined();
       expect(env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
     });
 
@@ -140,19 +144,23 @@ describe('claude driver', () => {
       expect(driver().envForAuth(noRegion).AWS_REGION).toBe('us-east-1');
     });
 
-    it('forwards nothing when the credential set is incomplete', () => {
+    it('fails closed instead of falling back to static credentials', () => {
       const env = driver().envForAuth({
-        AWS_REGION: 'eu-central-1',
-        AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
-        AWS_SECRET_ACCESS_KEY: 'secret',
+        ...ROLE_ENV,
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: '',
       });
+      expect(env.AWS_CONTAINER_CREDENTIALS_FULL_URI).toBeUndefined();
+      expect(env.AWS_CONTAINER_AUTHORIZATION_TOKEN).toBeUndefined();
       expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
       expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+      expect(env.AWS_SESSION_TOKEN).toBeUndefined();
     });
 
     it('keeps the bearer path unchanged when a bearer token is present', () => {
       const env = driver().envForAuth({ ...ROLE_ENV, AWS_BEARER_TOKEN_BEDROCK: 'tok' });
       expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe('tok');
+      expect(env.AWS_CONTAINER_CREDENTIALS_FULL_URI).toBeUndefined();
+      expect(env.AWS_CONTAINER_AUTHORIZATION_TOKEN).toBeUndefined();
       expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
       expect(env.AWS_SESSION_TOKEN).toBeUndefined();
     });
@@ -463,6 +471,53 @@ describe('getDriver', () => {
 });
 
 describe('runChild — exit contract', () => {
+  it('keeps only the invocation loopback provider for a refreshable CLI', () => {
+    const env = childProcessEnv(
+      {
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/invocation',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'invocation-token',
+      },
+      {
+        BASE: 'value',
+        AWS_ACCESS_KEY_ID: 'inherited-key',
+        AWS_SECRET_ACCESS_KEY: 'inherited-secret',
+        AWS_SESSION_TOKEN: 'inherited-session',
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://runtime.invalid/credentials',
+        AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials/runtime-role',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'runtime-token',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '/var/run/agentcore/runtime-token',
+        AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/web-identity-token',
+        AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/runtime',
+        AWS_ROLE_SESSION_NAME: 'runtime-session',
+        AWS_PROFILE: 'runtime',
+        AWS_DEFAULT_PROFILE: 'runtime',
+        AWS_SHARED_CREDENTIALS_FILE: '/home/node/.aws/credentials',
+        AWS_CONFIG_FILE: '/home/node/.aws/config',
+      },
+    );
+
+    expect(env).toMatchObject({
+      BASE: 'value',
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/invocation',
+      AWS_CONTAINER_AUTHORIZATION_TOKEN: 'invocation-token',
+    });
+    for (const name of [
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+      'AWS_WEB_IDENTITY_TOKEN_FILE',
+      'AWS_ROLE_ARN',
+      'AWS_ROLE_SESSION_NAME',
+      'AWS_PROFILE',
+      'AWS_DEFAULT_PROFILE',
+      'AWS_SHARED_CREDENTIALS_FILE',
+      'AWS_CONFIG_FILE',
+    ]) {
+      expect(env[name]).toBeUndefined();
+    }
+  });
   // A fake child the test drives to a close/error event.
   const fakeChild = () => {
     const c = new EventEmitter();

@@ -19,26 +19,22 @@
 // The MCP server name we register under in mcp-config (see stage-materializer).
 export const MCP_SERVER_NAME = 'aidlc';
 
-// Bedrock temporary credentials, forwarded to a CLI when the resolved binding is
-// an IAM role rather than a bearer token
-// (specs/bedrock-iam-role-credential-mode: req-credential-delivery-env).
-//
-// Nothing here is per-CLI: all three Bedrock CLIs use AWS SDKs and read the
-// standard credential variables, verified at the pinned versions
-// (con-cli-env-creds). No helper binary, no credential_process, no config file —
-// which is also what keeps a future non-AWS provider from needing its own wiring.
+// Bedrock IAM-role credentials are delivered to CLI children through the
+// loopback container-credentials provider. The child receives only the provider
+// URI and its invocation-scoped authorization token; it never receives the
+// broker's initial static STS values. All Bedrock CLIs use the AWS SDK container
+// provider chain, so the wiring is intentionally identical across drivers.
 //
 // A bearer token, when present, wins: con-one-binding-per-provider means one
-// provider resolves to exactly ONE binding, so the two shapes never coexist in
-// practice, and preferring the pre-existing path keeps the bearer behaviour
-// byte-identical to before this feature.
+// provider resolves to exactly ONE binding, and preferring the pre-existing path
+// keeps bearer behavior byte-identical. An incomplete refresh-provider pair
+// fails closed instead of falling back to static credentials.
 const bedrockRoleEnv = (env) => {
   if (env.AWS_BEARER_TOKEN_BEDROCK) return {};
-  if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY || !env.AWS_SESSION_TOKEN) return {};
+  if (!env.AWS_CONTAINER_CREDENTIALS_FULL_URI || !env.AWS_CONTAINER_AUTHORIZATION_TOKEN) return {};
   return {
-    AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID,
-    AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY,
-    AWS_SESSION_TOKEN: env.AWS_SESSION_TOKEN,
+    AWS_CONTAINER_CREDENTIALS_FULL_URI: env.AWS_CONTAINER_CREDENTIALS_FULL_URI,
+    AWS_CONTAINER_AUTHORIZATION_TOKEN: env.AWS_CONTAINER_AUTHORIZATION_TOKEN,
   };
 };
 

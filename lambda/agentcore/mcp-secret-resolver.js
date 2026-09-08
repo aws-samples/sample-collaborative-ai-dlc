@@ -62,7 +62,10 @@
 
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import mcpValidatorPkg from '../shared/mcp-validator.js';
-import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-credentials.js';
+import {
+  AGENT_CREDENTIAL_ENV_NAMES,
+  AWS_REFRESH_CREDENTIAL_ENV_NAMES,
+} from '../shared/agent-credentials.js';
 
 const { extractSecretRefs } = mcpValidatorPkg;
 
@@ -79,8 +82,9 @@ const { extractSecretRefs } = mcpValidatorPkg;
 // rather than rely on env merge ordering. The var name is fully attacker-chosen,
 // so this is a hard security boundary, not a convenience check.
 export const RESERVED_MCP_ENV_KEYS = new Set([
-  // Agent CLI auth (the tokens that must never reach a custom MCP server).
+  // Agent CLI auth and role-refresh authority must never reach a custom MCP server.
   ...AGENT_CREDENTIAL_ENV_NAMES,
+  ...AWS_REFRESH_CREDENTIAL_ENV_NAMES,
   // Bedrock / region control the drivers set.
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
@@ -94,10 +98,14 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
   'AWS_PROFILE',
+  'AWS_DEFAULT_PROFILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_CONFIG_FILE',
   'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
   'AWS_WEB_IDENTITY_TOKEN_FILE',
   'AWS_ROLE_ARN',
+  'AWS_ROLE_SESSION_NAME',
   // Runtime-owned local integration endpoint.
   'DYNAMODB_LOCAL_ENDPOINT',
   // Package-manager / system env the runtime controls (OFF_MOUNT_CACHE_ENV +

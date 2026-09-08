@@ -294,40 +294,107 @@ describe('buildMcpConfig', () => {
     expect(cfg.mcpServers.hostile.env.SAFE_SERVER_KEY).toBe('${SAFE_SERVER_KEY}');
     // Remote servers do not spawn a child and keep their original shape.
     expect(cfg.mcpServers.remote).toEqual({ type: 'http', url: 'https://mcp.example' });
-    // The runtime-owned bridge is trusted and receives only its scoped env.
-    expect(cfg.mcpServers.aidlc.env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
-    expect(cfg.mcpServers.aidlc.env.KIRO_API_KEY).toBeUndefined();
+    // The runtime-owned bridge is trusted for application data, not model auth.
+    // Explicit blanks override the selected CLI's inherited credential.
+    expect(cfg.mcpServers.aidlc.env.AWS_BEARER_TOKEN_BEDROCK).toBe('');
+    expect(cfg.mcpServers.aidlc.env.KIRO_API_KEY).toBe('');
   });
 
-  // specs/bedrock-iam-role-credential-mode — req-credential-safety,
-  // con-custom-server-excluded. Under role mode the CLI process env carries LIVE
-  // temporary Bedrock credentials where the bearer token never went, so a custom
-  // stdio child would inherit them from the parent unless they are blanked here.
-  it("prevents custom stdio servers from inheriting the role path's AWS credentials", () => {
+  it.each([
+    ['Bedrock bearer', { AWS_BEARER_TOKEN_BEDROCK: 'selected-bearer' }],
+    ['Kiro', { KIRO_API_KEY: 'selected-kiro-key' }],
+  ])('preserves the runtime container provider for the aidlc bridge in %s mode', (_mode, auth) => {
     const parentEnv = {
-      AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
-      AWS_SECRET_ACCESS_KEY: 'live-secret',
-      AWS_SESSION_TOKEN: 'live-session',
+      ...auth,
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://runtime.invalid/credentials',
+      AWS_CONTAINER_AUTHORIZATION_TOKEN: 'runtime-token',
     };
     const cfg = buildMcpConfig({
       mcpEntry: 'x',
       scope: { executionId: 'e', intentId: 'i' },
+      env: parentEnv,
+      customServers: { custom: { command: 'node' } },
+    });
+
+    expect(cfg.mcpServers.aidlc.env.AWS_CONTAINER_CREDENTIALS_FULL_URI).toBe(
+      '${AWS_CONTAINER_CREDENTIALS_FULL_URI}',
+    );
+    expect(cfg.mcpServers.aidlc.env.AWS_CONTAINER_AUTHORIZATION_TOKEN).toBe(
+      '${AWS_CONTAINER_AUTHORIZATION_TOKEN}',
+    );
+    expect(cfg.mcpServers.aidlc.env.AWS_BEARER_TOKEN_BEDROCK).toBe('');
+    expect(cfg.mcpServers.aidlc.env.KIRO_API_KEY).toBe('');
+    expect(cfg.mcpServers.custom.env.AWS_CONTAINER_CREDENTIALS_FULL_URI).toBe('');
+    expect(cfg.mcpServers.custom.env.AWS_CONTAINER_AUTHORIZATION_TOKEN).toBe('');
+  });
+
+  // specs/bedrock-iam-role-credential-mode — req-credential-safety,
+  // con-custom-server-excluded. The top-level CLI owns the selected model's
+  // loopback provider. MCP children must not inherit it; only the trusted aidlc
+  // bridge receives the separate AgentCore runtime identity.
+  it('isolates model refresh authority from every MCP stdio child', () => {
+    const parentEnv = {
+      AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
+      AWS_SECRET_ACCESS_KEY: 'live-secret',
+      AWS_SESSION_TOKEN: 'live-session',
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/invocation',
+      AWS_CONTAINER_AUTHORIZATION_TOKEN: 'invocation-token',
+      AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials/runtime-role',
+      AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '/var/run/agentcore/runtime-token',
+    };
+    const cfg = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i' },
+      env: parentEnv,
       customServers: {
         passive: { command: 'node', args: ['passive.js'] },
         hostile: {
           command: 'node',
           args: ['hostile.js'],
-          env: { AWS_ACCESS_KEY_ID: 'try-to-restore-it' },
+          env: {
+            AWS_ACCESS_KEY_ID: 'try-to-restore-it',
+            AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://attacker.invalid/credentials',
+            AWS_CONTAINER_AUTHORIZATION_TOKEN: 'try-to-restore-it',
+            AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/attacker/runtime-role',
+            AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '/attacker/token',
+          },
         },
       },
     });
 
     for (const name of ['passive', 'hostile']) {
       const observedChildEnv = { ...parentEnv, ...cfg.mcpServers[name].env };
-      expect(observedChildEnv.AWS_ACCESS_KEY_ID).toBe('');
-      expect(observedChildEnv.AWS_SECRET_ACCESS_KEY).toBe('');
-      expect(observedChildEnv.AWS_SESSION_TOKEN).toBe('');
+      for (const credentialName of [
+        'AWS_ACCESS_KEY_ID',
+        'AWS_SECRET_ACCESS_KEY',
+        'AWS_SESSION_TOKEN',
+        'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+        'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+      ]) {
+        expect(observedChildEnv[credentialName]).toBe('');
+      }
     }
+
+    const observedBridgeEnv = { ...parentEnv, ...cfg.mcpServers.aidlc.env };
+    for (const credentialName of [
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+    ]) {
+      expect(observedBridgeEnv[credentialName]).toBe('');
+    }
+    expect(observedBridgeEnv.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI).toBe(
+      '/v2/credentials/runtime-role',
+    );
+    expect(observedBridgeEnv.AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE).toBe(
+      '/var/run/agentcore/runtime-token',
+    );
+    expect(JSON.stringify(cfg.mcpServers)).not.toContain('invocation-token');
+    expect(JSON.stringify(cfg.mcpServers)).not.toContain('/v1/credentials/invocation');
   });
 
   it('never lets a custom server override the reserved aidlc entry', () => {
@@ -649,34 +716,79 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
     expect(toml).not.toContain('${');
   });
 
-  it('whitelists the AWS credential chain by NAME for the aidlc bridge ONLY', () => {
+  it('gives the Codex aidlc bridge only the runtime-role credential source', () => {
     const toml = buildCodexConfigToml({
       mcpEntry: '/opt/agentcore/mcp/index.js',
       scope: { executionId: 'e1', intentId: 'i1' },
-      env: { AWS_ACCESS_KEY_ID: 'AKIALOCAL', AWS_SECRET_ACCESS_KEY: 'secretlocal' },
+      env: {
+        AWS_ACCESS_KEY_ID: 'AKIALOCAL',
+        AWS_SECRET_ACCESS_KEY: 'secretlocal',
+        AWS_SESSION_TOKEN: 'sessionlocal',
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/invocation',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'invocation-token',
+        AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials/runtime-role',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '/var/run/agentcore/runtime-token',
+      },
       customServers: { custom: { command: 'uvx', args: ['server'], env: { FOO: 'bar' } } },
     });
     const aidlcSection = toml.slice(toml.indexOf('[mcp_servers."aidlc"]'));
-    // Names only — codex forwards the values from its process env at spawn
-    // time; the credential VALUES never land in the config file.
-    expect(aidlcSection).toContain('env_vars = [');
-    expect(aidlcSection).toContain('"AWS_ACCESS_KEY_ID"');
-    expect(aidlcSection).toContain('"AWS_CONTAINER_CREDENTIALS_FULL_URI"');
-    expect(toml).not.toContain('AKIALOCAL');
-    expect(toml).not.toContain('secretlocal');
-    // The custom server never gets the credential whitelist (con-custom-server-
-    // excluded). Under role mode the parent CLI process env carries LIVE Bedrock
-    // credentials, so a custom child must not merely be un-forwarded — the three
-    // AWS names are explicitly blanked so it cannot inherit them either.
+    expect(aidlcSection).not.toContain('env_vars');
+    expect(aidlcSection).toContain('"AWS_ACCESS_KEY_ID" = ""');
+    expect(aidlcSection).toContain('"AWS_CONTAINER_CREDENTIALS_FULL_URI" = ""');
+    expect(aidlcSection).toContain('"AWS_CONTAINER_AUTHORIZATION_TOKEN" = ""');
+    expect(aidlcSection).toContain(
+      '"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI" = "/v2/credentials/runtime-role"',
+    );
+    expect(aidlcSection).toContain(
+      '"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE" = "/var/run/agentcore/runtime-token"',
+    );
+    for (const secret of [
+      'AKIALOCAL',
+      'secretlocal',
+      'sessionlocal',
+      'invocation-token',
+      '/v1/credentials/invocation',
+    ]) {
+      expect(toml).not.toContain(secret);
+    }
+
     const customSection = toml.slice(
       toml.indexOf('[mcp_servers."custom"]'),
       toml.indexOf('[mcp_servers."aidlc"]'),
     );
     expect(customSection).toContain('"FOO" = "bar"');
     expect(customSection).not.toContain('env_vars');
-    for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
+    for (const name of [
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+      'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+    ]) {
       expect(customSection).toContain(`"${name}" = ""`);
     }
+  });
+
+  it('forwards the runtime provider by name for Codex bearer mode', () => {
+    const toml = buildCodexConfigToml({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      env: {
+        AWS_BEARER_TOKEN_BEDROCK: 'selected-bearer',
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://runtime.invalid/credentials',
+        AWS_CONTAINER_AUTHORIZATION_TOKEN: 'runtime-token',
+      },
+    });
+    const aidlcSection = toml.slice(toml.indexOf('[mcp_servers."aidlc"]'));
+    expect(aidlcSection).toContain(
+      'env_vars = ["AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN"]',
+    );
+    expect(aidlcSection).toContain('"AWS_BEARER_TOKEN_BEDROCK" = ""');
+    expect(toml).not.toContain('selected-bearer');
+    expect(toml).not.toContain('http://runtime.invalid/credentials');
+    expect(toml).not.toContain('runtime-token');
   });
 
   it('emits the reserved aidlc server LAST so a custom entry can never shadow it', () => {
@@ -863,6 +975,9 @@ describe('no credential material reaches disk under a role-mode stage', () => {
     AWS_ACCESS_KEY_ID: 'ASIAROLEMODEPROBE01',
     AWS_SECRET_ACCESS_KEY: 'sEcReTaCcEsSkEyPrObE0000000000000000000000',
     AWS_SESSION_TOKEN: 'SeSsIoNtOkEnPrObE//////wEaDmV1LWNlbnRyYWwtMQ==',
+    AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://127.0.0.1:3210/v1/credentials/role-mode-probe',
+    AWS_CONTAINER_AUTHORIZATION_TOKEN: 'RoLeMoDeReFrEsHtOkEnPrObE',
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials/runtime-role',
     AWS_REGION: 'eu-central-1',
   };
 
@@ -916,6 +1031,8 @@ describe('no credential material reaches disk under a role-mode stage', () => {
         ROLE_ENV.AWS_ACCESS_KEY_ID,
         ROLE_ENV.AWS_SECRET_ACCESS_KEY,
         ROLE_ENV.AWS_SESSION_TOKEN,
+        ROLE_ENV.AWS_CONTAINER_CREDENTIALS_FULL_URI,
+        ROLE_ENV.AWS_CONTAINER_AUTHORIZATION_TOKEN,
       ];
       for (const [where, body] of bodies) {
         for (const secret of secrets) {
@@ -925,11 +1042,7 @@ describe('no credential material reaches disk under a role-mode stage', () => {
     },
   );
 
-  it('forwards the credential chain to the reserved bridge by NAME, so nothing is stored', () => {
-    // Codex is the only CLI that names the credential variables in a written file.
-    // Names are inert on disk: codex resolves them from its process env at spawn,
-    // so when resolution produced nothing the child simply gets nothing — the file
-    // cannot make credentials appear.
+  it('materializes no selected credential source for the reserved Codex bridge', () => {
     const toml = buildCodexConfigToml({
       mcpEntry: '/opt/agentcore/mcp/index.js',
       scope: { executionId: 'e1', intentId: 'i1' },
@@ -937,8 +1050,11 @@ describe('no credential material reaches disk under a role-mode stage', () => {
       customServers: {},
     });
     const aidlcSection = toml.slice(toml.indexOf('[mcp_servers."aidlc"]'));
-    expect(aidlcSection).toContain('"AWS_SESSION_TOKEN"');
-    // A NAME list, never an assignment: `"AWS_SESSION_TOKEN" = "..."` would be a value.
-    expect(aidlcSection).not.toMatch(/"AWS_SESSION_TOKEN"\s*=/);
+    expect(aidlcSection).not.toContain('env_vars');
+    expect(aidlcSection).toContain('"AWS_ACCESS_KEY_ID" = ""');
+    expect(aidlcSection).toContain('"AWS_SECRET_ACCESS_KEY" = ""');
+    expect(aidlcSection).toContain('"AWS_SESSION_TOKEN" = ""');
+    expect(aidlcSection).toContain('"AWS_CONTAINER_CREDENTIALS_FULL_URI" = ""');
+    expect(aidlcSection).toContain('"AWS_CONTAINER_AUTHORIZATION_TOKEN" = ""');
   });
 });

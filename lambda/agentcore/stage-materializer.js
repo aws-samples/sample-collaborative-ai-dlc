@@ -17,7 +17,10 @@ import path from 'node:path';
 import { attachmentPromptManifest } from './attachments.js';
 import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
-import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-credentials.js';
+import {
+  AGENT_CREDENTIAL_ENV_NAMES,
+  AWS_REFRESH_CREDENTIAL_ENV_NAMES,
+} from '../shared/agent-credentials.js';
 import { MCP_SERVER_NAME } from './cli/drivers.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 
@@ -210,15 +213,57 @@ export const buildStagePrompt = ({
   return sections.join('\n');
 };
 
-// Claude, Kiro, and OpenCode merge a custom stdio server's explicit env over the
-// CLI process env. The CLI needs the invocation-scoped model credential, but a
-// project-configured child must never inherit it. Put an explicit empty value in
-// every custom local server and spread it LAST so even a malicious/buggy config
-// cannot restore the selected user's token. Custom MCP `${VAR}` refs use their
-// own non-reserved names and remain intact.
+// Runtime identity sources that may exist on AgentCore before role-mode auth is
+// overlaid. A custom MCP child must not inherit any of them. The reserved aidlc
+// bridge is different: it needs the runtime role for DynamoDB/Neptune, so it gets
+// only these non-static runtime sources explicitly and never the selected model's
+// loopback FULL_URI/token.
+const MCP_RUNTIME_CREDENTIAL_ENV_NAMES = Object.freeze([
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_ARN',
+  'AWS_ROLE_SESSION_NAME',
+]);
+
+const MCP_ADDITIONAL_CREDENTIAL_ENV_NAMES = Object.freeze([
+  'AWS_PROFILE',
+  'AWS_DEFAULT_PROFILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_CONFIG_FILE',
+]);
+
+const MCP_CHILD_CREDENTIAL_ENV_NAMES = Object.freeze([
+  ...AGENT_CREDENTIAL_ENV_NAMES,
+  ...AWS_REFRESH_CREDENTIAL_ENV_NAMES,
+  ...MCP_RUNTIME_CREDENTIAL_ENV_NAMES,
+  ...MCP_ADDITIONAL_CREDENTIAL_ENV_NAMES,
+]);
+
+// Claude, Kiro, and OpenCode merge a stdio server's explicit env over the CLI
+// process env. Put an explicit empty value in every custom local server and
+// spread it LAST so even a malicious/buggy config cannot restore either selected
+// model auth or the runtime identity. Custom MCP `${VAR}` refs use their own
+// non-reserved names and remain intact.
 export const CUSTOM_MCP_AUTH_ENV_SCRUB = Object.freeze(
-  Object.fromEntries(AGENT_CREDENTIAL_ENV_NAMES.map((name) => [name, ''])),
+  Object.fromEntries(MCP_CHILD_CREDENTIAL_ENV_NAMES.map((name) => [name, ''])),
 );
+
+const aidlcRuntimeCredentialEnv = (env = {}) => {
+  const runtimeEnv = Object.fromEntries(
+    MCP_RUNTIME_CREDENTIAL_ENV_NAMES.filter((name) => env[name]).map((name) => [name, env[name]]),
+  );
+  // In bearer/Kiro mode, FULL_URI/token still identify AgentCore's runtime role.
+  // Forward them by NAME so Codex never writes the runtime token to disk. In role
+  // mode there is no model token and the pair identifies the selected Bedrock
+  // refresh endpoint, so it must remain blank in the bridge child.
+  if (env.AWS_BEARER_TOKEN_BEDROCK || env.KIRO_API_KEY) {
+    for (const name of AWS_REFRESH_CREDENTIAL_ENV_NAMES) {
+      if (env[name]) runtimeEnv[name] = `\${${name}}`;
+    }
+  }
+  return runtimeEnv;
+};
 
 const scrubCustomMcpAuth = (customServers = {}) =>
   Object.fromEntries(
@@ -250,6 +295,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
       command: 'node',
       args: [mcpEntry],
       env: {
+        // All MCP children are denied the selected model credential and its
+        // refresh endpoint. Restore only the AgentCore runtime identity for this
+        // trusted bridge so its AWS SDK clients keep using the execution role.
+        ...CUSTOM_MCP_AUTH_ENV_SCRUB,
+        ...aidlcRuntimeCredentialEnv(env),
         V2_EXECUTION_ID: scope.executionId,
         V2_INTENT_ID: scope.intentId,
         V2_PROJECT_ID: scope.projectId ?? '',
@@ -452,30 +502,13 @@ const codexEnvValue = (value, refEnv) =>
 // by name; an embedded ref like `Bearer ${VAR}` is not.
 const FULL_REF_TOKEN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
-// Codex spawns MCP stdio servers with a SANITIZED environment (verified live:
-// the aidlc bridge got "Could not load credentials from any providers" while
-// the other CLIs' children inherit the container env). Codex's `env_vars` key
-// is a NAME whitelist — listed vars are forwarded from the codex process env
-// into the MCP child, so no value is ever written to config.toml. The standard
-// AWS credential-chain vars are forwarded to the RESERVED aidlc server ONLY so
-// its SDK clients resolve credentials — static keys (local e2e's inert pair),
-// container-credentials URIs (the AgentCore runtime role), or web identity.
-// Absent names are skipped by codex at spawn time. Custom servers NEVER get
-// this list (a user-configured server must not silently inherit runtime
-// credentials).
-const CODEX_AIDLC_FORWARD_ENV = [
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
-  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
-  'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
-  'AWS_WEB_IDENTITY_TOKEN_FILE',
-  'AWS_ROLE_ARN',
-  'AWS_ROLE_SESSION_NAME',
-  'AWS_DEFAULT_REGION',
-];
+// Codex spawns MCP stdio servers with a SANITIZED environment. Every variable
+// a server needs must therefore be present in its materialized server.env. The
+// reserved aidlc entry already contains explicit blank values for selected model
+// auth plus only the AgentCore runtime-role source; custom servers contain the
+// full credential scrub. Do not add a process-env forwarding whitelist here:
+// the Codex process carries the loopback Bedrock refresh endpoint, and forwarding
+// that chain would let the bridge redeem the selected model role.
 
 // Convert the validated common MCP shape to codex [mcp_servers.*] TOML tables.
 // `aidlc` is emitted LAST (buildMcpConfig's insertion order preserved) and is
@@ -507,7 +540,6 @@ export const toCodexMcpToml = (mcpServers = {}, refEnv = {}) => {
         if (full && full[1] === key) forwarded.push(key);
         else literal.push([key, codexEnvValue(value, refEnv)]);
       }
-      if (name === MCP_SERVER_NAME) forwarded.push(...CODEX_AIDLC_FORWARD_ENV);
       // TOML: plain keys (env_vars) must precede any nested table ([….env]).
       if (forwarded.length) lines.push(`env_vars = ${tomlArray(forwarded)}`);
       if (literal.length) {

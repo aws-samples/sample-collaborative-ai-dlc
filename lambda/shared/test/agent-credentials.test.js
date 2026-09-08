@@ -11,6 +11,7 @@ import {
   AGENT_CLI_PROVIDER,
   AGENT_CREDENTIAL_ENV_NAMES,
   AGENT_CREDENTIAL_PROVIDERS,
+  AWS_REFRESH_CREDENTIAL_ENV_NAMES,
   AWS_TEMPORARY_CREDENTIAL_ENV_NAMES,
   EXTERNAL_ID_ENTROPY_BYTES,
   agentCredentialPath,
@@ -43,11 +44,15 @@ import {
 describe('bedrock binding value discrimination', () => {
   const ROLE_ARN = 'arn:aws:iam::111122223333:role/aidlc-bedrock-inference';
 
-  it('scrubs the three AWS temporary-credential names alongside every provider name', () => {
+  it('defines the static and refreshable AWS credential environment names', () => {
     expect(AWS_TEMPORARY_CREDENTIAL_ENV_NAMES).toEqual([
       'AWS_ACCESS_KEY_ID',
       'AWS_SECRET_ACCESS_KEY',
       'AWS_SESSION_TOKEN',
+    ]);
+    expect(AWS_REFRESH_CREDENTIAL_ENV_NAMES).toEqual([
+      'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN',
     ]);
     expect(AGENT_CREDENTIAL_ENV_NAMES).toEqual([
       'AWS_BEARER_TOKEN_BEDROCK',

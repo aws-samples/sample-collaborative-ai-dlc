@@ -3,7 +3,7 @@ import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { STSClient } from '@aws-sdk/client-sts';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
-import { executionMetaKey } from '../shared/v2-process-keys.js';
+import { executionMetaKey, stageKey } from '../shared/v2-process-keys.js';
 import {
   ACTIVE,
   canonicalRepo,
@@ -17,7 +17,9 @@ import { repoUrl, repoProvider } from '../shared/repo-provider.js';
 import {
   AGENT_CREDENTIAL_STORE_ERROR_CODES,
   CREDENTIAL_VALUE_KINDS,
+  credentialProviderForCli,
   looksLikeRoleBindingValue,
+  normalizeCredentialBinding,
   parseRoleBindingValue,
   readCredentialBindingValue,
 } from '../shared/agent-credentials.js';
@@ -27,7 +29,10 @@ import {
   assumeBedrockRole,
   readSessionPolicy,
 } from '../shared/bedrock-role.js';
-import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
+  verifyIssuedAgentCredentialGrant,
+  verifyIssuedBedrockRoleRefreshGrant,
+} from '../shared/agent-credential-grants.js';
 import { AGENT_AUTH_MODES } from '../shared/agent-command-registry.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -37,6 +42,9 @@ const secrets = new SecretsManagerClient({});
 
 const CREDENTIAL_ACTIVE_EXECUTION_STATUSES = new Set(['CREATED', 'RUNNING']);
 const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
+const REFRESH_BEDROCK_ROLE_CREDENTIALS = 'refresh-bedrock-role-credentials';
+const BEDROCK_ROLE_BINDING_CHANGED = 'BEDROCK_ROLE_BINDING_CHANGED';
+const BEDROCK_ROLE_REFRESH_STAGE_NOT_ACTIVE = 'BEDROCK_ROLE_REFRESH_STAGE_NOT_ACTIVE';
 
 // ── Bedrock IAM-role resolution ──
 // specs/bedrock-iam-role-credential-mode: req-broker-side-assume,
@@ -60,6 +68,14 @@ const loggableAgentCredentialErrorCode = (error) => {
       return 'AGENT_CREDENTIAL_GRANT_INVALID';
     case 'AGENT_CREDENTIAL_GRANT_NOT_CONFIGURED':
       return 'AGENT_CREDENTIAL_GRANT_NOT_CONFIGURED';
+    case 'EXECUTION_NOT_FOUND':
+      return 'EXECUTION_NOT_FOUND';
+    case 'EXECUTION_NOT_ACTIVE':
+      return 'EXECUTION_NOT_ACTIVE';
+    case BEDROCK_ROLE_BINDING_CHANGED:
+      return BEDROCK_ROLE_BINDING_CHANGED;
+    case BEDROCK_ROLE_REFRESH_STAGE_NOT_ACTIVE:
+      return BEDROCK_ROLE_REFRESH_STAGE_NOT_ACTIVE;
     // req-resolution-resilience: SSM is on the critical path of every resolution,
     // so a throttled or unavailable store is reported as itself rather than as a
     // generic broker failure. Both still reach the stage as
@@ -220,6 +236,120 @@ const resolveAgentCredentialEntry = async (
   };
 };
 
+const bindingChanged = () =>
+  Object.assign(new Error('The Bedrock role binding changed during execution'), {
+    code: BEDROCK_ROLE_BINDING_CHANGED,
+  });
+
+const normalizeExecutionBedrockBinding = (execution) => {
+  const legacyProvider = credentialProviderForCli(execution?.agentCli);
+  const value =
+    execution?.credentialBinding ??
+    (legacyProvider === 'bedrock' ? { provider: 'bedrock', source: 'platform' } : null);
+  try {
+    return normalizeCredentialBinding(value);
+  } catch {
+    return null;
+  }
+};
+
+const sameCredentialBinding = (left, right) =>
+  Boolean(left) &&
+  Boolean(right) &&
+  left.provider === right.provider &&
+  left.source === right.source &&
+  (left.userId ?? null) === (right.userId ?? null);
+
+// Redeem a bounded, audience-separated refresh grant for fresh STS credentials.
+// The request contributes only the signed grant: the execution, binding pointer,
+// role ARN and external ID are all reloaded server-side before every AssumeRole.
+const refreshBedrockRoleCredentials = async (
+  { grant },
+  {
+    ddbClient = ddb,
+    ssmClient = ssm,
+    stsClient = sts,
+    secret = null,
+    env = process.env,
+    now = undefined,
+  } = {},
+) => {
+  if (!grant) {
+    throw Object.assign(new Error('Bedrock role refresh grant is required'), {
+      code: 'AGENT_CREDENTIAL_GRANT_INVALID',
+    });
+  }
+  const claims = await verifyIssuedBedrockRoleRefreshGrant(ssmClient, grant, {
+    env,
+    secret,
+    ...(now ? { now } : {}),
+  });
+  const { Item: execution } = await ddbClient.send(
+    new GetCommand({
+      TableName: env.V2_PROCESS_TABLE,
+      Key: executionMetaKey(claims.executionId),
+      ConsistentRead: true,
+    }),
+  );
+  if (!execution || execution.projectId !== claims.projectId) {
+    throw Object.assign(new Error('Execution was not found for this project'), {
+      code: 'EXECUTION_NOT_FOUND',
+    });
+  }
+  if (!CREDENTIAL_ACTIVE_EXECUTION_STATUSES.has(execution.status)) {
+    throw Object.assign(new Error('Execution is not active'), {
+      code: 'EXECUTION_NOT_ACTIVE',
+    });
+  }
+  const { Item: stage } = await ddbClient.send(
+    new GetCommand({
+      TableName: env.V2_PROCESS_TABLE,
+      Key: stageKey(claims.executionId, claims.stageInstanceId),
+      ConsistentRead: true,
+    }),
+  );
+  if (
+    !stage ||
+    stage.executionId !== claims.executionId ||
+    stage.stageInstanceId !== claims.stageInstanceId ||
+    stage.stageCallbackId !== claims.stageCallbackId ||
+    stage.state !== 'RUNNING'
+  ) {
+    throw Object.assign(new Error('Stage attempt is not active'), {
+      code: BEDROCK_ROLE_REFRESH_STAGE_NOT_ACTIVE,
+    });
+  }
+
+  const currentBinding = normalizeExecutionBedrockBinding(execution);
+  if (!sameCredentialBinding(currentBinding, claims.binding)) throw bindingChanged();
+
+  const value = await readCredentialBindingValue(ssmClient, {
+    base: env.AGENT_SETTINGS_SSM_PREFIX || '',
+    binding: currentBinding,
+    projectId: claims.projectId,
+  });
+  if (!value || !looksLikeRoleBindingValue(value)) throw bindingChanged();
+
+  const { roleArn, externalId } = parseRoleBindingValue(value);
+  const sessionPolicy = readSessionPolicy(env.BEDROCK_SESSION_POLICY);
+  const credentials = await assumeBedrockRole(
+    {
+      roleArn,
+      externalId,
+      projectId: claims.projectId,
+      sessionPolicy,
+    },
+    stsClient,
+  );
+  console.info('[credential-broker] Bedrock role credentials refreshed', {
+    grantId: claims.grantId,
+    executionId: claims.executionId,
+    projectId: claims.projectId,
+    stageInstanceId: claims.stageInstanceId,
+  });
+  return credentials;
+};
+
 const authorizeAgentCredentialRequest = async (
   { grant },
   { ssmClient = ssm, stsClient = sts, secret = null, env = process.env, now = undefined } = {},
@@ -262,6 +392,12 @@ export const handler = async (event) => {
         ...(await authorizeAgentCredentialRequest(event || {})),
       };
     }
+    if (action === REFRESH_BEDROCK_ROLE_CREDENTIALS) {
+      return {
+        ok: true,
+        credentials: await refreshBedrockRoleCredentials(event || {}),
+      };
+    }
     const credential = await authorizeCredentialRequest(event || {});
     if (event?.requiredAccess === 'identity') {
       return { ok: true, committer: credential.committer };
@@ -276,7 +412,7 @@ export const handler = async (event) => {
     // Both code helpers return only allowlisted constants — never provider-
     // derived error text, which can carry credential material.
     const code =
-      action === RESOLVE_AGENT_CREDENTIALS
+      action === RESOLVE_AGENT_CREDENTIALS || action === REFRESH_BEDROCK_ROLE_CREDENTIALS
         ? loggableAgentCredentialErrorCode(error)
         : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
     console.error('[credential-broker] request denied', {
@@ -293,10 +429,14 @@ export const handler = async (event) => {
 
 export {
   RESOLVE_AGENT_CREDENTIALS,
+  REFRESH_BEDROCK_ROLE_CREDENTIALS,
+  BEDROCK_ROLE_BINDING_CHANGED,
+  BEDROCK_ROLE_REFRESH_STAGE_NOT_ACTIVE,
   CREDENTIAL_ACTIVE_EXECUTION_STATUSES,
   ROLE_SESSION_DURATION_SECONDS,
   authorizeAgentCredentialRequest,
   executionIncludesRepository,
   loggableAgentCredentialErrorCode,
+  refreshBedrockRoleCredentials,
   authorizeCredentialRequest,
 };
