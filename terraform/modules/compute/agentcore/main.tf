@@ -71,9 +71,11 @@ locals {
   credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
 
-  billing_mode   = var.environment == "prod" ? "PROVISIONED" : "PAY_PER_REQUEST"
-  read_capacity  = var.environment == "prod" ? 5 : null
-  write_capacity = var.environment == "prod" ? 5 : null
+  # Keep billing independent from the environment name. Capacity attributes set to
+  # null are omitted by Terraform when PAY_PER_REQUEST is active.
+  billing_mode   = "PAY_PER_REQUEST"
+  read_capacity  = null
+  write_capacity = null
 
   # ── AgentCore VPC networking (region-agnostic AZ selection) ──────────────────
   # AgentCore Runtime VPC mode only accepts subnets in specific AZs per region,
