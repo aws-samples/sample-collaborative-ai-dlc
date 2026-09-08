@@ -388,3 +388,29 @@ output "managed_tool_status_lambda_name" {
   description = "Managed tool build-status Lambda function name"
   value       = module.managed_environments.tool_status_lambda_name
 }
+
+# ── Bedrock IAM-role credential mode ──
+# The two documents an operator pastes into the account owning the Bedrock role.
+# Rendered from Terraform expressions so the account id, region wildcards and
+# condition keys are derived rather than retyped
+# (specs/bedrock-iam-role-credential-mode: req-model-grant-families).
+
+output "credential_broker_role_arn" {
+  description = "IAM role ARN of the credential broker — the only principal a Bedrock role's trust policy must name"
+  value       = module.lambda.credential_broker_role_arn
+}
+
+output "bedrock_role_grant_policy_json" {
+  description = "Permission policy to attach to the Bedrock role the broker assumes. Invoke-only, geo-scoped, and fenced to inference profiles."
+  value       = jsonencode(local.bedrock_role_grant_policy)
+}
+
+output "bedrock_role_trust_policy_json" {
+  description = "Trust policy to attach to the Bedrock role the broker assumes. Shared across every space by default; set bedrock_role_trusted_space_ids to narrow it to named spaces."
+  value       = local.bedrock_role_trust_policy_json
+}
+
+output "bedrock_assumable_role_arns" {
+  description = "The sts:AssumeRole resource the broker is granted. Path-scoped by default; a role named outside this set cannot be used."
+  value       = var.bedrock_assumable_role_arns
+}

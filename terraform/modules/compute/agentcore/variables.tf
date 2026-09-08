@@ -92,13 +92,16 @@ variable "kiro_model" {
 }
 
 variable "codex_model" {
-  description = "Default Codex-on-Bedrock model id (exact openai.* id, e.g. openai.gpt-5.5) seeded into the cli-models SSM parameter (empty = none)"
+  description = "Default Codex-on-Bedrock model id seeded into the cli-models SSM parameter (empty = none). A cross-Region inference profile id such as global.openai.gpt-5.6-sol: Codex uses the Bedrock Runtime OpenAI-compatible endpoint, which refuses a bare foundation-model id"
   type        = string
   default     = ""
 
   validation {
-    condition     = var.codex_model == "" || can(regex("^openai\\.[A-Za-z0-9][A-Za-z0-9._-]*$", var.codex_model))
-    error_message = "codex_model must be a full Bedrock OpenAI model id: \"openai.\" followed by a model name (e.g. openai.gpt-5.5)."
+    # The optional geo/global prefix is a cross-Region inference profile, which the
+    # runtime endpoint REQUIRES for GPT-5.6 (a bare id is refused for on-demand
+    # throughput). Mirrors CODEX_MODEL_ID in lambda/shared/cli-models.js.
+    condition     = var.codex_model == "" || can(regex("^(?:(?:global|us|eu|apac)\\.)?openai\\.[A-Za-z0-9][A-Za-z0-9._-]*$", var.codex_model))
+    error_message = "codex_model must be a Bedrock OpenAI model id, optionally with a cross-Region inference prefix (e.g. global.openai.gpt-5.6-sol or openai.gpt-5.5)."
   }
 }
 

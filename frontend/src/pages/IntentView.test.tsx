@@ -349,7 +349,7 @@ describe('IntentView', () => {
     expect(editors[0].getAttribute('data-gate')).toBe('h1');
   });
 
-  it('moves the immutable environment snapshot into the run configuration dialog', async () => {
+  it('moves run configuration details into the dialog without guessing the credential kind', async () => {
     const user = userEvent.setup();
     get.mockResolvedValue(
       baseDetail({
@@ -394,6 +394,8 @@ describe('IntentView', () => {
     expect(screen.getByText('Polyglot')).toBeInTheDocument();
     expect(screen.getByText('Claude Code')).toBeInTheDocument();
     expect(screen.getByText(/us\.anthropic\.claude-sonnet-4-6/)).toBeInTheDocument();
+    expect(screen.getByText('Space')).toBeInTheDocument();
+    expect(screen.queryByText('Space key')).not.toBeInTheDocument();
     const sourceLabel = screen.getByText('Source: Issue #3');
     expect(sourceLabel).toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'GitHub' })).toBeInTheDocument();

@@ -306,3 +306,9 @@ variable "api_gateway_account_id" {
   description = "An attribute of the aws_api_gateway_account resource (its cloudwatch_role_arn). The value is unused — it is interpolated into the stage description to create an implicit dependency so the REST API stage waits for account-level CloudWatch logging to be configured."
   type        = string
 }
+
+variable "credential_broker_role_arn" {
+  description = "ARN of the credential-broker execution role. Non-secret, and surfaced to an operator writing a Bedrock role trust policy (specs/bedrock-iam-role-credential-mode: req-same-and-cross-account)."
+  type        = string
+  default     = ""
+}

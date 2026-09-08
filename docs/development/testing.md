@@ -407,8 +407,17 @@ conversation-store races.
 - Outbound HTTPS access from Docker containers
 - A Bedrock API key for Claude, OpenCode, and Codex
 - A Kiro API key for Kiro
-- For Codex, the OpenAI models (`openai.gpt-5.*`) enabled in Bedrock for the
-  chosen `AWS_REGION`
+- For Codex, the OpenAI models enabled in Bedrock for the chosen `AWS_REGION`,
+  and a cross-Region inference profile id such as `global.openai.gpt-5.6-sol` —
+  the endpoint Codex calls refuses a bare `openai.*` id
+
+!!! note "Codex authentication in this harness is unverified"
+
+    Codex uses the Bedrock Runtime provider, which signs requests with AWS SigV4.
+    Whether it also accepts a Bedrock API key as a bearer token has not been
+    verified here. If the Codex leg fails to authenticate, supply AWS credentials
+    in the environment instead. See
+    [Bedrock credential modes](../getting-started/bedrock-credentials.md#codex-on-bedrock).
 
 Before making model calls, the script checks Docker, Buildx, ARM64 execution,
 key presence, model syntax, and outbound connectivity. It supplies inert AWS
@@ -482,7 +491,7 @@ The examples assume the corresponding key was already exported.
 | `AWS_REGION`               | `us-east-1`                                          | Bedrock region                                     |
 | `BEDROCK_MODEL`            | `us.anthropic.claude-sonnet-4-6`                     | Bare Bedrock model or inference-profile ID         |
 | `KIRO_MODEL`               | `auto`                                               | Kiro model ID                                      |
-| `CODEX_MODEL`              | `openai.gpt-5.5`                                     | Exact Codex-on-Bedrock model ID (`openai.*`)       |
+| `CODEX_MODEL`              | `global.openai.gpt-5.6-sol`                          | Codex-on-Bedrock CRIS profile ID                   |
 | `E2E_CLIS`                 | `claude,kiro,opencode,codex`                         | CLIs to run, in execution order                    |
 | `AGENTCORE_IMAGE`          | none                                                 | Existing local ARM64 image; skips the image build  |
 | `KEEP_E2E`                 | `0`                                                  | Set to `1` to retain resources after a failed run  |

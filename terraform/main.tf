@@ -354,11 +354,15 @@ module "lambda" {
   project_name                = var.project_name
   environment                 = var.environment
   lambda_vpc_scope            = var.lambda_vpc_scope
-  application_url             = local.app_url
-  vpc_id                      = module.networking.vpc_id
-  private_subnet_ids          = module.networking.private_subnet_ids
-  neptune_endpoint            = module.neptune.cluster_endpoint
-  neptune_cluster_resource_id = module.neptune.cluster_resource_id
+  bedrock_assumable_role_arns = var.bedrock_assumable_role_arns
+  # Rendered from the same statement definition as the customer-facing grant, so the
+  # enforced ceiling cannot drift from the documented one.
+  bedrock_role_session_policy_json = local.bedrock_role_session_policy_json
+  application_url                  = local.app_url
+  vpc_id                           = module.networking.vpc_id
+  private_subnet_ids               = module.networking.private_subnet_ids
+  neptune_endpoint                 = module.neptune.cluster_endpoint
+  neptune_cluster_resource_id      = module.neptune.cluster_resource_id
   dynamodb_table_arns = [
     module.dynamodb.sessions_table_arn,
     module.dynamodb.notifications_table_arn,
@@ -482,6 +486,7 @@ module "api" {
   agent_questions_table_name               = module.dynamodb.agent_questions_table_name
   agent_outputs_table_name                 = module.dynamodb.agent_outputs_table_name
   agents_lambda_role_arn                   = module.lambda.agents_orchestrator_role_arn
+  credential_broker_role_arn               = module.lambda.credential_broker_role_arn
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
   agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name

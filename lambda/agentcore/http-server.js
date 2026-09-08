@@ -111,7 +111,16 @@ export const dispatchInvocation = async ({
     // instead of turning the response into an SDK transport exception.
     return { statusCode: 200, body: { ...result, command, at: now() } };
   } catch (e) {
-    return { statusCode: 500, body: { error: e.message, command } };
+    // A coded error carries its code through as `reason`, which is the field the
+    // orchestrator reads when a dispatch is refused. Without this, a credential
+    // resolution failure arrives as the generic stage_dispatch_failed and is
+    // indistinguishable from an old container or a duplicate job
+    // (specs/bedrock-iam-role-credential-mode: req-expiry-failure-legible).
+    // Only the code travels — never provider or STS error text.
+    return {
+      statusCode: 500,
+      body: { error: e.message, command, ...(e.code ? { reason: e.code } : {}) },
+    };
   } finally {
     busy?.leave();
   }
@@ -206,7 +215,7 @@ const main = async () => {
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
-  const { authenticatedClisForEnv, resolveInvocationAgentAuth } =
+  const { authenticatedClisForProviders, resolveInvocationAgentAuth } =
     await import('./auth-resolver.js');
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
@@ -222,7 +231,13 @@ const main = async () => {
     });
     return {
       ...auth,
-      availableClis: authenticatedClisForEnv({ installed: installedClis, env: auth.env }),
+      // A Bedrock role binding sets temporary AWS credentials and no bearer
+      // token, so availability must follow the RESOLVED providers, not the
+      // presence of a secret variable.
+      availableClis: authenticatedClisForProviders({
+        installed: installedClis,
+        resolvedProviders: auth.resolvedProviders,
+      }),
     };
   };
 
@@ -249,6 +264,10 @@ const main = async () => {
           availableClis: context.availableClis,
           credentialBindings: context.credentialBindings,
           missingCredentialBindings: context.missingCredentialBindings,
+          // The deadline on this invocation's temporary credentials, so a stage
+          // failure after it passed is attributed to expiry deterministically
+          // rather than by matching a CLI's stderr wording (req-expiry-tripwire).
+          credentialExpiresAt: context.credentialExpiresAt,
           broadcast,
           env: context.env,
         },
@@ -257,6 +276,9 @@ const main = async () => {
     capabilities: (p, context) =>
       capabilities(p, {
         env: context.env,
+        // Availability is a question about the RESOLVED binding, not about a
+        // secret env var: a Bedrock role binding sets no bearer token.
+        resolvedProviders: context.resolvedProviders,
         discoverInstalledClis: async () => installedClis,
       }),
     managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),

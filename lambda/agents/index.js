@@ -15,6 +15,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
+import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
 import { PricingClient, GetProductsCommand } from '@aws-sdk/client-pricing';
 import { randomUUID } from 'node:crypto';
@@ -44,11 +45,16 @@ import {
   AGENT_CREDENTIAL_PROVIDERS,
   credentialProviderForCli,
   credentialSourcesFromBindings,
+  prepareBedrockBindingWrite,
+  readBedrockExternalId,
+  validateCredentialScopeUpdate,
   writeCredentialScope,
 } from '../shared/agent-credentials.js';
 import {
+  preflightBedrockRoleBindingViaBroker,
   readCredentialScopeStatusViaBroker,
   resolveEffectiveCredentialBindingsViaBroker,
+  resolveEffectiveCredentialMetadataViaBroker,
 } from '../shared/agent-credential-metadata.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import {
@@ -85,6 +91,79 @@ const CAPABILITIES_SESSION_ID = 'aidlc-capabilities-probe-00000001';
 const PLATFORM_CREDENTIAL_BINDINGS = Object.fromEntries(
   AGENT_CREDENTIAL_PROVIDERS.map((provider) => [provider, { provider, source: 'platform' }]),
 );
+
+// The account this deployment runs in, used only to decide whether a Bedrock role
+// binding is cross-account and therefore needs an external ID
+// (dec-external-id-scope).
+//
+// sts:GetCallerIdentity requires no IAM permission at all, so this needs no
+// policy change; it is memoised per container because the answer cannot change.
+// A failure returns null, which bedrockRoleIsCrossAccount treats as "assume
+// cross-account" — the fail-safe direction, since a superfluous external ID is
+// inert unless a trust policy asks for one.
+let platformAccountIdPromise = null;
+export const resolvePlatformAccountId = async (stsClient = null) => {
+  if (process.env.PLATFORM_ACCOUNT_ID) return process.env.PLATFORM_ACCOUNT_ID;
+  if (!platformAccountIdPromise) {
+    const client = stsClient || new STSClient({ region: process.env.AWS_REGION || 'us-east-1' });
+    platformAccountIdPromise = client
+      .send(new GetCallerIdentityCommand({}))
+      .then((identity) => identity?.Account || null)
+      .catch((error) => {
+        console.error('[settings] platform account lookup failed:', error.message);
+        return null;
+      });
+  }
+  return platformAccountIdPromise;
+};
+
+// Compose the binding value actually stored for a Bedrock write, attaching a
+// platform-generated external ID when the role lives in another account.
+// req-external-id-lifecycle: the client never supplies the value and the server
+// never shows it in a log line.
+const prepareBedrockWrite = async ({ base, source, projectId = null, update }) =>
+  prepareBedrockBindingWrite(ssm, {
+    base,
+    source,
+    projectId,
+    update,
+    platformAccountId: await resolvePlatformAccountId(),
+  });
+
+// req-binding-preflight: a role binding is checked with a bare AssumeRole before it
+// is persisted, so a wrong trust policy is an input error at save time rather than
+// a stage failure minutes later. Returns a 400 body when the save must be rejected,
+// else null.
+//
+// It is an INPUT CHECK, NOT A SECURITY CONTROL — a trust policy can change the
+// instant after it passes, which is why resolution re-checks on every stage. That
+// is also why a preflight that could not RUN (`available: false`) does not block
+// the save: refusing a legitimate binding because the checker is down would be
+// worse than persisting one whose failure is already legible as
+// credential_resolution_failed.
+const rejectBedrockBindingOnPreflight = async ({ prepared, projectId = null }) => {
+  if (!prepared?.roleArn) return null;
+  const preflight = await preflightBedrockRoleBindingViaBroker({
+    roleArn: prepared.roleArn,
+    externalId: prepared.externalId,
+    projectId,
+  });
+  if (preflight.ok || !preflight.available) return null;
+  return {
+    error: 'The Bedrock role could not be assumed with this binding',
+    code: 'BEDROCK_ROLE_PREFLIGHT_FAILED',
+    preflight: {
+      cause: preflight.cause,
+      sessionName: preflight.sessionName,
+      candidates: preflight.candidates,
+    },
+    // Returned even on rejection, and deliberately: this IS the bootstrap. The
+    // operator cannot write the trust policy the preflight is checking until they
+    // have the value, and it is stable across retries (dec-external-id-storage).
+    bedrockRoleArn: prepared.roleArn,
+    bedrockExternalId: prepared.externalId,
+  };
+};
 
 // Fetch the runtime's capabilities (installed + authed CLIs, Kiro model list) by
 // invoking its `capabilities` command. Best-effort: returns null when no v2
@@ -376,6 +455,10 @@ export const handler = async (event) => {
         } catch {
           return response(400, { error: 'Invalid JSON body' });
         }
+        // Role bindings are rejected here by design: this endpoint is gated only
+        // on authentication, so any member could otherwise name a role ARN.
+        const invalid = validateCredentialScopeUpdate({ source: 'user', update: input });
+        if (invalid) return response(400, invalid);
         try {
           await writeCredentialScope(ssm, {
             base: credentialBase,
@@ -404,16 +487,45 @@ export const handler = async (event) => {
       }
       if (httpMethod === 'GET') {
         try {
-          const [space, platformFallback] = await Promise.all([
+          // This route is gated to space owners and admins, who may also PUT the
+          // binding, so binding detail may be returned here
+          // (req-same-and-cross-account). The platform fallback is read WITHOUT
+          // detail: a space admin may see that the platform has a binding, but
+          // the platform binding is not theirs to edit.
+          const [space, platformFallback, stagedExternalId] = await Promise.all([
             readCredentialScopeStatusViaBroker({
               source: 'space',
               projectId,
+              includeBindingDetail: true,
             }),
             readCredentialScopeStatusViaBroker({
               source: 'platform',
             }),
+            // The BOOTSTRAP value only. A cross-account binding cannot be saved
+            // until its trust policy already names the external ID, so between
+            // generation and the first accepted save there is no binding to read it
+            // from and this staging parameter is the only source
+            // (dec-external-id-storage). Best-effort: absent is the normal case.
+            readBedrockExternalId(ssm, {
+              base: credentialBase,
+              source: 'space',
+              projectId,
+            }).catch(() => null),
           ]);
-          return response(200, { ...space, platformFallback });
+          return response(200, {
+            ...space,
+            // The BINDING wins. It carries the value the broker sends to STS, so it
+            // is the only correct answer once a binding exists; the staging
+            // parameter outlives a rebind to a same-account role that sends none,
+            // and showing that would tell the operator to add an sts:ExternalId
+            // condition this binding can never satisfy.
+            bedrockExternalId:
+              space.bedrockMode === 'role' ? (space.bedrockExternalId ?? null) : stagedExternalId,
+            // A space owner writing a trust policy needs the principal to trust
+            // just as much as a platform admin does (req-same-and-cross-account).
+            bedrockBrokerRoleArn: process.env.CREDENTIAL_BROKER_ROLE_ARN || null,
+            platformFallback,
+          });
         } catch (error) {
           console.error('[space agent credentials] GET failed:', error.message);
           return response(500, { error: 'Failed to load space agent credentials' });
@@ -426,14 +538,37 @@ export const handler = async (event) => {
         } catch {
           return response(400, { error: 'Invalid JSON body' });
         }
+        const invalid = validateCredentialScopeUpdate({ source: 'space', update: input });
+        if (invalid) return response(400, invalid);
         try {
-          await writeCredentialScope(ssm, {
+          // The server owns the external ID: it decides whether one is needed and
+          // attaches its own value, so the stored binding is always canonical.
+          const prepared = await prepareBedrockWrite({
             base: credentialBase,
             source: 'space',
             projectId,
             update: input,
           });
-          return response(200, { saved: true });
+          const rejected = await rejectBedrockBindingOnPreflight({ prepared, projectId });
+          if (rejected) return response(400, rejected);
+          await writeCredentialScope(ssm, {
+            base: credentialBase,
+            source: 'space',
+            projectId,
+            update: prepared.update,
+          });
+          return response(200, {
+            saved: true,
+            ...(prepared.roleArn
+              ? {
+                  bedrockRoleArn: prepared.roleArn,
+                  // Returned so the operator can paste it into the trust policy.
+                  // Non-secret per dec-external-id-not-secret, and this route is
+                  // gated to principals who may modify the binding.
+                  bedrockExternalId: prepared.externalId,
+                }
+              : {}),
+          });
         } catch (error) {
           console.error('[space agent credentials] PUT failed:', error.message);
           return response(500, { error: 'Failed to save space agent credentials' });
@@ -448,11 +583,13 @@ export const handler = async (event) => {
       const access = await projectRuntimeAccess(event, projectId);
       if (access.denied) return response(access.statusCode, { error: access.error });
       let credentialBindings;
+      let credentialKinds;
       try {
-        credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
-          projectId,
-          userId: credentialUserId,
-        });
+        ({ bindings: credentialBindings, credentialKinds } =
+          await resolveEffectiveCredentialMetadataViaBroker({
+            projectId,
+            userId: credentialUserId,
+          }));
       } catch (error) {
         console.error('[effective agent credentials] resolve failed:', error.message);
         return response(500, { error: 'Failed to resolve agent credentials' });
@@ -473,9 +610,14 @@ export const handler = async (event) => {
         fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
       ]);
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
+      // Both shapes are populated deliberately. The per-CLI field is what a card
+      // reads first; the top-level map is the fallback when the runtime probe
+      // returned no CLI list. Each is DERIVED from the same provider map, so they
+      // cannot disagree.
       const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
         ...cli,
         credentialSource: credentialSources[credentialProviderForCli(cli.cli)] ?? null,
+        credentialKind: credentialKinds[credentialProviderForCli(cli.cli)] ?? null,
       }));
       const available = runtimeClis.filter((cli) => cli.available).map((cli) => cli.cli);
       if (!withModels) {
@@ -484,6 +626,7 @@ export const handler = async (event) => {
           runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
           runtimeClis,
           credentialSources,
+          credentialKinds,
         });
       }
       const opencodeModels = claudeModels.map((model) => ({
@@ -495,6 +638,7 @@ export const handler = async (event) => {
         runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
         runtimeClis,
         credentialSources,
+        credentialKinds,
         models: {
           claude: claudeModels,
           opencode: opencodeModels,
@@ -518,7 +662,12 @@ export const handler = async (event) => {
       const composeLlmBypassPath = `${prefix}/compose-llm-bypass`;
       const prStrategyPath = `${prefix}/pr-strategy`;
       try {
-        const [result, platformCredentialStatus] = await Promise.all([
+        // Role ARN and external ID are shown only to a platform admin — the same
+        // principal that may overwrite the binding (req-configured-semantics,
+        // req-external-id-lifecycle). Every other authenticated caller gets the
+        // booleans only, exactly as customMcpServers is gated below.
+        const bindingEditable = isPlatformAdmin(event);
+        const [result, platformCredentialStatus, platformExternalId] = await Promise.all([
           ssm.send(
             new GetParametersCommand({
               Names: [
@@ -533,7 +682,15 @@ export const handler = async (event) => {
               WithDecryption: true,
             }),
           ),
-          readCredentialScopeStatusViaBroker({ source: 'platform' }),
+          readCredentialScopeStatusViaBroker({
+            source: 'platform',
+            includeBindingDetail: bindingEditable,
+          }),
+          // The BOOTSTRAP value only — see the space route. Once a binding exists,
+          // the binding's own external ID is authoritative and this is ignored.
+          bindingEditable
+            ? readBedrockExternalId(ssm, { base: prefix, source: 'platform' }).catch(() => null)
+            : Promise.resolve(null),
         ]);
         const byName = {};
         for (const p of result.Parameters || []) byName[p.Name] = p.Value;
@@ -602,6 +759,22 @@ export const handler = async (event) => {
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           ...platformCredentialStatus,
+          ...(bindingEditable
+            ? {
+                // The BINDING wins once one exists; the staging parameter is only
+                // the pre-first-save bootstrap value. Reading the display off the
+                // parameter would survive a rebind to a same-account role that
+                // sends no external ID.
+                bedrockExternalId:
+                  platformCredentialStatus.bedrockMode === 'role'
+                    ? (platformCredentialStatus.bedrockExternalId ?? null)
+                    : platformExternalId,
+                // The principal a customer role must trust. Non-secret, and an
+                // operator cannot write a trust policy without it
+                // (req-same-and-cross-account).
+                bedrockBrokerRoleArn: process.env.CREDENTIAL_BROKER_ROLE_ARN || null,
+              }
+            : {}),
           cliModels,
           tierModels,
           deriveEnrichment,
@@ -626,10 +799,30 @@ export const handler = async (event) => {
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
       const input = JSON.parse(body || '{}');
       const errors = [];
+      // Set when a Bedrock role binding is written, so the response can hand the
+      // operator the external ID they must paste into the trust policy.
+      let bedrockBinding = null;
 
       if (typeof input.bedrockBearerToken === 'string') {
+        // A role-shaped value must parse before it is stored: validation lives on
+        // the write path so a malformed binding can never reach a stage
+        // (specs/bedrock-iam-role-credential-mode: req-single-parameter-encoding).
+        const invalid = validateCredentialScopeUpdate({ source: 'platform', update: input });
+        if (invalid) return response(400, invalid);
+        try {
+          bedrockBinding = await prepareBedrockWrite({
+            base: prefix,
+            source: 'platform',
+            update: input,
+          });
+        } catch (err) {
+          console.error('[settings] Failed to prepare Bedrock binding:', err.message);
+          return response(500, { error: 'Failed to prepare the Bedrock credential binding' });
+        }
+        const rejected = await rejectBedrockBindingOnPreflight({ prepared: bedrockBinding });
+        if (rejected) return response(400, rejected);
         // Empty string clears the token (stored as literal "placeholder" sentinel)
-        const value = input.bedrockBearerToken.trim() || 'placeholder';
+        const value = bedrockBinding.update.bedrockBearerToken.trim() || 'placeholder';
         try {
           await ssm.send(
             new PutParameterCommand({
@@ -865,7 +1058,18 @@ export const handler = async (event) => {
       }
 
       if (errors.length > 0) return response(500, { error: errors.join('; ') });
-      return response(200, { saved: true });
+      return response(200, {
+        saved: true,
+        ...(bedrockBinding?.roleArn
+          ? {
+              bedrockRoleArn: bedrockBinding.roleArn,
+              // Non-secret (dec-external-id-not-secret) and this route is
+              // platform-admin gated, so returning it is what makes the trust
+              // policy writable. Null for a same-account binding, which needs none.
+              bedrockExternalId: bedrockBinding.externalId,
+            }
+          : {}),
+      });
     }
 
     // GET /agents/capabilities — CLI availability + (with ?models=1) the model

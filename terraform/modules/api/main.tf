@@ -1,4 +1,6 @@
 # API Gateway REST API
+data "aws_caller_identity" "current" {}
+
 resource "aws_api_gateway_rest_api" "main" {
   name        = "${var.project_name}-api-${var.environment}"
   description = "REST API for ${var.project_name}"

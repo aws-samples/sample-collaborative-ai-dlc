@@ -19,6 +19,29 @@
 // The MCP server name we register under in mcp-config (see stage-materializer).
 export const MCP_SERVER_NAME = 'aidlc';
 
+// Bedrock temporary credentials, forwarded to a CLI when the resolved binding is
+// an IAM role rather than a bearer token
+// (specs/bedrock-iam-role-credential-mode: req-credential-delivery-env).
+//
+// Nothing here is per-CLI: all three Bedrock CLIs use AWS SDKs and read the
+// standard credential variables, verified at the pinned versions
+// (con-cli-env-creds). No helper binary, no credential_process, no config file —
+// which is also what keeps a future non-AWS provider from needing its own wiring.
+//
+// A bearer token, when present, wins: con-one-binding-per-provider means one
+// provider resolves to exactly ONE binding, so the two shapes never coexist in
+// practice, and preferring the pre-existing path keeps the bearer behaviour
+// byte-identical to before this feature.
+const bedrockRoleEnv = (env) => {
+  if (env.AWS_BEARER_TOKEN_BEDROCK) return {};
+  if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY || !env.AWS_SESSION_TOKEN) return {};
+  return {
+    AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY,
+    AWS_SESSION_TOKEN: env.AWS_SESSION_TOKEN,
+  };
+};
+
 // ── Claude Code (headless) ──
 // `claude -p --mcp-config <file> --permission-mode bypassPermissions
 //  --model <id> --output-format stream-json --verbose` — prompt piped on STDIN.
@@ -75,7 +98,7 @@ const claudeDriver = {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     };
     if (env.AWS_BEARER_TOKEN_BEDROCK) out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
-    return out;
+    return { ...out, ...bedrockRoleEnv(env) };
   },
 };
 
@@ -162,7 +185,7 @@ const opencodeDriver = {
     if (env.AWS_BEARER_TOKEN_BEDROCK) {
       out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
     }
-    return out;
+    return { ...out, ...bedrockRoleEnv(env) };
   },
 };
 
@@ -175,9 +198,23 @@ const opencodeDriver = {
 // minimal. Codex chooses the session id; the runtime captures the first
 // `thread.started` event and resumes with `codex exec resume <id>`.
 //
-// Model namespace: Bedrock's OpenAI-compatible endpoint takes EXACT ids like
-// "openai.gpt-5.5" — no geo prefix, no provider prefix. The resolver passes
-// configured values through verbatim (codex is NOT in BEDROCK_CLIS).
+// Model namespace: the Bedrock Runtime provider takes a cross-Region inference
+// (CRIS) profile id like "global.openai.gpt-5.6-sol". A bare foundation-model id
+// is refused with "Invocation of model ID ... with on-demand throughput isn't
+// supported. Retry your request with the ID or ARN of an inference profile", so
+// the prefix is required, not optional. The resolver passes configured values
+// through verbatim (codex is NOT in BEDROCK_CLIS).
+//
+// con-codex-runtime-provider: `amazon-bedrock-runtime`, NOT `amazon-bedrock`. The
+// latter is the legacy Mantle provider: it hardcodes
+// bedrock-mantle.<region>.api.aws, which serves no model in eu-central-1 and has
+// no CRIS support. Overriding only its base_url does not help — it still signs
+// SigV4 for service `bedrock-mantle` and bedrock-runtime answers "401 Credential
+// should be scoped to correct service: 'bedrock'". Measured on 0.145.0, which is
+// why the pinned version moved to 0.153.4 (the runtime provider needs >= 0.149.1).
+//
+// The provider takes its Region from AWS_REGION (measured), so envForAuth's region
+// is sufficient and no per-provider aws.region override is pinned here.
 // Argv config overrides pinned on EVERY codex invocation, materialized home or
 // not: a one-shot (no CODEX_HOME) must still hit Bedrock — codex's built-in
 // default provider is the OpenAI-hosted API, which this deployment has no
@@ -185,7 +222,7 @@ const opencodeDriver = {
 // With a materialized home these duplicate config.toml with the same values.
 const CODEX_BASE_OVERRIDES = [
   '-c',
-  'model_provider="amazon-bedrock"',
+  'model_provider="amazon-bedrock-runtime"',
   '-c',
   'approval_policy="never"',
 ];
@@ -227,7 +264,7 @@ const codexDriver = {
   envForAuth(env) {
     const out = { AWS_REGION: env.BEDROCK_REGION || env.AWS_REGION || 'us-east-1' };
     if (env.AWS_BEARER_TOKEN_BEDROCK) out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
-    return out;
+    return { ...out, ...bedrockRoleEnv(env) };
   },
 };
 

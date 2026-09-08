@@ -49,7 +49,7 @@ Agents run on **Amazon Bedrock AgentCore** — a serverless runtime that gives e
 - Stages run as background jobs with durable callbacks, so a stage can run for hours while the orchestrator is suspended at zero compute.
 - Session storage persists across park/resume, so a stage that asked a question continues its conversation with full context when you answer — even days later.
 
-The CLI authenticates to its model with a bearer token (Bedrock API key) or a Kiro API key configured in [Platform Admin → Agents](../using-the-platform/platform-settings.md#agents). The runtime's IAM role deliberately has no model-invocation permissions — token auth is the only path.
+The CLI authenticates to its model with Bedrock credentials — an IAM role assumed per invocation, or a bearer token (Bedrock API key) — or with a Kiro API key, configured in [Platform Admin → Agents](../using-the-platform/platform-settings.md#agents). The runtime's IAM role deliberately has no model-invocation permissions, so an agent never inherits Bedrock access from the runtime it executes in; role mode assumes a separate broker role instead. See [Bedrock credential modes](../getting-started/bedrock-credentials.md).
 
 !!! note "No ECS agent fleet"
 

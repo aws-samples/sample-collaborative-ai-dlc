@@ -106,6 +106,58 @@ describe('claude driver', () => {
     ).toBeUndefined();
   });
 
+  // specs/bedrock-iam-role-credential-mode — req-credential-delivery-env. One
+  // suite for all three Bedrock drivers: the point of the design is that role
+  // credentials introduce NO per-CLI wiring, so the assertion is identical.
+  describe.each([
+    ['claude', () => claudeDriver],
+    ['opencode', () => opencodeDriver],
+    ['codex', () => codexDriver],
+  ])('%s role-credential forwarding', (_name, driver) => {
+    const ROLE_ENV = {
+      AWS_REGION: 'eu-central-1',
+      AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
+      AWS_SECRET_ACCESS_KEY: 'secret',
+      AWS_SESSION_TOKEN: 'session',
+    };
+
+    it('forwards the three AWS credential variables when no bearer token is present', () => {
+      const env = driver().envForAuth(ROLE_ENV);
+      expect(env).toMatchObject({
+        AWS_REGION: 'eu-central-1',
+        AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
+        AWS_SECRET_ACCESS_KEY: 'secret',
+        AWS_SESSION_TOKEN: 'session',
+      });
+      expect(env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+    });
+
+    it('leaves the region resolution untouched', () => {
+      expect(driver().envForAuth({ ...ROLE_ENV, BEDROCK_REGION: 'us-west-2' }).AWS_REGION).toBe(
+        'us-west-2',
+      );
+      const { AWS_REGION: _region, ...noRegion } = ROLE_ENV;
+      expect(driver().envForAuth(noRegion).AWS_REGION).toBe('us-east-1');
+    });
+
+    it('forwards nothing when the credential set is incomplete', () => {
+      const env = driver().envForAuth({
+        AWS_REGION: 'eu-central-1',
+        AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
+        AWS_SECRET_ACCESS_KEY: 'secret',
+      });
+      expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+      expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    });
+
+    it('keeps the bearer path unchanged when a bearer token is present', () => {
+      const env = driver().envForAuth({ ...ROLE_ENV, AWS_BEARER_TOKEN_BEDROCK: 'tok' });
+      expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe('tok');
+      expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+      expect(env.AWS_SESSION_TOKEN).toBeUndefined();
+    });
+  });
+
   it('forces the session id up front when supplied (new-session-only)', () => {
     const inv = claudeDriver.buildInvocation({
       prompt: 'do it',
@@ -338,7 +390,7 @@ describe('codex driver', () => {
       '--json',
       '--skip-git-repo-check',
       '-c',
-      'model_provider="amazon-bedrock"',
+      'model_provider="amazon-bedrock-runtime"',
       '-c',
       'approval_policy="never"',
       '-m',
@@ -361,7 +413,7 @@ describe('codex driver', () => {
       '--json',
       '--skip-git-repo-check',
       '-c',
-      'model_provider="amazon-bedrock"',
+      'model_provider="amazon-bedrock-runtime"',
       '-c',
       'approval_policy="never"',
       '-',
@@ -383,7 +435,7 @@ describe('codex driver', () => {
       '--json',
       '--skip-git-repo-check',
       '-c',
-      'model_provider="amazon-bedrock"',
+      'model_provider="amazon-bedrock-runtime"',
       '-c',
       'approval_policy="never"',
       '-m',

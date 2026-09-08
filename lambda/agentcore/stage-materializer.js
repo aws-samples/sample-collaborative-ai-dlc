@@ -577,7 +577,12 @@ export const buildCodexConfigToml = ({
   const mcpServers = { ...others, [MCP_SERVER_NAME]: aidlc };
   return [
     '# Materialized by the AI-DLC runtime — regenerated every stage run.',
-    'model_provider = "amazon-bedrock"',
+    // specs/bedrock-iam-role-credential-mode: con-codex-runtime-provider. The
+    // Bedrock RUNTIME provider, which signs SigV4
+    // for service `bedrock` and supports cross-Region inference profiles. The
+    // legacy `amazon-bedrock` provider targets the Mantle endpoint, which serves no
+    // model in this Region. Region comes from AWS_REGION.
+    'model_provider = "amazon-bedrock-runtime"',
     'approval_policy = "never"',
     'sandbox_mode = "danger-full-access"',
     // The rendered rules doc doubles as the project doc when the repo has no

@@ -9,6 +9,35 @@ lambda_vpc_scope = "required"
 # Bedrock model pinning (for claude and opencode drivers)
 bedrock_model = "us.anthropic.claude-sonnet-4-6"
 
+# Codex model. Must be a cross-Region inference profile id: Codex calls Bedrock's
+# OpenAI-compatible Responses API, which refuses a bare foundation-model id.
+codex_model = "global.openai.gpt-5.6-sol"
+
+# ---------------------------------------------------------------------------
+# Bedrock IAM-role credential mode (optional)
+#
+# A Bedrock binding can name an IAM role instead of storing an API key; the
+# credential broker assumes it per agent invocation. Terraform does NOT create
+# that role - it may live in another account, and its trust policy is the
+# operator's control over who may assume it. Get the permission policy from
+# `terraform output -raw bedrock_role_grant_policy_json` and the principal to
+# trust from `terraform output -raw credential_broker_role_arn`.
+#
+# The broker may only assume roles matching these ARN patterns, so either name
+# the role `aidlc-bedrock-*` or widen this list. Leave commented for the default.
+# bedrock_assumable_role_arns = ["arn:aws:iam::*:role/aidlc-bedrock-*"]
+#
+# Set only when the role lives in a different account from this deployment (the
+# central-Bedrock-account topology). An external ID is then required, and the
+# platform generates it. Empty = this deployment's own account.
+# bedrock_role_account_id = ""
+#
+# Narrows the rendered trust policy to named spaces, for a SPACE-SCOPE binding.
+# Leave empty for the shared form, which is the only one a platform-scope binding
+# can use. Ids are the space ids from the space URLs.
+# bedrock_role_trusted_space_ids = []
+# ---------------------------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 # Custom domain (optional)
 #

@@ -464,6 +464,20 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         ]
       },
       {
+        # Bedrock role-binding external IDs (specs/bedrock-iam-role-credential-mode:
+        # dec-external-id-storage). Deliberately OUTSIDE the agent-credentials/
+        # paths above: the external ID is not a credential, so the write-only
+        # discipline that keeps this broad API role unable to decrypt credential
+        # material is untouched, and the settings API can read its own generated
+        # value back to hand to an operator without any read grant on credentials.
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-external-id",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/bedrock-external-id",
+        ]
+      },
+      {
         # Metadata-only broker: set-state and effective source bindings, never
         # values. The value-redemption broker remains AgentCore-only.
         Effect   = "Allow"
@@ -627,12 +641,21 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
         ]
       },
-      # Project teardown deletes the two Space credential SecureStrings. Keep
-      # this delete-only so the Projects Lambda cannot read or rotate values.
+      # Project teardown deletes the two Space credential SecureStrings, plus the
+      # Bedrock role binding's external ID. Keep this delete-only so the Projects
+      # Lambda cannot read or rotate values.
+      #
+      # The external ID lives OUTSIDE agent-credentials/ (dec-external-id-storage),
+      # so it needs its own resource here. Without it the parameter outlives the
+      # space it belongs to, and a space recreated with the same id would inherit a
+      # stale value no trust policy references.
       {
-        Effect   = "Allow"
-        Action   = ["ssm:DeleteParameter"]
-        Resource = ["arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*"]
+        Effect = "Allow"
+        Action = ["ssm:DeleteParameter"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/agent-credentials/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/bedrock-external-id",
+        ]
       },
     ]
   })
@@ -982,6 +1005,16 @@ resource "aws_iam_role_policy" "credential_broker" {
         ]
       },
       {
+        # Bedrock IAM-role credential mode: the broker is the ONE principal that
+        # may assume a customer's Bedrock role, so the number of principals able
+        # to do so stays at one and the AgentCore execution role gains nothing
+        # (specs/bedrock-iam-role-credential-mode: req-broker-side-assume,
+        # req-execution-role-no-bedrock, req-least-privilege-assume).
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = var.bedrock_assumable_role_arns
+      },
+      {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
         Resource = [var.github_app_config_param_arn]
@@ -1039,6 +1072,13 @@ module "credential_broker_lambda" {
     BITBUCKET_OAUTH_SECRET_NAME         = var.bitbucket_oauth_secret_name
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
+    # req-least-privilege-assume. The ceiling the broker attaches to every
+    # AssumeRole, rendered from the SAME definition as the customer-facing grant
+    # (see terraform/bedrock-role-grant.tf). The grant is advice about a role in an
+    # account this deployment does not manage; this is the enforcement, so a role
+    # carrying more than Bedrock invoke cannot deliver more than Bedrock invoke into
+    # a stage container.
+    BEDROCK_SESSION_POLICY = var.bedrock_role_session_policy_json
   }
 }
 
@@ -1072,6 +1112,20 @@ module "credential_metadata_lambda" {
 
   environment_variables = {
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    # Bind-time Bedrock role preflight (specs/bedrock-iam-role-credential-mode:
+    # req-binding-preflight). This function shares the credential-broker role, so
+    # it already holds the one sts:AssumeRole grant and no other role gains it.
+    # The allowlist is passed so a role outside it is reported deterministically
+    # without an STS round trip, and the broker role ARN so the failure guidance can
+    # name the exact principal an operator must trust.
+    BEDROCK_ASSUMABLE_ROLE_ARNS = jsonencode(var.bedrock_assumable_role_arns)
+    CREDENTIAL_BROKER_ROLE_ARN  = aws_iam_role.credential_broker.arn
+    PLATFORM_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
+    # The preflight must exercise the SAME AssumeRole the resolution path will, or it
+    # stops predicting it — so it attaches the same ceiling. A session policy does not
+    # affect whether AssumeRole is authorized (that is the trust policy's job), so this
+    # cannot change a preflight verdict; it keeps the two paths identical.
+    BEDROCK_SESSION_POLICY = var.bedrock_role_session_policy_json
   }
 }
 

@@ -97,9 +97,10 @@ The following are optional. Set them up to enable additional features.
 
 ## Agent authentication
 
-Agents authenticate using API keys configured through the platform UI. The platform supports two options:
+Agents authenticate using credentials configured through the platform UI: a Kiro API key for the
+Kiro CLI, and for Bedrock either an IAM role or a Bedrock API key.
 
-An agent CLI cannot reach its model until an effective credential is configured — the Bedrock AgentCore runtime has no IAM-role fallback. A user can provide a personal credential in **Account Settings**, a space owner/admin can provide a shared credential in **Space Settings → Agent**, or a platform admin can provide a fallback in **Admin → Agents**. Resolution is independent per provider and follows `personal > space > platform`.
+An agent CLI cannot reach its model until an effective credential is configured — the Bedrock AgentCore runtime's own execution role holds no Bedrock model-invocation permission, so there is no implicit fallback to the runtime's identity. A user can provide a personal credential in **Account Settings**, a space owner/admin can provide a shared credential in **Space Settings → Agent**, or a platform admin can provide a fallback in **Admin → Agents**. Resolution is independent per provider and follows `personal > space > platform`.
 
 ### Kiro CLI API key (required for the Kiro CLI driver)
 
@@ -107,13 +108,31 @@ Kiro API keys are turned **off by default**. A Kiro administrator must first ena
 
 Save the key as the **Kiro API Key** at the intended personal, space, or platform scope. AgentCore resolves the selected opaque binding for each invocation and provides the value to Kiro as `KIRO_API_KEY`.
 
-### Amazon Bedrock API key (required for Claude Code, OpenCode, and Codex setups)
+### Amazon Bedrock credentials (required for Claude Code, OpenCode, and Codex setups)
 
-Generate an Amazon Bedrock API key in the AWS Console (**Amazon Bedrock → API keys → Generate long-term API key**, scoped to your account and region). Save it as the **Bedrock Bearer Token** at the intended personal, space, or platform scope. AgentCore injects the selected value for that invocation as `AWS_BEARER_TOKEN_BEDROCK`.
+Bedrock access comes in one of two modes, configured per scope. **An IAM role is preferred**: the
+platform stores only a role ARN, a credential broker assumes it per invocation, and the agent
+receives credentials that expire within the hour. See
+[Bedrock credential modes](bedrock-credentials.md) for the setup, including the trust policy you
+need to write and the cross-account external-ID bootstrap.
 
-This token is required for Claude Code, OpenCode, and Codex agents: the Bedrock AgentCore runtime's IAM role intentionally has no Amazon Bedrock model-invocation permissions, so there is no IAM-role fallback. Agents authenticate to Bedrock exclusively through this token.
+The **Bedrock Bearer Token** is the older mode and is deprecated. Generate an Amazon Bedrock API key
+in the AWS Console (**Amazon Bedrock → API keys → Generate long-term API key**, scoped to your
+account and region) and save it at the intended personal, space, or platform scope. AgentCore
+injects the selected value for that invocation as `AWS_BEARER_TOKEN_BEDROCK`. It remains the only
+option at **personal** scope.
 
-For Codex, additionally enable access to the OpenAI models (`openai.gpt-5.*`) in the Bedrock console for your Region — Codex uses Bedrock's OpenAI-compatible Responses API, and the models are Region-limited. See [Use Codex with Amazon Bedrock](https://help.openai.com/en/articles/20001252-use-codex-with-amazon-bedrock). (GPT models are also available through Kiro, but Kiro accesses them via its own API key — no Bedrock model access is involved there.)
+One of the two is required for Claude Code, OpenCode, and Codex: the Bedrock AgentCore runtime's
+IAM role intentionally has no Amazon Bedrock model-invocation permissions, so an agent never
+inherits Bedrock access from the runtime it executes in. That is why role mode uses a _separate_
+broker role rather than the runtime's own identity.
+
+For Codex, additionally enable access to the OpenAI models in the Bedrock console for your Region,
+and configure a **cross-Region inference profile id** such as `global.openai.gpt-5.6-sol` — Codex
+calls Bedrock's OpenAI-compatible Responses API, which refuses a bare foundation-model id. See
+[Bedrock credential modes → Codex on Bedrock](bedrock-credentials.md#codex-on-bedrock) for the
+version, provider and grant it needs. (GPT models are also available through Kiro, but Kiro
+accesses them via its own API key — no Bedrock model access is involved there.)
 
 ### Where these values are stored
 
@@ -125,8 +144,13 @@ All credentials are stored in **AWS Systems Manager Parameter Store** as `Secure
 
 The credential name is `bedrock-bearer-token` or `kiro-api-key`. An unset platform credential holds the literal value `placeholder`, which the platform treats as "not configured"; clearing a space or personal credential deletes that scoped parameter so resolution can fall through.
 
+The `bedrock-bearer-token` name is historical: in role mode that same parameter holds a JSON object such as `{"roleArn":"arn:aws:iam::111122223333:role/aidlc-bedrock-inference"}` rather than a token. Role mode also uses one non-secret `String` parameter per scope for the external ID, deliberately **outside** `agent-credentials/`:
+
+- Space: `/<project_name>/<environment>/projects/<project-id>/bedrock-external-id`
+- Platform: `/<project_name>/<environment>/bedrock-external-id`
+
 ## AWS credentials for deployment
 
-AIDLC Collaborative infrastructure still requires valid AWS credentials for deployment and AWS resource management. Agent CLI model calls do not use ambient AWS credentials; they use the effective Kiro or Bedrock key selected through the hierarchy above.
+AIDLC Collaborative infrastructure still requires valid AWS credentials for deployment and AWS resource management. Agent CLI model calls never use the runtime's ambient AWS credentials: they use the effective Kiro key, Bedrock API key, or the short-lived credentials the broker mints from the bound IAM role.
 
 Without an effective agent credential, users can still browse the application and edit draft intents, but credential-backed AI composition, Quorum assists, and intent start are unavailable.

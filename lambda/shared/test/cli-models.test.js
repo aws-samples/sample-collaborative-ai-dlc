@@ -98,6 +98,36 @@ describe('normalizeCliModels', () => {
       expect(result.issues[0]).toMatchObject({ path: 'codex' });
     }
   });
+
+  // GPT-5.6 on Bedrock is reachable only through a cross-Region inference
+  // profile: the OpenAI-compatible endpoint Codex calls answers
+  // 404 "The model 'openai.gpt-5.6-sol' does not exist" for the bare id.
+  // Verified against a real Codex stage run, whose failure was this 404 and not
+  // an authorization error.
+  it('accepts cross-Region inference profile ids for Codex', () => {
+    for (const good of [
+      'global.openai.gpt-5.6-sol',
+      'global.openai.gpt-5.6-terra',
+      'us.openai.gpt-5.6-luna',
+      'openai.gpt-5.5',
+    ]) {
+      const result = normalizeCliModels({ codex: good });
+      expect(result.valid).toBe(true);
+      expect(result.value.codex).toBe(good);
+    }
+  });
+
+  it('still rejects a CRIS prefix on a non-openai Codex model', () => {
+    for (const bad of [
+      'global.anthropic.claude-sonnet-5',
+      'global.openai.',
+      'global.gpt-5.6-sol',
+    ]) {
+      const result = normalizeCliModels({ codex: bad });
+      expect(result.valid).toBe(false);
+      expect(result.issues[0]).toMatchObject({ path: 'codex' });
+    }
+  });
 });
 
 describe('parseCliModels', () => {

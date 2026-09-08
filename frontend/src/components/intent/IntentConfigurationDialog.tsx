@@ -9,7 +9,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useIntent } from '@/contexts/IntentContext';
-import { AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
+import { AGENT_CLI_METADATA, credentialBadgeLabel } from '@/lib/agentCli';
 import { getIntentStageSelection } from '@/lib/intentStageSelection';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
@@ -199,7 +199,7 @@ export function IntentConfigurationDialog({
                 label="Credentials"
                 value={
                   intent.credentialSource
-                    ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                    ? credentialBadgeLabel(intent.credentialSource)
                     : 'Default'
                 }
               />

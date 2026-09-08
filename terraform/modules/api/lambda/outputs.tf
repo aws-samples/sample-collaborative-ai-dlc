@@ -310,3 +310,11 @@ output "v2_orchestrator_qualified_arn" {
   description = "Qualified ARN of the v2 orchestrator durable Lambda"
   value       = module.v2_orchestrator_alias.lambda_alias_arn
 }
+
+# The single IAM principal permitted to assume a customer's Bedrock role. An
+# operator pastes this ARN into that role's trust policy
+# (specs/bedrock-iam-role-credential-mode: req-same-and-cross-account).
+output "credential_broker_role_arn" {
+  description = "IAM role ARN of the credential broker — the only principal a Bedrock role's trust policy must name"
+  value       = aws_iam_role.credential_broker.arn
+}

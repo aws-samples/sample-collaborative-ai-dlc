@@ -38,7 +38,38 @@ import {
   parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
-import { isCredentialFailure } from '../cli/credential-errors.js';
+import { isCredentialFailure, isExpiredCredentialFailure } from '../cli/credential-errors.js';
+
+// True when this invocation's temporary credential had already expired by the time
+// the CLI exited.
+//
+// specs/bedrock-iam-role-credential-mode: req-expiry-tripwire.
+// isExpiredCredentialFailure reads the CLI's stderr, which is
+// wording the platform does not control: a CLI that phrases expiry differently, or
+// wraps it as a bare 403, would be filed as credential_invalid or cli_nonzero_exit
+// and the counter that gates dec-v1-no-refresh would UNDER-count — hiding exactly
+// the evidence it exists to collect. The credential's own deadline is arithmetic,
+// so it needs no cooperation from the CLI.
+//
+// It can over-attribute: a stage that failed for an unrelated reason after the
+// deadline passed is filed as credential_expired. That direction is deliberate. A
+// false positive prompts a look at a decision that should be revisited on evidence;
+// a false negative leaves the decision resting on an assumption nobody rechecked.
+// Only reached on a NON-ZERO CLI exit, and a credential that expired mid-run is
+// overwhelmingly the cause of one.
+export const credentialDeadlinePassed = (
+  credentialExpiresAt,
+  clock = () => new Date().toISOString(),
+) => {
+  const deadline = Date.parse(credentialExpiresAt ?? '');
+  if (!Number.isFinite(deadline)) return false;
+  // The injected clock exists for deterministic event timestamps and is sometimes a
+  // sentinel rather than an instant, so fall back to real time when it does not
+  // parse. Comparing against a sentinel would silently disable this check.
+  const injected = Date.parse(clock() ?? '');
+  const now = Number.isFinite(injected) ? injected : Date.now();
+  return now >= deadline;
+};
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
@@ -1010,6 +1041,9 @@ export const runStage = async (
     availableClis = [],
     credentialBindings = [],
     missingCredentialBindings = [],
+    // The deadline on this invocation's temporary credentials (ISO string), or null
+    // for a bearer binding. Used only to classify a failure (req-expiry-tripwire).
+    credentialExpiresAt = null,
     env = process.env,
     spawnFn,
     broadcast = async () => {},
@@ -2375,6 +2409,21 @@ export const runStage = async (
           summary: `Kiro exited ${exitCode} with an empty final message after completing work; treated as success (ACP empty-completion).`,
         })
         .catch(() => {});
+    } else if (
+      isExpiredCredentialFailure(result?.stderrTail) ||
+      credentialDeadlinePassed(credentialExpiresAt, clock)
+    ) {
+      // req-expiry-failure-legible: distinct from credential_invalid because the
+      // binding is fine and a retry resolves a fresh credential through the
+      // normal invocation path. Distinguishable in logs from a dead container
+      // (stage_callback_failed) and from a genuine agent failure
+      // (cli_nonzero_exit). NOTE: a retry re-runs the WHOLE stage attempt, so
+      // work done before the expiry is lost.
+      return fail(
+        stageInstanceId,
+        'credential_expired',
+        'The temporary credential for this stage expired before the stage finished; the retry resolves a fresh one',
+      );
     } else if (isCredentialFailure(result?.stderrTail)) {
       const detail =
         credentialFailureDetail({

@@ -253,6 +253,39 @@ variable "agent_credential_grant_secret_param_arn" {
   type        = string
 }
 
+# Which IAM roles the credential broker may assume for Bedrock model access.
+#
+# specs/bedrock-iam-role-credential-mode: req-least-privilege-assume,
+# dec-assumable-role-default. The broker cannot know a customer's role ARNs at
+# deploy time, and a bare wildcard would leave the target role's TRUST POLICY as
+# the only control. The trust policy is inherently authoritative for a
+# bring-your-own-role model, so this is defence in depth, not the primary control.
+#
+# The path-scoped default imposes a naming convention on whoever owns the central
+# Bedrock account: name the role `aidlc-bedrock-*`. If that is not possible, set
+# ["*"] explicitly, which makes the looser posture a deliberate, visible choice
+# rather than the silent default. Narrowing `iam::*` to real account ids is
+# recommended for a known topology.
+#
+# A mismatch is cheap to diagnose: the Phase 2 bind-time preflight reports a role
+# outside this list at save time rather than as a failing stage.
+variable "bedrock_assumable_role_arns" {
+  description = "IAM role ARNs the credential broker may assume for Bedrock access. Path-scoped by default; set [\"*\"] to opt out of the naming convention."
+  type        = list(string)
+  default     = ["arn:aws:iam::*:role/aidlc-bedrock-*"]
+
+  validation {
+    condition     = length(var.bedrock_assumable_role_arns) > 0
+    error_message = "bedrock_assumable_role_arns must not be empty; the broker would be unable to resolve any role binding."
+  }
+}
+
+variable "bedrock_role_session_policy_json" {
+  description = "Session policy the broker attaches to every Bedrock AssumeRole, rendered from the same definition as the customer grant. Empty disables the ceiling."
+  type        = string
+  default     = ""
+}
+
 variable "agent_credential_grant_secret_param_name" {
   description = "SSM parameter name of the HMAC secret used to authorize AgentCore credential-broker requests"
   type        = string

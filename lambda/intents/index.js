@@ -1171,7 +1171,18 @@ const normalizeSource = (raw, trackers) => {
 
 // ── DTO assembly ──
 
-const CREDENTIAL_FAILURE_CODES = ['credential_unavailable', 'credential_invalid'];
+// Reasons whose detail message is written for a human and must survive the
+// legacy failureReason concatenation. credential_expired and
+// credential_resolution_failed belong to the Bedrock IAM-role credential mode
+// (specs/bedrock-iam-role-credential-mode: req-expiry-failure-legible); listing
+// them here is also what makes credential_expired countable as a persisted,
+// UI-visible field rather than needing a bespoke log query (req-expiry-tripwire).
+const CREDENTIAL_FAILURE_CODES = [
+  'credential_unavailable',
+  'credential_invalid',
+  'credential_expired',
+  'credential_resolution_failed',
+];
 
 // New execution rows persist a structured failure. Older rows only have the
 // concatenated failureReason string, so normalize those once at the API

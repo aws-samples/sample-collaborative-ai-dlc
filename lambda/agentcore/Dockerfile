@@ -50,7 +50,7 @@ RUN mkdir -p /opt/opencode/bin \
 # Codex — pinned for reproducibility (the npm package ships the arm64 binary).
 # The per-stage CODEX_HOME (config.toml) is materialized at run time; the
 # version assert catches a broken/mismatched install at build time.
-ARG CODEX_VERSION=0.145.0
+ARG CODEX_VERSION=0.153.4
 RUN npm install -g @openai/codex@${CODEX_VERSION} \
     && codex --version | grep -F "${CODEX_VERSION}" \
     && npm cache clean --force

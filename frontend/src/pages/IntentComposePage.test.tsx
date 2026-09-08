@@ -250,6 +250,73 @@ describe('IntentComposePage', () => {
     useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
   });
 
+  // An IAM-role binding stores no secret, so a card that calls it a "key" is
+  // simply wrong — the platform settings page says "No secret is stored".
+  it('names an IAM-role credential as a role and a stored secret as a key', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: ['kiro', 'claude'],
+      credentialSources: { bedrock: 'platform', kiro: 'platform' },
+      credentialKinds: { bedrock: 'role', kiro: 'bearer' },
+      runtimeClis: [
+        {
+          cli: 'kiro',
+          installed: true,
+          authed: true,
+          available: true,
+          credentialSource: 'platform',
+          credentialKind: 'bearer',
+        },
+        {
+          cli: 'claude',
+          installed: true,
+          authed: true,
+          available: true,
+          credentialSource: 'platform',
+          credentialKind: 'role',
+        },
+        { cli: 'opencode', installed: true, authed: false, available: false },
+        { cli: 'codex', installed: false, authed: false, available: false },
+      ],
+    });
+    renderPage();
+
+    const claude = await screen.findByTestId('agent-cli-claude');
+    expect(claude.textContent).toContain('Platform IAM role');
+    expect(claude.textContent).not.toContain('key');
+
+    // Kiro authenticates with a real API key, so "key" is correct there.
+    expect((await screen.findByTestId('agent-cli-kiro')).textContent).toContain('Platform key');
+  });
+
+  // The kind is descriptive, so a backend that cannot supply it (an older
+  // credential-metadata Lambda in a mixed-version deploy window) must leave the
+  // cards working and merely unlabelled. An unlabelled badge is accurate; a
+  // guessed noun is not.
+  it('names the scope alone when the credential kind is unknown', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: ['claude'],
+      credentialSources: { bedrock: 'space', kiro: null },
+      runtimeClis: [
+        {
+          cli: 'claude',
+          installed: true,
+          authed: true,
+          available: true,
+          credentialSource: 'space',
+        },
+        { cli: 'kiro', installed: true, authed: false, available: false },
+        { cli: 'opencode', installed: true, authed: false, available: false },
+        { cli: 'codex', installed: false, authed: false, available: false },
+      ],
+    });
+    renderPage();
+
+    const claude = await screen.findByTestId('agent-cli-claude');
+    expect(claude.textContent).toContain('Space');
+    expect(claude.textContent).not.toContain('key');
+    expect(claude.textContent).not.toContain('IAM role');
+  });
+
   it('renders the exact stage/gate counts from the preview summary', async () => {
     renderPage();
     const summary = await screen.findByTestId('scope-summary');

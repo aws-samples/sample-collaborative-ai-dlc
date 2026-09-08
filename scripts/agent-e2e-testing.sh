@@ -11,7 +11,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 BEDROCK_MODEL="${BEDROCK_MODEL:-us.anthropic.claude-sonnet-4-6}"
 KIRO_MODEL="${KIRO_MODEL:-auto}"
-CODEX_MODEL="${CODEX_MODEL:-openai.gpt-5.5}"
+CODEX_MODEL="${CODEX_MODEL:-global.openai.gpt-5.6-sol}"
 E2E_CLIS="${E2E_CLIS:-claude,kiro,opencode,codex}"
 KEEP_E2E="${KEEP_E2E:-0}"
 BEDROCK_TOKEN="${BEDROCK_API_KEY:-${AWS_BEARER_TOKEN_BEDROCK:-}}"
@@ -113,8 +113,12 @@ preflight() {
   [[ "$BEDROCK_MODEL" =~ ^[^[:space:]/]+$ ]] ||
     fail "BEDROCK_MODEL must be a bare Bedrock model/profile id"
   [ -n "$KIRO_MODEL" ] || fail "KIRO_MODEL must not be empty"
-  [[ "$CODEX_MODEL" =~ ^openai\. ]] ||
-    fail "CODEX_MODEL must be an exact openai.* Bedrock model id (e.g. openai.gpt-5.5)"
+  # An optional geo/global prefix is a cross-Region inference profile, which the
+  # Bedrock Runtime OpenAI-compatible endpoint REQUIRES for GPT-5.6 — a bare id is
+  # refused for on-demand throughput. Mirrors CODEX_MODEL_ID in
+  # lambda/shared/cli-models.js and the codex_model terraform variable.
+  [[ "$CODEX_MODEL" =~ ^(global\.|us\.|eu\.|apac\.)?openai\. ]] ||
+    fail "CODEX_MODEL must be a Bedrock OpenAI model id, optionally with a cross-Region inference prefix (e.g. global.openai.gpt-5.6-sol)"
   if is_selected claude || is_selected opencode || is_selected codex; then
     [ -n "$BEDROCK_TOKEN" ] ||
       fail "BEDROCK_API_KEY (or AWS_BEARER_TOKEN_BEDROCK) is required"

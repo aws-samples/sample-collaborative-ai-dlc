@@ -13,7 +13,7 @@ import {
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { agentsService, type AgentCapabilities } from '@/services/agents';
 import type { AgentCli } from '@/services/projects';
-import { AGENT_CLIS, AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
+import { AGENT_CLIS, AGENT_CLI_METADATA, credentialBadgeLabel } from '@/lib/agentCli';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
@@ -669,6 +669,12 @@ function IntentComposePageContent() {
                     AGENT_CLI_METADATA[cli].credentialProvider
                   ] ??
                   null;
+                const credentialKind =
+                  status?.credentialKind ??
+                  agentCapabilities?.credentialKinds?.[
+                    AGENT_CLI_METADATA[cli].credentialProvider
+                  ] ??
+                  null;
                 const unavailableReason =
                   status?.installed === false
                     ? 'not installed'
@@ -705,7 +711,7 @@ function IntentComposePageContent() {
                       )}
                       {source && (
                         <span className="rounded bg-muted px-1.5 py-0.5">
-                          {AGENT_CREDENTIAL_SOURCE_LABELS[source]} key
+                          {credentialBadgeLabel(source, credentialKind)}
                         </span>
                       )}
                       {!available && <span>{unavailableReason}</span>}

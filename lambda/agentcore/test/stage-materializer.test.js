@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { tmpdir } from 'node:os';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import {
   buildStagePrompt,
   renderUnitScope,
   buildMcpConfig,
+  CUSTOM_MCP_AUTH_ENV_SCRUB,
   buildKiroAgentConfig,
   materializeKiroAgent,
   KIRO_AGENT_NAME,
@@ -254,7 +255,7 @@ describe('buildMcpConfig', () => {
     expect(cfg.mcpServers.fetch).toEqual({
       command: 'uvx',
       args: ['mcp-server-fetch'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: CUSTOM_MCP_AUTH_ENV_SCRUB,
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
   });
@@ -296,6 +297,37 @@ describe('buildMcpConfig', () => {
     // The runtime-owned bridge is trusted and receives only its scoped env.
     expect(cfg.mcpServers.aidlc.env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
     expect(cfg.mcpServers.aidlc.env.KIRO_API_KEY).toBeUndefined();
+  });
+
+  // specs/bedrock-iam-role-credential-mode — req-credential-safety,
+  // con-custom-server-excluded. Under role mode the CLI process env carries LIVE
+  // temporary Bedrock credentials where the bearer token never went, so a custom
+  // stdio child would inherit them from the parent unless they are blanked here.
+  it("prevents custom stdio servers from inheriting the role path's AWS credentials", () => {
+    const parentEnv = {
+      AWS_ACCESS_KEY_ID: 'ASIAEXAMPLE',
+      AWS_SECRET_ACCESS_KEY: 'live-secret',
+      AWS_SESSION_TOKEN: 'live-session',
+    };
+    const cfg = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i' },
+      customServers: {
+        passive: { command: 'node', args: ['passive.js'] },
+        hostile: {
+          command: 'node',
+          args: ['hostile.js'],
+          env: { AWS_ACCESS_KEY_ID: 'try-to-restore-it' },
+        },
+      },
+    });
+
+    for (const name of ['passive', 'hostile']) {
+      const observedChildEnv = { ...parentEnv, ...cfg.mcpServers[name].env };
+      expect(observedChildEnv.AWS_ACCESS_KEY_ID).toBe('');
+      expect(observedChildEnv.AWS_SECRET_ACCESS_KEY).toBe('');
+      expect(observedChildEnv.AWS_SESSION_TOKEN).toBe('');
+    }
   });
 
   it('never lets a custom server override the reserved aidlc entry', () => {
@@ -382,7 +414,7 @@ describe('materializeStage (workspace write)', () => {
     expect(cfg.mcpServers.fetch).toEqual({
       command: 'uvx',
       args: ['mcp-server-fetch'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: CUSTOM_MCP_AUTH_ENV_SCRUB,
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
     // Custom rules go into the CLI's NATIVE rules dir (auto-loaded), NOT the prompt.
@@ -477,7 +509,7 @@ describe('buildKiroAgentConfig', () => {
     expect(cfg.mcpServers.git).toEqual({
       command: 'uvx',
       args: ['mcp-server-git'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: CUSTOM_MCP_AUTH_ENV_SCRUB,
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
   });
@@ -525,8 +557,7 @@ describe('OpenCode inline config', () => {
       environment: {
         API_KEY: '{env:LOCAL_KEY}',
         MIXED: 'Bearer {env:LOCAL_KEY}',
-        AWS_BEARER_TOKEN_BEDROCK: '',
-        KIRO_API_KEY: '',
+        ...CUSTOM_MCP_AUTH_ENV_SCRUB,
       },
     });
     expect(cfg.mcp.remote).toEqual({
@@ -566,7 +597,7 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
       mcpEntry: '/opt/agentcore/mcp/index.js',
       scope: { executionId: 'e1', intentId: 'i1' },
     });
-    expect(toml).toContain('model_provider = "amazon-bedrock"');
+    expect(toml).toContain('model_provider = "amazon-bedrock-runtime"');
     expect(toml).toContain('approval_policy = "never"');
     expect(toml).toContain('sandbox_mode = "danger-full-access"');
     expect(toml).toContain('project_doc_fallback_filenames = [".aidlc/rules.md"]');
@@ -633,14 +664,19 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
     expect(aidlcSection).toContain('"AWS_CONTAINER_CREDENTIALS_FULL_URI"');
     expect(toml).not.toContain('AKIALOCAL');
     expect(toml).not.toContain('secretlocal');
-    // The custom server never gets the credential whitelist.
+    // The custom server never gets the credential whitelist (con-custom-server-
+    // excluded). Under role mode the parent CLI process env carries LIVE Bedrock
+    // credentials, so a custom child must not merely be un-forwarded — the three
+    // AWS names are explicitly blanked so it cannot inherit them either.
     const customSection = toml.slice(
       toml.indexOf('[mcp_servers."custom"]'),
       toml.indexOf('[mcp_servers."aidlc"]'),
     );
     expect(customSection).toContain('"FOO" = "bar"');
-    expect(customSection).not.toContain('AWS_ACCESS_KEY_ID');
     expect(customSection).not.toContain('env_vars');
+    for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
+      expect(customSection).toContain(`"${name}" = ""`);
+    }
   });
 
   it('emits the reserved aidlc server LAST so a custom entry can never shadow it', () => {
@@ -673,7 +709,7 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
     expect(context.codexHome.startsWith(`${localRoot}${path.sep}`)).toBe(true);
     expect(context.codexHome).not.toContain(path.join('.aidlc', 'codex-home'));
     const toml = await readFile(path.join(context.codexHome, 'config.toml'), 'utf8');
-    expect(toml).toContain('model_provider = "amazon-bedrock"');
+    expect(toml).toContain('model_provider = "amazon-bedrock-runtime"');
     const agentsMd = await readFile(path.join(context.codexHome, 'AGENTS.md'), 'utf8');
     expect(agentsMd).toContain('.aidlc/rules.md');
     expect(agentsMd).toContain('.aidlc/codex-instructions');
@@ -809,5 +845,100 @@ describe('renderIntentBlock + prompt placement', () => {
     expect(intentIdx).toBeLessThan(bodyIdx);
     // Absent intent → no section (older callers unchanged).
     expect(buildStagePrompt({ stage: stage(), stageBody: 'x' })).not.toContain('## The intent');
+  });
+});
+
+// specs/bedrock-iam-role-credential-mode — req-credential-safety.
+//
+// Role-mode credentials live ONLY in a per-invocation process environment. Nothing
+// may write them to disk: the workspace is a git checkout that gets committed and
+// pushed, and CODEX_HOME persists across a resumable author run. The Codex config
+// assertions above cover one file's content by inspection; this walks EVERY file
+// each CLI writes and looks for the values themselves, so a future config key that
+// happens to interpolate a credential fails here rather than in a customer's repo.
+describe('no credential material reaches disk under a role-mode stage', () => {
+  // Distinctive, so a match cannot be coincidental. Shaped like the real thing:
+  // STS session credentials start ASIA.
+  const ROLE_ENV = {
+    AWS_ACCESS_KEY_ID: 'ASIAROLEMODEPROBE01',
+    AWS_SECRET_ACCESS_KEY: 'sEcReTaCcEsSkEyPrObE0000000000000000000000',
+    AWS_SESSION_TOKEN: 'SeSsIoNtOkEnPrObE//////wEaDmV1LWNlbnRyYWwtMQ==',
+    AWS_REGION: 'eu-central-1',
+  };
+
+  const walkFiles = async (dir) => {
+    const found = [];
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) found.push(...(await walkFiles(full)));
+      else if (entry.isFile()) found.push(full);
+    }
+    return found;
+  };
+
+  it.each(['claude', 'opencode', 'codex', 'kiro'])(
+    'writes no credential value anywhere for %s',
+    async (cli) => {
+      const ws = await mkdtemp(path.join(tmpdir(), `aidlc-credsafe-${cli}-`));
+      const localRoot = path.join(ws, 'ephemeral', 'codex-runs');
+      const scope = { executionId: 'e', intentId: 'i', stageInstanceId: 's', role: 'author' };
+
+      const context = await materializeCliContext({
+        cli,
+        workspaceDir: ws,
+        mcpEntry: '/opt/agentcore/mcp/index.js',
+        scope,
+        // The live invocation environment, exactly as the driver receives it.
+        env: { ...ROLE_ENV, V2_CODEX_HOME_ROOT: localRoot },
+        // A custom server is present because it is the one place a value could be
+        // written legitimately-looking (con-custom-server-excluded).
+        customServers: { local: { command: 'uvx', args: ['server'], env: { FOO: 'bar' } } },
+      });
+
+      // Both the workspace (a real git checkout) and the per-stage CODEX_HOME.
+      const roots = [ws, context.codexHome].filter(Boolean);
+      const files = (await Promise.all(roots.map(walkFiles))).flat();
+      const bodies = await Promise.all(
+        files.map(async (file) => [file, await readFile(file, 'utf8').catch(() => '')]),
+      );
+      // OpenCode is handed its config as a STRING and writes nothing to disk, so
+      // for it the equivalent surface is the returned content. Checking both means
+      // the test cannot pass vacuously for a CLI that writes nothing, and cannot
+      // miss a CLI that hands the config over in memory.
+      for (const [key, value] of Object.entries(context)) {
+        if (typeof value === 'string' && value.includes('{'))
+          bodies.push([`context.${key}`, value]);
+      }
+      expect(bodies.length, 'nothing was materialized, so nothing was checked').toBeGreaterThan(0);
+
+      const secrets = [
+        ROLE_ENV.AWS_ACCESS_KEY_ID,
+        ROLE_ENV.AWS_SECRET_ACCESS_KEY,
+        ROLE_ENV.AWS_SESSION_TOKEN,
+      ];
+      for (const [where, body] of bodies) {
+        for (const secret of secrets) {
+          expect(body, `${where} contains credential material`).not.toContain(secret);
+        }
+      }
+    },
+  );
+
+  it('forwards the credential chain to the reserved bridge by NAME, so nothing is stored', () => {
+    // Codex is the only CLI that names the credential variables in a written file.
+    // Names are inert on disk: codex resolves them from its process env at spawn,
+    // so when resolution produced nothing the child simply gets nothing — the file
+    // cannot make credentials appear.
+    const toml = buildCodexConfigToml({
+      mcpEntry: '/opt/agentcore/mcp/index.js',
+      scope: { executionId: 'e1', intentId: 'i1' },
+      env: {},
+      customServers: {},
+    });
+    const aidlcSection = toml.slice(toml.indexOf('[mcp_servers."aidlc"]'));
+    expect(aidlcSection).toContain('"AWS_SESSION_TOKEN"');
+    // A NAME list, never an assignment: `"AWS_SESSION_TOKEN" = "..."` would be a value.
+    expect(aidlcSection).not.toMatch(/"AWS_SESSION_TOKEN"\s*=/);
   });
 });

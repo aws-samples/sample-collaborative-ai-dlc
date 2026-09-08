@@ -641,6 +641,87 @@ describe('orchestrator durable handler', () => {
     });
   });
 
+  // specs/bedrock-iam-role-credential-mode — req-expiry-failure-legible. v1 ships
+  // no refresh, so expiry must be a DISTINCT, persisted reason that survives to
+  // the terminal FAILED transition; that is what makes it countable and what
+  // gates ever building refresh (req-expiry-tripwire).
+  it.each([
+    [
+      'credential_expired',
+      'The temporary credential for this stage expired before the stage finished; the retry resolves a fresh one',
+    ],
+    ['credential_resolution_failed', 'Agent credential resolution failed'],
+  ])(
+    'ends the stage FAILED carrying the %s reason to the terminal transition',
+    async (reason, detail) => {
+      deps.loadPlan.mockResolvedValue({
+        valid: true,
+        plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
+      });
+      deps.invokeRuntime = makeRuntime(ctx, (payload, n) =>
+        n === 1 ? { ok: true } : { ok: false, state: 'FAILED', reason, detail },
+      );
+
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+
+      expect(res.ok).toBe(false);
+      // The durable stage attempt is reconciled with the SAME reason, so the retry
+      // budget is the existing one and the reason is not rewritten on the way out.
+      expect(deps.store.failRunningStageAttempt).toHaveBeenCalledWith({
+        executionId: 'i1',
+        stageInstanceId: 'si-a',
+        stageCallbackId: 'cb-stage-cb-a',
+        runtimeError: reason,
+      });
+      const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+      expect(failCall[0].failure).toEqual({ code: reason, message: detail });
+      expect(failCall[0].failureReason).toContain(`${reason}: ${detail}`);
+      // Distinguishable from a dead container and from a genuine agent failure.
+      expect(failCall[0].failureReason).not.toContain('stage_callback_failed');
+      expect(failCall[0].failureReason).not.toContain('cli_nonzero_exit');
+    },
+  );
+
+  // A credential failure raised while PREPARING the invocation is refused at
+  // accept time, where the body carries no `state`. Without the coded reason it
+  // would arrive as the generic stage_dispatch_failed.
+  it('reports a resolution failure refused at accept time under its own reason', async () => {
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
+    });
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      invokes.push(payload);
+      if (payload.command === 'init-ws') return { ok: true };
+      // What dispatchInvocation returns for a thrown coded error.
+      return {
+        error: 'Agent credential resolution failed',
+        reason: 'credential_resolution_failed',
+      };
+    });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res.ok).toBe(false);
+    expect(deps.store.failRunningStageAttempt).toHaveBeenCalledWith({
+      executionId: 'i1',
+      stageInstanceId: 'si-a',
+      stageCallbackId: 'cb-stage-cb-a',
+      runtimeError: 'credential_resolution_failed',
+    });
+    const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+    expect(failCall[0].failureReason).toContain('credential_resolution_failed');
+    expect(failCall[0].failureReason).not.toContain('stage_dispatch_failed');
+  });
+
   it('fails the stage when the container REFUSES the dispatch (accept-time failure)', async () => {
     deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
     deps.invokeRuntime = vi.fn(async (payload) => {
