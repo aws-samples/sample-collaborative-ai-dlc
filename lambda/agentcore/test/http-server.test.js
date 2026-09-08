@@ -147,6 +147,28 @@ describe('dispatchInvocation', () => {
     });
   });
 
+  it('routes workflow checkpoint publication', async () => {
+    const r = await dispatchInvocation({
+      payload: { command: 'create-workflow-checkpoint', intentId: 'i1', executionId: 'e1' },
+      handlers: {
+        createWorkflowCheckpoint: async (p) => ({
+          ok: true,
+          checkpointId: 'cp1',
+          executionId: p.executionId,
+        }),
+      },
+    });
+    expect(r).toMatchObject({
+      statusCode: 200,
+      body: {
+        ok: true,
+        checkpointId: 'cp1',
+        executionId: 'e1',
+        command: 'create-workflow-checkpoint',
+      },
+    });
+  });
+
   it('routes discussion-assist-start for Quorum discussion jobs', async () => {
     const r = await dispatchInvocation({
       payload: {

@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   BatchWriteCommand,
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
@@ -20,6 +21,7 @@ import {
 import {
   META,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   humanTaskKey,
   steeringKey,
@@ -119,6 +121,60 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
+  // Publish the latest checkpoint only while the originating orchestrator still
+  // owns META. The condition and put must share one transaction because they
+  // target different items in the execution partition.
+  const putWorkflowCheckpoint = async (checkpoint) => {
+    if (!checkpoint?.executionId || !checkpoint?.checkpointId || !checkpoint?.orchestratorRunId) {
+      throw new Error(
+        'putWorkflowCheckpoint requires executionId, checkpointId, and orchestratorRunId',
+      );
+    }
+    const item = {
+      ...workflowCheckpointKey(checkpoint.executionId),
+      ...checkpoint,
+      updatedAt: now(),
+    };
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            ConditionCheck: {
+              TableName: table(),
+              Key: executionMetaKey(checkpoint.executionId),
+              ConditionExpression: 'orchestratorRunId = :orchestratorRunId',
+              ExpressionAttributeValues: {
+                ':orchestratorRunId': checkpoint.orchestratorRunId,
+              },
+            },
+          },
+          { Put: { TableName: table(), Item: item } },
+        ],
+      }),
+    );
+    return item;
+  };
+
+  // Read the latest completed checkpoint for export hydration.
+  const getWorkflowCheckpoint = async (executionId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: workflowCheckpointKey(executionId) }),
+    );
+    return Item ?? null;
+  };
+
+  const deleteWorkflowCheckpoint = async (executionId) => {
+    if (!executionId) throw new Error('deleteWorkflowCheckpoint requires executionId');
+    const { Attributes } = await ddb.send(
+      new DeleteCommand({
+        TableName: table(),
+        Key: workflowCheckpointKey(executionId),
+        ReturnValues: 'ALL_OLD',
+      }),
+    );
+    return Attributes ?? null;
+  };
+
   // Update the execution-level status + current phase/stage + pending gate, and
   // re-stamp the GSI projections. `fromStatus` (optional) makes it a CAS.
   // `ifOrchestratorRunId` (optional) additionally requires META to still carry
@@ -149,6 +205,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     agentCli,
     credentialBinding,
     constructionAutonomyMode,
+    projectType,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
     skipStageIds,
@@ -314,6 +371,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }
       sets.push('constructionAutonomyMode = :cam');
       values[':cam'] = constructionAutonomyMode;
+    }
+    if (projectType !== undefined) {
+      if (projectType !== 'greenfield' && projectType !== 'brownfield') {
+        throw new Error(`invalid projectType: ${projectType}`);
+      }
+      sets.push('projectType = :pt');
+      values[':pt'] = projectType;
     }
     // Per-intent skip overlay (stage-skip.js): a rewind to a skipped stage
     // un-skips it. Validated shape only — the plan resolver owns the policy.
@@ -554,6 +618,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     cliSessionId,
     resolvedModel,
     stageCallbackId,
+    aidlcRepoRef,
   }) => {
     const existing = await getStage(executionId, stageInstanceId);
     const ts = now();
@@ -601,6 +666,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (stageCallbackId !== undefined) {
       sets.push('stageCallbackId = :scb');
       values[':scb'] = stageCallbackId;
+    }
+    if (aidlcRepoRef !== undefined) {
+      sets.push('aidlcRepoRef = :aidlcRepoRef');
+      values[':aidlcRepoRef'] = aidlcRepoRef;
     }
     const { Attributes } = await ddb.send(
       new UpdateCommand({
@@ -2385,6 +2454,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   return {
     createExecution,
     getExecution,
+    putWorkflowCheckpoint,
+    getWorkflowCheckpoint,
+    deleteWorkflowCheckpoint,
     updateExecution,
     deleteExecution,
     putStage,

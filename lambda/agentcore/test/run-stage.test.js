@@ -890,6 +890,20 @@ describe('runStage — failure paths (always records terminal state)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'workflow_not_found' });
   });
 
+  it('fails loudly when the pinned methodology snapshot was replaced', async () => {
+    const deps = baseDeps({
+      loadLibrary: async () => {
+        throw new Error('Pinned methodology snapshot does not match AI-DLC repository ref abc');
+      },
+    });
+    const res = await runStage({ ...baseArgs, aidlcRepoRef: 'abc' }, deps);
+    expect(res).toMatchObject({
+      ok: false,
+      reason: 'methodology_snapshot_unavailable',
+      detail: 'Pinned methodology snapshot does not match AI-DLC repository ref abc',
+    });
+  });
+
   it('fails when the stage is not in scope', async () => {
     const res = await runStage({ ...baseArgs, stageId: 'ghost' }, baseDeps());
     expect(res).toMatchObject({ ok: false, reason: 'stage_not_in_scope' });
@@ -1435,6 +1449,39 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(putStage).toMatchObject({ cli: 'claude', cliSessionId: 'forced-uuid' });
   });
 
+  it('uses and records the intent-pinned AI-DLC methodology revision', async () => {
+    const methodologyPins = {
+      AGENT: { 'aidlc-product-agent': { tenantId: 'SYSTEM', version: 2 } },
+    };
+    const loadLibrary = vi.fn(async () => ({ workflow: workflow(), library: library() }));
+    const loadConductor = vi.fn(async () => '# pinned conductor');
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ids: () => 'forced-uuid',
+      loadLibrary,
+      loadConductor,
+    });
+    await runStage(
+      {
+        ...baseArgs,
+        aidlcRepoRef: 'a'.repeat(40),
+        methodologyPins,
+      },
+      deps,
+    );
+
+    expect(loadLibrary).toHaveBeenCalledWith({
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      methodologyPins,
+      aidlcRepoRef: 'a'.repeat(40),
+    });
+    expect(loadConductor).toHaveBeenCalledWith('a'.repeat(40));
+    expect(deps.store.calls.find((call) => call[0] === 'putStage')[1]).toMatchObject({
+      aidlcRepoRef: 'a'.repeat(40),
+    });
+  });
+
   it('parks WAITING_FOR_HUMAN (no SUCCEEDED) when a gate is still pending at exit', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,
@@ -1719,7 +1766,10 @@ describe('runStage — resume mode', () => {
         stage: { cli: 'claude', cliSessionId: 'sess-7' },
       }),
     });
-    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
+    const res = await runStage(
+      { ...baseArgs, resumeFrom: 'q-1', aidlcRepoRef: 'a'.repeat(40) },
+      deps,
+    );
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'claude' });
     // Built a --resume invocation targeting the persisted session id.
     expect(cap.get().command).toBe('claude');
@@ -1740,6 +1790,9 @@ describe('runStage — resume mode', () => {
     // which would re-stamp startedAt (the "duration resets on answer" bug).
     expect(deps.store.calls.some((c) => c[0] === 'resumeStageRow')).toBe(true);
     expect(deps.store.calls.some((c) => c[0] === 'putStage')).toBe(false);
+    expect(deps.store.calls.find((c) => c[0] === 'resumeStageRow')[1]).toMatchObject({
+      aidlcRepoRef: 'a'.repeat(40),
+    });
   });
 
   it('a fresh run carries the existing row attempt forward (rewind reset sets attempt+1)', async () => {

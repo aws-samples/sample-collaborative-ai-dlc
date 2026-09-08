@@ -67,8 +67,9 @@ outputs)
 seed)
   LAMBDA="$(tfout seed_blocks_lambda_name)"
   echo "=== invoking seed-blocks lambda: $LAMBDA ==="
-  aws lambda invoke --function-name "$LAMBDA" \
-    --payload '{}' --cli-binary-format raw-in-base64-out /tmp/aidlc-seed.json
+  AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name "$LAMBDA" \
+    --payload '{}' --cli-binary-format raw-in-base64-out \
+    --cli-read-timeout 0 /tmp/aidlc-seed.json
   echo "--- result ---"; cat /tmp/aidlc-seed.json; echo
   ;;
 

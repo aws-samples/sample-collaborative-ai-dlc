@@ -121,6 +121,18 @@ describe('buildStagePrompt', () => {
     });
     expect(prompt).not.toContain('# Artifact structure contracts');
   });
+
+  it('requires workspace detection to record its structured classification', () => {
+    const prompt = buildStagePrompt({
+      stage: stage({ stageId: 'workspace-detection', phase: 'initialization' }),
+      stageBody: 'Scan the workspace.',
+    });
+    expect(prompt).toContain('## Workspace classification contract');
+    expect(prompt).toContain('`record_project_type` exactly once');
+    expect(prompt.indexOf('record_project_type')).toBeLessThan(
+      prompt.indexOf('## Stage instructions'),
+    );
+  });
 });
 
 describe('buildStagePrompt — MCP execution annex binding', () => {
@@ -195,6 +207,7 @@ describe('buildMcpConfig', () => {
         executionId: 'e1',
         intentId: 'i1',
         projectId: 'p1',
+        stageId: 'workspace-detection',
         stageInstanceId: 'si1',
         sectionIndex: 2,
         stageAttempt: 3,
@@ -213,6 +226,7 @@ describe('buildMcpConfig', () => {
       V2_EXECUTION_ID: 'e1',
       V2_INTENT_ID: 'i1',
       V2_PROJECT_ID: 'p1',
+      V2_STAGE_ID: 'workspace-detection',
       V2_STAGE_INSTANCE_ID: 'si1',
       V2_SECTION_INDEX: '2',
       V2_STAGE_ATTEMPT: '3',

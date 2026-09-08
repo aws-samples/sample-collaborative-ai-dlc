@@ -1,19 +1,27 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { loadExecutionPlan, loadWorkflowScopes } from '../v2-workflow-plan.js';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  __test,
+  assembleWorkflow,
+  loadExecutionPlan,
+  loadWorkflowScopes,
+} from '../v2-workflow-plan.js';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const TABLE = 'blocks-test';
+const SOURCE_REF = 'a'.repeat(40);
 
 // Minimal fixture: a workflow with two placed stages (a→b via produces/consumes)
 // in scope "feature", plus the two STAGE blocks.
 const wfItems = [
-  { pk: 'WF#SYSTEM#aidlc-v2', sk: 'V#1#META', version: 1 },
+  { pk: 'WF#SYSTEM#aidlc-v2', sk: 'V#1#META', version: 1, sourceRef: SOURCE_REF },
   {
     pk: 'WF#SYSTEM#aidlc-v2',
     sk: 'V#1#PLACEMENT#stage-a',
     stageId: 'stage-a',
+    stageTenant: 'SYSTEM',
+    pinnedVersion: 1,
     order: 0,
     scopeMembership: { feature: 'EXECUTE' },
   },
@@ -21,6 +29,8 @@ const wfItems = [
     pk: 'WF#SYSTEM#aidlc-v2',
     sk: 'V#1#PLACEMENT#stage-b',
     stageId: 'stage-b',
+    stageTenant: 'SYSTEM',
+    pinnedVersion: 1,
     order: 1,
     scopeMembership: { feature: 'EXECUTE' },
   },
@@ -35,6 +45,7 @@ const stageBlocks = [
     version: 1,
     phase: 'inception',
     leadAgent: 'agent-x',
+    sourceRef: SOURCE_REF,
   },
   {
     GSI1PK: 'TENANT#SYSTEM#STAGE',
@@ -44,15 +55,38 @@ const stageBlocks = [
     phase: 'construction',
     leadAgent: 'agent-x',
     reviewer: 'agent-x',
+    sourceRef: SOURCE_REF,
   },
 ];
 
 // The AGENT blocks the stages above reference. loadExecutionPlan must load these
 // into agentsById or every agent-bearing stage fails `unresolved_agent`.
-const agentBlocks = [{ GSI1PK: 'TENANT#SYSTEM#AGENT', id: 'agent-x', blockId: 'agent-x' }];
+const agentBlocks = [
+  {
+    GSI1PK: 'TENANT#SYSTEM#AGENT',
+    tenantId: 'SYSTEM',
+    id: 'agent-x',
+    blockId: 'agent-x',
+    version: 4,
+    sourceRef: SOURCE_REF,
+  },
+];
 
 beforeEach(() => {
   ddbMock.reset();
+  ddbMock.on(GetCommand).callsFake((input) => ({
+    Item:
+      stageBlocks.find(
+        (stage) =>
+          input.Key.pk === `BLOCK#SYSTEM#STAGE#${stage.blockId}` &&
+          input.Key.sk === `V#${stage.version}`,
+      ) ??
+      agentBlocks.find(
+        (agent) =>
+          input.Key.pk === `BLOCK#SYSTEM#AGENT#${agent.blockId}` &&
+          input.Key.sk === `V#${agent.version}`,
+      ),
+  }));
   ddbMock.on(QueryCommand).callsFake((input) => {
     const values = input.ExpressionAttributeValues || {};
     if (input.IndexName === 'GSI1') {
@@ -68,6 +102,45 @@ beforeEach(() => {
 });
 
 describe('loadExecutionPlan', () => {
+  it('resolves legacy placements without ownership metadata through the merged catalog', async () => {
+    const legacyStage = {
+      GSI1PK: 'TENANT#default#STAGE',
+      id: 'legacy-stage',
+      blockId: 'legacy-stage',
+      version: 3,
+    };
+    ddbMock.reset();
+    ddbMock.on(QueryCommand).callsFake((input) => {
+      const pk = input.ExpressionAttributeValues?.[':pk'];
+      return { Items: pk === 'TENANT#default#STAGE' ? [legacyStage] : [] };
+    });
+
+    await expect(
+      __test.loadPlacedStages(ddbMock, TABLE, [{ stageId: 'legacy-stage' }]),
+    ).resolves.toEqual([legacyStage]);
+    expect(ddbMock.commandCalls(GetCommand)).toHaveLength(0);
+  });
+
+  it('preserves missing ownership metadata when assembling a legacy workflow snapshot', () => {
+    const workflow = assembleWorkflow(
+      [
+        { sk: 'V#1#META' },
+        {
+          sk: 'V#1#PLACEMENT#legacy-stage',
+          stageId: 'legacy-stage',
+          scopeMembership: { feature: 'EXECUTE' },
+        },
+      ],
+      { workflowId: 'legacy', workflowVersion: 1 },
+    );
+
+    expect(workflow.placements[0]).toMatchObject({
+      stageId: 'legacy-stage',
+      stageTenant: null,
+      pinnedVersion: null,
+    });
+  });
+
   it('returns the ordered in-scope stage list for a pinned workflow', async () => {
     const result = await loadExecutionPlan({
       ddb: ddbMock,
@@ -90,6 +163,52 @@ describe('loadExecutionPlan', () => {
     });
     expect(result.valid).toBe(true);
     expect((result.errors ?? []).map((e) => e.code)).not.toContain('unresolved_agent');
+    expect(result.methodologyPins.AGENT).toEqual({
+      'agent-x': { tenantId: 'SYSTEM', version: 4 },
+    });
+    expect(result.methodologySourceRefs).toEqual([SOURCE_REF]);
+  });
+
+  it('reloads supporting methodology from exact create-time version pins', async () => {
+    const result = await loadExecutionPlan({
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope: 'feature',
+      methodologyPins: {
+        AGENT: { 'agent-x': { tenantId: 'SYSTEM', version: 4 } },
+        SENSOR: {},
+        RULE: {},
+        ARTIFACT: {},
+        KNOWLEDGE: {},
+      },
+    });
+    expect(result.valid).toBe(true);
+    expect(ddbMock.commandCalls(GetCommand).map((call) => call.args[0].input.Key)).toContainEqual({
+      pk: 'BLOCK#SYSTEM#AGENT#agent-x',
+      sk: 'V#4',
+    });
+  });
+
+  it('loads the immutable stage version pinned by the workflow snapshot', async () => {
+    const result = await loadExecutionPlan({
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope: 'feature',
+    });
+    expect(result.valid).toBe(true);
+    const gets = ddbMock.commandCalls(GetCommand).map((call) => call.args[0].input.Key);
+    expect(gets).toContainEqual({
+      pk: 'BLOCK#SYSTEM#STAGE#stage-a',
+      sk: 'V#1',
+    });
+    expect(gets).toContainEqual({
+      pk: 'BLOCK#SYSTEM#STAGE#stage-b',
+      sk: 'V#1',
+    });
   });
 
   it('fails closed when the workflow version is not found', async () => {
@@ -146,12 +265,21 @@ describe('loadExecutionPlan', () => {
         pk: 'WF#default#aidlc-v2',
         sk: 'V#1#PLACEMENT#stage-a',
         stageId: 'stage-a',
+        stageTenant: 'SYSTEM',
+        pinnedVersion: 1,
         order: 0,
         scopeMembership: { feature: 'EXECUTE' },
       },
       { pk: 'WF#default#aidlc-v2', sk: 'V#1#SCOPEREF#feature', scopeId: 'feature' },
     ];
     ddbMock.reset();
+    ddbMock.on(GetCommand).callsFake((input) => ({
+      Item: stageBlocks.find(
+        (stage) =>
+          input.Key.pk === `BLOCK#SYSTEM#STAGE#${stage.blockId}` &&
+          input.Key.sk === `V#${stage.version}`,
+      ),
+    }));
     ddbMock.on(QueryCommand).callsFake((input) => {
       const values = input.ExpressionAttributeValues || {};
       if (input.IndexName === 'GSI1') {
@@ -180,6 +308,13 @@ describe('loadExecutionPlan', () => {
     // 1MB pages: a dropped second page loses PLACEMENT#stage-b (stage silently
     // skipped) or its STAGE block (plan fails unresolved_stage).
     ddbMock.reset();
+    ddbMock.on(GetCommand).callsFake((input) => ({
+      Item: stageBlocks.find(
+        (stage) =>
+          input.Key.pk === `BLOCK#SYSTEM#STAGE#${stage.blockId}` &&
+          input.Key.sk === `V#${stage.version}`,
+      ),
+    }));
     ddbMock.on(QueryCommand).callsFake((input) => {
       const values = input.ExpressionAttributeValues || {};
       if (input.IndexName === 'GSI1') {
