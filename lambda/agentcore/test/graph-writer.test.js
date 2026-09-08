@@ -1581,6 +1581,37 @@ describe('ingestCodeFiles (revision-scoped implementation traceability)', () => 
     expect(byCommit.get('b'.repeat(40)).superseded_at ?? '').toBe('');
   });
 
+  it('scopes supersede by unit: a file touched by two units keeps a current revision each', async () => {
+    await seedTopology();
+    await writer.mirrorUnitDag({
+      units: [
+        { slug: 'u-auth', dependsOn: [] },
+        { slug: 'u-web', dependsOn: [] },
+      ],
+    });
+    // Two parallel lanes commit their own branch-local revision of the SAME
+    // file. Neither may supersede the other's — both must remain current so the
+    // file never disappears from the graph.
+    await writer.ingestCodeFiles(batch({ unitSlug: 'u-auth', commitRef: 'a'.repeat(40) }));
+    await writer.ingestCodeFiles(batch({ unitSlug: 'u-web', commitRef: 'b'.repeat(40) }));
+
+    const rows = (await g.V().hasLabel('CodeFile').valueMap(true).toList()).map(flattenValueMap);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => (row.superseded_at ?? '') === '')).toBe(true);
+    expect(new Set(rows.map((row) => row.unit_slug))).toEqual(new Set(['u-auth', 'u-web']));
+
+    // A re-run of ONE unit still supersedes only that unit's prior revision.
+    await writer.ingestCodeFiles(batch({ unitSlug: 'u-auth', commitRef: 'c'.repeat(40) }));
+    const byCommit = new Map(
+      (await g.V().hasLabel('CodeFile').valueMap(true).toList())
+        .map(flattenValueMap)
+        .map((row) => [row.commit_ref, row]),
+    );
+    expect(byCommit.get('a'.repeat(40)).superseded_at).toBeTruthy();
+    expect(byCommit.get('b'.repeat(40)).superseded_at ?? '').toBe('');
+    expect(byCommit.get('c'.repeat(40)).superseded_at ?? '').toBe('');
+  });
+
   it('keeps legacy Git topology without fabricating requirement edges', async () => {
     await seedTopology();
     await writer.ingestCodeFiles(

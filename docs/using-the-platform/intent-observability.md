@@ -55,7 +55,7 @@ During parallel construction, the list shows one row per unit lane (with a unit 
 The **Graph** button opens the intent's knowledge graph — the traceability view:
 
 - The **Artifacts** layer shows the canonical documents and their produces/consumes/derived-from relationships.
-- The **Items & Units** layer adds the derived granular graph: typed items (stories, requirements, components, decisions) and the unit-of-work DAG, with traceability edges such as _covers_, _implements_, _depends on_, and _cites_.
+- The **Items & Units** layer adds the derived granular graph: typed items (stories, requirements, components, decisions) and the unit-of-work DAG, with traceability edges such as _covers_, _implements_, _depends on_, and _cites_. When the intent has code traceability, this layer becomes **Items, Units & Code** and also renders `CodeFile` nodes — the source files each construction stage changed — linked to their unit and, where a stage produced a `traceability.json`, to the requirements and stories they implement. Only the current revision of each file is shown; a re-run or rewind supersedes prior revisions.
 
 Selecting a node shares the same drill-down as the observability page.
 

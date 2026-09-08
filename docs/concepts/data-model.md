@@ -44,6 +44,7 @@ graph TD
   MESSAGE["DiscussionMessage"]
   PR["PullRequest / UnitPullRequest"]
   KNOWLEDGE["TeamKnowledge / LearningRule"]
+  CODEFILE["CodeFile<br/>changed source file revision"]
 
   PROJECT -->|HAS_KNOWLEDGE / HAS_LEARNING| KNOWLEDGE
   KNOWLEDGE -.->|INFORMS| INTENT
@@ -52,8 +53,12 @@ graph TD
   INTENT -->|CONTAINS| QUESTION
   INTENT -->|CONTAINS| STEERING
   INTENT -->|CONTAINS| UNIT
+  INTENT -->|CONTAINS| CODEFILE
   INTENT -->|HAS_DISCUSSION| DISCUSSION
   INTENT -->|HAS_PR / HAS_UNIT_PR| PR
+
+  UNIT -->|IMPLEMENTED_BY| CODEFILE
+  ITEM -.->|IMPLEMENTED_BY| CODEFILE
 
   ARTIFACT -->|HAS_SECTION| SECTION
   ARTIFACT -->|HAS_ITEM| ITEM
@@ -103,6 +108,26 @@ After an artifact is written, deterministic parsers inspect its Markdown:
 Agents write documents and structured blocks, not graph topology. The derived
 layer is an index over those documents and can be regenerated.
 
+#### Implementation layer
+
+Construction stages also change source files. At stage exit each changed file
+becomes a `CodeFile` vertex carrying trusted provenance (intent, unit, stage
+instance, repository, commit), linked `Intent --CONTAINS--> CodeFile` and
+`UnitOfWork --IMPLEMENTED_BY--> CodeFile`. This projection comes from Git, so it
+works for legacy workflows that produce no traceability manifest.
+
+When a stage produces a valid `traceability.json`, its coverage entries add
+precise `IMPLEMENTED_BY` edges from derived items (`Requirement`, `Story`, …) to
+the exact file revision they implement. A missing, malformed, or oversized
+manifest is an expected degraded mode: the Git topology is still ingested and
+the stage never fails.
+
+`CodeFile` identity is `hash(intent_id, repository, commit_ref, file_path)`, so
+re-ingesting the same stage and commit is idempotent. A re-run or rewind
+supersedes prior revisions of the same file — history stays queryable in
+Neptune, but the graph renders one current node per file, mirroring the
+supersede/current handling used for other derived rows.
+
 ### Vertex types
 
 #### Scope and authored knowledge
@@ -135,6 +160,7 @@ layer is an index over those documents and can be regenerated.
 | `StoryMapEntry` | `mappings` block     | unit and delivered stories                                                 |
 | `Contract`      | `contracts` block    | provider, consumers, kind, description                                     |
 | `UnitOfWork`    | Compiled unit plan   | stable unit slug and execution provenance                                  |
+| `CodeFile`      | Changed source file  | `file_path`, `repository`, `commit_ref`, `file_kind`, `traceability_source`, `superseded_at` |
 
 The typed-item list and field definitions come from the extraction registry in
 `lambda/shared/artifact-extractors.js`. That registry is the implementation
@@ -179,6 +205,8 @@ validation, agent authoring instructions, and graph reads.
 | `Story`, `Component`, or `UnitOfWork` | `DEPENDS_ON`        | Another entity of the same type |
 | `UnitOfWork`                          | `EXPOSES`           | `Contract`                      |
 | `UnitOfWork`                          | `CONSUMES_CONTRACT` | `Contract`                      |
+| `UnitOfWork`                          | `IMPLEMENTED_BY`    | `CodeFile`                      |
+| `Requirement`, `Story`, …             | `IMPLEMENTED_BY`    | `CodeFile` (from `traceability.json`) |
 | Answered `Question` or `Steering`     | `INFLUENCES`        | Resulting `Artifact`            |
 | `Steering`                            | `REVISES`           | Revised `Question`              |
 | `Discussion`                          | `DISCUSSES`         | Attached entity                 |
@@ -219,8 +247,11 @@ The Graph page is a projection of the stored model, not a raw database browser.
 It:
 
 - defaults to artifacts and provenance;
-- optionally adds typed items and units;
+- optionally adds typed items and units, and — when the intent has code
+  traceability — `CodeFile` nodes and their implementation edges;
 - excludes `Section` nodes to avoid overwhelming the canvas;
+- renders only the current revision of each file, hiding superseded `CodeFile`
+  rows from a re-run or rewind;
 - excludes superseded or stale derived rows from normal views;
 - drops edges whose endpoints are outside the rendered intent subgraph.
 
