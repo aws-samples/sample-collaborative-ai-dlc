@@ -248,6 +248,53 @@ describe('AgentCredentialScopeCard bedrock role mode', () => {
     expect(screen.getByLabelText(/Amazon Bedrock API Key \(inactive\)/)).toBeDisabled();
   });
 
+  it('removes a same-scope IAM role through the established Bedrock parameter', async () => {
+    getProjectCredentials
+      .mockResolvedValueOnce({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: 'role',
+        bedrockRoleArn: ROLE_ARN,
+        platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      })
+      .mockResolvedValueOnce({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: null,
+        platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      });
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
+
+    await user.click(await screen.findByRole('button', { name: 'Remove IAM role' }));
+
+    await waitFor(() =>
+      expect(updateProjectCredentials).toHaveBeenCalledWith('p-1', {
+        bedrockBearerToken: '',
+      }),
+    );
+    expect(getProjectCredentials).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('button', { name: 'Remove IAM role' })).not.toBeInTheDocument();
+  });
+
+  it('does not offer to remove an inherited platform IAM role from a space', async () => {
+    getProjectCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      bedrockMode: null,
+      platformFallback: {
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        bedrockMode: 'role',
+      },
+    });
+
+    render(<AgentCredentialScopeCard scope="space" projectId="p-1" />);
+
+    expect(await screen.findByText('Platform IAM role')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove IAM role' })).not.toBeInTheDocument();
+  });
+
   it('starts on the method the scope already uses and shows only its input', async () => {
     getProjectCredentials.mockResolvedValue({
       bedrockBearerTokenSet: true,

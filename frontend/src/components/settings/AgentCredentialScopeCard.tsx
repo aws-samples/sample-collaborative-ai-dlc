@@ -522,12 +522,28 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
 
           {roleSupported && bedrockMethod === 'role' && (
             <div className="space-y-1.5" data-testid={`${scope}-bedrock-role`}>
-              <label
-                htmlFor={`${scope}-bedrock-role-arn`}
-                className="text-xs font-medium text-foreground"
-              >
-                Role ARN
-              </label>
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor={`${scope}-bedrock-role-arn`}
+                  className="text-xs font-medium text-foreground"
+                >
+                  Role ARN
+                </label>
+                {bedrockMode === 'role' && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => clearSecret('bedrockBearerToken')}
+                    disabled={saving || clearingSecret !== null}
+                    className="h-auto px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-destructive"
+                  >
+                    {clearingSecret === 'bedrockBearerToken'
+                      ? 'Removing IAM role…'
+                      : 'Remove IAM role'}
+                  </Button>
+                )}
+              </div>
               {settings?.bedrockRoleArn && (
                 <p className="truncate font-mono text-[11px] text-muted-foreground">
                   {settings.bedrockRoleArn}
