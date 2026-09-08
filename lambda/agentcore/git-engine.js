@@ -23,10 +23,10 @@
 // failure fails the stage only when THIS stage created commits that did not
 // reach the remote (new work at risk = the documented v2 loss mode).
 
-import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, rm, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
+import { NO_HOOKS_PATH, runGitCommand } from './git-runner.js';
 import {
   resolveGitCommitter as defaultResolveGitCommitter,
   withGitCredential as defaultWithGitCredential,
@@ -151,37 +151,20 @@ const sanitizedGitEnv = (overrides = {}) => {
 // EVERY hook for the invocation, uniformly, and without mutating the
 // repository's own configuration (unlike `git config core.hooksPath`).
 //
-// Applied here, in the single choke point every engine git call passes through,
-// so operations added later inherit the policy automatically.
-export const NO_HOOKS_PATH = '/dev/null';
-const hooksDisabledArgs = () => ['-c', `core.hooksPath=${NO_HOOKS_PATH}`];
+// Applied by git-runner.js, the single production Git process choke point used
+// by both the engine and workspace paths.
+export { NO_HOOKS_PATH };
 
-export const runGit = (args, { cwd, env = {}, spawnFn = spawn } = {}) =>
-  new Promise((resolve) => {
-    let settled = false;
-    const settle = (v) => {
-      if (!settled) {
-        settled = true;
-        resolve(v);
-      }
-    };
-    const child = spawnFn('git', [...hooksDisabledArgs(), ...args], {
-      cwd,
-      shell: false,
-      env: sanitizedGitEnv(env),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (c) => {
-      stdout += c.toString();
-    });
-    child.stderr?.on('data', (c) => {
-      stderr += c.toString();
-    });
-    child.on('error', () => settle({ exitCode: null, stdout, stderr }));
-    child.on('close', (exitCode) => settle({ exitCode, stdout, stderr }));
+export const runGit = async (args, { cwd, env = {}, spawnFn } = {}) => {
+  const { exitCode, stdout, stderr } = await runGitCommand('git', args, {
+    cwd,
+    env: sanitizedGitEnv(env),
+    spawnFn,
+    captureOutput: true,
+    inheritEnv: false,
   });
+  return { exitCode, stdout, stderr };
+};
 
 // Token-free remote URL — what `.git/config` holds at rest.
 export const cleanRemoteUrl = (repo, gitProvider) => buildCloneUrl(gitProvider, repo, '');

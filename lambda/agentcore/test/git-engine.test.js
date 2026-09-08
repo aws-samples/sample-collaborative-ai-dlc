@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -166,6 +166,14 @@ describe('commitAll', () => {
 // proves the engine's own `-c core.hooksPath` overrides a hooksPath the
 // repository configured for itself, not just the default `.git/hooks`.
 describe('engine git ignores repository hooks', () => {
+  const globalConfig = () => path.join(root, 'global.gitconfig');
+  const isolatedGit = (args, options = {}) =>
+    runGit(args, {
+      ...options,
+      env: { GIT_CONFIG_GLOBAL: globalConfig(), ...options.env },
+    });
+  const isolatedGitAt = (args, cwd) => isolatedGit(args, { cwd });
+
   // Install a hook that records that it ran and then fails the operation.
   const installHook = async (work, name, { viaConfig = false, body } = {}) => {
     const dir = viaConfig ? path.join(work, '.custom-hooks') : path.join(work, '.git', 'hooks');
@@ -176,9 +184,23 @@ describe('engine git ignores repository hooks', () => {
       body ?? `#!/bin/sh\necho ran > "${marker}"\necho "${name} rejected" >&2\nexit 1\n`,
       { mode: 0o755 },
     );
-    if (viaConfig) await git(['config', 'core.hooksPath', dir], work);
+    if (viaConfig) await isolatedGitAt(['config', '--local', 'core.hooksPath', dir], work);
     return marker;
   };
+  const configureGlobalHooksPath = async () => {
+    const dir = path.join(root, 'global-hooks');
+    await mkdir(dir, { recursive: true });
+    await isolatedGitAt(['config', '--global', 'core.hooksPath', dir], root);
+    return dir;
+  };
+  const readHooksPaths = async (work) => ({
+    repository: (
+      await isolatedGitAt(['config', '--local', '--get', 'core.hooksPath'], work)
+    ).stdout.trim(),
+    global: (
+      await isolatedGitAt(['config', '--global', '--get', 'core.hooksPath'], work)
+    ).stdout.trim(),
+  });
   const ran = async (marker) => {
     try {
       await readFile(marker, 'utf8');
@@ -188,18 +210,29 @@ describe('engine git ignores repository hooks', () => {
     }
   };
 
-  for (const hook of ['pre-commit', 'commit-msg', 'prepare-commit-msg']) {
+  for (const hook of ['pre-commit', 'prepare-commit-msg', 'commit-msg']) {
     it(`commits with a failing ${hook} hook configured via core.hooksPath`, async () => {
       const { work } = await initRemoteAndClone();
+      const globalHooks = await configureGlobalHooksPath();
       const marker = await installHook(work, hook, { viaConfig: true });
+      const hooksPathsBefore = await readHooksPaths(work);
+      expect(hooksPathsBefore).toEqual({
+        repository: path.join(work, '.custom-hooks'),
+        global: globalHooks,
+      });
       await writeFile(path.join(work, 'agent-work.txt'), 'artifacts the agent produced\n');
 
-      const res = await commitAll({ dir: work, message: 'aidlc(functional-design): e1' });
+      const res = await commitAll({
+        dir: work,
+        message: 'aidlc(functional-design): e1',
+        git: isolatedGit,
+      });
 
       expect(res.committed).toBe(true);
       expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
       expect(await ran(marker)).toBe(false);
-      const show = await git(['show', '--stat', '--format='], work);
+      expect(await readHooksPaths(work)).toEqual(hooksPathsBefore);
+      const show = await isolatedGitAt(['show', '--stat', '--format='], work);
       expect(show.stdout).toContain('agent-work.txt');
     });
   }
@@ -208,14 +241,21 @@ describe('engine git ignores repository hooks', () => {
     // prepare-commit-msg is the gap --no-verify left open: it can abort a commit,
     // which previously returned commit_failed with the work still uncommitted.
     const { work } = await initRemoteAndClone();
+    await configureGlobalHooksPath();
     await installHook(work, 'prepare-commit-msg', { viaConfig: true });
+    const hooksPathsBefore = await readHooksPaths(work);
     await writeFile(path.join(work, 'agent-work.txt'), 'work\n');
 
-    const res = await commitAll({ dir: work, message: 'aidlc(x): e1' });
+    const res = await commitAll({
+      dir: work,
+      message: 'aidlc(x): e1',
+      git: isolatedGit,
+    });
 
     expect(res.committed).toBe(true);
     expect(res.dirty).toBeFalsy();
-    const status = await git(['status', '--porcelain'], work);
+    expect(await readHooksPaths(work)).toEqual(hooksPathsBefore);
+    const status = await isolatedGitAt(['status', '--porcelain'], work);
     expect(status.stdout.trim()).toBe('');
   });
 
@@ -224,19 +264,27 @@ describe('engine git ignores repository hooks', () => {
     // AIDLC_GIT_PASSWORD. If it executed it could exfiltrate the token, abort the
     // push, and surface the value in the returned error detail.
     const { work, remote } = await initRemoteAndClone();
+    const globalHooks = await configureGlobalHooksPath();
     const leak = path.join(work, 'leaked-credential.txt');
     await installHook(work, 'pre-push', {
       viaConfig: true,
       body: `#!/bin/sh\nprintf '%s' "$AIDLC_GIT_PASSWORD" > "${leak}"\necho "pre-push rejected" >&2\nexit 1\n`,
     });
+    const hooksPathsBefore = await readHooksPaths(work);
+    expect(hooksPathsBefore).toEqual({
+      repository: path.join(work, '.custom-hooks'),
+      global: globalHooks,
+    });
     await writeFile(path.join(work, 'agent-work.txt'), 'work\n');
-    await commitAll({ dir: work, message: 'aidlc(x): e1' });
+    const commit = await commitAll({ dir: work, message: 'aidlc(x): e1', git: isolatedGit });
+    expect(commit.committed).toBe(true);
 
     const res = await pushBranch({
       dir: work,
       repo: 'o/r',
       branch: 'main',
       urls: { clean: remote, tokenized: remote },
+      git: isolatedGit,
       withGitCredential: async (_o, fn) =>
         fn({ AIDLC_GIT_PASSWORD: 'super-secret-token', GIT_TERMINAL_PROMPT: '0' }),
       log: () => {},
@@ -245,9 +293,11 @@ describe('engine git ignores repository hooks', () => {
     expect(res.pushed).toBe(true);
     expect(await ran(leak)).toBe(false);
     expect(JSON.stringify(res)).not.toContain('super-secret-token');
-    // The commit really reached the remote.
-    const remoteHead = await git(['rev-parse', 'refs/heads/main'], remote);
-    expect(remoteHead.stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
+    expect(await readHooksPaths(work)).toEqual(hooksPathsBefore);
+    const localHead = await isolatedGitAt(['rev-parse', 'HEAD'], work);
+    expect(localHead.stdout.trim()).toBe(commit.sha);
+    const remoteHead = await isolatedGitAt(['rev-parse', 'refs/heads/main'], remote);
+    expect(remoteHead.stdout.trim()).toBe(localHead.stdout.trim());
   });
 });
 
@@ -1349,7 +1399,6 @@ describe('findRemainingConflictMarkers', () => {
 // including stages that produce no repo work at all.
 
 import { ensureRuntimeExcludes, RUNTIME_EXCLUDES } from '../git-engine.js';
-import { mkdir } from 'node:fs/promises';
 
 const seedRuntimeFiles = async (work) => {
   await mkdir(path.join(work, '.aidlc'), { recursive: true });

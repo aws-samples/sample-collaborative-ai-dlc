@@ -1,4 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { spawn } from 'node:child_process';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { initWs, ensureIntentVertex } from '../commands/init-ws.js';
@@ -8,6 +13,7 @@ import {
   ensureWorkspaceSource as ensureWorkspaceSourceImpl,
   trustGitDirectory,
 } from '../workspace.js';
+import { HOOKS_DISABLED_ARGS } from '../git-runner.js';
 
 const TEST_SECRET = ['broker', 'credential'].join('-');
 const withTestCredential = async (context, operation) =>
@@ -26,10 +32,20 @@ const credentialContext = {
   withGitCredential: withTestCredential,
   trustDirectory: async () => true,
 };
-const checkoutRepo = (args) => checkoutRepoImpl({ ...credentialContext, ...args });
-const checkoutRepos = (args) => checkoutReposImpl({ ...credentialContext, ...args });
-const ensureWorkspaceSource = (args) =>
-  ensureWorkspaceSourceImpl({ ...credentialContext, ...args });
+const logicalGitRunner =
+  (runner) =>
+  (command, args, ...runnerArgs) => {
+    expect(args.slice(0, HOOKS_DISABLED_ARGS.length)).toEqual(HOOKS_DISABLED_ARGS);
+    return runner(command, args.slice(HOOKS_DISABLED_ARGS.length), ...runnerArgs);
+  };
+const workspaceDeps = (args) => ({
+  ...credentialContext,
+  ...args,
+  ...(args.runner ? { runner: logicalGitRunner(args.runner) } : {}),
+});
+const checkoutRepo = (args) => checkoutRepoImpl(workspaceDeps(args));
+const checkoutRepos = (args) => checkoutReposImpl(workspaceDeps(args));
+const ensureWorkspaceSource = (args) => ensureWorkspaceSourceImpl(workspaceDeps(args));
 
 const PARTITION = 'agentcore-init-ws';
 let conn;
@@ -815,6 +831,218 @@ describe('workspace checkout (mocked git runner)', () => {
   });
 });
 
+describe('workspace checkout hook isolation (real local repositories)', () => {
+  const PASSWORD_SENTINEL = 'workspace-hook-regression-sentinel';
+  const CLEAN_URL = 'https://github.com/local/repository.git';
+  let root;
+
+  const gitEnvironment = (overrides = {}) => {
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) {
+      if (key.startsWith('GIT_')) delete env[key];
+    }
+    return {
+      ...env,
+      HOME: root,
+      XDG_CONFIG_HOME: path.join(root, 'xdg'),
+      GIT_CONFIG_GLOBAL: path.join(root, 'global.gitconfig'),
+      GIT_CONFIG_NOSYSTEM: '1',
+      AIDLC_GIT_PASSWORD: '',
+      ...overrides,
+    };
+  };
+
+  const runFixtureGit = (args, { cwd = root, env = {} } = {}) =>
+    new Promise((resolve) => {
+      const child = spawn('git', args, {
+        cwd,
+        env: gitEnvironment(env),
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', (error) => resolve({ code: null, stdout, stderr, error }));
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    });
+
+  const gitOk = async (args, options) => {
+    const result = await runFixtureGit(args, options);
+    expect(result.code, result.stderr).toBe(0);
+    return result;
+  };
+
+  const createLocalRemote = async ({ trackedPostCheckout } = {}) => {
+    const remote = path.join(root, `remote-${Math.random().toString(16).slice(2)}`);
+    await gitOk(['init', '-b', 'main', remote]);
+    await writeFile(path.join(remote, 'README.md'), 'local fixture\n');
+    if (trackedPostCheckout) {
+      const hooksDir = path.join(remote, '.githooks');
+      await mkdir(hooksDir, { recursive: true });
+      await writeFile(path.join(hooksDir, 'post-checkout'), trackedPostCheckout, { mode: 0o755 });
+    }
+    await gitOk(['add', '-A'], { cwd: remote });
+    await gitOk(
+      ['-c', 'user.name=Workspace Test', '-c', 'user.email=workspace@test', 'commit', '-m', 'seed'],
+      { cwd: remote },
+    );
+    return { remote, url: pathToFileURL(remote).href };
+  };
+
+  const hookBody = (marker) =>
+    `#!/bin/sh\nprintf '%s' "\${AIDLC_GIT_PASSWORD:-<unset>}" > "${marker}"\necho 'post-checkout rejected' >&2\nexit 97\n`;
+
+  const workspaceRunner =
+    ({ remoteUrl, password = '', commands }) =>
+    async (command, args, options = {}) => {
+      expect(command).toBe('git');
+      commands.push([...args]);
+      const localArgs = args.map((arg) => (arg === CLEAN_URL ? remoteUrl : arg));
+      return runFixtureGit(localArgs, {
+        cwd: options.cwd ?? root,
+        env: { AIDLC_GIT_PASSWORD: password, ...options.env },
+      });
+    };
+
+  const readLocalHooksPath = async (repo) =>
+    runFixtureGit(['config', '--local', '--get', 'core.hooksPath'], { cwd: repo });
+
+  const expectMissing = async (file) => {
+    await expect(readFile(file, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  };
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'init-ws-hooks-'));
+    await writeFile(path.join(root, 'global.gitconfig'), '');
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('suppresses a configured failing post-checkout hook during warm reuse without mutating hook config', async () => {
+    const marker = path.join(root, 'warm-hook-observed.txt');
+    const { url } = await createLocalRemote();
+    const work = path.join(root, 'warm-work');
+    await gitOk(['clone', url, work]);
+    await gitOk(['branch', 'next'], { cwd: work });
+    const hooksDir = path.join(work, '.configured-hooks');
+    await mkdir(hooksDir, { recursive: true });
+    await writeFile(path.join(hooksDir, 'post-checkout'), hookBody(marker), { mode: 0o755 });
+    await gitOk(['config', '--local', 'core.hooksPath', hooksDir], { cwd: work });
+
+    // Prove the fixture is live: an ordinary checkout runs the failing hook.
+    const unprotected = await runFixtureGit(['checkout', 'next'], { cwd: work });
+    expect(unprotected.code).not.toBe(0);
+    expect(await readFile(marker, 'utf8')).toBe('<unset>');
+    await rm(marker, { force: true });
+
+    const hooksPathBefore = await readLocalHooksPath(work);
+    const repositoryBefore = await readFile(path.join(work, '.git', 'config'), 'utf8');
+    const globalBefore = await readFile(path.join(root, 'global.gitconfig'), 'utf8');
+    const commands = [];
+    const result = await checkoutRepoImpl({
+      ...credentialContext,
+      repo: 'local/repository',
+      branch: 'main',
+      targetDir: work,
+      runner: workspaceRunner({ remoteUrl: url, password: PASSWORD_SENTINEL, commands }),
+      trustDirectory: async () => true,
+    });
+
+    expect(result).toMatchObject({ cloned: true, reused: true, branchOk: true });
+    expect((await gitOk(['branch', '--show-current'], { cwd: work })).stdout.trim()).toBe('main');
+    await expectMissing(marker);
+    expect((await readLocalHooksPath(work)).stdout).toBe(hooksPathBefore.stdout);
+    expect(await readFile(path.join(work, '.git', 'config'), 'utf8')).toBe(repositoryBefore);
+    expect(await readFile(path.join(root, 'global.gitconfig'), 'utf8')).toBe(globalBefore);
+    expect(commands.length).toBeGreaterThan(0);
+    for (const args of commands) {
+      expect(args.slice(0, HOOKS_DISABLED_ARGS.length)).toEqual(HOOKS_DISABLED_ARGS);
+    }
+  }, 30_000);
+
+  it('suppresses an inherited global hook path targeting a tracked hook during fresh clone', async () => {
+    const marker = path.join(root, 'fresh-hook-observed.txt');
+    const { url } = await createLocalRemote({ trackedPostCheckout: hookBody(marker) });
+    await gitOk(['config', '--global', 'core.hooksPath', '.githooks']);
+
+    // Without the command-scoped override, clone discovers the newly checked
+    // out tracked hook through the inherited global path and the hook rejects.
+    const unprotectedTarget = path.join(root, 'unprotected-clone');
+    const unprotected = await runFixtureGit(['clone', url, unprotectedTarget]);
+    expect(unprotected.code).not.toBe(0);
+    expect(await readFile(marker, 'utf8')).toBe('<unset>');
+    await rm(marker, { force: true });
+    await rm(unprotectedTarget, { recursive: true, force: true });
+
+    const globalBefore = await readFile(path.join(root, 'global.gitconfig'), 'utf8');
+    const target = path.join(root, 'protected-clone');
+    const commands = [];
+    const result = await checkoutRepoImpl({
+      ...credentialContext,
+      repo: 'local/repository',
+      branch: 'main',
+      targetDir: target,
+      runner: workspaceRunner({ remoteUrl: url, commands }),
+      withGitCredential: async (_context, operation) =>
+        operation({
+          env: {
+            AIDLC_GIT_PASSWORD: PASSWORD_SENTINEL,
+            GIT_TERMINAL_PROMPT: '0',
+          },
+        }),
+      trustDirectory: async () => true,
+    });
+
+    expect(result).toMatchObject({ cloned: true, branchOk: true });
+    await expectMissing(marker);
+    expect((await readLocalHooksPath(target)).code).not.toBe(0);
+    expect(await readFile(path.join(root, 'global.gitconfig'), 'utf8')).toBe(globalBefore);
+    expect(commands.length).toBeGreaterThan(0);
+    for (const args of commands) {
+      expect(args.slice(0, HOOKS_DISABLED_ARGS.length)).toEqual(HOOKS_DISABLED_ARGS);
+    }
+  }, 30_000);
+
+  it('proves a normal clone does not transfer remote-local config or .git hooks', async () => {
+    const marker = path.join(root, 'remote-local-hook-observed.txt');
+    const { remote, url } = await createLocalRemote();
+    await gitOk(['config', '--local', 'core.hooksPath', '.git/hooks'], { cwd: remote });
+    await gitOk(['config', '--local', 'workspace.remote-only', 'true'], { cwd: remote });
+    await writeFile(path.join(remote, '.git', 'hooks', 'post-checkout'), hookBody(marker), {
+      mode: 0o755,
+    });
+    const remoteConfigBefore = await readFile(path.join(remote, '.git', 'config'), 'utf8');
+
+    const target = path.join(root, 'ordinary-clone');
+    const cloned = await runFixtureGit(['clone', url, target], {
+      env: { AIDLC_GIT_PASSWORD: PASSWORD_SENTINEL },
+    });
+
+    expect(cloned.code, cloned.stderr).toBe(0);
+    await expectMissing(marker);
+    expect((await readLocalHooksPath(target)).code).not.toBe(0);
+    expect(
+      (
+        await runFixtureGit(['config', '--local', '--get', 'workspace.remote-only'], {
+          cwd: target,
+        })
+      ).code,
+    ).not.toBe(0);
+    await expect(access(path.join(target, '.git', 'hooks', 'post-checkout'))).rejects.toMatchObject(
+      { code: 'ENOENT' },
+    );
+    expect(await readFile(path.join(remote, '.git', 'config'), 'utf8')).toBe(remoteConfigBefore);
+  }, 30_000);
+});
+
 describe('ensureWorkspaceSource (self-heal a wiped checkout)', () => {
   const noMkdir = async () => {};
   // A stat that reports `.git` present for the given set of target dirs.
@@ -944,7 +1172,9 @@ describe('trustGitDirectory', () => {
       return { code: args.includes('--get-all') ? 1 : 0 };
     };
 
-    await expect(trustGitDirectory({ targetDir: '/ws/acme/api', runner })).resolves.toBe(true);
+    await expect(
+      trustGitDirectory({ targetDir: '/ws/acme/api', runner: logicalGitRunner(runner) }),
+    ).resolves.toBe(true);
     expect(commands).toEqual([
       'git config --global --fixed-value --get-all safe.directory /ws/acme/api',
       'git config --global --add safe.directory /ws/acme/api',
@@ -958,7 +1188,9 @@ describe('trustGitDirectory', () => {
       return { code: 0 };
     };
 
-    await expect(trustGitDirectory({ targetDir: '/ws/acme/api', runner })).resolves.toBe(true);
+    await expect(
+      trustGitDirectory({ targetDir: '/ws/acme/api', runner: logicalGitRunner(runner) }),
+    ).resolves.toBe(true);
     expect(commands).toEqual([
       'git config --global --fixed-value --get-all safe.directory /ws/acme/api',
     ]);
