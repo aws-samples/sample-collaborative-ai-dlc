@@ -149,17 +149,17 @@ supersede/current handling used for other derived rows.
 
 #### Derived structure
 
-| Vertex          | Derived from         | Important fields                                                           |
-| --------------- | -------------------- | -------------------------------------------------------------------------- |
-| `Section`       | Markdown heading     | `slug`, heading level, order, line range, content hash                     |
-| `Requirement`   | `requirements` block | category, priority, description, acceptance criteria                       |
-| `Story`         | `stories` block      | persona, priority, covered requirements, dependencies, acceptance criteria |
-| `Persona`       | `personas` block     | role, goals, pain points                                                   |
-| `Component`     | `components` block   | description, responsibilities, dependencies                                |
-| `Decision`      | `decisions` block    | status, context, decision, consequences                                    |
-| `StoryMapEntry` | `mappings` block     | unit and delivered stories                                                 |
-| `Contract`      | `contracts` block    | provider, consumers, kind, description                                     |
-| `UnitOfWork`    | Compiled unit plan   | stable unit slug and execution provenance                                  |
+| Vertex          | Derived from         | Important fields                                                                             |
+| --------------- | -------------------- | -------------------------------------------------------------------------------------------- |
+| `Section`       | Markdown heading     | `slug`, heading level, order, line range, content hash                                       |
+| `Requirement`   | `requirements` block | category, priority, description, acceptance criteria                                         |
+| `Story`         | `stories` block      | persona, priority, covered requirements, dependencies, acceptance criteria                   |
+| `Persona`       | `personas` block     | role, goals, pain points                                                                     |
+| `Component`     | `components` block   | description, responsibilities, dependencies                                                  |
+| `Decision`      | `decisions` block    | status, context, decision, consequences                                                      |
+| `StoryMapEntry` | `mappings` block     | unit and delivered stories                                                                   |
+| `Contract`      | `contracts` block    | provider, consumers, kind, description                                                       |
+| `UnitOfWork`    | Compiled unit plan   | stable unit slug and execution provenance                                                    |
 | `CodeFile`      | Changed source file  | `file_path`, `repository`, `commit_ref`, `file_kind`, `traceability_source`, `superseded_at` |
 
 The typed-item list and field definitions come from the extraction registry in
@@ -197,20 +197,20 @@ validation, agent authoring instructions, and graph reads.
 
 #### Traceability and provenance
 
-| Source                                | Edge                | Target                          |
-| ------------------------------------- | ------------------- | ------------------------------- |
-| `Story`                               | `COVERS`            | `Requirement`                   |
-| `Story`                               | `FOR_PERSONA`       | `Persona`                       |
-| `StoryMapEntry`                       | `IMPLEMENTS`        | `Story` or `UnitOfWork`         |
-| `Story`, `Component`, or `UnitOfWork` | `DEPENDS_ON`        | Another entity of the same type |
-| `UnitOfWork`                          | `EXPOSES`           | `Contract`                      |
-| `UnitOfWork`                          | `CONSUMES_CONTRACT` | `Contract`                      |
-| `UnitOfWork`                          | `IMPLEMENTED_BY`    | `CodeFile`                      |
+| Source                                | Edge                | Target                                |
+| ------------------------------------- | ------------------- | ------------------------------------- |
+| `Story`                               | `COVERS`            | `Requirement`                         |
+| `Story`                               | `FOR_PERSONA`       | `Persona`                             |
+| `StoryMapEntry`                       | `IMPLEMENTS`        | `Story` or `UnitOfWork`               |
+| `Story`, `Component`, or `UnitOfWork` | `DEPENDS_ON`        | Another entity of the same type       |
+| `UnitOfWork`                          | `EXPOSES`           | `Contract`                            |
+| `UnitOfWork`                          | `CONSUMES_CONTRACT` | `Contract`                            |
+| `UnitOfWork`                          | `IMPLEMENTED_BY`    | `CodeFile`                            |
 | `Requirement`, `Story`, …             | `IMPLEMENTED_BY`    | `CodeFile` (from `traceability.json`) |
-| Answered `Question` or `Steering`     | `INFLUENCES`        | Resulting `Artifact`            |
-| `Steering`                            | `REVISES`           | Revised `Question`              |
-| `Discussion`                          | `DISCUSSES`         | Attached entity                 |
-| `TeamKnowledge` or `LearningRule`     | `INFORMS`           | `Intent`                        |
+| Answered `Question` or `Steering`     | `INFLUENCES`        | Resulting `Artifact`                  |
+| `Steering`                            | `REVISES`           | Revised `Question`                    |
+| `Discussion`                          | `DISCUSSES`         | Attached entity                       |
+| `TeamKnowledge` or `LearningRule`     | `INFORMS`           | `Intent`                              |
 
 `INFORMS` is synthesized in the graph API projection to show prompt injection;
 Neptune persists the knowledge vertices under `Project` through `HAS_KNOWLEDGE`
