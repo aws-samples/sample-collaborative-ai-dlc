@@ -13,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Rocket,
+  Search,
   ShieldQuestion,
   Star,
   Trash2,
@@ -58,6 +59,7 @@ import { cn } from '@/lib/utils';
 import { Disclosure, ProcessOverview } from './environment-builder/ui';
 
 const ACTIVE_STATUSES = new Set(['QUEUED', 'BUILDING', 'SCANNING']);
+type ToolFilter = 'all' | 'attention' | 'progress' | 'published';
 const PRESETS = ['generic', 'java', 'go', 'rust', 'maven', 'gradle', 'dotnet'] as const;
 type VerificationPreset = (typeof PRESETS)[number];
 const PRESET_LABELS: Record<VerificationPreset, string> = {
@@ -515,6 +517,37 @@ const toolStatusLabel = (version: ManagedToolVersion) => {
     FAILED: 'Needs attention',
   };
   return labels[version.status] ?? version.status.replaceAll('_', ' ');
+};
+
+const latestToolVersion = (tool: ManagedTool) => tool.versions[0] ?? null;
+
+const filterTool = (tool: ManagedTool, filter: ToolFilter) => {
+  if (filter === 'all') return true;
+  const status = latestToolVersion(tool)?.status;
+  if (filter === 'attention') return status === 'SECURITY_REVIEW' || status === 'FAILED';
+  if (filter === 'progress') return Boolean(status && ACTIVE_STATUSES.has(status));
+  return status === 'PUBLISHED';
+};
+
+const toolSidebarTask = (tool: ManagedTool, version: ManagedToolVersion | null) => {
+  if (!version) return 'Add the first version';
+  if (version.status === 'DRAFT') return 'Build and verify this version';
+  if (version.status === 'QUEUED') return 'Waiting for the build';
+  if (version.status === 'BUILDING') return 'Building and verifying version';
+  if (version.status === 'SCANNING') return 'Scanning tool image packages';
+  if (version.status === 'SECURITY_REVIEW') {
+    return version.scanFindings?.status === 'UNSUPPORTED'
+      ? 'Review the scan limitation'
+      : 'Review security findings';
+  }
+  if (version.status === 'READY') return 'Publish this version';
+  if (version.status === 'PUBLISHED') {
+    return version.versionId === tool.recommendedVersionId
+      ? 'Recommended for new environments'
+      : 'Available to environments';
+  }
+  if (version.status === 'FAILED') return 'Correct or retry the failed build';
+  return 'Review version status';
 };
 
 function ToolStatus({ version }: { version: ManagedToolVersion }) {
@@ -1493,6 +1526,8 @@ export function ToolsRegistry() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<ToolFilter>('all');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
 
   const load = useCallback(async (preferredToolId?: string, preferredVersionId?: string) => {
@@ -1527,6 +1562,18 @@ export function ToolsRegistry() {
       null,
     [selectedTool, selectedVersionId],
   );
+  const filteredTools = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return tools.filter(
+      (tool) =>
+        filterTool(tool, filter) &&
+        (!query ||
+          tool.name.toLowerCase().includes(query) ||
+          tool.toolId.toLowerCase().includes(query) ||
+          tool.description.toLowerCase().includes(query) ||
+          tool.publisher.toLowerCase().includes(query)),
+    );
+  }, [filter, search, tools]);
   const missingDependencies = useMemo(
     () =>
       (selectedVersion?.definition.dependencies ?? []).filter((toolId) => {
@@ -1678,44 +1725,108 @@ export function ToolsRegistry() {
         }
       >
         {loading ? (
-          <div className="grid gap-4 lg:grid-cols-[230px_minmax(0,1fr)]">
+          <div className="grid gap-4 lg:grid-cols-[250px_minmax(0,1fr)]">
             <Skeleton className="h-72" />
             <Skeleton className="h-96" />
           </div>
         ) : (
-          <div className="grid min-w-0 gap-5 lg:grid-cols-[230px_minmax(0,1fr)]">
-            <div className="space-y-1 border-r pr-4">
-              {tools.map((tool) => (
-                <button
-                  key={tool.toolId}
-                  type="button"
-                  aria-pressed={!creatingTool && selectedToolId === tool.toolId}
-                  className={cn(
-                    'flex w-full items-start justify-between gap-2 rounded px-2.5 py-2 text-left hover:bg-muted/60',
-                    !creatingTool && selectedToolId === tool.toolId && 'bg-muted',
-                  )}
-                  onClick={() => {
-                    setCreatingTool(false);
-                    setCreatingVersion(false);
-                    setEditingVersionId(null);
-                    setSelectedToolId(tool.toolId);
-                  }}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-xs font-medium">{tool.name}</span>
-                    <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                      {tool.toolId}
-                    </span>
-                  </span>
-                  {tool.recommendedVersionId && (
-                    <span className="mt-0.5 shrink-0 text-amber-500">
-                      <Star className="h-3.5 w-3.5 fill-amber-400" />
-                      <span className="sr-only">Has a recommended version</span>
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
+          <div className="grid min-w-0 gap-5 lg:grid-cols-[250px_minmax(0,1fr)]">
+            <aside className="self-start rounded-xl border bg-muted/10 p-2 lg:sticky lg:top-0">
+              <div className="space-y-2 p-1">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    aria-label="Search tools"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search tools"
+                    className="h-9 bg-background pl-8 text-xs"
+                  />
+                </div>
+                <Select value={filter} onValueChange={(value) => setFilter(value as ToolFilter)}>
+                  <SelectTrigger aria-label="Filter tools" className="h-8 bg-background text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All tools</SelectItem>
+                    <SelectItem value="attention">Needs attention</SelectItem>
+                    <SelectItem value="progress">In progress</SelectItem>
+                    <SelectItem value="published">Published</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="mt-1 max-h-[680px] space-y-1 overflow-y-auto">
+                {creatingTool && (
+                  <div className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <Plus className="h-3.5 w-3.5 text-primary" />
+                      <span className="text-xs font-semibold">New tool</span>
+                    </div>
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      Unsaved family and first version
+                    </p>
+                  </div>
+                )}
+                {filteredTools.map((tool) => {
+                  const version = latestToolVersion(tool);
+                  const needsAttention =
+                    version?.status === 'SECURITY_REVIEW' || version?.status === 'FAILED';
+                  return (
+                    <button
+                      key={tool.toolId}
+                      type="button"
+                      aria-pressed={!creatingTool && selectedToolId === tool.toolId}
+                      className={cn(
+                        'w-full rounded-lg border border-transparent px-3 py-2.5 text-left transition-colors hover:bg-muted/60',
+                        !creatingTool &&
+                          selectedToolId === tool.toolId &&
+                          'border-border bg-background shadow-sm',
+                      )}
+                      onClick={() => {
+                        setCreatingTool(false);
+                        setCreatingVersion(false);
+                        setEditingVersionId(null);
+                        setSelectedToolId(tool.toolId);
+                      }}
+                    >
+                      <span className="flex items-start justify-between gap-2">
+                        <span className="min-w-0">
+                          <span className="block truncate text-xs font-semibold">{tool.name}</span>
+                          <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                            <span className="font-mono">{tool.toolId}</span> ·{' '}
+                            {tool.category.replaceAll('-', ' ')}
+                          </span>
+                        </span>
+                        {version ? (
+                          <ToolStatus version={version} />
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="shrink-0 bg-muted/50 px-1.5 py-0 text-[10px] text-muted-foreground"
+                          >
+                            Not created
+                          </Badge>
+                        )}
+                      </span>
+                      <span
+                        className={cn(
+                          'mt-1.5 block text-[10px] font-medium text-muted-foreground',
+                          needsAttention && 'text-amber-700 dark:text-amber-300',
+                        )}
+                      >
+                        {toolSidebarTask(tool, version)}
+                      </span>
+                    </button>
+                  );
+                })}
+                {filteredTools.length === 0 && (
+                  <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                    No tools match this view.
+                  </div>
+                )}
+              </div>
+            </aside>
 
             <div className="min-w-0 space-y-5">
               {creatingTool || creatingVersion ? (

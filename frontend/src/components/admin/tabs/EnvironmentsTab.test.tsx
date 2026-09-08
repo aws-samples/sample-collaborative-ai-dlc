@@ -260,6 +260,14 @@ describe('EnvironmentsTab', () => {
     });
   });
 
+  it('shows plain-language status and the next action in the environment list', async () => {
+    render(<EnvironmentsTab />);
+
+    expect(await screen.findByText('Build the first revision')).toBeInTheDocument();
+    expect(screen.getAllByText('Ready to build').length).toBeGreaterThan(0);
+    expect(screen.getByText('Available to projects')).toBeInTheDocument();
+  });
+
   it('shows revision evidence and starts a draft build', async () => {
     const user = userEvent.setup();
     render(<EnvironmentsTab />);

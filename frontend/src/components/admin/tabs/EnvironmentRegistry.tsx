@@ -76,6 +76,27 @@ const filterEnvironment = (environment: ManagedEnvironment, filter: EnvironmentF
   return environment.status === 'RETIRED';
 };
 
+const environmentTask = (environment: ManagedEnvironment) => {
+  const toolUpdates = environment.toolUpdates?.length ?? 0;
+  if (toolUpdates > 0) {
+    return `${toolUpdates} recommended tool update${toolUpdates === 1 ? '' : 's'}`;
+  }
+  if (environment.updateAvailable) return 'Rebuild on the latest base';
+  const tasks: Record<string, string> = {
+    DRAFT: 'Build the first revision',
+    QUEUED: 'Waiting for the image build',
+    BUILDING: 'Building the environment image',
+    SCANNING: 'Scanning image packages',
+    SECURITY_REVIEW: 'Review security findings',
+    VERIFYING: 'Validating runtime behavior',
+    READY: 'Publish this revision',
+    PUBLISHED: 'Available to projects',
+    FAILED: 'Correct or retry the failed build',
+    RETIRED: 'Read-only environment',
+  };
+  return tasks[environment.status] ?? 'Review environment status';
+};
+
 export function EnvironmentRegistry() {
   const [environments, setEnvironments] = useState<ManagedEnvironment[]>([]);
   const [tools, setTools] = useState<ManagedTool[]>([]);
@@ -482,28 +503,29 @@ export function EnvironmentRegistry() {
                     <div className="flex items-start justify-between gap-2">
                       <span className="min-w-0">
                         <span className="block truncate text-xs font-semibold">{item.name}</span>
-                        <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
+                        <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
                           {item.environmentId}
                         </span>
                       </span>
-                      {item.updateAvailable ? (
-                        <span className="mt-0.5 shrink-0 text-amber-600">
-                          <TriangleAlert className="h-3.5 w-3.5" />
-                          <span className="sr-only">Update available</span>
-                        </span>
-                      ) : (
-                        <StatusBadge
-                          status={item.status}
-                          className="shrink-0 px-1.5 py-0 text-[8px]"
-                        />
-                      )}
+                      <StatusBadge
+                        status={item.updateAvailable ? 'UPDATE_AVAILABLE' : item.status}
+                        className="shrink-0 px-1.5 py-0"
+                      />
                     </div>
-                    {(item.toolUpdates?.length ?? 0) > 0 && (
-                      <span className="mt-1.5 block text-[9px] font-medium text-amber-700 dark:text-amber-300">
-                        {item.toolUpdates?.length} recommended tool update
-                        {item.toolUpdates?.length === 1 ? '' : 's'}
-                      </span>
-                    )}
+                    <span
+                      className={cn(
+                        'mt-1.5 flex items-center gap-1 text-[10px] font-medium text-muted-foreground',
+                        (item.updateAvailable ||
+                          item.status === 'SECURITY_REVIEW' ||
+                          item.status === 'FAILED') &&
+                          'text-amber-700 dark:text-amber-300',
+                      )}
+                    >
+                      {(item.updateAvailable ||
+                        item.status === 'SECURITY_REVIEW' ||
+                        item.status === 'FAILED') && <TriangleAlert className="h-3 w-3 shrink-0" />}
+                      {environmentTask(item)}
+                    </span>
                   </button>
                 ))}
                 {filteredEnvironments.length === 0 && (
