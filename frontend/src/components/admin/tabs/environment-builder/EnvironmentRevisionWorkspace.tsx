@@ -439,7 +439,7 @@ export function EnvironmentRevisionWorkspace({
                   ))}
                 </SelectContent>
               </Select>
-              <StatusBadge status={selectedRevision.status} />
+              <StatusBadge status={selectedRevision.status} technical />
               <Button
                 size="icon"
                 variant="ghost"

@@ -31,13 +31,44 @@ export const severityClass = (severity: string) => {
   return 'bg-muted/50 text-muted-foreground';
 };
 
-export function StatusBadge({ status, className }: { status: string; className?: string }) {
+export const statusLabel = (status: string) => {
+  const labels: Record<string, string> = {
+    DRAFT: 'Ready to build',
+    QUEUED: 'In progress',
+    BUILDING: 'In progress',
+    SCANNING: 'In progress',
+    SECURITY_REVIEW: 'Action required',
+    VERIFYING: 'In progress',
+    READY: 'Ready to publish',
+    PUBLISHED: 'Published',
+    FAILED: 'Needs attention',
+    SUPERSEDED: 'Previous revision',
+    RETIRED: 'Retired',
+    UPDATE_AVAILABLE: 'Update available',
+  };
+  return labels[status] ?? status.replaceAll('_', ' ');
+};
+
+export function StatusBadge({
+  status,
+  className,
+  technical = false,
+}: {
+  status: string;
+  className?: string;
+  technical?: boolean;
+}) {
   return (
     <Badge
       variant="outline"
-      className={cn('font-mono text-[10px] font-medium', statusClass(status), className)}
+      className={cn(
+        technical && 'font-mono',
+        'text-[10px] font-medium',
+        statusClass(status),
+        className,
+      )}
     >
-      {status.replaceAll('_', ' ')}
+      {technical ? status.replaceAll('_', ' ') : statusLabel(status)}
     </Badge>
   );
 }

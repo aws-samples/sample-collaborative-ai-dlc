@@ -231,6 +231,36 @@ describe('ToolsRegistry', () => {
     expect(build).toHaveBeenCalledWith('java', 'tv-java-corretto');
   });
 
+  it('searches and filters tool families by their current lifecycle status', async () => {
+    const user = userEvent.setup();
+    const failedTool = {
+      ...goTool,
+      toolId: 'rust',
+      name: 'Rust Toolchain',
+      description: 'Rust compiler and package manager',
+      versions: [{ ...publishedVersion, toolId: 'rust', status: 'FAILED' as const }],
+    };
+    list.mockResolvedValue([goTool, failedTool]);
+
+    render(<ToolsRegistry />);
+
+    const search = await screen.findByLabelText('Search tools');
+    expect(screen.getByRole('button', { name: /Go SDK/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Rust Toolchain/ })).toBeInTheDocument();
+
+    await user.type(search, 'rust');
+    expect(screen.queryByRole('button', { name: /Go SDK/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Rust Toolchain/ })).toHaveTextContent(
+      'Correct or retry the failed build',
+    );
+
+    await user.clear(search);
+    await user.click(screen.getByLabelText('Filter tools'));
+    await user.click(await screen.findByRole('option', { name: 'Needs attention' }));
+    expect(screen.queryByRole('button', { name: /Go SDK/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Rust Toolchain/ })).toBeInTheDocument();
+  });
+
   it('does not mistake JavaScript tool families for Java JDKs', async () => {
     const user = userEvent.setup();
     list.mockResolvedValue([
@@ -455,7 +485,7 @@ describe('ToolsRegistry', () => {
     list.mockResolvedValue([{ ...goTool, versions: [unsupportedVersion] }]);
     render(<ToolsRegistry />);
 
-    expect(await screen.findAllByText('Scan unavailable')).toHaveLength(2);
+    expect(await screen.findAllByText('Scan unavailable')).toHaveLength(3);
     expect(
       screen.getByText(/This is a scan limitation, not a detected vulnerability/),
     ).toBeInTheDocument();
