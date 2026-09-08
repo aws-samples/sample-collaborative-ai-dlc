@@ -112,8 +112,8 @@ bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream
   arn:aws:bedrock:*::foundation-model/openai.gpt-*
   Condition StringLike bedrock:InferenceProfileArn = arn:aws:bedrock:*:<bedrock-account>:inference-profile/*
 
-bedrock-mantle:CreateInference
-  arn:aws:bedrock-mantle:*:<bedrock-account>:project/*                        ← Codex only
+bedrock:InvokeModel
+  arn:aws:bedrock:*:<bedrock-account>:project/default                        ← Codex Runtime OpenAI-compatible endpoint
 ```
 
 The broker's own policy, in the **platform** account, carries `sts:AssumeRole` with the resource from `bedrock_assumable_role_arns`.
@@ -316,14 +316,14 @@ decisions:
     decision: Add kind with value bearer or role and branch on it.
     consequences: A small contract addition, and the same lesson applied to the SSM value encoding.
   - id: dec-codex-scope
-    title: Codex is out of the verified set for v1
+    title: Codex uses the Bedrock Runtime OpenAI-compatible endpoint
     status: accepted
     context: >-
-      Codex uses bedrock-mantle rather than bedrock-runtime, and mantle in this region serves none of
-      the model ids tried. Its configured id is also a bare foundation-model id, which the grant
-      fence deliberately denies.
-    decision: Include the mantle grant statement, document Codex as unverified, and track both defects separately.
-    consequences: Codex works the moment its defects are fixed, with no further IAM change.
+      Codex 0.153.4 uses the amazon-bedrock-runtime provider and global CRIS model id. The endpoint
+      authorizes bedrock:InvokeModel against project/default in addition to the model; legacy Mantle
+      is neither required nor usable in the deployment region.
+    decision: Include the Bedrock Runtime project/default grant and exclude all bedrock-mantle actions.
+    consequences: Supported Codex versions work in role mode without a legacy Mantle rollback permission.
   - id: dec-litellm-provider
     title: LiteLLM will be a new provider, not a third bedrock mode
     status: accepted

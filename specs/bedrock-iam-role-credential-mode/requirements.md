@@ -151,13 +151,14 @@ requirements:
     priority: must-have
     description: >-
       Per con-claude-model-fanout no allowlist narrower than the provider family is viable. Per
-      con-gpt-global-cris-only GPT is reachable only through global CRIS. Per con-codex-mantle Codex
-      uses a different service namespace.
+      con-gpt-global-cris-only GPT is reachable only through global CRIS. Per
+      con-codex-runtime-provider supported Codex versions use Bedrock Runtime's OpenAI-compatible
+      endpoint, including its implicit project/default authorization resource.
     acceptance_criteria:
       - THE SYSTEM SHALL grant Anthropic and OpenAI inference-profile patterns, including global.openai.gpt-*
       - THE SYSTEM SHALL grant no eu.openai pattern, because no such profile exists
       - THE SYSTEM SHALL region-wildcard foundation-model ARNs and fence them by a StringLike condition on bedrock:InferenceProfileArn
-      - THE SYSTEM SHALL include a bedrock-mantle:CreateInference statement scoped to project/* for Codex
+      - THE SYSTEM SHALL include a bedrock:InvokeModel statement scoped to project/default for Codex and SHALL include no bedrock-mantle action
       - THE SYSTEM SHALL make every account id in the grant the account that owns the Bedrock role, which may differ from the platform account
       - THE SYSTEM SHALL introduce no per-space or per-model allowlist narrower than the provider family
   - id: req-same-and-cross-account
@@ -343,7 +344,7 @@ requirements:
       Codex has two pre-existing defects unrelated to this change. Its credential path is verified,
       but it cannot complete a call in this region.
     acceptance_criteria:
-      - THE SYSTEM SHALL include the mantle grant statement so Codex works the moment its defects are fixed
+      - THE SYSTEM SHALL include the Bedrock Runtime project/default grant for supported Codex versions and SHALL include no bedrock-mantle action
       - THE SYSTEM SHALL document Codex as unverified end-to-end, with both defects recorded separately
       - THE SYSTEM SHALL have no acceptance criterion in this spec depend on a successful Codex invocation
       - THE SYSTEM SHALL pin the custom-server exclusion of con-custom-server-excluded by a test

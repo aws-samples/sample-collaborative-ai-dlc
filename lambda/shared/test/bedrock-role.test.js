@@ -315,6 +315,32 @@ describe('Bedrock session-policy ceiling', () => {
       }),
     ],
     [
+      'an allow statement with the removed Mantle action',
+      JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'bedrock-mantle:CreateInference',
+            Resource: 'arn:aws:bedrock-mantle:eu-central-1:123456789012:project/default',
+          },
+        ],
+      }),
+    ],
+    [
+      'an allow statement with a removed Mantle resource',
+      JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'bedrock:InvokeModel',
+            Resource: 'arn:aws:bedrock-mantle:eu-central-1:123456789012:project/default',
+          },
+        ],
+      }),
+    ],
+    [
       'an allow statement with a non-Bedrock resource',
       JSON.stringify({
         Version: '2012-10-17',

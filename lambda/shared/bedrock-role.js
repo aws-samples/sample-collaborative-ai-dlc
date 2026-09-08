@@ -117,10 +117,8 @@ const STATEMENT_KEYS = new Set(['Sid', 'Effect', 'Action', 'Resource', 'Conditio
 const ALLOWED_ALLOW_ACTIONS = new Set([
   'bedrock:invokemodel',
   'bedrock:invokemodelwithresponsestream',
-  // Retained until the legacy Mantle permission is removed from the generated policy.
-  'bedrock-mantle:createinference',
 ]);
-const BEDROCK_RESOURCE_ARN_PATTERN = /^arn:[^:]+:(?:bedrock|bedrock-mantle):/;
+const BEDROCK_RESOURCE_ARN_PATTERN = /^arn:[^:]+:bedrock:/;
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const hasOnlyKeys = (value, allowed) => Object.keys(value).every((key) => allowed.has(key));
