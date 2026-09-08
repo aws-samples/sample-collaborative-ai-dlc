@@ -141,11 +141,16 @@ describe('agent credential metadata broker', () => {
 // number of principals able to assume a customer role stays at one.
 describe('bedrock role binding preflight action', () => {
   const ROLE_ARN = 'arn:aws:iam::444455556666:role/aidlc-bedrock-inference';
+  const SESSION_POLICY = JSON.stringify({
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Allow', Action: 'bedrock:InvokeModel', Resource: '*' }],
+  });
   const ENV = {
     AGENT_SETTINGS_SSM_PREFIX: '/app/dev',
     BEDROCK_ASSUMABLE_ROLE_ARNS: JSON.stringify(['arn:aws:iam::*:role/aidlc-bedrock-*']),
     CREDENTIAL_BROKER_ROLE_ARN: 'arn:aws:iam::111122223333:role/broker',
     PLATFORM_ACCOUNT_ID: '111122223333',
+    BEDROCK_SESSION_POLICY: SESSION_POLICY,
   };
 
   beforeEach(() => {
@@ -172,6 +177,7 @@ describe('bedrock role binding preflight action', () => {
     );
 
     expect(result.preflight).toMatchObject({ ok: true, cause: 'ok', sessionName: 'aidlc-p-1' });
+    expect(stsMock.commandCalls(AssumeRoleCommand)[0].args[0].input.Policy).toBe(SESSION_POLICY);
     expect(JSON.stringify(result)).not.toContain('must-not-leak');
     // The binding is not persisted yet, so the ARN comes from the request — which
     // means this action must never touch a stored credential to answer.
@@ -212,4 +218,33 @@ describe('bedrock role binding preflight action', () => {
     expect(preflight.cause).toBe('role-not-allowlisted');
     expect(stsMock.commandCalls(AssumeRoleCommand)).toHaveLength(0);
   });
+
+  it.each([
+    ['absent', undefined],
+    ['malformed JSON', '{"Version":'],
+  ])(
+    'returns an unavailable verdict when the mandatory ceiling is %s without calling STS',
+    async (_label, sessionPolicy) => {
+      const env = { ...ENV };
+      if (sessionPolicy === undefined) delete env.BEDROCK_SESSION_POLICY;
+      else env.BEDROCK_SESSION_POLICY = sessionPolicy;
+
+      const { preflight } = await inspectAgentCredentialMetadata(
+        {
+          action: AGENT_CREDENTIAL_METADATA_ACTIONS.PREFLIGHT_BEDROCK_ROLE,
+          roleArn: ROLE_ARN,
+          projectId: 'p-1',
+        },
+        { ssmClient: ssm, stsClient: sts, env },
+      );
+
+      expect(preflight).toEqual({
+        ok: false,
+        cause: 'unavailable',
+        sessionName: 'aidlc-p-1',
+        candidates: [],
+      });
+      expect(stsMock.commandCalls(AssumeRoleCommand)).toHaveLength(0);
+    },
+  );
 });

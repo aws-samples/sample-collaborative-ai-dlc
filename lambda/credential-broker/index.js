@@ -25,6 +25,7 @@ import {
   BEDROCK_ROLE_ERROR_CODES,
   ROLE_SESSION_DURATION_SECONDS,
   assumeBedrockRole,
+  readSessionPolicy,
 } from '../shared/bedrock-role.js';
 import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import { AGENT_AUTH_MODES } from '../shared/agent-command-registry.js';
@@ -194,6 +195,11 @@ const resolveAgentCredentialEntry = async (
   // write path (req-single-parameter-encoding); this is the fail-closed backstop
   // for a value written before that existed.
   const { roleArn, externalId } = parseRoleBindingValue(value);
+  // Validate the mandatory ceiling for every role-shaped result, including
+  // capabilities. Capabilities mints nothing, but reporting a binding as usable
+  // while the execution path would fail closed is a false authorization signal.
+  // Keep the canonical value and pass that exact ceiling to AssumeRole.
+  const sessionPolicy = readSessionPolicy(env.BEDROCK_SESSION_POLICY);
   // req-capabilities-authed: a capabilities request answers "is this binding
   // usable", which the binding itself already answers. Minting here would mean
   // one AssumeRole per settings render, which AWS warns can exceed the STS
@@ -208,7 +214,7 @@ const resolveAgentCredentialEntry = async (
       // req-least-privilege-assume: the ceiling comes from the environment, rendered
       // from the same Terraform definition as the customer-facing grant, so what is
       // enforced cannot drift from what is documented.
-      { roleArn, externalId, projectId, sessionPolicy: env.BEDROCK_SESSION_POLICY || null },
+      { roleArn, externalId, projectId, sessionPolicy },
       stsClient,
     ),
   };

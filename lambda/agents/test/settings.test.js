@@ -479,10 +479,38 @@ describe('platform role binding preflight', () => {
     ).toContain('/collab/dev/bedrock-bearer-token');
   });
 
-  it('persists the binding when the preflight itself could not run', async () => {
-    // Fail-open, deliberately: the preflight is an input check, not a security
-    // control. Resolution re-checks the binding on every stage, so refusing a
-    // legitimate save because the checker is unreachable would be the worse failure.
+  it('refuses to persist a binding when the broker reports an invalid ceiling', async () => {
+    credentialMetadataHandler = (request) =>
+      request.action === 'preflight-bedrock-role-binding'
+        ? {
+            ok: true,
+            preflight: {
+              ok: false,
+              cause: 'unavailable',
+              sessionName: 'aidlc-preflight',
+              candidates: [],
+            },
+          }
+        : { ok: true, status: { bedrockBearerTokenSet: false, kiroApiKeySet: false } };
+
+    const response = await saveRole();
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).preflight).toEqual({
+      cause: 'unavailable',
+      sessionName: 'aidlc-preflight',
+      candidates: [],
+    });
+    expect(
+      ssmMock.commandCalls(PutParameterCommand).map(({ args }) => args[0].input.Name),
+    ).not.toContain('/collab/dev/bedrock-bearer-token');
+  });
+
+  it('persists the binding when the preflight broker could not be reached', async () => {
+    // Fail-open only for a transport/broker outage (`available: false`). An
+    // available `cause: unavailable` verdict means the broker ran and rejected
+    // its own configuration (for example, an invalid mandatory ceiling), which
+    // is covered above and must block the save.
     credentialMetadataHandler = (request) => {
       if (request.action === 'preflight-bedrock-role-binding') return { ok: false, code: 'BOOM' };
       return { ok: true, status: { bedrockBearerTokenSet: false, kiroApiKeySet: false } };

@@ -217,6 +217,10 @@ describe('bedrock role credential resolution', () => {
   const PROJECT_ID = 'aa11bb22-cc33-dd44-ee55-ff6677889900';
   const ROLE_ARN = 'arn:aws:iam::111122223333:role/aidlc-bedrock-inference';
   const PLATFORM_PATH = '/app/dev/bedrock-bearer-token';
+  const SESSION_POLICY = JSON.stringify({
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Allow', Action: 'bedrock:InvokeModel', Resource: '*' }],
+  });
   const STS_CREDENTIALS = {
     AccessKeyId: 'ASIAEXAMPLEEXAMPLE',
     SecretAccessKey: 'secret-access-key',
@@ -236,17 +240,22 @@ describe('bedrock role credential resolution', () => {
       { now: () => NOW, randomId: () => 'grant-1234567890' },
     );
 
-  const resolve = (grant) =>
+  const resolveWithSessionPolicy = (grant, sessionPolicy, { configured = true } = {}) =>
     authorizeAgentCredentialRequest(
       { grant },
       {
         ssmClient: ssm,
         stsClient: sts,
         secret: SECRET,
-        env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+        env: {
+          AGENT_SETTINGS_SSM_PREFIX: '/app/dev',
+          ...(configured ? { BEDROCK_SESSION_POLICY: sessionPolicy } : {}),
+        },
         now: () => NOW,
       },
     );
+
+  const resolve = (grant) => resolveWithSessionPolicy(grant, SESSION_POLICY);
 
   const storeValue = (value) => {
     ssmMock.on(GetParameterCommand).callsFake((input) => ({
@@ -298,6 +307,7 @@ describe('bedrock role credential resolution', () => {
       RoleArn: ROLE_ARN,
       RoleSessionName: `aidlc-${PROJECT_ID}`,
       DurationSeconds: 3600,
+      Policy: SESSION_POLICY,
     });
     // con-role-chaining-3600 is a hard STS ceiling, not a tuning knob.
     expect(ROLE_SESSION_DURATION_SECONDS).toBe(3600);
@@ -306,6 +316,58 @@ describe('bedrock role credential resolution', () => {
     // con-tagsession-required: any Tags would fail closed on a trust policy that
     // omits sts:TagSession.
     expect(input).not.toHaveProperty('Tags');
+  });
+
+  it.each([
+    ['absent', undefined, { configured: false }],
+    ['malformed JSON', '{"Version":', undefined],
+    [
+      'a disallowed action',
+      JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 's3:GetObject', Resource: '*' }],
+      }),
+      undefined,
+    ],
+    [
+      'a non-Bedrock resource',
+      JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'bedrock:InvokeModel',
+            Resource: 'arn:aws:s3:::customer-data/*',
+          },
+        ],
+      }),
+      undefined,
+    ],
+  ])(
+    'fails closed when the session-policy ceiling is %s and never calls STS',
+    async (_label, sessionPolicy, options) => {
+      storeValue(JSON.stringify({ roleArn: ROLE_ARN }));
+      // If validation regresses, this successful mock would mint credentials.
+      stsMock.on(AssumeRoleCommand).resolves({ Credentials: STS_CREDENTIALS });
+
+      await expect(
+        resolveWithSessionPolicy(
+          grantFor('execution', { executionId: 'e-1' }),
+          sessionPolicy,
+          options,
+        ),
+      ).rejects.toMatchObject({ code: 'BEDROCK_ROLE_RESOLUTION_FAILED' });
+      expect(stsMock.commandCalls(AssumeRoleCommand)).toHaveLength(0);
+    },
+  );
+
+  it('does not report a role capability as usable when the ceiling is absent', async () => {
+    storeValue(JSON.stringify({ roleArn: ROLE_ARN }));
+
+    await expect(
+      resolveWithSessionPolicy(grantFor('capabilities'), undefined, { configured: false }),
+    ).rejects.toMatchObject({ code: 'BEDROCK_ROLE_RESOLUTION_FAILED' });
+    expect(stsMock.commandCalls(AssumeRoleCommand)).toHaveLength(0);
   });
 
   it('passes the external id when the binding carries one', async () => {
@@ -334,7 +396,10 @@ describe('bedrock role credential resolution', () => {
         ssmClient: ssm,
         stsClient: sts,
         secret: SECRET,
-        env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+        env: {
+          AGENT_SETTINGS_SSM_PREFIX: '/app/dev',
+          BEDROCK_SESSION_POLICY: SESSION_POLICY,
+        },
         now: () => NOW,
       },
     );

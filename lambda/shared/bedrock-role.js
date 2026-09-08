@@ -108,24 +108,104 @@ export const composeRoleSessionName = (projectId) => {
 // grant gained a fourth statement (`project/default`), and a copy would have 401'd
 // every Codex call.
 //
-// An ABSENT value applies no ceiling rather than refusing to mint. That matches
-// roleArnMatchesAllowlist's treatment of an empty allowlist — a missing configuration
-// means "unknown", not "deny everything" — and the alternative would fail every stage
-// during a partial deploy for the sake of a defence-in-depth control whose primary is
-// the role's own policy.
+// STS accepts an omitted Policy and then grants the role's full permissions. The
+// ceiling is therefore mandatory: deployment skew or invalid configuration must stop
+// here, before AssumeRole, rather than silently widening a stage credential.
+export const ROLE_SESSION_POLICY_MAX_CHARACTERS = 2048;
+const POLICY_KEYS = new Set(['Version', 'Statement', 'Id']);
+const STATEMENT_KEYS = new Set(['Sid', 'Effect', 'Action', 'Resource', 'Condition']);
+const ALLOWED_ALLOW_ACTIONS = new Set([
+  'bedrock:invokemodel',
+  'bedrock:invokemodelwithresponsestream',
+  // Retained until the legacy Mantle permission is removed from the generated policy.
+  'bedrock-mantle:createinference',
+]);
+const BEDROCK_RESOURCE_ARN_PATTERN = /^arn:[^:]+:(?:bedrock|bedrock-mantle):/;
+
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const hasOnlyKeys = (value, allowed) => Object.keys(value).every((key) => allowed.has(key));
+const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
+const asStringList = (value) => (Array.isArray(value) ? value : [value]);
+const isStringList = (value) => {
+  const list = asStringList(value);
+  return list.length > 0 && list.every(isNonEmptyString);
+};
+const isConditionScalar = (value) =>
+  isNonEmptyString(value) ||
+  typeof value === 'boolean' ||
+  (typeof value === 'number' && Number.isFinite(value));
+
+const isValidCondition = (condition) =>
+  isObject(condition) &&
+  Object.keys(condition).length > 0 &&
+  Object.entries(condition).every(
+    ([operator, clauses]) =>
+      isNonEmptyString(operator) &&
+      isObject(clauses) &&
+      Object.keys(clauses).length > 0 &&
+      Object.entries(clauses).every(
+        ([key, value]) =>
+          isNonEmptyString(key) &&
+          (isConditionScalar(value) ||
+            (Array.isArray(value) && value.length > 0 && value.every(isConditionScalar))),
+      ),
+  );
+
+const isValidAllowAction = (action) => ALLOWED_ALLOW_ACTIONS.has(action.trim().toLowerCase());
+const isValidAllowResource = (resource) => {
+  const value = resource.trim();
+  return value === '*' || BEDROCK_RESOURCE_ARN_PATTERN.test(value);
+};
+
+const isValidStatement = (statement) => {
+  if (!isObject(statement) || !hasOnlyKeys(statement, STATEMENT_KEYS)) return false;
+  if (statement.Sid !== undefined && !isNonEmptyString(statement.Sid)) return false;
+  if (statement.Effect !== 'Allow' && statement.Effect !== 'Deny') return false;
+  if (!isStringList(statement.Action) || !isStringList(statement.Resource)) return false;
+  if (statement.Condition !== undefined && !isValidCondition(statement.Condition)) return false;
+
+  // Deny statements can only narrow the session. Every Allow must remain within the
+  // Bedrock inference surface, even if a deployment accidentally renders a wider
+  // policy while the target role happens to grant the same wider permissions.
+  return (
+    statement.Effect !== 'Allow' ||
+    (asStringList(statement.Action).every(isValidAllowAction) &&
+      asStringList(statement.Resource).every(isValidAllowResource))
+  );
+};
+
+const invalidSessionPolicy = () =>
+  roleError(BEDROCK_ROLE_ERROR_CODES.RESOLUTION_FAILED, 'Role session policy ceiling is invalid');
+
 export const readSessionPolicy = (value) => {
-  const raw = String(value || '').trim();
-  if (!raw) return null;
-  try {
-    // Parsed rather than passed through, so a malformed value is inert instead of
-    // failing every AssumeRole with a ValidationError.
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    if (!Array.isArray(parsed.Statement) || parsed.Statement.length === 0) return null;
-    return JSON.stringify(parsed);
-  } catch {
-    return null;
+  if (typeof value !== 'string') throw invalidSessionPolicy();
+  const raw = value.trim();
+  if (!raw || raw.length > ROLE_SESSION_POLICY_MAX_CHARACTERS) {
+    throw invalidSessionPolicy();
   }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw invalidSessionPolicy();
+  }
+
+  if (
+    !isObject(parsed) ||
+    !hasOnlyKeys(parsed, POLICY_KEYS) ||
+    parsed.Version !== '2012-10-17' ||
+    (parsed.Id !== undefined && !isNonEmptyString(parsed.Id)) ||
+    !Array.isArray(parsed.Statement) ||
+    parsed.Statement.length === 0 ||
+    !parsed.Statement.every(isValidStatement)
+  ) {
+    throw invalidSessionPolicy();
+  }
+
+  const policy = JSON.stringify(parsed);
+  if (policy.length > ROLE_SESSION_POLICY_MAX_CHARACTERS) throw invalidSessionPolicy();
+  return policy;
 };
 
 export const assumeBedrockRole = async (
@@ -145,7 +225,7 @@ export const assumeBedrockRole = async (
         // customer's trust policy, so passing any would fail closed on every
         // role that omits it. Attribution is RoleSessionName only.
         ...(externalId ? { ExternalId: externalId } : {}),
-        ...(Policy ? { Policy } : {}),
+        Policy,
       }),
     );
   } catch (error) {
@@ -280,6 +360,22 @@ export const preflightBedrockRoleBinding = async (
   // A platform binding has no single space, so it probes with PREFLIGHT_SESSION_NAME.
   const sessionName = projectId ? composeRoleSessionName(projectId) : PREFLIGHT_SESSION_NAME;
   const crossAccount = bedrockRoleIsCrossAccount({ roleArn, platformAccountId });
+  // Validate the mandatory ceiling before every other preflight branch. In
+  // particular, an out-of-allowlist role must not let a broken deployment
+  // configuration look healthy merely because that branch needs no STS call.
+  // The preflight exposes only its stable unavailable classification; the
+  // policy parser's text never leaves this broker boundary.
+  let validatedSessionPolicy;
+  try {
+    validatedSessionPolicy = readSessionPolicy(sessionPolicy);
+  } catch {
+    return {
+      ok: false,
+      cause: BEDROCK_PREFLIGHT_CAUSES.UNAVAILABLE,
+      sessionName,
+      candidates: [],
+    };
+  }
   if (!roleArnMatchesAllowlist(roleArn, assumableRoleArns)) {
     return {
       ok: false,
@@ -294,7 +390,10 @@ export const preflightBedrockRoleBinding = async (
     };
   }
   try {
-    await assumeBedrockRole({ roleArn, externalId, sessionName, sessionPolicy }, stsClient);
+    await assumeBedrockRole(
+      { roleArn, externalId, sessionName, sessionPolicy: validatedSessionPolicy },
+      stsClient,
+    );
     return { ok: true, cause: BEDROCK_PREFLIGHT_CAUSES.OK, sessionName };
   } catch (error) {
     if (error?.code === BEDROCK_ROLE_ERROR_CODES.ASSUME_THROTTLED) {

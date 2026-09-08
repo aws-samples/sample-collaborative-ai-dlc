@@ -281,7 +281,7 @@ variable "bedrock_assumable_role_arns" {
 }
 
 variable "bedrock_role_session_policy_json" {
-  description = "Session policy the broker attaches to every Bedrock AssumeRole, rendered from the same definition as the customer grant. Empty disables the ceiling."
+  description = "Mandatory session-policy ceiling attached to every Bedrock AssumeRole, rendered from the same definition as the customer grant. Missing, empty, or invalid values make role resolution fail closed before STS."
   type        = string
   default     = ""
 }

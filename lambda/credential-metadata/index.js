@@ -65,10 +65,11 @@ export const inspectAgentCredentialMetadata = async (
           assumableRoleArns: parseAssumableRoleArns(env.BEDROCK_ASSUMABLE_ROLE_ARNS),
           brokerRoleArn: env.CREDENTIAL_BROKER_ROLE_ARN || null,
           platformAccountId: env.PLATFORM_ACCOUNT_ID || null,
-          // Same ceiling as the resolution path, so the preflight keeps exercising the
-          // call it predicts. Inert for the verdict: a session policy narrows the
-          // resulting session, it does not decide whether AssumeRole is authorized.
-          sessionPolicy: env.BEDROCK_SESSION_POLICY || null,
+          // Pass the raw value across this boundary. The shared preflight helper
+          // validates the mandatory ceiling and converts configuration failures
+          // into an available negative verdict, so save-time callers fail closed
+          // instead of mistaking a thrown parser error for a broker outage.
+          sessionPolicy: env.BEDROCK_SESSION_POLICY,
         },
         stsClient,
       );

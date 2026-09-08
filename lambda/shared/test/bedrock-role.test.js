@@ -3,6 +3,7 @@ import { mockClient } from 'aws-sdk-client-mock';
 import { AssumeRoleCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   BEDROCK_PREFLIGHT_CAUSES,
+  BEDROCK_ROLE_ERROR_CODES,
   PREFLIGHT_SESSION_NAME,
   ROLE_SESSION_DURATION_SECONDS,
   assumeBedrockRole,
@@ -20,6 +21,10 @@ import {
 const ROLE_ARN = 'arn:aws:iam::444455556666:role/aidlc-bedrock-inference';
 const BROKER_ARN = 'arn:aws:iam::111122223333:role/collab-credential-broker-dev';
 const ALLOWLIST = ['arn:aws:iam::*:role/aidlc-bedrock-*'];
+const CEILING = JSON.stringify({
+  Version: '2012-10-17',
+  Statement: [{ Effect: 'Allow', Action: ['bedrock:InvokeModel'], Resource: '*' }],
+});
 
 const denied = () => Object.assign(new Error('denied'), { name: 'AccessDenied' });
 const throttled = () => Object.assign(new Error('slow'), { name: 'ThrottlingException' });
@@ -42,7 +47,13 @@ describe('bedrock role binding preflight', () => {
     });
 
     const verdict = await preflightBedrockRoleBinding(
-      { roleArn: ROLE_ARN, externalId: 'ext', projectId: 'p-1', assumableRoleArns: ALLOWLIST },
+      {
+        roleArn: ROLE_ARN,
+        externalId: 'ext',
+        projectId: 'p-1',
+        assumableRoleArns: ALLOWLIST,
+        sessionPolicy: CEILING,
+      },
       sts,
     );
 
@@ -67,7 +78,7 @@ describe('bedrock role binding preflight', () => {
     });
 
     const verdict = await preflightBedrockRoleBinding(
-      { roleArn: ROLE_ARN, projectId: 'p-1', assumableRoleArns: ALLOWLIST },
+      { roleArn: ROLE_ARN, projectId: 'p-1', assumableRoleArns: ALLOWLIST, sessionPolicy: CEILING },
       sts,
     );
 
@@ -82,6 +93,7 @@ describe('bedrock role binding preflight', () => {
         roleArn: 'arn:aws:iam::444455556666:role/some-other-role',
         projectId: 'p-1',
         assumableRoleArns: ALLOWLIST,
+        sessionPolicy: CEILING,
       },
       sts,
     );
@@ -109,6 +121,7 @@ describe('bedrock role binding preflight', () => {
         externalId: 'ext',
         projectId: 'p-1',
         assumableRoleArns: ALLOWLIST,
+        sessionPolicy: CEILING,
         brokerRoleArn: BROKER_ARN,
         platformAccountId: '111122223333',
       },
@@ -139,6 +152,7 @@ describe('bedrock role binding preflight', () => {
         roleArn: ROLE_ARN,
         projectId: 'p-1',
         assumableRoleArns: ALLOWLIST,
+        sessionPolicy: CEILING,
         platformAccountId: '111122223333',
       },
       sts,
@@ -156,7 +170,7 @@ describe('bedrock role binding preflight', () => {
     // re-derive it: the opposite answer would tell the operator to REMOVE the
     // sts:ExternalId condition the write path had just generated a value for.
     const verdict = await preflightBedrockRoleBinding(
-      { roleArn: ROLE_ARN, projectId: 'p-1', assumableRoleArns: ALLOWLIST },
+      { roleArn: ROLE_ARN, projectId: 'p-1', assumableRoleArns: ALLOWLIST, sessionPolicy: CEILING },
       sts,
     );
 
@@ -170,7 +184,7 @@ describe('bedrock role binding preflight', () => {
   it('distinguishes throttling from a rejection, since it is not a binding fault', async () => {
     sts.on(AssumeRoleCommand).rejects(throttled());
     const verdict = await preflightBedrockRoleBinding(
-      { roleArn: ROLE_ARN, projectId: 'p-1', assumableRoleArns: ALLOWLIST },
+      { roleArn: ROLE_ARN, projectId: 'p-1', assumableRoleArns: ALLOWLIST, sessionPolicy: CEILING },
       sts,
     );
     expect(verdict.cause).toBe(BEDROCK_PREFLIGHT_CAUSES.THROTTLED);
@@ -183,7 +197,7 @@ describe('bedrock role binding preflight', () => {
     // and a StringEquals condition for one space SHOULD fail here, because such a
     // role cannot serve as a platform binding.
     const verdict = await preflightBedrockRoleBinding(
-      { roleArn: ROLE_ARN, assumableRoleArns: ALLOWLIST },
+      { roleArn: ROLE_ARN, assumableRoleArns: ALLOWLIST, sessionPolicy: CEILING },
       sts,
     );
     expect(verdict.sessionName).toBe(PREFLIGHT_SESSION_NAME);
@@ -246,10 +260,6 @@ describe('assumable-role allowlist matching', () => {
 // eu.anthropic.claude-sonnet-5 still invoked. These tests pin the plumbing that live
 // result depends on.
 describe('Bedrock session-policy ceiling', () => {
-  const CEILING = JSON.stringify({
-    Version: '2012-10-17',
-    Statement: [{ Effect: 'Allow', Action: ['bedrock:InvokeModel'], Resource: '*' }],
-  });
   const credentials = {
     AccessKeyId: 'AKIA',
     SecretAccessKey: 'secret',
@@ -280,10 +290,8 @@ describe('Bedrock session-policy ceiling', () => {
     expect(JSON.parse(policySent())).toEqual(JSON.parse(CEILING));
   });
 
-  // A missing ceiling applies none rather than refusing to mint. Same reasoning as an
-  // empty assumable-role allowlist: a missing configuration means "unknown", not "deny
-  // everything". Refusing would fail every stage during a partial deploy for the sake of
-  // a defence-in-depth control whose primary is the role's own policy.
+  // STS treats an omitted Policy as the full role policy, so invalid configuration must
+  // stop before the SDK is called rather than silently minting unrestricted credentials.
   it.each([
     ['absent', undefined],
     ['empty', ''],
@@ -292,13 +300,44 @@ describe('Bedrock session-policy ceiling', () => {
     ['an array', '[]'],
     ['missing Statement', '{"Version":"2012-10-17"}'],
     ['an empty Statement list', '{"Version":"2012-10-17","Statement":[]}'],
-  ])('sends no Policy when the ceiling is %s, rather than failing the mint', async (_l, value) => {
-    await assumeBedrockRole(
-      { roleArn: ROLE_ARN, projectId: 'p-1', sessionPolicy: value },
-      new STSClient({}),
-    );
-    expect(policySent()).toBeUndefined();
-    expect(sts.commandCalls(AssumeRoleCommand)).toHaveLength(1);
+    [
+      'an allow statement with a disallowed action',
+      JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 's3:ListAllMyBuckets', Resource: '*' }],
+      }),
+    ],
+    [
+      'an allow statement with a wildcard action',
+      JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 'bedrock:*', Resource: '*' }],
+      }),
+    ],
+    [
+      'an allow statement with a non-Bedrock resource',
+      JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'bedrock:InvokeModel',
+            Resource: 'arn:aws:s3:::customer-data',
+          },
+        ],
+      }),
+    ],
+  ])('rejects when the ceiling is %s without calling STS', async (_label, value) => {
+    await expect(
+      assumeBedrockRole(
+        { roleArn: ROLE_ARN, projectId: 'p-1', sessionPolicy: value },
+        new STSClient({}),
+      ),
+    ).rejects.toMatchObject({
+      code: BEDROCK_ROLE_ERROR_CODES.RESOLUTION_FAILED,
+      message: 'Role session policy ceiling is invalid',
+    });
+    expect(sts.commandCalls(AssumeRoleCommand)).toHaveLength(0);
   });
 
   it('normalises the ceiling rather than forwarding raw text', () => {

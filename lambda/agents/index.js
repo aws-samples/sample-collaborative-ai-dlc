@@ -136,11 +136,12 @@ const prepareBedrockWrite = async ({ base, source, projectId = null, update }) =
 // else null.
 //
 // It is an INPUT CHECK, NOT A SECURITY CONTROL — a trust policy can change the
-// instant after it passes, which is why resolution re-checks on every stage. That
-// is also why a preflight that could not RUN (`available: false`) does not block
-// the save: refusing a legitimate binding because the checker is down would be
+// instant after it passes, which is why resolution re-checks on every stage. A
+// preflight transport failure (`available: false`) does not block the save:
+// refusing a legitimate binding because the checker is unreachable would be
 // worse than persisting one whose failure is already legible as
-// credential_resolution_failed.
+// credential_resolution_failed. An available negative verdict always blocks,
+// including `cause: unavailable` when the broker rejects its mandatory ceiling.
 const rejectBedrockBindingOnPreflight = async ({ prepared, projectId = null }) => {
   if (!prepared?.roleArn) return null;
   const preflight = await preflightBedrockRoleBindingViaBroker({

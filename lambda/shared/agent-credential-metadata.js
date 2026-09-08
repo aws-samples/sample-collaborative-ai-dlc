@@ -1,4 +1,5 @@
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { BEDROCK_PREFLIGHT_CAUSES } from './bedrock-role.js';
 import { parseLambdaPayload } from './lambda-payload.js';
 import {
   AGENT_CREDENTIAL_METADATA_ACTIONS,
@@ -165,15 +166,43 @@ export const preflightBedrockRoleBindingViaBroker = async (request, deps) => {
       deps,
     );
   } catch {
-    return { ok: false, cause: 'unavailable', candidates: [], available: false };
+    return {
+      ok: false,
+      cause: BEDROCK_PREFLIGHT_CAUSES.UNAVAILABLE,
+      candidates: [],
+      available: false,
+    };
   }
   const preflight = result?.preflight;
   if (!preflight || typeof preflight !== 'object' || Array.isArray(preflight)) {
-    return { ok: false, cause: 'unavailable', candidates: [], available: false };
+    return {
+      ok: false,
+      cause: BEDROCK_PREFLIGHT_CAUSES.UNAVAILABLE,
+      candidates: [],
+      available: false,
+    };
+  }
+  const cause = preflight.cause;
+  const ok = preflight.ok === true;
+  const stableCause = Object.values(BEDROCK_PREFLIGHT_CAUSES).includes(cause);
+  // A mixed-version, malformed or compromised broker response must not create a
+  // new public classification or smuggle provider text through `cause`. Treat
+  // contradictory pairs as unavailable too: `ok` is valid only with cause `ok`.
+  if (
+    !stableCause ||
+    (ok && cause !== BEDROCK_PREFLIGHT_CAUSES.OK) ||
+    (!ok && cause === BEDROCK_PREFLIGHT_CAUSES.OK)
+  ) {
+    return {
+      ok: false,
+      cause: BEDROCK_PREFLIGHT_CAUSES.UNAVAILABLE,
+      candidates: [],
+      available: false,
+    };
   }
   return {
-    ok: preflight.ok === true,
-    cause: typeof preflight.cause === 'string' ? preflight.cause : 'unavailable',
+    ok,
+    cause,
     sessionName: typeof preflight.sessionName === 'string' ? preflight.sessionName : null,
     candidates: Array.isArray(preflight.candidates) ? preflight.candidates : [],
     available: true,
