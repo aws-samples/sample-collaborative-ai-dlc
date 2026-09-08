@@ -116,6 +116,24 @@ const isIntegratedUnitPr = (row) => row?.state === 'MERGED' || row?.state === 'P
 export const laneSessionIdFor = (intentId, sectionIndex, slug) =>
   `aidlc-intent-${intentId}-s${sectionIndex}-${slug}`.padEnd(33, '0');
 
+export const feedbackChangedFileReport = (result = {}) => {
+  // Explicit provenance is authoritative. Older stage results may only carry
+  // changedFiles; preserve those as known provenance without allowing an
+  // explicit unknown state to collapse back to a file list.
+  const changedFileProvenance = normalizeChangedFileProvenance(
+    result.changedFileProvenance ??
+      (Array.isArray(result.changedFiles)
+        ? { state: 'known', files: result.changedFiles }
+        : undefined),
+  );
+  const changedFiles = changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
+  const changedFilesSummary =
+    changedFileProvenance.state === 'known'
+      ? changedFiles.join(', ') || 'none'
+      : `unknown (${changedFileProvenance.reason})`;
+  return { changedFileProvenance, changedFiles, changedFilesSummary };
+};
+
 // ── engine gates ─────────────────────────────────────────────────────────────
 // An approval gate the ENGINE opens (skeleton / ladder / batch / halt / the
 // per-stage validation gate in index.js) — same HUMAN# row + callback
@@ -1022,13 +1040,8 @@ export const runParallelSection = async (segment, toolkit) => {
       }
 
       const result = revision.result ?? {};
-      const changedFileProvenance = normalizeChangedFileProvenance(result.changedFileProvenance);
-      const changedFiles =
-        changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
-      const changedFilesSummary =
-        changedFileProvenance.state === 'known'
-          ? changedFiles.join(', ') || 'none'
-          : `unknown (${changedFileProvenance.reason})`;
+      const { changedFileProvenance, changedFiles, changedFilesSummary } =
+        feedbackChangedFileReport(result);
       const refs = (next.comments ?? [])
         .map((comment) => `${comment.repository}#${comment.prNumber}:${comment.id}`)
         .join(', ');
