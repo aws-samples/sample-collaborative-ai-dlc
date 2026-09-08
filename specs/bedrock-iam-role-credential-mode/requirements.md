@@ -9,15 +9,15 @@ baseCommit: 8e67ac5
 
 Rationale and alternatives live in [ADR-0001](../../adr/0001-bedrock-iam-role-credential-mode.md). This document is the requirements portion of the implementable contract; the design and tasks live beside it. Every `file:line` citation is valid at pure upstream `8e67ac5`.
 
-> **This spec supersedes ADR-0001 §2 (the refresh sentences), §3 and §5–6 on v1 scope.** The ADR describes a v1 that includes a refresh-scoped grant, a broker refresh action and a credential-helper binary. Measured stage durations and the constraint to change as little as possible removed all of that from v1. Where the two disagree, this spec governs; the ADR remains the record of why the alternatives were considered.
+> **This spec and ADR-0001 describe the same final refresh contract.** Role mode includes a bounded refresh grant, a broker refresh action, and a token-protected loopback container-credentials endpoint so one stage can outlive multiple STS sessions. Static per-stage credential delivery and automatic whole-stage retry are rejected alternatives, not shipped behavior.
 
 ## Scope
 
 Add an **IAM role mode** to the existing `bedrock` credential provider without adding a new scope (`lambda/shared/agent-credentials.js`). Kiro and Bedrock bearer keys retain `user → space → platform` precedence when no Bedrock role applies. For Bedrock, the nearest supported role (`space → platform`) is authoritative for the effective space: a space role overrides a platform role, and either role makes covered personal and space bearer keys inactive without deleting them.
 
-**In scope:** role-mode credential resolution for Claude Code and OpenCode; broker-side `AssumeRole`; same-account and cross-account; per-invocation credential delivery; deprecating the bearer path; correcting the "configured" semantics; the capabilities fix; the grant shape for both endpoint families.
+**In scope:** role-mode credential resolution for Claude Code, OpenCode, and supported Codex versions; broker-side `AssumeRole`; same-account and cross-account; bounded mid-stage credential refresh; fresh credentials after a gate or user-answer wait; per-invocation credential delivery; deprecating the bearer path; correcting the "configured" semantics; the capabilities fix; the grant shape for Bedrock Runtime APIs.
 
-**Out of scope, deliberately:** any refresh mechanism (no refresh grant, no broker _refresh_ action, no credential-helper binary, no redemption counter); **role bindings at user scope** (`dec-user-scope-role-deferred`); cost-allocation-tag activation; AWS Budgets; per-space role minting; per-space model allowlists; a CUR export; an in-product billed-cost view; `AssumeRoleWithWebIdentity`; enabling model invocation logging; and Codex end-to-end (`con-codex-mantle`, `con-codex-model-missing`).
+**Out of scope, deliberately:** a fixed redemption counter that could exhaust before the eight-hour stage deadline; **role bindings at user scope** (`dec-user-scope-role-deferred`); cost-allocation-tag activation; AWS Budgets; per-space role minting; per-space model allowlists; a CUR export; an in-product billed-cost view; `AssumeRoleWithWebIdentity`; enabling model invocation logging; and compatibility with Codex's legacy `amazon-bedrock`/Mantle provider.
 
 A **control-plane-only** broker action for the bind-time preflight is in scope and is not a refresh action: it is unreachable from a container, mints nothing that leaves the control plane, and extends the existing `event.action` dispatch (`con-broker-action-dispatch`).
 
@@ -88,10 +88,10 @@ requirements:
     category: non-functional
     priority: must-have
     description: >-
-      Per con-mmds-chain-live the container credential chain reaches the execution role and is
-      deliberately forwarded to the reserved MCP child, so it cannot be removed. Fail-closed
-      therefore rests entirely on that role's policy holding nothing useful, which must be pinned by
-      a test rather than assumed.
+      Per con-mmds-chain-live the AgentCore execution-role identity reaches the trusted MCP bridge,
+      while selected Bedrock credentials and the invocation-specific full URI/token are scrubbed from
+      every MCP child. Fail-closed inference therefore rests on the execution-role policy holding
+      nothing useful, which must be pinned by a test rather than assumed.
     acceptance_criteria:
       - THE SYSTEM SHALL keep the execution role policy free of any bedrock, bedrock-mantle and sts action
       - THE SYSTEM SHALL include a test that asserts the absence of those actions so a future change cannot reintroduce them
@@ -99,21 +99,21 @@ requirements:
       - THE SYSTEM SHALL include a negative test proving the reserved MCP child cannot invoke Bedrock when resolution returned nothing
       - THE SYSTEM SHALL NOT claim in spec text that the credential chain is absent, only that the policy makes it inert
   - id: req-credential-delivery-env
-    title: Credentials reach each CLI as three environment variables, per invocation
+    title: Refreshable role credentials reach only the selected top-level CLI
     category: functional
     priority: must-have
     description: >-
-      No helper binary, no credential_process, no awsCredentialExport, no local credential endpoint.
-      Per con-cli-env-creds this is verified sufficient for Claude Code and OpenCode at the
-      con-pinned-versions builds, and per con-auth-context-seam the resolved context already reaches a
-      detached stage job, so no plumbing change is needed for a stage that outlives its invocation.
+      The selected top-level CLI uses the AWS SDK container-credentials provider against a
+      token-protected loopback endpoint. Static STS values obtained while resolving the binding are
+      discarded before the CLI starts. The endpoint remains valid only for the active stage invocation.
     acceptance_criteria:
-      - WHEN the broker returns a role result THEN auth-resolver SHALL set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN
-      - THE SYSTEM SHALL write the three variables only into the per-invocation environment clone, never into process.env
-      - THE SYSTEM SHALL make all three members of AGENT_CREDENTIAL_ENV_NAMES so cleanBaseEnv scrubs them from the base environment every invocation
-      - THE SYSTEM SHALL have each of the three envForAuth blocks forward them when no bearer token is present
-      - THE SYSTEM SHALL make a resolved binding either bearer or role and never both per con-one-binding-per-provider, so no driver-level precedence rule is needed
-      - THE SYSTEM SHALL install nothing into the agent image for this feature
+      - WHEN the broker resolves a role result THEN auth-resolver SHALL use it only to establish the credential kind and SHALL remove AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN before starting the CLI
+      - THE SYSTEM SHALL pass AWS_CONTAINER_CREDENTIALS_FULL_URI and AWS_CONTAINER_AUTHORIZATION_TOKEN only to the selected top-level CLI
+      - THE SYSTEM SHALL bind the endpoint to loopback and require the invocation-scoped authorization token on every request
+      - THE SYSTEM SHALL have each refresh request redeem a bounded refresh grant through the credential broker and return the standard container-credential response shape with no-store caching headers
+      - THE SYSTEM SHALL pass neither static Bedrock credentials nor refresh endpoint authority to reserved or custom MCP children
+      - THE SYSTEM SHALL make a resolved binding either bearer or role and never both per con-one-binding-per-provider
+      - THE SYSTEM SHALL install no helper binary into the agent image
   - id: req-broker-credential-resolution
     title: The broker returns an explicitly discriminated result
     category: functional
@@ -130,21 +130,20 @@ requirements:
       - WHEN resolution fails THEN the system SHALL return one of BEDROCK_ROLE_BINDING_INVALID, BEDROCK_ROLE_ASSUME_DENIED, BEDROCK_ROLE_ASSUME_THROTTLED or BEDROCK_ROLE_RESOLUTION_FAILED, added to the existing allowlist
       - THE SYSTEM SHALL log or return no STS or provider error text, only the allowlisted code
   - id: req-grant-model-unchanged
-    title: The agent credential grant module is not modified
+    title: Invocation and refresh grants remain audience-separated
     category: constraint
     priority: must-have
     description: >-
-      v1 adds no purpose, no claim field, no TTL change and no second redemption path. Verified
-      possible because the grant authorizes which binding path may be read, while bearer-versus-role
-      is a property of the value the broker reads downstream of the grant. The control-plane preflight
-      action is outside the grant model entirely, since it is not container-reachable.
+      The existing 300-second, one-shot invocation grant still authorizes initial binding resolution.
+      A separate refresh grant authorizes only repeated role refresh for one active stage and cannot
+      be presented to the invocation path or redeemed for a bearer secret.
     acceptance_criteria:
-      - THE SYSTEM SHALL leave agent-credential-grants.js unchanged
-      - THE SYSTEM SHALL keep AGENT_CREDENTIAL_GRANT_TTL_SECONDS at 300 for every purpose, per con-grant-ttl-300
-      - THE SYSTEM SHALL have no binding carry a mode field, so normalizeCredentialBinding needs no change
-      - THE SYSTEM SHALL still delete the grant from the handler payload before the handler runs, preserving con-grant-destroyed
-      - THE SYSTEM SHALL introduce no new grant purpose, and the preflight action SHALL require no grant because it is reachable only from the control plane
-      - WHEN broker resolution runs including the STS round trip on a cold start THEN it SHALL complete inside the 300s grant window, and a grant that expires first SHALL surface as a typed resolution failure
+      - THE SYSTEM SHALL keep AGENT_CREDENTIAL_GRANT_TTL_SECONDS at 300 for the existing invocation grant, per con-grant-ttl-300
+      - THE SYSTEM SHALL give refresh grants a distinct audience and bind them to project, execution, stage instance, callback, effective binding, and kind role
+      - THE SYSTEM SHALL cap a refresh grant at the stage callback deadline and SHALL reject it after the execution stops being active
+      - THE SYSTEM SHALL reject a refresh grant on the invocation path and SHALL reject an invocation grant on the refresh path
+      - THE SYSTEM SHALL delete both grants from the handler payload before command execution, preserving con-grant-destroyed
+      - THE SYSTEM SHALL use no fixed redemption count that can expire before a valid eight-hour stage ends
   - id: req-model-grant-families
     title: The grant is provider-family scoped and covers both endpoint families
     category: functional
@@ -176,12 +175,13 @@ requirements:
       - THE SYSTEM SHALL surface the Bedrock role ARN of a binding only on a read path gated to a principal that may modify that binding, since it is non-secret but tenant-identifying and no lower-privilege surface needs it
       - THE SYSTEM SHALL document the bootstrap order as generate the external ID, surface it to the operator, operator writes the trust policy, save the binding, preflight
   - id: req-external-id-lifecycle
-    title: The external ID is platform-generated, non-secret, and readable by an authorized operator
+    title: The external ID is platform-generated, non-secret, stable, and readable by an authorized operator
     category: non-functional
     priority: must-have
     description: >-
-      Properties were previously asserted without saying who generates the value, when, or how
-      rotation works. Rotation is a coordinated two-party change with a failure window.
+      The release generates one value per supported binding scope and preserves it across rejected and
+      successful saves, including role-ARN changes at that scope. Ordinary saves are idempotent and do
+      not provide an in-place rotation operation.
 
       AWS is explicit that the platform must generate this value and that it is not a secret: "it must
       be generated by Example Corp and not their customers to ensure each external ID is unique", and
@@ -193,18 +193,21 @@ requirements:
       names the broker role as its only principal, so the pair of role ARN and external ID is useless
       to any caller that is not the broker. An earlier revision of this requirement said the value is
       never returned to a client, which contradicted the bootstrap order in req-same-and-cross-account
-      -- an operator cannot write sts:ExternalId into a trust policy without seeing it. The
-      contradiction is resolved in favour of readability, because withholding the value buys no
-      confidentiality that AWS claims for it while making bootstrap, rotation and recovery each
-      require a rotation with the interim failure window below.
+      -- an operator cannot write sts:ExternalId into a trust policy without seeing it. Readability
+      makes bootstrap and recovery plain reads instead of forcing destructive space recreation. A
+      future in-place replacement requires an explicit administrator-gated operation; it must not be
+      implied by re-saving a binding.
     acceptance_criteria:
-      - THE SYSTEM SHALL generate the external ID from a CSPRNG with at least 128 bits of entropy, unique per binding of a space to a role
+      - THE SYSTEM SHALL generate the external ID from a CSPRNG with at least 128 bits of entropy, unique per supported binding scope
+      - THE SYSTEM SHALL preserve the generated external ID across rejected and successful saves and across role-ARN changes at the same scope
       - THE SYSTEM SHALL NOT accept a client-supplied external ID, because AWS requires the value to be controlled by the assuming party rather than the account owner
       - THE SYSTEM SHALL store it SecureString and SHALL return it only to a principal already authorized to modify that binding, idempotently on every such read rather than once at generation
       - THE SYSTEM SHALL report it only as set or not set on any read path reachable by a principal that cannot modify the binding, including the unauthenticated-scope agent settings read
       - THE SYSTEM SHALL keep it out of every log line, audit record and error message
       - THE SYSTEM SHALL NOT generate an external ID for a same-account binding by default, since dec-external-id-scope makes it unnecessary there and an unused stored value invites confusion
-      - THE SYSTEM SHALL document rotation as generate, operator updates the trust policy, save, preflight, with the interim AssumeRole failure window stated
+      - THE SYSTEM SHALL document that ordinary saves do not rotate the value and that this release has no in-place rotation operation
+      - THE SYSTEM SHALL document deletion and recreation of the entire space as the only supported current lifecycle that replaces a space external ID, including that it deletes all space-scoped agent credentials and creates an AssumeRole failure window
+      - THE SYSTEM SHALL document that platform-scope replacement requires a future explicit platform-admin-gated operation and that direct SSM mutation is unsupported
   - id: req-session-name-attribution
     title: Attribution is RoleSessionName only, composed in one server-side place
     category: functional
@@ -264,37 +267,35 @@ requirements:
       - THE SYSTEM SHALL leave Kiro unaffected, so a missing KIRO_API_KEY still reports unavailable
       - THE SYSTEM SHALL derive the answer from the resolved binding on the control plane, not from a marker variable in the container
   - id: req-expiry-failure-legible
-    title: Credential expiry is a distinct, automatically retried stage failure
+    title: Role credentials refresh in place and stage resume starts clean
     category: functional
     priority: must-have
     description: >-
-      There is no refresh mechanism in v1. Measured p99 stage duration is 20 minutes against a
-      3600s credential, and the orchestrator already reconciles and retries failed stage attempts
-      through the structured path of con-stage-reason-structured. Note con-stage-8h, one attempt may
-      legitimately run 8 hours, so a long stage is not itself evidence of a fault.
+      Role chaining caps one STS session at 3600 seconds while con-stage-8h permits one stage attempt
+      to run for eight hours. The SDK-standard loopback provider therefore replaces credentials
+      inside the active CLI process. Waiting at a gate persists no temporary credential material;
+      the next stage resolves the binding again under newly issued refresh authority.
     acceptance_criteria:
-      - WHEN a credential expires THEN the system SHALL terminate the stage with reason credential_expired
-      - WHEN a resolution fails THEN the system SHALL terminate the stage with reason credential_resolution_failed
-      - THE SYSTEM SHALL make both reasons distinguishable in logs from a dead container and from a genuine agent failure
-      - WHEN a stage retries THEN the system SHALL resolve credentials afresh through the normal invocation path
-      - THE SYSTEM SHALL read the retry budget from the existing durable stage-attempt configuration and not reinvent it
-      - WHEN the budget is exhausted THEN the system SHALL end the stage FAILED carrying the same reason, and that terminal transition SHALL be tested
-      - THE SYSTEM SHALL document that a retry re-runs the whole stage attempt, so work before the expiry is lost
+      - WHEN cached credentials approach or reach expiry during an active role-mode stage THEN the CLI SHALL obtain fresh credentials through the loopback endpoint without restarting the CLI or replaying the stage
+      - THE SYSTEM SHALL support repeated refreshes for the lifetime of one active stage without a fixed redemption counter
+      - WHEN refreshing THEN the broker SHALL revalidate the execution, project, stage, callback, current binding, role kind, and mandatory session-policy ceiling before AssumeRole
+      - WHEN the stage completes, fails, or is cancelled THEN the system SHALL revoke the endpoint token and scrub the refresh grant and credential material from memory
+      - WHILE an intent waits at a gate or for a user answer THEN durable state SHALL contain no STS credential, endpoint token, endpoint URL, or refresh grant
+      - WHEN execution resumes THEN the next stage SHALL receive a newly issued refresh grant, endpoint token, and role session
+      - WHEN refresh fails closed THEN the loopback endpoint SHALL return only a sanitized non-cacheable 503; if the CLI exits, the durable stage reason SHALL normally be cli_nonzero_exit, and the system SHALL NOT automatically replay the whole stage
   - id: req-expiry-tripwire
-    title: Credential expiry is counted, because it is the evidence that gates refresh
+    title: Credential-refresh failures remain observable at the correct boundary
     category: functional
     priority: must-have
     description: >-
-      Per con-stage-durations the no-refresh decision rests on a single outlier in a 27-day sample.
-      Per con-stage-reason-structured the reason is already a persisted, UI-visible field, so counting
-      the credential_expired reason measures the decision directly and costs almost nothing, which is
-      why this replaced an earlier proposal to count stage attempts over a duration threshold.
+      Routine STS expiry is handled inside the active stage and is not a stage failure. Initial
+      resolution failures remain structured and UI-visible. During an active stage, the broker keeps
+      its allowlisted code in broker logs while the loopback endpoint exposes only a sanitized 503;
+      if the CLI exits, stage reconciliation normally records cli_nonzero_exit.
     acceptance_criteria:
-      - THE SYSTEM SHALL make the credential_expired reason countable over a time window without a bespoke log query
-      - THE SYSTEM SHALL classify a stage failure that occurs after the resolved credential's own deadline as credential_expired, so the count does not depend on a CLI's stderr wording, which the platform does not control
-      - THE SYSTEM SHALL accept that this can over-attribute a failure that happened after the deadline for an unrelated reason, because a false positive prompts a review while a false negative hides the evidence the decision rests on
-      - THE SYSTEM SHALL document a non-zero count as the trigger to revisit dec-v1-no-refresh
-      - THE SYSTEM SHALL state the trigger in the runbook, so the decision is revisited on evidence rather than after an incident
+      - THE SYSTEM SHALL keep credential_expired and credential_resolution_failed countable for the initial or non-refresh paths that emit them and SHALL NOT describe them as active-refresh outcomes
+      - THE SYSTEM SHALL log an allowlisted broker code for endpoint authorization, grant validation, binding revalidation, and broker resolution failures without returning provider text or secrets to the CLI
+      - THE SYSTEM SHALL document how to correlate a loopback 503 or cli_nonzero_exit with the credential-broker log and SHALL NOT promise automatic whole-stage replay
       - THE SYSTEM SHALL introduce no new telemetry pipeline, metric namespace or duration histogram for this
   - id: req-credential-safety
     title: Only short-lived credentials exist, and they are never persisted or logged
@@ -306,7 +307,7 @@ requirements:
     acceptance_criteria:
       - THE SYSTEM SHALL make sts:AssumeRole the only credential source, creating no access key, service-specific credential or API key
       - THE SYSTEM SHALL keep neither the broker role nor any platform role holding iam:CreateAccessKey or iam:CreateServiceSpecificCredential
-      - THE SYSTEM SHALL keep credentials only in a per-invocation process environment
+      - THE SYSTEM SHALL keep STS credentials only in invocation-scoped broker/provider memory and the AWS SDK cache, never in durable state or a child-process environment
       - THE SYSTEM SHALL include a test asserting AWS_BEARER_TOKEN_BEDROCK is unset on the role path
       - THE SYSTEM SHALL leave no session token or secret access key in any log group after a full stage run
       - THE SYSTEM SHALL leave no credential material under /mnt/workspace after a role-mode stage, asserted for the per-stage CODEX_HOME and any written CLI config path
@@ -337,16 +338,17 @@ requirements:
       - THE SYSTEM SHALL have capabilities answer a binding-level question, so a key-based provider answers it the same way
       - THE SYSTEM SHALL add no additional hardcoded dependence on Bedrock to AGENT_CLI_PROVIDER
   - id: req-codex-scope
-    title: Codex is out of the verified set for v1
+    title: Supported Codex versions use the Bedrock Runtime OpenAI-compatible endpoint
     category: constraint
     priority: must-have
     description: >-
-      Codex has two pre-existing defects unrelated to this change. Its credential path is verified,
-      but it cannot complete a call in this region.
+      Codex >= 0.149.1, with 0.153.4 pinned, uses model_provider amazon-bedrock-runtime and a global
+      CRIS model id. The legacy amazon-bedrock provider targets Mantle and is not a supported fallback.
     acceptance_criteria:
-      - THE SYSTEM SHALL include the Bedrock Runtime project/default grant for supported Codex versions and SHALL include no bedrock-mantle action
-      - THE SYSTEM SHALL document Codex as unverified end-to-end, with both defects recorded separately
-      - THE SYSTEM SHALL have no acceptance criterion in this spec depend on a successful Codex invocation
+      - THE SYSTEM SHALL configure supported Codex versions with amazon-bedrock-runtime and SHALL pin a version at or above 0.149.1
+      - THE SYSTEM SHALL include the Bedrock Runtime project/default grant and SHALL include no bedrock-mantle action or resource
+      - THE SYSTEM SHALL support both IAM-role and bearer credentials through the Runtime provider without deriving a Codex-specific API key
+      - THE SYSTEM SHALL document that global.openai profiles may route prompts across commercial Regions and that enabling Codex is an administrator data-residency decision
       - THE SYSTEM SHALL pin the custom-server exclusion of con-custom-server-excluded by a test
   - id: req-binding-preflight
     title: A binding is validated when it is saved
@@ -388,6 +390,6 @@ Every requirement lands in exactly one phase, so the phasing is checkable rather
 | 1     | `req-role-credential-mode`, `req-single-parameter-encoding`, `req-broker-side-assume`, `req-broker-credential-resolution`, `req-credential-delivery-env`, `req-execution-role-no-bedrock`, `req-grant-model-unchanged`, `req-model-grant-families`, `req-session-name-attribution`, `req-session-name-trust-condition`, `req-least-privilege-assume`, `req-expiry-failure-legible`, `req-configured-semantics` (recomputation only) |
 | 2     | `req-same-and-cross-account`, `req-external-id-lifecycle`, `req-binding-preflight`, `req-configured-semantics` (new fields and UI), `req-bearer-deprecated`                                                                                                                                                                                                                                                                         |
 | 3     | `req-expiry-tripwire`, `req-resolution-resilience`, `req-credential-safety`, `req-codex-scope`, `req-litellm-seam`                                                                                                                                                                                                                                                                                                                  |
-| 4     | none — Phase 4 exists only if Phase 3 evidence reopens `dec-v1-no-refresh`                                                                                                                                                                                                                                                                                                                                                          |
+| 4     | refresh implementation for `req-credential-delivery-env`, `req-grant-model-unchanged`, `req-expiry-failure-legible`, and `req-expiry-tripwire`                                                                                                                                                                                                                                                                                      |
 
 Two placements are worth justifying. `req-credential-safety` sits in Phase 3 because its content is assertions and redaction tests over behaviour Phase 1 and 2 build; the _design_ constraints it encodes are satisfied from Phase 1 onward. `req-litellm-seam` is also Phase 3, because it is a "do not make this worse" constraint verified by review rather than a unit of work — nothing in Phases 0 to 2 may violate it, and Phase 3 is where that is confirmed.

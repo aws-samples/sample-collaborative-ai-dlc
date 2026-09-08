@@ -111,8 +111,11 @@ Save the key as the **Kiro API Key** at the intended personal, space, or platfor
 ### Amazon Bedrock credentials (required for Claude Code, OpenCode, and Codex setups)
 
 Bedrock access comes in one of two modes, configured per scope. **An IAM role is preferred**: the
-platform stores only a role ARN, a credential broker assumes it per invocation, and the agent
-receives credentials that expire within the hour. See
+platform stores only a role ARN, and the credential broker assumes it at stage start and on each
+refresh. The selected top-level CLI receives only an invocation-scoped loopback container-credentials
+URI and authorization token; its AWS SDK obtains and refreshes one-hour STS sessions through that
+provider. Static STS values are not injected into the CLI, and MCP children receive neither the
+provider URL/token nor Bedrock credentials. See
 [Bedrock credential modes](bedrock-credentials.md) for the setup, including the trust policy you
 need to write and the cross-account external-ID bootstrap.
 
@@ -145,7 +148,7 @@ All credentials are stored in **AWS Systems Manager Parameter Store** as `Secure
 
 The credential name is `bedrock-bearer-token` or `kiro-api-key`. An unset platform credential holds the literal value `placeholder`, which the platform treats as "not configured"; clearing a space or personal credential deletes that scoped parameter so resolution can fall through.
 
-The `bedrock-bearer-token` name is historical: in role mode that same parameter holds a JSON object such as `{"roleArn":"arn:aws:iam::111122223333:role/aidlc-bedrock-inference"}` rather than a token. Role mode also uses one non-secret `String` parameter per scope for the external ID, deliberately **outside** `agent-credentials/`:
+The `bedrock-bearer-token` name is historical: in role mode that same parameter holds a JSON object such as `{"roleArn":"arn:aws:iam::111122223333:role/aidlc-bedrock-inference"}` rather than a token. Role mode also uses one non-secret `SecureString` parameter per scope for the external ID (encrypted at rest but re-readable by an authorized operator), deliberately **outside** `agent-credentials/`:
 
 - Space: `/<project_name>/<environment>/projects/<project-id>/bedrock-external-id`
 - Platform: `/<project_name>/<environment>/bedrock-external-id`

@@ -8,7 +8,14 @@ This file keeps the **rationale** for each choice. The operator **procedure** is
 
 ## What you are configuring
 
-Instead of storing a long-lived Bedrock API key, the platform stores a **role ARN**. The credential broker assumes that role for each agent invocation and hands the resulting one-hour credentials to the CLI. You create the role; the platform never does, and cannot — the role may live in a different AWS account, and its trust policy is your authoritative control over who may assume it.
+Instead of storing a long-lived Bedrock API key, the platform stores a **role ARN**. At stage start
+and on every refresh, the credential broker assumes that role after revalidating the active stage,
+current binding, and mandatory session-policy ceiling. The selected top-level CLI receives only an
+invocation-scoped loopback container-credentials URI and authorization token; its AWS SDK obtains
+and refreshes one-hour STS sessions through that provider. Static STS values and refresh authority
+are withheld from MCP children. You create the role; the platform never does, and cannot — the role
+may live in a different AWS account, and its trust policy is your authoritative control over who may
+assume it.
 
 Two documents are needed on the role:
 
@@ -36,7 +43,7 @@ Follow this order. Saving the binding before the trust policy exists produces an
 4. **A different account:** save the binding once. The save is **rejected** because the trust policy cannot yet name an external ID nobody has seen, and the rejection **returns the external ID** the platform generated for this binding. Add it to the trust policy as an `sts:ExternalId` condition, then save again.
 5. Confirm a stage runs. CloudTrail in the Bedrock account shows `aidlc-<projectId>` in `userIdentity.arn` within a few minutes.
 
-The external ID is **stable across those retries**: it is generated once into its own per-scope parameter and copied into the binding when a save succeeds. So the trust policy you wrote against the first, rejected attempt stays valid, and you can read the value back at any time from the card or the settings response rather than rotating to rediscover it.
+The external ID is **stable across those save attempts**: it is generated once into its own per-scope parameter and copied into the binding when a save succeeds. So the trust policy you wrote against the first, rejected attempt stays valid, and you can read the value back at any time from the card or the settings response rather than rotating to rediscover it.
 
 The binding value is stored in the existing `bedrock` SSM parameter, with the external ID attached **by the server** — never send one, and a client-supplied `externalId` is rejected outright. AWS requires the assuming party to control the value:
 
@@ -117,21 +124,17 @@ bedrock_assumable_role_arns = ["*"]
 
 Setting it makes the looser posture a deliberate, visible choice. Narrowing `iam::*` to real account ids is recommended for a known topology.
 
-## Rotating the external ID
+## External-ID lifetime and replacement
 
-Rotation is a coordinated two-party change with a failure window, so plan it rather than performing it ad hoc.
+This release has **no in-place external-ID rotation operation**. Re-saving a binding — including saving a different role ARN at the same scope — reuses the platform-generated value in that scope's dedicated parameter. A save never overwrites or rotates it. If an operator loses the value, reveal the current value on the credential card instead of trying to replace it.
 
-1. Generate a new external ID in the platform (re-saving the binding does this).
-2. Update `sts:ExternalId` in the role's trust policy in the Bedrock account.
-3. Save the binding.
-4. Confirm with the preflight.
+For a space-scope binding, the only supported lifecycle action that removes the external-ID parameter is deleting the **entire space**. Recreating that space creates a new scope and the first cross-account save generates a new external ID. This is destructive, clears all space-scoped agent credentials, and is not an in-place rotation workflow. Stop active stages first, recreate the space and binding, update `sts:ExternalId` in the role trust policy with the newly returned value, then save again and confirm the preflight. From deletion until the new trust policy and binding agree, new or resumed stages cannot assume the role; the orchestrator does not replay them automatically. An already-minted role session can remain valid for up to its remaining hour.
 
-**Between steps 1 and 2 every `AssumeRole` for that binding fails.** Stages started in that window fail with `credential_resolution_failed` and consume retry budget. Rotate when no stage is running, or accept the retries.
-Rotation is for when the value should genuinely change — a suspected leak into a place it should not be, or a policy requiring periodic change. It is **not** the way to recover a value you have mislaid: the platform will show you the current external ID again whenever you can edit the binding, so read it rather than rotating and paying the failure window above for nothing.
+Platform scope cannot be deleted through the credential API, so this release provides no supported way to replace its external ID. Do not edit or delete the SSM parameter directly: the stored binding can retain the old value and become inconsistent with the trust policy. A future in-place rotation feature must be an explicit platform-admin-gated operation that coordinates generation, trust-policy update, binding replacement and preflight rather than making ordinary saves rotate implicitly.
 
 ### Same-account bindings
 
-No external ID is generated for a binding whose role lives in the platform account, and none is needed: the trust policy already names exactly one principal and the confused-deputy problem is a third-party one. If you later move that role to another account, save the binding again — that generates the external ID, which you then add to the trust policy.
+A fresh binding whose role lives in the platform account generates no external ID, and none is needed: the trust policy already names exactly one principal and the confused-deputy problem is a third-party one. If that scope later changes to a cross-account role, the first save generates an external ID when none exists; otherwise it reuses the preserved scope value. Add that returned value to the trust policy and save again.
 
 ### One role shared by several spaces
 
@@ -139,11 +142,13 @@ Each binding carries its own external ID, so if several spaces each bind the sam
 
 ## What happens when a credential expires
 
-v1 ships **no refresh mechanism**, by measurement rather than omission, and a stage that
-outlives its credential fails with the structured reason `credential_expired` and is retried.
+The top-level CLI uses an invocation-scoped loopback container-credentials endpoint. Its AWS
+SDK obtains another one-hour role session through that endpoint whenever the cached session
+expires, so the same stage process can continue across multiple expirations without replay.
 
-That reason is also the tripwire that governs whether refresh is ever built, so it is worth
-watching rather than merely knowing about: see
-[operator-runbook.md](operator-runbook.md#watch-the-credential-expiry-counter) for the count
-command, the trigger, and the up-to-3600s window in which an already-minted credential
+When the stage ends, the endpoint token is revoked and credential material is scrubbed. No STS
+credential or refresh authority is persisted while an intent waits at a gate or for a user
+answer; the next stage starts with a newly issued refresh grant, endpoint token, and role
+session. See [operator-runbook.md](operator-runbook.md#verify-credential-refresh-and-stage-resume)
+for the operational checks and the up-to-3600s window in which an already-minted credential
 outlives a revoked binding.

@@ -3,14 +3,16 @@
 Claude Code, OpenCode and Codex reach Amazon Bedrock through a credential you configure in the
 platform. There are two modes, and a scope holds one or the other:
 
-| Mode                          | What is stored            | Lifetime                                    |
-| ----------------------------- | ------------------------- | ------------------------------------------- |
-| **IAM role** (preferred)      | An IAM role ARN           | Credentials minted per invocation, one hour |
-| **Bearer token** (deprecated) | An Amazon Bedrock API key | Until you rotate it                         |
+| Mode                          | What is stored            | Lifetime                                           |
+| ----------------------------- | ------------------------- | -------------------------------------------------- |
+| **IAM role** (preferred)      | An IAM role ARN           | One-hour sessions refreshed during an active stage |
+| **Bearer token** (deprecated) | An Amazon Bedrock API key | Until you rotate it                                |
 
-In role mode the platform stores no secret at all. A credential broker assumes the role you name
-for each agent invocation and passes the resulting short-lived credentials to the CLI as
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`.
+In role mode the platform stores no long-lived secret. A credential broker assumes the role you
+name, while AgentCore gives only the selected top-level CLI an invocation-scoped loopback provider
+through `AWS_CONTAINER_CREDENTIALS_FULL_URI` and `AWS_CONTAINER_AUTHORIZATION_TOKEN`. The CLI's AWS
+SDK obtains and refreshes one-hour sessions through that provider. Static STS values are discarded
+before the CLI starts, and MCP children receive neither the values nor the provider URL/token.
 
 One property holds in both modes and is worth understanding, because it is the reason a role is
 needed at all: **the AgentCore runtime's execution role has no Bedrock model-invocation
@@ -25,6 +27,14 @@ reaching an agent is always scoped and short-lived.
 | **Platform** (Admin → Agents)      | Yes      | Yes          |
 | **Space** (Space Settings → Agent) | Yes      | Yes          |
 | **Personal** (Account Settings)    | No       | Yes          |
+
+### Agent support matrix
+
+| Agent CLI                         | IAM role | Bearer token | Bedrock path and model constraint                                                                      |
+| --------------------------------- | -------- | ------------ | ------------------------------------------------------------------------------------------------------ |
+| Claude Code 2.1.246               | Yes      | Yes          | Bedrock Runtime with an Anthropic inference profile                                                    |
+| OpenCode 1.17.20                  | Yes      | Yes          | Bedrock Runtime with an Anthropic inference profile                                                    |
+| Codex >= 0.149.1 (0.153.4 pinned) | Yes      | Yes          | Bedrock Runtime OpenAI-compatible endpoint with a `global.openai.*` CRIS profile; no Mantle permission |
 
 Personal scope is bearer-only by design: that endpoint is gated on authentication alone, so any
 member could otherwise name an arbitrary role ARN for the platform to assume.
@@ -93,9 +103,29 @@ That creates a deliberate two-pass bootstrap:
 3. Add it to the trust policy as an `sts:ExternalId` condition.
 4. Save again.
 
-The external ID is stable across those retries and is **re-readable** at any time from the card.
+The external ID is stable across those save attempts and is **re-readable** at any time from the card.
 It is not a secret — AWS documents it as non-secret — so it is masked with an explicit reveal
 rather than shown once and discarded.
+
+### External-ID lifetime and replacement
+
+Re-saving the binding, or saving a different role ARN at the same scope, **does not rotate the
+external ID**. This release preserves the platform-generated value in a dedicated per-scope
+parameter. Reveal the current value when reconciling a trust policy; do not re-save to try to obtain
+a new one.
+
+For a space binding, only deleting and recreating the **entire space** removes that parameter and
+causes the first cross-account save in the new space to generate a different value. This is a
+destructive lifecycle operation: it clears all space-scoped agent credentials and creates a window
+where new or resumed stages cannot assume the role until the trust policy and recreated binding use
+the new value. Stop active stages before doing it. An already-minted role session can remain valid
+for up to its remaining hour.
+
+Platform scope cannot be deleted through the credential API, and this release has no supported
+in-place replacement operation for its external ID. Do not edit or delete the SSM parameter
+directly, because the stored binding can retain the old value. A future replacement workflow must
+be an explicit platform-admin-gated operation that coordinates generation, trust-policy update,
+binding replacement and preflight.
 
 ## Trust policy templates
 
@@ -198,13 +228,20 @@ role allowlist on every invocation regardless.
 
 ## Day-two behaviour
 
-**Credentials last one hour and are not refreshed mid-stage.** A stage that runs longer than its
-credential fails with the reason `credential_expired`, which is distinct from a rejected
-credential: the binding is fine and a retry resolves a fresh credential through the normal path.
-Note that a retry re-runs the whole stage attempt, so work done before the expiry is lost.
+**Credentials refresh inside the active stage.** Each role-mode stage gives the selected top-level
+CLI an invocation-scoped, token-protected loopback container-credentials endpoint. The CLI's AWS
+SDK requests a new one-hour role session as its cached credentials approach expiry. The broker
+revalidates the active execution, stage, callback, current binding, and mandatory session-policy
+ceiling on every refresh. A long-running stage can therefore cross multiple expirations without
+restarting the CLI or replaying work. There is no automatic whole-stage credential retry.
+
+**Gate and user-answer waits persist no temporary credentials.** When a stage ends, its endpoint
+token is revoked and its in-memory credential material is scrubbed. After any wait, the next stage
+starts with a newly issued refresh grant, endpoint token, and role session.
 
 **Revoking a binding is not instant.** An already-minted credential can outlive the binding by up
-to its remaining hour. This is an accepted risk of per-invocation minting.
+to its remaining hour. The next refresh or resumed-stage resolution re-reads the binding and fails
+closed rather than minting another session.
 
 **Spend is attributed per space** through `RoleSessionName=aidlc-<projectId>`, which appears in
 CloudTrail in the role's account. Bedrock model-invocation logging is account-wide per Region and
@@ -213,7 +250,7 @@ optional operator step if you need per-request detail.
 
 ## Codex on Bedrock
 
-Codex needs more than a credential, because it does not use the Bedrock-native API:
+Codex uses Bedrock Runtime's OpenAI-compatible Responses API rather than Converse:
 
 - It must use the **`amazon-bedrock-runtime`** provider, which requires Codex 0.149.1 or later.
   This deployment pins **0.153.4**. The older `amazon-bedrock` provider targets the legacy Mantle
@@ -224,14 +261,16 @@ Codex needs more than a credential, because it does not use the Bedrock-native A
 - The role's permission policy must allow `bedrock:InvokeModel` on
   `arn:aws:bedrock:<region>:<account>:project/default`, which the OpenAI-compatible APIs authorize
   against in addition to the model. The Terraform-emitted policy includes it.
+- No `bedrock-mantle:CreateInference` action or `bedrock-mantle` project ARN is required. Do not add
+  the legacy Mantle grant as a fallback; supported Codex versions sign directly for Bedrock Runtime.
 
 !!! warning "Data residency"
 
     `global.` inference profiles route to commercial Regions worldwide, so Codex prompt content can
     leave the deployment's Region. There is no `eu.openai.*` profile, so an EU-residency-constrained
-    deployment cannot use GPT-5.6 on any route today and should leave Codex unconfigured. The
-    Anthropic models behind Claude Code and OpenCode are unaffected — they use `eu.anthropic.*`
-    profiles and stay in-Region.
+    deployment cannot use GPT-5.6 on any route today and should leave Codex unconfigured. Enabling
+    Codex is therefore an explicit administrator data-residency decision. The Anthropic models behind
+    Claude Code and OpenCode are unaffected — they use `eu.anthropic.*` profiles and stay in-Region.
 
 ## Troubleshooting
 
@@ -240,9 +279,10 @@ Codex needs more than a credential, because it does not use the Bedrock-native A
 | Save rejected, `role-not-allowlisted`                                           | The ARN does not match `bedrock_assumable_role_arns`; rename the role or override the variable                                             |
 | Save rejected, `trust-policy-rejected`                                          | One of: untrusted principal, session-name mismatch, wrong or missing external ID, or the role does not exist. STS cannot distinguish these |
 | Save rejected but returns an external ID                                        | Expected on the first cross-account save. Add it to the trust policy and save again                                                        |
-| Stage fails `credential_expired`                                                | The stage outran its one-hour credential. Retry re-runs the attempt                                                                        |
-| Stage fails `credential_resolution_failed`                                      | The broker could not mint a credential; check the binding still exists                                                                     |
-| Codex fails within seconds, `cli_nonzero_exit`                                  | Usually the model id or the `project/default` grant, not the credential                                                                    |
+| Initial dispatch fails `credential_resolution_failed`                           | The broker could not mint the first credential; check the binding and trust policy                                                         |
+| Active IAM-role stage exits `cli_nonzero_exit` after a provider 503             | A refresh failed at the loopback boundary; correlate the credential-broker's allowlisted log code. The stage is not replayed automatically |
+| Stage fails `credential_expired`                                                | This typed reason comes from a non-refreshable expiry path; active role-mode refresh failures normally use the generic exit path above     |
+| Codex fails within seconds, `cli_nonzero_exit`                                  | Usually the model id or the `project/default` grant, unless the provider also returned a refresh 503                                       |
 | `401 ... not authorized to perform: bedrock:InvokeModel on ... project/default` | The role's permission policy predates the Codex OpenAI-compatible grant; re-apply the emitted policy                                       |
 
 ## Where values are stored
@@ -252,7 +292,7 @@ All in AWS Systems Manager Parameter Store:
 | Value                         | Path                                                        | Type         |
 | ----------------------------- | ----------------------------------------------------------- | ------------ |
 | Bedrock binding (either mode) | `/<project>/<env>/…/agent-credentials/bedrock-bearer-token` | SecureString |
-| External ID                   | `/<project>/<env>/…/bedrock-external-id`                    | String       |
+| External ID                   | `/<project>/<env>/…/bedrock-external-id`                    | SecureString |
 
 The Bedrock parameter name is historical: it holds a bearer token in bearer mode and a JSON object
 such as `{"roleArn":"arn:aws:iam::111122223333:role/aidlc-bedrock-inference"}` in role mode. The
