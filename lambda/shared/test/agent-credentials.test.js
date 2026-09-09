@@ -303,6 +303,16 @@ describe('agent credentials', () => {
     ).toBe('/app/dev/users/u-1/agent-credentials/bedrock-bearer-token');
   });
 
+  it('normalizes long uncontrolled trailing-slash runs in linear time', () => {
+    const base = `/app/dev${'/'.repeat(10_000)}`;
+    expect(agentCredentialPath({ base, source: 'platform', provider: 'bedrock' })).toBe(
+      '/app/dev/bedrock-bearer-token',
+    );
+    expect(bedrockExternalIdPath({ base, source: 'space', projectId: 'p-1' })).toBe(
+      '/app/dev/projects/p-1/bedrock-external-id',
+    );
+  });
+
   it('keeps user over space over platform precedence when Bedrock uses API keys', async () => {
     values.set('/app/dev/bedrock-bearer-token', 'platform-bedrock');
     values.set('/app/dev/kiro-api-key', 'platform-kiro');

@@ -73,7 +73,12 @@ export const AGENT_CREDENTIAL_ENV_NAMES = Object.freeze([
   ...AWS_TEMPORARY_CREDENTIAL_ENV_NAMES,
 ]);
 
-const normalizeBase = (base) => String(base || '').replace(/\/+$/, '');
+const normalizeBase = (base) => {
+  const normalized = String(base || '');
+  let end = normalized.length;
+  while (end > 0 && normalized.charCodeAt(end - 1) === 47) end -= 1;
+  return end === normalized.length ? normalized : normalized.slice(0, end);
+};
 
 const assertIdentifier = (value, label) => {
   const normalized = String(value || '');
