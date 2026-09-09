@@ -11,6 +11,7 @@ import { mkdir, stat, readdir, rm, symlink, lstat, readFile } from 'node:fs/prom
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
 import { withGitCredential as defaultWithGitCredential } from './git-auth.js';
+import { validateSparseDirectories, validateSparseCheckout } from '../shared/sparse-checkout.js';
 
 // Provider-aware clone-URL builder — the single source of truth for the per-
 // provider auth scheme (GitHub `x-access-token:`, GitLab `oauth2:`) and host.
@@ -66,6 +67,7 @@ export const checkoutRepo = async ({
   // the repo's ACTUAL default branch. Never assume 'main': a repo whose
   // default is 'master'/'develop'/… must still get a correct base.
   baseBranch = null,
+  sparseDirectories = null,
   gitProvider,
   projectId,
   executionId,
@@ -78,6 +80,18 @@ export const checkoutRepo = async ({
   readGitConfig = (d) => readFile(path.join(d, '.git', 'config'), 'utf8'),
   trustDirectory = trustGitDirectory,
 }) => {
+  const selection = validateSparseDirectories(sparseDirectories);
+  if (selection.error) {
+    return { repo, targetDir, cloned: false, branchOk: false, error: selection.error };
+  }
+  const directories = selection.value;
+  const configureSparseCheckout = async () => {
+    if (!directories.length) return true;
+    const result = await runner('git', ['sparse-checkout', 'set', '--cone', '--', ...directories], {
+      cwd: targetDir,
+    });
+    return result.code === 0;
+  };
   await ensureDir(targetDir);
   if (!(await trustDirectory({ targetDir, runner }))) {
     return {
@@ -142,7 +156,11 @@ export const checkoutRepo = async ({
     if (checkout.code === 0) return true;
 
     if (!baseBranch) {
-      const createFromHead = await runner('git', ['checkout', '-b', branch], { cwd: targetDir });
+      const createFromHead = await runner(
+        'git',
+        ['checkout', '-b', branch, ...(directories.length ? ['HEAD'] : [])],
+        { cwd: targetDir },
+      );
       if (createFromHead.code === 0) return true;
     } else {
       const createFromOrigin = await runner(
@@ -167,6 +185,9 @@ export const checkoutRepo = async ({
 
   if (await hasCheckout(targetDir, statFn)) {
     await scrubRemote();
+    if (!(await configureSparseCheckout())) {
+      return { repo, targetDir, cloned: true, branchOk: false, error: 'sparse_checkout_failed' };
+    }
     const branchOk = await ensureBranch();
     return { repo, targetDir, cloned: true, reused: true, branchOk };
   }
@@ -181,7 +202,14 @@ export const checkoutRepo = async ({
         repository: repo,
         requiredAccess: 'read',
       },
-      ({ env }) => runner('git', ['clone', cleanUrl, targetDir], { env }),
+      // Do not materialize a full working tree even temporarily. Keep ordinary
+      // Git history/auth semantics; partial clone is a separate optimization.
+      ({ env }) =>
+        runner(
+          'git',
+          ['clone', ...(directories.length ? ['--no-checkout'] : []), cleanUrl, targetDir],
+          { env },
+        ),
     );
   } catch (error) {
     clone = { code: null, error: error.code || 'credential_unavailable' };
@@ -207,6 +235,23 @@ export const checkoutRepo = async ({
   // Defense in depth: origin was cloned from this same clean URL, but re-stamp
   // it before the agent can inspect the checkout.
   await scrubRemote();
+  if (!(await configureSparseCheckout())) {
+    await removeDir(targetDir).catch(() => {});
+    return { repo, targetDir, cloned: false, branchOk: false, error: 'sparse_checkout_failed' };
+  }
+  // sparse-checkout set on a --no-checkout clone configures the cone before
+  // ensureBranch populates the selected base. Without a requested branch,
+  // populate HEAD explicitly (empty repositories need no checkout).
+  if (directories.length && !branch) {
+    const head = await runner('git', ['rev-parse', '--verify', 'HEAD'], { cwd: targetDir });
+    if (head.code === 0) {
+      const checkout = await runner('git', ['checkout', 'HEAD'], { cwd: targetDir });
+      if (checkout.code !== 0) {
+        await removeDir(targetDir).catch(() => {});
+        return { repo, targetDir, cloned: false, branchOk: false, error: 'sparse_checkout_failed' };
+      }
+    }
+  }
   const branchOk = await ensureBranch();
   return { repo, targetDir, cloned, branchOk };
 };
@@ -232,6 +277,7 @@ export const checkoutRepos = async ({
   baseBranches,
   gitProvider,
   repoProviders = null,
+  sparseCheckout = null,
   projectId,
   executionId,
   workspaceDir,
@@ -240,6 +286,8 @@ export const checkoutRepos = async ({
   ensureDir,
   trustDirectory = trustGitDirectory,
 }) => {
+  const selection = validateSparseCheckout(sparseCheckout, repos);
+  if (selection.error) throw new Error(selection.error);
   const out = [];
   const multi = repos.length > 1;
   for (const repo of repos) {
@@ -255,6 +303,7 @@ export const checkoutRepos = async ({
         repo: url,
         branch,
         baseBranch: resolveBaseBranch(url, baseBranch, baseBranches),
+        sparseDirectories: selection.value?.[url],
         gitProvider: provider,
         projectId,
         executionId,
@@ -399,6 +448,7 @@ export const ensureWorkspaceSource = async ({
   baseBranches,
   gitProvider,
   repoProviders = null,
+  sparseCheckout = null,
   projectId,
   executionId,
   workspaceDir,
@@ -408,6 +458,8 @@ export const ensureWorkspaceSource = async ({
   statFn = stat,
   trustDirectory = trustGitDirectory,
 }) => {
+  const selection = validateSparseCheckout(sparseCheckout, repos);
+  if (selection.error) throw new Error(selection.error);
   const multi = repos.length > 1;
   const restoredRepos = [];
   const failed = [];
@@ -428,6 +480,7 @@ export const ensureWorkspaceSource = async ({
       repo: url,
       branch,
       baseBranch: resolveBaseBranch(url, baseBranch, baseBranches),
+      sparseDirectories: selection.value?.[url],
       gitProvider: provider,
       projectId,
       executionId,

@@ -39,6 +39,40 @@ Optional — collapsed by default, and defaulting to each repository's own defau
 
 Only repositories where you explicitly picked a branch are overridden; all others use their default.
 
+### Repository directories
+
+Optional — leave blank for a full checkout. For a large repository, expand
+**Repository directories** and enter one repository-relative directory per line
+for each repository, for example `services/api` and `packages/shared`. Include
+shared code and tooling needed to build and test the selected component.
+
+The selection is fixed when you create the intent and reused by retries, parallel
+unit workspaces, and restoration after session storage expires. Create a new
+intent to change it. API clients can supply the same option on intent creation:
+
+```json
+{
+  "title": "Update the API",
+  "prompt": "Add request validation",
+  "sparseCheckout": {
+    "owner/monorepo": ["services/api", "packages/shared"]
+  }
+}
+```
+
+Omitted repositories and empty lists retain full checkout. Use directory paths,
+not glob patterns or absolute paths. Git cone mode also includes root-level files
+and files directly inside the selected directories' ancestors. Files outside the
+selection remain in Git history; their absence is not committed as a deletion.
+This is a storage optimization, not a restriction on what an agent can access.
+
+The checkout configures the selection **before** materializing the working tree.
+Git history is still downloaded in full: selected files, `.git`, and agent state
+must fit together within the managed session storage limit (1 GiB), with room for
+new work. Large history, large root files, or merge conflicts that materialize
+additional files can still exceed it. This option mitigates oversized working
+trees; it does not provide general support for repositories over the limit.
+
 ## Draft, review, start
 
 Creating the intent opens it on the workbench in **DRAFT** state, with a **Review & start** card showing the prompt, scope, and branch (read-only — these are set at creation). Starting the intent:
