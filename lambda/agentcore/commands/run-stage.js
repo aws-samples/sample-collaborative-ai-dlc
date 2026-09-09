@@ -1804,6 +1804,7 @@ const runStageAttempt = async (
     baseBranches,
     gitProvider,
     repoProviders = null,
+    sparseCheckout = null,
     // Commit attribution ({ name, email } of the starting user, resolved by the
     // orchestrator from their OAuth connection): engine commits are authored by
     // the user, committed by AI-DLC Engine. null = engine-only identity.
@@ -2312,6 +2313,7 @@ const runStageAttempt = async (
       baseBranches,
       gitProvider,
       repoProviders,
+      sparseCheckout,
       projectId,
       executionId,
       workspaceDir,

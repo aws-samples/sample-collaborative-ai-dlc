@@ -893,6 +893,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         baseBranches: meta.baseBranches,
         gitProvider,
         repoProviders: meta.repoProviders ?? null,
+        sparseCheckout: meta.sparseCheckout ?? null,
         ...(gitAuthor ? { gitAuthor } : {}),
         title: meta.title,
         prompt: meta.prompt,
@@ -1124,6 +1125,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       baseBranches: meta.baseBranches,
       gitProvider,
       repoProviders: meta.repoProviders ?? null,
+      sparseCheckout: meta.sparseCheckout ?? null,
       ...(gitAuthor ? { gitAuthor } : {}),
     };
 
@@ -1473,6 +1475,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         baseBranches: meta.baseBranches,
         gitProvider,
         repoProviders: meta.repoProviders ?? null,
+        sparseCheckout: meta.sparseCheckout ?? null,
         ...(gitAuthor ? { gitAuthor } : {}),
       },
       intentSessionId: sessionId,
