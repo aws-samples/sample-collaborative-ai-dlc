@@ -16,7 +16,8 @@ import { machineCliModels } from '../model-resolver.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { selectCurrentArtifactHeads } from '../../shared/artifact-versioning.js';
 
-const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
+const artifactTs = (r) =>
+  [r.updated_at, r.created_at].filter(Boolean).map(String).toSorted().at(-1) ?? '';
 export const currentArtifacts = (rows = []) =>
   selectCurrentArtifactHeads(rows).toSorted(
     (a, b) =>
@@ -94,6 +95,7 @@ export const deriveArtifacts = async (payload, deps) => {
     intentId,
     executionId,
     stageInstanceId = null,
+    emittedAfter = null,
     artifactTypes = null,
     enrichment: requestedEnrichment = 'off',
     requestedCli = null,
@@ -114,6 +116,10 @@ export const deriveArtifacts = async (payload, deps) => {
     env = process.env,
   } = deps;
   if (!intentId || !executionId) return { ok: false, reason: 'missing_identity' };
+  const emittedAfterMs = emittedAfter == null ? null : Date.parse(emittedAfter);
+  if (emittedAfter != null && !Number.isFinite(emittedAfterMs)) {
+    return { ok: false, reason: 'invalid_emitted_after' };
+  }
 
   const publish = (p) => broadcast({ executionId, intentId, projectId, ...p }).catch(() => {});
   const event = (type, summary) =>
@@ -153,6 +159,10 @@ export const deriveArtifacts = async (payload, deps) => {
     const targets = all.filter((a) => {
       if (typeFilter && !typeFilter.has(a.artifact_type)) return false;
       if (stageInstanceId && a.created_by_stage_instance_id !== stageInstanceId) return false;
+      if (emittedAfterMs != null) {
+        const emittedAtMs = Date.parse(artifactTs(a));
+        if (!Number.isFinite(emittedAtMs) || emittedAtMs < emittedAfterMs) return false;
+      }
       return true;
     });
 

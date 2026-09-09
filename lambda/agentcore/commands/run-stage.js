@@ -1079,6 +1079,7 @@ export const runStage = async (
   } = deps;
 
   const now = () => clock();
+  const artifactWindowStartedAt = now();
   const reviewFeedbackPrompt =
     typeof reviewFeedback === 'string' ? reviewFeedback : reviewFeedback?.prompt;
   const reviewFeedbackTargets =
@@ -2478,6 +2479,7 @@ export const runStage = async (
       humanTaskId: parked.humanTaskId,
       cliSessionId,
       cli,
+      artifactWindowStartedAt,
     };
   }
 
@@ -2690,6 +2692,7 @@ export const runStage = async (
     unitSlug,
     sectionIndex,
     cli,
+    artifactWindowStartedAt,
     changedFiles,
     commitSha,
     verification:

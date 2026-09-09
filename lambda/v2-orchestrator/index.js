@@ -798,6 +798,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         ...stageOpts,
         resumeFrom: initialResumeFrom,
       });
+      const artifactWindowStartedAt = result?.artifactWindowStartedAt ?? null;
 
       // Park loop (D3): the stage may open more than one gate across resumes. Each
       // WAITING_FOR_HUMAN suspends on a durable callback until the gate is answered.
@@ -978,7 +979,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           result,
         };
       }
-      return { state: 'SUCCEEDED', result };
+      return { state: 'SUCCEEDED', result, artifactWindowStartedAt };
     };
 
     // ── Parallel sections (docs/v2-parallel.md WP5) ────────────────────────
@@ -1067,6 +1068,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         let resumeFromValidation = null;
         for (;;) {
           const suffix = validationRound ? `-validation-${validationRound}` : '';
+          const artifactWindowStartedAt = await ctx.step(
+            `artifact-window-start-${stage.stageId}${suffix}`,
+            () => new Date().toISOString(),
+          );
           const outcome = await executeStage(ctx, stage, {
             suffix,
             initialResumeFrom: resumeFromValidation,
@@ -1083,6 +1088,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             return { ...out, stageId: stage.stageId };
           }
 
+          let emittedArtifactIds = [];
           if (outputArtifactTypes.length > 0) {
             const derived = await ctx.step(`derive-artifacts-${stage.stageId}${suffix}`, () =>
               invokeIntentRuntime(
@@ -1091,7 +1097,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   projectId,
                   intentId,
                   executionId,
-                  stageInstanceId: stage.stageInstanceId ?? null,
+                  stageInstanceId: outcome.result?.stageInstanceId ?? stage.stageInstanceId ?? null,
+                  emittedAfter: outcome.artifactWindowStartedAt ?? artifactWindowStartedAt,
                   sectionIndexes: segments
                     .filter((candidate) => candidate.kind === 'section')
                     .map((candidate) => candidate.index),
@@ -1113,6 +1120,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   derived?.detail ? ` (${derived.detail})` : ''
                 }`,
               );
+            } else {
+              emittedArtifactIds = Array.isArray(derived.artifacts)
+                ? derived.artifacts.filter((artifactId) => typeof artifactId === 'string')
+                : [];
             }
           }
 
@@ -1132,7 +1143,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   projectId,
                   intentId,
                   executionId,
-                  stageInstanceId: stage.stageInstanceId ?? null,
+                  stageInstanceId: outcome.result?.stageInstanceId ?? stage.stageInstanceId ?? null,
+                  artifactIds: emittedArtifactIds,
                   sectionIndexes: segments
                     .filter((candidate) => candidate.kind === 'section')
                     .map((candidate) => candidate.index),

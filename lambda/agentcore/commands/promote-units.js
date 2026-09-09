@@ -40,7 +40,8 @@ const DAG_ARTIFACT_TYPE = 'unit-of-work-dependency';
 // Pick the artifact row to promote: current (non-superseded) rows win; among
 // those the newest by updated_at/created_at. A rewind marks old rows
 // superseded, so re-promotion naturally follows the re-produced artifact.
-const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
+const artifactTs = (r) =>
+  [r.updated_at, r.created_at].filter(Boolean).map(String).toSorted().at(-1) ?? '';
 export const pickCurrentArtifact = (rows = []) => {
   const current = rows.filter((r) => !r.superseded_at);
   return current.toSorted((a, b) => artifactTs(b).localeCompare(artifactTs(a)))[0] ?? null;
@@ -54,6 +55,17 @@ export const promoteUnits = async (payload, deps) => {
     stageInstanceId = null,
     sectionIndexes = [null],
   } = payload ?? {};
+  // Current orchestrators pass the exact artifact ids returned by the
+  // successful stage's derive step. Presence is significant: an empty list
+  // means that stage emitted no promotable DAG and must not fall back to a
+  // stale same-type artifact from an earlier stage or revision. Legacy direct
+  // callers that omit the field retain the type-based lookup.
+  const restrictToArtifactIds = Object.hasOwn(payload ?? {}, 'artifactIds');
+  const artifactIds = new Set(
+    Array.isArray(payload?.artifactIds)
+      ? payload.artifactIds.filter((id) => typeof id === 'string' && id)
+      : [],
+  );
   const {
     store,
     openGraph,
@@ -95,7 +107,10 @@ export const promoteUnits = async (payload, deps) => {
       artifactType: DAG_ARTIFACT_TYPE,
       includeContent: true,
     });
-    const artifact = pickCurrentArtifact(rows);
+    const eligibleRows = restrictToArtifactIds
+      ? rows.filter((row) => artifactIds.has(row.id))
+      : rows;
+    const artifact = pickCurrentArtifact(eligibleRows);
     if (!artifact) {
       await event('v2.units.promotion_failed', `no current ${DAG_ARTIFACT_TYPE} artifact`);
       return { ok: false, reason: 'artifact_not_found' };

@@ -1307,6 +1307,173 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
       'promote-units',
     ]);
   });
+
+  it('promotes a gated stage emission through production derivation without reusing a stale DAG', async () => {
+    const { deriveArtifacts } = await import('../../agentcore/commands/derive-artifacts.js');
+    const { promoteUnits } = await import('../../agentcore/commands/promote-units.js');
+    const stageId = 'units-generation-gated';
+    const stageInstanceId = 'si-units-generation-gated';
+    const emittedArtifactId = 'art-gated-dag';
+    const artifactWindowStartedAt = '2026-09-08T23:13:00.000Z';
+    const dagBody = `# Unit of Work Dependency
+
+\`\`\`yaml
+units:
+  - name: auth
+    depends_on: []
+  - name: checkout
+    depends_on: [auth]
+\`\`\`
+`;
+    const artifactRows = [
+      {
+        id: 'art-prior-revision',
+        intent_id: 'i1',
+        artifact_type: 'unit-of-work-dependency',
+        created_by_stage_instance_id: stageInstanceId,
+        section_index: 0,
+        content: dagBody.replace('checkout', 'stale-checkout'),
+        created_at: '2026-09-08T23:12:00.000Z',
+      },
+    ];
+
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: {
+        stages: [
+          {
+            stageId,
+            stageInstanceId,
+            outputArtifacts: [{ artifact: 'unit-of-work-dependency', terminal: false }],
+          },
+        ],
+      },
+    });
+    deps.store.getExecution
+      .mockResolvedValueOnce(META)
+      .mockResolvedValue({ ...META, pendingHumanTaskId: 'gate-units-generation' });
+    deps.store.getUnitPlan = vi.fn(async () => null);
+    deps.store.putUnitPlan = vi.fn(async (input) => input);
+    deps.store.syncUnitRows = vi.fn(async () => ({
+      created: ['auth', 'checkout'],
+      updated: [],
+      preserved: [],
+      orphaned: [],
+    }));
+
+    const graphWriter = {
+      getIntentGraph: vi.fn(async () => artifactRows),
+      mirrorArtifactDerivations: vi.fn(async ({ artifact }) => ({
+        artifactId: artifact.id,
+        sections: 0,
+        items: 0,
+        citations: 0,
+        superseded: 0,
+      })),
+      lookupArtifacts: vi.fn(async () => artifactRows),
+      mirrorUnitDag: vi.fn(async () => ({ mirrored: 2, superseded: 0 })),
+      resolveDerivedItemEdges: vi.fn(async () => ({ edges: 0 })),
+    };
+    const productionCommandDeps = {
+      store: deps.store,
+      openGraph: async () => ({}),
+      createWriter: () => graphWriter,
+      broadcast: async () => {},
+      clock: () => '2026-09-08T23:15:00.000Z',
+    };
+
+    // Reproduce the original terminal cause: a completed gated round with no
+    // emitted artifact id must refuse the prior round's still-current DAG.
+    const missingEmission = await promoteUnits(
+      {
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'i1',
+        stageInstanceId,
+        artifactIds: [],
+      },
+      productionCommandDeps,
+    );
+    expect(missingEmission).toMatchObject({ ok: false, reason: 'artifact_not_found' });
+    expect(deps.store.putUnitPlan).not.toHaveBeenCalled();
+
+    let stageLeg = 0;
+    deps.invokeRuntime = makeRuntime(ctx, async (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'run-stage-start') {
+        stageLeg += 1;
+        if (stageLeg === 1) {
+          return {
+            ok: true,
+            state: 'WAITING_FOR_HUMAN',
+            humanTaskId: 'gate-units-generation',
+            stageInstanceId,
+            artifactWindowStartedAt,
+          };
+        }
+        artifactRows.push({
+          id: emittedArtifactId,
+          intent_id: 'i1',
+          artifact_type: 'unit-of-work-dependency',
+          created_by_stage_instance_id: stageInstanceId,
+          section_index: 1,
+          content: dagBody,
+          created_at: '2026-09-08T23:13:30.000Z',
+        });
+        return { ok: true, state: 'SUCCEEDED', stageInstanceId };
+      }
+      if (payload.command === 'derive-artifacts') {
+        return deriveArtifacts(payload, productionCommandDeps);
+      }
+      if (payload.command === 'promote-units') {
+        return promoteUnits(payload, productionCommandDeps);
+      }
+      throw new Error(`unexpected command: ${payload.command}`);
+    });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: true, intentId: 'i1', stages: 1 });
+    expect(stageLeg).toBe(2);
+    expect(invokes.map((payload) => payload.command)).toEqual([
+      'init-ws',
+      'run-stage-start',
+      'run-stage-start',
+      'derive-artifacts',
+      'promote-units',
+    ]);
+    expect(invokes.find((payload) => payload.command === 'derive-artifacts')).toMatchObject({
+      stageInstanceId,
+      emittedAfter: artifactWindowStartedAt,
+    });
+    expect(graphWriter.mirrorArtifactDerivations).toHaveBeenCalledTimes(1);
+    expect(graphWriter.mirrorArtifactDerivations).toHaveBeenCalledWith(
+      expect.objectContaining({ artifact: expect.objectContaining({ id: emittedArtifactId }) }),
+    );
+    expect(invokes.find((payload) => payload.command === 'promote-units')).toMatchObject({
+      stageInstanceId,
+      artifactIds: [emittedArtifactId],
+    });
+    expect(deps.store.putUnitPlan).toHaveBeenCalledTimes(1);
+    expect(deps.store.putUnitPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceArtifactId: emittedArtifactId,
+        producedByStageInstanceId: stageInstanceId,
+      }),
+    );
+    expect(
+      deps.store.updateExecution.mock.calls.some(
+        ([input]) =>
+          input.status === 'FAILED' &&
+          input.failureReason ===
+            'units_promotion_failed: units-generation-gated: artifact_not_found',
+      ),
+    ).toBe(false);
+  });
 });
 
 // ── WP4: plan fan-out — sequential unit lanes (docs/v2-parallel.md) ──────────
