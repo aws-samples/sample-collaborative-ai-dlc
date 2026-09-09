@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Optional static egress for OAuth connectors, credential resolution, and seed-blocks through `lambda_vpc_scope = "public-egress"`, with NAT public IP outputs and addresses printed in the deployment summary for external allow-lists.
 - Configurable container runtime via `DOCKER_HOST` — any Docker-API-socket runtime works without requiring a container CLI (Podman, Rancher Desktop verified); Finch unsupported ([#420](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/420)).
 
+### Fixed
+
+- Intents Lambda's outer error handler discarded the caught exception (`catch {}` bound nothing, and the log statement was a static `'intents handler error'` string), so every 500 arrived in CloudWatch as an identical opaque line and 500s on `/api/projects/*/intents/*` were undiagnosable in production. The catch now binds the error and logs its `message`, `name`, `code`, `stack`, plus API-Gateway request context (`resource`, `httpMethod`, `projectId`, `intentId`). The 500 response contract is unchanged.
+
 ## [2.0.0] - 2026-08-06
 
 Second and final step of the v2 release, building on `2.0.0-preview0`. Everything listed below is new since that preview; see the `2.0.0-preview0` entry for the v2 platform itself.

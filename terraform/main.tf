@@ -354,6 +354,7 @@ module "lambda" {
   project_name                = var.project_name
   environment                 = var.environment
   lambda_vpc_scope            = var.lambda_vpc_scope
+  aidlc_repo_ref              = var.aidlc_repo_ref
   bedrock_assumable_role_arns = var.bedrock_assumable_role_arns
   # Rendered from the same statement definition as the customer-facing grant, so the
   # enforced ceiling cannot drift from the documented one.
