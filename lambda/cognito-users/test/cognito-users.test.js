@@ -68,6 +68,7 @@ beforeEach(() => {
   cognitoMock.reset();
   vi.stubEnv('COGNITO_USER_POOL_ID', POOL_ID);
   vi.stubEnv('CORS_ALLOWED_ORIGINS', 'https://app.example.com');
+  vi.stubEnv('SSO_ROLE_CONFIG', '{}');
   cognitoMock.on(ListUsersCommand).resolves({
     Users: [cognitoUser('alice', 'sub-alice', 'alice@x'), cognitoUser('bob', 'sub-bob', 'bob@x')],
   });
@@ -84,6 +85,54 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
+
+describe('directory request guards', () => {
+  it('short-circuits OPTIONS without authentication or a configured pool', async () => {
+    vi.stubEnv('COGNITO_USER_POOL_ID', undefined);
+
+    const res = await handler({ httpMethod: 'OPTIONS' });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({});
+    expect(cognitoMock.calls()).toHaveLength(0);
+  });
+
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'])(
+    'rejects authenticated %s directory requests',
+    async (method) => {
+      const res = await handler(makeEvent(method, '/users'));
+
+      expect(res.statusCode).toBe(405);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Method not allowed' });
+      expect(cognitoMock.calls()).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    undefined,
+    {},
+    { authorizer: {} },
+    { authorizer: { claims: {} } },
+    { authorizer: { claims: { sub: '' } } },
+  ])('rejects missing identity in requestContext %j', async (requestContext) => {
+    const res = await handler({ httpMethod: 'GET', path: '/users', requestContext });
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Unauthorized' });
+    expect(cognitoMock.calls()).toHaveLength(0);
+  });
+
+  it.each([undefined, ''])('rejects an unconfigured user pool (%j)', async (poolId) => {
+    vi.stubEnv('COGNITO_USER_POOL_ID', poolId);
+
+    const res = await handler(makeEvent('GET', '/users'));
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'User pool not configured' });
+    expect(cognitoMock.calls()).toHaveLength(0);
+  });
 });
 
 describe('GET /users (directory)', () => {
@@ -113,11 +162,46 @@ describe('GET /users (directory)', () => {
     ]);
   });
 
-  it('returns 401 without a Cognito sub', async () => {
-    const event = makeEvent('GET', '/users');
-    event.requestContext.authorizer.claims = {};
-    const res = await handler(event);
-    expect(res.statusCode).toBe(401);
+  it('maps named attributes and defaults absent email and display name', async () => {
+    cognitoMock.on(ListUsersCommand).resolves({
+      Users: [
+        cognitoUser('alice', 'sub-alice', 'alice@x', {
+          Attributes: [
+            { Name: 'custom:display_name', Value: 'Alice Example' },
+            { Name: 'email', Value: 'alice@example.com' },
+            { Name: 'sub', Value: 'sub-alice' },
+            { Name: 'custom:private', Value: 'not exposed' },
+          ],
+        }),
+        cognitoUser('bob', 'sub-bob', undefined, {
+          Attributes: [{ Name: 'sub', Value: 'sub-bob' }],
+        }),
+      ],
+    });
+
+    const res = await handler(makeEvent('GET', '/users'));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual([
+      {
+        userId: 'sub-alice',
+        email: 'alice@example.com',
+        displayName: 'Alice Example',
+        enabled: true,
+        status: 'CONFIRMED',
+        identitySource: 'cognito',
+        identityProvider: null,
+      },
+      {
+        userId: 'sub-bob',
+        email: '',
+        displayName: '',
+        enabled: true,
+        status: 'CONFIRMED',
+        identitySource: 'cognito',
+        identityProvider: null,
+      },
+    ]);
   });
 
   it('follows Cognito pagination', async () => {
@@ -127,10 +211,54 @@ describe('GET /users (directory)', () => {
         Users: [cognitoUser('alice', 'sub-alice', 'alice@x')],
         PaginationToken: 'next',
       })
+      .resolvesOnce({ PaginationToken: 'last' })
       .resolvesOnce({ Users: [cognitoUser('bob', 'sub-bob', 'bob@x')] });
     const res = await handler(makeEvent('GET', '/users'));
-    expect(JSON.parse(res.body)).toHaveLength(2);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).map((user) => user.userId)).toEqual(['sub-alice', 'sub-bob']);
+    expect(cognitoMock.calls()).toHaveLength(3);
+    expect(cognitoMock.commandCalls(ListUsersCommand).map(({ args }) => args[0].input)).toEqual([
+      { UserPoolId: POOL_ID, Limit: 60, PaginationToken: undefined },
+      { UserPoolId: POOL_ID, Limit: 60, PaginationToken: 'next' },
+      { UserPoolId: POOL_ID, Limit: 60, PaginationToken: 'last' },
+    ]);
   });
+
+  it.each([{}, { Users: [] }])(
+    'returns an empty directory for Cognito response %j',
+    async (page) => {
+      cognitoMock.on(ListUsersCommand).resolves(page);
+
+      const res = await handler(makeEvent('GET', '/users'));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual([]);
+      expect(cognitoMock.commandCalls(ListUsersCommand)).toHaveLength(1);
+    },
+  );
+
+  it.each([false, true])(
+    'returns a safe error when listing fails (later page: %s)',
+    async (laterPage) => {
+      const error = new Error('private Cognito failure details');
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const listing = cognitoMock.on(ListUsersCommand);
+      if (laterPage) {
+        listing.resolvesOnce({
+          Users: [cognitoUser('alice', 'sub-alice', 'alice@x')],
+          PaginationToken: 'next',
+        });
+      }
+      listing.rejects(error);
+
+      const res = await handler(makeEvent('GET', '/users'));
+
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Internal server error' });
+      expect(cognitoMock.commandCalls(ListUsersCommand)).toHaveLength(laterPage ? 2 : 1);
+      expect(errorLog).toHaveBeenCalledWith('Error handling users request:', error);
+    },
+  );
 
   it.each(['OIDC', 'SAML'])(
     'includes admitted %s identities without relying on CONFIRMED status',
