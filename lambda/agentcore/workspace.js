@@ -69,7 +69,7 @@ export const checkoutRepo = async ({
 }) => {
   const runner = withGitHooksDisabled(injectedRunner);
   await ensureDir(targetDir);
-  if (!(await trustDirectory({ targetDir, runner: injectedRunner }))) {
+  if (!(await trustDirectory({ targetDir, runner }))) {
     return {
       repo,
       targetDir,

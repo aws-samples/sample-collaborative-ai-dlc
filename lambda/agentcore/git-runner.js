@@ -21,9 +21,26 @@ export const withGitHooksDisabled = (runner) => {
   );
 };
 
+// Inherited GIT_* variables can redirect Git to another repository/index or
+// override the engine identity. Strip those ambient values for both engine and
+// workspace commands, then apply explicit per-command overrides (credentials,
+// isolated test configuration, etc.) without mutating either input.
+const AMBIENT_GIT_ENV =
+  /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|PREFIX|NAMESPACE|CEILING_DIRECTORIES|AUTHOR_|COMMITTER_)/;
+
+const sanitizedGitEnv = (overrides, inheritEnv) => {
+  const env = {};
+  if (inheritEnv) {
+    for (const [key, value] of Object.entries(process.env)) {
+      if (!AMBIENT_GIT_ENV.test(key)) env[key] = value;
+    }
+  }
+  return { ...env, ...overrides };
+};
+
 // The single production choke point for AgentCore-owned Git processes. Engine
 // operations request captured output; workspace operations inherit output. Both
-// receive the same command-scoped hook override before this one spawn call.
+// receive the same hook override and ambient environment sanitization.
 export const runGitCommand = markHooksDisabled(
   (
     command,
@@ -45,7 +62,7 @@ export const runGitCommand = markHooksDisabled(
         child = spawnFn(command, [...HOOKS_DISABLED_ARGS, ...args], {
           cwd,
           shell: false,
-          env: inheritEnv ? { ...process.env, ...env } : env,
+          env: sanitizedGitEnv(env, inheritEnv),
           stdio: captureOutput ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'inherit', 'inherit'],
         });
       } catch {

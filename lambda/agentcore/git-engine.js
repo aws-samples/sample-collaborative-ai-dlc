@@ -45,8 +45,8 @@ const DEFAULT_COMMITTER = {
 // GitHub App identity returned by the broker. Implemented via
 // `-c author.name/author.email` (git >=2.22):
 // unlike `--author` it works for `merge` too, and unlike GIT_AUTHOR_* env it
-// survives sanitizedGitEnv (which must keep stripping ambient overrides so
-// the agent can't spoof authorship).
+// survives the shared runner's environment sanitization (which strips ambient
+// overrides so the agent can't spoof authorship).
 //
 // Fields are sanitized to a valid git ident (no newlines/angle brackets); an
 // unusable identity falls back to the engine-only identity — attribution is
@@ -109,22 +109,6 @@ export const ensureRuntimeExcludes = async ({ dir }) => {
   }
 };
 
-// Ambient GIT_* environment variables redirect git to a DIFFERENT repository
-// (GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE) or override the engine identity
-// (GIT_AUTHOR_*/GIT_COMMITTER_*). Any process that spawns the engine from
-// inside a git hook (or any git-managed context) would leak them in — strip
-// them so engine git is deterministic regardless of the caller's environment.
-const AMBIENT_GIT_ENV =
-  /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|PREFIX|NAMESPACE|CEILING_DIRECTORIES|AUTHOR_|COMMITTER_)/;
-
-const sanitizedGitEnv = (overrides = {}) => {
-  const env = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (!AMBIENT_GIT_ENV.test(k)) env[k] = v;
-  }
-  return { ...env, ...overrides };
-};
-
 // argv-based git runner: captures stdout/stderr, resolves { exitCode, stdout,
 // stderr }, never rejects (spawn errors → exitCode null). Mirrors
 // cli/spawn.js#captureChild but is git-scoped and dependency-free.
@@ -158,10 +142,9 @@ export { NO_HOOKS_PATH };
 export const runGit = async (args, { cwd, env = {}, spawnFn } = {}) => {
   const { exitCode, stdout, stderr } = await runGitCommand('git', args, {
     cwd,
-    env: sanitizedGitEnv(env),
+    env,
     spawnFn,
     captureOutput: true,
-    inheritEnv: false,
   });
   return { exitCode, stdout, stderr };
 };
