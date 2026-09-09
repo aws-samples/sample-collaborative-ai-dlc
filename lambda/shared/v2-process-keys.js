@@ -324,6 +324,7 @@ const buildExecutionMeta = ({
   // resolved lazily by checkout/PR steps, never hardcoded here. null when the
   // caller didn't override anything (the common case).
   baseBranches = null,
+  sparseCheckout = null,
   repos = null,
   // Provider lookup by repository id. Most projects use one provider and keep
   // `gitProvider` as the fallback; this map preserves mixed-provider projects
@@ -464,6 +465,7 @@ const buildExecutionMeta = ({
   branch,
   baseBranch,
   baseBranches,
+  sparseCheckout,
   repos,
   repoProviders,
   gitProvider,

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Optional per-repository directory selection when creating an intent reduces checkout size using Git sparse checkout and is preserved when workspaces are restored. Git history still occupies storage; this does not raise the managed workspace limit.
+
 - Optional static egress for OAuth connectors, credential resolution, and seed-blocks through `lambda_vpc_scope = "public-egress"`, with NAT public IP outputs and addresses printed in the deployment summary for external allow-lists.
 - Configurable container runtime via `DOCKER_HOST` — any Docker-API-socket runtime works without requiring a container CLI (Podman, Rancher Desktop verified); Finch unsupported ([#420](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/420)).
 

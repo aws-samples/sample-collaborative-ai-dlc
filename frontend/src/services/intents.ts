@@ -66,6 +66,7 @@ export interface Intent {
   // from this map falls back to `baseBranch`, then to its own actual default
   // branch. null when the caller didn't override anything (the common case).
   baseBranches: Record<string, string> | null;
+  sparseCheckout?: Record<string, string[]> | null;
   repos: string[] | null;
   // Code host the intent's repos live on ('github' | 'gitlab'), used to build
   // branch/PR web links. null on older executions.
@@ -733,6 +734,7 @@ export interface CreateIntentInput {
   // pick a different base per repo on a multi-repo project. A repo omitted
   // here falls back to `baseBranch`, then to its own actual default branch.
   baseBranches?: Record<string, string>;
+  sparseCheckout?: Record<string, string[]>;
   scope?: string;
   // Per-intent stage deselection (only accepted when stage skipping is
   // enabled for the project): CONDITIONAL stage ids to skip for this run.
