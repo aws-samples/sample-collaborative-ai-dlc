@@ -6,6 +6,8 @@ const CREDENTIAL_FAILURE_PATTERNS = [
   /\binvalid (?:api[ -]?key|credential|token|bearer token)\b/i,
   /\b(?:api[ -]?key|credential|token|bearer token) (?:is )?(?:invalid|expired|missing|rejected)\b/i,
   /\baccess denied\b/i,
+  /\b(?:AccessDeniedException|ExpiredTokenException|InvalidClientTokenId)\b/,
+  /\b(?:assume.?role|credential provider).*(?:failed|error|denied)\b/i,
 ];
 
 export const isCredentialFailure = (output = '') => {

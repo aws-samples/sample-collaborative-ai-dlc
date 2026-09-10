@@ -11,7 +11,8 @@ let container;
 export async function setup() {
   container = await new GenericContainer('amazon/dynamodb-local:2.5.2')
     .withExposedPorts(8000)
-    .withCommand(['-jar', 'DynamoDBLocal.jar', '-inMemory', '-sharedDb'])
+    // Keep local test startup independent of outbound telemetry availability.
+    .withCommand(['-jar', 'DynamoDBLocal.jar', '-inMemory', '-sharedDb', '-disableTelemetry'])
     .withWaitStrategy(Wait.forListeningPorts())
     .start();
 

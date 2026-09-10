@@ -6,6 +6,10 @@ import { AGENT_AUTH_MODES } from './agent-command-registry.js';
 export const AGENT_CREDENTIAL_GRANT_AUDIENCE = 'aidlc-agent-credential-broker';
 export const AGENT_CREDENTIAL_GRANT_PURPOSES = Object.freeze(Object.values(AGENT_AUTH_MODES));
 export const AGENT_CREDENTIAL_GRANT_TTL_SECONDS = 300;
+const BEDROCK_RENEWAL_AUDIENCE = 'aidlc-bedrock-credential-renewal';
+// AgentCore's maximum active session duration. A resumed invocation receives a
+// new handoff grant; renewal never extends the original invocation's lifetime.
+export const BEDROCK_RENEWAL_TTL_SECONDS = 8 * 60 * 60;
 
 const MAX_TOKEN_BYTES = 8192;
 const CLOCK_SKEW_SECONDS = 30;
@@ -71,7 +75,7 @@ const signingKey = (secret) => {
 const signatureFor = (encodedClaims, secret) =>
   createHmac('sha256', signingKey(secret)).update(encodedClaims).digest();
 
-const normalizedClaims = (claims) => {
+const normalizedClaims = (claims, audience = AGENT_CREDENTIAL_GRANT_AUDIENCE) => {
   if (!claims || typeof claims !== 'object' || Array.isArray(claims)) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
@@ -96,7 +100,7 @@ const normalizedClaims = (claims) => {
   }
   return {
     version: 1,
-    audience: AGENT_CREDENTIAL_GRANT_AUDIENCE,
+    audience,
     grantId: requiredString(claims.grantId, 'grantId'),
     purpose,
     projectId,
@@ -138,7 +142,15 @@ export const signAgentCredentialGrant = (
   return `${encodedClaims}.${signature}`;
 };
 
-export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now() } = {}) => {
+const verifyToken = (
+  token,
+  secret,
+  {
+    now = () => Date.now(),
+    audience = AGENT_CREDENTIAL_GRANT_AUDIENCE,
+    ttlSeconds = AGENT_CREDENTIAL_GRANT_TTL_SECONDS,
+  } = {},
+) => {
   if (typeof token !== 'string' || !token || Buffer.byteLength(token) > MAX_TOKEN_BYTES) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
@@ -167,22 +179,57 @@ export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now
   } catch {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
-  if (parsed?.version !== 1 || parsed?.audience !== AGENT_CREDENTIAL_GRANT_AUDIENCE) {
+  if (parsed?.version !== 1 || parsed?.audience !== audience) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
-  const claims = normalizedClaims(parsed);
+  const claims = normalizedClaims(parsed, audience);
   const current = Math.floor(now() / 1000);
   if (
     !Number.isInteger(claims.issuedAt) ||
     !Number.isInteger(claims.expiresAt) ||
     claims.expiresAt <= claims.issuedAt ||
-    claims.expiresAt - claims.issuedAt > AGENT_CREDENTIAL_GRANT_TTL_SECONDS ||
+    claims.expiresAt - claims.issuedAt > ttlSeconds ||
     claims.issuedAt > current + CLOCK_SKEW_SECONDS
   ) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
   if (claims.expiresAt <= current) {
     throw grantError('AGENT_CREDENTIAL_GRANT_EXPIRED', 'Agent credential grant has expired');
+  }
+  return claims;
+};
+
+export const verifyAgentCredentialGrant = (token, secret, options) =>
+  verifyToken(token, secret, options);
+
+// Only the broker calls this after redeeming a valid short-lived handoff.
+// No role/scope supplied in a renewal request is used: all authority is in the
+// signed token. Its separate audience prevents using it to redeem API keys.
+export const signBedrockCredentialRenewal = (grantClaims, secret) => {
+  const bindings = grantClaims.bindings.filter((binding) => binding.authType === 'iam');
+  if (bindings.length !== 1) {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'One IAM binding is required');
+  }
+  const claims = normalizedClaims(
+    {
+      ...grantClaims,
+      bindings,
+      expiresAt: grantClaims.issuedAt + BEDROCK_RENEWAL_TTL_SECONDS,
+    },
+    BEDROCK_RENEWAL_AUDIENCE,
+  );
+  const encoded = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  return `${encoded}.${signatureFor(encoded, secret).toString('base64url')}`;
+};
+
+export const verifyBedrockCredentialRenewal = (token, secret, options = {}) => {
+  const claims = verifyToken(token, secret, {
+    ...options,
+    audience: BEDROCK_RENEWAL_AUDIENCE,
+    ttlSeconds: BEDROCK_RENEWAL_TTL_SECONDS,
+  });
+  if (claims.bindings.length !== 1 || claims.bindings[0].authType !== 'iam') {
+    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'One IAM binding is required');
   }
   return claims;
 };

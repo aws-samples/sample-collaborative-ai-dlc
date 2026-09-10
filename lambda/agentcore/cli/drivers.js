@@ -17,6 +17,8 @@
 // secret loading is the caller's job (loadSecrets), kept out of argv.
 
 // The MCP server name we register under in mcp-config (see stage-materializer).
+import { bedrockDriverAuthEnv } from '../bedrock-iam.js';
+
 export const MCP_SERVER_NAME = 'aidlc';
 
 // ── Claude Code (headless) ──
@@ -74,8 +76,7 @@ const claudeDriver = {
       IS_SANDBOX: '1',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     };
-    if (env.AWS_BEARER_TOKEN_BEDROCK) out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
-    return out;
+    return { ...out, ...bedrockDriverAuthEnv(env) };
   },
 };
 
@@ -159,10 +160,7 @@ const opencodeDriver = {
       XDG_DATA_HOME: env.OPENCODE_XDG_DATA_HOME || '/home/node/.opencode-data',
       OPENCODE_DISABLE_AUTOUPDATE: '1',
     };
-    if (env.AWS_BEARER_TOKEN_BEDROCK) {
-      out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
-    }
-    return out;
+    return { ...out, ...bedrockDriverAuthEnv(env) };
   },
 };
 
@@ -226,8 +224,7 @@ const codexDriver = {
   },
   envForAuth(env) {
     const out = { AWS_REGION: env.BEDROCK_REGION || env.AWS_REGION || 'us-east-1' };
-    if (env.AWS_BEARER_TOKEN_BEDROCK) out.AWS_BEARER_TOKEN_BEDROCK = env.AWS_BEARER_TOKEN_BEDROCK;
-    return out;
+    return { ...out, ...bedrockDriverAuthEnv(env) };
   },
 };
 

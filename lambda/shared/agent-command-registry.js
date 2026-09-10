@@ -35,6 +35,7 @@ export const COMMANDS = Object.freeze({
   capabilities: command('capabilities', AGENT_AUTH_MODES.CAPABILITIES),
   'managed-runtime-check': command('managedRuntimeCheck'),
   'verify-mcp': command('verifyMcp'),
+  'verify-bedrock-iam': command('verifyBedrockIam', AGENT_AUTH_MODES.CAPABILITIES),
 });
 
 export const commandDefinition = (name) =>

@@ -116,7 +116,7 @@ The password prompt is silent. The permanent Cognito password is sent directly t
 bash /tmp/aidlc-install.sh status
 ```
 
-Then configure agent credentials in **Admin → Agents** (a Bedrock API key for Claude Code / OpenCode / Codex, or a Kiro API key) and follow [Your first intent](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/first-intent/).
+Then configure agent credentials in **Admin → Agents** (IAM or a Bedrock API key for Claude Code / OpenCode / Codex, or a Kiro API key) and follow [Your first intent](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/first-intent/).
 
 > [!WARNING]
 > **This deploys real AWS infrastructure into your account**: VPC, Neptune, ECS Fargate, Lambda, API Gateway, DynamoDB, S3, CloudFront, Cognito, Bedrock AgentCore, ECR, and Secrets Manager. Some of these resources bill while idle (Neptune and the Fargate collaboration server in particular), and agent runs incur Bedrock model-invocation charges on top. Deployment takes 15 to 30 minutes. Tear everything down with the [destroy command](#destroy-infrastructure) when you're done evaluating.
@@ -168,7 +168,7 @@ You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Ga
 
 Agent CLIs authenticate through credentials you configure after install, in **Admin → Agents**:
 
-- **Amazon Bedrock API key** for Claude Code, OpenCode, and Codex. The AgentCore runtime's IAM role intentionally has no Bedrock model-invocation permissions; this token is the only path. For Codex, additionally enable the OpenAI models (`openai.gpt-5.*`) in the Bedrock console for your Region.
+- **IAM role or Amazon Bedrock API key** for Claude Code, OpenCode, and Codex. The [IAM setup wizard](docs/using-the-platform/bedrock-iam.md) generates role policies and supports a separate inference account and region. Platform IAM disables Bedrock keys for new runs; existing key runs can finish. For Codex, enable the OpenAI models in the inference account and region.
 - **Kiro API key** for the Kiro CLI driver. A Kiro administrator must first enable API key generation in the Kiro console.
 
 Both are stored as `SecureString` parameters in Systems Manager Parameter Store.
@@ -334,7 +334,7 @@ the upstream AI-DLC pin, baseline blocks, or default workflow:
 
 ### Agent credentials
 
-In local/hybrid mode, the installer creates the first Cognito user and grants `platform-admin` for v2 (`owner` for v1.1.0); in `sso-only` mode, administrator access comes from an external role mapping, and federated roles appear in **Admin → Users** as externally managed and read-only. Configure agent authentication in **Admin → Agents**: an Amazon Bedrock API key (as the Bedrock Bearer Token) for Claude Code, OpenCode, and Codex, or a Kiro API key for the Kiro driver. Agent credentials are separate from the Cognito login created during installation.
+In local/hybrid mode, the installer creates the first Cognito user and grants `platform-admin` for v2 (`owner` for v1.1.0); in `sso-only` mode, administrator access comes from an external role mapping, and federated roles appear in **Admin → Users** as externally managed and read-only. Configure agent authentication in **Admin → Agents**: use the IAM setup wizard or a Bedrock API key for Claude Code, OpenCode, and Codex; use a Kiro API key for the Kiro driver. Agent credentials are separate from the Cognito login created during installation.
 
 ### Provider OAuth apps
 

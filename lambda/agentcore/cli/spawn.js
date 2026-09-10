@@ -13,10 +13,54 @@
 // losing the log. Otherwise stderr is inherited as before.
 
 import { spawn } from 'node:child_process';
+import { currentCredentialSignal } from '../invocation-credentials.js';
 
 // Keep only the last `max` bytes of a growing string — the tail is where a CLI
 // prints its terminating error, and it bounds memory on a chatty child.
 const clampTail = (s, max) => (s.length > max ? s.slice(s.length - max) : s);
+
+// Give an IAM invocation its own process group, so cancelling an agent also
+// stops its tool/MCP children. Allow a brief graceful exit, then bound teardown
+// even when the CLI ignores SIGTERM or never closes its streams.
+const watchCancellation = ({ child, signal, detached, finish, killProcessGroup, abortGraceMs }) => {
+  let timer;
+  let disposed = false;
+  const kill = (name) => {
+    try {
+      if (detached && child.pid) killProcessGroup(-child.pid, name);
+      else child.kill?.(name);
+    } catch {
+      // The process/group may already have exited.
+    }
+  };
+  const abort = () => {
+    if (disposed) return;
+    timer = setTimeout(() => {
+      kill('SIGKILL');
+      child.stdin?.destroy?.();
+      child.stdout?.destroy?.();
+      child.stderr?.destroy?.();
+      finish(null);
+    }, abortGraceMs);
+    timer.unref?.();
+    kill('SIGTERM');
+  };
+  return {
+    kill,
+    start() {
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+    },
+    dispose() {
+      disposed = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      // The parent may exit before a child that ignores SIGTERM. Stop the
+      // remaining group before checkpointing files or reporting completion.
+      if (signal?.aborted) kill('SIGKILL');
+    },
+  };
+};
 
 export const runChild = ({
   command,
@@ -28,16 +72,25 @@ export const runChild = ({
   captureStderrTail = 0,
   onStdout = null,
   spawnFn = spawn,
+  signal = currentCredentialSignal(),
+  abortGraceMs = 5000,
+  killProcessGroup = (pid, name) => process.kill(pid, name),
 }) =>
   new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      resolve({ exitCode: null, stderrTail: '', aborted: true });
+      return;
+    }
     const capture = captureStderrTail > 0;
     const mergedEnv = { ...process.env, ...env };
+    const detached = Boolean(signal) && process.platform !== 'win32';
     let child;
     try {
       child = spawnFn(command, args, {
         cwd,
         env: mergedEnv,
         shell: false,
+        ...(detached ? { detached: true } : {}),
         stdio: [
           promptViaStdin ? 'pipe' : 'ignore',
           onStdout ? 'pipe' : 'inherit',
@@ -67,14 +120,25 @@ export const runChild = ({
       });
     }
     let settled = false;
+    let cancellation;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      resolve({ exitCode, stderrTail });
+      cancellation?.dispose();
+      resolve({ exitCode, stderrTail, ...(signal?.aborted ? { aborted: true } : {}) });
     };
     child.on('error', () => finish(null)); // spawn failure → runner maps to FAILED
     child.on('close', (code) => finish(code));
-    if (promptViaStdin) {
+    cancellation = watchCancellation({
+      child,
+      signal,
+      detached,
+      finish,
+      killProcessGroup,
+      abortGraceMs,
+    });
+    cancellation.start();
+    if (promptViaStdin && !signal?.aborted) {
       try {
         child.stdin?.end(prompt ?? '');
       } catch {
@@ -103,15 +167,24 @@ export const captureChild = ({
   captureStderr = false,
   timeoutMs = 0,
   spawnFn = spawn,
+  signal = currentCredentialSignal(),
+  abortGraceMs = 5000,
+  killProcessGroup = (pid, name) => process.kill(pid, name),
 }) =>
   new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve({ exitCode: null, stdout: '', stderr: '', timedOut: false, aborted: true });
+      return;
+    }
     const mergedEnv = { ...process.env, ...env };
+    const detached = Boolean(signal) && process.platform !== 'win32';
     let child;
     try {
       child = spawnFn(command, args, {
         cwd,
         env: mergedEnv,
         shell: false,
+        ...(detached ? { detached: true } : {}),
         stdio: [promptViaStdin ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
       });
     } catch (e) {
@@ -130,17 +203,26 @@ export const captureChild = ({
     let settled = false;
     let timedOut = false;
     let timer = null;
+    let cancellation;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      resolve({ exitCode, stdout, stderr, timedOut });
+      cancellation?.dispose();
+      resolve({
+        exitCode,
+        stdout,
+        stderr,
+        timedOut,
+        ...(signal?.aborted ? { aborted: true } : {}),
+      });
     };
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         timedOut = true;
         try {
-          child.kill?.('SIGKILL');
+          if (cancellation) cancellation.kill('SIGKILL');
+          else child.kill?.('SIGKILL');
         } catch {
           /* already gone */
         }
@@ -154,7 +236,16 @@ export const captureChild = ({
     }
     child.on('error', () => finish(null));
     child.on('close', (code) => finish(code));
-    if (promptViaStdin) {
+    cancellation = watchCancellation({
+      child,
+      signal,
+      detached,
+      finish,
+      killProcessGroup,
+      abortGraceMs,
+    });
+    cancellation.start();
+    if (promptViaStdin && !signal?.aborted) {
       try {
         child.stdin?.end(prompt ?? '');
       } catch {
