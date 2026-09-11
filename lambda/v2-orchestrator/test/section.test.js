@@ -231,6 +231,7 @@ describe('awaitExternalDevelopment', () => {
         broadcast: vi.fn(async () => {}),
         stopSession: vi.fn(async () => {}),
         ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+        aidlcRepoRef: 'a'.repeat(40),
         runId: 'run-1',
         stageInstanceIdFor: () => 'si-code-auth',
       },
@@ -253,6 +254,12 @@ describe('awaitExternalDevelopment', () => {
     );
 
     expect(result.state).toBe('SUCCEEDED');
+    expect(store.putStage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stageId: 'code-generation',
+        aidlcRepoRef: 'a'.repeat(40),
+      }),
+    );
     expect(store.createHumanTask).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'external-development',

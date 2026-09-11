@@ -287,7 +287,7 @@ export const awaitExternalDevelopment = async (
   toolkit,
   { stage, unitSlug, sectionIndex, repositories, branch, harness, assignedTo = null, sessionId },
 ) => {
-  const { store, broadcast, stopSession, ids, runId, stageInstanceIdFor } = toolkit;
+  const { store, broadcast, stopSession, ids, aidlcRepoRef, runId, stageInstanceIdFor } = toolkit;
   const { executionId, intentId, projectId } = ids;
   if (
     repositories.length === 0 ||
@@ -312,6 +312,7 @@ export const awaitExternalDevelopment = async (
       phase: stage.phase ?? null,
       state: 'RUNNING',
       attempt,
+      aidlcRepoRef,
     });
     try {
       await store.createHumanTask({
