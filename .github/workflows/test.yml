@@ -34,7 +34,33 @@ jobs:
         run: npm ci
 
       - name: Run unit tests
+        if: matrix.node-version == 22
         run: npm test
+
+      - name: Run unit tests with coverage
+        if: matrix.node-version == 24
+        run: npm run test:coverage
+
+      - name: Upload backend coverage report
+        if: matrix.node-version == 24
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-coverage-node-24
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Publish backend coverage baseline
+        if: >-
+          matrix.node-version == 24 &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-coverage-baseline
+          path: coverage/coverage-summary.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Run release tooling tests
         run: npm run test:release
