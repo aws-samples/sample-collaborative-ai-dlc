@@ -97,18 +97,24 @@ environments by themselves.
 
 ### Tool-version lifecycle
 
-The version selector in **Tools** shows every version and its status:
+The **Tools** workspace shows a visual path for every selected version:
 
-| Status            | Meaning                                                                                                 | Available action                                  |
-| ----------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `DRAFT`           | Definition is editable and no build is active.                                                          | **Edit** or **Build**                             |
-| `QUEUED`          | CodeBuild has been requested.                                                                           | Wait or refresh                                   |
-| `BUILDING`        | Source import, installation, normalization, and functional checks are running.                          | Open **Build logs**                               |
-| `SCANNING`        | The immutable OCI artifact exists and ECR scan results are being evaluated.                             | Wait or refresh                                   |
-| `SECURITY_REVIEW` | Critical or High findings, or an unsupported artifact scan, require an explicit administrator decision. | **Accept Findings** or **Accept Scan Limitation** |
-| `READY`           | Source, artifact, scan decision, and verification evidence are complete.                                | **Publish**                                       |
-| `PUBLISHED`       | The immutable version can be selected by environments.                                                  | **Recommend** when it is not already recommended  |
-| `FAILED`          | Import, installation, scan processing, or verification failed.                                          | Inspect evidence, **Edit**, or **Retry**          |
+**Define -> Build -> Check -> Publish -> Recommend**
+
+The active step includes a waiting indicator while CodeBuild or ECR is still
+working. **CodeBuild logs** are available as soon as the build supplies a log
+URL, and **Open ECR** is available after the image exists.
+
+| Status            | Meaning                                                                                      | Available action                                   |
+| ----------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `DRAFT`           | Definition is editable and no build is active.                                               | Edit or start the build                            |
+| `QUEUED`          | CodeBuild has been requested.                                                                | Wait or open **CodeBuild logs**                    |
+| `BUILDING`        | Source import, installation, normalization, and functional checks are running.               | Open **CodeBuild logs**                            |
+| `SCANNING`        | The immutable OCI artifact exists and ECR scan results are being evaluated.                  | Wait or open **ECR**                               |
+| `SECURITY_REVIEW` | Critical or High findings, or a scan limitation, require an explicit administrator decision. | Review the findings or scan limitation             |
+| `READY`           | Source, artifact, scan decision, and verification evidence are complete.                     | **Publish**                                        |
+| `PUBLISHED`       | The immutable version can be selected by environments.                                       | **Make recommended** when it should be the default |
+| `FAILED`          | Import, installation, scan processing, or verification failed.                               | Inspect the error, edit, or retry                  |
 
 Refreshing the browser is not required while a build is active; the view polls
 the version until it reaches a reviewable or terminal status.
@@ -121,14 +127,21 @@ Before opening the form, identify:
 
 - An exact version.
 - An official Linux ARM64 archive URL.
-- The executable paths inside the installed tool.
-- A command that prints the version and a stable expected substring.
-- A representative functional check.
-- Any exact Debian package prerequisites.
-- Any dependency on another tool family.
-- An optional publisher checksum and public checksum-evidence URL.
+- The distribution and publisher, for example **Amazon Corretto** and
+  **Amazon Web Services**.
+- The tool type, such as **Java JDK**, **Go SDK**, or **Other CLI**.
 
-The normal import path accepts public HTTPS archives ending in:
+For the normal case, that is all the version form requires. The tool type
+supplies the executable paths, environment variables, dependencies, version
+command, and functional check. Open **Advanced options** only for an unusual
+archive layout, installer, dependency, package prerequisite, or verification
+command.
+
+The optional advanced checksum fields can record a publisher-provided checksum
+and public checksum-evidence URL. The platform always pins the downloaded
+artifact to its calculated SHA-256 even when those fields are empty.
+
+The import path accepts public HTTPS archives ending in:
 
 - `.tar.gz`
 - `.tgz`
@@ -157,29 +170,29 @@ Current import limits are:
 #### Create the family and first version
 
 1. Open **Admin -> Environments -> Tools**.
-2. Choose **Add Tool**.
+2. Choose **New tool family**.
 3. Enter a human-readable **Name**, for example `.NET SDK`.
 4. Enter or accept the stable lowercase **ID**, for example `dotnet-sdk`.
 5. Enter the **Publisher**, **Category**, and **Description**.
 6. Enter the **Exact version**.
-7. Select a **Verification** preset.
-8. Enter the **Official ARM64 archive** URL.
-9. Review the generated installation and verification defaults.
-10. Choose **Create and Build**.
+7. Select the **Tool type**.
+8. Enter the **Linux ARM64 download URL**.
+9. Choose **Create and start build**.
 
 Creating the family and creating its first version happen together. A tool
-family can later contain multiple published versions.
+family can later contain multiple published versions. For the first version,
+the family name and publisher are also used as the distribution identity.
 
 The tool ID is a durable catalog key. Do not include the version in it. Use
 `dotnet-sdk`, not `dotnet-sdk-8`. The version belongs to the tool-version
 record.
 
-#### Choose a verification preset
+#### Choose a tool type
 
-Presets fill in executable paths, environment variables, dependencies, the
-version command, and a representative build:
+Tool types fill in executable paths, environment variables, dependencies, the
+version command, and a representative functional check:
 
-| Preset          | Functional verification                                                                                |
+| Tool type       | Functional verification                                                                                |
 | --------------- | ------------------------------------------------------------------------------------------------------ |
 | **Java**        | Runs `java -version`, compiles a class with `javac`, and runs it.                                      |
 | **Go**          | Runs `go version`, builds a small Go program, and runs it.                                             |
@@ -189,7 +202,7 @@ version command, and a representative build:
 | **.NET**        | Runs `dotnet --version`, creates a console project, builds it, and runs it.                            |
 | **Generic CLI** | Runs the configured version command. Add a custom verifier when a version check alone is insufficient. |
 
-Selecting a preset is a starting point, not a bypass. Review the generated
+Selecting a tool type is a starting point, not a bypass. Review the generated
 executable paths and expected version before building.
 
 #### Publisher checksum and source trust
@@ -293,19 +306,16 @@ output. Do not include credentials or production data.
 
 #### Example: add a .NET SDK
 
-1. Choose **Add Tool**.
+1. Choose **New tool family**.
 2. Set **Name** to `.NET SDK` and **ID** to `dotnet-sdk`.
 3. Set **Publisher** to `Microsoft` and **Category** to `Language SDK`.
 4. Enter the exact SDK version.
-5. Select the **.NET** preset.
+5. Select the **.NET SDK** tool type.
 6. Enter Microsoft's official Linux ARM64 SDK archive URL.
-7. Add publisher checksum evidence when available.
-8. Confirm the preset exposes `dotnet`, sets
-   `DOTNET_ROOT=${TOOL_ROOT}`, and expects the exact SDK version.
-9. Choose **Create and Build**.
-10. Review the source, OCI artifact, scan, and console-project verification.
-11. Publish the version.
-12. Recommend it if it should be the default .NET SDK for new environment
+7. Choose **Create and start build**.
+8. Review the source, artifact, package inspection, and functional check.
+9. Publish the version.
+10. Make it recommended if it should be the default .NET SDK for new environment
     drafts.
 
 This adds .NET as a selectable tool. It does not create or publish a .NET
@@ -345,11 +355,12 @@ identity, failure detail, and CodeBuild logs.
 
 For a `FAILED` version:
 
-1. Open **Build logs** and read the failure detail shown in the version.
+1. Open **CodeBuild logs** and read the field-specific failure detail shown in
+   the version.
 2. Choose **Edit** when the archive layout, executable path, installer,
    package, variable, version command, or verifier is wrong.
-3. Choose **Save and Build** to store the corrected definition and queue a new
-   build.
+3. Choose **Save and rebuild** to store the corrected definition and queue a
+   new build.
 4. Choose **Retry** only when the definition is already correct and the failure
    was transient.
 
@@ -367,11 +378,12 @@ limitation retained as evidence.
 The administrator can:
 
 - Leave the version unpublished and remediate its source or dependencies.
-- Choose **Accept Findings** to record the identity and timestamp and move the
+- Choose **Review package findings** when Critical or High package findings
+  were detected, then explicitly continue to record the decision and move the
   version to `READY`.
-- Choose **Accept Scan Limitation** when ECR reports the artifact as
-  unsupported, after reviewing the publisher checksum, generated SBOM, and
-  networkless functional verification.
+- Choose **Continue without scan** when ECR cannot inspect the artifact format.
+  The dialog explains that this is a scanner limitation, not a detected
+  vulnerability.
 
 Acceptance does not publish the version. The findings and acceptance record
 remain visible after publication and in every environment revision that
@@ -381,10 +393,10 @@ snapshots that tool version.
 
 Publishing and recommending are separate decisions:
 
-| Action        | Effect                                                                                |
-| ------------- | ------------------------------------------------------------------------------------- |
-| **Publish**   | Makes one exact immutable version available for explicit environment selection.       |
-| **Recommend** | Makes one published version the default for new selections and dependency resolution. |
+| Action               | Effect                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| **Publish**          | Makes one exact immutable version available for explicit environment selection.       |
+| **Make recommended** | Makes one published version the default for new selections and dependency resolution. |
 
 Multiple versions of the same tool can remain published. Only one version is
 recommended.
@@ -400,23 +412,34 @@ new version:
 - Does not change an existing environment revision.
 - Does not change an active or completed intent.
 
+Choosing **Replace recommendation** directly replaces the current recommended
+version within that tool family. The existing recommendation does not need to
+be removed first.
+
 For shipped tools, publish and recommend Java before building Maven or Gradle.
 
 ### Add or update a tool version
 
-To add a newer version:
+To add a newer version or another distribution:
 
 1. Open the tool family in **Admin -> Environments -> Tools**.
-2. Choose **Add Version**.
-3. Enter the new exact version, official ARM64 archive, and verification
-   definition.
-4. Choose **Create and Build**.
-5. Review the complete evidence.
+2. Choose **Add distribution or version**.
+3. Enter the distribution, publisher, exact version, and Linux ARM64 download
+   URL. The existing family supplies the tool type.
+4. Choose **Create and start build**.
+5. Review the lifecycle and evidence.
 6. Publish the version.
-7. Choose **Recommend** only when the new version should become the default.
+7. Choose **Make recommended** or **Replace recommendation** only when the new
+   version should become the default.
 
 The prior published version remains selectable. Environments pinned to it
 remain valid.
+
+For example, add **Amazon Corretto** as another version in the existing
+**Java JDK** family. Set **Distribution** to `Amazon Corretto`, **Publisher** to
+`Amazon Web Services`, choose the exact Corretto version and archive, then
+publish and replace the Eclipse Temurin recommendation if Corretto should
+become the default. Both distributions remain selectable.
 
 To correct an unpublished version, use **Edit** while its status is `DRAFT` or
 `FAILED`. Published versions cannot be edited; create another version instead.
@@ -433,9 +456,9 @@ Tool versions are selected on an environment revision, not globally:
 6. Choose **Create Draft** or **Save as New Revision**.
 7. Build, review, and publish that environment revision.
 
-When a tool has only one published version, the editor shows its version badge
-and an include switch; there is no redundant version selector. A selector
-appears when:
+When a tool has only one published version, the editor shows its version and an
+**Add** action; there is no redundant version selector. The tool can be removed
+again before the revision is saved. A selector appears when:
 
 - More than one published version is available.
 - The base already includes the tool and a published version can override the
@@ -446,26 +469,27 @@ not a restriction. Any published version shown by the selector can be chosen.
 
 ### Create an environment
 
-Open **Admin -> Environments -> Environments** and choose **New Environment**.
+Open **Admin -> Environments -> Environments** and choose **New environment**.
 
-1. Enter a stable environment ID, name, and description.
+1. Enter a name and description. Optionally provide a stable environment ID;
+   otherwise one is generated from the name.
 2. Select a published **Base environment**. Use Standard unless the new
    environment intentionally extends another published custom environment.
 3. Review the protected Node.js and Python versions and any tools inherited
    from the base.
-4. Enable catalog tools. The initial toggle selects the recommended published
-   version.
+4. Search or browse the tool catalog and choose **Add** for each capability.
+   The recommended published version is selected initially.
 5. Use the version selector when multiple published versions exist or when
    overriding a tool inherited from the base.
-6. Review dependencies marked **Required**. They are added at their recommended
-   published versions.
-7. Add exact apt packages, non-secret environment variables, or restricted
-   single-line build commands only when the catalog tools do not cover the
-   need.
-8. Review the projected compressed size. AgentCore runtime images must remain
-   at or below `2048 MiB`.
-9. Choose **Create Draft**.
-10. Select the draft revision and choose **Build**.
+6. Review dependencies marked **Required** or **Automatic**. They are added at
+   their recommended published versions.
+7. Expand **Advanced settings** only when catalog tools do not cover the need.
+   Add exact apt packages, non-secret environment variables, or restricted
+   single-line build commands as structured rows.
+8. Review the live **Composition** summary and projected compressed size.
+   AgentCore runtime images must remain at or below `2048 MiB`.
+9. Choose **Create draft**.
+10. Open **Revisions**, select the draft revision, and choose **Build**.
 
 Environment variables and build commands cannot replace protected runtime
 behavior, inject secrets, change the runtime user, entrypoint, command, port,
@@ -501,13 +525,21 @@ and AgentCore runtime validation succeed.
 
 ### Environment-revision lifecycle
 
+The revision workspace shows the process as a visual path:
+
+**Define -> Build -> Check -> Verify -> Publish**
+
+The active Build, Check, or Verify step displays a waiting indicator.
+CodeBuild logs are shown when available, and the ECR repository is linked after
+the image has been created.
+
 | Status            | Meaning                                                          | Available action                                |
 | ----------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
 | `DRAFT`           | Editable recipe snapshot, not yet built.                         | **Build**                                       |
 | `QUEUED`          | CodeBuild has been requested.                                    | Wait or refresh                                 |
-| `BUILDING`        | The composed image and local checks are running.                 | Open **Build logs**                             |
-| `SCANNING`        | ECR scan results are being evaluated.                            | Wait or refresh                                 |
-| `SECURITY_REVIEW` | Critical or High findings require a recorded decision.           | **Accept Findings & Continue**                  |
+| `BUILDING`        | The composed image and local checks are running.                 | Open **CodeBuild logs**                         |
+| `SCANNING`        | ECR scan results are being evaluated.                            | Wait or open **ECR**                            |
+| `SECURITY_REVIEW` | Critical or High findings require a recorded decision.           | **Review findings**                             |
 | `VERIFYING`       | AgentCore runtime and endpoint validation are running.           | Wait or refresh                                 |
 | `READY`           | All required checks passed or findings were explicitly accepted. | **Publish**                                     |
 | `PUBLISHED`       | This is, or was, a published immutable revision.                 | Create another revision for changes             |
@@ -547,9 +579,9 @@ revision.
 2. Recommend it when it should become the default. Affected environments show
    a recommended-tool update warning.
 3. Open the environment.
-4. Select the desired exact version in the catalog-tool list.
-5. Choose **Save as New Revision**.
-6. Build, review, and publish the new revision.
+4. Open **Definition** and select the desired exact version in the tool list.
+5. Review the composition summary and choose **Save as new revision**.
+6. Open **Revisions**, then build, review, and publish the new revision.
 
 The warning is informational. No revision changes until the administrator
 selects versions and saves a new revision.
