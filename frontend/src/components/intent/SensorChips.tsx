@@ -1,5 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { redactRenderedDiagnostic } from '@/components/intent/SensorDiagnostics';
 import type { IntentSensorRun, SensorDetail } from '@/services/intents';
 
 // Sensor result → chip styling. `held: true` marks a blocking failure — the
@@ -30,12 +31,14 @@ export function summarizeSensorDetail(detail: SensorDetail | null): string | nul
   const missing = Array.isArray(detail.artifacts)
     ? detail.artifacts.filter((a) => a?.reason === 'not found in graph').map((a) => a.artifact)
     : [];
-  if (missing.length) return `missing: ${missing.join(', ')}`;
-  if (Array.isArray(detail.unreferenced) && detail.unreferenced.length) {
-    return `unreferenced: ${detail.unreferenced.join(', ')}`;
+  if (missing.length) {
+    return redactRenderedDiagnostic(`missing: ${missing.join(', ')}`);
   }
-  if (detail.error) return String(detail.error);
-  if (detail.reason) return String(detail.reason);
+  if (Array.isArray(detail.unreferenced) && detail.unreferenced.length) {
+    return redactRenderedDiagnostic(`unreferenced: ${detail.unreferenced.join(', ')}`);
+  }
+  if (detail.error) return redactRenderedDiagnostic(detail.error);
+  if (detail.reason) return redactRenderedDiagnostic(detail.reason);
   return null;
 }
 

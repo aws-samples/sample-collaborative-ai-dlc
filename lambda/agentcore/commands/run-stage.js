@@ -88,6 +88,10 @@ import {
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
 import { credentialProviderForCli } from '../../shared/agent-credentials.js';
+import {
+  mergeChangedFileProvenance,
+  unknownChangedFileProvenance,
+} from '../../shared/changed-file-provenance.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
@@ -551,6 +555,18 @@ const summarizeSensorDetail = (detail) => {
   return '';
 };
 
+// A stage can safely scope sensors only when every repository reported known
+// provenance. One unknown repository widens the whole workspace scan because a
+// failed Git collection may hide a relevant path in any sensor's match set.
+const changedFileProvenanceFromGitResults = (results = []) =>
+  mergeChangedFileProvenance(
+    results.map((result) => ({
+      source: result.repo ?? 'unknown repository',
+      provenance:
+        result.provenance ?? unknownChangedFileProvenance('missing_repository_provenance'),
+    })),
+  );
+
 // Run the stage's deterministic sensors after the agent finishes. Records a
 // SensorRun verdict + broadcasts an `agent.note` per sensor. Returns a
 // human-readable reason string when a BLOCKING sensor held the stage, else null.
@@ -568,6 +584,7 @@ const runStageSensors = async ({
   openGraph,
   loadBlockScript,
   workspaceDir,
+  changedFileProvenance = unknownChangedFileProvenance('not_provided'),
   env,
   spawnFn,
   store,
@@ -593,6 +610,7 @@ const runStageSensors = async ({
       executionId,
       loadBlockScript,
       workspaceDir,
+      changedFileProvenance,
       env,
       spawnFn,
       store,
@@ -633,6 +651,7 @@ const runSensorsWithGraph = async ({
   executionId,
   loadBlockScript,
   workspaceDir,
+  changedFileProvenance = unknownChangedFileProvenance('not_provided'),
   env,
   spawnFn,
   store,
@@ -649,6 +668,7 @@ const runSensorsWithGraph = async ({
     substitutions: {},
     spawnFn,
     childEnv: env,
+    changedFileProvenance,
   });
 
   const verdicts = await runner.runStageSensors({
@@ -2279,6 +2299,8 @@ export const runStage = async (
     repos,
     workspaceDir,
     branch,
+    baseBranch,
+    baseBranches,
     gitProvider,
     repoProviders,
     projectId,
@@ -2495,6 +2517,11 @@ export const runStage = async (
     return fail(stageInstanceId, uncommitted ? 'git_commit_failed' : 'push_failed', detail);
   }
 
+  // Capture this stage's paths before running script sensors. Any repository
+  // whose Git collection failed makes provenance unknown and widens checking.
+  const changedFileProvenance = changedFileProvenanceFromGitResults(gitResult.results);
+  const changedFiles = changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
+
   // 6. Deterministic sensors — the verification axis that runs AFTER the agent.
   // Graph sensors evaluate the produced artifacts' content in-process; script
   // sensors spawn against the workspace checkout. Advisory verdicts record a
@@ -2514,6 +2541,7 @@ export const runStage = async (
       openGraph,
       loadBlockScript,
       workspaceDir,
+      changedFileProvenance,
       env,
       spawnFn,
       store,
@@ -2646,9 +2674,6 @@ export const runStage = async (
     sectionIndex,
     state: 'SUCCEEDED',
   });
-  const changedFiles = [
-    ...new Set(gitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
-  ].toSorted();
   const commitSha =
     gitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ?? null;
   return {
@@ -2658,6 +2683,7 @@ export const runStage = async (
     unitSlug,
     sectionIndex,
     cli,
+    changedFileProvenance,
     changedFiles,
     commitSha,
     verification:
@@ -2679,5 +2705,6 @@ export const __test = {
   isBenignKiroEmptyCompletion,
   buildReviewerPrompt,
   renderReviewerReadScope,
+  changedFileProvenanceFromGitResults,
   SHARED_CONTRACT_ARTIFACTS,
 };
