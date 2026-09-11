@@ -37,6 +37,7 @@ import {
 } from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
+import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -2481,6 +2482,13 @@ export const handler = async (event, context) => {
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
+      const answerStatus = data.status ?? 'answered';
+      if (!isHumanTaskAnswerStatus(answerStatus)) {
+        return response(400, {
+          error: 'status must be answered, approved, or rejected',
+          code: 'invalid_gate_status',
+        });
+      }
       // A live Quorum edit is mutating this intent's artifacts; answering the
       // gate would resume the parked stage RIGHT INTO those writes. The run is
       // already parked — waiting for the edit to finish costs nothing (mirror
@@ -2502,7 +2510,7 @@ export const handler = async (event, context) => {
       const answered = await store.answerHumanTask({
         executionId: intentId,
         humanTaskId,
-        status: data.status || 'answered',
+        status: answerStatus,
         answer: data.answer ?? null,
         answeredBy: responder.sub,
         answeredByName: responder.displayName,
