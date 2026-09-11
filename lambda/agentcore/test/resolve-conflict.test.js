@@ -125,6 +125,48 @@ describe('buildConflictPrompt', () => {
 });
 
 describe('resolveConflict', () => {
+  it('restores and trusts the lane checkout before the first fetch', async () => {
+    const ws = path.join(root, 'restored-lane-ws');
+    const calls = [];
+    const res = await resolveConflict(basePayload(ws), {
+      ensureWorkspaceSource: async (options) => {
+        calls.push('restore');
+        expect(options).toMatchObject({
+          repos: ['o/r'],
+          branch: 'aidlc/i1--s1-unit-u',
+          baseBranch: 'aidlc/i1',
+          projectId: 'p1',
+          executionId: 'e1',
+          workspaceDir: ws,
+        });
+        return { restored: false, repos: [], failed: [] };
+      },
+      beginConflictMerge: async ({ dir }) => {
+        calls.push('fetch');
+        expect(dir).toBe(ws);
+        return { conflicted: false, merged: 'up_to_date' };
+      },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual(['restore', 'fetch']);
+  });
+
+  it('fails before fetching when the lane checkout cannot be restored or trusted', async () => {
+    const beginConflictMerge = vi.fn();
+    const res = await resolveConflict(basePayload('/restored-lane-ws'), {
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: ['o/r'] }),
+      beginConflictMerge,
+    });
+
+    expect(res).toMatchObject({
+      ok: false,
+      reason: 'workspace_restore_failed',
+      detail: 'could not restore or trust: o/r',
+    });
+    expect(beginConflictMerge).not.toHaveBeenCalled();
+  });
+
   it('resolves a real conflict: engine merges, agent edits, engine verifies + concludes + pushes', async () => {
     const { remote, ws } = await conflictWorld();
     const store = spyStore();
