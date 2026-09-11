@@ -67,6 +67,10 @@ run "standalone_defaults" {
     condition     = aws_ecs_service.yjs_server.deployment_maximum_percent == 100 && aws_ecs_service.yjs_server.deployment_minimum_healthy_percent == 0
     error_message = "A single-worker upgrade must stop the old task before starting another owner."
   }
+  assert {
+    condition     = aws_ecs_service.yjs_server.availability_zone_rebalancing == "DISABLED"
+    error_message = "Existing services must explicitly disable AZ rebalancing when adopting maximumPercent = 100."
+  }
 }
 
 run "manual_cluster" {
@@ -88,6 +92,10 @@ run "manual_cluster" {
   assert {
     condition     = length(aws_dynamodb_table.members) == 1 && length(aws_iam_role_policy.cluster) == 1
     error_message = "Cluster mode needs membership storage and snapshot permissions."
+  }
+  assert {
+    condition     = aws_ecs_service.yjs_server.availability_zone_rebalancing == "DISABLED"
+    error_message = "Manual clusters must retain an AZ rebalancing setting compatible with the deployment limits."
   }
 }
 
@@ -118,6 +126,10 @@ run "automatic_cluster" {
   assert {
     condition     = jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].stopTimeout == 120
     error_message = "ECS must give the application its checkpoint/drain budget."
+  }
+  assert {
+    condition     = aws_ecs_service.yjs_server.availability_zone_rebalancing == "DISABLED"
+    error_message = "Autoscaling must not enable AZ rebalancing while maximumPercent remains 100."
   }
 }
 
