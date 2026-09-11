@@ -43,6 +43,7 @@ const dependencies = () => {
         isFile: () => false,
       })),
       checkoutRepo: vi.fn(),
+      trustDirectory: vi.fn(async () => true),
       checkoutRemoteRevision: vi.fn(async () => ({ ready: true })),
       openGraph: vi.fn(async () => ({})),
       createWriter: vi.fn(() => ({ createArtifact })),
@@ -58,6 +59,10 @@ describe('importHandoffArtifacts', () => {
     const result = await importHandoffArtifacts(payload, deps);
 
     expect(result.ok).toBe(true);
+    expect(deps.trustDirectory).toHaveBeenCalledWith({ targetDir: '/workspace' });
+    expect(deps.trustDirectory.mock.invocationCallOrder[0]).toBeLessThan(
+      deps.checkoutRemoteRevision.mock.invocationCallOrder[0],
+    );
     expect(deps.checkoutRemoteRevision).toHaveBeenCalledWith(
       expect.objectContaining({
         branch: 'aidlc/unit/payments',
@@ -121,5 +126,36 @@ describe('importHandoffArtifacts', () => {
         targetDir: '/workspace',
       }),
     );
+    expect(deps.trustDirectory).not.toHaveBeenCalled();
+  });
+
+  it('fails before checkout when a restored repository cannot be trusted', async () => {
+    const { deps } = dependencies();
+    deps.trustDirectory.mockResolvedValue(false);
+
+    const result = await importHandoffArtifacts(
+      {
+        ...payload,
+        workspaceDir: '/mnt/workspace',
+        repositories: [
+          payload.repositories[0],
+          {
+            ...payload.repositories[0],
+            name: 'frontend',
+            repository: 'owner/frontend',
+          },
+        ],
+      },
+      deps,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'safe_directory_config_failed',
+      repository: 'owner/api',
+      detail: 'could not trust restored checkout /mnt/workspace/owner/api',
+    });
+    expect(deps.checkoutRemoteRevision).not.toHaveBeenCalled();
+    expect(deps.openGraph).not.toHaveBeenCalled();
   });
 });

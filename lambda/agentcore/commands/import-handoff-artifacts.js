@@ -2,6 +2,7 @@ import { stat } from 'node:fs/promises';
 import {
   checkoutRepo as defaultCheckoutRepo,
   hasCheckout as defaultHasCheckout,
+  trustGitDirectory as defaultTrustGitDirectory,
 } from '../workspace.js';
 import {
   checkoutRemoteRevision as defaultCheckoutRemoteRevision,
@@ -29,6 +30,7 @@ export const importHandoffArtifacts = async (payload, deps) => {
     checkoutRepo = defaultCheckoutRepo,
     checkoutRemoteRevision = defaultCheckoutRemoteRevision,
     hasCheckout = defaultHasCheckout,
+    trustDirectory = defaultTrustGitDirectory,
     statFn = stat,
     createWriter = createGraphWriter,
   } = deps;
@@ -46,7 +48,8 @@ export const importHandoffArtifacts = async (payload, deps) => {
   const multi = repositories.length > 1;
   for (const repository of repositories) {
     const dir = repoTargetDir({ url: repository.repository, workspaceDir, multi });
-    if (!(await hasCheckout(dir, statFn))) {
+    const checkoutExists = await hasCheckout(dir, statFn);
+    if (!checkoutExists) {
       const cloned = await checkoutRepo({
         repo: repository.repository,
         branch: repository.branch,
@@ -63,6 +66,16 @@ export const importHandoffArtifacts = async (payload, deps) => {
           repository: repository.repository,
         };
       }
+    } else if (!(await trustDirectory({ targetDir: dir }))) {
+      // Submission import can resume in a runtime whose uid differs from the
+      // process that created the persisted checkout. Trust it before the first
+      // status/fetch performed by checkoutRemoteRevision.
+      return {
+        ok: false,
+        reason: 'safe_directory_config_failed',
+        repository: repository.repository,
+        detail: `could not trust restored checkout ${dir}`,
+      };
     }
     const checkedOut = await checkoutRemoteRevision({
       dir,
