@@ -4,8 +4,28 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: Immutable release tag to deploy
+        description: Immutable release tag or commit SHA to deploy
         required: true
+        type: string
+      ref_type:
+        description: How to validate ref (release-tag or commit)
+        required: false
+        default: release-tag
+        type: string
+      deployment_target:
+        description: Stable target identifier used for reporting
+        required: false
+        default: release
+        type: string
+      github_environment:
+        description: Protected GitHub Environment containing deployment variables
+        required: false
+        default: demo-release
+        type: string
+      terraform_project_name:
+        description: Project namespace used to isolate account-global AWS resource names
+        required: false
+        default: collaborative-ai-dlc
         type: string
   workflow_dispatch:
     inputs:
@@ -18,16 +38,60 @@ permissions:
   contents: read
   id-token: write
 
-concurrency:
-  group: deploy-demo
-  cancel-in-progress: false
-
 jobs:
+  # Environment variables are available only after a job starts. Capture the
+  # backend before the deployment job's concurrency group is evaluated.
+  resolve-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    environment:
+      name: ${{ inputs.github_environment || 'demo-release' }}
+      deployment: false
+    outputs:
+      backend: ${{ steps.backend.outputs.backend }}
+      concurrency_group: ${{ steps.backend.outputs.concurrency_group }}
+    steps:
+      - name: Resolve Terraform backend
+        id: backend
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+          TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { appendFileSync } from 'node:fs';
+
+          const backend = {};
+          for (const [field, name] of Object.entries({
+            bucket: 'TF_STATE_BUCKET',
+            key: 'TF_STATE_KEY',
+            region: 'TF_STATE_REGION',
+          })) {
+            const value = process.env[name];
+            if (!value) {
+              throw new Error(`GitHub Environment variable ${name} is required.`);
+            }
+            backend[field] = value;
+          }
+
+          // Hash the tuple to preserve key case and avoid ambiguous separators.
+          const identity = JSON.stringify([backend.bucket, backend.key]);
+          const digest = createHash('sha256').update(identity).digest('hex');
+          appendFileSync(process.env.GITHUB_OUTPUT,
+            `backend=${JSON.stringify(backend)}\nconcurrency_group=deploy-demo-${digest}\n`);
+          NODE
+
   deploy:
+    needs: resolve-backend
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    concurrency:
+      group: ${{ needs.resolve-backend.outputs.concurrency_group }}
+      cancel-in-progress: false
     environment:
-      name: demo
+      name: ${{ inputs.github_environment || 'demo-release' }}
       url: ${{ steps.deployment.outputs.url }}
     env:
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
@@ -35,47 +99,83 @@ jobs:
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
       BEDROCK_MODEL: ${{ vars.BEDROCK_MODEL }}
       DEPLOY_REF: ${{ inputs.ref }}
+      DEPLOY_REF_TYPE: ${{ inputs.ref_type || 'release-tag' }}
+      DEPLOY_TARGET: ${{ inputs.deployment_target || 'release' }}
       TF_ENVIRONMENT: prod
+      TF_PROJECT_NAME: ${{ inputs.terraform_project_name || 'collaborative-ai-dlc' }}
       TF_INPUT: 'false'
       TF_IN_AUTOMATION: 'true'
       # Clean runners do not have archives recorded in remote Terraform state.
       # Do not turn that expected absence into timestamp-driven Lambda rebuilds.
       TF_RECREATE_MISSING_LAMBDA_PACKAGE: 'false'
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-      TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
-      TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}
+      TF_STATE_BUCKET: ${{ fromJSON(needs.resolve-backend.outputs.backend).bucket }}
+      TF_STATE_KEY: ${{ fromJSON(needs.resolve-backend.outputs.backend).key }}
+      TF_STATE_REGION: ${{ fromJSON(needs.resolve-backend.outputs.backend).region }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           ref: ${{ inputs.ref }}
 
-      - name: Verify release tag
+      - name: Verify deployment ref
         run: |
           set -euo pipefail
-          if [[ ! "$DEPLOY_REF" =~ ^v[0-9] ]]; then
-            echo "Deployment ref must be a version tag beginning with v: $DEPLOY_REF" >&2
+
+          if [[ ! "$DEPLOY_TARGET" =~ ^[a-z0-9][a-z0-9-]{0,19}$ ]]; then
+            echo "deployment_target must be 1-20 lowercase letters, digits, or hyphens: $DEPLOY_TARGET" >&2
             exit 1
           fi
-          tag_ref="refs/tags/$DEPLOY_REF"
-          if ! git show-ref --verify --quiet "$tag_ref"; then
-            echo "Deployment tag does not exist: $DEPLOY_REF" >&2
-            exit 1
-          fi
-          if ! git rev-parse --verify "$tag_ref^{tag}" >/dev/null; then
-            echo "Deployment tag must be annotated: $DEPLOY_REF" >&2
+          if [[ ! "$TF_PROJECT_NAME" =~ ^[a-z0-9][a-z0-9-]{0,26}[a-z0-9]$ ]]; then
+            echo "terraform_project_name must be 2-28 lowercase letters, digits, or hyphens: $TF_PROJECT_NAME" >&2
             exit 1
           fi
 
-          tag_commit="$(git rev-parse --verify "$tag_ref^{commit}")"
           main_commit="$(git rev-parse --verify "refs/remotes/origin/main^{commit}")"
-          if ! git merge-base --is-ancestor "$tag_commit" "$main_commit"; then
-            echo "Deployment tag $DEPLOY_REF ($tag_commit) is not reachable from main." >&2
-            exit 1
-          fi
+          case "$DEPLOY_REF_TYPE" in
+            release-tag)
+              if [[ ! "$DEPLOY_REF" =~ ^v[0-9] ]]; then
+                echo "Deployment ref must be a version tag beginning with v: $DEPLOY_REF" >&2
+                exit 1
+              fi
+              tag_ref="refs/tags/$DEPLOY_REF"
+              if ! git show-ref --verify --quiet "$tag_ref"; then
+                echo "Deployment tag does not exist: $DEPLOY_REF" >&2
+                exit 1
+              fi
+              if ! git rev-parse --verify "$tag_ref^{tag}" >/dev/null; then
+                echo "Deployment tag must be annotated: $DEPLOY_REF" >&2
+                exit 1
+              fi
 
-          echo "Verified $DEPLOY_REF resolves to main commit $tag_commit."
-          echo "DEPLOY_COMMIT=$tag_commit" >> "$GITHUB_ENV"
+              deploy_commit="$(git rev-parse --verify "$tag_ref^{commit}")"
+              if ! git merge-base --is-ancestor "$deploy_commit" "$main_commit"; then
+                echo "Deployment tag $DEPLOY_REF ($deploy_commit) is not reachable from main." >&2
+                exit 1
+              fi
+              ;;
+            commit)
+              if [[ ! "$DEPLOY_REF" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "Commit deployment ref must be a full 40-character SHA: $DEPLOY_REF" >&2
+                exit 1
+              fi
+              deploy_commit="$(git rev-parse --verify "$DEPLOY_REF^{commit}")"
+              if [[ "$deploy_commit" != "$DEPLOY_REF" ]]; then
+                echo "Deployment ref did not resolve to the requested commit: $DEPLOY_REF" >&2
+                exit 1
+              fi
+              if ! git merge-base --is-ancestor "$deploy_commit" "$main_commit"; then
+                echo "Deployment commit $deploy_commit is not reachable from main." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "ref_type must be release-tag or commit: $DEPLOY_REF_TYPE" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "Verified $DEPLOY_REF resolves to main commit $deploy_commit."
+          echo "DEPLOY_COMMIT=$deploy_commit" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -106,7 +206,7 @@ jobs:
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
-              echo "GitHub Environment variable $name is required." >&2
+              echo "GitHub Environment variable or workflow input $name is required." >&2
               exit 1
             fi
           done
@@ -126,7 +226,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           mask-aws-account-id: true
           role-duration-seconds: 10800
-          role-session-name: aidlc-demo-${{ github.run_id }}-${{ github.run_attempt }}
+          role-session-name: aidlc-${{ inputs.deployment_target || 'release' }}-${{ github.run_id }}-${{ github.run_attempt }}
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
       - name: Create Terraform environment files
@@ -144,6 +244,7 @@ jobs:
 
           {
             printf 'environment   = %s\n' "$(hcl_string "$TF_ENVIRONMENT")"
+            printf 'project_name  = %s\n' "$(hcl_string "$TF_PROJECT_NAME")"
             printf 'aws_region    = %s\n' "$(hcl_string "$AWS_REGION")"
             printf 'bedrock_model = %s\n' "$(hcl_string "$BEDROCK_MODEL")"
           } > "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
@@ -241,10 +342,12 @@ jobs:
             "$app_url" >/dev/null
           echo "url=$app_url" >> "$GITHUB_OUTPUT"
           {
-            echo "### Demo deployment"
+            echo "### ${DEPLOY_TARGET^} demo deployment"
             echo
-            echo "- Release: \`$DEPLOY_REF\`"
+            echo "- Source: \`$DEPLOY_REF\`"
             echo "- Commit: \`$DEPLOY_COMMIT\`"
+            echo "- Terraform project: \`$TF_PROJECT_NAME\`"
             echo "- Terraform environment: \`$TF_ENVIRONMENT\`"
+            echo "- Region: \`$AWS_REGION\`"
             echo "- URL: $app_url"
           } >> "$GITHUB_STEP_SUMMARY"
