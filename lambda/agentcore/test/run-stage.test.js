@@ -7,6 +7,7 @@ import {
   __test,
 } from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
+import { credentialFailureError, withCredentialSignal } from '../invocation-credentials.js';
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
@@ -238,6 +239,88 @@ describe('runStage — happy path', () => {
       status: 'RUNNING',
       currentStage: 'requirements-analysis',
       currentPhase: 'inception',
+    });
+  });
+});
+
+describe('runStage — IAM cancellation', () => {
+  it.each(['claude', 'opencode', 'codex'])(
+    'checkpoints partial %s work before reporting a typed IAM failure',
+    async (cli) => {
+      const controller = new AbortController();
+      const order = [];
+      const store = spyStore();
+      const originalUpdate = store.updateStageState;
+      store.updateStageState = async (args) => {
+        if (args.state === 'FAILED') order.push('failed');
+        return originalUpdate(args);
+      };
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = { end() {} };
+      child.kill = vi.fn(() => {
+        order.push('stopped');
+        child.emit('close', 0); // No stderr/auth error to recognize; signal is authoritative.
+      });
+      const result = await withCredentialSignal(controller.signal, () =>
+        runStage(
+          {
+            ...baseArgs,
+            requestedCli: cli,
+          },
+          baseDeps({
+            store,
+            availableClis: [cli],
+            withOpenCodeStore: async ({ operation }) => operation(),
+            cleanupCodexHome: async () => true,
+            persistCodexRollout: async () => ({ ok: true }),
+            spawnFn: () => {
+              setImmediate(() =>
+                controller.abort(credentialFailureError('bedrock_credentials_expired')),
+              );
+              return child;
+            },
+            commitAndPushAll: async () => {
+              order.push('checkpoint');
+              return { ok: true, committed: false, results: [] };
+            },
+          }),
+        ),
+      );
+      expect(result).toMatchObject({ ok: false, reason: 'bedrock_credentials_expired' });
+      expect(order.indexOf('stopped')).toBeLessThan(order.indexOf('checkpoint'));
+      expect(order.indexOf('checkpoint')).toBeLessThan(order.indexOf('failed'));
+      expect(
+        store.calls.some(([name, row]) => name === 'updateStageState' && row.state === 'SUCCEEDED'),
+      ).toBe(false);
+    },
+  );
+
+  it('still parks an existing human gate so the answer can resume with fresh credentials', async () => {
+    const controller = new AbortController();
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => child.emit('close', null);
+    const result = await withCredentialSignal(controller.signal, () =>
+      runStage(
+        baseArgs,
+        baseDeps({
+          store: spyStore(pendingGateSeed('human-gate')),
+          spawnFn: () => {
+            setImmediate(() =>
+              controller.abort(credentialFailureError('bedrock_credentials_expired')),
+            );
+            return child;
+          },
+        }),
+      ),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'human-gate',
     });
   });
 });
@@ -1277,6 +1360,38 @@ describe('runStage — LLM reviewer axis', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+  });
+
+  it('reports an expired IAM session during review instead of accepting an inconclusive review', async () => {
+    const controller = new AbortController();
+    const spawnFn = vi
+      .fn()
+      .mockImplementationOnce(okSpawn)
+      .mockImplementation(() => {
+        const child = new EventEmitter();
+        child.stdin = { end() {} };
+        child.kill = () => child.emit('close', 0);
+        setImmediate(() => controller.abort(credentialFailureError('bedrock_credentials_expired')));
+        return child;
+      });
+    const deps = baseDeps({
+      store: storeWithVerdict('READY'),
+      spawnFn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithReviewer({ humanValidation: 'required', reviewerMaxIterations: 3 }),
+      }),
+    });
+
+    const result = await withCredentialSignal(controller.signal, () => runStage(baseArgs, deps));
+
+    expect(result).toMatchObject({ ok: false, reason: 'bedrock_credentials_expired' });
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+    expect(
+      deps.store.calls.some(
+        ([name, row]) => name === 'updateStageState' && row.state === 'SUCCEEDED',
+      ),
+    ).toBe(false);
   });
 
   it('retries a NOT-READY reviewer verdict up to reviewerMaxIterations before failing', async () => {

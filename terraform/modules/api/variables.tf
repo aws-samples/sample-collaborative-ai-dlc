@@ -166,6 +166,11 @@ variable "agent_credential_grant_secret_param_name" {
   type        = string
 }
 
+variable "credential_broker_role_arn" {
+  description = "Credential broker role used by the Bedrock IAM setup wizard"
+  type        = string
+}
+
 variable "agentcore_runtime_arn" {
   description = "AgentCore v2 stage-executor runtime ARN. The agents Lambda invokes its `capabilities` command (GET /agents/capabilities?models=1) to discover Kiro's model list + per-CLI auth state. Empty on v1-only stacks."
   type        = string

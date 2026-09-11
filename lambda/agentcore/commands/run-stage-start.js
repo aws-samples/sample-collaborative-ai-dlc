@@ -26,6 +26,7 @@
 // Traceability: the callbackId rides the payload into run-stage, which stamps
 // it on the STAGE row (stageCallbackId) — who is waiting on what is always
 // recoverable from the row, and a stuck callback can be completed manually.
+import { credentialFailureResult } from '../invocation-credentials.js';
 
 // Key one in-flight stage attempt. resumeFrom distinguishes park/resume legs —
 // a resume may legitimately start while bookkeeping for the parked leg of the
@@ -158,7 +159,7 @@ export const createRunStageStart = ({
           // must still complete or the orchestrator waits for the heartbeat
           // timeout for nothing.
           log(`stage job crashed (${key}):`, err?.message ?? err);
-          result = {
+          result = credentialFailureResult() ?? {
             ok: false,
             state: 'FAILED',
             reason: 'stage_job_crashed',

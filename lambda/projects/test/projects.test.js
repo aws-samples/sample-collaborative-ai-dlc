@@ -862,13 +862,21 @@ describe('DELETE /projects/:id', () => {
     expect(JSON.parse(fetched.body)).toEqual({ error: 'Access denied' });
   });
 
-  it('deletes both space agent credentials and tolerates an idempotent retry', async () => {
+  it('deletes space API keys and IAM configuration', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub);
     const bedrockPath = `/collab/dev/projects/${id}/agent-credentials/bedrock-bearer-token`;
     const kiroPath = `/collab/dev/projects/${id}/agent-credentials/kiro-api-key`;
+    const iamPath = `/collab/dev/projects/${id}/agent-credentials/bedrock-iam`;
     ssmParams.set(bedrockPath, 'space-bedrock');
     ssmParams.set(kiroPath, 'space-kiro');
+    ssmParams.set(
+      iamPath,
+      JSON.stringify({
+        roleArn: 'arn:aws:iam::222222222222:role/SpaceInference',
+        region: 'eu-north-1',
+      }),
+    );
 
     const res = await handler({
       httpMethod: 'DELETE',
@@ -879,12 +887,13 @@ describe('DELETE /projects/:id', () => {
     expect(res.statusCode).toBe(204);
     expect(ssmParams.has(bedrockPath)).toBe(false);
     expect(ssmParams.has(kiroPath)).toBe(false);
+    expect(ssmParams.has(iamPath)).toBe(false);
     expect(
       ssmMock
         .commandCalls(DeleteParameterCommand)
         .map((call) => call.args[0].input.Name)
         .filter((name) => name.includes(`projects/${id}/agent-credentials/`)),
-    ).toEqual([bedrockPath, kiroPath]);
+    ).toEqual([bedrockPath, kiroPath, iamPath]);
   });
 
   it('keeps the project retryable when space credential cleanup fails', async () => {

@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { executionMetaKey } from '../shared/v2-process-keys.js';
 import {
   ACTIVE,
@@ -14,16 +15,81 @@ import {
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
 import { readCredentialBindingValue } from '../shared/agent-credentials.js';
-import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
+  loadAgentCredentialGrantSecret,
+  BEDROCK_RENEWAL_TTL_SECONDS,
+  signBedrockCredentialRenewal,
+  verifyAgentCredentialGrant,
+  verifyBedrockCredentialRenewal,
+} from '../shared/agent-credential-grants.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const sts = new STSClient({});
 
 const CREDENTIAL_ACTIVE_EXECUTION_STATUSES = new Set(['CREATED', 'RUNNING']);
 const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
+const RENEW_BEDROCK_CREDENTIALS = 'renew-bedrock-credentials';
+
+// Even a mistakenly overprivileged inference role cannot give an agent STS,
+// IAM, or application-data access through this credential path.
+const INFERENCE_SESSION_POLICY = JSON.stringify({
+  Version: '2012-10-17',
+  Statement: [
+    { Effect: 'Deny', Action: 'sts:AssumeRole', Resource: '*' },
+    {
+      Effect: 'Allow',
+      Action: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:GetInferenceProfile',
+        'bedrock:ListInferenceProfiles',
+        'bedrock:ListFoundationModels',
+        'bedrock-mantle:CreateInference',
+        'bedrock-mantle:GetInference',
+        'bedrock-mantle:CancelInference',
+        'bedrock-mantle:DeleteInference',
+        'bedrock-mantle:GetProject',
+        'bedrock-mantle:ListModels',
+        'bedrock-mantle:ListTagsForResource',
+        'bedrock-mantle:ListProjects',
+      ],
+      Resource: '*',
+    },
+  ],
+});
+
+const assumeInferenceRole = async (claims, binding, stsClient) => {
+  const result = await stsClient.send(
+    new AssumeRoleCommand({
+      RoleArn: binding.iam.roleArn,
+      RoleSessionName: `collaborative-${claims.grantId.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 40)}`,
+      DurationSeconds: 3600,
+      ...(binding.iam.externalId ? { ExternalId: binding.iam.externalId } : {}),
+      Policy: INFERENCE_SESSION_POLICY,
+    }),
+  );
+  const credentials = result.Credentials;
+  if (
+    !credentials?.AccessKeyId ||
+    !credentials.SecretAccessKey ||
+    !credentials.SessionToken ||
+    !credentials.Expiration
+  ) {
+    throw new Error('STS returned incomplete inference credentials');
+  }
+  return {
+    AccessKeyId: credentials.AccessKeyId,
+    SecretAccessKey: credentials.SecretAccessKey,
+    Token: credentials.SessionToken,
+    Expiration: new Date(credentials.Expiration).toISOString(),
+  };
+};
 
 const loggableAgentCredentialErrorCode = (error) => {
+  if (['AccessDenied', 'AccessDeniedException'].includes(error?.name))
+    return 'BEDROCK_IAM_ACCESS_DENIED';
   switch (error?.code) {
     case 'AGENT_CREDENTIAL_GRANT_EXPIRED':
       return 'AGENT_CREDENTIAL_GRANT_EXPIRED';
@@ -131,29 +197,49 @@ const authorizeCredentialRequest = async (
 };
 
 const authorizeAgentCredentialRequest = async (
-  { grant },
-  { ssmClient = ssm, secret = null, env = process.env, now = undefined } = {},
+  { grant, action = RESOLVE_AGENT_CREDENTIALS, renewalToken },
+  { ssmClient = ssm, stsClient = sts, secret = null, env = process.env, now = undefined } = {},
 ) => {
-  if (!grant) {
+  const renewal = action === RENEW_BEDROCK_CREDENTIALS;
+  if (!(renewal ? renewalToken : grant)) {
     throw Object.assign(new Error('Agent credential grant is required'), {
       code: 'AGENT_CREDENTIAL_GRANT_INVALID',
     });
   }
-  const claims = await verifyIssuedAgentCredentialGrant(ssmClient, grant, {
-    env,
-    secret,
-    ...(now ? { now } : {}),
-  });
+  const key = secret ?? (await loadAgentCredentialGrantSecret(ssmClient, { env }));
+  const claims = (renewal ? verifyBedrockCredentialRenewal : verifyAgentCredentialGrant)(
+    renewal ? renewalToken : grant,
+    key,
+    now ? { now } : {},
+  );
   const credentials = await Promise.all(
-    claims.bindings.map(async (binding) => ({
-      binding,
-      value:
-        (await readCredentialBindingValue(ssmClient, {
-          base: env.AGENT_SETTINGS_SSM_PREFIX || '',
-          binding,
-          projectId: claims.projectId,
-        })) || null,
-    })),
+    claims.bindings.map(async (binding) => {
+      if (binding.authType === 'iam') {
+        try {
+          return {
+            binding,
+            iamCredentials: await assumeInferenceRole(claims, binding, stsClient),
+            renewalToken: renewal ? renewalToken : signBedrockCredentialRenewal(claims, key),
+            renewalExpiresAt:
+              (renewal ? claims.expiresAt : claims.issuedAt + BEDROCK_RENEWAL_TTL_SECONDS) * 1000,
+          };
+        } catch (error) {
+          // A broken Bedrock connection must not hide a usable Kiro key from
+          // capability discovery. Execution and renewal still fail closed.
+          if (renewal || claims.purpose !== 'capabilities') throw error;
+          return { binding, error: loggableAgentCredentialErrorCode(error) };
+        }
+      }
+      return {
+        binding,
+        value:
+          (await readCredentialBindingValue(ssmClient, {
+            base: env.AGENT_SETTINGS_SSM_PREFIX || '',
+            binding,
+            projectId: claims.projectId,
+          })) || null,
+      };
+    }),
   );
   return {
     purpose: claims.purpose,
@@ -166,7 +252,7 @@ const authorizeAgentCredentialRequest = async (
 export const handler = async (event) => {
   const action = event?.action || 'source-control';
   try {
-    if (action === RESOLVE_AGENT_CREDENTIALS) {
+    if ([RESOLVE_AGENT_CREDENTIALS, RENEW_BEDROCK_CREDENTIALS].includes(action)) {
       return {
         ok: true,
         ...(await authorizeAgentCredentialRequest(event || {})),
@@ -185,10 +271,9 @@ export const handler = async (event) => {
   } catch (error) {
     // Both code helpers return only allowlisted constants — never provider-
     // derived error text, which can carry credential material.
-    const code =
-      action === RESOLVE_AGENT_CREDENTIALS
-        ? loggableAgentCredentialErrorCode(error)
-        : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
+    const code = [RESOLVE_AGENT_CREDENTIALS, RENEW_BEDROCK_CREDENTIALS].includes(action)
+      ? loggableAgentCredentialErrorCode(error)
+      : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
     console.error('[credential-broker] request denied', {
       code,
       action,

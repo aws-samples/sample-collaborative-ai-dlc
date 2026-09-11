@@ -1261,6 +1261,13 @@ const mapIntent = (meta) => ({
   rewindFromStageId: meta.rewindFromStageId ?? null,
   agentCli: meta.agentCli ?? null,
   credentialSource: meta.credentialBinding?.source ?? null,
+  ...(meta.credentialBinding?.authType === 'iam'
+    ? {
+        credentialAuthType: 'iam',
+        credentialRoleArn: meta.credentialBinding.iam.roleArn,
+        credentialRegion: meta.credentialBinding.iam.region,
+      }
+    : {}),
   cliModels: meta.cliModels ?? null,
   tierModels: meta.tierModels ?? null,
   environment: meta.environment ?? null,

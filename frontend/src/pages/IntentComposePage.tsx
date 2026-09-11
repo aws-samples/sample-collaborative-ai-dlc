@@ -705,7 +705,8 @@ function IntentComposePageContent() {
                       )}
                       {source && (
                         <span className="rounded bg-muted px-1.5 py-0.5">
-                          {AGENT_CREDENTIAL_SOURCE_LABELS[source]} key
+                          {AGENT_CREDENTIAL_SOURCE_LABELS[source]}{' '}
+                          {status?.authType === 'iam' ? 'IAM role' : 'key'}
                         </span>
                       )}
                       {!available && <span>{unavailableReason}</span>}

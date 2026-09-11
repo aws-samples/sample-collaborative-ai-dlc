@@ -67,6 +67,7 @@
 import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
+import { withCredentialSignal } from './invocation-credentials.js';
 
 // Track whether a stage is currently running so /ping can report HealthyBusy.
 export const createBusyTracker = () => {
@@ -83,6 +84,20 @@ export const createBusyTracker = () => {
     },
   };
 };
+
+// Detached jobs acquire a reference when they enter the busy tracker. HTTP
+// dispatch releases its own reference after the accept response, and the job
+// releases the last reference on completion (including failures and parking).
+export const invocationBusyTracker = (busy, context) => ({
+  enter() {
+    context.retain?.();
+    busy.enter();
+  },
+  leave() {
+    context.dispose?.();
+    busy.leave();
+  },
+});
 
 // Dispatch one parsed invocation to the right command handler. PURE of HTTP —
 // returns { statusCode, body }. `handlers` = { initWs, runStage }; `busy` is the
@@ -101,21 +116,38 @@ export const dispatchInvocation = async ({
   if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
 
   busy?.enter();
+  let context;
   try {
-    const context =
+    context =
       prepareInvocation && definition.agentAuth
         ? await prepareInvocation(payload, definition.agentAuth)
         : {};
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
-    const result = await handler(handlerPayload, context);
+    const result = await withCredentialSignal(context.credentialSignal, () =>
+      handler(handlerPayload, context),
+    );
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception.
     return { statusCode: 200, body: { ...result, command, at: now() } };
   } catch (e) {
+    if (command === 'verify-bedrock-iam') {
+      return {
+        statusCode: 200,
+        body: {
+          command,
+          verified: false,
+          error:
+            e.code === 'BEDROCK_IAM_ACCESS_DENIED'
+              ? 'The credential broker cannot assume this role. Check the inference role trust policy, the broker AssumeRole permission, and the external ID. Allow time for IAM changes to propagate, then retry.'
+              : 'The IAM credential check failed. Check the broker permissions and connectivity, then retry.',
+        },
+      };
+    }
     return { statusCode: 500, body: { error: e.message, command } };
   } finally {
+    context?.dispose?.();
     busy?.leave();
   }
 };
@@ -206,6 +238,7 @@ const main = async () => {
   const { capabilities } = await import('./commands/capabilities.js');
   const { managedRuntimeCheck } = await import('./commands/managed-runtime-check.js');
   const { verifyMcp } = await import('./commands/verify-mcp.js');
+  const { verifyBedrockIam } = await import('./commands/verify-bedrock-iam.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
@@ -266,6 +299,7 @@ const main = async () => {
       }),
     managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),
     verifyMcp: (p) => verifyMcp(p),
+    verifyBedrockIam: (p, context) => verifyBedrockIam(p, { env: context.env }),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).
@@ -319,7 +353,7 @@ const main = async () => {
       runStage: (q) => handlers.runStage(q, context),
       sendCallbackSuccess: sendStageCallbackSuccess,
       sendCallbackHeartbeat: sendStageCallbackHeartbeat,
-      busy,
+      busy: invocationBusyTracker(busy, context),
       activeJobs: stageJobs,
     })(p);
   const discussionJobs = new Map();
@@ -331,7 +365,7 @@ const main = async () => {
       availableClis: context.availableClis,
       env: context.env,
       mcpEntry,
-      busy,
+      busy: invocationBusyTracker(busy, context),
       activeJobs: discussionJobs,
     })(p);
   // Composer proposals (Adaptive Workflows): grounded scope/grid proposals for
@@ -345,7 +379,7 @@ const main = async () => {
       broadcast,
       availableClis: context.availableClis,
       env: context.env,
-      busy,
+      busy: invocationBusyTracker(busy, context),
       activeJobs: composeJobs,
     })(p);
   // Quorum-supported artifact edits: plan (impact analysis) + apply (approved
@@ -361,7 +395,7 @@ const main = async () => {
       env: context.env,
       sendCallbackSuccess: sendStageCallbackSuccess,
       sendCallbackHeartbeat: sendStageCallbackHeartbeat,
-      busy,
+      busy: invocationBusyTracker(busy, context),
       activeJobs: quorumPlanJobs,
     })(p);
   const quorumApplyJobs = new Map();
@@ -375,7 +409,7 @@ const main = async () => {
       deriveArtifacts: (q) => handlers.deriveArtifacts(q, context),
       sendCallbackSuccess: sendStageCallbackSuccess,
       sendCallbackHeartbeat: sendStageCallbackHeartbeat,
-      busy,
+      busy: invocationBusyTracker(busy, context),
       activeJobs: quorumApplyJobs,
     })(p);
   // Ops remediation: reconstruct lost structured blocks (see command header).

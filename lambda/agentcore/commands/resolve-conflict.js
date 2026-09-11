@@ -35,6 +35,7 @@ import {
 } from '../git-engine.js';
 import { getDriver, selectCli } from '../cli/drivers.js';
 import { runChild as defaultRunChild } from '../cli/spawn.js';
+import { credentialFailureResult } from '../invocation-credentials.js';
 import { resolveStageModel } from '../model-resolver.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
@@ -258,12 +259,17 @@ export const resolveConflict = async (
       );
       if (e?.stack) console.error(e.stack);
       await abortAll(conflictedByRepo, dirFor);
-      return { ok: false, reason: 'cli_error', detail: e.message };
+      return credentialFailureResult() ?? { ok: false, reason: 'cli_error', detail: e.message };
     } finally {
       if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
       if (cli === 'codex') {
         await cleanupCodexHome({ codexHome, env }).catch(() => false);
       }
+    }
+    const authFailure = credentialFailureResult();
+    if (authFailure) {
+      await abortAll(conflictedByRepo, dirFor);
+      return authFailure;
     }
     if ((result?.exitCode ?? 0) !== 0) {
       await abortAll(conflictedByRepo, dirFor);

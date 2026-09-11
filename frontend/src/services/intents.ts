@@ -83,6 +83,9 @@ export interface Intent {
   rewindFromStageId?: string | null;
   agentCli?: AgentCli | null;
   credentialSource?: AgentCredentialSource | null;
+  credentialAuthType?: 'iam';
+  credentialRoleArn?: string;
+  credentialRegion?: string;
   cliModels: Record<string, string> | null;
   environment: IntentEnvironmentSnapshot | null;
   parkReleaseSeconds: number | null;

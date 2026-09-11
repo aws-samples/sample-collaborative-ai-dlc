@@ -429,6 +429,7 @@ module "lambda" {
 module "api" {
   source = "./modules/api"
 
+  credential_broker_role_arn               = module.lambda.credential_broker_role_arn
   project_name                             = var.project_name
   environment                              = var.environment
   cognito_user_pool_arn                    = module.auth.user_pool_arn

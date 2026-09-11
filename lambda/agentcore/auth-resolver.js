@@ -17,9 +17,9 @@ import {
 } from '../shared/agent-credentials.js';
 import { AGENT_AUTH_MODES } from './command-registry.js';
 import { invokeCredentialBroker } from './clients.js';
+import { prepareBedrockIamEnv } from './bedrock-iam.js';
 
-const bindingKey = (binding) =>
-  `${binding.provider}:${binding.source}:${binding.source === 'user' ? binding.userId : ''}`;
+const bindingKey = (binding) => JSON.stringify(normalizeCredentialBinding(binding));
 const grantMismatch = () =>
   Object.assign(new Error('Agent credential grant does not match this invocation'), {
     code: 'credential_grant_mismatch',
@@ -28,6 +28,8 @@ const grantMismatch = () =>
 const cleanBaseEnv = (env) => {
   const invocationEnv = { ...env };
   for (const name of AGENT_CREDENTIAL_ENV_NAMES) delete invocationEnv[name];
+  delete invocationEnv.BEDROCK_IAM_CREDENTIALS_URI;
+  delete invocationEnv.BEDROCK_IAM_AUTHORIZATION_TOKEN;
   return invocationEnv;
 };
 
@@ -102,7 +104,13 @@ const bindingResolvers = Object.freeze({
 export const authenticatedClisForEnv = ({ installed = [], env = {} } = {}) =>
   installed.filter((cli) => {
     const provider = credentialProviderForCli(cli);
-    return provider && Boolean(env[credentialEnvName(provider)]);
+    return (
+      provider &&
+      Boolean(
+        env[credentialEnvName(provider)] ||
+        (provider === 'bedrock' && env.BEDROCK_IAM_CREDENTIALS_URI),
+      )
+    );
   });
 
 export const resolveInvocationAgentAuth = async ({
@@ -111,6 +119,7 @@ export const resolveInvocationAgentAuth = async ({
   store = null,
   env = process.env,
   broker = invokeCredentialBroker,
+  prepareIamEnv = prepareBedrockIamEnv,
 } = {}) => {
   const invocationEnv = cleanBaseEnv(env);
   let meta = null;
@@ -162,6 +171,7 @@ export const resolveInvocationAgentAuth = async ({
     for (const credential of brokerResult.credentials) {
       const binding = normalizeCredentialBinding(credential?.binding);
       authorized.set(bindingKey(binding), {
+        ...credential,
         binding,
         value: typeof credential?.value === 'string' ? credential.value : '',
       });
@@ -181,12 +191,48 @@ export const resolveInvocationAgentAuth = async ({
     throw grantMismatch();
   }
 
+  let iamLifetime = {};
   for (const binding of bindings) {
     const credentialBinding = {
       provider: binding.provider,
       source: binding.source,
+      ...(binding.authType ? { authType: binding.authType } : {}),
     };
     credentialBindings.push(credentialBinding);
+    if (binding.authType === 'iam') {
+      const credential = authorized.get(bindingKey(binding));
+      if (credential.error) {
+        missingProviders.push(binding.provider);
+        missingCredentialBindings.push(credentialBinding);
+        continue;
+      }
+      const prepared = await prepareIamEnv(credential, {
+        renew: async () => {
+          const result = await broker({
+            action: 'renew-bedrock-credentials',
+            renewalToken: credential.renewalToken,
+          });
+          if (
+            result.purpose !== authMode ||
+            (result.projectId ?? null) !== projectId ||
+            (result.executionId ?? null) !== executionId ||
+            result.credentials?.length !== 1 ||
+            bindingKey(result.credentials[0].binding) !== bindingKey(binding)
+          ) {
+            throw grantMismatch();
+          }
+          return result.credentials[0].iamCredentials;
+        },
+      });
+      Object.assign(invocationEnv, prepared.env);
+      iamLifetime = {
+        retain: prepared.retain,
+        dispose: prepared.dispose,
+        credentialSignal: prepared.credentialSignal,
+      };
+      resolvedProviders.push(binding.provider);
+      continue;
+    }
     const value = authorized.get(bindingKey(binding))?.value || '';
     if (!value) {
       missingProviders.push(binding.provider);
@@ -198,6 +244,7 @@ export const resolveInvocationAgentAuth = async ({
   }
 
   return {
+    ...iamLifetime,
     env: invocationEnv,
     credentialBindings,
     resolvedProviders,

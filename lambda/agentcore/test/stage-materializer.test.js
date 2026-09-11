@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { tmpdir } from 'node:os';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { captureChild } from '../cli/spawn.js';
 import {
   OUTPUT_CONTRACT,
   MCP_EXECUTION_ANNEX,
@@ -572,6 +573,36 @@ describe('OpenCode inline config', () => {
     await expect(readFile(path.join(ws, '.opencode', 'opencode.json'), 'utf8')).rejects.toThrow();
     await expect(readFile(path.join(ws, 'AGENTS.md'), 'utf8')).rejects.toThrow();
   });
+});
+
+describe('Quorum working directories', () => {
+  it.each(['claude', 'kiro', 'opencode', 'codex'])(
+    'can launch %s in a new discussion directory after materializing its context',
+    async (cli) => {
+      const root = await mkdtemp(path.join(tmpdir(), 'aidlc-quorum-cwd-'));
+      const cwd = path.join(root, 'quorum', 'intent', 'discussion');
+      try {
+        await materializeCliContext({
+          cli,
+          workspaceDir: cwd,
+          mcpEntry: '/unused/mcp/index.js',
+          scope: { intentId: 'intent', discussionId: 'discussion', role: 'reader' },
+          env: { V2_CODEX_HOME_ROOT: path.join(root, 'codex-homes') },
+        });
+        // Use a real process so a missing cwd fails exactly as the agent launch
+        // does, without calling a model or depending on an installed agent CLI.
+        const result = await captureChild({
+          command: process.execPath,
+          args: ['-e', 'process.stdout.write("launched")'],
+          cwd,
+          timeoutMs: 5000,
+        });
+        expect(result).toMatchObject({ exitCode: 0, stdout: 'launched', timedOut: false });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('Codex config (per-stage CODEX_HOME)', () => {
