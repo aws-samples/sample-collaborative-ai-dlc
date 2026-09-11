@@ -108,6 +108,12 @@ manifest updates check that token and the parent scope's revocation marker.
 Workers stop accepting document messages five seconds before their local lease
 deadline. This assumes normally synchronized ECS task clocks.
 
+Transactions for documents in one intent share its revocation guard. Each worker
+serializes transactions on that scope and retries temporary DynamoDB transaction
+conflicts with bounded jitter. A temporary renewal failure retains only the last
+confirmed lease deadline; a failed ownership/revocation condition immediately
+stops serving the document.
+
 Dirty documents checkpoint at most once per two-second interval. Concurrent
 explicit flushes share the checkpoint. S3 holds the binary Yjs update, while a
 conditional DynamoDB transaction commits its exact object/version and sequence.

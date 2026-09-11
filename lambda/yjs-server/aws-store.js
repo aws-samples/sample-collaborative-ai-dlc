@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
@@ -15,7 +16,7 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
-import { scopeKey, snapshotPrefix } from './cluster.js';
+import { isTransientTransactionCancellation, scopeKey, snapshotPrefix } from './cluster.js';
 
 export class AwsStore {
   constructor({
@@ -38,6 +39,32 @@ export class AwsStore {
     if (!documentsTable || !membersTable || !bucket)
       throw new Error('Incomplete Yjs cluster storage');
     Object.assign(this, { documentsTable, membersTable, bucket, ddb, s3, logger });
+    this.transactions = new Map();
+  }
+
+  transact(documentId, input) {
+    // DynamoDB conflicts even when transactions only share a ConditionCheck.
+    // Serialize this worker's transactions on each parent scope; other workers
+    // can still contend, so retry explicitly transient cancellations with jitter.
+    const scope = scopeKey(documentId);
+    const previous = this.transactions.get(scope) ?? Promise.resolve();
+    const command = new TransactWriteCommand({ ClientRequestToken: randomUUID(), ...input });
+    const operation = previous
+      .catch(() => {})
+      .then(async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return await this.ddb.send(command);
+          } catch (error) {
+            if (attempt >= 3 || !isTransientTransactionCancellation(error)) throw error;
+            await sleep(25 * 2 ** attempt * (0.5 + Math.random()));
+          }
+        }
+      });
+    this.transactions.set(scope, operation);
+    return operation.finally(() => {
+      if (this.transactions.get(scope) === operation) this.transactions.delete(scope);
+    });
   }
 
   register(member) {
@@ -85,53 +112,49 @@ export class AwsStore {
   }
 
   async claim(lease, now) {
-    await this.ddb.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          this.scopeCondition(lease.documentId),
-          {
-            Update: {
-              TableName: this.documentsTable,
-              Key: { documentId: lease.documentId },
-              UpdateExpression:
-                'SET ownerId = :owner, ownerAddress = :address, leaseToken = :token, leaseUntil = :until',
-              ConditionExpression: 'attribute_not_exists(leaseUntil) OR leaseUntil <= :now',
-              ExpressionAttributeValues: {
-                ':owner': lease.ownerId,
-                ':address': lease.ownerAddress,
-                ':token': lease.leaseToken,
-                ':until': lease.leaseUntil,
-                ':now': now,
-              },
+    await this.transact(lease.documentId, {
+      TransactItems: [
+        this.scopeCondition(lease.documentId),
+        {
+          Update: {
+            TableName: this.documentsTable,
+            Key: { documentId: lease.documentId },
+            UpdateExpression:
+              'SET ownerId = :owner, ownerAddress = :address, leaseToken = :token, leaseUntil = :until',
+            ConditionExpression: 'attribute_not_exists(leaseUntil) OR leaseUntil <= :now',
+            ExpressionAttributeValues: {
+              ':owner': lease.ownerId,
+              ':address': lease.ownerAddress,
+              ':token': lease.leaseToken,
+              ':until': lease.leaseUntil,
+              ':now': now,
             },
           },
-        ],
-      }),
-    );
+        },
+      ],
+    });
     return this.get(lease.documentId);
   }
 
   renew(lease, until, now) {
-    return this.ddb.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          this.scopeCondition(lease.documentId),
-          {
-            Update: {
-              TableName: this.documentsTable,
-              Key: { documentId: lease.documentId },
-              UpdateExpression: 'SET leaseUntil = :until',
-              ConditionExpression: 'leaseToken = :token AND leaseUntil > :now',
-              ExpressionAttributeValues: {
-                ':until': until,
-                ':token': lease.leaseToken,
-                ':now': now,
-              },
+    return this.transact(lease.documentId, {
+      TransactItems: [
+        this.scopeCondition(lease.documentId),
+        {
+          Update: {
+            TableName: this.documentsTable,
+            Key: { documentId: lease.documentId },
+            UpdateExpression: 'SET leaseUntil = :until',
+            ConditionExpression: 'leaseToken = :token AND leaseUntil > :now',
+            ExpressionAttributeValues: {
+              ':until': until,
+              ':token': lease.leaseToken,
+              ':now': now,
             },
           },
-        ],
-      }),
-    );
+        },
+      ],
+    });
   }
 
   async load(lease) {
@@ -166,33 +189,31 @@ export class AwsStore {
       }),
     );
     try {
-      await this.ddb.send(
-        new TransactWriteCommand({
-          ClientRequestToken: randomUUID(),
-          TransactItems: [
-            this.scopeCondition(lease.documentId),
-            {
-              Update: {
-                TableName: this.documentsTable,
-                Key: { documentId: lease.documentId },
-                UpdateExpression:
-                  'SET snapshotKey = :key, snapshotVersion = :version, snapshotBytes = :bytes, snapshotSequence = :sequence',
-                ConditionExpression:
-                  'leaseToken = :token AND leaseUntil > :now AND (attribute_not_exists(snapshotSequence) OR snapshotSequence = :previous)',
-                ExpressionAttributeValues: {
-                  ':key': key,
-                  ':version': object.VersionId ?? null,
-                  ':bytes': snapshot.byteLength,
-                  ':token': lease.leaseToken,
-                  ':now': now,
-                  ':previous': previousSequence,
-                  ':sequence': previousSequence + 1,
-                },
+      await this.transact(lease.documentId, {
+        ClientRequestToken: randomUUID(),
+        TransactItems: [
+          this.scopeCondition(lease.documentId),
+          {
+            Update: {
+              TableName: this.documentsTable,
+              Key: { documentId: lease.documentId },
+              UpdateExpression:
+                'SET snapshotKey = :key, snapshotVersion = :version, snapshotBytes = :bytes, snapshotSequence = :sequence',
+              ConditionExpression:
+                'leaseToken = :token AND leaseUntil > :now AND (attribute_not_exists(snapshotSequence) OR snapshotSequence = :previous)',
+              ExpressionAttributeValues: {
+                ':key': key,
+                ':version': object.VersionId ?? null,
+                ':bytes': snapshot.byteLength,
+                ':token': lease.leaseToken,
+                ':now': now,
+                ':previous': previousSequence,
+                ':sequence': previousSequence + 1,
               },
             },
-          ],
-        }),
-      );
+          },
+        ],
+      });
     } catch (error) {
       // A timeout may mean the transaction committed but its response was
       // lost. Never delete the object unless cancellation is definitive.
