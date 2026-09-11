@@ -132,13 +132,11 @@ GitHub Environment subject:
 }
 ```
 
-Attach the reviewed Terraform deployment policy used by the release demo. If
-that policy restricts `aws:RequestedRegion` or contains region-qualified ARNs,
-add the main demo's application region. IAM and CloudFront permissions remain
-account-global. A reviewed least-privilege policy remains recommended. Existing
-demo accounts that deliberately mirror AWS-managed `AdministratorAccess` must
-use its AWS-owned ARN (`arn:aws:iam::aws:policy/AdministratorAccess`) and treat
-the unrestricted account access as an accepted risk.
+Use the same deployment policy as the release demo, described in
+[Grant deployment permissions](#grant-deployment-permissions), on the separate
+main-demo role. If a customer-managed policy restricts `aws:RequestedRegion` or
+contains region-qualified ARNs, add the main demo's application region. IAM and
+CloudFront permissions remain account-global.
 
 Grant the role access to the chosen backend bucket and only the new state
 objects (plus `s3:GetBucketLocation` and `s3:ListBucket` on the bucket):
@@ -298,8 +296,29 @@ If the bucket uses a customer-managed KMS key, also grant the role
 
 ## Grant deployment permissions
 
-Attach the customer-managed policy currently used for manual Terraform
-deployments:
+The maintained demo account currently attaches AWS-managed
+`AdministratorAccess` (`arn:aws:iam::aws:policy/AdministratorAccess`) to both
+deployment roles:
+
+| GitHub Environment | IAM role                            |
+| ------------------ | ----------------------------------- |
+| `demo-release`     | `CollaborativeDemoGitHubDeploy`     |
+| `demo-main`        | `CollaborativeMainDemoGitHubDeploy` |
+
+Each role trusts only its corresponding GitHub Environment. The main demo
+mirrors the existing release deployment permissions; it does not require a
+broader policy than the release demo.
+
+This documents the current demo account configuration. `AdministratorAccess`
+is not required simply because Terraform creates IAM roles or CloudFront
+resources. A reviewed customer-managed policy can grant the necessary service
+permissions while restricting role management and `iam:PassRole` to application
+roles. Permissions boundaries on those roles can limit the permissions the
+deployment is allowed to delegate. Developing and validating that policy is
+separate hardening work.
+
+For other accounts, prefer a reviewed customer-managed deployment policy.
+Attach the policy deliberately selected for the account:
 
 ```bash
 aws iam attach-role-policy \
@@ -312,17 +331,18 @@ and policy management, `iam:PassRole`, Lambda, API Gateway, Cognito, EC2,
 Elastic Load Balancing, ECS, ECR, S3, DynamoDB, Neptune, CloudFront, CloudWatch,
 EventBridge, SQS, Secrets Manager, Systems Manager, and Bedrock AgentCore.
 
-A reviewed customer-managed policy is recommended. AWS-managed
-`AdministratorAccess` gives the workflow unrestricted control of the account;
-existing demo accounts that deliberately retain it should treat that as an
-accepted risk and attach the AWS-managed policy ARN deliberately.
+`AdministratorAccess` grants permissions for all AWS actions on all resources,
+including resources unrelated to the deployment. Retaining it in the maintained
+demo account is an explicit permissions choice. Scoped state policies and
+separate project names do not reduce the permissions granted by that policy.
 
 ## Verify before enabling automatic deployment
 
 Before publishing the first release, confirm that the `demo-release` environment has
 the required reviewers, self-review prevention, administrator bypass disabled,
 and the `main` deployment branch rule. Also confirm that the `v*` tag ruleset
-is active and the deployment role has the deliberately selected deployment policy.
+is active and the deployment role has the selected deployment policy, with its
+scope reviewed for the account.
 
 Every published release then waits for an independent approval, creates a
 Terraform plan, applies that exact saved plan, deploys the frontend, and
