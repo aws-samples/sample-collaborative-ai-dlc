@@ -70,6 +70,29 @@ exist. Apply reuses those exact packages, so neither missing files nor changed
 source hashes can invalidate the saved plan. Source changes still produce and
 deploy new content-addressed archives.
 
+## Deployment concurrency
+
+The reusable workflow first resolves `TF_STATE_BUCKET`, `TF_STATE_KEY`, and
+`TF_STATE_REGION` from the selected GitHub Environment in a small configuration
+job. The deployment job uses that captured backend for both Terraform and its
+concurrency group, so configuration changes while it waits cannot make the
+group refer to a different state than Terraform uses.
+
+The concurrency group is a hash of the state bucket and key. Callers using the
+same state share a group even when their target labels or project names differ;
+different state objects can deploy in parallel. Hashing preserves distinctions
+between case-sensitive S3 keys despite GitHub's case-insensitive group names.
+`cancel-in-progress: false` protects an active deployment. GitHub's default
+queue behavior retains the most recent pending deployment for each group.
+
+The configuration job has no GitHub token permissions, does not request AWS
+credentials, and uses `deployment: false` to avoid recording a deployment.
+Environment protection rules still apply to both jobs: when required reviewers
+are configured, approve backend resolution first and deployment afterward.
+Wait timers also apply to both jobs. Environments using custom deployment
+protection GitHub Apps must set `resolve-backend.environment.deployment` to
+`true`, because those rules require a deployment object.
+
 ## Configure the continuous main demo
 
 The main deployment is intentionally a separate target rather than another

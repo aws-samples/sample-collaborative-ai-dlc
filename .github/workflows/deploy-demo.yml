@@ -13,7 +13,7 @@ on:
         default: release-tag
         type: string
       deployment_target:
-        description: Stable target identifier used for concurrency and reporting
+        description: Stable target identifier used for reporting
         required: false
         default: release
         type: string
@@ -38,14 +38,58 @@ permissions:
   contents: read
   id-token: write
 
-concurrency:
-  group: deploy-demo-${{ inputs.deployment_target || 'release' }}
-  cancel-in-progress: false
-
 jobs:
+  # Environment variables are available only after a job starts. Capture the
+  # backend before the deployment job's concurrency group is evaluated.
+  resolve-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    environment:
+      name: ${{ inputs.github_environment || 'demo-release' }}
+      deployment: false
+    outputs:
+      backend: ${{ steps.backend.outputs.backend }}
+      concurrency_group: ${{ steps.backend.outputs.concurrency_group }}
+    steps:
+      - name: Resolve Terraform backend
+        id: backend
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+          TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { appendFileSync } from 'node:fs';
+
+          const backend = {};
+          for (const [field, name] of Object.entries({
+            bucket: 'TF_STATE_BUCKET',
+            key: 'TF_STATE_KEY',
+            region: 'TF_STATE_REGION',
+          })) {
+            const value = process.env[name];
+            if (!value) {
+              throw new Error(`GitHub Environment variable ${name} is required.`);
+            }
+            backend[field] = value;
+          }
+
+          // Hash the tuple to preserve key case and avoid ambiguous separators.
+          const identity = JSON.stringify([backend.bucket, backend.key]);
+          const digest = createHash('sha256').update(identity).digest('hex');
+          appendFileSync(process.env.GITHUB_OUTPUT,
+            `backend=${JSON.stringify(backend)}\nconcurrency_group=deploy-demo-${digest}\n`);
+          NODE
+
   deploy:
+    needs: resolve-backend
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    concurrency:
+      group: ${{ needs.resolve-backend.outputs.concurrency_group }}
+      cancel-in-progress: false
     environment:
       name: ${{ inputs.github_environment || 'demo-release' }}
       url: ${{ steps.deployment.outputs.url }}
@@ -64,9 +108,9 @@ jobs:
       # Clean runners do not have archives recorded in remote Terraform state.
       # Do not turn that expected absence into timestamp-driven Lambda rebuilds.
       TF_RECREATE_MISSING_LAMBDA_PACKAGE: 'false'
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-      TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
-      TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}
+      TF_STATE_BUCKET: ${{ fromJSON(needs.resolve-backend.outputs.backend).bucket }}
+      TF_STATE_KEY: ${{ fromJSON(needs.resolve-backend.outputs.backend).key }}
+      TF_STATE_REGION: ${{ fromJSON(needs.resolve-backend.outputs.backend).region }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
