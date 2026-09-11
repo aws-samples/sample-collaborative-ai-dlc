@@ -24,6 +24,7 @@
 // graph.
 
 import gremlin from 'gremlin';
+import { randomUUID } from 'node:crypto';
 import { flattenVertexMap } from './graph-rows.js';
 import { selectCurrentArtifactHeads } from './artifact-versioning.js';
 
@@ -205,15 +206,19 @@ export const applyArtifactEdit = async ({
   const exists = await artifactAt(g, intentId, artifactId).hasNext();
   if (!exists) throw new Error(`Artifact "${artifactId}" not found`);
   const ts = now ?? new Date().toISOString();
-  await artifactAt(g, intentId, artifactId)
+  let write = artifactAt(g, intentId, artifactId)
     .property(cardinality.single, 'content', String(content ?? ''))
     .property(cardinality.single, 'updated_at', ts)
     .property(cardinality.single, 'edited_by', String(editedBy ?? ''))
     .property(cardinality.single, 'edited_by_name', String(editedByName ?? ''))
     .property(cardinality.single, 'edited_at', ts)
     .property(cardinality.single, 'edit_origin', origin)
-    .property(cardinality.single, 'edit_ref', String(editRef ?? ''))
-    .next();
+    .property(cardinality.single, 'edit_ref', String(editRef ?? ''));
+  // Human autosaves share their current CRDT. A Quorum replacement starts a
+  // fresh editor document so a recovered old snapshot cannot overwrite it.
+  if (origin === 'quorum')
+    write = write.property(cardinality.single, 'collaboration_epoch', randomUUID());
+  await write.next();
   await clearArtifactStale({ g, intentId, artifactId });
   return { artifactId, editedAt: ts };
 };

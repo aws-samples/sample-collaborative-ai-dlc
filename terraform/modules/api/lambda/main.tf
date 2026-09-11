@@ -726,7 +726,7 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
         # Yjs documents: remove the intent-scoped realtime docs (gate editors,
         # discussion threads, presence) for each deleted intent.
         Effect   = "Allow"
-        Action   = ["dynamodb:DeleteItem"]
+        Action   = ["dynamodb:DeleteItem", "dynamodb:PutItem"]
         Resource = [var.yjs_documents_table_arn]
       },
       {
@@ -2756,7 +2756,7 @@ resource "aws_iam_role_policy" "intents" {
         # Yjs documents: remove the intent-scoped realtime docs (gate editors,
         # discussion threads, presence) when an intent is deleted.
         Effect   = "Allow"
-        Action   = ["dynamodb:DeleteItem"]
+        Action   = ["dynamodb:DeleteItem", "dynamodb:PutItem"]
         Resource = [var.yjs_documents_table_arn]
       },
       {

@@ -25,7 +25,8 @@ export function useCollaborativeArtifact<T extends Record<string, string>>(
   onAutoSave?: (values: T) => Promise<void>,
 ) {
   const docId = isEditing ? `${artifactType}-${sprintId}-${artifactId}` : null;
-  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(docId, userName);
+  const { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument } =
+    useYjsDocument(docId, userName);
   const [values, setValues] = useState<T>({} as T);
 
   // Stabilize fields reference so it doesn't cause effect re-runs. fields is a
@@ -104,25 +105,23 @@ export function useCollaborativeArtifact<T extends Record<string, string>>(
     stableFields.forEach((f) => {
       v[f as string] = doc.getText(f as string).toString();
     });
-    // Return null if all fields are empty (nothing to save)
-    if (Object.values(v).every((s) => !s)) return null;
     return v;
   }, [doc, synced, stableFields]);
 
   const autoSaveHandler = useCallback(
     async (data: Record<string, string>) => {
       if (onAutoSave) {
+        await flushDocument();
         await onAutoSave(data as T);
       }
     },
-    [onAutoSave],
+    [onAutoSave, flushDocument],
   );
 
-  // Serialize values to a stable string so useAutoSave can detect changes
-  const valuesKey = stableFields.map((f) => values[f] ?? '').join('\x00');
-
-  useAutoSave(getAutoSaveData, autoSaveHandler, [valuesKey], {
+  useAutoSave(getAutoSaveData, autoSaveHandler, [localRevision], {
     enabled: isEditing && synced && !!onAutoSave,
+    skipInitial: true,
+    resetKey: doc,
   });
 
   return {

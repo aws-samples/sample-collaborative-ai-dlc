@@ -20,6 +20,7 @@ export function useCollaborativeArtifactContent({
   projectId,
   intentId,
   artifactId,
+  collaborationEpoch,
   userName,
   userColor,
   enabled,
@@ -28,21 +29,20 @@ export function useCollaborativeArtifactContent({
   projectId: string;
   intentId: string;
   artifactId: string;
+  collaborationEpoch?: string | null;
   userName: string;
   userColor?: string;
   enabled: boolean;
   onAutoSave?: (content: string) => Promise<void>;
 }) {
-  const docId = enabled ? `intent-artifact-${intentId}-${artifactId}` : null;
-  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(
-    docId,
-    userName,
-    userColor,
-    {
+  const docId = enabled
+    ? `intent-artifact-${intentId}-${artifactId}-epoch-${collaborationEpoch ?? 'legacy'}`
+    : null;
+  const { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument } =
+    useYjsDocument(docId, userName, userColor, {
       intentId,
       projectId,
-    },
-  );
+    });
   const [content, setContentState] = useState('');
 
   useEffect(() => {
@@ -99,18 +99,23 @@ export function useCollaborativeArtifactContent({
   const getAutoSaveData = useCallback(() => {
     if (!doc || !docId || !synced) return null;
     const value = doc.getText('content').toString();
-    return value ? { content: value } : null;
+    return { content: value };
   }, [doc, docId, synced]);
 
   const autoSaveHandler = useCallback(
     async (data: { content: string }) => {
-      if (onAutoSave) await onAutoSave(data.content);
+      if (onAutoSave) {
+        await flushDocument();
+        await onAutoSave(data.content);
+      }
     },
-    [onAutoSave],
+    [onAutoSave, flushDocument],
   );
 
-  useAutoSave(getAutoSaveData, autoSaveHandler, [content], {
+  const { flush } = useAutoSave(getAutoSaveData, autoSaveHandler, [localRevision], {
     enabled: enabled && synced && !!onAutoSave,
+    skipInitial: true,
+    resetKey: doc,
   });
 
   return {
@@ -123,5 +128,6 @@ export function useCollaborativeArtifactContent({
     awareness,
     remoteUsers,
     setCursor,
+    flush,
   };
 }

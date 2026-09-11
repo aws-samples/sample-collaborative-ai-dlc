@@ -32,7 +32,7 @@ export function useCollaborativeInception(
   userName: string,
   autoSave?: AutoSaveCallbacks,
 ) {
-  const { doc, synced, remoteUsers, setCursor } = useYjsDocument(
+  const { doc, synced, remoteUsers, setCursor, flushDocument } = useYjsDocument(
     `inception-${projectId}`,
     userName,
     generateColor(userName),
@@ -42,6 +42,9 @@ export function useCollaborativeInception(
     answers: {},
     status: 'drafting',
   });
+  const [localChanges, setLocalChanges] = useState({ doc, description: 0, answers: 0 });
+  const descriptionRevision = localChanges.doc === doc ? localChanges.description : 0;
+  const answersRevision = localChanges.doc === doc ? localChanges.answers : 0;
 
   // Sync Yjs state to React state
   useEffect(() => {
@@ -50,6 +53,18 @@ export function useCollaborativeInception(
     const descriptionText = doc.getText('description');
     const answersMap = doc.getMap('answers');
     const metaMap = doc.getMap('meta');
+    const changedLocally = (transaction: Y.Transaction) => {
+      if (!transaction.local) return;
+      const changedTypes = new Set<unknown>(transaction.changedParentTypes.keys());
+      const description = changedTypes.has(descriptionText);
+      const answers = changedTypes.has(answersMap);
+      if (!description && !answers) return;
+      setLocalChanges((previous) => ({
+        doc,
+        description: (previous.doc === doc ? previous.description : 0) + Number(description),
+        answers: (previous.doc === doc ? previous.answers : 0) + Number(answers),
+      }));
+    };
 
     const updateState = () => {
       const answers: Record<string, StructuredAnswerState> = {};
@@ -92,12 +107,14 @@ export function useCollaborativeInception(
     descriptionText.observe(updateState);
     answersMap.observeDeep(updateState);
     metaMap.observe(updateState);
+    doc.on('afterTransaction', changedLocally);
     updateState();
 
     return () => {
       descriptionText.unobserve(updateState);
       answersMap.unobserveDeep(updateState);
       metaMap.unobserve(updateState);
+      doc.off('afterTransaction', changedLocally);
     };
   }, [doc]);
 
@@ -264,36 +281,31 @@ export function useCollaborativeInception(
   const getDescriptionData = useCallback(() => {
     if (!doc || !synced) return null;
     const desc = doc.getText('description').toString();
-    if (!desc) return null;
     return { description: desc };
   }, [doc, synced]);
 
   const saveDescription = useCallback(
     async (data: Record<string, string>) => {
-      if (autoSave?.onSaveDescription && data.description) {
+      if (autoSave?.onSaveDescription) {
+        await flushDocument();
         await autoSave.onSaveDescription(data.description);
       }
     },
-    [autoSave],
+    [autoSave, flushDocument],
   );
 
-  useAutoSave(getDescriptionData, saveDescription, [state.description], {
+  useAutoSave(getDescriptionData, saveDescription, [descriptionRevision], {
     enabled: synced && !!autoSave?.onSaveDescription,
+    skipInitial: true,
+    resetKey: doc,
   });
 
   // ── Auto-save answer drafts to backend ──
-  const answersKey = JSON.stringify(state.answers);
-
   const getAnswersData = useCallback(() => {
     if (!doc || !synced || !autoSave?.onSaveDraft) return null;
     const data: Record<string, StructuredAnswer> = {};
     for (const [questionId, answerState] of Object.entries(state.answers)) {
-      const hasData = answerState.answers.some(
-        (a) => a.selectedOptions.length > 0 || (a.freeText && a.freeText.length > 0),
-      );
-      if (hasData) {
-        data[questionId] = { answers: answerState.answers };
-      }
+      data[questionId] = { answers: answerState.answers };
     }
     if (Object.keys(data).length === 0) return null;
     return data;
@@ -302,17 +314,20 @@ export function useCollaborativeInception(
   const saveAnswerDrafts = useCallback(
     async (data: Record<string, StructuredAnswer>) => {
       if (!autoSave?.onSaveDraft) return;
+      await flushDocument();
       await Promise.all(
         Object.entries(data).map(([questionId, draftAnswer]) =>
           autoSave.onSaveDraft!(questionId, draftAnswer),
         ),
       );
     },
-    [autoSave],
+    [autoSave, flushDocument],
   );
 
-  useAutoSave(getAnswersData, saveAnswerDrafts, [answersKey], {
+  useAutoSave(getAnswersData, saveAnswerDrafts, [answersRevision], {
     enabled: synced && !!autoSave?.onSaveDraft,
+    skipInitial: true,
+    resetKey: doc,
   });
 
   return {

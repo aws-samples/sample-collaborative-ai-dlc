@@ -4,6 +4,7 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { createGraphWriter, GraphWriteError, flattenValueMap } from '../mcp/graph-writer.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { archiveArtifactsForStages } from '../../shared/artifact-versioning.js';
+import { applyArtifactEdit } from '../../shared/artifact-edit.js';
 
 const PARTITION = 'agentcore-graph-writer';
 
@@ -101,6 +102,40 @@ describe('createGraphWriter — guards', () => {
 });
 
 describe('createArtifact', () => {
+  it('changes the collaboration epoch for external replacements but preserves human editing sessions', async () => {
+    await seedIntent();
+    await writer.createArtifact({
+      artifactType: 'design',
+      id: 'epoch',
+      content: 'first',
+      props: { collaboration_epoch: 'caller-cannot-set-this' },
+    });
+    const original = (await writer.getArtifact({ id: 'epoch' })).collaboration_epoch;
+    expect(original).toMatch(/^[0-9a-f-]{36}$/);
+    await writer.updateArtifact({ id: 'epoch', props: { title: 'renamed' } });
+    expect((await writer.getArtifact({ id: 'epoch' })).collaboration_epoch).toBe(original);
+    await applyArtifactEdit({
+      g,
+      intentId: SCOPE.intentId,
+      artifactId: 'epoch',
+      content: 'human draft',
+      editedBy: 'alice',
+      origin: 'human',
+    });
+    expect((await writer.getArtifact({ id: 'epoch' })).collaboration_epoch).toBe(original);
+    await writer.updateArtifact({ id: 'epoch', props: { content: 'regenerated' } });
+    const regenerated = (await writer.getArtifact({ id: 'epoch' })).collaboration_epoch;
+    expect(regenerated).not.toBe(original);
+    await applyArtifactEdit({
+      g,
+      intentId: SCOPE.intentId,
+      artifactId: 'epoch',
+      content: 'quorum replacement',
+      editedBy: 'alice',
+      origin: 'quorum',
+    });
+    expect((await writer.getArtifact({ id: 'epoch' })).collaboration_epoch).not.toBe(regenerated);
+  });
   it('fails when the Intent anchor does not exist', async () => {
     await expect(
       writer.createArtifact({ artifactType: 'requirements-analysis', id: 'a1' }),

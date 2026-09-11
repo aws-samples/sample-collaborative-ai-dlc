@@ -409,6 +409,7 @@ export interface IntentArtifact {
   unitSlug?: string | null;
   stageAttempt?: number;
   generation?: number;
+  collaborationEpoch?: string | null;
   versionCount?: number;
   aliases?: string[];
   createdAt: string | null;
@@ -1147,6 +1148,7 @@ export const intentsService = {
     intentId: string,
     artifactId: string,
     content: string,
+    collaborationEpoch?: string | null,
   ) =>
     api.put<{
       artifactId: string;
@@ -1156,7 +1158,7 @@ export const intentsService = {
       steering: IntentSteering | null;
     }>(
       `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/content`,
-      { content },
+      { content, ...(collaborationEpoch !== undefined ? { collaborationEpoch } : {}) },
     ),
   // Clear the drift marker: reviewed against the upstream edit, still valid.
   verifyArtifact: (projectId: string, intentId: string, artifactId: string, note?: string) =>
