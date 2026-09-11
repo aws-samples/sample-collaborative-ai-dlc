@@ -260,7 +260,7 @@ bash /tmp/aidlc-install.sh adopt \
   --profile <aws-profile> \
   --admin <existing-administrator-email>
 
-bash /tmp/aidlc-install.sh update --version 2.0.0
+bash /tmp/aidlc-install.sh update --version 2.1.0
 ```
 
 The update backs up Terraform state and rejects plans that unexpectedly destroy Cognito, Neptune, S3, or persistent DynamoDB resources. Retiring the v1 ECS agent runtime and agent-pool table is expected. The existing administrator receives `platform-admin`. If an update fails, `current` still points to the previous working release.
@@ -413,10 +413,13 @@ Bitbucket OAuth scopes are the singular scope names (`account`, `email`, `reposi
 2. Under **Permissions**, add the **Jira API** with scopes:
    - `read:jira-work`
    - `read:jira-user`
+   - `write:jira-work`
    - `offline_access` (required for refresh tokens — don't skip)
 3. Under **Authorization**, set the callback URL to `https://<your-app-domain>/trackers/callback/jira-cloud`.
 4. Open the **Settings** tab of the app and copy the **Client ID** and **Client Secret**.
 5. In the deployed app, sign in and open **Admin → Trackers → Jira Cloud**. Paste both values and click **Save**.
+
+When upgrading from a release before v2.1.0, add `write:jira-work` to the existing OAuth application and reconnect Jira to grant it. This enables delivery comments; Jira task status is not changed automatically.
 
 Rotating credentials later is the same flow — paste new values and **Save** overwrites the stored secret.
 

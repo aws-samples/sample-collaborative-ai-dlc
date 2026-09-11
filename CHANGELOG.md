@@ -6,14 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-11
+
+This release adds portable workspace exports, managed toolchains, personal and shared agent credentials, and tracker delivery updates, alongside runtime, authentication, and deployment fixes.
+
 ### Added
 
+- Native AI-DLC workspace exports for Claude, Codex, Kiro CLI, Kiro IDE, and OpenCode. Download an intent's pinned methodology, workflow state, artifacts, questions and answers, audit trail, and repository setup instructions to continue locally. Running intents export their latest completed checkpoint; waiting and terminal intents export their current state.
+- Managed tools and build environments. Platform administrators can import, verify, scan, and publish exact ARM64 tool versions, compose them into immutable environment revisions, and assign published environments to projects. Standard provides Node.js and Python; the shipped catalog includes Java, Go, Rust, Maven, and Gradle, with support for administrator-defined tools such as .NET. New intents pin their environment revision, image digest, and runtime endpoint.
+- Hierarchical Bedrock and Kiro credentials with `personal > space > platform` precedence, managed through Account Settings, project settings, and Platform Admin. Users explicitly select an available agent CLI for each new intent, with a project recommendation. Intent starts pin the selected CLI and credential binding; draft composition and discussion assists use the requesting user's effective credentials.
+- Delivery updates for GitHub Issues, GitLab Issues, and Jira Cloud. The platform comments on the originating issue with the intent, branch, and final pull/merge requests, then records when all delivery requests have merged. GitHub and GitLab issues close after all delivery requests merge; Jira receives comments without a status transition. Generated pull/merge requests also link back to their AI-DLC intent.
 - Optional static egress for OAuth connectors, credential resolution, and seed-blocks through `lambda_vpc_scope = "public-egress"`, with NAT public IP outputs and addresses printed in the deployment summary for external allow-lists.
 - Configurable container runtime via `DOCKER_HOST` — any Docker-API-socket runtime works without requiring a container CLI (Podman, Rancher Desktop verified); Finch unsupported ([#420](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/420)).
+- Automatic deployment of `main` to an isolated demo environment, with separate Terraform state and deployment protection from the release demo.
+
+### Changed
+
+- Intent headers and pipeline navigation now expose configuration, scope, stage selection, and activity more clearly, with improved navigation between intent views.
+- DynamoDB tables now use on-demand billing in every environment, including production, removing fixed provisioned-throughput settings.
+- Reduced AgentCore image size and hardened image builds with pinned downloads, checksum verification, and readable runtime files.
 
 ### Fixed
 
-- Intents Lambda's outer error handler discarded the caught exception (`catch {}` bound nothing, and the log statement was a static `'intents handler error'` string), so every 500 arrived in CloudWatch as an identical opaque line and 500s on `/api/projects/*/intents/*` were undiagnosable in production. The catch now binds the error and logs its `message`, `name`, `code`, `stack`, plus API-Gateway request context (`resource`, `httpMethod`, `projectId`, `intentId`). The 500 response contract is unchanged.
+- Paused stages restore their saved workspace when resuming, and failed intents retry from the failed stage. Restored construction lanes and conflict-resolution checkouts are trusted explicitly so Git ownership checks do not prevent recovery.
+- Transient authentication, network, and service errors no longer sign users out. Sign-out occurs only after definitive session expiry, consistently across API requests and real-time connections.
+- Repository discovery and read operations respect the project's bound GitHub authentication method. GitHub App tracker bindings no longer show an OAuth reconnect action, and Bitbucket is no longer offered as an issue tracker.
+- Persisted project-cache hydration now notifies subscribers, preventing stale or empty views after reload.
+- Managed installer checkouts preserve readable directory and file permissions, including installations created with a restrictive umask.
+- Intents Lambda errors now log the caught exception and API Gateway request context, making HTTP 500 failures diagnosable in CloudWatch.
+- Demo deployments build Lambda packages before Terraform planning, preserve reproducible package inputs, support ARM64 image builds, and serialize deployments by Terraform backend.
+
+### Security
+
+- Engine-owned Git operations disable repository hooks and sanitize inherited Git configuration overrides. Repository hooks can no longer break stage commits or run during credential-bearing pushes, and directory trust is scoped to the required checkouts.
+- Updated dependencies to address security advisories, including `js-yaml`, `fast-uri`, `dompurify`, and `pymdown-extensions`.
+
+### Notes
+
+- Existing Jira connections must be reauthorized with `write:jira-work` to post delivery comments. Add this scope to the Atlassian OAuth application before reconnecting; existing read scopes and `offline_access` remain required.
+- Projects without an assigned managed environment use Standard. Environment assignment and publication changes apply to newly created intents; existing intents retain their pinned runtime. Deploying the managed tool catalog adds build infrastructure and automatically queues initial tool imports.
+- Rotating a credential at the scope pinned by an intent takes effect on the next invocation. Removing or invalidating that credential fails the run instead of silently selecting a different scope.
+- Workspace export is a one-way handoff. Source repositories and credentials are excluded, local changes do not synchronize back, and exporting does not stop the collaborative intent.
 
 ## [2.0.0] - 2026-08-06
 

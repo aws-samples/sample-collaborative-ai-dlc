@@ -219,7 +219,7 @@ All tagged releases, including previews such as `v2.0.0-preview0`, are shown by 
 ```bash
 bash /tmp/aidlc-install.sh versions
 bash /tmp/aidlc-install.sh install --version 2.0.0-preview0 ...
-bash /tmp/aidlc-install.sh install --version 2.0.0 ...
+bash /tmp/aidlc-install.sh install --version 2.1.0 ...
 bash /tmp/aidlc-install.sh update
 ```
 
@@ -236,7 +236,7 @@ bash /tmp/aidlc-install.sh adopt \
   --profile <aws-profile> \
   --admin <existing-administrator-email>
 
-bash /tmp/aidlc-install.sh update --version 2.0.0
+bash /tmp/aidlc-install.sh update --version 2.1.0
 ```
 
 An update backs up Terraform state, rejects unexpected destruction of Cognito, Neptune, S3, or persistent DynamoDB resources, deploys infrastructure, grants the existing administrator `platform-admin`, and deploys the frontend. Removal of the retired v1 ECS agent runtime and agent-pool table is expected. If any step fails, `current` remains on the working version. Application-data backup beyond Terraform state remains the operator's responsibility. v1 work stays viewable but read-only after the upgrade.
@@ -340,16 +340,16 @@ In local/hybrid mode, the installer creates the first Cognito user and grants `p
 
 The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud), so an intent can be started from a tracker issue. All providers are optional; skip any you don't need and the corresponding **Connect** buttons in the UI stay disabled.
 
-For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only, and the Jira Cloud and GitLab Issues tracker integrations are read-only.
+For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only. Tracker integrations post delivery comments; GitHub and GitLab issues also close after all final delivery requests merge.
 
 `<your-app-domain>` is the deployment's canonical hostname: the custom domain when one is configured, otherwise the CloudFront domain. The Admin page shows it, and each provider's setup guide shows the exact callback URL to copy. To read it directly: `terraform -chdir=terraform output -raw application_domain`.
 
-| Provider     | Callback URL                                             | Scopes / permissions                                           |
-| ------------ | -------------------------------------------------------- | -------------------------------------------------------------- |
-| GitHub OAuth | `https://<your-app-domain>/github/callback`              | `repo`, `workflow`, `read:user`                                |
-| GitLab       | `https://<your-app-domain>/gitlab/callback`              | `api`, `read_user` (Confidential enabled)                      |
-| Bitbucket    | `https://<your-app-domain>/bitbucket/callback`           | Account (Read, Email), Repositories (R/W), Pull requests (R/W) |
-| Jira Cloud   | `https://<your-app-domain>/trackers/callback/jira-cloud` | `read:jira-work`, `read:jira-user`, `offline_access`           |
+| Provider     | Callback URL                                             | Scopes / permissions                                                    |
+| ------------ | -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| GitHub OAuth | `https://<your-app-domain>/github/callback`              | `repo`, `workflow`, `read:user`                                         |
+| GitLab       | `https://<your-app-domain>/gitlab/callback`              | `api`, `read_user` (Confidential enabled)                               |
+| Bitbucket    | `https://<your-app-domain>/bitbucket/callback`           | Account (Read, Email), Repositories (R/W), Pull requests (R/W)          |
+| Jira Cloud   | `https://<your-app-domain>/trackers/callback/jira-cloud` | `read:jira-work`, `read:jira-user`, `write:jira-work`, `offline_access` |
 
 GitHub also supports a **GitHub App** authentication type, configured independently in **Admin → Source Control → GitHub** with the App ID and private key; OAuth and App can be enabled simultaneously, and each project chooses its authentication type. Installation IDs are discovered per repository when a project is bound. See [Setup → Configure provider OAuth apps](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/setup/#configure-provider-oauth-apps) for the full step-by-step per provider, including GitHub App permissions and reauthorization notes.
 

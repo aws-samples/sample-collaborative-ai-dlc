@@ -90,7 +90,13 @@ On the **New Intent** page, use the **Import from tracker** panel to browse open
 
 On read-only v1 projects, issues that were already linked to a sprint keep their **Open sprint** link, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide. New sprints can no longer be started from issues.
 
-The Jira and GitLab Issues integrations are **read-only** — the agent never writes back issue comments or status changes. (On the code-host side, the platform does open a pull request / merge request — see [Reviews](#reviews).)
+### Delivery updates
+
+When an intent imported from a tracker completes and opens final delivery pull/merge requests, the platform comments on the originating GitHub issue, GitLab issue, or Jira task with links to the intent, branches, and delivery requests. After every final delivery request has merged, it adds a merge confirmation and closes GitHub or GitLab issues. Jira receives the comments without changing the task's status.
+
+Synchronization waits until all delivery requests have merged. Closing a delivery request without merging blocks synchronization; authorization failures and exhausted write retries are recorded in the intent's activity. Tracker write failures do not change a successfully completed intent to failed.
+
+Jira delivery comments require `write:jira-work`. For connections created before v2.1.0, add that scope to the Atlassian OAuth application and reconnect Jira to grant it. The existing `read:jira-work`, `read:jira-user`, and `offline_access` scopes remain required.
 
 ## Reconnecting a tracker
 
