@@ -488,9 +488,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return item;
   };
 
-  const getStage = async (executionId, stageInstanceId) => {
+  const getStage = async (executionId, stageInstanceId, { consistentRead = false } = {}) => {
     const { Item } = await ddb.send(
-      new GetCommand({ TableName: table(), Key: stageKey(executionId, stageInstanceId) }),
+      new GetCommand({
+        TableName: table(),
+        Key: stageKey(executionId, stageInstanceId),
+        ...(consistentRead ? { ConsistentRead: true } : {}),
+      }),
     );
     return Item ?? null;
   };
@@ -620,7 +624,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     stageCallbackId,
     aidlcRepoRef,
   }) => {
-    const existing = await getStage(executionId, stageInstanceId);
+    const existing = await getStage(executionId, stageInstanceId, { consistentRead: true });
     const ts = now();
     // Fold the open park window into the accumulator. Guarded parses: an
     // unparsable timestamp contributes 0 rather than poisoning waitMs with NaN.
@@ -810,9 +814,13 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
-  const getHumanTask = async (executionId, humanTaskId) => {
+  const getHumanTask = async (executionId, humanTaskId, { consistentRead = false } = {}) => {
     const { Item } = await ddb.send(
-      new GetCommand({ TableName: table(), Key: humanTaskKey(executionId, humanTaskId) }),
+      new GetCommand({
+        TableName: table(),
+        Key: humanTaskKey(executionId, humanTaskId),
+        ...(consistentRead ? { ConsistentRead: true } : {}),
+      }),
     );
     return Item ?? null;
   };

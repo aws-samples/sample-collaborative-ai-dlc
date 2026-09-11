@@ -261,7 +261,122 @@ describe('orchestrator durable handler', () => {
       .mockResolvedValueOnce(META)
       .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
     deps.store.setGateCallbackId.mockResolvedValueOnce(null);
+    deps.store.getHumanTask.mockResolvedValue({ status: 'pending' });
     deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+    });
+
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: false, reason: 'gate_callback_conflict' });
+    expect(stageStarts()).toHaveLength(1);
+  });
+
+  it.each(['answered', 'approved', 'rejected'])(
+    'resumes when a %s decision wins before the gate callback can be bound',
+    async (status) => {
+      deps.store.getExecution
+        .mockResolvedValueOnce(META)
+        .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
+      deps.store.setGateCallbackId.mockResolvedValueOnce(null);
+      deps.store.getHumanTask.mockResolvedValue({
+        status,
+        answer: { choice: 'A' },
+        stageInstanceId: 'si-a',
+        unitSlug: null,
+        sectionIndex: null,
+      });
+      deps.loadPlan.mockResolvedValue({
+        valid: true,
+        plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
+      });
+      deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+        if (n === 1) return { ok: true };
+        if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+        return { ok: true, state: 'SUCCEEDED' };
+      });
+
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+
+      expect(res.ok).toBe(true);
+      expect(stageStarts()).toHaveLength(2);
+      expect(stageStarts()[1].resumeFrom).toBe('h1');
+      expect(deps.stopSession).not.toHaveBeenCalled();
+      expect(deps.store.getHumanTask).toHaveBeenCalledWith('i1', 'h1', {
+        consistentRead: true,
+      });
+    },
+  );
+
+  it.each([
+    [
+      'stage ownership mismatch',
+      {
+        status: 'answered',
+        stageInstanceId: 'si-other',
+        unitSlug: null,
+        sectionIndex: null,
+      },
+    ],
+    [
+      'unit ownership mismatch',
+      {
+        status: 'answered',
+        stageInstanceId: 'si-a',
+        unitSlug: 'other-unit',
+        sectionIndex: null,
+      },
+    ],
+    [
+      'callback ID mismatch',
+      {
+        status: 'answered',
+        stageInstanceId: 'si-a',
+        unitSlug: null,
+        sectionIndex: null,
+        callbackId: 'cb-other',
+        callbackOwner: 'stage:si-a',
+      },
+    ],
+    [
+      'callback owner mismatch',
+      {
+        status: 'answered',
+        stageInstanceId: 'si-a',
+        unitSlug: null,
+        sectionIndex: null,
+        callbackOwner: 'stage:si-other',
+      },
+    ],
+    [
+      'unexpected terminal status',
+      {
+        status: 'banana',
+        stageInstanceId: 'si-a',
+        unitSlug: null,
+        sectionIndex: null,
+      },
+    ],
+  ])('keeps the callback conflict on bind failure with a %s', async (_case, gate) => {
+    deps.store.getExecution
+      .mockResolvedValueOnce(META)
+      .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
+    deps.store.setGateCallbackId.mockResolvedValueOnce(null);
+    deps.store.getHumanTask.mockResolvedValue(gate);
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
+    });
     deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
       if (n === 1) return { ok: true };
       return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };

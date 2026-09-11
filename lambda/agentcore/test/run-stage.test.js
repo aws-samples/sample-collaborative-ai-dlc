@@ -128,16 +128,16 @@ const spyStore = (seed = {}) => {
       calls.push(['recordMetric', args]);
       return { metricId: 'm-test' };
     },
-    async getHumanTask(_e, id) {
-      calls.push(['getHumanTask', id]);
+    async getHumanTask(_e, id, options) {
+      calls.push(['getHumanTask', id, options]);
       return seed.humanTask ?? null;
     },
-    async getStage(_e, id) {
-      calls.push(['getStage', id]);
+    async getStage(_e, id, options) {
+      calls.push(['getStage', id, options]);
       return seed.stage ?? null;
     },
-    async getExecution(_e) {
-      calls.push(['getExecution']);
+    async getExecution(_e, options) {
+      calls.push(['getExecution', options]);
       return seed.execution ?? null;
     },
     async getUnitPlan(_e) {
@@ -1511,6 +1511,47 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(
       deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.parked'),
     ).toBe(true);
+  });
+
+  it('parks and resumes when the gate is answered after grace but before CLI exit', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ids: () => 'forced-uuid',
+      store: spyStore(
+        pendingGateSeed('q-late-answer', {
+          status: 'answered',
+          answer: { answers: [{ selectedOptions: [0] }] },
+        }),
+      ),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'q-late-answer',
+    });
+    const states = deps.store.calls
+      .filter((call) => call[0] === 'updateStageState')
+      .map((call) => call[1].state);
+    expect(states).toContain('WAITING_FOR_HUMAN');
+    expect(states).not.toContain('SUCCEEDED');
+    expect(
+      deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.stage.succeeded',
+      ),
+    ).toBe(false);
+    expect(deps.store.calls).toContainEqual([
+      'getStage',
+      BASE_STAGE_INSTANCE_ID,
+      { consistentRead: true },
+    ]);
+    expect(deps.store.calls).toContainEqual([
+      'getHumanTask',
+      'q-late-answer',
+      { consistentRead: true },
+    ]);
   });
 
   it('re-stamps parkedAt with the gate ASK time so the exit-time write never shortens the wait', async () => {

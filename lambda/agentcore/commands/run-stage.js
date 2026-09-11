@@ -87,6 +87,7 @@ import {
   stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
+import { humanTaskMatchesOwner } from '../../shared/v2-process-keys.js';
 import { credentialProviderForCli } from '../../shared/agent-credentials.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 // The typed-extraction registry gates the platform-injected graph-coverage
@@ -887,28 +888,33 @@ export const isBenignKiroEmptyCompletion = (stderrTail = '') => {
   return !transportCause.test(s);
 };
 
-// Return THIS stage's still-pending HUMAN gate. Stage ownership is the source
-// of truth because one META pointer cannot represent concurrent lane questions.
-// The META fallback supports old rows, but only when the gate names this exact
-// stage; a sibling's question can therefore never park the current stage.
-const pendingGate = async ({ store, executionId, stageInstanceId, unitSlug, sectionIndex }) => {
-  const stage = await store.getStage(executionId, stageInstanceId).catch(() => null);
+// Return the HUMAN gate still owned by THIS stage at CLI exit. Stage ownership
+// is the source of truth because one META pointer cannot represent concurrent
+// lane questions. The META fallback supports old rows, but only when the gate
+// names this exact stage; a sibling's question can therefore never park the
+// current stage.
+//
+// Deliberately do NOT require gate.status === 'pending'. The human answer can
+// land after ask_question's grace window but before the CLI exits. In that
+// window the stage row still owns the gate and the conversation still needs a
+// resume turn with the answer; treating the answered gate as absent would let
+// the stage continue to sensors/success without ever delivering the answer.
+const ownedGateAtExit = async ({ store, executionId, stageInstanceId, unitSlug, sectionIndex }) => {
+  const stage = await store
+    .getStage(executionId, stageInstanceId, { consistentRead: true })
+    .catch(() => null);
   let humanTaskId = stage?.pendingHumanTaskId ?? null;
   if (!humanTaskId) {
-    const meta = await store.getExecution(executionId).catch(() => null);
+    const meta = await store.getExecution(executionId, { consistentRead: true }).catch(() => null);
     humanTaskId = meta?.pendingHumanTaskId ?? null;
   }
   if (!humanTaskId) return null;
-  const gate = await store.getHumanTask(executionId, humanTaskId).catch(() => null);
-  const ownsStage = gate?.stageInstanceId === stageInstanceId;
-  const ownsUnit = (gate?.unitSlug ?? null) === (unitSlug ?? null);
-  const ownsSection =
-    gate?.sectionIndex == null ||
-    sectionIndex == null ||
-    Number(gate.sectionIndex) === Number(sectionIndex);
+  const gate = await store
+    .getHumanTask(executionId, humanTaskId, { consistentRead: true })
+    .catch(() => null);
   // createdAt rides along for wait accounting: the park's parkedAt is the ASK
   // moment, not the (later) CLI exit.
-  return gate && gate.status === 'pending' && ownsStage && ownsUnit && ownsSection
+  return humanTaskMatchesOwner({ task: gate, stageInstanceId, unitSlug, sectionIndex })
     ? { humanTaskId, createdAt: gate.createdAt ?? null }
     : null;
 };
@@ -1415,12 +1421,16 @@ export const runStage = async (
       stageInstanceId,
     });
     resumeGate = resumeFrom
-      ? await store.getHumanTask(executionId, resumeFrom).catch(() => null)
+      ? await store
+          .getHumanTask(executionId, resumeFrom, { consistentRead: true })
+          .catch(() => null)
       : null;
     if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
     if (resumeFrom && resumeGate.status === 'pending')
       return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
-    const row = await store.getStage(executionId, stageInstanceId).catch(() => null);
+    const row = await store
+      .getStage(executionId, stageInstanceId, { consistentRead: true })
+      .catch(() => null);
     cli = row?.cli ?? null;
     const priorSessionId = row?.cliSessionId ?? null;
     if ((!cli || !priorSessionId) && !reviewFeedback) {
@@ -2331,13 +2341,15 @@ export const runStage = async (
     }
   }
 
-  // 5. Park check — did the agent leave a pending question? ask_question parks
-  // (returns a sentinel) instead of blocking, so the agent is told to stop. The
-  // durable pending gate — NOT the CLI exit code — is the source of truth for a
-  // park: a clean exit OR a non-zero exit AFTER parking both mean "waiting on a
-  // human". We therefore check the gate BEFORE treating a non-zero exit as failure,
-  // so a Kiro run that parks then errors on its next turn parks rather than fails.
-  const parked = await pendingGate({
+  // 5. Park check — did the agent leave a question-owned stage boundary?
+  // ask_question parks (returns a sentinel) instead of blocking, so the agent is
+  // told to stop. The durable stage pointer — NOT the gate's current status or
+  // the CLI exit code — is the source of truth for a park. The gate may already
+  // be answered here if the answer landed while the CLI was shutting down; that
+  // still requires a resume turn so the conversation receives the answer.
+  // Therefore a clean exit OR a non-zero exit after asking both mean "park and
+  // hand control back to the orchestrator".
+  const parked = await ownedGateAtExit({
     store,
     executionId,
     stageInstanceId,

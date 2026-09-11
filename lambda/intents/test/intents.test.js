@@ -3893,6 +3893,23 @@ describe('POST /start — preconditions', () => {
 });
 
 describe('POST /gates/{humanTaskId}/answer', () => {
+  it('rejects an unknown status without consuming the pending gate', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+
+    const invalid = await answerGate(sub, projectId, intent.id, 'h1', {
+      status: 'banana',
+      answer: { ok: 1 },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(JSON.parse(invalid.body)).toMatchObject({ code: 'invalid_gate_status' });
+
+    // Validation happens before the answer CAS, so the same gate remains usable.
+    expect((await answerGate(sub, projectId, intent.id, 'h1')).statusCode).toBe(200);
+  });
+
   it('answers a pending gate (CAS) and resumes the durable callback when bound', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

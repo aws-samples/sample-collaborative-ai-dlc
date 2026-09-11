@@ -38,6 +38,9 @@ import {
   buildTrackerSyncRow,
   executionTypeStateIndex,
   HUMAN_TASK_STATUSES,
+  HUMAN_TASK_ANSWER_STATUSES,
+  isHumanTaskAnswerStatus,
+  humanTaskMatchesOwner,
   STEERING_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
@@ -102,6 +105,36 @@ describe('v2-process-keys', () => {
       now: 'T',
     });
     expect(linked).toMatchObject({ cli: 'claude', cliSessionId: 'sess-7' });
+  });
+
+  it('defines one answer-status and legacy-compatible ownership contract for human gates', () => {
+    expect(HUMAN_TASK_ANSWER_STATUSES).toEqual(['answered', 'approved', 'rejected']);
+    expect(HUMAN_TASK_ANSWER_STATUSES.every(isHumanTaskAnswerStatus)).toBe(true);
+    expect(isHumanTaskAnswerStatus('pending')).toBe(false);
+    expect(isHumanTaskAnswerStatus('superseded')).toBe(false);
+
+    const owner = {
+      stageInstanceId: 'si-a',
+      unitSlug: 'auth',
+      sectionIndex: 2,
+    };
+    expect(humanTaskMatchesOwner({ task: owner, ...owner })).toBe(true);
+    expect(humanTaskMatchesOwner({ task: { ...owner, sectionIndex: null }, ...owner })).toBe(true);
+    expect(humanTaskMatchesOwner({ task: owner, ...owner, sectionIndex: null })).toBe(true);
+    expect(
+      humanTaskMatchesOwner({
+        task: owner,
+        ...owner,
+        sectionIndex: 3,
+      }),
+    ).toBe(false);
+    expect(
+      humanTaskMatchesOwner({
+        task: owner,
+        ...owner,
+        unitSlug: 'catalog',
+      }),
+    ).toBe(false);
   });
 
   it('builds a question human-task carrying the structured payload', () => {
@@ -182,6 +215,29 @@ describe('createProcessStore', () => {
     expect(eventual).not.toHaveProperty('ConsistentRead');
     expect(consistent).toMatchObject({
       Key: executionMetaKey('e1'),
+      ConsistentRead: true,
+    });
+  });
+
+  it('opts into strongly consistent stage and human-gate reads only when requested', async () => {
+    ddb.on(GetCommand).resolves({ Item: { executionId: 'e1' } });
+
+    await store.getStage('e1', 'si-1');
+    await store.getStage('e1', 'si-1', { consistentRead: true });
+    await store.getHumanTask('e1', 'h1');
+    await store.getHumanTask('e1', 'h1', { consistentRead: true });
+
+    const [eventualStage, consistentStage, eventualGate, consistentGate] = ddb
+      .commandCalls(GetCommand)
+      .map((call) => call.args[0].input);
+    expect(eventualStage).not.toHaveProperty('ConsistentRead');
+    expect(consistentStage).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      ConsistentRead: true,
+    });
+    expect(eventualGate).not.toHaveProperty('ConsistentRead');
+    expect(consistentGate).toMatchObject({
+      Key: humanTaskKey('e1', 'h1'),
       ConsistentRead: true,
     });
   });
@@ -413,6 +469,10 @@ describe('createProcessStore', () => {
     expect(input.ExpressionAttributeValues[':scb']).toBe('cb-2');
     expect(input.UpdateExpression).toContain('aidlcRepoRef = :aidlcRepoRef');
     expect(input.ExpressionAttributeValues[':aidlcRepoRef']).toBe('a'.repeat(40));
+    expect(ddb.commandCalls(GetCommand)[0].args[0].input).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      ConsistentRead: true,
+    });
   });
 
   it('resumeStageRow tolerates a missing/unparsable park stamp (waitMs unchanged, no NaN)', async () => {
