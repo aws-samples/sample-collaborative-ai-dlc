@@ -341,6 +341,69 @@ describe('document ownership and recovery', () => {
     await expect(server.cluster.resolve(DOCUMENT)).rejects.toThrow();
   });
 
+  it.each(['TransactionConflict', 'ProvisionedThroughputExceeded', 'ThrottlingError'])(
+    'retains the last confirmed lease during a temporary %s cancellation',
+    async (code) => {
+      const store = new MemoryStore();
+      let now = Date.now();
+      const server = await start({ store, id: 'a', clock: () => now });
+      const alice = await join(server);
+      const bob = await join(server, DOCUMENT, { user: 'bob' });
+      const room = server.rooms.rooms.get(DOCUMENT);
+      const deadline = room.lease.leaseUntil;
+      vi.spyOn(store, 'renew').mockRejectedValueOnce(
+        Object.assign(new Error('Temporary transaction cancellation'), {
+          name: 'TransactionCanceledException',
+          CancellationReasons: [{ Code: code }, { Code: 'None' }],
+        }),
+      );
+      now += 1000;
+      await server.cluster.tick();
+      expect(server.rooms.rooms.get(DOCUMENT)).toBe(room);
+      expect(room.lease.leaseUntil).toBe(deadline);
+      alice.doc.getText('content').insert(0, 'still owned');
+      await expect.poll(() => bob.doc.getText('content').toString()).toBe('still owned');
+      await server.cluster.tick();
+      expect(room.lease.leaseUntil).toBeGreaterThan(deadline);
+    },
+  );
+
+  it('stops serving at the confirmed lease deadline when transaction conflicts persist', async () => {
+    const store = new MemoryStore();
+    let now = Date.now();
+    const server = await start({ store, id: 'a', clock: () => now });
+    await join(server);
+    const room = server.rooms.rooms.get(DOCUMENT);
+    vi.spyOn(store, 'renew').mockRejectedValue(
+      Object.assign(new Error('Temporary transaction cancellation'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'TransactionConflict' }, { Code: 'None' }],
+      }),
+    );
+    now = room.lease.leaseUntil - server.cluster.safetyMs;
+    await server.cluster.tick();
+    expect(server.rooms.rooms.has(DOCUMENT)).toBe(false);
+    expect(server.cluster.owns(room.lease)).toBe(false);
+  });
+
+  it.each([
+    undefined,
+    [{ Code: 'None' }, { Code: 'ConditionalCheckFailed' }],
+    [{ Code: 'TransactionConflict' }, { Code: 'ConditionalCheckFailed' }],
+  ])('fails closed on a non-transient transaction cancellation (%j)', async (reasons) => {
+    const store = new MemoryStore();
+    const server = await start({ store, id: 'a' });
+    await join(server);
+    vi.spyOn(store, 'renew').mockRejectedValueOnce(
+      Object.assign(new Error('Ownership rejected'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: reasons,
+      }),
+    );
+    await server.cluster.tick();
+    expect(server.rooms.rooms.has(DOCUMENT)).toBe(false);
+  });
+
   it('shares acquisition for simultaneous joins on the same worker', async () => {
     const store = new MemoryStore();
     const server = await start({ store, id: 'a' });

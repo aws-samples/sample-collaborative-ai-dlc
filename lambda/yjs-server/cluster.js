@@ -1,6 +1,20 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { requiredScopeForYjsDoc } from './realtime-token.js';
 
+export const isTransientTransactionCancellation = (error) => {
+  if (error.name !== 'TransactionCanceledException') return false;
+  const codes = error.CancellationReasons?.map((reason) => reason.Code);
+  const transient = new Set([
+    'TransactionConflict',
+    'ProvisionedThroughputExceeded',
+    'ThrottlingError',
+  ]);
+  return (
+    !!codes?.some((code) => transient.has(code)) &&
+    codes.every((code) => code === 'None' || transient.has(code))
+  );
+};
+
 export const scopeKey = (docName) => {
   const scope = requiredScopeForYjsDoc(docName);
   if (!scope) throw new Error('Unknown document scope');
@@ -112,9 +126,13 @@ export class ClusterCoordinator {
               await this.store.renew(lease, until, this.clock());
               lease.leaseUntil = until;
             } catch (error) {
+              // A conflict does not revoke the last confirmed lease. Keep its
+              // deadline unchanged; the normal safety margin still stops edits
+              // if renewal cannot succeed before that deadline.
               if (
                 error.name === 'ConditionalCheckFailedException' ||
-                error.name === 'TransactionCanceledException'
+                (error.name === 'TransactionCanceledException' &&
+                  !isTransientTransactionCancellation(error))
               ) {
                 lease.leaseUntil = 0;
               }
@@ -123,7 +141,11 @@ export class ClusterCoordinator {
                 const room = this.manager?.rooms.get(lease.documentId);
                 if (room?.lease === lease) this.manager.destroy(room);
               }
-              this.logger.warn('Yjs lease renewal failed:', error.name);
+              this.logger.warn(
+                'Yjs lease renewal failed:',
+                error.name,
+                error.CancellationReasons?.map((reason) => reason.Code).join(',') ?? '',
+              );
             }
           }),
         );
