@@ -35,9 +35,26 @@ const run = (file, args, options = {}) =>
     cwd: options.cwd ?? root,
     encoding: 'utf8',
     env: { ...process.env, ...options.env },
+    shell: false,
   });
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+
+test('release process helper preserves shell metacharacters in script paths and arguments', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-process-args-'));
+  const marker = join(fixture, 'injected');
+  const script = join(fixture, 'script with spaces; $(touch injected).sh');
+  const argument = 'value with spaces; $(touch injected)';
+  try {
+    writeFileSync(script, '#!/bin/bash\nprintf "%s" "$1"\n');
+    const result = run('bash', [script, argument], { cwd: fixture });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, argument);
+    assert.equal(existsSync(marker), false);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
 
 const resolveDemoBackend = (env = {}) => {
   const deployment = readFileSync(demoWorkflow, 'utf8');
@@ -1166,7 +1183,12 @@ test('installer accepts a non-default DOCKER_HOST without a container CLI on PAT
   mkdirSync(dataRoot, { recursive: true });
   symlinkSync(dir, join(dataRoot, 'current'));
 
-  const dockerLookup = run('bash', ['-c', 'command -v docker'], { env: runtimeEnv });
+  // Keep this fixed shell expression separate from the script/argument helper.
+  const dockerLookup = spawnSync('bash', ['-c', 'command -v docker'], {
+    env: { ...process.env, ...runtimeEnv },
+    encoding: 'utf8',
+    shell: false,
+  });
   assert.notEqual(dockerLookup.status, 0, 'docker must not be available in the controlled PATH');
 
   const installed = run('bash', [installer, 'install', '--version', '2.0.0'], {
