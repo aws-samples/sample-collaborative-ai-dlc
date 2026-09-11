@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   DeleteParameterCommand,
@@ -75,6 +76,54 @@ describe('agent credentials', () => {
       }),
     ).toBe('/app/dev/users/u-1/agent-credentials/bedrock-bearer-token');
   });
+
+  it.each([
+    ['/app/dev/', '/app/dev'],
+    ['/app/dev///', '/app/dev'],
+    ['/app//dev///', '/app//dev'],
+    ['/app/dev/ ', '/app/dev/ '],
+    [123, '123'],
+  ])('removes only trailing slashes from base %j', (base, prefix) => {
+    expect(agentCredentialPath({ base, source: 'platform', provider: 'bedrock' })).toBe(
+      `${prefix}/bedrock-bearer-token`,
+    );
+  });
+
+  it.each([undefined, null, '', false, 0, '/', '///'])(
+    'rejects an empty normalized base %j',
+    (base) => {
+      expect(() => agentCredentialPath({ base, source: 'platform', provider: 'bedrock' })).toThrow(
+        'Agent credential store is not configured',
+      );
+    },
+  );
+
+  it('handles long slash sequences without excessive backtracking', () => {
+    // Isolate synchronous work so a regressed regex cannot hang the test runner.
+    execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+          import { strict as assert } from 'node:assert';
+          import { agentCredentialPath } from ${JSON.stringify(new URL('../agent-credentials.js', import.meta.url).href)};
+          const slashes = '/'.repeat(1_000_000);
+          for (const [base, prefix] of [
+            ['/app' + slashes + 'dev', '/app' + slashes + 'dev'],
+            ['/app' + slashes + 'dev///', '/app' + slashes + 'dev'],
+            ['/app/dev' + slashes, '/app/dev'],
+          ]) {
+            assert.equal(
+              agentCredentialPath({ base, source: 'platform', provider: 'bedrock' }),
+              prefix + '/bedrock-bearer-token',
+            );
+          }
+        `,
+      ],
+      { timeout: 5_000, stdio: 'pipe' },
+    );
+  }, 10_000);
 
   it('resolves each provider independently with user over space over platform', async () => {
     values.set('/app/dev/bedrock-bearer-token', 'platform-bedrock');

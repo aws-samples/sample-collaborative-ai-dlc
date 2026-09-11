@@ -44,7 +44,13 @@ export const AGENT_CREDENTIAL_ENV_NAMES = Object.freeze(
   AGENT_CREDENTIAL_PROVIDERS.map((provider) => PROVIDER_CONFIG[provider].envName),
 );
 
-const normalizeBase = (base) => String(base || '').replace(/\/+$/, '');
+const normalizeBase = (base) => {
+  const value = String(base || '');
+  let end = value.length;
+  // Scan backwards to avoid regex backtracking over embedded slash sequences.
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+};
 
 const assertIdentifier = (value, label) => {
   const normalized = String(value || '');
