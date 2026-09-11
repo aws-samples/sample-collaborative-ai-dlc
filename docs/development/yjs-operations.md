@@ -153,6 +153,9 @@ environment is implied by running the unit tests.
    Reload active browsers so they use the corrected awareness protocol and
    artifact document identities. The single-worker deployment stops the old
    task before starting the replacement and briefly interrupts collaboration.
+   Terraform explicitly disables ECS Availability Zone Rebalancing in the same
+   service update. Existing installations may have it enabled; ECS otherwise
+   retains that setting and rejects the required `maximumPercent = 100`.
 2. During a maintenance window, let editors save and close them. Set
    `cluster_enabled = true`, **keep `desired_count = 1`**, and leave automatic
    scaling unset. Deploy and wait for the service to stabilize. The old

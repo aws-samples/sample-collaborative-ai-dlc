@@ -395,7 +395,11 @@ resource "aws_ecs_service" "yjs_server" {
   # Standalone tasks cannot overlap: their documents are process-local.
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
-  health_check_grace_period_seconds  = 60
+  # Existing services retain AZ rebalancing when an update omits it. Explicitly
+  # disable it in the same update: ECS rejects rebalancing with maximumPercent
+  # <= 100, which we require for standalone upgrades and the mode transition.
+  availability_zone_rebalancing     = "DISABLED"
+  health_check_grace_period_seconds = 60
 
   deployment_circuit_breaker {
     enable   = true
