@@ -1422,7 +1422,12 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     );
     deps.store.updateStageState = vi.fn(async (args) => args);
     deps.store.completeExternalDevelopmentStage = vi.fn(async (args) => args);
-    deps.store.getExecution = vi.fn(async () => ({ ...META, orchestratorRunId: null }));
+    const aidlcRepoRef = 'a'.repeat(40);
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      aidlcRepoRef,
+      orchestratorRunId: null,
+    }));
     deps.store.createHumanTask = vi.fn(async (task) => {
       openedTasks.set(task.humanTaskId, task);
       return task;
@@ -1465,6 +1470,13 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
         (payload) => payload.stageId === 'code-generation' && payload.unitSlug === 'auth',
       ),
     ).toBe(false);
+    expect(deps.store.putStage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stageId: 'code-generation',
+        unitSlug: 'auth',
+        aidlcRepoRef,
+      }),
+    );
     expect(deps.store.createHumanTask).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'external-development',
