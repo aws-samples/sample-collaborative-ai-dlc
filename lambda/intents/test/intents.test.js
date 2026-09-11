@@ -3257,6 +3257,36 @@ describe('POST /start', () => {
 });
 
 describe('realtime-token', () => {
+  it('does not log the configured SSM parameter path when the realtime secret is empty', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const paramName = '/private-deployment/realtime-signing-secret';
+    vi.stubEnv('REALTIME_DOC_SECRET', '');
+    vi.stubEnv('REALTIME_SECRET_PARAM', paramName);
+    ssmMock.on(GetParameterCommand, { Name: paramName }).resolves({ Parameter: { Value: '' } });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/realtime-token`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Internal server error' });
+      expect(errorSpy).toHaveBeenCalledWith(
+        'intents handler error',
+        expect.objectContaining({ message: 'Realtime secret SSM parameter is empty' }),
+      );
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(paramName);
+    } finally {
+      errorSpy.mockRestore();
+      vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
+      vi.stubEnv('REALTIME_SECRET_PARAM', undefined);
+    }
+  });
+
   it('mints an intent + project scope token for a member', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
