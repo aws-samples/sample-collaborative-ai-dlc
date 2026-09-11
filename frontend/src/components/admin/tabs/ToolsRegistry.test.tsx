@@ -208,6 +208,7 @@ describe('ToolsRegistry', () => {
     expect(screen.getByText(/Java JDK settings are applied automatically/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Tool type')).not.toBeInTheDocument();
     expect(screen.getByText('Recommend')).toBeInTheDocument();
+    expect(screen.getByLabelText('Publisher')).toHaveValue('');
     await user.clear(screen.getByLabelText('Distribution'));
     await user.type(screen.getByLabelText('Distribution'), 'Amazon Corretto');
     await user.clear(screen.getByLabelText('Publisher'));
@@ -229,6 +230,33 @@ describe('ToolsRegistry', () => {
       }),
     );
     expect(build).toHaveBeenCalledWith('java', 'tv-java-corretto');
+  });
+
+  it('requires a publisher for an added distribution instead of inheriting the family publisher', async () => {
+    const user = userEvent.setup();
+    list.mockResolvedValue([
+      {
+        ...goTool,
+        toolId: 'java',
+        name: 'Java JDK',
+        publisher: 'Eclipse Adoptium',
+      },
+    ]);
+
+    render(<ToolsRegistry />);
+
+    await user.click(await screen.findByRole('button', { name: 'Add distribution or version' }));
+    await user.clear(screen.getByLabelText('Distribution'));
+    await user.type(screen.getByLabelText('Distribution'), 'Amazon Corretto');
+    await user.type(screen.getByLabelText('Exact version'), '21.0.8.9.1');
+    await user.type(
+      screen.getByLabelText('Linux ARM64 download URL'),
+      'https://corretto.aws/downloads/resources/21.0.8.9.1/amazon-corretto-21.0.8.9.1-linux-aarch64.tar.gz',
+    );
+    await user.click(screen.getByRole('button', { name: 'Create and start build' }));
+
+    expect(screen.getByText('Name the publisher for this distribution.')).toBeInTheDocument();
+    expect(createVersion).not.toHaveBeenCalled();
   });
 
   it('searches and filters tool families by their current lifecycle status', async () => {
@@ -297,6 +325,7 @@ describe('ToolsRegistry', () => {
     render(<ToolsRegistry />);
 
     await user.click(await screen.findByRole('button', { name: 'Add distribution or version' }));
+    await user.type(screen.getByLabelText('Publisher'), 'The Go project');
     await user.type(screen.getByLabelText('Exact version'), '1.25.0');
     await user.type(
       screen.getByLabelText('Linux ARM64 download URL'),
@@ -396,6 +425,33 @@ describe('ToolsRegistry', () => {
       }),
     );
     expect(retry).toHaveBeenCalledWith('go', 'tv-go-1');
+  });
+
+  it.each([
+    ['PUBLISHER_VERIFIED', 'Publisher verified'],
+    ['PLATFORM_PINNED', 'Platform pinned'],
+  ] as const)('shows %s source trust as %s in evidence', async (trustLevel, label) => {
+    list.mockResolvedValue([
+      {
+        ...goTool,
+        versions: [
+          {
+            ...publishedVersion,
+            source: { ...publishedVersion.source, trustLevel },
+          },
+        ],
+      },
+    ]);
+
+    render(<ToolsRegistry />);
+
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Details and evidence',
+      }),
+    );
+    expect(await screen.findByText(label)).toBeInTheDocument();
+    expect(screen.getByText('Download complete')).toBeInTheDocument();
   });
 
   it('lets an administrator explicitly recommend a published version', async () => {

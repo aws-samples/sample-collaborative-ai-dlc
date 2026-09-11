@@ -297,7 +297,7 @@ const emptyForm = (tool?: ManagedTool | null): ToolForm => {
     publisher: tool?.publisher ?? '',
     version: '',
     distribution: reference?.definition.distribution ?? tool?.publisher ?? '',
-    versionPublisher: reference?.definition.publisher ?? tool?.publisher ?? '',
+    versionPublisher: '',
     sourceUrl: '',
     preset,
     installerMode: defaults.installerMode,
@@ -366,15 +366,19 @@ const parsePairs = (value: string) =>
         : [line, ''];
     });
 
-const definitionFromForm = (form: ToolForm): ToolVersionDefinition => ({
+const definitionFromForm = (form: ToolForm, creatingTool: boolean): ToolVersionDefinition => ({
   schemaVersion: 1,
   version: form.version.trim(),
   ...(form.distribution.trim() || form.name.trim()
     ? { distribution: form.distribution.trim() || form.name.trim() }
     : {}),
-  ...(form.versionPublisher.trim() || form.publisher.trim()
-    ? { publisher: form.versionPublisher.trim() || form.publisher.trim() }
-    : {}),
+  ...(creatingTool
+    ? form.publisher.trim()
+      ? { publisher: form.publisher.trim() }
+      : {}
+    : form.versionPublisher.trim()
+      ? { publisher: form.versionPublisher.trim() }
+      : {}),
   source: {
     type: 'https',
     url: form.sourceUrl.trim(),
@@ -428,6 +432,9 @@ const validateToolForm = (form: ToolForm, creatingTool: boolean) => {
   }
   if (!creatingTool && !form.distribution.trim()) {
     issues.push('Name the distribution, for example Amazon Corretto.');
+  }
+  if (!creatingTool && !form.versionPublisher.trim()) {
+    issues.push('Name the publisher for this distribution.');
   }
   if (!form.sourceUrl.trim()) {
     issues.push('Add the Linux ARM64 download URL.');
@@ -726,6 +733,11 @@ function ToolLifecycle({
   );
 }
 
+const SOURCE_TRUST_LABELS = {
+  PLATFORM_PINNED: 'Platform pinned',
+  PUBLISHER_VERIFIED: 'Publisher verified',
+} as const;
+
 function VersionEvidence({ version }: { version: ManagedToolVersion }) {
   const findings = version.scanFindings?.findings ?? [];
   const scanUnsupported = version.scanFindings?.status === 'UNSUPPORTED';
@@ -741,17 +753,20 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
             Source
           </p>
           <p className="mt-2 text-xs font-medium">
-            {version.source ? 'Download complete' : 'Waiting for build'}
+            {version.source ? SOURCE_TRUST_LABELS[version.source.trustLevel] : 'Waiting for build'}
           </p>
           {version.source && (
-            <a
-              href={version.source.requestedUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-            >
-              View download <ExternalLink className="h-3 w-3" />
-            </a>
+            <>
+              <p className="mt-1 text-[10px] text-muted-foreground">Download complete</p>
+              <a
+                href={version.source.requestedUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+              >
+                View download <ExternalLink className="h-3 w-3" />
+              </a>
+            </>
           )}
         </div>
         <div className="rounded-xl border p-3">
@@ -1636,7 +1651,7 @@ export function ToolsRegistry() {
         setCreatingVersion(true);
       }
       if (!tool) throw new Error('Tool is unavailable');
-      const definition = definitionFromForm(form);
+      const definition = definitionFromForm(form, creatingTool);
       if (editingVersionId) {
         const current = tool.versions.find((version) => version.versionId === editingVersionId);
         const updated = await toolsService.updateVersion(tool.toolId, editingVersionId, definition);
