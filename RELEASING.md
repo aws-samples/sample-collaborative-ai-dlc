@@ -4,6 +4,8 @@ The root `package.json` is the sole product version. Component manifests are pri
 
 The installer lists stable and preview tags by default and selects the highest tag by SemVer precedence. A stable `v2.0.0` supersedes every `v2.0.0-*` preview. Use numeric prerelease identifiers after a dot when a sequence can exceed nine, for example `v2.1.0-preview.10`.
 
+For current releases, follow [Ongoing Releases](#ongoing-releases). The v1 archival and v2 launch steps below document the completed transition and should not be repeated.
+
 ## Prepare v2 on `aidlc-v2`
 
 1. Merge `origin/main` into `aidlc-v2`; never rebase the shared release branch.
@@ -61,12 +63,47 @@ The stable GitHub Release becomes the normal release for the same core version, 
 ## Failure Handling
 
 - If validation fails, fix the release branch and rerun CI. Do not bypass the check.
-- If deployment testing fails, keep `aidlc-v2` unmerged and preserve the previous managed `current` checkout.
+- If deployment testing fails, keep the release preparation PR unmerged and preserve the previous managed `current` checkout.
 - If tagging succeeds but GitHub Release creation fails, rerun only release publication against the existing immutable tag.
 - If a published release is defective, prepare and publish the next patch version. Never force-update a tag.
 
 ## Ongoing Releases
 
-Normal work branches from and merges to `main`; releases are tagged from `main`. Prepare v2 patches such as `2.0.1` on `main`, then dispatch the release workflow. Preview releases use explicit versions such as `v2.1.0-preview0` and participate in installer discovery by default.
+Normal work and release preparation branch from and merge to `main`; releases are tagged only from `main`. For a minor release such as `2.1.0`:
+
+1. Start with a clean working tree, update `main`, and create the preparation branch:
+
+   ```bash
+   git switch main
+   git pull --ff-only
+   git switch -c release/2.1.0
+   git fetch origin --tags
+   npm run release:prepare -- 2.1.0
+   ```
+
+2. Complete the new `CHANGELOG.md` entry by reviewing every change since the previous release (`git log v2.0.0..HEAD` for this release). Leave an empty `Unreleased` section for subsequent work. Record operator actions and compatibility changes, update installation examples, and replace `TBD` with the intended publication date before final validation.
+3. Install the locked dependencies and run the checks used by CI. The backend tests require a running Docker-compatible container runtime for Gremlin Server and DynamoDB Local. CI tests the backend on Node.js 22 and 24; use Node.js 24 for the frontend build and lint checks.
+
+   ```bash
+   npm ci
+   npm --prefix frontend ci
+   npm run release:check -- 2.1.0 --final --tag-must-not-exist
+   npm run test:release
+   npm test
+   npm run lint
+   npm run format:check
+   npm run sdk:check
+   npm --prefix frontend test
+   npm --prefix frontend run build
+   ```
+
+   When documentation changes, also run `uv sync --group docs` and `uv run zensical build`.
+
+4. Test a fresh installation and an update from the previous stable release in a disposable deployment. For `2.1.0`, also follow the [managed build environment test](docs/development/testing.md#managed-build-environment-deployed-stack-test), verify credential selection and paused-stage recovery, export a workspace, and verify tracker delivery comments. Reauthorize Jira with `write:jira-work` before testing its write-back. Keep v1 adoption and upgrade coverage when those paths change.
+5. Open the preparation PR into `main` and require every CI check to pass. If `main` changes during validation, incorporate the changes and rerun the affected checks. Merge only after deployment testing succeeds.
+6. Confirm the merged commit is green, reports root version `2.1.0`, and has the intended changelog date. Dispatch **Publish Release** from `main` with version `2.1.0`. The workflow creates the annotated tag and GitHub Release, then starts the protected demo deployment described in [Demo deployment](docs/development/demo-deployment.md).
+7. Verify that `v2.1.0` points to the dispatched `main` commit, the installer lists and selects `2.1.0`, and the deployed status bar reports `AI-DLC v2.1.0`.
+
+Creating the preparation branch does not publish a release. Do not tag that branch or manually recreate tags owned by the release workflow. Use the same process with the appropriate version and previous tag for subsequent minor or patch releases. Preview releases use explicit versions such as `2.2.0-preview0` and participate in installer discovery by default.
 
 `release/1.x` remains frozen. An exceptional v1 security fix branches from and returns to `release/1.x`; v2 code must not be merged into it.
