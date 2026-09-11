@@ -199,7 +199,21 @@ const STAGE_STATE = ['PENDING', 'RUNNING', 'WAITING_FOR_HUMAN', 'SUCCEEDED', 'FA
 // Human gate kinds + lifecycle. `superseded` retires a still-pending gate whose
 // run was cancelled/rewound — never answered, kept as the audit record.
 const HUMAN_TASK_KINDS = ['approval', 'question', 'review-verdict', 'validation'];
-const HUMAN_TASK_STATUSES = ['pending', 'answered', 'approved', 'rejected', 'superseded'];
+const HUMAN_TASK_ANSWER_STATUSES = ['answered', 'approved', 'rejected'];
+const HUMAN_TASK_STATUSES = ['pending', ...HUMAN_TASK_ANSWER_STATUSES, 'superseded'];
+const isHumanTaskAnswerStatus = (status) => HUMAN_TASK_ANSWER_STATUSES.includes(status);
+// Stage + lane ownership for a human gate. sectionIndex is legacy-compatible:
+// older rows can omit it, so either side being null falls back to the exact
+// stageInstanceId + unitSlug match.
+const humanTaskMatchesOwner = ({ task, stageInstanceId, unitSlug = null, sectionIndex = null }) => {
+  if (!task || task.stageInstanceId !== stageInstanceId) return false;
+  if ((task.unitSlug ?? null) !== (unitSlug ?? null)) return false;
+  return (
+    task.sectionIndex == null ||
+    sectionIndex == null ||
+    Number(task.sectionIndex) === Number(sectionIndex)
+  );
+};
 // Human steering (course-correction) messages. Immutable once written; a
 // correction of a correction supersedes the old row. Delivery ("consumed") only
 // happens at a deterministic injection point: a gate resume or a fresh stage
@@ -1176,7 +1190,10 @@ export {
   ACTIVE_EXECUTION_STATUSES,
   STAGE_STATE,
   HUMAN_TASK_KINDS,
+  HUMAN_TASK_ANSWER_STATUSES,
   HUMAN_TASK_STATUSES,
+  isHumanTaskAnswerStatus,
+  humanTaskMatchesOwner,
   STEERING_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
@@ -1244,7 +1261,10 @@ export default {
   ACTIVE_EXECUTION_STATUSES,
   STAGE_STATE,
   HUMAN_TASK_KINDS,
+  HUMAN_TASK_ANSWER_STATUSES,
   HUMAN_TASK_STATUSES,
+  isHumanTaskAnswerStatus,
+  humanTaskMatchesOwner,
   STEERING_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,

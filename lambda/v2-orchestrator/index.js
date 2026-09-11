@@ -42,6 +42,7 @@ import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
+import { humanTaskMatchesOwner, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { resolveSkipTo, skipTargetsFrom, resolveRecomposeSkips } from '../shared/stage-skip.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
@@ -846,23 +847,64 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Create a durable callback and stamp it on the gate so the answer path
         // can resume THIS execution. Then suspend (zero compute) until answered.
         const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
+        const expectedStageInstanceId = result.stageInstanceId ?? stage.stageInstanceId ?? null;
+        const expectedCallbackOwner = `stage:${expectedStageInstanceId ?? label}`;
         const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
           store.setGateCallbackId({
             executionId,
             humanTaskId,
             callbackId,
-            stageInstanceId: result.stageInstanceId ?? stage.stageInstanceId ?? null,
-            callbackOwner: `stage:${result.stageInstanceId ?? stage.stageInstanceId ?? label}`,
+            stageInstanceId: expectedStageInstanceId,
+            callbackOwner: expectedCallbackOwner,
           }),
         );
+        let answeredEarly = false;
         if (!callbackBound) {
-          return {
-            state: 'TERMINAL',
-            value: await fail(
-              'gate_callback_conflict',
-              `gate ${humanTaskId} is already bound to a different stage callback`,
-            ),
-          };
+          // The answer can win the CAS immediately before this bind. In that
+          // case setGateCallbackId returns null because the gate is no longer
+          // pending, but no callback is needed: resume directly with the
+          // persisted answer. Any still-pending, differently owned, or already
+          // bound gate remains an invariant violation.
+          const gateAfterBindFailure = await ctxArg.step(
+            `gate-after-bind-failure-${humanTaskId}`,
+            () => store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
+          );
+          if (gateAfterBindFailure?.status === 'superseded') {
+            ctx.logger?.info?.('run retired before gate callback bind', {
+              intentId,
+              humanTaskId,
+            });
+            return {
+              state: 'TERMINAL',
+              value: { ok: false, reason: 'retired', intentId, humanTaskId },
+            };
+          }
+          const ownsExpectedStage = humanTaskMatchesOwner({
+            task: gateAfterBindFailure,
+            stageInstanceId: expectedStageInstanceId,
+            unitSlug,
+            sectionIndex,
+          });
+          const callbackIdCompatible =
+            gateAfterBindFailure?.callbackId == null ||
+            gateAfterBindFailure.callbackId === callbackId;
+          const callbackOwnerCompatible =
+            gateAfterBindFailure?.callbackOwner == null ||
+            gateAfterBindFailure.callbackOwner === expectedCallbackOwner;
+          answeredEarly =
+            isHumanTaskAnswerStatus(gateAfterBindFailure?.status) &&
+            ownsExpectedStage &&
+            callbackIdCompatible &&
+            callbackOwnerCompatible;
+          if (!answeredEarly) {
+            return {
+              state: 'TERMINAL',
+              value: await fail(
+                'gate_callback_conflict',
+                `gate ${humanTaskId} bind failed without an unbound answer owned by this stage`,
+              ),
+            };
+          }
         }
 
         // Answer/bind race (field incident): a fast human can answer in the
@@ -872,10 +914,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // parkReleaseSeconds stall the human reads as "my answer was
         // ignored"). Re-read AFTER binding: an already-answered gate skips
         // the wait entirely and resumes now.
-        const answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
-          const gate = await store.getHumanTask(executionId, humanTaskId);
-          return Boolean(gate?.status) && gate.status !== 'pending';
-        });
+        if (callbackBound) {
+          answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
+            const gate = await store.getHumanTask(executionId, humanTaskId, {
+              consistentRead: true,
+            });
+            return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+          });
+        }
         if (!answeredEarly) {
           // D1 release-on-park: if no human answers within parkReleaseSeconds, free
           // the warm microVM compute (StopRuntimeSession) while we keep waiting —
@@ -893,7 +939,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               ctxArg.wait(`release-timer-${humanTaskId}`, { seconds: parkReleaseSeconds }),
             ]);
             const stillPending = await ctxArg.step(`gate-status-${humanTaskId}`, async () => {
-              const gate = await store.getHumanTask(executionId, humanTaskId);
+              const gate = await store.getHumanTask(executionId, humanTaskId, {
+                consistentRead: true,
+              });
               return gate?.status === 'pending';
             });
             if (stillPending) {
@@ -909,7 +957,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // wakes this callback with a cancel sentinel. The cancel/rewind path owns
         // META from here — exit WITHOUT any further write (docs/v2-steering.md).
         const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, () =>
-          store.getHumanTask(executionId, humanTaskId),
+          store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
         );
         if (gateAfter?.status === 'superseded') {
           ctx.logger?.info?.('run retired while parked', { intentId, humanTaskId });
