@@ -5,13 +5,13 @@ WORKDIR /app
 COPY --chown=node:node --chmod=0644 package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY --chown=node:node --chmod=0644 server.js realtime-token.js doc-name.js ./
+COPY --chown=node:node --chmod=0644 server.js service.js rooms.js protocol.js cluster.js aws-store.js config.js doc-name.js realtime-token.js ./
 
 USER node
 
 EXPOSE 1234
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --spider -q http://localhost:1234/ || exit 1
+  CMD wget --spider -q http://localhost:1234/healthz || exit 1
 
 CMD ["node", "server.js"]

@@ -899,6 +899,7 @@ const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   repository: row.repository || null,
   stageAttempt: Number(row.stage_attempt) || 0,
   generation: Math.max(1, Number(row.generation) || 1),
+  collaborationEpoch: row.collaboration_epoch ?? null,
   versionCount: Math.max(0, Number(row.version_count) || 0) + legacyVersionCount,
   aliases: artifactAliases(row),
   createdAt: row.created_at ?? null,
@@ -966,6 +967,7 @@ const fetchArtifactRow = async (g, intentId, artifactId) => {
     artifactType: row.artifact_type ?? null,
     title: row.title ?? null,
     supersededAt: row.superseded_at ?? null,
+    collaborationEpoch: row.collaboration_epoch ?? null,
   };
 };
 
@@ -2132,6 +2134,15 @@ export const handler = async (event) => {
       if (!artifact) return response(404, { error: 'Artifact not found' });
       if (artifact.supersededAt) {
         return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
+      }
+      if (
+        data.collaborationEpoch !== undefined &&
+        data.collaborationEpoch !== artifact.collaborationEpoch
+      ) {
+        return response(409, {
+          error: 'Artifact content was replaced — reload before editing',
+          code: 'artifact_replaced',
+        });
       }
       const canonicalArtifactId = artifact.id;
       const responder = getResponder(event);

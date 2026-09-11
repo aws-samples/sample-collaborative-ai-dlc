@@ -39,6 +39,7 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
+import { revokeYjsScope } from '../shared/yjs-revocation.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { isSafeRepo } from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
@@ -1857,6 +1858,24 @@ export const handler = async (event) => {
         // and the delete is simply retryable.
         {
           const actor = userEmail || userId;
+          const legacySprintIds = await g
+            .V()
+            .has('Project', 'id', projectId)
+            .out('HAS_SPRINT')
+            .hasLabel('Sprint')
+            .values('id')
+            .toList();
+          for (const [type, scopeId] of [
+            ['project', projectId],
+            ...legacySprintIds.map((sprintId) => ['sprint', sprintId]),
+          ]) {
+            await revokeYjsScope({
+              ddb,
+              table: process.env.YJS_DOCUMENTS_TABLE,
+              type,
+              id: scopeId,
+            });
+          }
           const execs = await store.listProjectExecutions({ projectId, limit: 1000 });
           const failures = [];
           for (const execMeta of execs) {

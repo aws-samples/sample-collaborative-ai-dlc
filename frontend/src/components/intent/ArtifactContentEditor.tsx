@@ -27,17 +27,24 @@ export function ArtifactContentEditor({
   const [finishing, setFinishing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const { content, contentText, initContent, getContent, synced, awareness, remoteUsers } =
+  const { content, contentText, initContent, synced, awareness, remoteUsers, flush } =
     useCollaborativeArtifactContent({
       projectId,
       intentId,
       artifactId: artifact.id,
+      collaborationEpoch: artifact.collaborationEpoch,
       userName,
       userColor: generateColor(userName || artifact.id),
       enabled: true,
       onAutoSave: async (value) => {
         try {
-          await intentsService.updateArtifactContent(projectId, intentId, artifact.id, value);
+          await intentsService.updateArtifactContent(
+            projectId,
+            intentId,
+            artifact.id,
+            value,
+            artifact.collaborationEpoch ?? null,
+          );
           setSaveError(null);
         } catch (err) {
           setSaveError(err instanceof Error ? err.message : 'Save failed');
@@ -50,6 +57,9 @@ export function ArtifactContentEditor({
   // wins; later joiners see the live state).
   const seededRef = useRef(false);
   useEffect(() => {
+    seededRef.current = false;
+  }, [artifact.id, artifact.collaborationEpoch]);
+  useEffect(() => {
     if (!synced || seededRef.current) return;
     seededRef.current = true;
     initContent(artifact.content ?? '');
@@ -58,10 +68,7 @@ export function ArtifactContentEditor({
   const finish = async () => {
     setFinishing(true);
     try {
-      const value = getContent();
-      if (value.trim()) {
-        await intentsService.updateArtifactContent(projectId, intentId, artifact.id, value);
-      }
+      await flush();
       await reload();
       onDone();
     } catch (err) {

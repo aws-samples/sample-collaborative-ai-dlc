@@ -60,3 +60,6 @@ jobs:
 
       - name: Terraform validate
         run: terraform validate
+
+      - name: Yjs configuration tests (mock providers)
+        run: terraform test -filter=tests/yjs.tftest.hcl

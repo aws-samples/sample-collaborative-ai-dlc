@@ -3,6 +3,9 @@
 This guide covers contributor-facing integration tests that are intentionally
 separate from the managed installation documentation.
 
+For collaboration transport, DynamoDB ownership transactions, and deployed
+workload measurements, see [Yjs operations](yjs-operations.md#reproducible-validation).
+
 ## Managed build environment deployed-stack test
 
 Use a disposable AWS account or logical environment for this test. Managed

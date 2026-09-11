@@ -118,6 +118,10 @@ const installDdbFakes = () => {
   });
   ddbMock.on(PutCommand).callsFake((input) => {
     const item = input.Item;
+    if (item.documentId !== undefined) {
+      yjsStore.set(item.documentId, { ...item });
+      return {};
+    }
     const k = keyOf(item.pk, item.sk);
     if (input.ConditionExpression?.includes('attribute_not_exists') && procStore.has(k)) {
       const e = new Error('cond');
@@ -4735,7 +4739,8 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
     const leftover = [...procStore.keys()].filter((k) => k.startsWith(`EXEC#${intentId}|`));
     expect(leftover).toEqual([]);
     // Yjs: only the intent-scoped docs are removed.
-    expect([...yjsStore.keys()]).toEqual(['unrelated-doc']);
+    expect([...yjsStore.keys()]).toEqual(['unrelated-doc', `scope#intent:${intentId}`]);
+    expect(yjsStore.get(`scope#intent:${intentId}`).deletedAt).toEqual(expect.any(Number));
   });
 
   it('purges every version of the intent native workspace exports from S3', async () => {
@@ -6344,16 +6349,35 @@ describe('GET /artifacts/{id}/impact', () => {
   });
 });
 
-const putContent = (sub, projectId, intentId, artifactId, content) =>
+const putContent = (sub, projectId, intentId, artifactId, content, extra = {}) =>
   handler({
     httpMethod: 'PUT',
     path: `/projects/${projectId}/intents/${intentId}/artifacts/${artifactId}/content`,
     pathParameters: { projectId, intentId, artifactId },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, ...extra }),
     ...claims(sub),
   });
 
 describe('PUT /artifacts/{id}/content (simple edit)', () => {
+  it('refuses a stale collaboration epoch after the content was replaced', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    await g
+      .V()
+      .has('Artifact', 'id', 'mr')
+      .has('intent_id', intent.id)
+      .property('collaboration_epoch', 'replacement')
+      .next();
+    const stale = await putContent(sub, projectId, intent.id, 'mr', 'stale draft', {
+      collaborationEpoch: null,
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(JSON.parse(stale.body).code).toBe('artifact_replaced');
+    const current = await putContent(sub, projectId, intent.id, 'mr', 'current draft', {
+      collaborationEpoch: 'replacement',
+    });
+    expect(current.statusCode).toBe(200);
+  });
   it('writes content + human provenance, marks the closure stale, records the event', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent } = await seedEditFixture(sub);

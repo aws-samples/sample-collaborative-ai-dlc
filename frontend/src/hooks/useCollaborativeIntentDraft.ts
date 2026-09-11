@@ -7,9 +7,10 @@ import { generateColor } from '../utils/colors';
 import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 import { intentsService, type Intent } from '../services/intents';
 
-// The collaboratively edited slice of a DRAFT intent. Yjs is the transport
-// (docs evaporate ~60s after the last client leaves); the intent's META row —
-// written through the debounced PATCH auto-save — is the durability. Shapes:
+// The collaboratively edited slice of a DRAFT intent. Clustered Yjs checkpoints
+// the CRDT; debounced PATCH saves maintain the intent's business-data META row.
+// Standalone Yjs relies on that META row when its idle documents are evicted.
+// Shapes:
 //   Y.Text 'title' / 'prompt'      — diff-based collaborative text
 //   Y.Map  'config'                — LWW atomic-replace selection state:
 //     scope: string                — scope name or composed-grid label
@@ -46,12 +47,13 @@ export function useCollaborativeIntentDraft(
   intentId: string | null,
   userName: string,
 ) {
-  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(
-    intentId ? `intent-draft-${intentId}` : null,
-    userName,
-    generateColor(userName),
-    intentId ? { intentId, projectId } : undefined,
-  );
+  const { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument } =
+    useYjsDocument(
+      intentId ? `intent-draft-${intentId}` : null,
+      userName,
+      generateColor(userName),
+      intentId ? { intentId, projectId } : undefined,
+    );
   const [state, setState] = useState<IntentDraftState>({
     title: '',
     prompt: '',
@@ -176,8 +178,7 @@ export function useCollaborativeIntentDraft(
   );
 
   // Debounced PATCH persistence: the backend re-validates everything (scope,
-  // grid, skips) against the pinned plan; a rejected save only logs — the next
-  // valid edit saves again.
+  // grid, skips) against the pinned workflow; failures remain dirty and retry.
   const getSaveData = useCallback(() => {
     if (!doc || !synced || !intentId || !seededRef.current) return null;
     const config = doc.getMap('config');
@@ -194,17 +195,17 @@ export function useCollaborativeIntentDraft(
   const save = useCallback(
     async (data: NonNullable<ReturnType<typeof getSaveData>>) => {
       if (!intentId) return;
+      await flushDocument();
       await intentsService.update(projectId, intentId, data);
     },
-    [projectId, intentId],
+    [projectId, intentId, flushDocument],
   );
 
-  const { flush } = useAutoSave(
-    getSaveData,
-    save,
-    [state.title, state.prompt, state.scope, state.composedGrid, state.skipStageIds],
-    { enabled: synced && !!intentId },
-  );
+  const { flush } = useAutoSave(getSaveData, save, [localRevision], {
+    enabled: synced && !!intentId,
+    skipInitial: true,
+    resetKey: doc,
+  });
 
   return {
     ...state,
