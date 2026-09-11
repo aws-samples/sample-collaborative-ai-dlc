@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
@@ -67,11 +67,19 @@ const rewind = vi.fn();
 const answerGate = vi.fn();
 const repair = vi.fn();
 const exportWorkflow = vi.fn();
+const submitHandoff = vi.fn();
 const writeText = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
 vi.mock('@/services/intents', () => ({
+  NATIVE_EXPORT_HARNESS_OPTIONS: [
+    { value: 'claude', label: 'Claude' },
+    { value: 'codex', label: 'Codex' },
+    { value: 'kiro', label: 'Kiro CLI' },
+    { value: 'kiro-ide', label: 'Kiro IDE' },
+    { value: 'opencode', label: 'OpenCode' },
+  ],
   intentsService: {
     get: (...a: unknown[]) => get(...a),
     start: (...a: unknown[]) => start(...a),
@@ -79,6 +87,7 @@ vi.mock('@/services/intents', () => ({
     answerGate: (...a: unknown[]) => answerGate(...a),
     repair: (...a: unknown[]) => repair(...a),
     exportWorkflow: (...a: unknown[]) => exportWorkflow(...a),
+    submitHandoff: (...a: unknown[]) => submitHandoff(...a),
     // Knowledge graph feeding the popovers/derived-items section — empty
     // graph keeps those affordances out of these page-behavior tests.
     graph: (...a: unknown[]) => graph(...a),
@@ -157,6 +166,10 @@ const baseDetail = (over: Record<string, unknown> = {}) => ({
 
 describe('IntentView', () => {
   beforeEach(() => {
+    window.HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
+    window.HTMLElement.prototype.setPointerCapture = vi.fn();
+    window.HTMLElement.prototype.releasePointerCapture = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
     clearIntentCache();
     get.mockReset();
     start.mockReset();
@@ -164,6 +177,7 @@ describe('IntentView', () => {
     answerGate.mockReset();
     repair.mockReset();
     exportWorkflow.mockReset();
+    submitHandoff.mockReset();
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText },
@@ -364,195 +378,6 @@ describe('IntentView', () => {
     expect(editors[0].getAttribute('data-gate')).toBe('h1');
   });
 
-  it('moves the immutable environment snapshot into the run configuration dialog', async () => {
-    const user = userEvent.setup();
-    get.mockResolvedValue(
-      baseDetail({
-        status: 'RUNNING',
-        agentCli: 'claude',
-        credentialSource: 'space',
-        cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
-        source: {
-          bindingId: 'github',
-          provider: 'github',
-          instance: null,
-          resourceType: 'issue',
-          resourceId: '3',
-          resourceUrl: 'https://github.com/example/repository/issues/3',
-        },
-        environment: {
-          environmentId: 'polyglot',
-          name: 'Polyglot',
-          revisionId: 'r-7',
-          imageDigest: `sha256:${'a'.repeat(64)}`,
-          runtimeVersion: '3',
-          runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/polyglot',
-          runtimeEndpoint: 'revision_r_7',
-          compatibilityVersion: '2',
-          verification: { status: 'PASSED' },
-        },
-      }),
-    );
-    renderAt();
-
-    expect(await screen.findByText('My intent')).toBeInTheDocument();
-    expect(screen.queryByText('Polyglot')).not.toBeInTheDocument();
-    expect(screen.queryByText('Claude Code')).not.toBeInTheDocument();
-    expect(screen.queryByText('Source: Issue #3')).not.toBeInTheDocument();
-
-    await user.click(screen.getByLabelText('Intent actions'));
-    await user.click(screen.getByText('Intent configuration'));
-
-    expect(
-      await screen.findByRole('heading', { name: 'Intent configuration' }),
-    ).toBeInTheDocument();
-    expect(screen.getByText('Polyglot')).toBeInTheDocument();
-    expect(screen.getByText('Claude Code')).toBeInTheDocument();
-    expect(screen.getByText(/us\.anthropic\.claude-sonnet-4-6/)).toBeInTheDocument();
-    const sourceLabel = screen.getByText('Source: Issue #3');
-    expect(sourceLabel).toBeInTheDocument();
-    expect(screen.getByRole('img', { name: 'GitHub' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute(
-      'href',
-      'https://github.com/example/repository/issues/3',
-    );
-    const executionHeading = screen.getByRole('heading', { name: 'Execution' });
-    expect(
-      sourceLabel.compareDocumentPosition(executionHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
-    expect(screen.getByText('r-7')).toBeInTheDocument();
-    expect(screen.getByText('revision_r_7')).toBeInTheDocument();
-    expect(screen.getAllByText('PASSED')).toHaveLength(1);
-    const passedBadge = screen
-      .getAllByText('PASSED')
-      .find((element) => element.classList.contains('text-agent-success'));
-    expect(passedBadge).toBeDefined();
-    expect(passedBadge?.querySelector('svg')).toBeInTheDocument();
-  });
-
-  it('preserves Jira source keys in the intent configuration dialog', async () => {
-    const user = userEvent.setup();
-    get.mockResolvedValue(
-      baseDetail({
-        status: 'RUNNING',
-        source: {
-          bindingId: 'jira',
-          provider: 'jira-cloud',
-          instance: 'cloud',
-          resourceType: 'task',
-          resourceId: 'TAS-01',
-          resourceUrl: 'https://example.atlassian.net/browse/TAS-01',
-        },
-      }),
-    );
-    renderAt();
-
-    await screen.findByText('My intent');
-    await user.click(screen.getByLabelText('Intent actions'));
-    await user.click(screen.getByText('Intent configuration'));
-
-    expect(await screen.findByText('Source: task TAS-01')).toBeInTheDocument();
-    expect(screen.queryByText(/#TAS-01/)).not.toBeInTheDocument();
-    expect(screen.getByRole('img', { name: 'Jira' })).toBeInTheDocument();
-  });
-
-  it('opens the reshape controls from the intent actions menu', async () => {
-    const user = userEvent.setup();
-    get.mockResolvedValue(
-      baseDetail({
-        status: 'WAITING',
-        constructionAutonomyMode: 'gated',
-      }),
-    );
-    renderAt();
-
-    expect(await screen.findByText('My intent')).toBeInTheDocument();
-    expect(screen.queryByTestId('recompose-dialog')).not.toBeInTheDocument();
-
-    await user.click(screen.getByLabelText('Intent actions'));
-    await user.click(screen.getByText('Reshape remaining stages'));
-
-    expect(
-      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId('recompose-dialog')).toBeInTheDocument();
-  });
-
-  it('switches from intent configuration to reshape', async () => {
-    const user = userEvent.setup();
-    get.mockResolvedValue(
-      baseDetail({
-        status: 'WAITING',
-        constructionAutonomyMode: 'gated',
-      }),
-    );
-    renderAt();
-
-    await screen.findByText('My intent');
-    await user.click(screen.getByLabelText('Intent actions'));
-    await user.click(screen.getByText('Intent configuration'));
-    expect(
-      await screen.findByRole('heading', { name: 'Intent configuration' }),
-    ).toBeInTheDocument();
-    const waitingBadge = screen.getByText('WAITING');
-    expect(waitingBadge).toHaveClass('text-agent-waiting');
-    expect(waitingBadge.querySelector('svg')).not.toBeNull();
-    expect(waitingBadge.querySelector('.animate-spin')).toBeNull();
-
-    await user.click(screen.getByRole('button', { name: 'Reshape' }));
-
-    expect(
-      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Intent configuration' })).not.toBeInTheDocument();
-  });
-
-  it('opens reshape from the scope definition link', async () => {
-    const user = userEvent.setup();
-    compiled.mockResolvedValue({
-      scopeGrid: {
-        feature: {
-          requirements: 'EXECUTE',
-          optional: 'SKIP',
-        },
-      },
-      graph: {
-        nodes: [
-          { stageId: 'requirements', phasePath: '01', order: 1 },
-          { stageId: 'optional', phasePath: '01', order: 2 },
-        ],
-        edges: [],
-      },
-    });
-    workflowGet.mockResolvedValue({
-      phases: [
-        {
-          phaseId: 'inception',
-          name: 'Inception',
-          kind: 'phase',
-          path: '01',
-          parentPath: null,
-          order: 1,
-        },
-      ],
-    });
-    get.mockResolvedValue(
-      baseDetail({
-        status: 'WAITING',
-        currentPhase: 'inception',
-        constructionAutonomyMode: 'gated',
-      }),
-    );
-    renderAt();
-
-    await user.click(await screen.findByRole('button', { name: /Inception/ }));
-    await user.click(screen.getByRole('button', { name: 'Scope definition' }));
-
-    expect(
-      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
-    ).toBeInTheDocument();
-  });
-
   it('shows a visible native export beside Discuss', async () => {
     get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
     renderAt();
@@ -596,6 +421,333 @@ describe('IntentView', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('downloads a task-scoped workspace from an external-development gate', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      gates: [
+        {
+          humanTaskId: 'external-s1-auth-a0',
+          stageInstanceId: 'si-code-auth',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'external-development',
+          status: 'pending',
+          prompt: 'Develop auth externally.',
+          options: null,
+          questions: null,
+          externalDevelopment: {
+            stageAttempt: 0,
+            harness: 'codex',
+            repositories: [
+              {
+                name: 'api',
+                repository: 'https://github.com/owner/api.git',
+                provider: 'github',
+                baseSha: 'a'.repeat(40),
+                branch: 'aidlc/i1--s1-unit-auth',
+              },
+            ],
+          },
+        },
+      ],
+    });
+    exportWorkflow.mockResolvedValue({
+      exportId: 'handoff-1',
+      filename: 'auth-codex.zip',
+      downloadUrl: 'https://download.example/auth.zip',
+      expiresAt: '2026-08-17T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'extract-only',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: false,
+        repositories: [
+          {
+            id: 'api',
+            directory: 'api',
+            url: 'https://github.com/owner/api.git',
+            branch: 'aidlc/i1--s1-unit-auth',
+          },
+        ],
+      },
+    });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+
+    renderAt();
+    expect(
+      await screen.findByText(/Download this unit’s code-generation workspace/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upload plan' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upload summary' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Choose external development harness' }),
+    );
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Claude' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Download workspace' }));
+    expect(screen.getByRole('heading', { name: 'Develop auth externally?' })).toBeInTheDocument();
+    expect(screen.getByText(/point-in-time Claude workspace/i)).toBeInTheDocument();
+    expect(screen.getByText('aidlc/i1--s1-unit-auth')).toBeInTheDocument();
+    expect(screen.getByText(/code-generation-plan\.md/)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Download code-generation workspace' }),
+    );
+
+    expect(exportWorkflow).toHaveBeenCalledWith('p1', 'i1', 'claude', 'external-s1-auth-a0');
+    expect(downloadClick).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByRole('heading', { name: 'Set up external code generation for auth' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("$aidlc Let's perform the code-generation stage for unit 'auth'."),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('alertdialog')).queryByText('Finish and return the unit'),
+    ).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(
+      screen.getByRole('button', { name: 'Choose external development harness' }),
+    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Download workspace' })).toBeEnabled();
+    expect(screen.getByText('Finish and return the unit')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "find . -type f \\( -name 'code-generation-plan.md' -o -name 'code-summary.md' \\) -print",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/git push origin 'aidlc\/i1--s1-unit-auth'/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Upload plan' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Upload summary' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled();
+    downloadClick.mockRestore();
+  });
+
+  it('restores the handoff return phase from persisted export metadata', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      gates: [
+        {
+          humanTaskId: 'external-s1-auth-a0',
+          stageInstanceId: 'si-code-auth',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'external-development',
+          status: 'pending',
+          prompt: 'Develop auth externally.',
+          options: null,
+          questions: null,
+          externalDevelopment: {
+            stageAttempt: 0,
+            harness: 'claude',
+            exportId: 'handoff-export',
+            exportedAt: '2026-08-18T12:00:00.000Z',
+            repositories: [
+              {
+                name: 'api',
+                repository: 'https://github.com/owner/api.git',
+                provider: 'github',
+                baseSha: 'a'.repeat(40),
+                branch: 'aidlc/i1--s1-unit-auth',
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    renderAt();
+
+    expect(await screen.findByText('Finish and return the unit')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download workspace' })).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'Choose external development harness' }),
+    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Upload plan' })).toBeInTheDocument();
+    expect(exportWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('submits the two selected native documents for an external-development gate', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      gates: [
+        {
+          humanTaskId: 'external-s1-auth-a0',
+          stageInstanceId: 'si-code-auth',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'external-development',
+          status: 'pending',
+          prompt: 'Develop auth externally.',
+          options: null,
+          questions: null,
+          externalDevelopment: {
+            stageAttempt: 0,
+            harness: 'codex',
+            repositories: [],
+          },
+        },
+      ],
+    });
+    exportWorkflow.mockResolvedValue({
+      exportId: 'handoff-submit',
+      filename: 'auth-codex.zip',
+      downloadUrl: 'https://download.example/auth-submit.zip',
+      expiresAt: '2026-08-17T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'extract-only',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: false,
+        repositories: [],
+      },
+    });
+    submitHandoff.mockResolvedValue({ ok: true });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download workspace' }));
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Download code-generation workspace' }),
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Done' }));
+    const inputs = await screen.findAllByLabelText(/Upload (code-generation plan|code summary)/);
+    await userEvent.upload(inputs[0], new File(['# Plan\n'], 'plan.md', { type: 'text/markdown' }));
+    await userEvent.upload(
+      inputs[1],
+      new File(['# Summary\n'], 'agent-notes.md', { type: 'text/markdown' }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    expect(submitHandoff).toHaveBeenCalledWith('p1', 'i1', 'external-s1-auth-a0', {
+      'code-generation-plan': {
+        content: '# Plan\n',
+      },
+      'code-summary': {
+        content: '# Summary\n',
+      },
+    });
+    downloadClick.mockRestore();
+  });
+
+  it('cancels external development and requests managed code generation', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING' }),
+      gates: [
+        {
+          humanTaskId: 'external-s1-auth-a0',
+          stageInstanceId: 'si-code-auth',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'external-development',
+          status: 'pending',
+          prompt: 'Develop auth externally.',
+          options: null,
+          questions: null,
+          externalDevelopment: {
+            stageAttempt: 0,
+            harness: 'codex',
+            repositories: [],
+          },
+        },
+      ],
+    });
+    answerGate.mockResolvedValue({});
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderAt();
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Cancel external development' }),
+    );
+
+    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'external-s1-auth-a0', {
+      status: 'answered',
+      answer: { decision: 'run-managed' },
+    });
+  });
+
+  it('reloads persisted validation findings after a rejected handoff submission', async () => {
+    const gate = {
+      humanTaskId: 'external-s1-auth-a0',
+      stageInstanceId: 'si-code-auth',
+      unitSlug: 'auth',
+      sectionIndex: 1,
+      kind: 'external-development',
+      status: 'pending',
+      prompt: 'Develop auth externally.',
+      options: null,
+      questions: null,
+      externalDevelopment: {
+        stageAttempt: 0,
+        harness: 'codex',
+        repositories: [],
+      },
+    };
+    get
+      .mockResolvedValueOnce({ ...baseDetail({ status: 'RUNNING' }), gates: [gate] })
+      .mockResolvedValue({
+        ...baseDetail({ status: 'RUNNING' }),
+        gates: [
+          {
+            ...gate,
+            externalDevelopment: {
+              ...gate.externalDevelopment,
+              validationFindings: [
+                { field: 'code-summary', code: 'content_required', detail: null },
+              ],
+            },
+          },
+        ],
+      });
+    exportWorkflow.mockResolvedValue({
+      exportId: 'handoff-rejected',
+      filename: 'auth-codex.zip',
+      downloadUrl: 'https://download.example/auth-rejected.zip',
+      expiresAt: '2026-08-17T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'extract-only',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: false,
+        repositories: [],
+      },
+    });
+    submitHandoff.mockRejectedValue(new Error('Submission failed validation'));
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download workspace' }));
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Download code-generation workspace' }),
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Done' }));
+    const inputs = await screen.findAllByLabelText(/Upload (code-generation plan|code summary)/);
+    await userEvent.upload(
+      inputs[0],
+      new File(['# Plan\n'], 'code-generation-plan.md', { type: 'text/markdown' }),
+    );
+    await userEvent.upload(inputs[1], new File([''], 'summary.md', { type: 'text/markdown' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    expect(await screen.findByText('code-summary: content_required')).toBeInTheDocument();
+    expect(get).toHaveBeenCalledTimes(2);
+    downloadClick.mockRestore();
   });
 
   it('shows the legacy-ref warning even when no workspace setup is required', async () => {
@@ -875,6 +1027,30 @@ describe('IntentView', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders the immutable environment revision and verification result', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'RUNNING',
+        environment: {
+          environmentId: 'polyglot',
+          name: 'Polyglot',
+          revisionId: 'r-7',
+          imageDigest: `sha256:${'a'.repeat(64)}`,
+          runtimeVersion: '3',
+          runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/polyglot',
+          runtimeEndpoint: 'revision_r_7',
+          compatibilityVersion: '2',
+          verification: { status: 'PASSED' },
+        },
+      }),
+    );
+    renderAt();
+    expect(await screen.findByText('Polyglot')).toBeInTheDocument();
+    expect(screen.getByText('r-7')).toBeInTheDocument();
+    expect(screen.getByText('revision_r_7')).toBeInTheDocument();
+    expect(screen.getByText('verification PASSED')).toBeInTheDocument();
+  });
+
   it('shows resume progress after a gate is answered but before the stage is running again', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
@@ -1015,7 +1191,7 @@ describe('IntentView', () => {
           kind: 'validation',
           status: 'pending',
           prompt: 'Review stage stage-a.',
-          options: ['approve', 'request-changes'],
+          options: ['approve', 'develop-externally', 'request-changes'],
           questions: null,
           answer: null,
           answeredBy: null,
@@ -1064,7 +1240,22 @@ describe('IntentView', () => {
     renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(await screen.findByText('Review: stage-a')).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Review navigation' })).toHaveTextContent(
+      'Back to intent',
+    );
+    const approvalActions = screen.getByRole('group', { name: 'Approval actions' });
+    expect(approvalActions).toHaveTextContent('Approve stage');
+    expect(approvalActions).toHaveTextContent('Approve and develop externally');
     expect(screen.getByRole('button', { name: /Approve stage/i })).toBeInTheDocument();
+    const externalButton = screen.getByRole('button', {
+      name: 'Approve and develop externally',
+    });
+    await userEvent.hover(externalButton);
+    expect(
+      await screen.findAllByText(
+        /Approve this stage, then develop the unit in your preferred IDE or CLI/i,
+      ),
+    ).not.toHaveLength(0);
     const reviewDiscuss = screen
       .getAllByTestId('discuss')
       .find((b) => b.getAttribute('data-entity') === 'review');
@@ -1258,7 +1449,7 @@ describe('IntentView', () => {
     const { unmount } = renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(
-      await screen.findByRole('button', { name: 'Approve — continue to stage-b' }),
+      await screen.findByRole('button', { name: 'Approve and continue to stage-b' }),
     ).toBeInTheDocument();
     unmount();
 
@@ -1267,7 +1458,7 @@ describe('IntentView', () => {
     renderAt();
     await userEvent.click(await screen.findByRole('button', { name: 'Review stage' }));
     expect(
-      await screen.findByRole('button', { name: 'Approve — complete workflow' }),
+      await screen.findByRole('button', { name: 'Approve and complete workflow' }),
     ).toBeInTheDocument();
   });
 
@@ -1475,7 +1666,7 @@ describe('IntentView', () => {
 
     renderAt();
     // Phases and stages render expanded by default, in workflow order.
-    expect((await screen.findAllByText('Construction')).length).toBeGreaterThan(0);
+    expect(await screen.findByText('Construction')).toBeInTheDocument();
     expect(await screen.findByText('Code Gen Doc')).toBeInTheDocument();
 
     // Collect phase headers + document titles in DOM order and assert the full
@@ -1489,10 +1680,7 @@ describe('IntentView', () => {
       'Requirements Doc Old',
       'Requirements Doc New',
     ];
-    const positions = labels.map((t) => {
-      const matches = screen.getAllByText(t);
-      return { t, el: matches[matches.length - 1] };
-    });
+    const positions = labels.map((t) => ({ t, el: screen.getByText(t) }));
     const domOrder = positions
       .toSorted((a, b) =>
         a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,

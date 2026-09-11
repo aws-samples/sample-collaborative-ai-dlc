@@ -16,19 +16,10 @@ import {
 import { workflowsService, type CompiledWorkflow, type PhaseNode } from '@/services/workflows';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { AlertCircle, Loader2, Sparkles } from 'lucide-react';
+import { AlertCircle, ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react';
 
 interface Props {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
   projectId: string;
   intentId: string;
   intent: Intent;
@@ -42,8 +33,6 @@ const POLL_MS = 2500;
 const RAN_STATES = new Set(['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN', 'FAILED']);
 
 export function RecomposePanel({
-  open,
-  onOpenChange,
   projectId,
   intentId,
   intent,
@@ -51,6 +40,7 @@ export function RecomposePanel({
   workflowVersion,
   onRelaunched,
 }: Props) {
+  const [open, setOpen] = useState(false);
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [phases, setPhases] = useState<PhaseNode[]>([]);
   const [grid, setGrid] = useState<Record<string, 'EXECUTE' | 'SKIP'> | null>(null);
@@ -120,37 +110,6 @@ export function RecomposePanel({
       })),
     [compiled],
   );
-  const orderedNodes = useMemo(
-    () =>
-      (compiled?.graph.nodes ?? []).toSorted(
-        (a, b) =>
-          (a.phasePath ?? '').localeCompare(b.phasePath ?? '') ||
-          a.order - b.order ||
-          a.stageId.localeCompare(b.stageId),
-      ),
-    [compiled],
-  );
-  const progressBoundaryIndex = useMemo(() => {
-    const currentStageIndex = intent.currentStage
-      ? orderedNodes.findIndex((node) => node.stageId === intent.currentStage)
-      : -1;
-    if (currentStageIndex >= 0) return currentStageIndex;
-
-    const currentPhasePath =
-      phases.find(
-        (phase) => phase.phaseId === intent.currentPhase || phase.path === intent.currentPhase,
-      )?.path ?? null;
-    const currentPhaseIndex = currentPhasePath
-      ? orderedNodes.findIndex((node) => node.phasePath === currentPhasePath)
-      : -1;
-    if (currentPhaseIndex >= 0) return currentPhaseIndex;
-
-    let latestRanIndex = -1;
-    orderedNodes.forEach((node, index) => {
-      if (frozen.get(node.stageId) === 'EXECUTE') latestRanIndex = index;
-    });
-    return latestRanIndex;
-  }, [frozen, intent.currentPhase, intent.currentStage, orderedNodes, phases]);
   const lockedStageIds = useMemo(
     () =>
       new Set([
@@ -158,9 +117,8 @@ export function RecomposePanel({
           .filter((n) => initPhasePath != null && n.phasePath === initPhasePath)
           .map((n) => n.stageId),
         ...frozen.keys(),
-        ...orderedNodes.slice(0, Math.max(0, progressBoundaryIndex)).map((n) => n.stageId),
       ]),
-    [compiled, frozen, initPhasePath, orderedNodes, progressBoundaryIndex],
+    [compiled, initPhasePath, frozen],
   );
 
   // Baseline: the intent's composed grid, else the run scope's projection,
@@ -179,14 +137,6 @@ export function RecomposePanel({
   }, [intent.scope, intent.composedGrid, compiled, frozen]);
 
   const effectiveGrid = grid ?? baseline;
-
-  const preserveLockedStages = (candidate: Record<string, 'EXECUTE' | 'SKIP'>) => {
-    const next = { ...candidate };
-    for (const stageId of lockedStageIds) {
-      next[stageId] = baseline[stageId] === 'EXECUTE' ? 'EXECUTE' : 'SKIP';
-    }
-    return next;
-  };
 
   const toggleStage = (stageId: string) => {
     if (lockedStageIds.has(stageId)) return;
@@ -220,11 +170,10 @@ export function RecomposePanel({
     setError(null);
     try {
       await intentsService.recompose(projectId, intentId, {
-        composedGrid: preserveLockedStages(applyGrid),
+        composedGrid: applyGrid,
         scope: scopeLabel,
       });
       await onRelaunched();
-      onOpenChange(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Recompose failed');
     } finally {
@@ -235,22 +184,24 @@ export function RecomposePanel({
   const dirty = grid != null;
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !applying && onOpenChange(next)}>
-      <DialogContent
-        className="max-h-[85vh] gap-0 overflow-y-auto p-0 sm:max-w-3xl"
-        data-testid="recompose-dialog"
+    <div className="rounded border" data-testid="recompose-panel">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-1.5 px-3 py-2 text-sm font-medium"
+        data-testid="recompose-toggle"
       >
-        <DialogHeader className="border-b px-6 py-5">
-          <DialogTitle>Reshape remaining stages</DialogTitle>
-          <DialogDescription>
-            Completed and running stages stay locked. Pending stages can be added or removed.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4 px-6 py-5">
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        Reshape remaining stages
+        <span className="text-xs text-muted-foreground font-normal">
+          skip or add pending stages — completed work stays frozen
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-3">
           {error && (
             <p className="flex items-start gap-1.5 text-xs text-destructive">
-              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
               {error}
             </p>
           )}
@@ -272,9 +223,9 @@ export function RecomposePanel({
               data-testid="recompose-ask-composer"
             >
               {composing || pending ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
               ) : (
-                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                <Sparkles className="h-3.5 w-3.5 mr-1.5" />
               )}
               {pending ? 'Composing…' : 'Ask composer'}
             </Button>
@@ -288,7 +239,7 @@ export function RecomposePanel({
 
           {latestInflight?.state === 'COMPLETED' && latestInflight.proposal?.grid && (
             <div
-              className="space-y-2 rounded-md border bg-muted/30 px-3 py-2.5"
+              className="rounded-md border bg-muted/30 px-3 py-2.5 space-y-2"
               data-testid="recompose-proposal"
             >
               <p className="text-sm font-medium">
@@ -317,7 +268,7 @@ export function RecomposePanel({
                 disabled={applying}
                 data-testid="recompose-apply-proposal"
               >
-                {applying && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                {applying && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
                 Apply &amp; relaunch
               </Button>
             </div>
@@ -342,7 +293,7 @@ export function RecomposePanel({
                     disabled={applying}
                     data-testid="recompose-apply-manual"
                   >
-                    {applying && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                    {applying && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
                     Apply changes &amp; relaunch
                   </Button>
                   <Button
@@ -364,7 +315,7 @@ export function RecomposePanel({
             <p className="text-xs text-muted-foreground">Loading the workflow grid…</p>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+      )}
+    </div>
   );
 }

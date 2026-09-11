@@ -2,19 +2,23 @@ import { useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
 import {
   intentsService,
+  NATIVE_EXPORT_HARNESS_OPTIONS,
+  type IntentGate,
   type NativeExportHarness,
+  type NativeHandoffDocuments,
   type NativeWorkflowExport,
 } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { RecomposePanel } from '@/components/intent/RecomposePanel';
-import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
+import { formatTrackerSourceLabel } from '@/lib/trackerSourceLabel';
+import { AGENT_CLI_METADATA, AGENT_CREDENTIAL_SOURCE_LABELS } from '@/lib/agentCli';
 import { PendingQuestionsTabs } from '@/components/intent/PendingQuestionsTabs';
-import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
+import { ScopeBadge } from '@/components/intent/ScopeBadge';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
 import { AgentProgressCard } from '@/components/intent/AgentProgressCard';
@@ -40,21 +44,20 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
+  Bot,
+  Boxes,
   Check,
   ChevronDown,
   Download,
-  GitBranch,
   KeyRound,
   Loader2,
   MoreHorizontal,
   Play,
   RotateCcw,
-  Settings2,
   Trash2,
   TriangleAlert,
   Wrench,
@@ -69,14 +72,6 @@ import {
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
 const CREDENTIAL_FAILURE_CODES = new Set(['credential_unavailable', 'credential_invalid']);
 const NON_EXPORTABLE_STATUSES = new Set(['DRAFT', 'CREATED']);
-const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
-  { value: 'claude', label: 'Claude' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'kiro', label: 'Kiro CLI' },
-  { value: 'kiro-ide', label: 'Kiro IDE' },
-  { value: 'opencode', label: 'OpenCode' },
-];
-
 const errorMessage = (value: string) => {
   try {
     const parsed = JSON.parse(value);
@@ -125,8 +120,6 @@ export default function IntentView() {
   const [deleting, setDeleting] = useState(false);
   const [confirmRepair, setConfirmRepair] = useState(false);
   const [repairing, setRepairing] = useState(false);
-  const [configurationOpen, setConfigurationOpen] = useState(false);
-  const [reshapeOpen, setReshapeOpen] = useState(false);
   const [confirmExport, setConfirmExport] = useState(false);
   const [selectedExportHarness, setSelectedExportHarness] = useState<
     NativeExportHarness | undefined
@@ -134,8 +127,15 @@ export default function IntentView() {
   const [requestedExportHarness, setRequestedExportHarness] = useState<
     NativeExportHarness | undefined
   >();
+  const [requestedHandoffGate, setRequestedHandoffGate] = useState<IntentGate | null>(null);
   const [exporting, setExporting] = useState(false);
   const [constructionExport, setConstructionExport] = useState<NativeWorkflowExport | null>(null);
+  const [constructionExportHandoff, setConstructionExportHandoff] = useState<IntentGate | null>(
+    null,
+  );
+  const [downloadedHandoffTaskIds, setDownloadedHandoffTaskIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
 
@@ -216,12 +216,14 @@ export default function IntentView() {
     }
   };
 
-  const handleExport = async (harness?: NativeExportHarness) => {
+  const handleExport = async (harness?: NativeExportHarness, handoffGate?: IntentGate | null) => {
     setConfirmExport(false);
     setExporting(true);
     setActionError(null);
     try {
-      const result = await intentsService.exportWorkflow(projectId, intentId, harness);
+      const result = handoffGate
+        ? await intentsService.exportWorkflow(projectId, intentId, harness, handoffGate.humanTaskId)
+        : await intentsService.exportWorkflow(projectId, intentId, harness);
       const download = document.createElement('a');
       download.href = result.downloadUrl;
       download.download = result.filename;
@@ -229,7 +231,15 @@ export default function IntentView() {
       document.body.append(download);
       download.click();
       download.remove();
-      if (result.setup.showWorkspaceSetup || result.warnings.length > 0) {
+      if (handoffGate) {
+        setDownloadedHandoffTaskIds((current) => {
+          const next = new Set(current);
+          next.add(handoffGate.humanTaskId);
+          return next;
+        });
+      }
+      if (handoffGate || result.setup.showWorkspaceSetup || result.warnings.length > 0) {
+        setConstructionExportHandoff(handoffGate ?? null);
         setConstructionExport(result);
       }
     } catch (err) {
@@ -240,7 +250,27 @@ export default function IntentView() {
     }
   };
 
+  const handleSubmitHandoff = async (
+    handoffGate: IntentGate,
+    documents: NativeHandoffDocuments,
+  ) => {
+    try {
+      await intentsService.submitHandoff(projectId, intentId, handoffGate.humanTaskId, documents);
+    } catch (error) {
+      await reload();
+      throw error;
+    }
+    await reload();
+  };
+
   const requestExport = (harness?: NativeExportHarness) => {
+    setRequestedHandoffGate(null);
+    setRequestedExportHarness(harness);
+    setConfirmExport(true);
+  };
+
+  const requestHandoffExport = async (handoffGate: IntentGate, harness: NativeExportHarness) => {
+    setRequestedHandoffGate(handoffGate);
     setRequestedExportHarness(harness);
     setConfirmExport(true);
   };
@@ -273,6 +303,10 @@ export default function IntentView() {
   }
 
   const intent = detail.intent;
+  const environmentVerification =
+    typeof intent.environment?.verification?.status === 'string'
+      ? intent.environment.verification.status
+      : 'UNKNOWN';
   const laneWaits = deriveLaneWaits(detail.stages, gates);
   const recoveryWaits = Object.values(laneWaits).filter((wait) => wait.kind === 'recovery');
   const needsLaneRepair =
@@ -287,8 +321,6 @@ export default function IntentView() {
   }
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
   const isFailed = intent.status === 'FAILED';
-  const canReshape =
-    (intent.status === 'WAITING' || isFailed) && intent.constructionAutonomyMode !== 'autonomous';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.
   const isCancellable = ['WAITING', 'CREATED', 'FAILED'].includes(intent.status);
   // Deletable (destructive): owner/admin, any status except mid-RUNNING.
@@ -299,8 +331,11 @@ export default function IntentView() {
   const defaultExportHarness = intent.agentCli ?? undefined;
   const activeExportHarness = selectedExportHarness ?? defaultExportHarness;
   const exportCli =
-    EXPORT_HARNESSES.find((option) => option.value === activeExportHarness)?.label ??
+    NATIVE_EXPORT_HARNESS_OPTIONS.find((option) => option.value === activeExportHarness)?.label ??
     'native AI-DLC';
+  const requestedExportCli =
+    NATIVE_EXPORT_HARNESS_OPTIONS.find((option) => option.value === requestedExportHarness)
+      ?.label ?? 'native AI-DLC';
   const exportButtonLabel =
     intent.status === 'RUNNING'
       ? `Download ${exportCli} workspace from latest completed checkpoint`
@@ -341,6 +376,16 @@ export default function IntentView() {
           <h1 className="text-lg font-bold tracking-tight truncate min-w-0">
             {intent.title || 'Intent'}
           </h1>
+          {intent.scope && <ScopeBadge scope={intent.scope} className="shrink-0" />}
+          {intent.agentCli && (
+            <Badge variant="outline" className="gap-1 text-[10px] shrink-0">
+              <Bot className="h-3 w-3" />
+              {AGENT_CLI_METADATA[intent.agentCli].label}
+              {intent.credentialSource
+                ? ` · ${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                : ''}
+            </Badge>
+          )}
           {TERMINAL_STATUSES.has(intent.status) && (
             <Badge variant="outline" className="text-[10px] shrink-0">
               {intent.status}
@@ -352,8 +397,6 @@ export default function IntentView() {
               aria-label="live"
             />
           )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
           <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
           <div className="inline-flex h-7 shrink-0 overflow-hidden rounded-md border border-border/60">
             <TooltipProvider>
@@ -373,7 +416,7 @@ export default function IntentView() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="start">
-                        {EXPORT_HARNESSES.map((option) => (
+                        {NATIVE_EXPORT_HARNESS_OPTIONS.map((option) => (
                           <DropdownMenuItem
                             key={option.value}
                             disabled={exporting}
@@ -427,48 +470,53 @@ export default function IntentView() {
               </Tooltip>
             </TooltipProvider>
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setConfigurationOpen(true)}>
-                <Settings2 className="mr-2 h-4 w-4" />
-                Intent configuration
-              </DropdownMenuItem>
-              {canReshape && (
-                <DropdownMenuItem onSelect={() => setReshapeOpen(true)}>
-                  <GitBranch className="mr-2 h-4 w-4" />
-                  Reshape remaining stages
-                </DropdownMenuItem>
-              )}
-              {(isCancellable || isDeletable) && <DropdownMenuSeparator />}
-              {isCancellable && (
-                <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
-                  <XCircle className="mr-2 h-4 w-4" />
-                  {cancelling ? 'Cancelling…' : 'Cancel run'}
-                </DropdownMenuItem>
-              )}
-              {isDeletable && (
-                <DropdownMenuItem
-                  disabled={deleting}
-                  onClick={() => setConfirmDelete(true)}
-                  className="text-destructive"
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {intent.source && (
+            <span className="text-xs text-muted-foreground">
+              {intent.source.resourceUrl ? (
+                <a
+                  href={intent.source.resourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:no-underline"
                 >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  {deleting ? 'Deleting…' : 'Delete'}
-                </DropdownMenuItem>
+                  from {formatTrackerSourceLabel(intent.source)}
+                </a>
+              ) : (
+                <>from {formatTrackerSourceLabel(intent.source)}</>
               )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+            </span>
+          )}
+          {(isCancellable || isDeletable) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {isCancellable && (
+                  <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
+                    <XCircle className="mr-2 h-4 w-4" />
+                    {cancelling ? 'Cancelling…' : 'Cancel run'}
+                  </DropdownMenuItem>
+                )}
+                {isDeletable && (
+                  <DropdownMenuItem
+                    disabled={deleting}
+                    onClick={() => setConfirmDelete(true)}
+                    className="text-destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
-
-      <IntentPhaseBreadcrumb
-        onOpenScopeDefinition={canReshape ? () => setReshapeOpen(true) : undefined}
-      />
 
       {visibleError && (
         <div
@@ -486,6 +534,42 @@ export default function IntentView() {
           >
             <X className="h-4 w-4" />
           </Button>
+        </div>
+      )}
+
+      {intent.environment && (
+        <div className="grid gap-3 border-y py-3 text-[11px] sm:grid-cols-2 lg:grid-cols-[auto_1fr_1fr_1fr_auto] lg:items-center">
+          <div className="flex items-center gap-1.5 font-medium">
+            <Boxes className="h-3.5 w-3.5" />
+            {intent.environment.name}
+          </div>
+          <div>
+            <span className="text-muted-foreground">Revision </span>
+            <span className="break-all font-mono">{intent.environment.revisionId}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Image </span>
+            <span className="break-all font-mono">
+              {intent.environment.imageDigest ?? 'Unavailable'}
+            </span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Endpoint </span>
+            <span className="break-all font-mono">
+              {intent.environment.runtimeEndpoint ?? 'Default'}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 lg:justify-end">
+            <Badge variant="outline" className="font-mono text-[10px]">
+              runtime {intent.environment.runtimeVersion ?? 'legacy'}
+            </Badge>
+            <Badge variant="outline" className="font-mono text-[10px]">
+              compatibility {intent.environment.compatibilityVersion}
+            </Badge>
+            <Badge variant="outline" className="font-mono text-[10px]">
+              verification {environmentVerification}
+            </Badge>
+          </div>
         </div>
       )}
 
@@ -583,6 +667,24 @@ export default function IntentView() {
         </div>
       )}
 
+      {/* In-flight reshape (Adaptive Workflows): skip/add PENDING stages on a
+          parked or failed run — composer-assisted or manual, always applied
+          through the validated recompose relaunch. Hidden mid-RUN and while
+          construction runs autonomously (the endpoint rejects both anyway). */}
+      {(intent.status === 'WAITING' || isFailed) &&
+        intent.constructionAutonomyMode !== 'autonomous' &&
+        projectId &&
+        intentId && (
+          <RecomposePanel
+            projectId={projectId}
+            intentId={intentId}
+            intent={intent}
+            stageRows={detail.stages}
+            workflowVersion={intent.workflowVersion ?? undefined}
+            onRelaunched={reload}
+          />
+        )}
+
       {/* DRAFT never renders here — it redirects to the compose page above. */}
       {reviewGate ? (
         <StageReviewPanel
@@ -631,7 +733,13 @@ export default function IntentView() {
                   projectId={projectId}
                   intentId={intentId}
                   userName={userName}
+                  handoffWorkspaceDownloaded={
+                    downloadedHandoffTaskIds.has(gate.humanTaskId) ||
+                    Boolean(gate.externalDevelopment?.exportedAt)
+                  }
                   onAnswer={answerGate}
+                  onExportHandoff={requestHandoffExport}
+                  onSubmitHandoff={handleSubmitHandoff}
                 />
               )}
             />
@@ -666,19 +774,65 @@ export default function IntentView() {
         onOpenChange={(open) => {
           if (exporting) return;
           setConfirmExport(open);
-          if (!open) setRequestedExportHarness(undefined);
+          if (!open) {
+            setRequestedExportHarness(undefined);
+            setRequestedHandoffGate(null);
+          }
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Continue outside Collaborative AI-DLC?</AlertDialogTitle>
-            <AlertDialogDescription className="break-words">
-              {intent.status === 'RUNNING'
-                ? 'This download uses the latest completed workflow checkpoint and excludes the stage currently in progress. '
-                : 'This download creates a point-in-time workspace. '}
-              Work completed locally, including decisions, approvals, artifacts, and code changes,
-              will not be synchronized back to this intent or included in its traceability history.
-            </AlertDialogDescription>
+            <AlertDialogTitle>
+              {requestedHandoffGate
+                ? `Develop ${requestedHandoffGate.unitSlug ?? 'this unit'} externally?`
+                : 'Continue outside Collaborative AI-DLC?'}
+            </AlertDialogTitle>
+            {requestedHandoffGate ? (
+              <>
+                <AlertDialogDescription className="break-words">
+                  This download creates a point-in-time {requestedExportCli} workspace scoped to
+                  this unit&apos;s <code>code-generation</code> stage. Collaborative AI-DLC keeps
+                  the unit parked while you work externally.
+                </AlertDialogDescription>
+                <div className="space-y-2 text-sm text-muted-foreground">
+                  <p>
+                    Commit and push source changes to the assigned{' '}
+                    {requestedHandoffGate.externalDevelopment?.repositories.length === 1
+                      ? 'branch'
+                      : 'branches'}
+                    :
+                  </p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    {requestedHandoffGate.externalDevelopment?.repositories.map((repository) => (
+                      <li key={`${repository.repository}-${repository.branch}`}>
+                        <code>{repository.branch}</code>
+                        {repository.name ? ` (${repository.name})` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                  <p>
+                    When code generation is complete, return here and upload the generated{' '}
+                    <code>code-generation-plan.md</code> and <code>code-summary.md</code>.
+                    Collaborative AI-DLC will validate the pushed revisions and documents, then
+                    resume the unit&apos;s normal workflow.
+                  </p>
+                  <p>
+                    Only pushed commits and those two submitted documents are synchronized back.
+                    Other external decisions, approvals, or workspace state are not added to the
+                    intent&apos;s traceability history.
+                  </p>
+                </div>
+              </>
+            ) : (
+              <AlertDialogDescription className="break-words">
+                {intent.status === 'RUNNING'
+                  ? 'This download uses the latest completed workflow checkpoint and excludes the stage currently in progress. '
+                  : 'This download creates a point-in-time workspace. '}
+                Work completed locally, including decisions, approvals, artifacts, and code changes,
+                will not be synchronized back to this intent or included in its traceability
+                history.
+              </AlertDialogDescription>
+            )}
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={exporting}>Cancel</AlertDialogCancel>
@@ -686,10 +840,14 @@ export default function IntentView() {
               disabled={exporting}
               onClick={(event) => {
                 event.preventDefault();
-                void handleExport(requestedExportHarness);
+                void handleExport(requestedExportHarness, requestedHandoffGate);
               }}
             >
-              {exporting ? 'Preparing workspace…' : 'Download workspace'}
+              {exporting
+                ? 'Preparing workspace…'
+                : requestedHandoffGate
+                  ? 'Download code-generation workspace'
+                  : 'Download workspace'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -698,7 +856,11 @@ export default function IntentView() {
       <NativeExportSetupDialog
         exportResult={constructionExport}
         projectName={project?.name}
-        onClose={() => setConstructionExport(null)}
+        handoffGate={constructionExportHandoff}
+        onClose={() => {
+          setConstructionExport(null);
+          setConstructionExportHandoff(null);
+        }}
       />
 
       {/* Delete confirmation */}
@@ -765,25 +927,6 @@ export default function IntentView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <IntentConfigurationDialog
-        open={configurationOpen}
-        onOpenChange={setConfigurationOpen}
-        onOpenReshape={canReshape ? () => setReshapeOpen(true) : undefined}
-      />
-
-      {canReshape && (
-        <RecomposePanel
-          open={reshapeOpen}
-          onOpenChange={setReshapeOpen}
-          projectId={projectId}
-          intentId={intentId}
-          intent={intent}
-          stageRows={detail.stages}
-          workflowVersion={intent.workflowVersion ?? undefined}
-          onRelaunched={reload}
-        />
-      )}
     </div>
   );
 }

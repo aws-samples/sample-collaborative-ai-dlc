@@ -64,6 +64,7 @@ const HUMAN_TASK_FIELDS = [
   'status',
   'questions',
   'answer',
+  'externalDevelopment',
   'createdAt',
   'answeredAt',
 ];

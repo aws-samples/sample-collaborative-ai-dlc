@@ -76,6 +76,7 @@ vi.mock('@/components/layout/AppHeader', () => ({
   ),
 }));
 vi.mock('@/components/layout/SprintPipelineBar', () => ({ SprintPipelineBar: () => null }));
+vi.mock('@/components/layout/IntentPipelineBar', () => ({ IntentPipelineBar: () => null }));
 vi.mock('@/components/layout/ActivityPanel', () => ({
   ActivityPanel: () => <div data-testid="activity-panel" />,
 }));

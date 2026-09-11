@@ -586,7 +586,7 @@ require_terraform_version() {
 
 require_commands() {
     local missing=0 command
-    local commands="git node npm terraform aws"
+    local commands="git node npm terraform aws docker"
     [[ "${AIDLC_TEST_MODE:-0}" == 1 ]] && commands="git node"
     for command in $commands; do
         if ! command -v "$command" >/dev/null 2>&1; then

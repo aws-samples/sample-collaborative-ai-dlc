@@ -23,10 +23,10 @@
 // failure fails the stage only when THIS stage created commits that did not
 // reach the remote (new work at risk = the documented v2 loss mode).
 
+import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, rm, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
-import { NO_HOOKS_PATH, runGitCommand } from './git-runner.js';
 import {
   resolveGitCommitter as defaultResolveGitCommitter,
   withGitCredential as defaultWithGitCredential,
@@ -45,8 +45,8 @@ const DEFAULT_COMMITTER = {
 // GitHub App identity returned by the broker. Implemented via
 // `-c author.name/author.email` (git >=2.22):
 // unlike `--author` it works for `merge` too, and unlike GIT_AUTHOR_* env it
-// survives the shared runner's environment sanitization (which strips ambient
-// overrides so the agent can't spoof authorship).
+// survives sanitizedGitEnv (which must keep stripping ambient overrides so
+// the agent can't spoof authorship).
 //
 // Fields are sanitized to a valid git ident (no newlines/angle brackets); an
 // unusable identity falls back to the engine-only identity — attribution is
@@ -109,45 +109,51 @@ export const ensureRuntimeExcludes = async ({ dir }) => {
   }
 };
 
+// Ambient GIT_* environment variables redirect git to a DIFFERENT repository
+// (GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE) or override the engine identity
+// (GIT_AUTHOR_*/GIT_COMMITTER_*). Any process that spawns the engine from
+// inside a git hook (or any git-managed context) would leak them in — strip
+// them so engine git is deterministic regardless of the caller's environment.
+const AMBIENT_GIT_ENV =
+  /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|PREFIX|NAMESPACE|CEILING_DIRECTORIES|AUTHOR_|COMMITTER_)/;
+
+const sanitizedGitEnv = (overrides = {}) => {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!AMBIENT_GIT_ENV.test(k)) env[k] = v;
+  }
+  return { ...env, ...overrides };
+};
+
 // argv-based git runner: captures stdout/stderr, resolves { exitCode, stdout,
 // stderr }, never rejects (spawn errors → exitCode null). Mirrors
 // cli/spawn.js#captureChild but is git-scoped and dependency-free.
-// Engine-owned git invocations must NEVER execute the cloned repository's hooks.
-//
-// Two reasons, both observed in production:
-//
-//  1. CORRECTNESS. A repo using husky + lint-staged installs hooks that shell
-//     out to npm/npx. The runtime deliberately never installs the checkout's
-//     dependencies (see the inode-budget notes in workspace.js), so the hook
-//     exits non-zero and the commit fails — losing a stage's completed work for
-//     a reason unrelated to that work. Seen as a `git_commit_failed` whose only
-//     detail was npm's "Unknown project config" warnings.
-//
-//  2. SECURITY. Repo hooks are arbitrary, untrusted code. They would run inside
-//     the agent runtime, and pushes carry a short-lived credential in the
-//     environment — a `pre-push` hook could read it, abort the push, and surface
-//     the value in the error detail. Running customer hooks is an attack
-//     surface, not a safeguard.
-//
-// `--no-verify` is NOT sufficient: it covers `pre-commit` and `commit-msg` only,
-// leaving `prepare-commit-msg` able to abort a commit and `pre-push` able to run
-// on every push. Setting `core.hooksPath` to a directory with no hooks disables
-// EVERY hook for the invocation, uniformly, and without mutating the
-// repository's own configuration (unlike `git config core.hooksPath`).
-//
-// Applied by git-runner.js, the single production Git process choke point used
-// by both the engine and workspace paths.
-export { NO_HOOKS_PATH };
-
-export const runGit = async (args, { cwd, env = {}, spawnFn } = {}) => {
-  const { exitCode, stdout, stderr } = await runGitCommand('git', args, {
-    cwd,
-    env,
-    spawnFn,
-    captureOutput: true,
+export const runGit = (args, { cwd, env = {}, spawnFn = spawn } = {}) =>
+  new Promise((resolve) => {
+    let settled = false;
+    const settle = (v) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
+    const child = spawnFn('git', args, {
+      cwd,
+      shell: false,
+      env: sanitizedGitEnv(env),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (c) => {
+      stdout += c.toString();
+    });
+    child.stderr?.on('data', (c) => {
+      stderr += c.toString();
+    });
+    child.on('error', () => settle({ exitCode: null, stdout, stderr }));
+    child.on('close', (exitCode) => settle({ exitCode, stdout, stderr }));
   });
-  return { exitCode, stdout, stderr };
-};
 
 // Token-free remote URL — what `.git/config` holds at rest.
 export const cleanRemoteUrl = (repo, gitProvider) => buildCloneUrl(gitProvider, repo, '');
@@ -625,6 +631,57 @@ export const fetchOrigin = async ({
       detail: error.code || error.message,
     };
   }
+};
+
+export const checkoutRemoteRevision = async ({
+  dir,
+  repo,
+  branch,
+  sha,
+  gitProvider,
+  projectId,
+  executionId,
+  urls = {},
+  git = runGit,
+  withGitCredential = defaultWithGitCredential,
+}) => {
+  const dirty = await git(['status', '--porcelain'], { cwd: dir });
+  if (dirty.exitCode !== 0) {
+    return { ready: false, reason: 'status_failed', detail: dirty.stderr.trim() };
+  }
+  if (dirty.stdout.trim()) {
+    return { ready: false, reason: 'workspace_dirty' };
+  }
+  const fetched = await fetchOrigin({
+    dir,
+    repo,
+    gitProvider,
+    projectId,
+    executionId,
+    urls,
+    git,
+    withGitCredential,
+  });
+  if (!fetched.fetched) return { ready: false, ...fetched };
+
+  const remoteRef = `refs/remotes/origin/${branch}`;
+  const remote = await git(['rev-parse', '--verify', remoteRef], { cwd: dir });
+  if (remote.exitCode !== 0) {
+    return { ready: false, reason: 'branch_missing', detail: branch };
+  }
+  if (remote.stdout.trim().toLowerCase() !== String(sha).toLowerCase()) {
+    return {
+      ready: false,
+      reason: 'branch_head_moved',
+      expectedSha: sha,
+      actualSha: remote.stdout.trim(),
+    };
+  }
+  const checkout = await git(['checkout', '-B', branch, sha], { cwd: dir });
+  if (checkout.exitCode !== 0) {
+    return { ready: false, reason: 'checkout_failed', detail: checkout.stderr.trim() };
+  }
+  return { ready: true, sha: remote.stdout.trim() };
 };
 
 // Ensure the unit-lane branch exists locally AND remotely, branched from the

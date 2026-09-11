@@ -10,11 +10,10 @@ import {
   readlinkSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -27,7 +26,6 @@ const destroyTerraform = join(root, 'scripts/destroy.sh');
 const generateEnv = join(root, 'scripts/generate-env.sh');
 const releaseWorkflow = join(root, '.github/workflows/release.yml');
 const demoWorkflow = join(root, '.github/workflows/deploy-demo.yml');
-const mainDemoWorkflow = join(root, '.github/workflows/deploy-main.yml');
 const yjsDockerfile = join(root, 'lambda/yjs-server/Dockerfile');
 
 const run = (file, args, options = {}) =>
@@ -39,72 +37,23 @@ const run = (file, args, options = {}) =>
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 
-const resolveDemoBackend = (env = {}) => {
-  const deployment = readFileSync(demoWorkflow, 'utf8');
-  const source = deployment.match(
-    /          node --input-type=module <<'NODE'\n([\s\S]*?)\n          NODE/,
-  )?.[1];
-  assert.ok(source, 'backend resolution must run before deployment concurrency is evaluated');
-  const fixture = mkdtempSync(join(tmpdir(), 'aidlc-demo-backend-'));
-  const outputFile = join(fixture, 'github-output');
-  try {
-    const result = run('node', ['--input-type=module', '-e', source], {
-      env: {
-        TF_STATE_BUCKET: 'demo-state-bucket',
-        TF_STATE_KEY: 'terraform.tfstate',
-        TF_STATE_REGION: 'us-east-1',
-        ...env,
-        GITHUB_OUTPUT: outputFile,
-      },
-    });
-    const lines = existsSync(outputFile)
-      ? readFileSync(outputFile, 'utf8').trimEnd().split('\n')
-      : [];
-    const outputs = Object.fromEntries(
-      lines.map((line) => {
-        const separator = line.indexOf('=');
-        return [line.slice(0, separator), line.slice(separator + 1)];
-      }),
-    );
-    return { ...result, outputs };
-  } finally {
-    rmSync(fixture, { recursive: true, force: true });
-  }
-};
-
 test('current release metadata is internally consistent', () => {
   const version = JSON.parse(readFileSync(join(root, 'package.json'))).version;
   const checked = run('node', ['scripts/release.mjs', 'check', version]);
   assert.equal(checked.status, 0, checked.stderr);
 });
 
-test('release and main deployments use isolated protected environments and GitHub OIDC', () => {
+test('release deployment uses the protected demo environment and GitHub OIDC', () => {
   const release = readFileSync(releaseWorkflow, 'utf8');
   const deployment = readFileSync(demoWorkflow, 'utf8');
-  const mainDeployment = readFileSync(mainDemoWorkflow, 'utf8');
 
   assert.match(release, /uses: \.\/\.github\/workflows\/deploy-demo\.yml/);
   assert.match(release, /ref: v\$\{\{ inputs\.version \}\}/);
   assert.doesNotMatch(release, /apply:/);
 
-  assert.match(mainDeployment, /push:\n    branches:\n      - main/);
-  assert.match(mainDeployment, /uses: \.\/\.github\/workflows\/deploy-demo\.yml/);
-  assert.match(mainDeployment, /ref: \$\{\{ github\.sha \}\}/);
-  assert.match(mainDeployment, /ref_type: commit/);
-  assert.match(mainDeployment, /deployment_target: main/);
-  assert.match(mainDeployment, /github_environment: demo-main/);
-  assert.match(mainDeployment, /terraform_project_name: collaborative-ai-dlc-main/);
-  assert.doesNotMatch(mainDeployment, /apply:/);
-
-  assert.match(deployment, /github_environment:[\s\S]*?default: demo-release/);
-  assert.match(deployment, /name: \$\{\{ inputs\.github_environment \|\| 'demo-release' \}\}/);
+  assert.match(deployment, /name: demo/);
   assert.match(deployment, /id-token: write/);
   assert.match(deployment, /TF_ENVIRONMENT: prod/);
-  assert.match(
-    deployment,
-    /TF_PROJECT_NAME: \$\{\{ inputs\.terraform_project_name \|\| 'collaborative-ai-dlc' \}\}/,
-  );
-  assert.match(deployment, /printf 'project_name  = %s\\n'/);
   assert.match(deployment, /TF_RECREATE_MISSING_LAMBDA_PACKAGE: 'false'/);
   assert.match(deployment, /role-to-assume: \$\{\{ vars\.AWS_ROLE_ARN \}\}/);
   assert.match(deployment, /TF_STATE_BUCKET: \$\{\{ vars\.TF_STATE_BUCKET \}\}/);
@@ -114,17 +63,14 @@ test('release and main deployments use isolated protected environments and GitHu
   assert.match(deployment, /AIDLC_SKIP_NPM_CI: '1'/);
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);
-  assert.match(deployment, /case "\$DEPLOY_REF_TYPE" in/);
-  assert.match(deployment, /release-tag\)/);
-  assert.match(deployment, /commit\)/);
-  assert.match(deployment, /git merge-base --is-ancestor "\$deploy_commit" "\$main_commit"/);
+  assert.match(deployment, /git merge-base --is-ancestor "\$tag_commit" "\$main_commit"/);
   assert.equal(deployment.match(/--phase plan/g)?.length, 2);
   assert.doesNotMatch(deployment, /inputs\.apply|plan-only/);
   assert.doesNotMatch(deployment, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.ok(
     deployment.indexOf('git merge-base --is-ancestor') <
       deployment.indexOf('aws-actions/configure-aws-credentials'),
-    'source ancestry must be verified before AWS credentials are configured',
+    'release ancestry must be verified before AWS credentials are configured',
   );
   assert.ok(
     deployment.indexOf('docker/setup-qemu-action') <
@@ -140,91 +86,6 @@ test('release and main deployments use isolated protected environments and GitHu
         deployment.indexOf('- name: Apply infrastructure'),
     'Lambda packages must be built before the final saved plan is applied',
   );
-});
-
-test('demo deployments use the resolved backend for both concurrency and Terraform', () => {
-  const deployment = readFileSync(demoWorkflow, 'utf8');
-  assert.doesNotMatch(deployment, /^concurrency:/m);
-  assert.match(deployment, /  resolve-backend:[\s\S]*?permissions: \{\}/);
-  assert.match(deployment, /  resolve-backend:[\s\S]*?deployment: false/);
-  assert.match(deployment, /  deploy:\n    needs: resolve-backend/);
-  assert.match(
-    deployment,
-    /concurrency:\n      group: \$\{\{ needs\.resolve-backend\.outputs\.concurrency_group \}\}\n      cancel-in-progress: false/,
-  );
-  for (const [name, field] of [
-    ['TF_STATE_BUCKET', 'bucket'],
-    ['TF_STATE_KEY', 'key'],
-    ['TF_STATE_REGION', 'region'],
-  ]) {
-    assert.ok(
-      deployment.includes(
-        `      ${name}: \${{ fromJSON(needs.resolve-backend.outputs.backend).${field} }}`,
-      ),
-      `Terraform must use the captured ${field}`,
-    );
-  }
-  assert.match(deployment, /printf 'use_lockfile = true\\n'/);
-});
-
-test('demo concurrency follows state identity independently of caller labels and region', () => {
-  const baseline = resolveDemoBackend();
-  assert.equal(baseline.status, 0, baseline.stderr);
-  assert.match(baseline.outputs.concurrency_group, /^deploy-demo-[0-9a-f]{64}$/);
-  assert.deepEqual(JSON.parse(baseline.outputs.backend), {
-    bucket: 'demo-state-bucket',
-    key: 'terraform.tfstate',
-    region: 'us-east-1',
-  });
-
-  const renamedCaller = resolveDemoBackend({
-    DEPLOY_TARGET: 'another-caller',
-    TF_PROJECT_NAME: 'another-project',
-    TF_STATE_REGION: 'eu-central-1',
-  });
-  assert.equal(renamedCaller.status, 0, renamedCaller.stderr);
-  assert.equal(renamedCaller.outputs.concurrency_group, baseline.outputs.concurrency_group);
-  assert.equal(JSON.parse(renamedCaller.outputs.backend).region, 'eu-central-1');
-
-  for (const env of [
-    { TF_STATE_BUCKET: 'other-state-bucket' },
-    { TF_STATE_KEY: 'main/terraform.tfstate' },
-    { TF_STATE_KEY: 'Terraform.tfstate' },
-  ]) {
-    const differentState = resolveDemoBackend(env);
-    assert.equal(differentState.status, 0, differentState.stderr);
-    assert.notEqual(differentState.outputs.concurrency_group, baseline.outputs.concurrency_group);
-  }
-});
-
-test('demo backend outputs preserve special keys and distinguish ambiguous bucket/key joins', () => {
-  const key = 'state/"quoted"\\key\nconcurrency_group=injected.tfstate';
-  const specialKey = resolveDemoBackend({ TF_STATE_KEY: key });
-  assert.equal(specialKey.status, 0, specialKey.stderr);
-  assert.deepEqual(Object.keys(specialKey.outputs).toSorted(), ['backend', 'concurrency_group']);
-  assert.equal(JSON.parse(specialKey.outputs.backend).key, key);
-  assert.match(specialKey.outputs.concurrency_group, /^deploy-demo-[0-9a-f]{64}$/);
-
-  const first = resolveDemoBackend({
-    TF_STATE_BUCKET: 'demo-state',
-    TF_STATE_KEY: 'one-terraform.tfstate',
-  });
-  const second = resolveDemoBackend({
-    TF_STATE_BUCKET: 'demo-state-one',
-    TF_STATE_KEY: 'terraform.tfstate',
-  });
-  assert.equal(first.status, 0, first.stderr);
-  assert.equal(second.status, 0, second.stderr);
-  assert.notEqual(first.outputs.concurrency_group, second.outputs.concurrency_group);
-});
-
-test('demo backend resolution rejects missing configuration before publishing outputs', () => {
-  for (const name of ['TF_STATE_BUCKET', 'TF_STATE_KEY', 'TF_STATE_REGION']) {
-    const result = resolveDemoBackend({ [name]: '' });
-    assert.notEqual(result.status, 0);
-    assert.ok(result.stderr.includes(`GitHub Environment variable ${name} is required.`));
-    assert.deepEqual(result.outputs, {});
-  }
 });
 
 test('deployment scripts enforce locked dependencies without install hooks', () => {
@@ -1129,6 +990,7 @@ exit 0
     { mode: 0o755 },
   );
   writeFileSync(join(bin, 'npm'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  writeFileSync(join(bin, 'docker'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
   return {
     ...env,
     PATH: `${bin}:${process.env.PATH}`,
@@ -1136,46 +998,6 @@ exit 0
     AIDLC_TEST_MODE: '',
   };
 };
-
-const isolatedInstallerPath = (env) => {
-  const bin = env.PATH.split(delimiter)[0];
-  const commands = {
-    bash: '/bin/bash',
-    dirname: '/usr/bin/dirname',
-    git: '/usr/bin/git',
-    node: process.execPath,
-  };
-  for (const [command, source] of Object.entries(commands)) {
-    const destination = join(bin, command);
-    if (existsSync(destination)) continue;
-    symlinkSync(source, destination);
-  }
-  return bin;
-};
-
-test('installer accepts a non-default DOCKER_HOST without a container CLI on PATH', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'aidlc-container-socket-'));
-  const env = mockedCommandEnv(dir, join(dir, 'unused-repository'));
-  const path = isolatedInstallerPath(env);
-  const runtimeEnv = {
-    ...env,
-    PATH: path,
-    DOCKER_HOST: 'unix:///tmp/podman.sock',
-  };
-  const dataRoot = join(env.XDG_DATA_HOME, 'collaborative-ai-dlc');
-  mkdirSync(dataRoot, { recursive: true });
-  symlinkSync(dir, join(dataRoot, 'current'));
-
-  const dockerLookup = run('bash', ['-c', 'command -v docker'], { env: runtimeEnv });
-  assert.notEqual(dockerLookup.status, 0, 'docker must not be available in the controlled PATH');
-
-  const installed = run('bash', [installer, 'install', '--version', '2.0.0'], {
-    env: runtimeEnv,
-  });
-  assert.equal(installed.status, 1);
-  assert.match(installed.stderr, /A managed installation already exists/);
-  assert.doesNotMatch(installed.stderr, /Missing required command: docker/);
-});
 
 test('installer rejects Terraform older than 1.4 during preflight', () => {
   const repository = createReleaseRepository();

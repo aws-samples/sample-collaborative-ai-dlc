@@ -4,7 +4,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { AppSidebar } from '@/components/layout/AppSidebar';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { SprintPipelineBar } from '@/components/layout/SprintPipelineBar';
-import { detectSection } from '@/components/layout/IntentPipelineBar';
+import { IntentPipelineBar } from '@/components/layout/IntentPipelineBar';
 // Lazy: the activity panels pull react-markdown (+ transitively heavy deps)
 // that don't belong in the eager main chunk — they only render when a side
 // panel is open on sprint/intent routes.
@@ -24,7 +24,6 @@ import { useProjectSprintsCache } from '@/hooks/useProjectsCache';
 import { useState, useCallback, useMemo, useEffect, useRef, lazy, Suspense } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useResizablePanel } from '@/hooks/useResizablePanel';
-import { setLastIntentSection } from '@/lib/intentSectionPreference';
 
 // ---------------------------------------------------------------------------
 // Route classification: determines whether the activity panel should default
@@ -80,13 +79,17 @@ export function AppShell() {
   // mounted in the same slots as the sprint one and backed by IntentProvider.
   const inIntent = !!intentId;
   const onProjectPage = !!projectId && !inSprint && !inIntent;
+  const onComposePage = location.pathname.endsWith('/compose');
+  const onWorkSection =
+    inIntent &&
+    !onComposePage &&
+    !location.pathname.endsWith('/observability') &&
+    !location.pathname.endsWith('/graph') &&
+    !location.pathname.endsWith('/audit');
+  const showPipelineBar = onWorkSection;
   // Graph pages render a full-bleed canvas with their own toolbar: the shell's
   // content padding would float that toolbar mid-pane, so drop it there.
   const onGraphPage = location.pathname.endsWith('/graph');
-
-  useEffect(() => {
-    if (intentId) setLastIntentSection(intentId, detectSection(location.pathname));
-  }, [intentId, location.pathname]);
 
   // Breakpoint (Tailwind lg): below it BOTH side panels render as NON-modal
   // overlays above the content instead of grid columns, so they stay usable
@@ -191,6 +194,7 @@ export function AppShell() {
               {/* Main content */}
               <main className="h-full overflow-hidden min-w-0 flex flex-col">
                 {inSprint && <SprintPipelineBar />}
+                {showPipelineBar && <IntentPipelineBar />}
                 <div
                   className={cn(
                     'flex-1 overflow-y-auto min-w-0',

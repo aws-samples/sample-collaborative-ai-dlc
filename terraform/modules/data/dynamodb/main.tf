@@ -1,9 +1,7 @@
 locals {
-  # Keep billing independent from the environment name. Capacity attributes set to
-  # null are omitted by Terraform when PAY_PER_REQUEST is active.
-  billing_mode   = "PAY_PER_REQUEST"
-  read_capacity  = null
-  write_capacity = null
+  billing_mode   = var.environment == "prod" ? "PROVISIONED" : "PAY_PER_REQUEST"
+  read_capacity  = var.environment == "prod" ? 5 : null
+  write_capacity = var.environment == "prod" ? 5 : null
 }
 
 resource "aws_dynamodb_table" "sessions" {

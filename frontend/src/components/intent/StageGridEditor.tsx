@@ -21,7 +21,7 @@ interface Props {
   phaseNames: Record<string, string>;
   /** The effective grid (composed grid, or the selected scope's projection). */
   grid: Record<string, 'EXECUTE' | 'SKIP'>;
-  /** Stage ids whose current EXECUTE/SKIP value cannot be changed. */
+  /** Stage ids locked to EXECUTE (initialization). */
   lockedStageIds: Set<string>;
   disabled?: boolean;
   onToggle: (stageId: string) => void;
@@ -57,7 +57,7 @@ export function StageGridEditor({
           <div className="mt-1 grid gap-1.5 sm:grid-cols-2">
             {phaseStages.map((s) => {
               const locked = lockedStageIds.has(s.stageId);
-              const executed = grid[s.stageId] === 'EXECUTE';
+              const executed = locked || grid[s.stageId] === 'EXECUTE';
               return (
                 <label
                   key={s.stageId}
@@ -77,7 +77,7 @@ export function StageGridEditor({
                     {s.stageId}
                   </span>
                   {locked && (
-                    <span title="This stage can no longer be changed">
+                    <span title="Initialization stages always run">
                       <Lock className="ml-auto h-3 w-3 text-muted-foreground" />
                     </span>
                   )}

@@ -1,6 +1,11 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import type { GateAnswer, IntentGate } from '@/services/intents';
+import type {
+  GateAnswer,
+  IntentGate,
+  NativeExportHarness,
+  NativeHandoffDocuments,
+} from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import QuestionEditor from '@/components/QuestionEditor';
 import type { Question } from '@/services/questions';
@@ -10,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Compass } from 'lucide-react';
+import { ExternalDevelopmentGateCard } from './ExternalDevelopmentGateCard';
 
 // Map a v2 HUMAN# gate to the right editor, keyed by the intent collaboration
 // scope. `question` gates render the structured QuestionEditor; approval and
@@ -31,10 +37,22 @@ export interface GateCardProps {
   projectId: string;
   intentId: string;
   userName: string;
+  handoffWorkspaceDownloaded?: boolean;
   onAnswer: (gate: IntentGate, input: GateAnswer) => Promise<void>;
+  onExportHandoff?: (gate: IntentGate, harness: NativeExportHarness) => Promise<void>;
+  onSubmitHandoff?: (gate: IntentGate, documents: NativeHandoffDocuments) => Promise<void>;
 }
 
-export function GateCard({ gate, projectId, intentId, userName, onAnswer }: GateCardProps) {
+export function GateCard({
+  gate,
+  projectId,
+  intentId,
+  userName,
+  handoffWorkspaceDownloaded = false,
+  onAnswer,
+  onExportHandoff,
+  onSubmitHandoff,
+}: GateCardProps) {
   const navigate = useNavigate();
   const { stageNameOf: gateStageNameOf, detail } = useIntent();
   // Steering (docs/v2-steering.md): an optional course correction riding the
@@ -61,6 +79,18 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
       createdAt: gate.createdAt ?? '',
     };
   }, [gate]);
+
+  if (gate.kind === 'external-development') {
+    return (
+      <ExternalDevelopmentGateCard
+        gate={gate}
+        workspaceDownloaded={handoffWorkspaceDownloaded}
+        onAnswer={onAnswer}
+        onExport={onExportHandoff}
+        onSubmit={onSubmitHandoff}
+      />
+    );
+  }
 
   if (gate.kind === 'validation') {
     const stageArtifacts =

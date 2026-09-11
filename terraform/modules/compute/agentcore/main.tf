@@ -29,8 +29,6 @@ terraform {
 }
 
 provider "docker" {
-  # Support for Podman via DOCKER_HOST environment variable (e.g., unix:///path/to/podman.sock)
-  # If DOCKER_HOST is not set, defaults to the standard Docker socket
   registry_auth {
     address  = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, data.aws_partition.current.dns_suffix)
     username = data.aws_ecr_authorization_token.token.user_name
@@ -71,11 +69,9 @@ locals {
   credential_broker_function_arn = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-credential-broker-${var.environment}"
   source_control_function_arn    = "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-source-control-${var.environment}"
 
-  # Keep billing independent from the environment name. Capacity attributes set to
-  # null are omitted by Terraform when PAY_PER_REQUEST is active.
-  billing_mode   = "PAY_PER_REQUEST"
-  read_capacity  = null
-  write_capacity = null
+  billing_mode   = var.environment == "prod" ? "PROVISIONED" : "PAY_PER_REQUEST"
+  read_capacity  = var.environment == "prod" ? 5 : null
+  write_capacity = var.environment == "prod" ? 5 : null
 
   # ── AgentCore VPC networking (region-agnostic AZ selection) ──────────────────
   # AgentCore Runtime VPC mode only accepts subnets in specific AZs per region,

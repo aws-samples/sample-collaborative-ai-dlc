@@ -1,120 +1,94 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { render } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
-const { mockUseIntent } = vi.hoisted(() => ({
-  mockUseIntent: vi.fn(),
-}));
+vi.mock('react-router', async () => {
+  const actual = await vi.importActual('react-router');
+  return { ...actual, useNavigate: () => vi.fn() };
+});
 
 vi.mock('@/contexts/IntentContext', () => ({
-  useIntent: mockUseIntent,
+  useIntent: () => ({
+    projectId: 'p1',
+    intentId: 'i1',
+    detail: { intent: { id: 'i1', status: 'RUNNING' } },
+    compiled: { graph: { nodes: [{ stageId: 's1', phasePath: '01' }], edges: [] } },
+    stageRows: [{ stageId: 's1', phase: '01', state: 'RUNNING', done: 0, total: 1 }],
+    loading: false,
+    phaseNameOf: () => 'Build',
+    initializationPhasePaths: new Set(),
+    workflowPhases: [{ path: '01', name: 'Build' }],
+    currentPhasePath: '01',
+  }),
 }));
 
-import { IntentPhaseBreadcrumb, detectSection } from './IntentPipelineBar';
+vi.mock('@/lib/intentPhases', () => ({
+  groupByPhase: (rows: unknown[]) => (rows.length > 0 ? [{ phase: '01', done: 0, total: 1 }] : []),
+  derivePhaseState: () => 'active',
+}));
 
-const readyContext = {
-  detail: {
-    intent: {
-      scope: 'feature',
-      composedGrid: {
-        requirements: 'EXECUTE',
-        design: 'SKIP',
-        build: 'EXECUTE',
-        release: 'SKIP',
-      },
-      skipStageIds: [],
-    },
-    stages: [
-      { stageInstanceId: 'r1', stageId: 'requirements', state: 'SUCCEEDED' },
-      { stageInstanceId: 'b1', stageId: 'build', state: 'SUCCEEDED', unitSlug: 'one' },
-      { stageInstanceId: 'b2', stageId: 'build', state: 'RUNNING', unitSlug: 'two' },
-    ],
-  },
-  compiled: {
-    scopeGrid: {},
-    graph: {
-      nodes: [
-        { stageId: 'requirements', phasePath: '01', order: 1 },
-        { stageId: 'design', phasePath: '01', order: 2 },
-        { stageId: 'build', phasePath: '02', order: 3 },
-        { stageId: 'release', phasePath: '03', order: 4 },
-      ],
-    },
-  },
-  phaseNameOf: (phase: string) =>
-    phase === '01' ? 'Inception' : phase === '02' ? 'Construction' : 'Operation',
-  initializationPhasePaths: new Set<string>(),
-  workflowPhases: [{ path: '01' }, { path: '02' }, { path: '03' }],
-  currentPhasePath: '02',
-};
+import { IntentPipelineBar, detectSection } from './IntentPipelineBar';
+import { getLastIntentSection } from '@/lib/intentSectionPreference';
 
-describe('IntentPhaseBreadcrumb', () => {
-  it('uses selected stage definitions and collapses parallel instances', () => {
-    mockUseIntent.mockReturnValue(readyContext);
-    render(<IntentPhaseBreadcrumb />);
-    expect(screen.getByLabelText('Scope: feature')).toBeInTheDocument();
-    expect(screen.getByText('1/1 selected stages')).toBeInTheDocument();
-    expect(screen.getByText('0/1 selected stages')).toBeInTheDocument();
-    expect(screen.queryByText('Operation')).not.toBeInTheDocument();
-    const scroller = screen.getByTestId('intent-phase-breadcrumb-scroll');
-    expect(scroller).toHaveClass('flex', 'w-full', 'overflow-x-auto');
-    expect(scroller).not.toHaveClass('min-w-max');
+const renderAt = (path: string) =>
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <TooltipProvider>
+        <IntentPipelineBar />
+      </TooltipProvider>
+    </MemoryRouter>,
+  );
+
+describe('IntentPipelineBar', () => {
+  beforeEach(() => {
+    localStorage.clear();
   });
 
-  it('reserves the breadcrumb space while workflow metadata loads', () => {
-    mockUseIntent.mockReturnValue({
-      ...readyContext,
-      compiled: null,
-      workflowPhases: null,
-    });
-
-    render(<IntentPhaseBreadcrumb />);
-
-    const placeholder = screen.getByTestId('intent-phase-breadcrumb-placeholder');
-    expect(placeholder).toHaveClass('space-y-2');
-    expect(placeholder.children).toHaveLength(2);
-    expect(screen.queryByTestId('intent-phase-breadcrumb')).not.toBeInTheDocument();
+  it('renders phase progress chips on the work route', () => {
+    const { container } = renderAt('/space/p1/intent/i1');
+    expect(container.textContent).toContain('Build');
   });
 
-  it('opens the scope definition from a phase with excluded stages', async () => {
-    const user = userEvent.setup();
-    const onOpenScopeDefinition = vi.fn();
-    mockUseIntent.mockReturnValue(readyContext);
-
-    render(<IntentPhaseBreadcrumb onOpenScopeDefinition={onOpenScopeDefinition} />);
-
-    await user.click(screen.getByRole('button', { name: /Inception/ }));
-    await user.click(screen.getByRole('button', { name: 'Scope definition' }));
-
-    expect(onOpenScopeDefinition).toHaveBeenCalledOnce();
+  it('persists work when on the root intent route', () => {
+    renderAt('/space/p1/intent/i1');
+    expect(getLastIntentSection('i1')).toBe('work');
   });
 
-  it('renders failed stages as failures instead of running work', async () => {
-    const user = userEvent.setup();
-    mockUseIntent.mockReturnValue({
-      ...readyContext,
-      detail: {
-        ...readyContext.detail,
-        stages: [{ stageInstanceId: 'r1', stageId: 'requirements', state: 'FAILED' }],
-      },
-      currentPhasePath: '01',
-    });
+  it('persists overview when on the observability route', () => {
+    renderAt('/space/p1/intent/i1/observability');
+    expect(getLastIntentSection('i1')).toBe('overview');
+  });
 
-    render(<IntentPhaseBreadcrumb />);
+  it('persists overview when on the audit route', () => {
+    renderAt('/space/p1/intent/i1/audit');
+    expect(getLastIntentSection('i1')).toBe('overview');
+  });
 
-    const inception = screen.getByRole('button', { name: /Inception/ });
-    expect(inception).toHaveClass('text-destructive');
-    await user.click(inception);
-
-    expect(screen.getByText(/1 failed/)).toBeInTheDocument();
-    expect(screen.getByText('failed')).toHaveClass('text-destructive');
+  it('persists graph when on the graph route', () => {
+    renderAt('/space/p1/intent/i1/graph');
+    expect(getLastIntentSection('i1')).toBe('graph');
   });
 });
 
 describe('detectSection', () => {
-  it('maps intent routes', () => {
-    expect(detectSection('/space/p/intent/i')).toBe('work');
-    expect(detectSection('/space/p/intent/i/observability')).toBe('overview');
-    expect(detectSection('/space/p/intent/i/graph')).toBe('graph');
+  it('maps root intent path to work', () => {
+    expect(detectSection('/space/p1/intent/i1')).toBe('work');
+  });
+
+  it('maps review subroute to work', () => {
+    expect(detectSection('/space/p1/intent/i1/review/h1')).toBe('work');
+  });
+
+  it('maps /observability to overview', () => {
+    expect(detectSection('/space/p1/intent/i1/observability')).toBe('overview');
+  });
+
+  it('maps /audit to overview', () => {
+    expect(detectSection('/space/p1/intent/i1/audit')).toBe('overview');
+  });
+
+  it('maps /graph to graph', () => {
+    expect(detectSection('/space/p1/intent/i1/graph')).toBe('graph');
   });
 });
