@@ -42,6 +42,8 @@ export function ExternalDevelopmentGateCard({
   const [planFile, setPlanFile] = useState<File | null>(null);
   const [summaryFile, setSummaryFile] = useState<File | null>(null);
   const unitName = gate.unitSlug ?? 'unit';
+  const repositories = gate.externalDevelopment?.repositories ?? [];
+  const hasMultipleRepositories = repositories.length > 1;
   const defaultHarness =
     NATIVE_EXPORT_HARNESS_OPTIONS.find(({ value }) => value === gate.externalDevelopment?.harness)
       ?.value ?? 'kiro';
@@ -164,10 +166,25 @@ export function ExternalDevelopmentGateCard({
                   </CopyableCommandBlock>
                 </li>
                 <li>
-                  From each repository root, review and stage only source changes, then commit and
-                  push its assigned branch:
-                  {gate.externalDevelopment?.repositories.map((repository) => (
+                  {hasMultipleRepositories ? (
+                    <>
+                      For each repository below, review and stage only source changes, then commit
+                      and push its assigned branch:
+                    </>
+                  ) : (
+                    <>
+                      From the <code>{repositories[0]?.name ?? 'assigned'}</code> repository root,
+                      review and stage only source changes, then commit and push its assigned
+                      branch:
+                    </>
+                  )}
+                  {repositories.map((repository) => (
                     <div key={repository.repository} className="mt-3">
+                      {hasMultipleRepositories && (
+                        <p className="font-medium text-foreground">
+                          In <code>{repository.name}</code>:
+                        </p>
+                      )}
                       <CopyableCommandBlock
                         label={`Copy commit and push commands for ${repository.name}`}
                       >
