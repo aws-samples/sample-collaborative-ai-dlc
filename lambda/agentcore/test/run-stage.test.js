@@ -242,6 +242,70 @@ describe('runStage — happy path', () => {
   });
 });
 
+describe('runStage — CodeFile traceability projection', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+
+  it('projects per-repository Git files after successful stage gates', async () => {
+    const ingestStageCodeTraceability = vi.fn(async () => ({
+      batches: 1,
+      codeFiles: 2,
+      evidenceEdges: 1,
+      statuses: ['valid'],
+    }));
+    const gitResult = {
+      ok: true,
+      committed: true,
+      results: [
+        {
+          repo: 'owner/repo',
+          committed: true,
+          pushed: true,
+          sha: 'a'.repeat(40),
+          files: ['src/auth.ts', 'traceability.json'],
+        },
+      ],
+    };
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      commitAndPushAll: async () => gitResult,
+      ingestStageCodeTraceability,
+    });
+    const result = await runStage({ ...baseArgs, repos: ['owner/repo'] }, deps);
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitResult,
+        repos: ['owner/repo'],
+        stageId: 'requirements-analysis',
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+      }),
+    );
+    const event = deps.store.calls.find(
+      (call) => call[0] === 'appendEvent' && call[1].type === 'v2.code_files.ingested',
+    );
+    expect(event[1].summary).toContain('2 code file revision(s)');
+  });
+
+  it('keeps stage execution successful when traceability projection fails', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ingestStageCodeTraceability: async () => {
+        throw new Error('malformed traceability');
+      },
+    });
+    const result = await runStage(baseArgs, deps);
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const event = deps.store.calls.find(
+      (call) => call[0] === 'appendEvent' && call[1].type === 'v2.traceability.degraded',
+    );
+    expect(event[1].summary).toContain('malformed traceability');
+  });
+});
+
 describe('runStage — knowledge injection (both tiers reach the prompt)', () => {
   // Capture the `knowledge` string run-stage composes and hands to the materializer.
   const captureKnowledge = () => {

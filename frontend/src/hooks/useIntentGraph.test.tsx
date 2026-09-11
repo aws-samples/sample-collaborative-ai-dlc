@@ -113,6 +113,40 @@ describe('useIntentGraph', () => {
     expect(result.current.itemsByArtifact.has('unit:intent-1:u-auth')).toBe(false);
   });
 
+  it('detects CodeFile capability from graph data and preserves implementation neighbors', async () => {
+    const { projectId, intentId } = freshIds();
+    graphMock.mockResolvedValue({
+      nodes: [
+        ...GRAPH.nodes,
+        {
+          id: 'codefile:abc',
+          type: 'CodeFile',
+          label: 'src/auth.ts',
+          graphLayer: 'implementation',
+        },
+      ],
+      edges: [
+        ...GRAPH.edges,
+        {
+          source: 'unit:intent-1:u-auth',
+          target: 'codefile:abc',
+          label: 'IMPLEMENTED_BY',
+        },
+      ],
+    });
+    const { result } = renderHook(() => useIntentGraph(projectId, intentId));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.hasCodeTraceability).toBe(true);
+    expect(result.current.getNeighbors('unit:intent-1:u-auth')).toContainEqual(
+      expect.objectContaining({
+        id: 'codefile:abc',
+        edgeLabel: 'IMPLEMENTED_BY',
+        graphLayer: 'implementation',
+      }),
+    );
+    expect(result.current.derivedItems.some((item) => item.type === 'CodeFile')).toBe(false);
+  });
+
   it('invalidateIntentGraph triggers a refetch (the agent.derived realtime path)', async () => {
     const { projectId, intentId } = freshIds();
     const { result } = renderHook(() => useIntentGraph(projectId, intentId));
