@@ -243,10 +243,17 @@ test('Yjs image pins readable ownership and modes for non-root runtime files', (
     dockerfile,
     /COPY --chown=node:node --chmod=0644 package\.json package-lock\.json \.\//,
   );
-  assert.match(
-    dockerfile,
-    /COPY --chown=node:node --chmod=0644 server\.js realtime-token\.js doc-name\.js \.\//,
+  const runtimeCopy = dockerfile.match(
+    /^COPY --chown=node:node --chmod=0644 (server\.js .+) \.\/$/m,
   );
+  assert.ok(runtimeCopy, 'runtime sources must be readable by the non-root user');
+  const runtimeFiles = new Set(runtimeCopy[1].split(/\s+/));
+  for (const file of runtimeFiles) {
+    const source = readFileSync(join(dirname(yjsDockerfile), file), 'utf8');
+    for (const [, dependency] of source.matchAll(/['"]\.\/([^'"]+\.js)['"]/g)) {
+      assert.ok(runtimeFiles.has(dependency), `${file} imports unpackaged ${dependency}`);
+    }
+  }
   assert.ok(
     dockerfile.indexOf('--chmod=0644 server.js') < dockerfile.indexOf('USER node'),
     'runtime source permissions must be fixed before dropping privileges',

@@ -1,24 +1,98 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useMemo } from 'react';
 
 interface UseAutoSaveOptions {
-  /** Debounce interval in ms (default 2000) */
   interval?: number;
-  /** Disable auto-save when false (default true) */
+  maxWait?: number;
   enabled?: boolean;
+  /** Hydration/remote updates should not make a collaborative editor dirty. */
+  skipInitial?: boolean;
+  /** Give a different document its own save queue and deduplication state. */
+  resetKey?: unknown;
+}
+
+class SaveQueue<T> {
+  getData: () => T | null;
+  onSave: (data: T) => Promise<void>;
+  interval = 2000;
+  maxWait = 10_000;
+  enabled = true;
+  disposed = false;
+  revision = 0;
+  savedRevision = 0;
+  firstDirtyAt: number | null = null;
+  lastSaved: string | null = null;
+  running: Promise<void> | null = null;
+  timer: ReturnType<typeof setTimeout> | null = null;
+  failures = 0;
+  previousDeps: readonly unknown[] | null = null;
+
+  constructor(getData: () => T | null, onSave: (data: T) => Promise<void>) {
+    this.getData = getData;
+    this.onSave = onSave;
+  }
+
+  cancelTimer() {
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  schedule(retry = false) {
+    this.cancelTimer();
+    if (!this.enabled || this.disposed || this.savedRevision >= this.revision) return;
+    const remaining = Math.max(0, this.maxWait - (Date.now() - (this.firstDirtyAt ?? Date.now())));
+    const delay = retry
+      ? Math.min(1000 * 2 ** Math.min(this.failures, 5), 30_000) * (0.5 + Math.random() * 0.5)
+      : Math.min(this.interval, remaining);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.flush().catch((error) => console.error('[useAutoSave] save failed:', error));
+    }, delay);
+  }
+
+  changed() {
+    this.revision++;
+    this.firstDirtyAt ??= Date.now();
+    this.schedule();
+  }
+
+  flush = async (): Promise<void> => {
+    this.cancelTimer();
+    const requiredRevision = this.revision;
+    try {
+      while (this.savedRevision < requiredRevision) {
+        if (this.running) {
+          await this.running;
+          continue;
+        }
+        const data = this.getData();
+        if (data === null) throw new Error('Save data is not ready');
+        const revision = this.revision;
+        const snapshot = JSON.stringify(data);
+        const save = this.onSave;
+        this.running = (async () => {
+          if (snapshot !== this.lastSaved) await save(data);
+          this.lastSaved = snapshot;
+          this.savedRevision = revision;
+          this.failures = 0;
+          if (this.savedRevision === this.revision) this.firstDirtyAt = null;
+        })().finally(() => {
+          this.running = null;
+        });
+        await this.running;
+      }
+    } catch (error) {
+      this.failures++;
+      this.schedule(true);
+      throw error;
+    }
+    this.schedule();
+  };
 }
 
 /**
- * Auto-save hook that debounces writes and flushes on unmount + beforeunload.
- *
- * The backend DB is the source of truth. This hook ensures Yjs state is
- * persisted within `interval` ms of any change, and guaranteed-flushed when
- * the user navigates away or closes the tab.
- *
- * @param getData  Returns the current data to save (called at save time, not capture time)
- * @param onSave   Persist `data` to the backend. Must be safe to call concurrently.
- * @param deps     Dependency array — when any dep changes, the dirty flag is set
- *                 (typically the serialized Yjs field values)
- * @param options  interval (ms), enabled (boolean)
+ * Serialize saves, retry failures, and flush the revision requested by callers.
+ * Navigation/unload is best-effort; durable Yjs checkpoints do not rely on the
+ * browser finishing an asynchronous request while its page is being closed.
  */
 export function useAutoSave<T = Record<string, string>>(
   getData: () => T | null,
@@ -26,105 +100,48 @@ export function useAutoSave<T = Record<string, string>>(
   deps: readonly unknown[],
   options?: UseAutoSaveOptions,
 ) {
-  const interval = options?.interval ?? 2000;
+  const resetKey = options?.resetKey;
+  // A new document needs an independent queue. Callbacks/configuration are
+  // refreshed below without discarding an in-flight save on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const queue = useMemo(() => new SaveQueue(getData, onSave), [resetKey]);
   const enabled = options?.enabled ?? true;
+  const interval = options?.interval ?? 2000;
+  const maxWait = options?.maxWait ?? 10_000;
+  const skipInitial = options?.skipInitial ?? false;
 
-  const onSaveRef = useRef(onSave);
-  const getDataRef = useRef(getData);
-  const timerRef = useRef<number | null>(null);
-  const lastSavedRef = useRef<string | null>(null);
-  const isSavingRef = useRef(false);
-  const mountedRef = useRef(true);
-
-  // Keep refs fresh without re-running effects
   useEffect(() => {
-    onSaveRef.current = onSave;
-  }, [onSave]);
+    queue.getData = getData;
+    queue.onSave = onSave;
+    queue.interval = interval;
+    queue.maxWait = maxWait;
+  }, [queue, getData, onSave, interval, maxWait]);
+
   useEffect(() => {
-    getDataRef.current = getData;
-  }, [getData]);
-
-  // Core save function — deduplicates by comparing serialized snapshots
-  const doSave = useCallback(async () => {
-    if (isSavingRef.current) return;
-    const data = getDataRef.current();
-    if (!data) return;
-    const snapshot = JSON.stringify(data);
-    if (snapshot === lastSavedRef.current) return; // nothing changed
-
-    isSavingRef.current = true;
-    try {
-      await onSaveRef.current(data);
-      lastSavedRef.current = snapshot;
-    } catch (err) {
-      console.error('[useAutoSave] save failed:', err);
-    } finally {
-      isSavingRef.current = false;
-    }
-  }, []);
-
-  // Synchronous save for beforeunload — uses fetch keepalive
-  // We can't use the async path here, so we just fire doSave and hope
-  // the keepalive flag lets it complete. The parent hook supplies onSave,
-  // which typically calls fetch(). As a last resort, browsers give ~500ms.
-  const flushSync = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    // Fire-and-forget — can't await in beforeunload
-    doSave();
-  }, [doSave]);
-
-  // Public flush (awaitable, for programmatic use)
-  const flush = useCallback(async () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    await doSave();
-  }, [doSave]);
-
-  // Schedule a debounced save whenever deps change
-  useEffect(() => {
-    if (!enabled) return;
-    // Clear previous timer
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null;
-      doSave();
-    }, interval);
-
-    return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    };
+    const initial = queue.previousDeps === null;
+    const changed =
+      initial || deps.some((value, index) => !Object.is(value, queue.previousDeps![index]));
+    queue.previousDeps = [...deps];
+    queue.enabled = enabled;
+    if (changed && !(initial && skipInitial)) queue.changed();
+    else queue.schedule();
+    // The caller supplies the data-change dependencies, as with useEffect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, enabled, interval]);
+  }, [queue, ...deps, enabled, skipInitial]);
 
-  // Flush on unmount
   useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      // Fire the save — can't await in cleanup, but doSave is resilient
-      doSave();
+    queue.disposed = false;
+    const unload = () => {
+      queue.flush().catch((error) => console.error('[useAutoSave] unload save failed:', error));
     };
-  }, [doSave]);
+    window.addEventListener('beforeunload', unload);
+    return () => {
+      queue.disposed = true;
+      queue.cancelTimer();
+      window.removeEventListener('beforeunload', unload);
+      queue.flush().catch((error) => console.error('[useAutoSave] navigation save failed:', error));
+    };
+  }, [queue]);
 
-  // Flush on beforeunload (tab close, refresh, navigate away)
-  useEffect(() => {
-    if (!enabled) return;
-    const handleBeforeUnload = () => flushSync();
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [enabled, flushSync]);
-
-  return { flush };
+  return { flush: queue.flush };
 }

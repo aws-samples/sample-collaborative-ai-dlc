@@ -43,12 +43,8 @@ export function useCollaborativeStructuredAnswer(
   onAutoSave?: (draft: StructuredAnswer) => Promise<void>,
 ) {
   const docId = docPrefixFor(scope, questionId);
-  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(
-    docId,
-    userName,
-    generateColor(userName),
-    scopeTargetFor(scope),
-  );
+  const { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument } =
+    useYjsDocument(docId, userName, generateColor(userName), scopeTargetFor(scope));
 
   const [selections, setSelections] = useState<Map<number, number[]>>(new Map());
   const [freeTexts, setFreeTexts] = useState<Map<number, string>>(new Map());
@@ -199,31 +195,26 @@ export function useCollaborativeStructuredAnswer(
   }, [questionCount, selections, freeTexts]);
 
   // ── Auto-save draft to backend ──
-  const selectionsKey = JSON.stringify(Array.from(selections.entries()));
-  const freeTextsKey = JSON.stringify(Array.from(freeTexts.entries()));
-
   const getAutoSaveData = useCallback(() => {
     if (!doc || !synced) return null;
     const answer = toStructuredAnswer();
-    // Only save if there's any data
-    const hasData = answer.answers.some(
-      (a) => a.selectedOptions.length > 0 || (a.freeText && a.freeText.length > 0),
-    );
-    if (!hasData) return null;
     return answer;
   }, [doc, synced, toStructuredAnswer]);
 
   const autoSaveHandler = useCallback(
     async (data: StructuredAnswer) => {
       if (onAutoSave) {
+        await flushDocument();
         await onAutoSave(data);
       }
     },
-    [onAutoSave],
+    [onAutoSave, flushDocument],
   );
 
-  useAutoSave(getAutoSaveData, autoSaveHandler, [selectionsKey, freeTextsKey], {
+  useAutoSave(getAutoSaveData, autoSaveHandler, [localRevision], {
     enabled: synced && !!onAutoSave,
+    skipInitial: true,
+    resetKey: doc,
   });
 
   return {

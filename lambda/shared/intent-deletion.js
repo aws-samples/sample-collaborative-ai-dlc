@@ -20,6 +20,7 @@ import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { SendDurableExecutionCallbackSuccessCommand } from '@aws-sdk/client-lambda';
 import { StopRuntimeSessionCommand } from '@aws-sdk/client-bedrock-agentcore';
 import { DeleteObjectsCommand, ListObjectVersionsCommand, S3Client } from '@aws-sdk/client-s3';
+import { revokeYjsScope } from './yjs-revocation.js';
 
 const __ = gremlin.process.statics;
 const s3 = new S3Client({});
@@ -178,6 +179,7 @@ const deleteIntentCascade = async ({
   // (intent-discussion-<id>-<discussionId>, from the Neptune Discussion vertices)
   // and the presence doc.
   const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  await revokeYjsScope({ ddb, table: yjsTable, type: 'intent', id: intentId });
   await Promise.all([
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/committed/${intentId}/`),
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/staging/${intentId}/`),

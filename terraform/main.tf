@@ -18,6 +18,10 @@ terraform {
       source  = "hashicorp/time"
       version = "~> 0.13"
     }
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.0"
+    }
   }
   backend "s3" {}
 }
@@ -529,6 +533,11 @@ module "yjs_server" {
   cognito_user_pool_id          = module.auth.user_pool_id
   cognito_client_id             = module.auth.user_pool_client_id
   realtime_doc_secret_param_arn = module.realtime.realtime_doc_secret_param_arn
+  scaling                       = var.yjs_scaling
+  documents_table_name          = module.dynamodb.yjs_documents_table_name
+  documents_table_arn           = module.dynamodb.yjs_documents_table_arn
+  snapshots_bucket_name         = module.s3.artifacts_bucket_name
+  snapshots_bucket_arn          = module.s3.artifacts_bucket_arn
   # Serialize the yjs image build after the agentcore image build — concurrent
   # builds from the two docker provider instances deadlock at context
   # transfer. Value-neutral: only creates a dependency edge (see variable).
