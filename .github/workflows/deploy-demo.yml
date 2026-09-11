@@ -156,7 +156,6 @@ jobs:
             AWS_REGION
             AWS_ROLE_ARN
             BEDROCK_MODEL
-            TF_PROJECT_NAME
             TF_STATE_BUCKET
             TF_STATE_KEY
             TF_STATE_REGION
