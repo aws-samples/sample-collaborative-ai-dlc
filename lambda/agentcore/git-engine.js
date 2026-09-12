@@ -274,7 +274,20 @@ export const commitAll = async ({
       return { committed: false, reason: 'commit_failed', detail: commit.stderr.trim(), files };
     }
     const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
-    return { committed: true, sha: head.stdout.trim() || null, files };
+    // Pre-stage porcelain collapses wholly-untracked trees to directory names
+    // (for example `src/`). Once committed, enumerate the exact paths recorded
+    // by Git so downstream traceability receives files rather than directories.
+    const committedDiff = await git(
+      ['diff-tree', '--root', '--format=', '--name-only', '-r', '-z', 'HEAD'],
+      { cwd: dir },
+    );
+    const committedFiles =
+      committedDiff.exitCode === 0 ? committedDiff.stdout.split('\0').filter(Boolean) : [];
+    return {
+      committed: true,
+      sha: head.stdout.trim() || null,
+      files: committedFiles.length ? committedFiles : files,
+    };
   };
 
   let last = null;

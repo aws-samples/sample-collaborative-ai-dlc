@@ -10,6 +10,7 @@ import {
   normalizeWorkspacePath,
   validateTraceabilityDocument,
 } from '../code-traceability.js';
+import { commitAll, runGit } from '../git-engine.js';
 
 const roots = [];
 const workspace = async () => {
@@ -83,6 +84,55 @@ describe('traceability document validation', () => {
 });
 
 describe('collectCodeTraceabilityBatches', () => {
+  it('projects files and evidence created inside new directories from real Git output', async () => {
+    const root = await workspace();
+    await runGit(['init', '-b', 'main'], { cwd: root });
+    await put(root, 'src/index.ts', 'export const value = true;\n');
+    await put(
+      root,
+      'records/u1/traceability.json',
+      JSON.stringify({
+        stage: 'code-generation',
+        unit: 'u1',
+        coverage: [{ id: 'AC1.1', status: 'OK', target: 'src/index.ts' }],
+      }),
+    );
+
+    const commit = await commitAll({ dir: root, message: 'aidlc(code-generation): e1' });
+    expect(commit).toMatchObject({
+      committed: true,
+      files: ['records/u1/traceability.json', 'src/index.ts'],
+    });
+
+    const [batch] = await collectCodeTraceabilityBatches({
+      gitResult: {
+        ok: true,
+        committed: true,
+        results: [{ repo: 'owner/repo', pushed: true, ...commit }],
+      },
+      repos: ['owner/repo'],
+      workspaceDir: root,
+      stageId: 'code-generation',
+      stageInstanceId: 'si-code-u1',
+      unitSlug: 'u1',
+    });
+
+    expect(batch).toMatchObject({
+      traceabilityStatus: 'valid',
+      files: expect.arrayContaining([
+        expect.objectContaining({
+          filePath: 'src/index.ts',
+          traceabilitySource: 'aidlc-traceability',
+          evidenceIds: ['AC1.1'],
+        }),
+        expect.objectContaining({
+          filePath: 'records/u1/traceability.json',
+          traceabilitySource: 'git',
+        }),
+      ]),
+    });
+  });
+
   it('uses valid traceability as authoritative evidence for OK changed-file targets', async () => {
     const root = await workspace();
     await put(root, 'src/auth/login.ts', 'export const login = true;\n');
