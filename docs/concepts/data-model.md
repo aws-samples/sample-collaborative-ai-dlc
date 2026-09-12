@@ -124,9 +124,10 @@ the stage never fails.
 
 `CodeFile` identity is `hash(intent_id, repository, commit_ref, file_path)`, so
 re-ingesting the same stage and commit is idempotent. A re-run or rewind
-supersedes prior revisions of the same file — history stays queryable in
-Neptune, but the graph renders one current node per file, mirroring the
-supersede/current handling used for other derived rows.
+supersedes prior revisions of the same file from the same unit — history stays
+queryable in Neptune, but the graph renders one current node per unit and file.
+When multiple units change the same path, each unit keeps its own current
+revision.
 
 ### Vertex types
 
@@ -250,8 +251,8 @@ It:
 - optionally adds typed items and units, and — when the intent has code
   traceability — `CodeFile` nodes and their implementation edges;
 - excludes `Section` nodes to avoid overwhelming the canvas;
-- renders only the current revision of each file, hiding superseded `CodeFile`
-  rows from a re-run or rewind;
+- renders only the current revision for each unit and file, hiding superseded
+  `CodeFile` rows from that unit's re-run or rewind;
 - excludes superseded or stale derived rows from normal views;
 - drops edges whose endpoints are outside the rendered intent subgraph.
 
