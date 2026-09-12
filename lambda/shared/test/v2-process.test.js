@@ -93,7 +93,11 @@ describe('v2-process-keys', () => {
 
   it('carries the CLI session linkage (null by default) for park/resume', () => {
     const fresh = buildStageRow({ executionId: 'e1', stageInstanceId: 'si-1', now: 'T' });
-    expect(fresh).toMatchObject({ cli: null, cliSessionId: null });
+    expect(fresh).toMatchObject({
+      cli: null,
+      cliSessionId: null,
+      pendingCodeCommitRefs: null,
+    });
     const linked = buildStageRow({
       executionId: 'e1',
       stageInstanceId: 'si-1',
@@ -319,15 +323,19 @@ describe('createProcessStore', () => {
 
   it('updateStageState stamps parkedAt on a park (human-wait accounting)', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: 'a'.repeat(40) }];
     await store.updateStageState({
       executionId: 'e1',
       stageInstanceId: 'si-1',
       state: 'WAITING_FOR_HUMAN',
       parkedAt: true,
+      pendingCodeCommitRefs,
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.UpdateExpression).toContain('parkedAt = :pa');
     expect(input.ExpressionAttributeValues[':pa']).toBe('T');
+    expect(input.UpdateExpression).toContain('pendingCodeCommitRefs = :pccr');
+    expect(input.ExpressionAttributeValues[':pccr']).toEqual(pendingCodeCommitRefs);
   });
 
   it('updateStageState leaves parkedAt untouched when not supplied', async () => {
@@ -409,6 +417,7 @@ describe('createProcessStore', () => {
     // The patch never touches first-start or attempt bookkeeping.
     expect(input.UpdateExpression).not.toContain('startedAt');
     expect(input.UpdateExpression).not.toContain('attempt');
+    expect(input.UpdateExpression).not.toContain('pendingCodeCommitRefs');
     expect(input.ExpressionAttributeValues[':csid']).toBe('sess-1');
     expect(input.ExpressionAttributeValues[':scb']).toBe('cb-2');
     expect(input.UpdateExpression).toContain('aidlcRepoRef = :aidlcRepoRef');
@@ -429,6 +438,7 @@ describe('createProcessStore', () => {
     await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.UpdateExpression).toContain('parkedAt = :null');
+    expect(input.UpdateExpression).toContain('pendingCodeCommitRefs = :null');
     expect(input.UpdateExpression).toContain('waitMs = :zero');
     expect(input.ExpressionAttributeValues[':zero']).toBe(0);
   });

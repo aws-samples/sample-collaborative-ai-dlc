@@ -1222,3 +1222,54 @@ export const commitAndPushAll = async ({
   const committed = results.some((r) => r.committed === true);
   return { ok, committed, results };
 };
+
+// Rehydrate the complete file set for a stage that committed across one or
+// more park/resume legs. Stage rows persist only compact repo+SHA references;
+// Git remains the source of truth for the potentially large path list.
+export const gitResultForCommitRefs = async ({
+  commitRefs = [],
+  repos = [],
+  workspaceDir,
+  git = runGit,
+}) => {
+  const repoUrls = repos.map((repo) => (typeof repo === 'string' ? repo : repo.url));
+  const allowedRepos = new Set(repoUrls);
+  const multi = repoUrls.length > 1;
+  const byRepo = new Map();
+
+  for (const ref of commitRefs) {
+    const repo = typeof ref?.repo === 'string' ? ref.repo : '';
+    const sha = typeof ref?.sha === 'string' ? ref.sha : '';
+    if (!allowedRepos.has(repo) || !/^[0-9a-f]{40,64}$/i.test(sha)) {
+      throw new Error(`invalid parked-stage commit reference for ${repo || 'unknown repository'}`);
+    }
+    const dir = repoTargetDir({ url: repo, workspaceDir, multi });
+    const diff = await git(
+      ['diff-tree', '--root', '--format=', '--name-only', '-r', '-z', sha, '--'],
+      { cwd: dir },
+    );
+    if (diff.exitCode !== 0) {
+      throw new Error(
+        `could not read parked-stage commit ${repo}@${sha.slice(0, 8)}: ${
+          diff.stderr.trim() || 'git diff-tree failed'
+        }`,
+      );
+    }
+    let entry = byRepo.get(repo);
+    if (!entry) {
+      entry = { repo, sha, files: new Set() };
+      byRepo.set(repo, entry);
+    }
+    entry.sha = sha;
+    for (const file of diff.stdout.split('\0').filter(Boolean)) entry.files.add(file);
+  }
+
+  const results = [...byRepo.values()].map(({ repo, sha, files }) => ({
+    repo,
+    committed: true,
+    pushed: true,
+    sha,
+    files: [...files].toSorted(),
+  }));
+  return { ok: true, committed: results.length > 0, results };
+};

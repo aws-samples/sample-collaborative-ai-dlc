@@ -76,7 +76,11 @@ import {
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
   redirectHeavyDirs as defaultRedirectHeavyDirs,
 } from '../workspace.js';
-import { commitAndPushAll as defaultCommitAndPushAll, freeDiskBytes } from '../git-engine.js';
+import {
+  commitAndPushAll as defaultCommitAndPushAll,
+  freeDiskBytes,
+  gitResultForCommitRefs as defaultGitResultForCommitRefs,
+} from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
@@ -914,6 +918,25 @@ const pendingGate = async ({ store, executionId, stageInstanceId, unitSlug, sect
     : null;
 };
 
+const mergeCodeCommitRefs = (priorRefs, gitResult) => {
+  const refs = [];
+  const seen = new Set();
+  const add = (ref) => {
+    const repo = typeof ref?.repo === 'string' ? ref.repo : '';
+    const sha = typeof ref?.sha === 'string' ? ref.sha : '';
+    if (!repo || !sha) return;
+    const key = `${repo}\0${sha}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    refs.push({ repo, sha });
+  };
+  for (const ref of Array.isArray(priorRefs) ? priorRefs : []) add(ref);
+  for (const change of gitResult?.results ?? []) {
+    if (change?.committed === true) add(change);
+  }
+  return refs;
+};
+
 export const runStage = async (
   {
     projectId,
@@ -1041,6 +1064,9 @@ export const runStage = async (
     // adapter detects traceability capability from a valid produced artifact,
     // never from workflowVersion, and is deliberately best-effort.
     ingestStageCodeTraceability = defaultIngestStageCodeTraceability,
+    // Reconstruct file lists for compact repo+SHA refs retained across a park.
+    // Injected for tests; Git remains authoritative after workspace re-clones.
+    gitResultForCommitRefs = defaultGitResultForCommitRefs,
     compileContextPack = defaultCompileContextPack,
     // Fetch project custom agent rules (.md bodies) from S3 → written into the
     // selected CLI's native rules dir by the materializer. Injected for tests.
@@ -2295,6 +2321,11 @@ export const runStage = async (
       ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
       : `aidlc(${stageId}): ${executionId}`,
   });
+  const carriedCodeCommitRefs =
+    resumeFrom && Array.isArray(priorStageRow?.pendingCodeCommitRefs)
+      ? priorStageRow.pendingCodeCommitRefs
+      : [];
+  const stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
@@ -2423,6 +2454,7 @@ export const runStage = async (
         parkedAt: parked.createdAt ?? true,
         cli,
         cliSessionId,
+        pendingCodeCommitRefs: stageCodeCommitRefs.length ? stageCodeCommitRefs : null,
       })
       .catch(() => {});
     await store.appendEvent({
@@ -2610,7 +2642,15 @@ export const runStage = async (
   // evidence edges on top. Projection is intentionally best-effort: missing or
   // malformed evidence and Neptune outages must not turn successful
   // implementation work into an execution failure.
+  let completedGitResult = gitResult;
   try {
+    if (carriedCodeCommitRefs.length > 0) {
+      completedGitResult = await gitResultForCommitRefs({
+        commitRefs: stageCodeCommitRefs,
+        repos,
+        workspaceDir,
+      });
+    }
     const projected = await ingestStageCodeTraceability({
       openGraph,
       scope: {
@@ -2621,7 +2661,7 @@ export const runStage = async (
         sectionIndex,
         unitSlug,
       },
-      gitResult,
+      gitResult: completedGitResult,
       repos,
       workspaceDir,
       stageId,
@@ -2676,6 +2716,7 @@ export const runStage = async (
     completedAt: true,
     cli,
     cliSessionId,
+    pendingCodeCommitRefs: null,
   });
   // Steering provenance: link the corrections this stage consumed to the
   // artifacts it produced (Steering --INFLUENCES--> Artifact), mirroring the
@@ -2717,10 +2758,11 @@ export const runStage = async (
     state: 'SUCCEEDED',
   });
   const changedFiles = [
-    ...new Set(gitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
+    ...new Set(completedGitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
   ].toSorted();
   const commitSha =
-    gitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ?? null;
+    completedGitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ??
+    null;
   return {
     ok: true,
     state: 'SUCCEEDED',

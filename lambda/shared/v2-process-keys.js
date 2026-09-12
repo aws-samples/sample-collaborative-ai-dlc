@@ -557,6 +557,10 @@ const buildStageRow = ({
   resolvedModel,
   stageCallbackId,
   pendingHumanTaskId,
+  // Compact Git provenance retained while a stage is parked. File paths are
+  // reconstructed from these commits on successful resume to keep the stage
+  // row safely below DynamoDB's item-size limit.
+  pendingCodeCommitRefs: null,
   runtimeError: null,
   startedAt: state === 'RUNNING' ? now : null,
   completedAt: null,

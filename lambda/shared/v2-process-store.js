@@ -511,6 +511,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     cliSessionId,
     resolvedModel,
     pendingHumanTaskId,
+    pendingCodeCommitRefs,
   }) => {
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk', 'runtimeError = :err'];
@@ -544,6 +545,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (pendingHumanTaskId !== undefined) {
       sets.push('pendingHumanTaskId = :ph');
       values[':ph'] = pendingHumanTaskId;
+    }
+    if (pendingCodeCommitRefs !== undefined) {
+      sets.push('pendingCodeCommitRefs = :pccr');
+      values[':pccr'] = pendingCodeCommitRefs;
     }
     const { Attributes } = await ddb.send(
       new UpdateCommand({
@@ -1069,7 +1074,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       existing.state === 'PENDING' &&
       existing.startedAt == null &&
       existing.cliSessionId == null &&
-      existing.runtimeError == null
+      existing.runtimeError == null &&
+      existing.pendingCodeCommitRefs == null
     ) {
       return null;
     }
@@ -1082,6 +1088,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           'SET #state = :state, attempt = :attempt, cli = :null, cliSessionId = :null, ' +
           'runtimeError = :null, startedAt = :null, completedAt = :null, ' +
           'parkedAt = :null, pendingHumanTaskId = :null, waitMs = :zero, ' +
+          'pendingCodeCommitRefs = :null, ' +
           'updatedAt = :ts, GSI2SK = :g2sk',
         ExpressionAttributeNames: { '#state': 'state' },
         ExpressionAttributeValues: {
