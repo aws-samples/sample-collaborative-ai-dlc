@@ -16,6 +16,51 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "kms_mode" {
+  description = "Data-store KMS mode: default uses service-owned keys, create provisions a shared CMK, existing uses kms_key_arn"
+  type        = string
+  default     = "default"
+
+  validation {
+    condition     = contains(["default", "create", "existing"], var.kms_mode)
+    error_message = "kms_mode must be one of: default, create, existing."
+  }
+}
+
+variable "kms_key_arn" {
+  description = "Existing customer-managed KMS key ARN. Required only when kms_mode is existing."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.kms_key_arn == "" || can(regex("^arn:aws[a-zA-Z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.kms_key_arn))
+    error_message = "kms_key_arn must be a full KMS key ARN (aliases are not accepted)."
+  }
+}
+
+variable "deletion_protection" {
+  description = "Protect durable DynamoDB tables and the Neptune cluster from deletion"
+  type        = bool
+  default     = true
+}
+
+variable "backup_retention_period" {
+  description = "Number of days to retain automated Neptune backups"
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.backup_retention_period >= 7 && var.backup_retention_period <= 35
+    error_message = "backup_retention_period must be between 7 and 35 days."
+  }
+}
+
+variable "skip_final_snapshot" {
+  description = "Skip the final Neptune snapshot during deletion. Keep false for recoverable teardown."
+  type        = bool
+  default     = false
+}
+
 variable "lambda_vpc_scope" {
   description = "Lambda VPC placement scope: required keeps only private-resource Lambdas in the VPC; public-egress also routes selected public-service traffic through NAT"
   type        = string

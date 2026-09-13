@@ -5,7 +5,7 @@ resource "random_id" "bucket_suffix" {
 # Artifacts bucket for Yjs docs and artifact content
 resource "aws_s3_bucket" "artifacts" {
   bucket        = "${var.project_name}-artifacts-${var.environment}-${random_id.bucket_suffix.hex}"
-  force_destroy = true
+  force_destroy = var.environment != "prod"
 }
 
 resource "aws_s3_bucket_versioning" "artifacts" {
@@ -86,7 +86,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
 # Code snapshots bucket for agent code outputs
 resource "aws_s3_bucket" "code_snapshots" {
   bucket        = "${var.project_name}-code-snapshots-${var.environment}-${random_id.bucket_suffix.hex}"
-  force_destroy = true
+  force_destroy = var.environment != "prod"
 }
 
 resource "aws_s3_bucket_versioning" "code_snapshots" {
@@ -124,7 +124,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "code_snapshots" {
 # Shared access logging bucket (CloudFront, ALB, etc.)
 resource "aws_s3_bucket" "access_logs" {
   bucket        = "${var.project_name}-access-logs-${var.environment}-${random_id.bucket_suffix.hex}"
-  force_destroy = true
+  force_destroy = var.environment != "prod"
 }
 
 resource "aws_s3_bucket_public_access_block" "access_logs" {

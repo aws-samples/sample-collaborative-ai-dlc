@@ -8,6 +8,18 @@ variable "environment" {
   type        = string
 }
 
+variable "kms_key_arn" {
+  description = "Customer-managed KMS key ARN for the v2 execution table. Empty uses the AWS-owned service default."
+  type        = string
+  default     = ""
+}
+
+variable "deletion_protection" {
+  description = "Protect the durable v2 execution table from deletion"
+  type        = bool
+  default     = true
+}
+
 variable "aws_region" {
   description = "AWS region"
   type        = string

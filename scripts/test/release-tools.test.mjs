@@ -877,7 +877,73 @@ exit 0
   const commands = readFileSync(terraformLog, 'utf8');
   assert.match(commands, /init -reconfigure/);
   assert.match(commands, /state pull/);
-  assert.match(commands, /destroy .*local-test\.tfvars -auto-approve/);
+  assert.match(
+    commands,
+    /apply .*local-test\.tfvars -var=deletion_protection=false .*module\.neptune\.aws_neptune_cluster\.main .*module\.dynamodb\.aws_dynamodb_table\.yjs_documents .*module\.agentcore\.aws_dynamodb_table\.v2_executions -auto-approve/,
+  );
+  assert.match(
+    commands,
+    /destroy .*local-test\.tfvars -var=deletion_protection=false -auto-approve/,
+  );
+});
+
+test('standalone destroy refuses production even when confirmation is bypassed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-prod-'));
+  const bin = join(dir, 'bin');
+  const config = join(dir, 'config/environments');
+  const terraformLog = join(dir, 'terraform.log');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'prod.tfvars'), 'environment = "prod"\n');
+  writeFileSync(join(config, 'prod.s3.tfbackend'), 'bucket = "prod-state"\n');
+  writeFileSync(join(config, 'production-alias.tfvars'), 'environment = "prod"\n');
+  writeFileSync(
+    join(config, 'production-alias.s3.tfbackend'),
+    'bucket = "production-alias-state"\n',
+  );
+  writeFileSync(
+    join(bin, 'terraform'),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$TERRAFORM_LOG"
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  for (const environment of ['prod', 'production-alias']) {
+    const destroyed = run('bash', [destroyTerraform, environment, '--yes'], {
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        AIDLC_CONFIG_DIR: join(dir, 'config'),
+        AIDLC_YES: '1',
+        TERRAFORM_LOG: terraformLog,
+      },
+    });
+    assert.equal(destroyed.status, 1);
+    assert.match(destroyed.stderr, /Refusing automated destruction of a production environment/);
+  }
+  assert.equal(existsSync(terraformLog), false);
+});
+
+test('managed destroy refuses production before command or AWS preflight', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-managed-destroy-prod-'));
+  const configRoot = join(dir, 'config/collaborative-ai-dlc');
+  mkdirSync(configRoot, { recursive: true });
+  writeFileSync(
+    join(configRoot, 'install.conf'),
+    'AIDLC_ENVIRONMENT=prod\nAIDLC_REGION=us-east-1\n',
+  );
+
+  const destroyed = run('bash', [installer, 'destroy', '--yes'], {
+    env: {
+      PATH: '/usr/bin:/bin',
+      XDG_CONFIG_HOME: join(dir, 'config'),
+      XDG_DATA_HOME: join(dir, 'data'),
+    },
+  });
+  assert.equal(destroyed.status, 1);
+  assert.match(destroyed.stderr, /Refusing automated destruction of a production environment/);
+  assert.doesNotMatch(destroyed.stderr, /Missing required command/);
 });
 
 test('installer lists prereleases by default in SemVer order', () => {

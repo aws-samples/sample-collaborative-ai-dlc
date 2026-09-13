@@ -39,6 +39,21 @@ if [[ ! -f "$BACKEND_FILE" ]]; then
     exit 1
 fi
 
+TFVARS_ENVIRONMENT="$(
+    awk -F= '$1 ~ /^[[:space:]]*environment[[:space:]]*$/ {
+        value = $2
+        sub(/#.*/, "", value)
+        gsub(/[[:space:]\"]/, "", value)
+        print value
+        exit
+    }' "$TFVARS_FILE"
+)"
+if [[ "$ENVIRONMENT" == "prod" || "${TF_VAR_environment:-}" == "prod" || "$TFVARS_ENVIRONMENT" == "prod" ]]; then
+    echo "Refusing automated destruction of a production environment." >&2
+    echo "Use the documented production break-glass procedure with independently reviewed backups and plans." >&2
+    exit 1
+fi
+
 if [[ "$ASSUME_YES" != 1 ]]; then
     if [[ ! -t 0 ]]; then
         echo "Destruction requires an interactive terminal or --yes." >&2
@@ -62,8 +77,36 @@ terraform -chdir="$TF_DIR" state pull > "$BACKUP_FILE"
 chmod 600 "$BACKUP_FILE"
 echo "Terraform state backup: $BACKUP_FILE"
 
+echo "Disabling deletion protection for the confirmed teardown"
+# terraform-hardening.test.mjs cross-checks this list against every protected
+# table and cluster so a newly protected resource cannot silently drift.
+PROTECTION_TARGETS=(
+    -target=module.neptune.aws_neptune_cluster.main
+    -target=module.dynamodb.aws_dynamodb_table.sessions
+    -target=module.dynamodb.aws_dynamodb_table.notifications
+    -target=module.dynamodb.aws_dynamodb_table.agent_questions
+    -target=module.dynamodb.aws_dynamodb_table.agent_outputs
+    -target=module.dynamodb.aws_dynamodb_table.blocks
+    -target=module.dynamodb.aws_dynamodb_table.environment_registry
+    -target=module.dynamodb.aws_dynamodb_table.discussion_read_state
+    -target=module.dynamodb.aws_dynamodb_table.yjs_documents
+    -target=module.git.aws_dynamodb_table.git_connections
+    -target=module.git.aws_dynamodb_table.git_provider_connections
+    -target=module.git.aws_dynamodb_table.source_control_bindings
+    -target=module.git.aws_dynamodb_table.tracker_connections
+    -target=module.agentcore.aws_dynamodb_table.v2_executions
+)
+terraform -chdir="$TF_DIR" apply \
+    -var-file="$TFVARS_FILE" \
+    -var="deletion_protection=false" \
+    "${PROTECTION_TARGETS[@]}" \
+    -auto-approve
+
 echo "Destroying AI-DLC environment: $ENVIRONMENT"
-terraform -chdir="$TF_DIR" destroy -var-file="$TFVARS_FILE" -auto-approve
+terraform -chdir="$TF_DIR" destroy \
+    -var-file="$TFVARS_FILE" \
+    -var="deletion_protection=false" \
+    -auto-approve
 
 STATE_BUCKET="$(awk -F= '$1 ~ /^[[:space:]]*bucket[[:space:]]*$/ { gsub(/[[:space:]\"]/, "", $2); print $2; exit }' "$BACKEND_FILE")"
 echo ""
