@@ -1,6 +1,23 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
+# Protect durable DynamoDB tables and Neptune against accidental deletion, and
+# retain at least seven days of automated Neptune backups.
+deletion_protection     = true
+backup_retention_period = 7
+skip_final_snapshot     = false
+
+# Data-store KMS mode:
+# - "default": AWS-owned/service-default encryption, with no KMS resources or
+#   KMS administration permissions required from the deployment principal.
+# - "create": provision one rotating customer-managed key for DynamoDB now and
+#   Neptune after the opt-in encryption migration.
+# - "existing": use the full key ARN in kms_key_arn; its policy must allow this
+#   account to use it through DynamoDB (and RDS/Neptune for PR 2).
+# See docs/getting-started/prerequisites.md before using create or existing.
+kms_mode    = "default"
+kms_key_arn = ""
+
 # Keep only Lambdas already requiring private resources in the VPC. Set to
 # "public-egress" to also route OAuth connectors, credential resolution, and
 # seed-blocks through NAT.

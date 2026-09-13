@@ -228,12 +228,13 @@ data "aws_ecr_image" "agentcore" {
 # ---------------------------------------------------------------------------
 
 resource "aws_dynamodb_table" "v2_executions" {
-  name           = "${var.project_name}-v2-executions-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "pk"
-  range_key      = "sk"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-v2-executions-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "pk"
+  range_key                   = "sk"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "pk"
@@ -311,6 +312,15 @@ resource "aws_dynamodb_table" "v2_executions" {
       attribute_name = "GSI3SK"
       key_type       = "RANGE"
     }
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags
