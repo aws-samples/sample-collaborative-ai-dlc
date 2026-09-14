@@ -2,7 +2,9 @@ import { api } from './api';
 
 export type EnvironmentStatus =
   | 'DRAFT'
+  | 'QUEUED'
   | 'BUILDING'
+  | 'SCANNING'
   | 'SECURITY_REVIEW'
   | 'VERIFYING'
   | 'READY'

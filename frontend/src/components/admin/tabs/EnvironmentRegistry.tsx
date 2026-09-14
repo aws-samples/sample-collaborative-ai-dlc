@@ -45,7 +45,7 @@ import {
   recipeFromForm,
   type EnvironmentForm,
 } from './environment-builder/model';
-import { StatusBadge, statusClass } from './environment-builder/ui';
+import { ACTIVE_REVISION_STATUSES, StatusBadge, statusClass } from './environment-builder/ui';
 
 type Workspace = 'definition' | 'revisions';
 type EnvironmentFilter = 'all' | 'attention' | 'drafts' | 'published' | 'retired';
@@ -68,8 +68,9 @@ const filterEnvironment = (environment: ManagedEnvironment, filter: EnvironmentF
     );
   }
   if (filter === 'drafts') {
-    return ['DRAFT', 'BUILDING', 'SECURITY_REVIEW', 'VERIFYING', 'READY', 'FAILED'].includes(
-      environment.status,
+    return (
+      ACTIVE_REVISION_STATUSES.has(environment.status) ||
+      ['DRAFT', 'SECURITY_REVIEW', 'READY', 'FAILED'].includes(environment.status)
     );
   }
   if (filter === 'published') return environment.status === 'PUBLISHED';

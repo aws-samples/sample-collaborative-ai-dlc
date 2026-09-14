@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -241,6 +241,15 @@ const standardDetail = {
 };
 
 describe('EnvironmentsTab', () => {
+  beforeAll(() => {
+    Object.defineProperties(Element.prototype, {
+      hasPointerCapture: { configurable: true, value: () => false },
+      setPointerCapture: { configurable: true, value: () => undefined },
+      releasePointerCapture: { configurable: true, value: () => undefined },
+      scrollIntoView: { configurable: true, value: () => undefined },
+    });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockResolvedValue([custom, standard]);
@@ -266,6 +275,44 @@ describe('EnvironmentsTab', () => {
     expect(await screen.findByText('Build the first revision')).toBeInTheDocument();
     expect(screen.getAllByText('Ready to build').length).toBeGreaterThan(0);
     expect(screen.getByText('Available to projects')).toBeInTheDocument();
+  });
+
+  it('keeps every unfinished environment visible in the in-progress filter', async () => {
+    const user = userEvent.setup();
+    const statuses = [
+      'DRAFT',
+      'QUEUED',
+      'BUILDING',
+      'SCANNING',
+      'SECURITY_REVIEW',
+      'VERIFYING',
+      'READY',
+      'FAILED',
+    ];
+    const unfinished = statuses.map((status) => ({
+      ...custom,
+      environmentId: status.toLowerCase(),
+      name: `${status} environment`,
+      status,
+    }));
+    list.mockResolvedValue([
+      custom,
+      ...unfinished,
+      standard,
+      { ...custom, environmentId: 'retired', name: 'Retired environment', status: 'RETIRED' },
+    ]);
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByLabelText('Filter environments'));
+    await user.click(await screen.findByRole('option', { name: 'In progress' }));
+
+    for (const environment of unfinished) {
+      expect(
+        screen.getByRole('button', { name: new RegExp(environment.name) }),
+      ).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /Standard Node\/Python/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Retired environment/ })).not.toBeInTheDocument();
   });
 
   it('shows revision evidence and starts a draft build', async () => {
