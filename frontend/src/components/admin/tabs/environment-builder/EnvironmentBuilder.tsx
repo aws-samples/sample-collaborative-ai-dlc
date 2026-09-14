@@ -442,7 +442,9 @@ export function EnvironmentBuilder({
                 </Label>
                 <Select
                   value={form.baseEnvironmentId}
-                  onValueChange={(baseEnvironmentId) => onChange({ ...form, baseEnvironmentId })}
+                  onValueChange={(baseEnvironmentId) =>
+                    onChange({ ...form, baseEnvironmentId, toolVersionIds: [] })
+                  }
                   disabled={disabled}
                 >
                   <SelectTrigger id="environment-base" className="h-9 text-sm">

@@ -7,6 +7,7 @@ const listTools = vi.fn();
 const get = vi.fn();
 const build = vi.fn();
 const create = vi.fn();
+const update = vi.fn();
 const acceptFindings = vi.fn();
 const rebuild = vi.fn();
 
@@ -16,7 +17,7 @@ vi.mock('@/services/environments', () => ({
     get: (...args: unknown[]) => get(...args),
     build: (...args: unknown[]) => build(...args),
     create: (...args: unknown[]) => create(...args),
-    update: vi.fn(),
+    update: (...args: unknown[]) => update(...args),
     retry: vi.fn(),
     acceptFindings: (...args: unknown[]) => acceptFindings(...args),
     publish: vi.fn(),
@@ -502,6 +503,84 @@ describe('EnvironmentsTab', () => {
     expect(await screen.findByText('Added automatically for Apache Maven')).toBeInTheDocument();
     expect(screen.getByText('Required')).toBeInTheDocument();
     expect(screen.getByText('1200 / 2048 MiB')).toBeInTheDocument();
+  });
+
+  it('resets added tools when changing the base so inherited tools do not block saving', async () => {
+    const user = userEvent.setup();
+    const javaBase = {
+      ...custom,
+      environmentId: 'java-base',
+      name: 'Java base',
+      status: 'PUBLISHED',
+      currentRevisionId: 'java-base-1',
+      publishedRevisionId: 'java-base-1',
+    };
+    const inheritedJava = {
+      ...javaVersion.definition,
+      toolId: javaTool.toolId,
+      name: javaTool.name,
+      category: javaTool.category,
+      versionId: javaVersion.versionId,
+      imageUri: javaVersion.imageUri,
+      imageDigest: javaVersion.imageDigest,
+      imageSizeBytes: javaVersion.imageSizeBytes,
+      trustLevel: javaVersion.source.trustLevel,
+    };
+    const javaRecipe = {
+      ...recipe,
+      toolVersionIds: [javaVersion.versionId],
+      tools: [inheritedJava],
+      resolvedTools: [inheritedJava],
+    };
+    const javaBaseRevision = {
+      ...revision,
+      environmentId: javaBase.environmentId,
+      revisionId: javaBase.currentRevisionId,
+      status: 'PUBLISHED',
+      imageSizeBytes: 1900 * 1024 * 1024,
+      recipe: javaRecipe,
+      flattenedRecipe: javaRecipe,
+    };
+    list.mockResolvedValue([custom, standard, javaBase]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : environmentId === javaBase.environmentId
+          ? {
+              environment: javaBase,
+              revisions: [javaBaseRevision],
+              publishedRevision: javaBaseRevision,
+            }
+          : { environment: custom, revisions: [revision], publishedRevision: null },
+    );
+
+    render(<EnvironmentsTab />);
+    const name = await screen.findByLabelText('Name');
+    await user.clear(name);
+    await user.type(name, 'Java services');
+    await user.click(screen.getByRole('button', { name: 'Add Java JDK' }));
+    expect(screen.getByText('1100 / 2048 MiB')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: 'Base' }));
+    await user.click(await screen.findByRole('option', { name: javaBase.name }));
+
+    expect(await screen.findByText('1900 / 2048 MiB')).toBeInTheDocument();
+    expect(screen.getByText('Inherited')).toBeInTheDocument();
+    expect(screen.queryByText('Added here')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('The projected image is larger than the 2048 MiB runtime limit.'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save as new revision' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Save as new revision' }));
+    expect(update).toHaveBeenCalledWith(
+      'custom',
+      expect.objectContaining({
+        name: 'Java services',
+        description: custom.description,
+        baseEnvironmentId: javaBase.environmentId,
+        recipe: expect.objectContaining({ toolVersionIds: [] }),
+      }),
+    );
   });
 
   it('shows a successful image build and lets an admin accept security findings', async () => {
