@@ -620,11 +620,11 @@ export function EnvironmentBuilder({
                                         : null}
                                 </span>
                               )}
-                              {effective?.imageSizeBytes && (
+                              {effective?.imageSizeBytes ? (
                                 <span>
                                   {(effective.imageSizeBytes / 1024 / 1024).toFixed(0)} MiB
                                 </span>
-                              )}
+                              ) : null}
                             </div>
                           </div>
                         </div>

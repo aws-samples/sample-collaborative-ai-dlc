@@ -776,11 +776,11 @@ function VersionEvidence({ version }: { version: ManagedToolVersion }) {
           <p className="mt-2 text-xs font-medium">
             {version.imageDigest ? 'Image created' : 'Waiting for build'}
           </p>
-          {version.imageSizeBytes && (
+          {version.imageSizeBytes ? (
             <p className="mt-1 font-mono text-[10px] text-muted-foreground">
               {(version.imageSizeBytes / 1024 / 1024).toFixed(1)} MiB
             </p>
-          )}
+          ) : null}
         </div>
         <div className="rounded-xl border p-3">
           <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">

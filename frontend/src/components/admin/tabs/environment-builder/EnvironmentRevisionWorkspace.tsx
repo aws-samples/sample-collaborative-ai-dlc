@@ -217,11 +217,11 @@ function EvidenceContent({ revision }: { revision: EnvironmentRevision }) {
           <p className="mt-2 text-[11px] text-muted-foreground">
             {revision.imageDigest ? 'Built successfully' : 'Not built yet'}
           </p>
-          {revision.imageSizeBytes && (
+          {revision.imageSizeBytes ? (
             <p className="mt-1 font-mono text-[10px] text-muted-foreground">
               {(revision.imageSizeBytes / 1024 / 1024).toFixed(1)} MiB
             </p>
-          )}
+          ) : null}
         </div>
         <div className="rounded-xl border p-3">
           <div className="flex items-center justify-between gap-2">

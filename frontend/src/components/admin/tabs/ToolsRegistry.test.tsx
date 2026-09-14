@@ -454,6 +454,22 @@ describe('ToolsRegistry', () => {
     expect(screen.getByText('Download complete')).toBeInTheDocument();
   });
 
+  it.each([
+    [0, ''],
+    [null, ''],
+    [undefined, ''],
+    [100 * 1024 * 1024, '100.0 MiB'],
+  ])('renders tool artifact size %s without stray text', async (imageSizeBytes, sizeLabel) => {
+    const user = userEvent.setup();
+    list.mockResolvedValue([{ ...goTool, versions: [{ ...publishedVersion, imageSizeBytes }] }]);
+
+    render(<ToolsRegistry />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+
+    const artifactCard = screen.getByText('Artifact').parentElement;
+    expect(artifactCard?.textContent).toBe(`ArtifactImage created${sizeLabel}`);
+  });
+
   it('lets an administrator explicitly recommend a published version', async () => {
     const user = userEvent.setup();
     list.mockResolvedValue([goTool]);

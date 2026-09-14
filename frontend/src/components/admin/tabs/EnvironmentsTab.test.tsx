@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const list = vi.fn();
@@ -503,6 +503,55 @@ describe('EnvironmentsTab', () => {
     expect(await screen.findByText('Added automatically for Apache Maven')).toBeInTheDocument();
     expect(screen.getByText('Required')).toBeInTheDocument();
     expect(screen.getByText('1200 / 2048 MiB')).toBeInTheDocument();
+  });
+
+  it.each([
+    [0, ''],
+    [null, ''],
+    [undefined, ''],
+    [200 * 1024 * 1024, '200 MiB'],
+  ])('renders selected tool size %s without stray text', async (imageSizeBytes, sizeLabel) => {
+    const user = userEvent.setup();
+    listTools.mockResolvedValue([{ ...javaTool, versions: [{ ...javaVersion, imageSizeBytes }] }]);
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Add Java JDK' }));
+
+    const tools = screen.getByRole('heading', { name: 'Tools' }).closest('section')!;
+    const versionDetails = within(tools).getByText('Eclipse Temurin 21.0.8').parentElement;
+    expect(versionDetails?.textContent).toBe(`Eclipse Temurin 21.0.8${sizeLabel}`);
+  });
+
+  it.each([
+    [0, ''],
+    [null, ''],
+    [undefined, ''],
+    [900 * 1024 * 1024, '900.0 MiB'],
+  ])('renders revision image size %s without stray text', async (imageSizeBytes, sizeLabel) => {
+    const user = userEvent.setup();
+    const readyEnvironment = { ...custom, status: 'READY' };
+    const readyRevision = {
+      ...revision,
+      status: 'READY',
+      imageDigest: javaVersion.imageDigest,
+      imageSizeBytes,
+    };
+    list.mockResolvedValue([readyEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : {
+            environment: readyEnvironment,
+            revisions: [readyRevision],
+            publishedRevision: null,
+          },
+    );
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+
+    const imageCard = screen.getByText('Built successfully').parentElement;
+    expect(imageCard?.textContent).toBe(`ImageBuilt successfully${sizeLabel}`);
   });
 
   it('resets added tools when changing the base so inherited tools do not block saving', async () => {
