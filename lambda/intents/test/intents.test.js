@@ -3063,10 +3063,12 @@ describe('POST /start', () => {
 
   it('outer catch logs the exception and request context, not a static string', async () => {
     // Regression test for the diagnostic contract of the top-level handler
-    // catch. The 500 body must stay generic (public contract), but the
-    // console.error payload must carry the actual Error's message/name/code/
-    // stack plus API-Gateway request context so operators can trace which
-    // path failed. A later refactor that drops this shape must fail here.
+    // catch. The 500 body must stay generic (public contract), but the logged
+    // payload must carry the actual Error's message/name/code/stack plus
+    // API-Gateway request context so operators can trace which path failed.
+    // Powertools serializes the Error into a structured `error` field and
+    // merges extra attributes at the top level. A later refactor that drops
+    // this shape must fail here.
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
@@ -3084,7 +3086,15 @@ describe('POST /start', () => {
       .on(InvokeCommand, { FunctionName: 'orchestrator-test' })
       .rejectsOnce(new OrchestratorInvokeError());
 
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Powertools Logger writes to process.stdout — capture it.
+    const stdoutLines = [];
+    const captureStream = (chunk) => {
+      stdoutLines.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    };
+    // Powertools routes INFO to stdout and WARN/ERROR to stderr — capture both.
+    vi.spyOn(process.stdout, 'write').mockImplementation(captureStream);
+    vi.spyOn(process.stderr, 'write').mockImplementation(captureStream);
     try {
       const res = await handler({
         httpMethod: 'POST',
@@ -3098,14 +3108,20 @@ describe('POST /start', () => {
       expect(res.statusCode).toBe(500);
       expect(JSON.parse(res.body)).toEqual({ error: 'Internal server error' });
 
-      // Diagnostic payload must reach console.error.
-      const call = errorSpy.mock.calls.find(([msg]) => msg === 'intents handler error');
-      expect(call, 'expected console.error to be called with the diagnostic tag').toBeDefined();
-      const [, ctx] = call;
-      expect(ctx).toEqual(
+      // Diagnostic payload must reach the structured logger.
+      const logged = stdoutLines
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .find((o) => o && o.level === 'ERROR' && o.message === 'intents handler error');
+      expect(logged, 'expected logger.error with the diagnostic tag').toBeDefined();
+      // Request context is merged at the top level.
+      expect(logged).toEqual(
         expect.objectContaining({
-          message: 'invoke failed — orchestrator handoff blew up',
-          name: 'OrchestratorInvokeError',
           code: 'ORCHESTRATOR_HANDOFF_FAILED',
           resource: '/projects/{projectId}/intents/{intentId}/start',
           httpMethod: 'POST',
@@ -3113,11 +3129,17 @@ describe('POST /start', () => {
           intentId: intent.id,
         }),
       );
-      // Stack must be present and reference the caught error's class.
-      expect(typeof ctx.stack).toBe('string');
-      expect(ctx.stack).toContain('OrchestratorInvokeError');
+      // The Error is serialized under the structured `error` field.
+      expect(logged.error).toEqual(
+        expect.objectContaining({
+          message: 'invoke failed — orchestrator handoff blew up',
+          name: 'OrchestratorInvokeError',
+        }),
+      );
+      expect(typeof logged.error.stack).toBe('string');
+      expect(logged.error.stack).toContain('OrchestratorInvokeError');
     } finally {
-      errorSpy.mockRestore();
+      vi.restoreAllMocks();
     }
   });
 
@@ -3265,7 +3287,15 @@ describe('realtime-token', () => {
     vi.stubEnv('REALTIME_DOC_SECRET', '');
     vi.stubEnv('REALTIME_SECRET_PARAM', paramName);
     ssmMock.on(GetParameterCommand, { Name: paramName }).resolves({ Parameter: { Value: '' } });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Powertools Logger writes to process.stdout — capture it instead of console.error.
+    const stdoutLines = [];
+    const captureStream = (chunk) => {
+      stdoutLines.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    };
+    // Powertools routes INFO to stdout and WARN/ERROR to stderr — capture both.
+    vi.spyOn(process.stdout, 'write').mockImplementation(captureStream);
+    vi.spyOn(process.stderr, 'write').mockImplementation(captureStream);
     try {
       const res = await handler({
         httpMethod: 'POST',
@@ -3275,13 +3305,21 @@ describe('realtime-token', () => {
       });
       expect(res.statusCode).toBe(500);
       expect(JSON.parse(res.body)).toEqual({ error: 'Internal server error' });
-      expect(errorSpy).toHaveBeenCalledWith(
-        'intents handler error',
-        expect.objectContaining({ message: 'Realtime secret SSM parameter is empty' }),
-      );
-      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(paramName);
+      const errorLine = stdoutLines
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .find((o) => o && o.level === 'ERROR' && o.message === 'intents handler error');
+      expect(errorLine).toBeDefined();
+      expect(errorLine.error?.message).toBe('Realtime secret SSM parameter is empty');
+      // Security contract: the secret SSM parameter path must never reach the logs.
+      expect(stdoutLines.join('')).not.toContain(paramName);
     } finally {
-      errorSpy.mockRestore();
+      vi.restoreAllMocks();
       vi.stubEnv('REALTIME_DOC_SECRET', 'test-secret');
       vi.stubEnv('REALTIME_SECRET_PARAM', undefined);
     }

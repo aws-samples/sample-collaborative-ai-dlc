@@ -4,6 +4,7 @@
 // for a local gremlin-server; wss + SigV4 in production Neptune. The DDB/S3/WS
 // clients use the default credential chain (the ECS/AgentCore task role).
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
@@ -22,6 +23,8 @@ import {
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'clients' } });
 
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
@@ -125,10 +128,10 @@ export const sendStageCallbackSuccess = async (
       return { delivered: true };
     } catch (err) {
       lastErr = err;
-      console.error(
-        `[agentcore] stage callback send failed (attempt ${i + 1}/${attempts}):`,
-        err.message,
-      );
+      logger.error('stage callback send failed', err, {
+        attempt: i + 1,
+        attempts,
+      });
       if (i < attempts - 1) await sleep(baseDelayMs * 2 ** i);
     }
   }
@@ -152,10 +155,10 @@ export const sendStageCallbackHeartbeat = async (
       return { delivered: true };
     } catch (err) {
       lastErr = err;
-      console.error(
-        `[agentcore] stage callback heartbeat failed (attempt ${i + 1}/${attempts}):`,
-        err.message,
-      );
+      logger.error('stage callback heartbeat failed', err, {
+        attempt: i + 1,
+        attempts,
+      });
       if (i < attempts - 1) await sleep(baseDelayMs * 2 ** i);
     }
   }
@@ -243,6 +246,6 @@ export const broadcastToIntent = async (intentId, payload) => {
       ),
     );
   } catch (err) {
-    console.error('[agentcore] intent broadcast failed:', err.message);
+    logger.error('intent broadcast failed', err);
   }
 };

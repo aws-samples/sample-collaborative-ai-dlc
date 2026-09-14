@@ -26,6 +26,7 @@ import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin, isPlatformAdmin } from '../shared/authz.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
@@ -66,6 +67,7 @@ const pricing = new PricingClient({
   region: (process.env.AWS_REGION || '').startsWith('ap-') ? 'ap-south-1' : 'us-east-1',
 });
 
+const logger = new Logger({ persistentKeys: { component: 'agents' } });
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const { cardinality } = gremlin.process;
@@ -124,7 +126,7 @@ export const fetchRuntimeCapabilities = async (
     const text = res.response ? await res.response.transformToString() : '';
     return text ? JSON.parse(text) : null;
   } catch (e) {
-    console.error('[capabilities] runtime invoke failed:', e.message);
+    logger.error('[capabilities] runtime invoke failed', e);
     return null;
   }
 };
@@ -164,7 +166,7 @@ export const verifyMcpServers = async ({
     const text = res.response ? await res.response.transformToString() : '';
     return text ? JSON.parse(text) : { error: 'Empty response from runtime' };
   } catch (e) {
-    console.error('[verify-mcp] runtime invoke failed:', e.message);
+    logger.error('[verify-mcp] runtime invoke failed', e);
     return { error: `Runtime invoke failed: ${e.message}` };
   }
 };
@@ -333,20 +335,28 @@ async function refreshModelPricing() {
       }),
     );
   } catch (e) {
-    console.error('[pricing] refresh failed:', e.message);
+    logger.error('[pricing] refresh failed', e);
   }
 }
 
 // --- Handler ---
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logger.resetKeys();
+  logger.logEventIfEnabled(event);
   const response = buildResponse(event);
   const { httpMethod, path = '', pathParameters, body } = event;
   const projectId = pathParameters?.projectId;
   const taskId = pathParameters?.taskId ? decodeURIComponent(pathParameters.taskId) : null;
+  const credentialUserId = event.requestContext?.authorizer?.claims?.sub || '';
+  logger.appendKeys({
+    ...(projectId && { projectId }),
+    ...(taskId && { taskId }),
+    ...(credentialUserId && { userId: credentialUserId }),
+  });
 
   try {
-    const credentialUserId = event.requestContext?.authorizer?.claims?.sub || '';
     const credentialBase = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
 
     // ===== HIERARCHICAL AGENT CREDENTIALS =====
@@ -365,7 +375,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (error) {
-          console.error('[user agent credentials] GET failed:', error.message);
+          logger.error('[user agent credentials] GET failed', error);
           return response(500, { error: 'Failed to load personal agent credentials' });
         }
       }
@@ -385,7 +395,7 @@ export const handler = async (event) => {
           });
           return response(200, { saved: true });
         } catch (error) {
-          console.error('[user agent credentials] PUT failed:', error.message);
+          logger.error('[user agent credentials] PUT failed', error);
           return response(500, { error: 'Failed to save personal agent credentials' });
         }
       }
@@ -415,7 +425,7 @@ export const handler = async (event) => {
           ]);
           return response(200, { ...space, platformFallback });
         } catch (error) {
-          console.error('[space agent credentials] GET failed:', error.message);
+          logger.error('[space agent credentials] GET failed', error);
           return response(500, { error: 'Failed to load space agent credentials' });
         }
       }
@@ -435,7 +445,7 @@ export const handler = async (event) => {
           });
           return response(200, { saved: true });
         } catch (error) {
-          console.error('[space agent credentials] PUT failed:', error.message);
+          logger.error('[space agent credentials] PUT failed', error);
           return response(500, { error: 'Failed to save space agent credentials' });
         }
       }
@@ -454,7 +464,7 @@ export const handler = async (event) => {
           userId: credentialUserId,
         });
       } catch (error) {
-        console.error('[effective agent credentials] resolve failed:', error.message);
+        logger.error('[effective agent credentials] resolve failed', error);
         return response(500, { error: 'Failed to resolve agent credentials' });
       }
       const withModels = event.queryStringParameters?.models === '1';
@@ -596,7 +606,7 @@ export const handler = async (event) => {
           try {
             ({ set: mcpSecretsSet } = await listMcpSecrets(ssm, { base: prefix }));
           } catch (e) {
-            console.error('[settings] mcp-secrets list failed:', e.message);
+            logger.error('[settings] mcp-secrets list failed', e);
           }
         }
         // Return secrets as masked flags (never send the raw values to the browser)
@@ -614,7 +624,7 @@ export const handler = async (event) => {
           globalMcpServerSecretRefs,
         });
       } catch (err) {
-        console.error('[settings] GET failed:', err.message);
+        logger.error('[settings] GET failed', err);
         return response(500, { error: 'Failed to load settings from SSM' });
       }
     }
@@ -640,7 +650,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write bearer token:', err.message);
+          logger.error('[settings] Failed to write bearer token', err);
           errors.push('bedrockBearerToken: ' + err.message);
         }
       }
@@ -657,7 +667,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write Kiro API key:', err.message);
+          logger.error('[settings] Failed to write Kiro API key', err);
           errors.push('kiroApiKey: ' + err.message);
         }
       }
@@ -680,7 +690,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write CLI models:', err.message);
+          logger.error('[settings] Failed to write CLI models', err);
           errors.push('cliModels: ' + err.message);
         }
       }
@@ -707,7 +717,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write tier models:', err.message);
+          logger.error('[settings] Failed to write tier models', err);
           errors.push('tierModels: ' + err.message);
         }
       }
@@ -731,7 +741,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write derive enrichment mode:', err.message);
+          logger.error('[settings] Failed to write derive enrichment mode', err);
           errors.push('deriveEnrichment: ' + err.message);
         }
       }
@@ -757,7 +767,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write stage skipping mode:', err.message);
+          logger.error('[settings] Failed to write stage skipping mode', err);
           errors.push('stageSkipping: ' + err.message);
         }
       }
@@ -782,7 +792,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write compose LLM bypass mode:', err.message);
+          logger.error('[settings] Failed to write compose LLM bypass mode', err);
           errors.push('composeLlmBypass: ' + err.message);
         }
       }
@@ -804,7 +814,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write PR strategy:', err.message);
+          logger.error('[settings] Failed to write PR strategy', err);
           errors.push('prStrategy: ' + err.message);
         }
       }
@@ -836,7 +846,7 @@ export const handler = async (event) => {
             }),
           );
         } catch (err) {
-          console.error('[settings] Failed to write custom MCP servers:', err.message);
+          logger.error('[settings] Failed to write custom MCP servers', err);
           errors.push('customMcpServers: ' + err.message);
         }
       }
@@ -859,7 +869,7 @@ export const handler = async (event) => {
           });
           errors.push(...secretErrors.map((e) => `mcpSecrets.${e}`));
         } catch (err) {
-          console.error('[settings] Failed to write MCP secrets:', err.message);
+          logger.error('[settings] Failed to write MCP secrets', err);
           errors.push('mcpSecrets: ' + err.message);
         }
       }
@@ -963,7 +973,7 @@ export const handler = async (event) => {
             userId: credentialUserId,
           });
         } catch (error) {
-          console.error('[effective agent credentials] resolve failed:', error.message);
+          logger.error('[effective agent credentials] resolve failed', error);
           return response(500, { error: 'Failed to resolve agent credentials' });
         }
       }
@@ -1164,7 +1174,7 @@ export const handler = async (event) => {
         ...new Set((result.Items || []).map((item) => item.projectId).filter(Boolean)),
       ];
       if (projectIds.length > 1) {
-        console.error(`[agents] Questions for execution ${taskId} span multiple projects`);
+        logger.error('Questions for execution span multiple projects', { projectIds });
         return response(500, { error: 'Internal server error' });
       }
       const auth = await authorizeExecutionRead(event, projectIds[0], [taskId]);
@@ -1230,7 +1240,7 @@ export const handler = async (event) => {
     if (isEnvironmentResolutionError(err)) {
       return response(409, { error: err.message, code: err.code });
     }
-    console.error('Handler error:', err);
+    logger.error('Handler error', err);
     return response(500, { error: 'Internal server error' });
   }
 };

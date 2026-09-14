@@ -16,11 +16,13 @@
 // agent-chosen id) is never dropped for this intent.
 
 import gremlin from 'gremlin';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { SendDurableExecutionCallbackSuccessCommand } from '@aws-sdk/client-lambda';
 import { StopRuntimeSessionCommand } from '@aws-sdk/client-bedrock-agentcore';
 import { DeleteObjectsCommand, ListObjectVersionsCommand, S3Client } from '@aws-sdk/client-s3';
 
+const logger = new Logger({ persistentKeys: { component: 'intent-deletion' } });
 const __ = gremlin.process.statics;
 const s3 = new S3Client({});
 
@@ -97,7 +99,10 @@ const stopRuntimeSessions = async (
         }),
       );
     } catch (err) {
-      console.log(`stop-runtime-session best-effort miss (${id}): ${err?.message ?? err}`);
+      logger.info('stop-runtime-session best-effort miss', {
+        sessionId: id,
+        error: err?.message ?? String(err),
+      });
     }
   }
 };
@@ -118,7 +123,7 @@ const retireParkedRun = async ({ store, lambdaClient, executionId, reason }) => 
         supersededBy: reason,
       })
       .catch((err) => {
-        console.error('Gate supersede failed:', err.message);
+        logger.error('Gate supersede failed', err);
         return null;
       });
     if (superseded && gate.callbackId && lambdaClient) {
@@ -129,7 +134,7 @@ const retireParkedRun = async ({ store, lambdaClient, executionId, reason }) => 
             Result: Buffer.from(JSON.stringify({ cancelled: true, reason })),
           }),
         )
-        .catch((err) => console.error('Cancel callback send failed:', err.message));
+        .catch((err) => logger.error('Cancel callback send failed', err));
     }
   }
 };
@@ -216,7 +221,7 @@ const deleteIntentCascade = async ({
         try {
           await ddb.send(new DeleteCommand({ TableName: yjsTable, Key: { documentId } }));
         } catch (err) {
-          console.error(`Yjs doc delete failed (${documentId}):`, err.message);
+          logger.error('Yjs doc delete failed', err, { documentId });
         }
       }),
     );

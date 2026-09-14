@@ -27,6 +27,7 @@
 // run; this command owns ONLY process state. Every effect is injected so the
 // whole flow is unit-tested with the CLI + AWS mocked.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { randomUUID } from 'node:crypto';
 import {
   selectCli,
@@ -89,6 +90,9 @@ import {
 } from '../../shared/v2-execution-plan.js';
 import { credentialProviderForCli } from '../../shared/agent-credentials.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'run-stage' } });
+
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
@@ -1464,7 +1468,7 @@ export const runStage = async (
       const kiroRestored = await restoreKiroStore({ env }).catch(() => false);
       if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
       else if (!kiroRestored)
-        console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
+        logger.error('kiro store not restored for resume', { stageInstanceId });
     } else if (!demotedResume && cli === 'opencode') {
       const storePresent = await hasOpenCodeStore({ env }).catch(() => false);
       if (!storePresent && resolveOpenCodeStore(env)) conversationLost = true;
@@ -1556,9 +1560,11 @@ export const runStage = async (
       const detail = `${restoreStatus ?? 'restore_failed'}${
         restored?.error?.code ? ` (${restored.error.code})` : ''
       }`;
-      console.error(
-        `[run-stage] codex rollout not restored stage=${stageInstanceId} thread=${cliSessionId} status=${detail}`,
-      );
+      logger.error('codex rollout not restored', {
+        stage: stageInstanceId,
+        thread: cliSessionId,
+        status: detail,
+      });
       await store
         .appendEvent({
           executionId,
@@ -1573,7 +1579,7 @@ export const runStage = async (
       const recoveryFailure = await recoverLostConversation();
       if (recoveryFailure) return recoveryFailure;
     } else if (!restoredOk) {
-      console.error(`[run-stage] codex rollout store not configured for resume ${stageInstanceId}`);
+      logger.error('codex rollout store not configured for resume', { stageInstanceId });
     }
   }
 
@@ -1679,7 +1685,7 @@ export const runStage = async (
         metrics: { agentLaunchMs },
       });
     } catch (e) {
-      console.error(`[run-stage] agentLaunchMs not recorded for ${stageInstanceId}: ${e.message}`);
+      logger.error('agentLaunchMs not recorded', e, { stageInstanceId });
     }
   }
 
@@ -1723,7 +1729,7 @@ export const runStage = async (
   } catch (e) {
     // Fail closed: a collision or an unset referenced secret aborts the stage
     // with a clear, actionable error (never a silent drop / a generic CLI 401).
-    console.error(`[run-stage] mcp secret resolution failed: ${e.message}`);
+    logger.error('mcp secret resolution failed', e);
     return fail(stageInstanceId, 'mcp_secret_error', e.message);
   }
   const customServers = {
@@ -1940,7 +1946,7 @@ export const runStage = async (
   // resume — its mount was wiped, so there is nothing to restore.
   if (freshRun && !demotedResume && cli === 'kiro') {
     const restored = await restoreKiroStore({ env }).catch(() => false);
-    if (!restored) console.error(`[run-stage] kiro store not restored (fresh) ${stageInstanceId}`);
+    if (!restored) logger.error('kiro store not restored (fresh)', { stageInstanceId });
   }
 
   // 4. Spawn the headless CLI.
@@ -2023,11 +2029,14 @@ export const runStage = async (
   });
   // Correlate the [spawn:size] line below to THIS stage/cli — the diagnostic for
   // the 2026-07 nfr-design E2BIG (prompt now piped on stdin; this confirms it).
-  console.info(
-    `[run-stage] spawning cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
-      `promptBytes=${Buffer.byteLength(prompt ?? invocation.prompt ?? '', 'utf8')} ` +
-      `promptViaStdin=${invocation.promptViaStdin} argc=${invocation.args.length}`,
-  );
+  logger.info('spawning cli', {
+    cli,
+    stage: stageId,
+    unit: unitSlug ?? '-',
+    promptBytes: Buffer.byteLength(prompt ?? invocation.prompt ?? '', 'utf8'),
+    promptViaStdin: invocation.promptViaStdin,
+    argc: invocation.args.length,
+  });
   const spawnCli = () =>
     runChild({
       command: invocation.command,
@@ -2108,9 +2117,11 @@ export const runStage = async (
       const detail = `${codexPersistResult?.status ?? 'persist_failed'}${
         codexPersistResult?.error?.code ? ` (${codexPersistResult.error.code})` : ''
       }`;
-      console.error(
-        `[run-stage] codex rollout not persisted stage=${stageInstanceId} thread=${cliSessionId ?? '-'} status=${detail}`,
-      );
+      logger.error('codex rollout not persisted', {
+        stage: stageInstanceId,
+        thread: cliSessionId ?? '-',
+        status: detail,
+      });
       await store
         .appendEvent({
           executionId,
@@ -2130,18 +2141,24 @@ export const runStage = async (
     // Log the failure at the catch point — fail() only records it to DynamoDB
     // (the UI's cli_error), never to the container log. This makes the E2BIG (or
     // any spawn failure) visible + attributable to THIS stage/cli.
-    console.error(
-      `[run-stage] cli_error cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
-        `code=${spawnError?.code ?? '-'} msg=${spawnError?.message}`,
-    );
-    if (spawnError?.stack) console.error(spawnError.stack);
+    logger.error('cli_error', {
+      cli,
+      stage: stageId,
+      unit: unitSlug ?? '-',
+      code: spawnError?.code ?? '-',
+      msg: spawnError?.message,
+    });
+    if (spawnError?.stack) logger.error(spawnError.stack);
     return fail(stageInstanceId, 'cli_error', spawnError.message);
   }
 
   const exitCode = result?.exitCode ?? 0;
-  console.error(
-    `[run-stage] cli=${cli} stage=${stageId} exitCode=${exitCode} model=${model ?? '(default)'}`,
-  );
+  logger.error('cli exit', {
+    cli,
+    stage: stageId,
+    exitCode,
+    model: model ?? '(default)',
+  });
 
   // Kiro only: persist the live local store back to the durable mount after the
   // run. Runs on ANY exit (success, park, or crash) so a parked conversation is
@@ -2150,7 +2167,7 @@ export const runStage = async (
   if (cli === 'kiro') {
     const persisted = await persistKiroStore({ env }).catch(() => false);
     if (!persisted) {
-      console.error(`[run-stage] kiro store not persisted for ${stageInstanceId}`);
+      logger.error('kiro store not persisted', { stageInstanceId });
     }
   }
 
@@ -2193,7 +2210,7 @@ export const runStage = async (
         });
       }
     } catch (e) {
-      console.error(`[run-stage] kiro credits not recorded for ${stageInstanceId}: ${e.message}`);
+      logger.error('kiro credits not recorded', e, { stageInstanceId });
     }
   }
 
@@ -2378,9 +2395,10 @@ export const runStage = async (
     // message. Treat as success (not a stage failure) but record a note so the
     // signature stays visible. Sensors below still run and can hold the stage.
     if (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail)) {
-      console.error(
-        `[run-stage] kiro empty-completion (benign) on ${stageId}; exitCode=${exitCode} — treating as success`,
-      );
+      logger.error('kiro empty-completion (benign); treating as success', {
+        stage: stageId,
+        exitCode,
+      });
       await store
         .appendEvent({
           executionId,

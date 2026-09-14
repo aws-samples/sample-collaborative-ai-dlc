@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
 import { S3Client } from '@aws-sdk/client-s3';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import {
@@ -27,6 +28,8 @@ const s3 = new S3Client({});
 const codebuild = new CodeBuildClient({});
 const defaultStore = createToolStore({ ddb });
 const defaultEnvironmentStore = createEnvironmentStore({ ddb });
+
+const logger = new Logger({ persistentKeys: { component: 'environments' } });
 
 const toolMetadata = (data, { partial = false } = {}) => {
   const values = {};
@@ -307,12 +310,13 @@ export const createToolsHandler = ({
         });
       } catch (error) {
         if (error.code === 'TOOL_RECOMMENDED_DEPENDENCY_MISSING') continue;
-        console.error(`Unable to start seeded tool build ${version.versionId}:`, error.message);
+        logger.error('Unable to start seeded tool build', error, { versionId: version.versionId });
       }
     }
   });
 
-  return async (event) => {
+  return async (event, context) => {
+    if (context) logger.addContext(context);
     if (event?.action === 'bootstrap') {
       await initialize();
       return { initialized: true };
@@ -511,7 +515,7 @@ export const createToolsHandler = ({
 
       return response(405, { error: 'Method not allowed' });
     } catch (error) {
-      console.error('Managed tool request failed:', error.message);
+      logger.error('Managed tool request failed', error);
       return responseError(response, error);
     }
   };

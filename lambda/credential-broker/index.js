@@ -15,6 +15,9 @@ import { resolveBindingCredential } from '../shared/source-control-credentials.j
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
 import { readCredentialBindingValue } from '../shared/agent-credentials.js';
 import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'credential-broker' } });
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -163,7 +166,8 @@ const authorizeAgentCredentialRequest = async (
   };
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const action = event?.action || 'source-control';
   try {
     if (action === RESOLVE_AGENT_CREDENTIALS) {
@@ -189,7 +193,7 @@ export const handler = async (event) => {
       action === RESOLVE_AGENT_CREDENTIALS
         ? loggableAgentCredentialErrorCode(error)
         : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
-    console.error('[credential-broker] request denied', {
+    logger.error('request denied', {
       code,
       action,
       executionId: event?.executionId || null,

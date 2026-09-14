@@ -39,6 +39,9 @@ import {
   validateBlockInput,
   validateId,
 } from '../shared/blocks.js';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'building-blocks' } });
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -331,7 +334,9 @@ const toApi = (item) => {
 
 // ─── Router ───
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logger.logEventIfEnabled(event);
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
@@ -375,7 +380,7 @@ export const handler = async (event) => {
     if (method === 'POST') return await createBlock(event, res, tenant, type);
     return res(405, { error: 'Method not allowed' });
   } catch (err) {
-    console.error('building-blocks handler error:', err?.name || 'error');
+    logger.error('building-blocks handler error', err);
     return res(500, { error: 'Internal server error' });
   }
 };

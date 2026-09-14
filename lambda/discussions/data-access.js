@@ -4,9 +4,12 @@
 
 import { randomUUID } from 'node:crypto';
 import { PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { ddb, cardinality, order, __, P, locksTable, readStateTable } from './clients.js';
 import { MESSAGE_GUARD_COMPLETE_SECONDS } from './constants.js';
 import { getVal, mapDiscussion, nowSeconds, isConditionalCheckFailed } from './mappers.js';
+
+const logger = new Logger({ persistentKeys: { component: 'discussions' } });
 
 // ─── Read cursors (DynamoDB) ───
 //
@@ -341,7 +344,7 @@ export const completeGuard = async (guardKey, ownerToken) => {
       // A takeover stole the guard mid-write — provably impossible for a live
       // winner (pending window > lambda timeout), so just log; the new owner
       // finishes the transition.
-      console.warn(`Guard ${guardKey}: ownerToken mismatch on complete-transition (takeover?)`);
+      logger.warn('Guard ownerToken mismatch on complete-transition (takeover?)', { guardKey });
       return;
     }
     throw err;

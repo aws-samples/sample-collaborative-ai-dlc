@@ -17,6 +17,7 @@ import {
   GetSecretValueCommand,
   PutSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import {
@@ -48,6 +49,10 @@ const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
 const lambda = new LambdaClient({});
 const processStore = createProcessStore({ ddb });
+
+// Structured logger (Powertools). serviceName defaults to 'trackers' and is
+// overridden by POWERTOOLS_SERVICE_NAME; level via POWERTOOLS_LOG_LEVEL.
+const logger = new Logger({ persistentKeys: { component: 'trackers' } });
 
 const trackerGitProvider = (provider) =>
   provider === 'github-issues' ? 'github' : provider === 'gitlab-issues' ? 'gitlab' : null;
@@ -399,7 +404,7 @@ const handleProviderError = (response, err) => {
   if (err.code === 'NOT_CONNECTED') {
     return response(400, { error: err.message || 'Provider not connected' });
   }
-  console.error('Provider error:', err);
+  logger.error('Provider error', err);
   return response(500, { error: 'Internal server error' });
 };
 
@@ -413,11 +418,11 @@ const listTrackerConnections = async (response, userId) => {
   // legacy rows on read). Tracker-only providers come from tracker-connections.
   const [gitGithub, gitGitlab, trackerItems] = await Promise.all([
     getGitConnection(ddb, userId, 'github').catch((err) => {
-      console.error('Failed to read github connection:', err.message);
+      logger.error('Failed to read github connection', err);
       return null;
     }),
     getGitConnection(ddb, userId, 'gitlab').catch((err) => {
-      console.error('Failed to read gitlab connection:', err.message);
+      logger.error('Failed to read gitlab connection', err);
       return null;
     }),
     process.env.TRACKER_CONNECTIONS_TABLE
@@ -431,7 +436,7 @@ const listTrackerConnections = async (response, userId) => {
           )
           .then((r) => r.Items ?? [])
           .catch((err) => {
-            console.error('Failed to scan tracker-connections:', err.message);
+            logger.error('Failed to scan tracker-connections', err);
             return [];
           })
       : Promise.resolve([]),
@@ -480,7 +485,7 @@ const disconnectTracker = async (response, userId, provider, instance) => {
       try {
         await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
       } catch (e) {
-        console.error('Failed to delete git token parameter:', e.message);
+        logger.error('Failed to delete git token parameter', e);
       }
     }
     // Remove from both the new and legacy tables.
@@ -504,7 +509,7 @@ const disconnectTracker = async (response, userId, provider, instance) => {
       try {
         await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
       } catch (e) {
-        console.error('Failed to delete jira token parameter:', e.message);
+        logger.error('Failed to delete jira token parameter', e);
       }
     }
     await ddb.send(
@@ -518,7 +523,9 @@ const disconnectTracker = async (response, userId, provider, instance) => {
   return response(400, { error: `Disconnect not implemented for ${provider}/${instance}` });
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logger.logEventIfEnabled(event);
   if (event?.action === 'reconcile-tracker-deliveries') {
     return runTrackerDeliveryMaintenance(event);
   }
@@ -627,7 +634,7 @@ export const handler = async (event) => {
         if (err instanceof ProviderError) {
           return response(err.status, { error: err.message, ...err.extra });
         }
-        console.error('Jira auth/callback error:', err);
+        logger.error('Jira auth/callback error', err);
         return response(500, { error: 'Internal server error' });
       }
     }
@@ -680,7 +687,7 @@ export const handler = async (event) => {
       if (err instanceof ProviderError) {
         return response(err.status, { error: err.message, ...err.extra });
       }
-      console.error('Jira finalize error:', err);
+      logger.error('Jira finalize error', err);
       return response(500, { error: 'Internal server error' });
     }
   }
@@ -731,7 +738,7 @@ export const handler = async (event) => {
           const r = await readOAuthSecret(cfg.secretEnvVar);
           configured = r.configured;
         } catch (err) {
-          console.error(`Failed to probe ${id} OAuth secret:`, err.message);
+          logger.error('Failed to probe OAuth secret', err, { providerId: id });
         }
         return { id, label: cfg.label, instances: cfg.instances, configured };
       }),
@@ -776,7 +783,7 @@ export const handler = async (event) => {
       if (err instanceof ProviderError) {
         return response(err.status, { error: err.message });
       }
-      console.error('Failed to write OAuth secret:', err);
+      logger.error('Failed to write OAuth secret', err);
       return response(500, { error: 'Failed to write OAuth secret' });
     }
     return response(200, { success: true });
@@ -1032,7 +1039,7 @@ export const handler = async (event) => {
 
     return response(404, { error: 'Not found' });
   } catch (err) {
-    console.error('Error:', err);
+    logger.error('Error', err);
     return response(500, { error: 'Internal server error', message: err.message });
   } finally {
     if (conn) {

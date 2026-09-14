@@ -1208,7 +1208,14 @@ describe('github handler', () => {
 
   describe('logging', () => {
     it('redacts sensitive fields from logged event', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      // Powertools Logger writes structured JSON to process.stdout, not
+      // console.log — capture stdout and parse the emitted log line. The
+      // security contract is unchanged: secrets must never reach the logs.
+      const lines = [];
+      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+        lines.push(typeof chunk === 'string' ? chunk : chunk.toString());
+        return true;
+      });
 
       const handler = await loadHandler();
       await handler({
@@ -1220,15 +1227,27 @@ describe('github handler', () => {
         body: '{"password": "secret"}',
       });
 
-      const loggedArg = consoleSpy.mock.calls[0][1];
-      const logged = JSON.parse(loggedArg);
+      const logged = lines
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .find((o) => o && o.message === 'Request');
+      expect(logged).toBeDefined();
       expect(logged.gitToken).toBeUndefined();
       expect(logged.code).toBeUndefined();
       expect(logged.state).toBeUndefined();
       expect(logged.accessToken).toBeUndefined();
       expect(logged.body).toBe('[REDACTED]');
+      // Belt-and-suspenders: no secret value leaks anywhere in the raw output.
+      const raw = lines.join('');
+      expect(raw).not.toContain('secret-token');
+      expect(raw).not.toContain('secret-access');
 
-      consoleSpy.mockRestore();
+      stdoutSpy.mockRestore();
     });
   });
 });

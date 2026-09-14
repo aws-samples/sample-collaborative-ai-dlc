@@ -48,6 +48,7 @@
 //     Combine with dryRun to preview the clear without deleting.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { Logger } from '@aws-lambda-powertools/logger';
 import {
   DynamoDBDocumentClient,
   PutCommand,
@@ -83,6 +84,7 @@ import {
   workflowGsi1Pk,
 } from '../shared/workflows.js';
 
+const logger = new Logger({ persistentKeys: { component: 'seed-blocks' } });
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
 
@@ -250,7 +252,8 @@ const putObject = (key, body, contentType) =>
     }),
   );
 
-export const handler = async (event = {}) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const dryRun = event?.dryRun === true;
   const reseed = event?.reseed === true;
   const configuredRef = event?.ref || defaultRef();
@@ -402,6 +405,6 @@ export const handler = async (event = {}) => {
     seeded,
     skipped,
   };
-  console.log('seed-blocks result:', JSON.stringify({ ...result, seeded: seeded.length }));
+  logger.info('seed-blocks result', { ...result, seeded: seeded.length });
   return result;
 };

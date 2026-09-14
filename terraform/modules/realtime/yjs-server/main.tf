@@ -210,6 +210,10 @@ resource "aws_ecs_task_definition" "yjs_server" {
         name  = "DOC_TOKEN_ENFORCE"
         value = var.doc_token_enforce ? "true" : "false"
       },
+      {
+        name  = "POWERTOOLS_SERVICE_NAME"
+        value = "collaborative-aidlc"
+      },
     ]
     secrets = [
       {

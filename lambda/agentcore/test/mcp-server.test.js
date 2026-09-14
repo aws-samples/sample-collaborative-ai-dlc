@@ -395,27 +395,42 @@ describe('registerTools', () => {
     const bound = {};
     const server = { tool: (name, _d, _s, fn) => (bound[name] = fn) };
     const handlers = { get_learning_rules: async () => ok({ hello: 'world' }) };
-    const errSpy = vi.spyOn(console, 'error').mockImplementation((m) => captured.push(m));
+    // Powertools Logger writes structured JSON to process.stdout.
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      captured.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    });
     try {
       registerTools({ server, handlers, role: 'reviewer', z: fakeZod, env: {} });
       const env = await bound.get_learning_rules({});
       // Envelope is returned unchanged (tracing is transparent).
       expect(JSON.parse(env.content[0].text)).toEqual({ hello: 'world' });
-      const line = captured.find((l) => l.startsWith('[mcp-trace] get_learning_rules'));
-      expect(line).toBeDefined();
-      expect(line).toContain(`bytes=${Buffer.byteLength(env.content[0].text, 'utf8')}`);
-      expect(line).toContain('ok=true');
+      const trace = captured
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .find((o) => o && o.message === 'mcp-trace' && o.name === 'get_learning_rules');
+      expect(trace).toBeDefined();
+      expect(trace.bytes).toBe(Buffer.byteLength(env.content[0].text, 'utf8'));
+      expect(trace.ok).toBe(true);
     } finally {
-      errSpy.mockRestore();
+      outSpy.mockRestore();
     }
   });
 
-  it('V2_MCP_TRACE=off silences the trace (no stderr line)', async () => {
+  it('V2_MCP_TRACE=off silences the trace (no trace line)', async () => {
     const captured = [];
     const bound = {};
     const server = { tool: (name, _d, _s, fn) => (bound[name] = fn) };
     const handlers = { get_learning_rules: async () => ok({ ok: true }) };
-    const errSpy = vi.spyOn(console, 'error').mockImplementation((m) => captured.push(m));
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      captured.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    });
     try {
       registerTools({
         server,
@@ -425,9 +440,18 @@ describe('registerTools', () => {
         env: { V2_MCP_TRACE: 'off' },
       });
       await bound.get_learning_rules({});
-      expect(captured.some((l) => String(l).startsWith('[mcp-trace]'))).toBe(false);
+      const hasTrace = captured
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .some((o) => o && o.message === 'mcp-trace');
+      expect(hasTrace).toBe(false);
     } finally {
-      errSpy.mockRestore();
+      outSpy.mockRestore();
     }
   });
 });

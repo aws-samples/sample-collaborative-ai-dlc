@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { S3Client } from '@aws-sdk/client-s3';
 import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { isPlatformAdmin, requirePlatformAdmin } from '../shared/authz.js';
 import {
@@ -33,6 +34,8 @@ const s3 = new S3Client({});
 const codebuild = new CodeBuildClient({});
 const defaultStore = createEnvironmentStore({ ddb });
 const defaultToolStore = createToolStore({ ddb });
+
+const logger = new Logger({ persistentKeys: { component: 'environments' } });
 
 const configuredCore = () => ({
   coreImageUri: process.env.CORE_IMAGE_URI,
@@ -230,7 +233,7 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
         },
       );
     } catch (stateError) {
-      console.error('Unable to record environment image build start failure:', stateError.message);
+      logger.error('Unable to record environment image build start failure', stateError);
     }
     throw Object.assign(new Error('Unable to start environment image build'), {
       statusCode: 502,
@@ -319,7 +322,8 @@ export const createHandler = ({
 } = {}) => {
   const deps = { s3: s3Client, codebuild: codebuildClient };
   const initialize = createRetryableInitializer(() => ensureSeeded(store));
-  return async (event) => {
+  return async (event, context) => {
+    if (context) logger.addContext(context);
     const response = buildResponse(event);
     if (event.httpMethod === 'OPTIONS') return response(200, {});
     const missingUser = requireUser(event);
@@ -706,7 +710,7 @@ export const createHandler = ({
 
       return response(405, { error: 'Method not allowed' });
     } catch (error) {
-      console.error('Managed environment request failed:', error.message);
+      logger.error('Managed environment request failed', error);
       return responseError(response, error);
     }
   };

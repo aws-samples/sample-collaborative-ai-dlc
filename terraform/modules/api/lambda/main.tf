@@ -7,6 +7,8 @@ locals {
   dns_suffix           = data.aws_partition.current.dns_suffix
   enable_public_egress = var.lambda_vpc_scope == "public-egress"
 
+  powertools_service_name = "collaborative-aidlc"
+
   # Lambdas that bundle code from lambda/shared/** via esbuild are packaged by
   # the terraform-aws-modules/lambda module,
   # which only hashes each Lambda's OWN source_path directory. A change in a
@@ -932,6 +934,9 @@ module "source_control_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT        = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT                   = var.neptune_endpoint
     SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
     GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
@@ -1049,6 +1054,9 @@ module "credential_broker_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     V2_PROCESS_TABLE                    = var.v2_executions_table_name
     SOURCE_CONTROL_BINDINGS_TABLE       = var.source_control_bindings_table_name
     GIT_CONNECTIONS_TABLE               = var.git_connections_table_name
@@ -1092,7 +1100,10 @@ module "credential_metadata_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
-    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    AGENT_SETTINGS_SSM_PREFIX   = "/${var.project_name}/${var.environment}"
   }
 }
 
@@ -1138,6 +1149,10 @@ module "projects_lambda" {
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     ARTIFACTS_BUCKET               = var.artifacts_bucket_name
+    # Powertools structured logging (see lambda/projects/index.js).
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
     # Project delete fans out into the intents' process state: the v2 process
     # table (drained per intent, incl. metrics), the intent-scoped Yjs docs, and
     # the AgentCore runtime (stop live sessions of deleted intents).
@@ -1184,6 +1199,9 @@ module "users_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT              = var.neptune_endpoint
     SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
     ENVIRONMENT                   = var.environment
@@ -1218,9 +1236,12 @@ module "sprints_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1254,9 +1275,12 @@ module "requirements_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1290,9 +1314,12 @@ module "user_stories_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1323,9 +1350,12 @@ module "tasks_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1359,9 +1389,12 @@ module "code_files_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1395,9 +1428,12 @@ module "reviews_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1430,9 +1466,12 @@ module "questions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1463,9 +1502,12 @@ module "sprint_graph_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1499,9 +1541,12 @@ module "general_info_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1535,6 +1580,9 @@ module "github_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT        = tostring(var.powertools_log_event)
     GITHUB_OAUTH_SECRET_NAME           = var.github_oauth_secret_name
     GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
@@ -1634,6 +1682,9 @@ module "gitlab_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
@@ -1733,6 +1784,9 @@ module "bitbucket_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
     BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
@@ -1775,6 +1829,9 @@ module "trackers_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
@@ -1846,9 +1903,12 @@ module "timeline_events_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1963,6 +2023,9 @@ module "discussions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT                    = var.neptune_endpoint
     ENVIRONMENT                         = var.environment
     CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
@@ -2010,10 +2073,13 @@ module "cognito_users_lambda" {
   lambda_role = aws_iam_role.cognito_reader.arn
 
   environment_variables = {
-    COGNITO_USER_POOL_ID = var.cognito_user_pool_id
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
-    SSO_ROLE_CONFIG      = var.sso_role_config
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    COGNITO_USER_POOL_ID        = var.cognito_user_pool_id
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
+    SSO_ROLE_CONFIG             = var.sso_role_config
   }
 }
 
@@ -2044,9 +2110,12 @@ module "purge_neptune_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -2081,8 +2150,11 @@ module "migrate_tracker_fields_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT = var.neptune_endpoint
-    ENVIRONMENT      = var.environment
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
   }
 }
 
@@ -2112,10 +2184,13 @@ module "building_blocks_lambda" {
   lambda_role = aws_iam_role.blocks.arn
 
   environment_variables = {
-    BLOCKS_TABLE         = var.blocks_table_name
-    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    BLOCKS_TABLE                = var.blocks_table_name
+    ARTIFACTS_BUCKET            = var.artifacts_bucket_name
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -2151,10 +2226,13 @@ module "seed_blocks_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
-    BLOCKS_TABLE     = var.blocks_table_name
-    ARTIFACTS_BUCKET = var.artifacts_bucket_name
-    ENVIRONMENT      = var.environment
-    AIDLC_REPO_REF   = var.aidlc_repo_ref
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    BLOCKS_TABLE                = var.blocks_table_name
+    ARTIFACTS_BUCKET            = var.artifacts_bucket_name
+    ENVIRONMENT                 = var.environment
+    AIDLC_REPO_REF              = var.aidlc_repo_ref
   }
 }
 
@@ -2185,9 +2263,12 @@ module "workflows_lambda" {
   lambda_role = aws_iam_role.blocks.arn
 
   environment_variables = {
-    BLOCKS_TABLE         = var.blocks_table_name
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    BLOCKS_TABLE                = var.blocks_table_name
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -2481,12 +2562,15 @@ module "intents_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT      = var.neptune_endpoint
-    ENVIRONMENT           = var.environment
-    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
-    V2_PROCESS_TABLE      = var.v2_executions_table_name
-    BLOCKS_TABLE          = var.blocks_table_name
-    REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
+    V2_PROCESS_TABLE            = var.v2_executions_table_name
+    BLOCKS_TABLE                = var.blocks_table_name
+    REALTIME_SECRET_PARAM       = var.realtime_doc_secret_param_name
     # Intent-scoped realtime docs are removed on intent delete.
     YJS_DOCUMENTS_TABLE = var.yjs_documents_table_name
     # Admin global cli-models default lives under this SSM prefix; the intents
@@ -2733,6 +2817,9 @@ module "v2_orchestrator_lambda" {
   lambda_role = aws_iam_role.v2_orchestrator.arn
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     ENVIRONMENT                         = var.environment
     APPLICATION_URL                     = var.application_url
     V2_PROCESS_TABLE                    = var.v2_executions_table_name

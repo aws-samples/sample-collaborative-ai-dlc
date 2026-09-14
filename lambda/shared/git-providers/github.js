@@ -5,7 +5,10 @@
 // and SSM-token plumbing live in the handler/shared layers; this module only
 // knows how to talk to GitHub once it has a token.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { ProviderError } from './errors.js';
+
+const logger = new Logger({ persistentKeys: { component: 'git-provider', module: 'github' } });
 
 const API_BASE = 'https://api.github.com';
 
@@ -543,7 +546,7 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   try {
     refs = await listConstructionTaskRefs(ctx, repoId, branch);
   } catch (err) {
-    console.error(err.message);
+    logger.error('Failed to list construction task branches', err);
     return { deleted: 0, failed: 1, skipped: 0 };
   }
   let deleted = 0;
@@ -557,12 +560,12 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
       merged = await isBranchMergedInto(ctx, repoId, taskBranch, branch);
     } catch (err) {
       failed += 1;
-      console.error(err.message);
+      logger.error('Failed to check merge status of construction task branch', err);
       continue;
     }
     if (!merged) {
       skipped += 1;
-      console.error(`Skipping unmerged construction task branch ${taskBranch}`);
+      logger.error('Skipping unmerged construction task branch', { taskBranch });
       continue;
     }
     const deletePath = encodeRefPath(refName.replace(/^refs\//, ''));
@@ -576,13 +579,11 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
     } else {
       failed += 1;
       const errorText = await deleteRes.text();
-      console.error(`Failed to delete construction task branch ${refName}:`, errorText);
+      logger.error('Failed to delete construction task branch', { refName, errorText });
     }
   }
   if (deleted || failed || skipped) {
-    console.log(
-      `Construction task branch cleanup complete: deleted=${deleted}, failed=${failed}, skipped=${skipped}`,
-    );
+    logger.info('Construction task branch cleanup complete', { deleted, failed, skipped });
   }
   return { deleted, failed, skipped };
 };

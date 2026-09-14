@@ -6,6 +6,7 @@
 // temporary GIT_ASKPASS environment, never argv or the remote URL. Multi-repo lays out under
 // <workspaceDir>/<owner>/<repo>; single-repo clones into <workspaceDir> directly.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { mkdir, stat, readdir, rm, symlink, lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
@@ -13,6 +14,8 @@ import { withGitCredential as defaultWithGitCredential } from './git-auth.js';
 import { runGitCommand, withGitHooksDisabled } from './git-runner.js';
 import { isValidRepoPath } from '../shared/repo-validation.js';
 import { repoTargetDir } from './repo-paths.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'workspace' } });
 
 // Provider-aware clone-URL builder — the single source of truth for the per-
 // provider auth scheme (GitHub `x-access-token:`, GitLab `oauth2:`) and host.
@@ -181,7 +184,7 @@ export const checkoutRepo = async ({
   }
   const cloned = clone.code === 0;
   if (!cloned) {
-    console.error('[workspace] clone failed', {
+    logger.error('clone failed', {
       provider: gitProvider,
       reason: clone.error || 'clone_failed',
     });
@@ -313,7 +316,7 @@ export const redirectHeavyDirs = async ({
   maxDepth = 5,
   maxPackages = 50,
   fsOps = { mkdir, readdir, rm, symlink, lstat },
-  log = (...a) => console.error('[workspace]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
   // Find every directory holding a package.json (each is an install root).
   const pkgDirs = [];

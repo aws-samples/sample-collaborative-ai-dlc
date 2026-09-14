@@ -11,6 +11,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, PutParameterCommand, DeleteParameterCommand } from '@aws-sdk/client-ssm';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from './response.js';
 import {
   getOAuthCredentials,
@@ -28,6 +29,7 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
 const ssm = new SSMClient({});
+const logger = new Logger({ persistentKeys: { component: 'git-handler' } });
 
 // Build a handler bound to a single provider.
 //
@@ -137,14 +139,11 @@ export const createGitHandler = (provider, routes) => {
       }
       return out;
     };
-    console.log(
-      'Request:',
-      JSON.stringify({
-        ...safeEvent,
-        body: '[REDACTED]',
-        queryStringParameters: redactQuery(safeEvent.queryStringParameters),
-      }),
-    );
+    logger.info('Request', {
+      ...safeEvent,
+      body: '[REDACTED]',
+      queryStringParameters: redactQuery(safeEvent.queryStringParameters),
+    });
 
     if (event.httpMethod === 'OPTIONS') return response(200, {});
 
@@ -237,7 +236,7 @@ export const createGitHandler = (provider, routes) => {
               authorEmail: user.authorEmail,
             };
           } catch (e) {
-            console.error(`Failed to fetch ${providerLabel} user for attribution:`, e.message);
+            logger.error(`Failed to fetch ${providerLabel} user for attribution`, e);
           }
         }
         await putGitConnection(ddb, {
@@ -299,7 +298,7 @@ export const createGitHandler = (provider, routes) => {
           try {
             await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
           } catch (e) {
-            console.error('Failed to delete git token parameter:', e.message);
+            logger.error('Failed to delete git token parameter', e);
           }
         }
         // Delete from BOTH the new and legacy tables so a stale legacy row
@@ -390,7 +389,7 @@ export const createGitHandler = (provider, routes) => {
 
       return response(404, { error: 'Not found' });
     } catch (err) {
-      console.error('Error:', err);
+      logger.error('Error', err);
       if (err.status && err.name === 'ProviderError') {
         return response(err.status, { error: err.message, ...err.extra });
       }

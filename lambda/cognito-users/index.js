@@ -24,8 +24,11 @@ import {
 import { buildResponse } from '../shared/response.js';
 import { requirePlatformAdmin, PLATFORM_ADMIN_GROUP } from '../shared/authz.js';
 import { evaluateSsoRoles, parseRoleConfig } from '../shared/sso-roles.js';
+import { Logger } from '@aws-lambda-powertools/logger';
 
 const client = new CognitoIdentityProviderClient({});
+
+const logger = new Logger({ persistentKeys: { component: 'cognito-users' } });
 
 const attrsToMap = (attributes = []) => {
   const attrs = {};
@@ -93,7 +96,9 @@ const listPlatformAdminUsernames = async (userPoolId) => {
   return usernames;
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logger.logEventIfEnabled(event);
   const response = buildResponse(event, { methods: 'GET,PUT,OPTIONS' });
   if (event.httpMethod === 'OPTIONS') {
     return response(200, {});
@@ -195,7 +200,7 @@ export const handler = async (event) => {
           }
           throw err;
         }
-        console.log('[cognito-users] platform-admin role changed', {
+        logger.info('platform-admin role changed', {
           target: username,
           isAdmin: data.isAdmin,
           by: requestingUserId,
@@ -232,7 +237,7 @@ export const handler = async (event) => {
         ),
     );
   } catch (err) {
-    console.error('Error handling users request:', err);
+    logger.error('Error handling users request', err);
     return response(500, { error: 'Internal server error' });
   }
 };

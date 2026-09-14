@@ -32,6 +32,9 @@
 //   GIT_CONNECTIONS_TABLE          — legacy single-key table (read-fallback)
 
 import { GetCommand, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'git-connection-store' } });
 
 // The only git-connection instance today is the SaaS one. Pinned here so the
 // stored data already carries the composite key shape; callers never see it.
@@ -91,7 +94,7 @@ const getGitConnection = async (ddb, userId, provider) => {
       await ddb.send(new DeleteCommand({ TableName: legacyTable(), Key: { userId } }));
     } catch (err) {
       // Migration is opportunistic; the read still succeeds on the legacy data.
-      console.error('git connection migrate-on-read failed:', err.message);
+      logger.error('git connection migrate-on-read failed', err);
     }
   }
   return migrated;

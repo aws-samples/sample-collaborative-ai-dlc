@@ -5,11 +5,14 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
 import { invalidateProjectBindingsByDelegator } from '../shared/source-control-bindings.js';
+import { Logger } from '@aws-lambda-powertools/logger';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+const logger = new Logger({ persistentKeys: { component: 'users' } });
 
 const VALID_ROLES = ['owner', 'admin', 'member'];
 
@@ -36,7 +39,9 @@ const getConnection = async () => {
   return new DriverRemoteConnection(connInfo.url, { headers: connInfo.headers });
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logger.logEventIfEnabled(event);
   const response = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') {
     return response(200, {});
@@ -312,14 +317,14 @@ export const handler = async (event) => {
         return response(405, { error: 'Method not allowed' });
     }
   } catch (err) {
-    console.error('Error:', err);
+    logger.error('Unhandled error', err);
     return response(500, { error: 'Internal server error' });
   } finally {
     if (conn) {
       try {
         await conn.close();
       } catch (e) {
-        console.error('Error closing connection:', e);
+        logger.error('Error closing connection', e);
       }
     }
   }

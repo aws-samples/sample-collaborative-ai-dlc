@@ -8,6 +8,23 @@ variable "environment" {
   type        = string
 }
 
+variable "powertools_log_level" {
+  description = "Log level for Powertools structured logging (DEBUG/INFO/WARN/ERROR)"
+  type        = string
+  default     = "INFO"
+
+  validation {
+    condition     = contains(["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL", "SILENT"], var.powertools_log_level)
+    error_message = "powertools_log_level must be one of DEBUG, INFO, WARN, ERROR, CRITICAL or SILENT."
+  }
+}
+
+variable "powertools_log_event" {
+  description = "When true, Powertools logs the full incoming event (debug only; default off). Central switch for all API Lambdas."
+  type        = bool
+  default     = false
+}
+
 variable "application_url" {
   description = "Canonical public URL for links back to the application"
   type        = string

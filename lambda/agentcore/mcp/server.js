@@ -17,7 +17,10 @@
 // MCP SDK. `startMcpServer()` (only at container entry) wires the real SDK +
 // stdio transport over the same handlers.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { GraphWriteError } from './graph-writer.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'mcp' } });
 
 export const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
 export const fail = (msg) => ({ content: [{ type: 'text', text: msg }], isError: true });
@@ -410,11 +413,14 @@ export const toolSchemas = (z) => ({
   },
 });
 
-// Wrap a tool handler with a one-line stderr trace (stderr flows to the
-// container log). Records the call, its arg keys, latency, error flag, and —
-// critically — the RESULT envelope size, so an oversized tool_result that
-// wedges the CLI's next model turn is visible without guessing. Tracing is on
-// by default; set V2_MCP_TRACE=off to silence. Never throws (best-effort).
+// Wrap a tool handler with a one-line structured trace (via the Powertools
+// logger; both stdout and stderr flow to the container log). Success traces at
+// INFO, a thrown handler at ERROR. Records the call, its arg keys, latency,
+// error flag, and — critically — the RESULT envelope size, so an oversized
+// tool_result that wedges the CLI's next model turn is visible without
+// guessing. Tracing is on by default; set V2_MCP_TRACE=off to silence. Never
+// throws (best-effort). NOTE: the INFO success trace is subject to
+// POWERTOOLS_LOG_LEVEL — keep the level at INFO or lower to retain it.
 const traceHandler = (name, fn, { enabled }) => {
   if (!enabled) return fn;
   return async (args) => {
@@ -422,12 +428,16 @@ const traceHandler = (name, fn, { enabled }) => {
     try {
       const env = await fn(args);
       const bytes = envelopeTextBytes(env);
-      console.error(
-        `[mcp-trace] ${name} ok=${!env?.isError} bytes=${bytes} ms=${Date.now() - startedAt} args=${Object.keys(args ?? {}).join(',')}`,
-      );
+      logger.info('mcp-trace', {
+        name,
+        ok: !env?.isError,
+        bytes,
+        ms: Date.now() - startedAt,
+        args: Object.keys(args ?? {}).join(','),
+      });
       return env;
     } catch (e) {
-      console.error(`[mcp-trace] ${name} threw ms=${Date.now() - startedAt} err=${e?.message}`);
+      logger.error('mcp-trace threw', e, { name, ms: Date.now() - startedAt });
       throw e;
     }
   };
