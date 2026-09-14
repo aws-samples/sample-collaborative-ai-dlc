@@ -384,7 +384,7 @@ resource "aws_iam_role_policy" "agentcore" {
         {
           # v2 process state table (+ its indexes) and the blocks table (read).
           Effect = "Allow"
-          Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan"]
+          Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
           Resource = compact([
             aws_dynamodb_table.v2_executions.arn,
             "${aws_dynamodb_table.v2_executions.arn}/index/*",
