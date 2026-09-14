@@ -2,7 +2,9 @@ import { api } from './api';
 
 export type EnvironmentStatus =
   | 'DRAFT'
+  | 'QUEUED'
   | 'BUILDING'
+  | 'SCANNING'
   | 'SECURITY_REVIEW'
   | 'VERIFYING'
   | 'READY'
@@ -56,6 +58,7 @@ export interface EnvironmentToolSnapshot {
   toolId: string;
   name: string;
   category: string;
+  distribution?: string;
   publisher: string;
   versionId: string;
   version: string;
@@ -209,6 +212,8 @@ export interface ToolVerification {
 export interface ToolVersionDefinition {
   schemaVersion: 1;
   version: string;
+  distribution?: string;
+  publisher?: string;
   source: {
     type: 'https';
     url: string;

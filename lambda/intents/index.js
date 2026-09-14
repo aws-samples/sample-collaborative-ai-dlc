@@ -567,7 +567,7 @@ const getSecret = async () => {
   if (!paramName) throw new Error('REALTIME_SECRET_PARAM is not configured');
   const result = await ssm.send(new GetParameterCommand({ Name: paramName, WithDecryption: true }));
   cachedSecret = result.Parameter?.Value;
-  if (!cachedSecret) throw new Error(`SSM parameter ${paramName} is empty`);
+  if (!cachedSecret) throw new Error('Realtime secret SSM parameter is empty');
   return cachedSecret;
 };
 
