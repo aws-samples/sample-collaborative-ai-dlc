@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile, lstat, readlink, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { redirectHeavyDirs } from '../workspace.js';
+import { pathToFileURL } from 'node:url';
+import { checkoutRepo, redirectHeavyDirs } from '../workspace.js';
+import { runGit } from '../git-engine.js';
+import { HOOKS_DISABLED_ARGS } from '../git-runner.js';
 
 // redirectHeavyDirs (2026-07 ENOSPC incident #2): node_modules must live on
 // container-local disk, never on the session mount — the mount's write/backup
@@ -27,7 +30,96 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
+});
+
+describe('checkoutRepo Git isolation', () => {
+  it('passes the protected runner to custom directory-trust callbacks', async () => {
+    const runner = vi.fn(async () => ({ code: 0 }));
+    const trustDirectory = async ({ runner: trustRunner }) => {
+      const result = await trustRunner('git', ['config', '--global', '--get', 'safe.directory']);
+      return result.code === 0;
+    };
+
+    const result = await checkoutRepo({
+      repo: 'acme/api',
+      targetDir: ws,
+      branch: 'main',
+      runner,
+      trustDirectory,
+      statFn: async () => ({ isDirectory: () => true }),
+      readGitConfig: async () => '',
+    });
+
+    expect(result).toMatchObject({ cloned: true, reused: true, branchOk: true });
+    expect(runner).toHaveBeenCalledTimes(3);
+    for (const [, args] of runner.mock.calls) {
+      expect(args.slice(0, HOOKS_DISABLED_ARGS.length)).toEqual(HOOKS_DISABLED_ARGS);
+      expect(args.filter((arg) => arg === 'core.hooksPath=/dev/null')).toHaveLength(1);
+    }
+  });
+
+  it.each([false, true])(
+    'ignores ambient repository overrides with the production runner (warm checkout: %s)',
+    async (warm) => {
+      vi.stubEnv('GIT_CONFIG_GLOBAL', path.join(root, 'global.gitconfig'));
+      vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+      const git = async (args, cwd = root) => {
+        const result = await runGit(args, { cwd });
+        expect(result.exitCode, result.stderr).toBe(0);
+        return result.stdout.trim();
+      };
+      const remote = path.join(root, 'remote');
+      const cleanUrl = 'https://github.com/acme/api.git';
+      await git(['init', '-b', 'main', remote]);
+      await writeFile(path.join(remote, 'README.md'), 'seed\n');
+      await git(['add', '-A'], remote);
+      await git(
+        [
+          '-c',
+          'user.name=Workspace Test',
+          '-c',
+          'user.email=workspace@test',
+          'commit',
+          '-m',
+          'seed',
+        ],
+        remote,
+      );
+      const seed = await git(['rev-parse', 'HEAD'], remote);
+      await git(['config', '--global', `url.${pathToFileURL(remote).href}.insteadOf`, cleanUrl]);
+      if (warm) await git(['clone', cleanUrl, ws]);
+
+      const ambient = {
+        GIT_DIR: path.join(root, 'bogus.git'),
+        GIT_WORK_TREE: path.join(root, 'bogus-worktree'),
+        GIT_INDEX_FILE: path.join(root, 'bogus-index'),
+      };
+      for (const [key, value] of Object.entries(ambient)) vi.stubEnv(key, value);
+      const withGitCredential = vi.fn(async (_context, operation) =>
+        operation({ env: { GIT_TERMINAL_PROMPT: '0' } }),
+      );
+
+      const result = await checkoutRepo({
+        repo: 'acme/api',
+        targetDir: ws,
+        branch: 'aidlc/test',
+        withGitCredential,
+      });
+
+      expect(result).toMatchObject({ cloned: true, branchOk: true });
+      expect(Boolean(result.reused)).toBe(warm);
+      expect(withGitCredential).toHaveBeenCalledTimes(warm ? 0 : 1);
+      expect(await git(['branch', '--show-current'], ws)).toBe('aidlc/test');
+      expect(await git(['rev-parse', 'HEAD'], ws)).toBe(seed);
+      expect(await git(['config', '--local', '--get', 'remote.origin.url'], ws)).toBe(cleanUrl);
+      expect(await git(['config', '--global', '--get-all', 'safe.directory'])).toBe(ws);
+      await expect(stat(ambient.GIT_INDEX_FILE)).rejects.toMatchObject({ code: 'ENOENT' });
+      for (const [key, value] of Object.entries(ambient)) expect(process.env[key]).toBe(value);
+    },
+    30_000,
+  );
 });
 
 describe('redirectHeavyDirs', () => {

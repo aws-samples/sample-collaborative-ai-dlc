@@ -29,6 +29,7 @@ import {
 import {
   checkoutRepo as defaultCheckoutRepo,
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
+  trustGitDirectory as defaultTrustGitDirectory,
 } from '../workspace.js';
 import { stat } from 'node:fs/promises';
 import { repoUrl, repoProvider } from '../../shared/repo-provider.js';
@@ -66,6 +67,7 @@ export const initLane = async (
     broadcast = async () => {},
     checkoutRepo = defaultCheckoutRepo,
     ensureLaneBranch = defaultEnsureLaneBranch,
+    trustDirectory = defaultTrustGitDirectory,
     statFn = stat,
     urlsFor = null, // test seam for file:// remotes
   } = deps;
@@ -92,11 +94,11 @@ export const initLane = async (
     const url = repoUrl(repo);
     const provider = repoProvider(repo, gitProvider, repoProviders);
     const dir = repoTargetDir({ url, workspaceDir, multi });
+    const checkoutExists = await hasCheckout(dir, statFn);
     // Fresh lane mount → clone first. Checkout the INTENT branch (it exists on
     // the remote — the pre-section stages pushed it); the unit branch is
-    // created from it below. A repo that already has a checkout (re-init in a
-    // live session) skips the clone — ensureLaneBranch fetches what it needs.
-    if (!(await hasCheckout(dir, statFn))) {
+    // created from it below.
+    if (!checkoutExists) {
       const cloned = await checkoutRepo({
         repo: url,
         branch: intentBranch,
@@ -113,6 +115,14 @@ export const initLane = async (
           detail: `${url}: ${cloned?.error ?? 'clone failed (repository or project binding unavailable)'}`,
         };
       }
+    } else if (!(await trustDirectory({ targetDir: dir }))) {
+      // A continued lane can restore a checkout owned by the previous runtime
+      // user. Re-establish trust before ensureLaneBranch's first `git fetch`.
+      return {
+        ok: false,
+        reason: 'safe_directory_config_failed',
+        detail: `${url}: could not trust restored checkout ${dir}`,
+      };
     }
     const lane = await ensureLaneBranch({
       dir,

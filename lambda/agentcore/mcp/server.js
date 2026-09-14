@@ -183,6 +183,8 @@ export const buildToolHandlers = ({ writer, graph, bridge }) => {
     ask_question: ({ questions }) => guard(() => bridge.askQuestion({ questions })),
     send_output: ({ content, kind }) =>
       guard(() => bridge.sendOutput({ content, kind: kind ?? 'text' })),
+    record_project_type: ({ projectType }) =>
+      guard(() => bridge.recordProjectType({ projectType })),
     collect_metric: ({ metrics }) => guard(() => bridge.collectMetric({ metrics })),
     emit_stage_note: ({ summary, type }) => guard(() => bridge.emitStageNote({ summary, type })),
     submit_review: ({ reviewer, verdict, findings, round }) =>
@@ -223,12 +225,20 @@ export const AUTHOR_TOOLS = [
 ];
 
 export const REVIEWER_TOOLS = [...READ_TOOLS, 'collect_metric', 'submit_review'];
+export const WORKSPACE_DETECTION_TOOLS = ['record_project_type'];
+
+const toolsForRole = (role, stageId = null) => {
+  if (role === 'reader') return READ_TOOLS;
+  if (role === 'reviewer') return REVIEWER_TOOLS;
+  return stageId === 'workspace-detection'
+    ? [...AUTHOR_TOOLS, ...WORKSPACE_DETECTION_TOOLS]
+    : AUTHOR_TOOLS;
+};
 
 // The handler subset for a given role. `reader` → read-only; `reviewer` adds
 // review verdict/metrics; `author` → all.
-export const handlersForRole = (allHandlers, role) => {
-  const names =
-    role === 'reader' ? READ_TOOLS : role === 'reviewer' ? REVIEWER_TOOLS : AUTHOR_TOOLS;
+export const handlersForRole = (allHandlers, role, stageId = null) => {
+  const names = toolsForRole(role, stageId);
   return Object.fromEntries(names.map((n) => [n, allHandlers[n]]));
 };
 
@@ -374,6 +384,11 @@ export const toolSchemas = (z) => ({
       'Stream a unit of human-facing output (markdown) to the UI. Persisted so it survives a page reload.',
     shape: { content: z.string(), kind: z.enum(['text', 'thought', 'tool']).optional() },
   },
+  record_project_type: {
+    description:
+      'Workspace Detection only: persist the deterministic workspace classification for later stages and native exports.',
+    shape: { projectType: z.enum(['greenfield', 'brownfield']) },
+  },
   collect_metric: {
     description:
       'Record a numeric metric sample (e.g. tokensInput, tokensOutput, contextWindowPct).',
@@ -421,10 +436,9 @@ const traceHandler = (name, fn, { enabled }) => {
 // Register the role-appropriate tools on an McpServer. Pure of transport so it
 // is unit-testable with a fake server that records registrations. Each handler
 // is wrapped in a stderr trace (see traceHandler) unless env disables it.
-export const registerTools = ({ server, handlers, role, z, env = process.env }) => {
+export const registerTools = ({ server, handlers, role, stageId = null, z, env = process.env }) => {
   const schemas = toolSchemas(z);
-  const names =
-    role === 'reader' ? READ_TOOLS : role === 'reviewer' ? REVIEWER_TOOLS : AUTHOR_TOOLS;
+  const names = toolsForRole(role, stageId);
   const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {
     const { description, shape } = schemas[name];

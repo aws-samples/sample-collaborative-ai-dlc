@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   BatchWriteCommand,
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
@@ -11,6 +12,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import {
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   humanTaskKey,
   steeringKey,
@@ -49,6 +51,7 @@ import { createProcessStore } from '../v2-process-store.js';
 describe('v2-process-keys', () => {
   it('namespaces every record under EXEC#<id>', () => {
     expect(executionMetaKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'META' });
+    expect(workflowCheckpointKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'CHECKPOINT' });
     expect(stageKey('e1', 'si-1')).toEqual({ pk: 'EXEC#e1', sk: 'STAGE#si-1' });
     expect(humanTaskKey('e1', 'h1')).toEqual({ pk: 'EXEC#e1', sk: 'HUMAN#h1' });
     expect(trackerSyncKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'TRACKERSYNC' });
@@ -183,6 +186,43 @@ describe('createProcessStore', () => {
     });
   });
 
+  it('stores and retrieves the latest workflow checkpoint', async () => {
+    ddb.on(TransactWriteCommand).resolves({});
+    ddb.on(GetCommand).resolves({
+      Item: { pk: 'EXEC#e1', sk: 'CHECKPOINT', executionId: 'e1', checkpointId: 'cp1' },
+    });
+    await store.putWorkflowCheckpoint({
+      executionId: 'e1',
+      checkpointId: 'cp1',
+      orchestratorRunId: 'run-1',
+    });
+    const transaction = ddb.commandCalls(TransactWriteCommand)[0].args[0].input.TransactItems;
+    expect(transaction[0].ConditionCheck).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'META' },
+      ConditionExpression: 'orchestratorRunId = :orchestratorRunId',
+      ExpressionAttributeValues: { ':orchestratorRunId': 'run-1' },
+    });
+    expect(transaction[1].Put.Item).toMatchObject({
+      pk: 'EXEC#e1',
+      sk: 'CHECKPOINT',
+      checkpointId: 'cp1',
+      orchestratorRunId: 'run-1',
+      updatedAt: 'T',
+    });
+    await expect(store.getWorkflowCheckpoint('e1')).resolves.toMatchObject({
+      checkpointId: 'cp1',
+    });
+  });
+
+  it('deletes the latest workflow checkpoint', async () => {
+    ddb.on(DeleteCommand).resolves({ Attributes: { checkpointId: 'cp1' } });
+    await expect(store.deleteWorkflowCheckpoint('e1')).resolves.toEqual({ checkpointId: 'cp1' });
+    expect(ddb.commandCalls(DeleteCommand)[0].args[0].input).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'CHECKPOINT' },
+      ReturnValues: 'ALL_OLD',
+    });
+  });
+
   it('updateExecution sets status + re-stamps both indexes', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'RUNNING' } });
     await store.updateExecution({
@@ -221,6 +261,14 @@ describe('createProcessStore', () => {
         failure: { code: '', message: 'Missing code.' },
       }),
     ).rejects.toThrow('failure must be {code, message} or null');
+  });
+
+  it('persists a validated workspace classification', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { projectType: 'greenfield' } });
+    await store.updateExecution({ executionId: 'e1', projectType: 'greenfield' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':pt']).toBe('greenfield');
+    expect(input.UpdateExpression).toContain('projectType = :pt');
   });
 
   it('removes the sparse active projection on a terminal execution state', async () => {
@@ -351,6 +399,7 @@ describe('createProcessStore', () => {
       cli: 'claude',
       cliSessionId: 'sess-1',
       stageCallbackId: 'cb-2',
+      aidlcRepoRef: 'a'.repeat(40),
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ExpressionAttributeValues[':state']).toBe('RUNNING');
@@ -362,6 +411,8 @@ describe('createProcessStore', () => {
     expect(input.UpdateExpression).not.toContain('attempt');
     expect(input.ExpressionAttributeValues[':csid']).toBe('sess-1');
     expect(input.ExpressionAttributeValues[':scb']).toBe('cb-2');
+    expect(input.UpdateExpression).toContain('aidlcRepoRef = :aidlcRepoRef');
+    expect(input.ExpressionAttributeValues[':aidlcRepoRef']).toBe('a'.repeat(40));
   });
 
   it('resumeStageRow tolerates a missing/unparsable park stamp (waitMs unchanged, no NaN)', async () => {

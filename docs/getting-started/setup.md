@@ -322,6 +322,13 @@ These environment variables are useful when iterating:
 
 With `lambda_vpc_scope = "public-egress"`, the deployment summary prints the NAT addresses to add to provider allow-lists. Development environments expose one address and production environments expose two; allow-list every address printed. See [Git and Tracker Integration → Static egress IPs](../using-the-platform/git-integration.md#static-egress-ips) for the affected services.
 
+For infrastructure-only changes that do not modify the upstream AI-DLC pin,
+baseline blocks, or default workflow, skip the post-apply reseed:
+
+```bash
+./scripts/deploy-terraform.sh dev --skip-seed
+```
+
 ### Bootstrap the first platform administrator
 
 The **Admin** page (user management, agent settings and default models, provider OAuth/App configuration, migrations) and workflow/building-block authoring require the **`platform-admin`** role. For local Cognito users, bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional local admins can be granted or revoked in the UI under **Admin → Users**:

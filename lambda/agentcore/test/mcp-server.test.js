@@ -90,6 +90,10 @@ const stubBridge = () => ({
     this.calls.push(['sendOutput', args]);
     return { seq: 1, kind: args.kind };
   },
+  recordProjectType(args) {
+    this.calls.push(['recordProjectType', args]);
+    return args;
+  },
   collectMetric(args) {
     this.calls.push(['collectMetric', args]);
     return { metricId: 'm1' };
@@ -119,6 +123,12 @@ describe('buildToolHandlers — routing + envelopes', () => {
     expect(parse(env)).toEqual({ id: 'd1' });
     expect(writer.calls[0][0]).toBe('createArtifact');
     expect(writer.calls[0][1]).toMatchObject({ artifactType: 'design', id: 'd1', links: [] });
+  });
+
+  it('routes record_project_type through the process bridge', async () => {
+    const env = await h.record_project_type({ projectType: 'brownfield' });
+    expect(parse(env)).toEqual({ projectType: 'brownfield' });
+    expect(bridge.calls).toContainEqual(['recordProjectType', { projectType: 'brownfield' }]);
   });
 
   it('create_artifact emits a v2.artifact.created note so the UI updates live', async () => {
@@ -319,6 +329,13 @@ describe('role gating', () => {
     const author = handlersForRole(h, 'author');
     expect(Object.keys(author).toSorted()).toEqual([...AUTHOR_TOOLS].toSorted());
   });
+
+  it('workspace detection gets the classification tool in addition to the author surface', () => {
+    const h = buildToolHandlers({ writer: stubWriter(), bridge: stubBridge() });
+    const author = handlersForRole(h, 'author', 'workspace-detection');
+    expect(author.record_project_type).toBeDefined();
+    expect(Object.keys(author)).toHaveLength(AUTHOR_TOOLS.length + 1);
+  });
 });
 
 describe('registerTools', () => {
@@ -357,6 +374,20 @@ describe('registerTools', () => {
     const server = { tool: (name) => registered.push(name) };
     registerTools({ server, handlers: {}, role: 'author', z: fakeZod });
     expect(registered.toSorted()).toEqual([...AUTHOR_TOOLS].toSorted());
+  });
+
+  it('registers project classification for workspace detection', () => {
+    const registered = [];
+    const server = { tool: (name) => registered.push(name) };
+    registerTools({
+      server,
+      handlers: {},
+      role: 'author',
+      stageId: 'workspace-detection',
+      z: fakeZod,
+    });
+    expect(registered).toContain('record_project_type');
+    expect(registered).toHaveLength(AUTHOR_TOOLS.length + 1);
   });
 
   it('traces each call with the result-envelope byte size, and passes the envelope through', async () => {

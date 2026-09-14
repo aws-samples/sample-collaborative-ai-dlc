@@ -158,6 +158,12 @@ Full documentation lives at [aws-samples.github.io/sample-collaborative-ai-dlc](
 | AWS CLI   | v2            |
 | Docker    | Recent stable |
 
+### Using an alternative container runtime
+
+Docker is the default container runtime and needs no configuration. The image build connects to a Docker Engine API socket via `DOCKER_HOST`, so **any runtime that exposes such a socket works** — Podman and Rancher Desktop are validated end-to-end, and Colima and OrbStack use the same mechanism. Finch and other CLI-only/daemonless build tools (Buildah, nerdctl, Kaniko, BuildKit) do not expose a Docker-API socket and are not supported for the builds.
+
+See [Using an alternative container runtime](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/#using-an-alternative-container-runtime) for the socket paths, per-runtime setup, and the `DOCKER_HOST` contract.
+
 You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, Bedrock AgentCore, Secrets Manager, Systems Manager Parameter Store, and IAM. See [Prerequisites](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/) for the full service list and verification commands.
 
 Agent CLIs authenticate through credentials you configure after install, in **Admin → Agents**:
@@ -314,6 +320,13 @@ Useful environment variables when iterating:
 | `AIDLC_TFVARS_FILE`   | Path to an alternative `.tfvars`, overriding the `<environment>.tfvars` convention  |
 | `AIDLC_BACKEND_FILE`  | Path to an alternative `.s3.tfbackend`                                              |
 | `AIDLC_CONFIG_DIR`    | Directory holding `environments/`, for Terraform configuration outside the checkout |
+
+Use `--skip-seed` when applying infrastructure-only changes that do not modify
+the upstream AI-DLC pin, baseline blocks, or default workflow:
+
+```bash
+./scripts/deploy-terraform.sh dev --skip-seed
+```
 
 </details>
 

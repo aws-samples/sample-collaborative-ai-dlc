@@ -603,6 +603,8 @@ const buildExecutionPlan = ({
         stageInstanceId: stageInstanceId(namespace, stageId),
         stageId,
         stageVersion,
+        stageTenant: placement.stageTenant ?? null,
+        pinnedVersion: placement.pinnedVersion ?? null,
         phase: stage.phase ?? null,
         order: placement.order ?? 0,
         mode: stage.mode ?? 'inline',

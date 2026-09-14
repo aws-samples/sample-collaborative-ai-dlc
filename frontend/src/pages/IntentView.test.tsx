@@ -4,7 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
-const projectCacheMock = vi.hoisted(() => ({ role: 'owner' as 'owner' | 'admin' | 'member' }));
+const projectCacheMock = vi.hoisted(() => ({
+  role: 'owner' as 'owner' | 'admin' | 'member',
+  name: 'Bookstore Tracker',
+}));
 
 // Heavy leaf components are stubbed to simple markers — these tests exercise
 // IntentView's OWN rendering logic (DRAFT card, pipeline, gates, artifacts)
@@ -53,7 +56,9 @@ vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ user: { displayName: 'U', email: 'u@x' } }),
 }));
 vi.mock('@/hooks/useProjectsCache', () => ({
-  useProjectCache: () => ({ project: { userRole: projectCacheMock.role } }),
+  useProjectCache: () => ({
+    project: { name: projectCacheMock.name, userRole: projectCacheMock.role },
+  }),
 }));
 
 const get = vi.fn();
@@ -61,6 +66,8 @@ const start = vi.fn();
 const rewind = vi.fn();
 const answerGate = vi.fn();
 const repair = vi.fn();
+const exportWorkflow = vi.fn();
+const writeText = vi.fn();
 const graph = vi.fn();
 const compiled = vi.fn();
 const workflowGet = vi.fn();
@@ -71,6 +78,7 @@ vi.mock('@/services/intents', () => ({
     rewind: (...a: unknown[]) => rewind(...a),
     answerGate: (...a: unknown[]) => answerGate(...a),
     repair: (...a: unknown[]) => repair(...a),
+    exportWorkflow: (...a: unknown[]) => exportWorkflow(...a),
     // Knowledge graph feeding the popovers/derived-items section — empty
     // graph keeps those affordances out of these page-behavior tests.
     graph: (...a: unknown[]) => graph(...a),
@@ -155,7 +163,14 @@ describe('IntentView', () => {
     rewind.mockReset();
     answerGate.mockReset();
     repair.mockReset();
+    exportWorkflow.mockReset();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    writeText.mockReset().mockResolvedValue(undefined);
     projectCacheMock.role = 'owner';
+    projectCacheMock.name = 'Bookstore Tracker';
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
     compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
     workflowGet.mockReset().mockResolvedValue({ phases: [] });
@@ -349,10 +364,22 @@ describe('IntentView', () => {
     expect(editors[0].getAttribute('data-gate')).toBe('h1');
   });
 
-  it('renders the immutable environment revision and verification result', async () => {
+  it('moves the immutable environment snapshot into the run configuration dialog', async () => {
+    const user = userEvent.setup();
     get.mockResolvedValue(
       baseDetail({
         status: 'RUNNING',
+        agentCli: 'claude',
+        credentialSource: 'space',
+        cliModels: { claude: 'us.anthropic.claude-sonnet-4-6' },
+        source: {
+          bindingId: 'github',
+          provider: 'github',
+          instance: null,
+          resourceType: 'issue',
+          resourceId: '3',
+          resourceUrl: 'https://github.com/example/repository/issues/3',
+        },
         environment: {
           environmentId: 'polyglot',
           name: 'Polyglot',
@@ -367,10 +394,485 @@ describe('IntentView', () => {
       }),
     );
     renderAt();
-    expect(await screen.findByText('Polyglot')).toBeInTheDocument();
+
+    expect(await screen.findByText('My intent')).toBeInTheDocument();
+    expect(screen.queryByText('Polyglot')).not.toBeInTheDocument();
+    expect(screen.queryByText('Claude Code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Source: Issue #3')).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText('Intent actions'));
+    await user.click(screen.getByText('Intent configuration'));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Intent configuration' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Polyglot')).toBeInTheDocument();
+    expect(screen.getByText('Claude Code')).toBeInTheDocument();
+    expect(screen.getByText(/us\.anthropic\.claude-sonnet-4-6/)).toBeInTheDocument();
+    const sourceLabel = screen.getByText('Source: Issue #3');
+    expect(sourceLabel).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'GitHub' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute(
+      'href',
+      'https://github.com/example/repository/issues/3',
+    );
+    const executionHeading = screen.getByRole('heading', { name: 'Execution' });
+    expect(
+      sourceLabel.compareDocumentPosition(executionHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     expect(screen.getByText('r-7')).toBeInTheDocument();
     expect(screen.getByText('revision_r_7')).toBeInTheDocument();
-    expect(screen.getByText('verification PASSED')).toBeInTheDocument();
+    expect(screen.getAllByText('PASSED')).toHaveLength(1);
+    const passedBadge = screen
+      .getAllByText('PASSED')
+      .find((element) => element.classList.contains('text-agent-success'));
+    expect(passedBadge).toBeDefined();
+    expect(passedBadge?.querySelector('svg')).toBeInTheDocument();
+  });
+
+  it('preserves Jira source keys in the intent configuration dialog', async () => {
+    const user = userEvent.setup();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'RUNNING',
+        source: {
+          bindingId: 'jira',
+          provider: 'jira-cloud',
+          instance: 'cloud',
+          resourceType: 'task',
+          resourceId: 'TAS-01',
+          resourceUrl: 'https://example.atlassian.net/browse/TAS-01',
+        },
+      }),
+    );
+    renderAt();
+
+    await screen.findByText('My intent');
+    await user.click(screen.getByLabelText('Intent actions'));
+    await user.click(screen.getByText('Intent configuration'));
+
+    expect(await screen.findByText('Source: task TAS-01')).toBeInTheDocument();
+    expect(screen.queryByText(/#TAS-01/)).not.toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Jira' })).toBeInTheDocument();
+  });
+
+  it('opens the reshape controls from the intent actions menu', async () => {
+    const user = userEvent.setup();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        constructionAutonomyMode: 'gated',
+      }),
+    );
+    renderAt();
+
+    expect(await screen.findByText('My intent')).toBeInTheDocument();
+    expect(screen.queryByTestId('recompose-dialog')).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText('Intent actions'));
+    await user.click(screen.getByText('Reshape remaining stages'));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('recompose-dialog')).toBeInTheDocument();
+  });
+
+  it('switches from intent configuration to reshape', async () => {
+    const user = userEvent.setup();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        constructionAutonomyMode: 'gated',
+      }),
+    );
+    renderAt();
+
+    await screen.findByText('My intent');
+    await user.click(screen.getByLabelText('Intent actions'));
+    await user.click(screen.getByText('Intent configuration'));
+    expect(
+      await screen.findByRole('heading', { name: 'Intent configuration' }),
+    ).toBeInTheDocument();
+    const waitingBadge = screen.getByText('WAITING');
+    expect(waitingBadge).toHaveClass('text-agent-waiting');
+    expect(waitingBadge.querySelector('svg')).not.toBeNull();
+    expect(waitingBadge.querySelector('.animate-spin')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Reshape' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Intent configuration' })).not.toBeInTheDocument();
+  });
+
+  it('opens reshape from the scope definition link', async () => {
+    const user = userEvent.setup();
+    compiled.mockResolvedValue({
+      scopeGrid: {
+        feature: {
+          requirements: 'EXECUTE',
+          optional: 'SKIP',
+        },
+      },
+      graph: {
+        nodes: [
+          { stageId: 'requirements', phasePath: '01', order: 1 },
+          { stageId: 'optional', phasePath: '01', order: 2 },
+        ],
+        edges: [],
+      },
+    });
+    workflowGet.mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'inception',
+          name: 'Inception',
+          kind: 'phase',
+          path: '01',
+          parentPath: null,
+          order: 1,
+        },
+      ],
+    });
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        currentPhase: 'inception',
+        constructionAutonomyMode: 'gated',
+      }),
+    );
+    renderAt();
+
+    await user.click(await screen.findByRole('button', { name: /Inception/ }));
+    await user.click(screen.getByRole('button', { name: 'Scope definition' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Reshape remaining stages' }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a visible native export beside Discuss', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
+    renderAt();
+    expect(
+      await screen.findByRole('button', { name: 'Download Codex workspace' }),
+    ).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    expect(screen.queryByText('Export')).not.toBeInTheDocument();
+  });
+
+  it('can export the workflow with a different native harness', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
+    exportWorkflow.mockImplementation(() => new Promise(() => {}));
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Choose workspace harness' }));
+    expect(await screen.findByRole('menuitem', { name: /^Codex/ })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Claude' }));
+    expect(screen.queryByText('Continue outside Collaborative AI-DLC?')).not.toBeInTheDocument();
+    expect(exportWorkflow).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Download Claude workspace' }));
+    expect(await screen.findByText('Continue outside Collaborative AI-DLC?')).toBeInTheDocument();
+    expect(screen.getByText(/will not be synchronized back to this intent/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
+
+    expect(exportWorkflow).toHaveBeenCalledWith('p1', 'i1', 'claude');
+  });
+
+  it('shows only the error message and allows dismissing it', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
+    exportWorkflow.mockRejectedValue(new Error('{"error":"Workspace export is unavailable"}'));
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Workspace export is unavailable');
+    expect(
+      screen.queryByText('{"error":"Workspace export is unavailable"}'),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss error' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows the legacy-ref warning even when no workspace setup is required', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', agentCli: 'codex' }));
+    exportWorkflow.mockResolvedValue({
+      exportId: 'export-warning',
+      filename: 'workspace.zip',
+      downloadUrl: 'https://download.example/workspace.zip',
+      expiresAt: '2026-08-12T12:15:00.000Z',
+      warnings: [
+        'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+      ],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'extract-only',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: false,
+        repositories: [],
+      },
+    });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
+
+    expect(downloadClick).toHaveBeenCalledOnce();
+    expect(await screen.findByText('Workspace downloaded with warnings')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+    );
+    expect(screen.queryByText(/Create a project directory/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByText('Workspace downloaded with warnings')).not.toBeInTheDocument();
+    downloadClick.mockRestore();
+  });
+
+  it('keeps construction setup instructions open after starting the download', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        agentCli: 'codex',
+        currentPhase: 'INCEPTION',
+      }),
+    );
+    exportWorkflow.mockResolvedValue({
+      exportId: 'export-1',
+      filename: 'workspace.zip',
+      downloadUrl: 'https://download.example/workspace.zip',
+      expiresAt: '2026-08-12T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'manual-workspace',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        showWorkspaceSetup: true,
+        repositories: [
+          {
+            id: 'org-a/api',
+            directory: 'org-a_api',
+            url: 'git@github.com:org-a/api.git',
+            branch: 'aidlc/i1',
+          },
+          {
+            id: 'org-b/api',
+            directory: 'org-b_api',
+            url: 'git@github.com:org-b/api.git',
+            branch: 'aidlc/i1',
+          },
+        ],
+        construction: {
+          nextUnit: 'identify-plant',
+          completedUnits: ['upload-image'],
+          readyUnits: ['identify-plant'],
+          perUnitIteration: true,
+        },
+      },
+    });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Download workspace',
+      }),
+    );
+
+    expect(downloadClick).toHaveBeenCalledOnce();
+    expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
+    expect(screen.getByText(/mkdir 'Bookstore_Tracker'/)).toBeInTheDocument();
+    expect(screen.getByText(/unzip "\$HOME\/Downloads\/workspace.zip" -d \./)).toBeInTheDocument();
+    expect(screen.getByText('Fresh clone: org-a/api')).toBeInTheDocument();
+    expect(screen.getByText('Fresh clone: org-b/api')).toBeInTheDocument();
+    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'org-a_api'/)).toBeInTheDocument();
+    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'org-b_api'/)).toBeInTheDocument();
+    expect(screen.queryByText(/aidlc-workspace-sync/)).not.toBeInTheDocument();
+    expect(screen.getByText('Start the selected harness:')).toBeInTheDocument();
+    expect(screen.getByText('codex')).toBeInTheDocument();
+    expect(screen.getByText('Then run inside the agent session:')).toBeInTheDocument();
+    expect(screen.getByText('$aidlc')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy AI-DLC command' }));
+    expect(writeText).toHaveBeenCalledWith('$aidlc');
+    expect(screen.getByRole('button', { name: 'Copy AI-DLC command copied' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByText('Set up your local workspace')).not.toBeInTheDocument();
+    downloadClick.mockRestore();
+  });
+
+  it('renders and copies workspace-sync setup instructions', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        agentCli: 'codex',
+        currentPhase: 'CONSTRUCTION',
+      }),
+    );
+    exportWorkflow.mockResolvedValue({
+      exportId: 'export-sync',
+      filename: 'workspace.zip',
+      downloadUrl: 'https://download.example/workspace.zip',
+      expiresAt: '2026-08-12T12:15:00.000Z',
+      warnings: [],
+      setup: {
+        workspaceLayout: 'spaces',
+        mode: 'workspace-sync',
+        harnessDir: '.codex',
+        launchCommand: 'codex',
+        continueCommand: '$aidlc',
+        syncCommand: 'bun .codex/tools/aidlc-workspace-sync.ts',
+        showWorkspaceSetup: true,
+        repositories: [
+          {
+            id: 'example/plant-finder',
+            directory: 'plant-finder',
+            url: 'git@github.com:example/plant-finder.git',
+            branch: 'aidlc/intent-1',
+          },
+        ],
+      },
+    });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Codex workspace' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Download workspace' }));
+
+    expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
+    expect(screen.getByText('bun .codex/tools/aidlc-workspace-sync.ts')).toBeInTheDocument();
+    expect(screen.getByText('repos.json').closest('p')).toHaveTextContent(
+      'This reads repos.json and clones the repository on their declared intent branches.',
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy workspace sync command' }));
+    expect(writeText).toHaveBeenCalledWith('bun .codex/tools/aidlc-workspace-sync.ts');
+    expect(
+      screen.getByRole('button', { name: 'Copy workspace sync command copied' }),
+    ).toBeInTheDocument();
+
+    downloadClick.mockRestore();
+  });
+
+  it('shows clone and checkout commands for a legacy construction export', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'WAITING',
+        agentCli: 'claude',
+        currentPhase: 'CONSTRUCTION',
+      }),
+    );
+    exportWorkflow.mockResolvedValue({
+      exportId: 'export-legacy',
+      filename: 'legacy-claude.zip',
+      downloadUrl: 'https://download.example/legacy-claude.zip',
+      expiresAt: '2026-08-12T12:15:00.000Z',
+      warnings: [
+        'This workspace uses an older AI-DLC runtime with limited automatic per-unit iteration.',
+      ],
+      setup: {
+        workspaceLayout: 'flat',
+        mode: 'manual-clone',
+        harnessDir: '.claude',
+        launchCommand: 'claude',
+        continueCommand: '/aidlc',
+        showWorkspaceSetup: true,
+        repositories: [
+          {
+            id: 'example/plant-finder',
+            directory: 'plant-finder',
+            url: 'git@github.com:example/plant-finder.git',
+            branch: 'aidlc/intent-1',
+          },
+        ],
+        construction: {
+          nextUnit: 'identify-plant',
+          completedUnits: ['upload-image'],
+          readyUnits: ['identify-plant'],
+          perUnitIteration: false,
+        },
+      },
+    });
+    const downloadClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {});
+    renderAt();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Download Claude workspace' }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Download workspace',
+      }),
+    );
+
+    expect(await screen.findByText('Set up your local workspace')).toBeInTheDocument();
+    expect(screen.getByText(/git clone --branch 'aidlc\/intent-1'/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/git fetch origin[\s\S]*git switch 'aidlc\/intent-1'/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/unzip "\$HOME\/Downloads\/legacy-claude.zip" -d \./),
+    ).toBeInTheDocument();
+    expect(screen.getByText('claude')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '/aidlc Continue the construction phase. Completed units: upload-image. Continue with unit: identify-plant.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/older AI-DLC runtime/)).toBeInTheDocument();
+    expect(screen.queryByText(/local\/aidlc-continuation/)).not.toBeInTheDocument();
+    downloadClick.mockRestore();
+  });
+
+  it('shows export disabled while a created intent may still start running', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'CREATED', agentCli: 'codex' }));
+    renderAt();
+    expect(await screen.findByRole('button', { name: 'Download Codex workspace' })).toBeDisabled();
+    await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    expect(screen.queryByText('Export')).not.toBeInTheDocument();
+  });
+
+  it('allows downloading the latest completed checkpoint while the workflow is running', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'RUNNING', agentCli: 'codex' }));
+    renderAt();
+
+    expect(
+      await screen.findByRole('button', {
+        name: 'Download Codex workspace from latest completed checkpoint',
+      }),
+    ).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Choose workspace harness' })).toBeEnabled();
+    await userEvent.hover(screen.getByTestId('workspace-export-download'));
+    expect(
+      await screen.findByRole('tooltip', {
+        name: 'Download Codex workspace from latest completed checkpoint',
+      }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Download Codex workspace from latest completed checkpoint',
+      }),
+    );
+    expect(
+      await screen.findByText(/excludes the stage currently in progress/i),
+    ).toBeInTheDocument();
   });
 
   it('shows resume progress after a gate is answered but before the stage is running again', async () => {
@@ -973,7 +1475,7 @@ describe('IntentView', () => {
 
     renderAt();
     // Phases and stages render expanded by default, in workflow order.
-    expect(await screen.findByText('Construction')).toBeInTheDocument();
+    expect((await screen.findAllByText('Construction')).length).toBeGreaterThan(0);
     expect(await screen.findByText('Code Gen Doc')).toBeInTheDocument();
 
     // Collect phase headers + document titles in DOM order and assert the full
@@ -987,7 +1489,10 @@ describe('IntentView', () => {
       'Requirements Doc Old',
       'Requirements Doc New',
     ];
-    const positions = labels.map((t) => ({ t, el: screen.getByText(t) }));
+    const positions = labels.map((t) => {
+      const matches = screen.getAllByText(t);
+      return { t, el: matches[matches.length - 1] };
+    });
     const domOrder = positions
       .toSorted((a, b) =>
         a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,

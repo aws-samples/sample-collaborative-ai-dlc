@@ -60,6 +60,7 @@ const RESERVED_FIELDS = new Set([
   'version',
   'bodyRef',
   'scriptRef',
+  'sourceRef',
   'createdAt',
   'updatedAt',
 ]);

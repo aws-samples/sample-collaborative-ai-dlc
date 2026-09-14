@@ -33,6 +33,7 @@ import {
   repoTargetDir,
   runGit,
 } from '../git-engine.js';
+import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
 import { getDriver, selectCli } from '../cli/drivers.js';
 import { runChild as defaultRunChild } from '../cli/spawn.js';
 import { resolveStageModel } from '../model-resolver.js';
@@ -112,6 +113,7 @@ export const resolveConflict = async (
     runChild = defaultRunChild,
     beginConflictMerge = defaultBeginConflictMerge,
     concludeConflictMerge = defaultConcludeConflictMerge,
+    ensureWorkspaceSource = defaultEnsureWorkspaceSource,
     materializeMcpConfig = defaultMaterializeMcpConfig,
     materializeKiroAgent = defaultMaterializeKiroAgent,
     materializeOpenCodeConfig = defaultMaterializeOpenCodeConfig,
@@ -133,6 +135,27 @@ export const resolveConflict = async (
   if (!unitSlug) return { ok: false, reason: 'missing_unit_slug' };
   if (repos.length === 0) return { ok: false, reason: 'no_repos' };
   if (!unitBranch || !intentBranch) return { ok: false, reason: 'missing_branch' };
+
+  // The lane session may have been stopped after review/integration and then
+  // remounted for this command. Re-clone a wiped checkout or re-establish the
+  // exact safe.directory entry before beginConflictMerge's first `git fetch`.
+  const heal = await ensureWorkspaceSource({
+    repos,
+    branch: unitBranch,
+    baseBranch: intentBranch,
+    gitProvider,
+    repoProviders,
+    projectId,
+    executionId,
+    workspaceDir,
+  }).catch((error) => ({ error: error?.message ?? String(error) }));
+  if (heal?.error || heal?.failed?.length) {
+    return {
+      ok: false,
+      reason: 'workspace_restore_failed',
+      detail: heal?.error ?? `could not restore or trust: ${heal.failed.join(', ')}`,
+    };
+  }
 
   const multi = repos.length > 1;
   const dirFor = (url) => repoTargetDir({ url, workspaceDir, multi });
