@@ -38,7 +38,7 @@ import {
   parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
-import { isCredentialFailure } from '../cli/credential-errors.js';
+import { isCredentialFailure, isCreditExhaustion } from '../cli/credential-errors.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
@@ -174,7 +174,20 @@ const credentialFailureDetail = ({ binding, state }) => {
   if (!binding) return null;
   const provider = CREDENTIAL_PROVIDER_LABELS[binding.provider] ?? binding.provider;
   const source = CREDENTIAL_SOURCE_LABELS[binding.source] ?? binding.source;
-  const condition = state === 'rejected' ? 'was rejected' : 'is no longer available';
+  const condition =
+    state === 'exhausted'
+      ? 'has exhausted its provider credits or usage allowance'
+      : state === 'rejected'
+        ? 'was rejected'
+        : 'is no longer available';
+  if (state === 'exhausted') {
+    const settings = {
+      user: 'Account Settings',
+      space: 'Space Settings',
+      platform: 'Platform Settings',
+    }[binding.source];
+    return `The ${source} ${provider} credential pinned to this run ${condition}. Replenish its allowance or rotate the key in ${settings}, then retry the failed stage. Updating another credential scope does not change this run's binding.`;
+  }
   const remediation = {
     user: 'Restore or rotate it in Account Settings, then restart the run.',
     space:
@@ -1226,7 +1239,16 @@ export const runStage = async (
   // The unit's dependsOn edges feed the prompt's unit-scope block below.
   let unit = null;
   if (unitSlug) {
-    const unitPlan = await store.getUnitPlan(executionId).catch(() => null);
+    let unitPlan;
+    try {
+      unitPlan = await store.getUnitPlan(executionId);
+    } catch {
+      return fail(
+        stageInstanceId,
+        'unit_plan_unavailable',
+        'The promoted unit plan could not be read. Retry the stage when storage is available; the approved plan has not been changed.',
+      );
+    }
     unit = (unitPlan?.units ?? []).find((u) => u.slug === unitSlug) ?? null;
     if (!unit) {
       return fail(
@@ -1370,9 +1392,9 @@ export const runStage = async (
   }
 
   // 2b. Pick the CLI + recover (resume) or mint (fresh) the conversation handle.
-  // On resume the gate MUST be answered and the parked stage MUST carry a CLI
-  // session id (same conversation continues). On a fresh run Claude's id is forced
-  // up front; Kiro's is captured after the run (it has no start-time id flag).
+  // Resume the saved conversation when available. Legacy Kiro waits with a
+  // missing handle require matching stage/gate ownership before a fresh recovery.
+  // Claude's fresh id is forced up front; Kiro's is captured after the run.
   let cli;
   let cliSessionId = null;
   let resumeAnswer = null;
@@ -1414,17 +1436,54 @@ export const runStage = async (
         : 'Resuming agent session...',
       stageInstanceId,
     });
-    resumeGate = resumeFrom
-      ? await store.getHumanTask(executionId, resumeFrom).catch(() => null)
-      : null;
+    let row;
+    try {
+      resumeGate = resumeFrom
+        ? await store.getHumanTask(executionId, resumeFrom, { consistentRead: true })
+        : null;
+      row = await store.getStage(executionId, stageInstanceId, { consistentRead: true });
+    } catch {
+      return fail(
+        null,
+        'resume_state_unavailable',
+        'The saved stage or answer could not be read. Retry when storage is available; the saved conversation has not been reset.',
+      );
+    }
     if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
+    if (resumeGate?.status === 'superseded') return { ok: false, reason: 'retired' };
     if (resumeFrom && resumeGate.status === 'pending')
       return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
-    const row = await store.getStage(executionId, stageInstanceId).catch(() => null);
+    if (
+      resumeFrom &&
+      ((resumeGate.stageInstanceId != null && resumeGate.stageInstanceId !== stageInstanceId) ||
+        (resumeGate.unitSlug ?? null) !== unitSlug ||
+        (resumeGate.sectionIndex ?? null) !== sectionIndex ||
+        (row?.state != null && !['WAITING_FOR_HUMAN', 'SUCCEEDED'].includes(row.state)) ||
+        (row?.pendingHumanTaskId != null && row.pendingHumanTaskId !== resumeFrom))
+    ) {
+      return fail(
+        null,
+        'resume_state_conflict',
+        'The answer no longer belongs to this parked stage.',
+      );
+    }
     cli = row?.cli ?? null;
     const priorSessionId = row?.cliSessionId ?? null;
-    if ((!cli || !priorSessionId) && !reviewFeedback) {
-      return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
+    // Legacy Kiro waits could be parked before session capture succeeded.
+    // Recover only a positively owned wait, never a reset row or sibling gate.
+    const recoverMissingKiroSession =
+      cli === 'kiro' &&
+      !priorSessionId &&
+      resumeFrom &&
+      row?.state === 'WAITING_FOR_HUMAN' &&
+      row.pendingHumanTaskId === resumeFrom &&
+      resumeGate?.stageInstanceId === stageInstanceId;
+    if ((!cli || !priorSessionId) && !reviewFeedback && !recoverMissingKiroSession) {
+      return fail(
+        stageInstanceId,
+        'resume_no_session',
+        'Stage has no persisted CLI session. Retry this stage to recover from its saved artifacts.',
+      );
     }
     if (cli && !availableClis.includes(cli)) {
       const detail = credentialFailureDetail({
@@ -1437,9 +1496,13 @@ export const runStage = async (
       cli = null;
     }
     resumeAnswer = reviewFeedbackPrompt || formatResumeAnswer(resumeGate);
+    if (recoverMissingKiroSession) {
+      const recoveryFailure = await recoverLostConversation();
+      if (recoveryFailure) return recoveryFailure;
+    }
     if (!cli || !priorSessionId) {
       demotedResume = true;
-      cli = selectCli({ requested: requestedCli, availableClis });
+      cli ??= selectCli({ requested: requestedCli, availableClis });
       if (!cli) {
         return fail(
           stageInstanceId,
@@ -2144,12 +2207,12 @@ export const runStage = async (
   );
 
   // Kiro only: persist the live local store back to the durable mount after the
-  // run. Runs on ANY exit (success, park, or crash) so a parked conversation is
-  // captured even if the CLI later errored. Best-effort — a failed persist never
-  // fails the stage, but a parked conversation then won't survive a reap, so log it.
+  // run. Runs on ANY exit (success, park, or crash). A parked stage must have a
+  // successful durable write; the park check below retires unresumable questions.
+  let kiroStorePersisted = false;
   if (cli === 'kiro') {
-    const persisted = await persistKiroStore({ env }).catch(() => false);
-    if (!persisted) {
+    kiroStorePersisted = await persistKiroStore({ env }).catch(() => false);
+    if (!kiroStorePersisted) {
       console.error(`[run-stage] kiro store not persisted for ${stageInstanceId}`);
     }
   }
@@ -2344,6 +2407,28 @@ export const runStage = async (
     unitSlug,
     sectionIndex,
   });
+  const failUnresumableGate = async (reason, detail) => {
+    await store.supersedeHumanTask({
+      executionId,
+      humanTaskId: parked.humanTaskId,
+      supersededBy: reason,
+    });
+    if (!unitSlug) {
+      await store.updateExecution({ executionId, pendingHumanTaskId: null });
+    }
+    return fail(stageInstanceId, reason, detail, { clearPending: true });
+  };
+  if (
+    parked &&
+    cli === 'kiro' &&
+    (!cliSessionId || (resolveKiroStore(env) && !kiroStorePersisted))
+  ) {
+    const reason = !cliSessionId ? 'kiro_session_missing' : 'kiro_store_persist_failed';
+    return failUnresumableGate(
+      reason,
+      'Kiro could not save a resumable conversation. Retry this stage using its saved artifacts; the unresumable question has been retired.',
+    );
+  }
   if (parked && (cli === 'opencode' || cli === 'codex') && !cliSessionId) {
     return fail(
       stageInstanceId,
@@ -2377,7 +2462,17 @@ export const runStage = async (
     // agent just ended without closing text and kiro-cli's ACP rejected the empty
     // message. Treat as success (not a stage failure) but record a note so the
     // signature stays visible. Sensors below still run and can hold the stage.
-    if (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail)) {
+    if (isCreditExhaustion(result?.stderrTail)) {
+      return fail(
+        stageInstanceId,
+        'credential_quota_exhausted',
+        credentialFailureDetail({
+          binding: credentialBindingForCli(credentialBindings, cli),
+          state: 'exhausted',
+        }) ??
+          'The provider credit allowance is exhausted. Replenish it or rotate the pinned credential, then retry the failed stage.',
+      );
+    } else if (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail)) {
       console.error(
         `[run-stage] kiro empty-completion (benign) on ${stageId}; exitCode=${exitCode} — treating as success`,
       );
@@ -2405,7 +2500,7 @@ export const runStage = async (
     }
   }
   if (parked) {
-    await store
+    const parkSaved = await store
       .updateStageState({
         executionId,
         stageInstanceId,
@@ -2419,7 +2514,14 @@ export const runStage = async (
         cli,
         cliSessionId,
       })
-      .catch(() => {});
+      .then(() => true)
+      .catch(() => false);
+    if (!parkSaved) {
+      return failUnresumableGate(
+        'stage_park_persist_failed',
+        'The conversation metadata could not be saved. Retry the stage when storage is available; the unresumable question has been retired.',
+      );
+    }
     await store.appendEvent({
       executionId,
       type: 'v2.stage.parked',

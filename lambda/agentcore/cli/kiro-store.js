@@ -68,9 +68,9 @@ export const restoreKiroStore = async ({
   }
 };
 
-// Persist the live local store (local → mount) after a Kiro run. Best-effort: a
-// failed persist must never fail the stage (the run already happened), but the
-// caller should log it because a parked conversation then won't survive a reap.
+// Persist the live local store (local → mount) after a Kiro run. The caller
+// logs failures and must not report a resumable park after a failed write:
+// that conversation would not survive a reap.
 // Returns true on a successful copy, false when there was nothing/failed.
 export const persistKiroStore = async ({
   env = process.env,

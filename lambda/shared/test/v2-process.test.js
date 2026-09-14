@@ -155,6 +155,19 @@ describe('createProcessStore', () => {
     });
   });
 
+  it('strongly reads recovery state and scheduling truth', async () => {
+    ddb.on(GetCommand).resolves({ Item: {} });
+    await store.getStage('e1', 's1', { consistentRead: true });
+    await store.getHumanTask('e1', 'h1', { consistentRead: true });
+    await store.getUnitPlan('e1');
+    const inputs = ddb.commandCalls(GetCommand).map((call) => call.args[0].input);
+    expect(inputs).toEqual([
+      { TableName: 'v2-proc', Key: stageKey('e1', 's1'), ConsistentRead: true },
+      { TableName: 'v2-proc', Key: humanTaskKey('e1', 'h1'), ConsistentRead: true },
+      { TableName: 'v2-proc', Key: unitPlanKey('e1'), ConsistentRead: true },
+    ]);
+  });
+
   it('createExecution writes META guarded against overwrite', async () => {
     ddb.on(PutCommand).resolves({});
     await store.createExecution({

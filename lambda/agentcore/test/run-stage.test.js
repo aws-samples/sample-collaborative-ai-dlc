@@ -1635,6 +1635,28 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(failedEvent?.[1].summary).not.toContain('secret');
   });
 
+  it('classifies exhausted Kiro credits before generic authentication errors', async () => {
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      credentialBindings: [{ provider: 'kiro', source: 'space' }],
+      spawnFn: (_command, args) => ({
+        on: (event, cb) => event === 'close' && setImmediate(() => cb(1)),
+        stdin: { end() {} },
+        stderr: {
+          on: (event, cb) =>
+            event === 'data' &&
+            !args.includes('--list-sessions') &&
+            cb(Buffer.from('403: insufficient credits (fixture-secret)')),
+        },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'credential_quota_exhausted' });
+    expect(res.detail).toContain('Space Kiro credential');
+    expect(res.detail).toContain('then retry the failed stage');
+    expect(res.detail).not.toContain('fixture-secret');
+  });
+
   it('treats a Kiro empty-final-completion crash as success (work already done)', async () => {
     // kiro-cli exits non-zero after the turn's work because it ended with an
     // empty final message; its ACP reports "Kiro failed to generate a response".
@@ -1828,6 +1850,21 @@ describe('runStage — resume mode', () => {
     });
     const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
     expect(res).toMatchObject({ ok: false, reason: 'resume_no_session' });
+  });
+
+  it.each(['getHumanTask', 'getStage'])('preserves state when %s fails on resume', async (read) => {
+    const store = spyStore({
+      humanTask: { humanTaskId: 'q-1', status: 'answered' },
+      stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
+    });
+    store[read] = vi.fn(async () => {
+      throw new Error('Storage unavailable');
+    });
+    const spawnFn = vi.fn();
+    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, baseDeps({ store, spawnFn }));
+    expect(res).toMatchObject({ ok: false, reason: 'resume_state_unavailable' });
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(store.calls.some(([op]) => op === 'updateStageState' || op === 'putStage')).toBe(false);
   });
 
   it('explains a removed pinned credential when resuming a parked stage', async () => {
@@ -2404,6 +2441,239 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     XDG_DATA_HOME: '/home/node/.kiro-data',
     V2_KIRO_STORE_DIR: '/mnt/workspace/.kiro-data',
   };
+
+  const sessionSpawn =
+    (capture = true, prompts = []) =>
+    (_command, args) => {
+      if (args.includes('--list-sessions')) {
+        return {
+          ...okSpawn(),
+          stdout: {
+            on: (event, cb) =>
+              event === 'data' &&
+              cb(
+                Buffer.from(
+                  JSON.stringify(
+                    capture
+                      ? [{ cwd: '/ws', sessions: [{ sessionId: 'kiro-new', updatedAt: 'T' }] }]
+                      : [],
+                  ),
+                ),
+              ),
+          },
+        };
+      }
+      prompts.push(args.join(' '));
+      return {
+        ...okSpawn(),
+        stdin: {
+          end: (text) => {
+            if (text) prompts.push(String(text));
+          },
+        },
+      };
+    };
+  const ownedMissingSession = () => ({
+    humanTask: {
+      humanTaskId: 'q-1',
+      status: 'answered',
+      stageInstanceId: BASE_STAGE_INSTANCE_ID,
+      answer: { freeText: 'Keep the existing compliance requirements' },
+    },
+    stage: {
+      state: 'WAITING_FOR_HUMAN',
+      cli: 'kiro',
+      cliSessionId: null,
+      pendingHumanTaskId: 'q-1',
+      stageInstanceId: BASE_STAGE_INSTANCE_ID,
+    },
+  });
+
+  it('recovers an owned legacy Kiro wait with no session ID and injects its saved answer', async () => {
+    const prompts = [];
+    const store = spyStore(ownedMissingSession());
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
+      baseDeps({
+        availableClis: ['kiro'],
+        store,
+        spawnFn: sessionSpawn(true, prompts),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, cli: 'kiro' });
+    expect(prompts.join('\n')).toContain('Keep the existing compliance requirements');
+    expect(prompts.join('\n')).not.toContain('--resume');
+    expect(
+      store.calls.some(([op, row]) => op === 'appendEvent' && row.type === 'v2.stage.recovered'),
+    ).toBe(true);
+    expect(
+      store.calls.some(([op, row]) => op === 'updateStageState' && row.cliSessionId === 'kiro-new'),
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      'reset stage',
+      (seed) => {
+        seed.stage.state = 'PENDING';
+      },
+    ],
+    [
+      'different answer',
+      (seed) => {
+        seed.stage.pendingHumanTaskId = 'other';
+      },
+    ],
+    [
+      'sibling stage',
+      (seed) => {
+        seed.humanTask.stageInstanceId = 'sibling';
+      },
+    ],
+    [
+      'sibling lane',
+      (seed) => {
+        seed.humanTask.unitSlug = 'sibling';
+      },
+    ],
+    [
+      'different section',
+      (seed) => {
+        seed.humanTask.sectionIndex = 3;
+      },
+    ],
+  ])('does not recover or overwrite a %s', async (_label, change) => {
+    const seed = ownedMissingSession();
+    change(seed);
+    const store = spyStore(seed);
+    const spawnFn = vi.fn();
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
+      baseDeps({
+        availableClis: ['kiro'],
+        store,
+        spawnFn,
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'resume_state_conflict' });
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(store.calls.some(([op]) => op === 'putStage' || op === 'updateStageState')).toBe(false);
+  });
+
+  it('retires a superseded Kiro answer without changing stage state', async () => {
+    const seed = ownedMissingSession();
+    seed.humanTask.status = 'superseded';
+    const store = spyStore(seed);
+    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, baseDeps({ store }));
+    expect(res).toEqual({ ok: false, reason: 'retired' });
+    expect(store.calls.some(([op]) => op === 'putStage' || op === 'updateStageState')).toBe(false);
+  });
+
+  it('keeps the expiry guard for a missing Kiro session ID', async () => {
+    const seed = ownedMissingSession();
+    seed.humanTask.createdAt = '2026-06-01T00:00:00Z';
+    const store = spyStore(seed);
+    const spawnFn = vi.fn();
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
+      baseDeps({
+        availableClis: ['kiro'],
+        store,
+        spawnFn,
+        clock: () => '2026-07-01T00:00:00Z',
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'resume_store_expired' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [false, true, 'kiro_session_missing'],
+    [true, false, 'kiro_store_persist_failed'],
+  ])(
+    'retires an unresumable Kiro gate (capture=%s, persist=%s)',
+    async (capture, persisted, reason) => {
+      const store = spyStore(pendingGateSeed('q-1'));
+      const res = await runStage(
+        { ...baseArgs, requestedCli: 'kiro' },
+        baseDeps({
+          availableClis: ['kiro'],
+          env: kiroStoreEnv,
+          store,
+          spawnFn: sessionSpawn(capture),
+          persistKiroStore: async () => persisted,
+        }),
+      );
+      expect(res).toMatchObject({ ok: false, reason });
+      expect(store.calls).toContainEqual([
+        'supersedeHumanTask',
+        {
+          executionId: 'e1',
+          humanTaskId: 'q-1',
+          supersededBy: reason,
+        },
+      ]);
+      expect(
+        store.calls.some(
+          ([op, row]) => op === 'updateStageState' && row.state === 'WAITING_FOR_HUMAN',
+        ),
+      ).toBe(false);
+      expect(store.calls).toContainEqual([
+        'updateStageState',
+        expect.objectContaining({
+          state: 'FAILED',
+          pendingHumanTaskId: null,
+        }),
+      ]);
+    },
+  );
+
+  it('parks Kiro when both its session ID and durable store are saved', async () => {
+    const store = spyStore(pendingGateSeed('q-1'));
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro' },
+      baseDeps({
+        availableClis: ['kiro'],
+        env: kiroStoreEnv,
+        store,
+        spawnFn: sessionSpawn(),
+        persistKiroStore: async () => true,
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', cliSessionId: 'kiro-new' });
+    expect(store.calls.some(([op]) => op === 'supersedeHumanTask')).toBe(false);
+  });
+
+  it('does not report a Kiro park when the session metadata write fails', async () => {
+    const store = spyStore(pendingGateSeed('q-1'));
+    const update = store.updateStageState;
+    store.updateStageState = async (row) => {
+      if (row.state === 'WAITING_FOR_HUMAN') throw new Error('Storage unavailable');
+      return update(row);
+    };
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro' },
+      baseDeps({
+        availableClis: ['kiro'],
+        env: kiroStoreEnv,
+        store,
+        spawnFn: sessionSpawn(),
+        persistKiroStore: async () => true,
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'stage_park_persist_failed' });
+    expect(store.calls).toContainEqual([
+      'supersedeHumanTask',
+      {
+        executionId: 'e1',
+        humanTaskId: 'q-1',
+        supersededBy: 'stage_park_persist_failed',
+      },
+    ]);
+    expect(
+      store.calls.some(([op, row]) => op === 'appendEvent' && row.type === 'v2.stage.parked'),
+    ).toBe(false);
+  });
 
   it('recovers a resume with a lost Kiro store by re-running fresh (recent gate)', async () => {
     // D2 recoverable path: mount wiped (restore fails, mount configured) but the
@@ -3525,6 +3795,16 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'unit_not_found' });
   });
 
+  it('distinguishes a unit-plan storage failure from an absent unit', async () => {
+    const store = spyStore({ unitPlan: UNIT_PLAN });
+    store.getUnitPlan = async () => {
+      throw new Error('ThrottlingException');
+    };
+    const spawnFn = vi.fn();
+    const res = await runStage(unitArgs, unitDeps({ store, spawnFn }));
+    expect(res).toMatchObject({ ok: false, reason: 'unit_plan_unavailable' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
   it('a non-forEach stage without a unit still runs with the plain instance id and null unitSlug', async () => {
     const deps = unitDeps();
     const res = await runStage({ ...baseArgs, stageId: 'units-generation' }, deps);

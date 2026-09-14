@@ -261,6 +261,11 @@ describe('orchestrator durable handler', () => {
       .mockResolvedValueOnce(META)
       .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
     deps.store.setGateCallbackId.mockResolvedValueOnce(null);
+    deps.store.getHumanTask.mockResolvedValue({
+      status: 'answered',
+      callbackId: 'sibling-callback',
+      callbackOwner: 'stage:sibling',
+    });
     deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
     deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
       if (n === 1) return { ok: true };
@@ -277,6 +282,26 @@ describe('orchestrator durable handler', () => {
     expect(stageStarts()).toHaveLength(1);
   });
 
+  it('resumes when the human answers before the stage callback can bind', async () => {
+    deps.store.setGateCallbackId.mockResolvedValue(null);
+    deps.store.getHumanTask.mockResolvedValue({ status: 'answered' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = makeRuntime(ctx, (_payload, n) =>
+      n === 1
+        ? { ok: true }
+        : n === 2
+          ? { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' }
+          : { ok: true, state: 'SUCCEEDED' },
+    );
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(stageStarts().filter((row) => row.resumeFrom === 'h1')).toHaveLength(1);
+    expect(deps.stopSession).not.toHaveBeenCalled();
+  });
   it('fails instead of binding a human gate callback when the soft deadline is past', async () => {
     deps.store.getExecution
       .mockResolvedValueOnce(META) // load-meta
