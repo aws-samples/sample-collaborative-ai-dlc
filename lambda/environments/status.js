@@ -26,6 +26,11 @@ import {
 } from './build-lifecycle.js';
 import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
+import {
+  WORKSPACE_VOLUME_NAME,
+  ensureCapacityProvider,
+  environmentArchitecture,
+} from './compute.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ecr = new ECRClient({});
@@ -138,9 +143,49 @@ const createRuntimeForRevision = async ({
       ...parseJsonEnv('MANAGED_RUNTIME_ENVIRONMENT', {}),
       RUNTIME_COMPATIBILITY_VERSION: revision.runtimeCompatibilityVersion,
     };
-    const networkMode = process.env.MANAGED_RUNTIME_NETWORK_MODE || 'PUBLIC';
-    const subnets = parseJsonEnv('MANAGED_RUNTIME_SUBNETS', []);
-    const securityGroups = parseJsonEnv('MANAGED_RUNTIME_SECURITY_GROUPS', []);
+    const instances = environment.compute?.type === 'instances';
+    // Instances runtimes attach to a capacity provider and inherit its VPC —
+    // passing networkConfiguration alongside capacityProviderConfiguration is
+    // rejected by the control plane. The EBS volume declared on the capacity
+    // provider replaces managed session storage at the same mount path.
+    let computeParams;
+    if (instances) {
+      const provider = await ensureCapacityProvider({
+        controlClient,
+        architecture: environmentArchitecture(environment),
+      });
+      if (provider.pending) return { environment, revision, pending: true };
+      computeParams = {
+        capacityProviderConfiguration: {
+          capacityProviderArn: provider.capacityProviderArn,
+        },
+        filesystemConfigurations: [
+          {
+            capacityProviderVolume: {
+              volumeName: WORKSPACE_VOLUME_NAME,
+              mountPath: '/mnt/workspace',
+            },
+          },
+        ],
+      };
+    } else {
+      const networkMode = process.env.MANAGED_RUNTIME_NETWORK_MODE || 'PUBLIC';
+      const subnets = parseJsonEnv('MANAGED_RUNTIME_SUBNETS', []);
+      const securityGroups = parseJsonEnv('MANAGED_RUNTIME_SECURITY_GROUPS', []);
+      computeParams = {
+        networkConfiguration: {
+          networkMode,
+          ...(networkMode === 'VPC' ? { networkModeConfig: { subnets, securityGroups } } : {}),
+        },
+        filesystemConfigurations: [
+          {
+            sessionStorage: {
+              mountPath: '/mnt/workspace',
+            },
+          },
+        ],
+      };
+    }
     created = await controlClient.send(
       new CreateAgentRuntimeCommand({
         agentRuntimeName: runtimeNameFor(environment.environmentId, revision.revisionId),
@@ -151,21 +196,11 @@ const createRuntimeForRevision = async ({
         },
         roleArn: process.env.MANAGED_RUNTIME_ROLE_ARN,
         protocolConfiguration: { serverProtocol: 'HTTP' },
-        networkConfiguration: {
-          networkMode,
-          ...(networkMode === 'VPC' ? { networkModeConfig: { subnets, securityGroups } } : {}),
-        },
         lifecycleConfiguration: {
           idleRuntimeSessionTimeout: 900,
           maxLifetime: 28800,
         },
-        filesystemConfigurations: [
-          {
-            sessionStorage: {
-              mountPath: '/mnt/workspace',
-            },
-          },
-        ],
+        ...computeParams,
         environmentVariables,
         tags: resourceTags,
         clientToken: clientTokenFor('runtime', environment.environmentId, revision.revisionId),
@@ -515,7 +550,7 @@ const verifyRuntime = async ({
           completedAt,
           imageBuild: 'PASSED',
           baseDigest: 'PASSED',
-          architecture: 'arm64',
+          architecture: environmentArchitecture(environment),
           nonRoot: deterministic.nonRoot === true,
           workspaceWritable: deterministic.workspaceWritable === true,
           protectedRuntime: deterministic.protectedRuntime === true,

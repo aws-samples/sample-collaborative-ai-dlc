@@ -103,3 +103,33 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "instances_compute_enabled" {
+  description = "Allow managed environments to target the AgentCore Instances compute type (EC2 managed instances via capacity providers)"
+  type        = bool
+  default     = false
+}
+
+variable "core_image_uri_amd64" {
+  description = "ECR repository URI of the amd64 core image (required for x86_64 environments)"
+  type        = string
+  default     = ""
+}
+
+variable "core_image_digest_amd64" {
+  description = "Digest of the amd64 core image (required for x86_64 environments)"
+  type        = string
+  default     = ""
+}
+
+variable "instances_allowed_instance_types" {
+  description = "EC2 instance types allowed on the platform-managed capacity providers"
+  type        = list(string)
+  default     = ["t3.large"]
+}
+
+variable "instances_workspace_gib" {
+  description = "Size in GiB of the persistent EBS workspace volume on Instances sessions"
+  type        = number
+  default     = 50
+}

@@ -27,6 +27,7 @@ import {
 } from './request.js';
 import { createEnvironmentStore } from './store.js';
 import { createToolStore } from './tool-store.js';
+import { applyComputeBase, environmentArchitecture, normalizeCompute } from './compute.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -203,7 +204,24 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
             type: 'PLAINTEXT',
           },
           { name: 'IMAGE_TAG', value: revision.revisionId, type: 'PLAINTEXT' },
+          {
+            name: 'IMAGE_PLATFORM',
+            value:
+              environmentArchitecture(environment) === 'x86_64'
+                ? 'linux/amd64'
+                : 'linux/arm64',
+            type: 'PLAINTEXT',
+          },
         ],
+        // The project's default fleet is arm64; x86_64 environments build on
+        // an x86 fleet via per-build overrides so a single project serves
+        // both architectures.
+        ...(environmentArchitecture(environment) === 'x86_64'
+          ? {
+              environmentTypeOverride: 'LINUX_CONTAINER',
+              imageOverride: 'aws/codebuild/amazonlinux-x86_64-standard:5.0',
+            }
+          : {}),
       }),
     );
   } catch (error) {
@@ -303,8 +321,12 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
   });
   return store.createRevision({
     environment,
-    recipe,
-    flattenedRecipe,
+    recipe: environment.compute
+      ? applyComputeBase({ recipe, compute: environment.compute })
+      : recipe,
+    flattenedRecipe: environment.compute
+      ? applyComputeBase({ recipe: flattenedRecipe, compute: environment.compute })
+      : flattenedRecipe,
     createdBy: actor,
     reason: 'latest-base',
     clearUpdateAvailable: true,
@@ -355,6 +377,7 @@ export const createHandler = ({
           return response(400, { error: 'environmentId is reserved by the platform' });
         }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';
+        const compute = normalizeCompute(data.compute);
         await assertAcyclicBase(store, id, baseEnvironmentId);
         const prepared = await prepareCatalogRecipe(
           store,
@@ -362,13 +385,20 @@ export const createHandler = ({
           data.recipe,
           baseEnvironmentId,
         );
+        const recipe = compute
+          ? applyComputeBase({ recipe: prepared.recipe, compute })
+          : prepared.recipe;
+        const flattenedRecipe = compute
+          ? applyComputeBase({ recipe: prepared.flattenedRecipe, compute })
+          : prepared.flattenedRecipe;
         const created = await store.createEnvironment({
           environmentId: id,
           name: data.name.trim(),
           description: String(data.description ?? '').trim(),
           baseEnvironmentId,
-          recipe: prepared.recipe,
-          flattenedRecipe: prepared.flattenedRecipe,
+          recipe,
+          flattenedRecipe,
+          compute,
           createdBy: actor,
         });
         return response(201, created);
@@ -460,8 +490,15 @@ export const createHandler = ({
         );
         const revision = await store.createRevision({
           environment,
-          recipe: prepared.recipe,
-          flattenedRecipe: prepared.flattenedRecipe,
+          recipe: environment.compute
+            ? applyComputeBase({ recipe: prepared.recipe, compute: environment.compute })
+            : prepared.recipe,
+          flattenedRecipe: environment.compute
+            ? applyComputeBase({
+                recipe: prepared.flattenedRecipe,
+                compute: environment.compute,
+              })
+            : prepared.flattenedRecipe,
           createdBy: actor,
         });
         const updated = await store.updateEnvironment(environmentId, {

@@ -112,6 +112,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     flattenedRecipe = recipe,
     createdBy,
     system = false,
+    compute = null,
   }) => {
     const createdAt = now();
     const revisionId = `r-${nextId()}`;
@@ -126,6 +127,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       system,
       status: 'DRAFT',
       baseEnvironmentId,
+      ...(compute ? { compute } : {}),
       currentRevisionId: revisionId,
       publishedRevisionId: null,
       updateAvailable: false,

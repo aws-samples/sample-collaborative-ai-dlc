@@ -261,7 +261,7 @@ resource "aws_codebuild_project" "managed_environments" {
           commands = [
             "cd \"$CODEBUILD_SRC_DIR/build-context\"",
             "export image_ref=$IMAGE_REPOSITORY_URI:$IMAGE_TAG",
-            "docker build --platform linux/arm64 --tag $image_ref .",
+            "docker build --platform \"$${IMAGE_PLATFORM:-linux/arm64}\" --tag $image_ref .",
             "./verification.sh $image_ref",
             "docker push $image_ref",
             "aws s3 cp verification.json s3://$CONTEXT_BUCKET/$CONTEXT_PREFIX/verification.json --sse AES256",
@@ -360,6 +360,13 @@ module "control_lambda" {
     RUNTIME_COMPATIBILITY_VERSION   = var.runtime_compatibility_version
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
     CORS_ALLOWED_ORIGINS            = var.cors_allowed_origins
+
+    # Instances compute type (empty/no-op when disabled)
+    CORE_IMAGE_URI_AMD64                = var.core_image_uri_amd64
+    CORE_IMAGE_DIGEST_AMD64             = var.core_image_digest_amd64
+    MANAGED_INSTANCES_OPERATOR_ROLE_ARN = var.instances_compute_enabled ? aws_iam_role.instances_operator[0].arn : ""
+    MANAGED_INSTANCES_SUBNETS           = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
+    MANAGED_INSTANCES_SECURITY_GROUPS   = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
   }
 }
 
@@ -367,6 +374,70 @@ resource "aws_iam_role" "status" {
   name               = "${var.project_name}-environment-status-${var.environment}"
   assume_role_policy = local.lambda_assume_role_policy
   tags               = var.tags
+}
+
+# ---------------------------------------------------------------------------
+# Instances compute type (optional)
+#
+# The status lambda lazily creates one capacity provider per architecture the
+# first time an Instances environment reaches runtime creation. AgentCore
+# assumes the operator role to provision and manage the EC2 managed instances
+# in this account; the AWS managed policy scopes what it may touch (resources
+# tagged with the capacity provider id).
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "instances_operator" {
+  count = var.instances_compute_enabled ? 1 : 0
+
+  name = "${var.project_name}-instances-operator-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "bedrock-agentcore.${local.dns_suffix}" }
+    }]
+  })
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "instances_operator" {
+  count = var.instances_compute_enabled ? 1 : 0
+
+  role       = aws_iam_role.instances_operator[0].name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/BedrockAgentCoreRuntimeInstancesOperatorRolePolicy"
+}
+
+resource "aws_iam_role_policy" "status_instances" {
+  count = var.instances_compute_enabled ? 1 : 0
+
+  name = "managed-environment-status-instances"
+  role = aws_iam_role.status.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:CreateCapacityProvider",
+          "bedrock-agentcore:GetCapacityProvider",
+          "bedrock-agentcore:ListCapacityProviders",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = aws_iam_role.instances_operator[0].arn
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "bedrock-agentcore.${local.dns_suffix}"
+          }
+        }
+      },
+    ]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "status_basic" {
@@ -480,6 +551,14 @@ module "status_lambda" {
     MANAGED_RUNTIME_ENVIRONMENT     = jsonencode(var.runtime_environment_variables)
     MANAGED_RUNTIME_TAGS            = jsonencode(var.tags)
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
+
+    # Instances compute type (empty/no-op when disabled)
+    MANAGED_INSTANCES_OPERATOR_ROLE_ARN = var.instances_compute_enabled ? aws_iam_role.instances_operator[0].arn : ""
+    MANAGED_INSTANCES_SUBNETS           = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
+    MANAGED_INSTANCES_SECURITY_GROUPS   = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
+    MANAGED_INSTANCES_ALLOWED_TYPES     = jsonencode(var.instances_allowed_instance_types)
+    MANAGED_INSTANCES_WORKSPACE_GIB     = tostring(var.instances_workspace_gib)
+    MANAGED_INSTANCES_CP_NAME_PREFIX    = replace("${var.project_name}_${var.environment}", "-", "_")
   }
 }
 
