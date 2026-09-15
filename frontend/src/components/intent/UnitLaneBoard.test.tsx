@@ -358,6 +358,7 @@ describe('UnitLaneBoardView', () => {
           requestedByName: 'Reviewer',
           stageInstanceId: 'stage-1',
           output: 'Handled the empty-token case.',
+          changedFileProvenance: { state: 'known', files: ['src/auth.ts'] },
           changedFiles: ['src/auth.ts'],
           verification: 'npm test passed',
           commitSha: 'abcdef123456',

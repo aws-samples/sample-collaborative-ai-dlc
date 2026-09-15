@@ -28,6 +28,11 @@ import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
 import { NO_HOOKS_PATH, runGitCommand } from './git-runner.js';
 import {
+  knownChangedFileProvenance,
+  mapKnownChangedFiles,
+  unknownChangedFileProvenance,
+} from '../shared/changed-file-provenance.js';
+import {
   resolveGitCommitter as defaultResolveGitCommitter,
   withGitCredential as defaultWithGitCredential,
 } from './git-auth.js';
@@ -234,6 +239,27 @@ const resolveCommitterFor = async ({
 //     losing a commit is strictly worse than a dependency re-install,
 //   - a terminal failure reports `dirty` (does the tree hold uncommitted
 //     work?) so run-stage can fail the stage when real work is at risk.
+// Parse NUL-delimited porcelain output without Git's path quoting. Under `-z`,
+// rename/copy entries are encoded as `XY destination\0source\0`; preserve both
+// endpoints so project-scoped sensors inspect the source and destination trees.
+export const parsePorcelainZ = (stdout = '') => {
+  const fields = String(stdout).split('\0');
+  const files = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const entry = fields[index];
+    if (!entry) continue;
+    const status = entry.slice(0, 2);
+    const file = entry.slice(3);
+    if (file) files.push(file);
+    if (status.includes('R') || status.includes('C')) {
+      const source = fields[index + 1];
+      if (source) files.push(source);
+      index += 1;
+    }
+  }
+  return files;
+};
+
 export const commitAll = async ({
   dir,
   message,
@@ -250,31 +276,41 @@ export const commitAll = async ({
   await ensureRuntimeExcludes({ dir });
 
   const attemptOnce = async () => {
-    const before = await git(['status', '--porcelain'], { cwd: dir });
-    const files =
+    const before = await git(['status', '--porcelain', '-z'], { cwd: dir });
+    const provenance =
       before.exitCode === 0
-        ? before.stdout
-            .split('\n')
-            .filter(Boolean)
-            .map((line) => line.slice(3).trim().split(' -> ').pop())
-            .filter(Boolean)
-        : [];
+        ? knownChangedFileProvenance(parsePorcelainZ(before.stdout))
+        : unknownChangedFileProvenance('git_status_failed', before.stderr?.trim());
     const add = await git(['add', '-A'], { cwd: dir });
     if (add.exitCode !== 0) {
-      return { committed: false, reason: 'add_failed', detail: add.stderr.trim(), files };
+      return {
+        committed: false,
+        reason: 'add_failed',
+        detail: add.stderr.trim(),
+        provenance,
+      };
     }
     const status = await git(['status', '--porcelain'], { cwd: dir });
     if (status.exitCode === 0 && status.stdout.trim() === '') {
-      return { committed: false, reason: 'clean' };
+      return {
+        committed: false,
+        reason: 'clean',
+        provenance: knownChangedFileProvenance([]),
+      };
     }
     const commit = await git([...gitIdentity(author, committer), 'commit', '-m', message], {
       cwd: dir,
     });
     if (commit.exitCode !== 0) {
-      return { committed: false, reason: 'commit_failed', detail: commit.stderr.trim(), files };
+      return {
+        committed: false,
+        reason: 'commit_failed',
+        detail: commit.stderr.trim(),
+        provenance,
+      };
     }
     const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
-    return { committed: true, sha: head.stdout.trim() || null, files };
+    return { committed: true, sha: head.stdout.trim() || null, provenance };
   };
 
   let last = null;
@@ -426,11 +462,113 @@ export const freeDiskBytes = async ({ dir, statfsFn = statfs }) => {
 export const isAheadOfRemote = async ({ dir, branch, git = runGit }) => {
   const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
   if (head.exitCode !== 0) return false;
-  const remoteRef = await git(['rev-parse', '--verify', `refs/remotes/origin/${branch}`], {
+  const remoteRef = `refs/remotes/origin/${branch}`;
+  const remote = await git(['rev-parse', '--verify', remoteRef], { cwd: dir });
+  if (remote.exitCode !== 0) return true;
+
+  // Equality is insufficient when a cached tracking ref is stale or has
+  // diverged: a remote-only commit must not be mistaken for local unpushed
+  // work. Count only commits reachable from HEAD and not from the tracking ref.
+  // On an unreadable graph, prefer attempting a non-force push over silently
+  // declaring the checkout up to date; the push remains the durability guard.
+  const localOnly = await git(['rev-list', '--count', `${remoteRef}..HEAD`], { cwd: dir });
+  if (localOnly.exitCode !== 0) return true;
+  const count = Number.parseInt(localOnly.stdout.trim(), 10);
+  return Number.isSafeInteger(count) ? count > 0 : true;
+};
+
+// Parse `git diff --name-status -z` output without path quoting. Rename and
+// copy rows contain two paths (`source`, then `destination`); every other row
+// contains one. Flattening the endpoints is intentional: sensor applicability
+// needs to inspect both trees, while provenance does not need the relationship.
+export const parseNameStatusZ = (stdout = '') => {
+  const fields = String(stdout).split('\0');
+  const files = [];
+  for (let index = 0; index < fields.length;) {
+    const status = fields[index++];
+    if (!status) continue;
+    const source = fields[index++];
+    if (source) files.push(source);
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const destination = fields[index++];
+      if (destination) files.push(destination);
+    }
+  }
+  return files;
+};
+
+const verifiedRemoteRef = async ({ dir, ref, git }) => {
+  if (!ref) return null;
+  const resolved = await git(['rev-parse', '--verify', ref], { cwd: dir });
+  return resolved.exitCode === 0 ? ref : null;
+};
+
+// Resolve a local ref that is known to predate the branch's unpushed work.
+// Prefer the target branch's tracking ref. On a never-pushed branch, use the
+// repository's recorded base branch; old payloads fall back to origin/HEAD.
+// We deliberately do not guess main/master because a wrong base can suppress
+// provenance. Returning null widens sensor checking through an unknown result.
+const resolveUnpushedBaseRef = async ({ dir, branch, baseBranch, git }) => {
+  const target = await verifiedRemoteRef({
+    dir,
+    ref: branch ? `refs/remotes/origin/${branch}` : null,
+    git,
+  });
+  if (target) return target;
+
+  const configuredBase = await verifiedRemoteRef({
+    dir,
+    ref: baseBranch ? `refs/remotes/origin/${baseBranch}` : null,
+    git,
+  });
+  if (configuredBase) return configuredBase;
+
+  const symbolicDefault = await git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], {
     cwd: dir,
   });
-  if (remoteRef.exitCode !== 0) return true;
-  return remoteRef.stdout.trim() !== head.stdout.trim();
+  if (symbolicDefault.exitCode !== 0) return null;
+  const defaultRef = symbolicDefault.stdout.trim();
+  if (!defaultRef.startsWith('refs/remotes/origin/')) return null;
+  return verifiedRemoteRef({ dir, ref: defaultRef, git });
+};
+
+// Recover changed paths when a prior stage committed successfully but its push
+// failed. The merge-base-to-HEAD range spans every unpushed commit, including
+// when the target tracking ref is absent. Reducing stale/diverged refs to their
+// merge base excludes remote-only history while retaining all local work.
+// Rename/copy detection stays enabled and both endpoints are parsed explicitly.
+// Paths remain repo-relative until commitAndPushAll returns its final result.
+export const aheadFiles = async ({ dir, branch, baseBranch = null, git = runGit }) => {
+  const baseRef = await resolveUnpushedBaseRef({ dir, branch, baseBranch, git });
+  if (!baseRef) {
+    return unknownChangedFileProvenance(
+      'git_base_ref_missing',
+      baseBranch ? `missing origin/${branch} and origin/${baseBranch}` : `missing origin/${branch}`,
+    );
+  }
+
+  const mergeBase = await git(['merge-base', baseRef, 'HEAD'], { cwd: dir });
+  if (mergeBase.exitCode !== 0 || !mergeBase.stdout.trim()) {
+    return unknownChangedFileProvenance('git_merge_base_failed', mergeBase.stderr?.trim());
+  }
+
+  const diff = await git(
+    [
+      'diff',
+      '--name-status',
+      '-z',
+      '--find-renames',
+      '--find-copies',
+      '--find-copies-harder',
+      mergeBase.stdout.trim(),
+      'HEAD',
+    ],
+    { cwd: dir },
+  );
+  if (diff.exitCode !== 0) {
+    return unknownChangedFileProvenance('git_diff_failed', diff.stderr?.trim());
+  }
+  return knownChangedFileProvenance(parseNameStatusZ(diff.stdout));
 };
 
 // Push HEAD to the branch with v1 pushBranchWithRetry semantics. Returns:
@@ -525,6 +663,12 @@ export const pushBranch = async ({
 // The on-disk target dir for a repo — MUST match workspace.js#repoTargetDir
 // (single repo → workspaceDir; multi → workspaceDir/<owner>/<repo>). Exported
 // for the lane commands (init-lane / merge-lane) that loop repos themselves.
+export const toWorkspaceRelative = (files = [], { url, multi }) => {
+  if (!multi) return [...files];
+  const projectPrefix = `${url}/`;
+  return files.map((file) => (file.startsWith(projectPrefix) ? file : `${projectPrefix}${file}`));
+};
+
 export const repoTargetDir = ({ url, workspaceDir, multi }) =>
   multi ? path.join(workspaceDir, url) : workspaceDir;
 
@@ -1123,6 +1267,8 @@ export const commitAndPushAll = async ({
   repos = [],
   workspaceDir,
   branch,
+  baseBranch = null,
+  baseBranches = null,
   gitProvider,
   repoProviders = null,
   projectId,
@@ -1145,6 +1291,7 @@ export const commitAndPushAll = async ({
       repoProviders?.[url] ||
       gitProvider ||
       'github';
+    const repoBaseBranch = baseBranches?.[url] ?? baseBranch;
     const dir = repoTargetDir({ url, workspaceDir, multi });
     const urls = urlsFor ? urlsFor(url) : {};
     try {
@@ -1165,17 +1312,32 @@ export const commitAndPushAll = async ({
         sleep,
         log,
       });
+      const toWorkspaceProvenance = (provenance) =>
+        mapKnownChangedFiles(provenance, (file) =>
+          toWorkspaceRelative([file], { url, multi }).at(0),
+        );
       if (commit.reason === 'add_failed' || commit.reason === 'commit_failed') {
-        results.push({ repo: url, ...commit, pushed: false });
+        const provenance = toWorkspaceProvenance(commit.provenance);
+        const files = provenance.state === 'known' ? provenance.files : null;
+        results.push({ repo: url, ...commit, provenance, files, pushed: false });
         continue;
       }
       // Skip the network when there is provably nothing to push: no new
       // commit AND the remote-tracking ref matches HEAD. A clean tree with an
       // ahead HEAD still pushes — it retries a previously failed push.
-      if (!commit.committed && !(await isAheadOfRemote({ dir, branch, git }))) {
-        results.push({ repo: url, ...commit, pushed: 'up_to_date' });
+      const ahead = !commit.committed && (await isAheadOfRemote({ dir, branch, git }));
+      if (!commit.committed && !ahead) {
+        const provenance = toWorkspaceProvenance(commit.provenance);
+        const files = provenance.state === 'known' ? provenance.files : null;
+        results.push({ repo: url, ...commit, provenance, files, pushed: 'up_to_date' });
         continue;
       }
+      const repoProvenance =
+        !commit.committed && commit.provenance?.state === 'known'
+          ? await aheadFiles({ dir, branch, baseBranch: repoBaseBranch, git })
+          : commit.provenance;
+      const provenance = toWorkspaceProvenance(repoProvenance);
+      const files = provenance.state === 'known' ? provenance.files : null;
       const push = await pushBranch({
         dir,
         repo: url,
@@ -1189,7 +1351,7 @@ export const commitAndPushAll = async ({
         sleep,
         log,
       });
-      results.push({ repo: url, ...commit, ...push });
+      results.push({ repo: url, ...commit, provenance, files, ...push });
     } catch (err) {
       // Defensive: nothing in this module should throw, but a git layer bug
       // must never take down stage bookkeeping.
@@ -1200,6 +1362,8 @@ export const commitAndPushAll = async ({
         pushed: false,
         reason: 'engine_crashed',
         detail: err?.message,
+        provenance: unknownChangedFileProvenance('engine_crashed', err?.message),
+        files: null,
       });
     }
   }

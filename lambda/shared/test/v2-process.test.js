@@ -1128,6 +1128,8 @@ describe('unit keys + builders', () => {
     expect(feedback).toMatchObject({
       sk: 'FEEDBACK#S2#auth#b1',
       state: 'QUEUED',
+      changedFileProvenance: null,
+      changedFiles: null,
       GSI2SK: 'TYPE#FEEDBACK#STATE#QUEUED#S2#auth#b1',
     });
   });

@@ -6,6 +6,7 @@ import {
   validateFanoutOverrides,
   unitBranchFor,
   laneSessionIdFor,
+  feedbackChangedFileReport,
 } from '../section.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -155,5 +156,54 @@ describe('lane naming (A2 rules 3 + 6)', () => {
     expect(id.length).toBeGreaterThanOrEqual(33);
     expect(laneSessionIdFor('i1', 1, 'billing')).not.toBe(id);
     expect(laneSessionIdFor('i1', 2, 'auth')).not.toBe(id);
+  });
+});
+
+describe('feedback changed-file provenance consumer', () => {
+  it('persists unknown provenance and reports it as unknown', () => {
+    const report = feedbackChangedFileReport({
+      changedFileProvenance: {
+        state: 'unknown',
+        reason: 'git_diff_failed',
+        detail: 'exit 128',
+      },
+      changedFiles: ['must-not-be-used.js'],
+    });
+
+    expect(report).toEqual({
+      changedFileProvenance: {
+        state: 'unknown',
+        reason: 'git_diff_failed',
+        detail: 'exit 128',
+      },
+      changedFiles: null,
+      changedFilesSummary: 'unknown (git_diff_failed)',
+    });
+  });
+
+  it('preserves known-empty provenance as an intentional empty set', () => {
+    expect(
+      feedbackChangedFileReport({
+        changedFileProvenance: { state: 'known', files: [] },
+      }),
+    ).toEqual({
+      changedFileProvenance: { state: 'known', files: [] },
+      changedFiles: [],
+      changedFilesSummary: 'none',
+    });
+  });
+
+  it('preserves known paths unchanged for persistence and reporting', () => {
+    const files = ['services/api/index.js', 'packages/ui/Button.tsx'];
+
+    expect(
+      feedbackChangedFileReport({
+        changedFileProvenance: { state: 'known', files },
+      }),
+    ).toEqual({
+      changedFileProvenance: { state: 'known', files },
+      changedFiles: files,
+      changedFilesSummary: 'services/api/index.js, packages/ui/Button.tsx',
+    });
   });
 });
