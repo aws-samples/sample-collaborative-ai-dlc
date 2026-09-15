@@ -998,6 +998,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       executeStage,
       publishCheckpoint,
       ids: { projectId, intentId, executionId },
+      aidlcRepoRef: meta.aidlcRepoRef ?? null,
       runId: null, // stamped below once minted
       intentBranch: meta.branch,
       cloneBase: {

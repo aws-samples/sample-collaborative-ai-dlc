@@ -196,6 +196,7 @@ const main = async () => {
   const { repairStructure } = await import('./commands/repair-structure.js');
   const { promoteUnits } = await import('./commands/promote-units.js');
   const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
+  const { importHandoffArtifacts } = await import('./commands/import-handoff-artifacts.js');
   const { createWorkflowCheckpoint } = await import('./commands/create-workflow-checkpoint.js');
   const { recordPr } = await import('./commands/record-pr.js');
   const { recordUnitPr } = await import('./commands/record-unit-pr.js');
@@ -278,6 +279,21 @@ const main = async () => {
         availableClis: context.availableClis,
         env: context.env,
       }),
+    importHandoffArtifacts: (p) =>
+      importHandoffArtifacts(
+        { ...p, workspaceDir },
+        {
+          openGraph,
+          deriveArtifacts: (q) =>
+            deriveArtifacts(q, {
+              store,
+              openGraph,
+              broadcast,
+              availableClis: [],
+              env: {},
+            }),
+        },
+      ),
     createWorkflowCheckpoint: (p) =>
       createWorkflowCheckpoint(p, {
         store,

@@ -4,6 +4,10 @@ You can export an intent as a [native AI-DLC](https://github.com/awslabs/aidlc-w
 
 Use this when you want to inspect or continue the work outside Collaborative AIDLC. It is a point-in-time handoff, not a synchronized local copy of the intent.
 
+!!! tip "Returning one unit to the running intent"
+
+    This page describes the general, one-way workspace export. To complete a unit's `code-generation` stage externally and return pushed code and generated documents to the running intent, use the [external code-generation handoff](external-code-generation.md).
+
 ## Export an intent
 
 The export control appears beside **Discuss** in the intent header after the workflow has started.

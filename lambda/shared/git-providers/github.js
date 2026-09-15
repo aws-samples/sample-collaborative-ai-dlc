@@ -825,6 +825,19 @@ const compareBranches = async (ctx, repoId, { base, head }) => {
   };
 };
 
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/git/ref/heads/${encodeRefPath(branch)}`,
+  );
+  if (!res.ok) throw new ProviderError(res.status, `Branch not found: ${branch}`);
+  const data = await res.json();
+  const sha = data?.object?.sha;
+  if (!sha) throw new ProviderError(502, `Branch head unavailable: ${branch}`);
+  return { branch, sha };
+};
+
 // Get the live state of a PR ('open' | 'closed' | 'merged' | null if not found).
 const getPullRequestState = async (ctx, repoId, prNumber) => {
   const status = await getPullRequestStatus(ctx, repoId, prNumber);
@@ -961,6 +974,7 @@ export {
   findPullRequest,
   createPullRequest,
   compareBranches,
+  getBranchHead,
   getPullRequestState,
   getPullRequestStatus,
   setPullRequestDraft,
@@ -1000,6 +1014,7 @@ export default {
   findPullRequest,
   createPullRequest,
   compareBranches,
+  getBranchHead,
   getPullRequestState,
   getPullRequestStatus,
   setPullRequestDraft,

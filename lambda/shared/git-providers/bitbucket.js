@@ -649,9 +649,7 @@ const isCommitAncestor = async (ctx, repoId, ancestorSha, descendantRef) => {
   const mergeBaseHash = data?.hash;
   if (!mergeBaseHash) return false;
 
-  // ancestorSha may be a short hash; merge-base returns the full hash. Compare
-  // both directions so a prefix match still counts.
-  return mergeBaseHash === ancestorSha || mergeBaseHash.startsWith(ancestorSha);
+  return mergeBaseHash === ancestorSha;
 };
 
 const getUnmergedConstructionTaskBranches = async (ctx, repoId, branch) => {
@@ -883,6 +881,19 @@ const compareBranches = async (ctx, repoId, { base, head }) => {
   return { status: aheadBy > 0 ? 'ahead' : 'identical', aheadBy, base: resolvedBase };
 };
 
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const res = await bbFetch(
+    ctx,
+    `${API_BASE}/repositories/${workspace}/${repoSlug}/refs/branches/${encodeURIComponent(branch)}`,
+  );
+  if (!res.ok) throw new ProviderError(res.status, `Branch not found: ${branch}`);
+  const data = await res.json();
+  const sha = data?.target?.hash;
+  if (!sha) throw new ProviderError(502, `Branch head unavailable: ${branch}`);
+  return { branch, sha };
+};
+
 const getPullRequestState = async (ctx, repoId, prId) => {
   const status = await getPullRequestStatus(ctx, repoId, prId);
   return status?.state ?? null;
@@ -1050,6 +1061,7 @@ export {
   findPullRequest,
   createPullRequest,
   compareBranches,
+  getBranchHead,
   getPullRequestState,
   getPullRequestStatus,
   setPullRequestDraft,
@@ -1083,6 +1095,7 @@ export default {
   findPullRequest,
   createPullRequest,
   compareBranches,
+  getBranchHead,
   getPullRequestState,
   getPullRequestStatus,
   setPullRequestDraft,

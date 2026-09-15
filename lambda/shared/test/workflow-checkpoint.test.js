@@ -59,6 +59,43 @@ describe('workflow checkpoint', () => {
     expect(canonicalJson(first)).toBe(canonicalJson(second));
   });
 
+  it('retains external-development metadata used by unit handoff projection', () => {
+    const checkpoint = buildWorkflowCheckpoint({
+      executionId: 'i1',
+      createdAt: '2026-08-17T10:00:00.000Z',
+      records: {
+        ...records,
+        humanTasks: [
+          {
+            executionId: 'i1',
+            humanTaskId: 'external-1',
+            stageInstanceId: 's1',
+            unitSlug: 'auth',
+            sectionIndex: 0,
+            kind: 'external-development',
+            status: 'pending',
+            externalDevelopment: {
+              stageAttempt: 1,
+              harness: 'codex',
+              repositories: [
+                {
+                  name: 'api',
+                  baseSha: 'a'.repeat(40),
+                  branch: 'aidlc/i1/auth/a1',
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(checkpoint.process.humanTasks[0].externalDevelopment).toMatchObject({
+      stageAttempt: 1,
+      harness: 'codex',
+    });
+  });
+
   it('refuses a checkpoint that could exceed the DynamoDB item limit', () => {
     expect(() =>
       buildWorkflowCheckpoint({

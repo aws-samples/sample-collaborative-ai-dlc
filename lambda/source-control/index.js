@@ -37,6 +37,7 @@ const SOURCE_CONTROL_OPERATIONS = Object.freeze({
   contents: 'read',
   'default-branch': 'read',
   compare: 'read',
+  'branch-head': 'read',
   'find-pr': 'read',
   'create-pr': 'write',
   'pr-status': 'read',
@@ -304,6 +305,8 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
       return provider.getDefaultBranch(ctx, repo);
     case 'compare':
       return provider.compareBranches(ctx, repo, { base: args.base, head: args.head });
+    case 'branch-head':
+      return provider.getBranchHead(ctx, repo, args.branch);
     case 'find-pr':
       return provider.findPullRequest(ctx, repo, {
         sourceBranch: args.sourceBranch,
