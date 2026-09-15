@@ -74,6 +74,17 @@ const RETRYABLE_CONTROL_ERRORS = new Set([
   'TooManyRequestsException',
 ]);
 
+// The first invocation of an Instances-backed runtime provisions an EC2
+// instance and can exceed client timeouts while it boots. Those errors are
+// transient — retry the validation on the next poll instead of failing the
+// revision permanently.
+const INSTANCES_TRANSIENT_ERRORS = new Set([
+  'TimeoutError',
+  'RequestTimeout',
+  'ServiceUnavailableException',
+  'RuntimeClientError',
+]);
+
 const isConditionalFailure = (error) => error?.name === 'ConditionalCheckFailedException';
 
 const securityFindingsAcceptedAt = (revision) =>
@@ -573,7 +584,10 @@ const verifyRuntime = async ({
     });
     return { environment, revision: ready };
   } catch (error) {
-    if (RETRYABLE_CONTROL_ERRORS.has(error?.name)) {
+    if (
+      RETRYABLE_CONTROL_ERRORS.has(error?.name) ||
+      (environment.compute?.type === 'instances' && INSTANCES_TRANSIENT_ERRORS.has(error?.name))
+    ) {
       return { environment, revision, pending: true };
     }
     if (isConditionalFailure(error)) {
