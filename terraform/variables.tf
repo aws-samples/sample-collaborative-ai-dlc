@@ -284,3 +284,15 @@ variable "auth_certificate_arn" {
     error_message = "auth_certificate_arn must be an ACM certificate ARN in us-east-1 — Cognito custom domains only accept certificates from that region."
   }
 }
+
+variable "enable_instances_compute" {
+  description = "Enable the AgentCore Instances compute type for managed environments (x86_64 support, EC2 managed instances in this account via capacity providers)"
+  type        = bool
+  default     = false
+}
+
+variable "instances_allowed_instance_types" {
+  description = "EC2 instance types allowed on the platform-managed capacity providers"
+  type        = list(string)
+  default     = ["t3.large"]
+}
