@@ -7,7 +7,7 @@
 #
 # Build context is the repo `lambda/` dir (so the image can COPY both the
 # agentcore package and the shared/ helpers it imports via ../shared).
-FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:be8929e08ae137e81b5e1edba02259e6c4cb2f5ad655092bb9f56b97e41c4536
+FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
 
 # Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
 # archives), jq, procps,
