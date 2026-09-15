@@ -11,6 +11,8 @@ import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
 import { withGitCredential as defaultWithGitCredential } from './git-auth.js';
 import { runGitCommand, withGitHooksDisabled } from './git-runner.js';
+import { isValidRepoPath } from '../shared/repo-validation.js';
+import { repoTargetDir } from './repo-paths.js';
 
 // Provider-aware clone-URL builder — the single source of truth for the per-
 // provider auth scheme (GitHub `x-access-token:`, GitLab `oauth2:`) and host.
@@ -67,6 +69,7 @@ export const checkoutRepo = async ({
   readGitConfig = (d) => readFile(path.join(d, '.git', 'config'), 'utf8'),
   trustDirectory = trustGitDirectory,
 }) => {
+  if (!isValidRepoPath(repo)) throw new Error('Invalid repository path');
   const runner = withGitHooksDisabled(injectedRunner);
   await ensureDir(targetDir);
   if (!(await trustDirectory({ targetDir, runner }))) {
@@ -201,12 +204,6 @@ export const checkoutRepo = async ({
   return { repo, targetDir, cloned, branchOk };
 };
 
-// The on-disk target dir for a repo, given the intent's repo count. Single-repo
-// clones straight into <workspaceDir>; multi lays out under <workspaceDir>/<url>.
-// The single source of truth for the layout so init and self-heal agree.
-const repoTargetDir = ({ url, workspaceDir, multi }) =>
-  multi ? path.join(workspaceDir, url) : workspaceDir;
-
 // Per-repo base-branch override wins; the legacy single string is the
 // project-wide fallback; a repo absent from both resolves to null, which
 // checkoutRepo treats as "branch off this repo's own default HEAD" — never a
@@ -232,14 +229,17 @@ export const checkoutRepos = async ({
 }) => {
   const out = [];
   const multi = repos.length > 1;
-  for (const repo of repos) {
+  // Validate the entire batch before creating directories or cloning anything.
+  const targets = repos.map((repo) => {
     const url = typeof repo === 'string' ? repo : repo.url;
+    return { repo, url, targetDir: repoTargetDir({ url, workspaceDir, multi }) };
+  });
+  for (const { repo, url, targetDir } of targets) {
     const provider =
       (typeof repo === 'object' && repo?.provider) ||
       repoProviders?.[url] ||
       gitProvider ||
       'github';
-    const targetDir = repoTargetDir({ url, workspaceDir, multi });
     out.push(
       await checkoutRepo({
         repo: url,
@@ -401,14 +401,16 @@ export const ensureWorkspaceSource = async ({
   const multi = repos.length > 1;
   const restoredRepos = [];
   const failed = [];
-  for (const repo of repos) {
+  const targets = repos.map((repo) => {
     const url = typeof repo === 'string' ? repo : repo.url;
+    return { repo, url, targetDir: repoTargetDir({ url, workspaceDir, multi }) };
+  });
+  for (const { repo, url, targetDir } of targets) {
     const provider =
       (typeof repo === 'object' && repo?.provider) ||
       repoProviders?.[url] ||
       gitProvider ||
       'github';
-    const targetDir = repoTargetDir({ url, workspaceDir, multi });
     if (await hasCheckout(targetDir, statFn)) {
       if (!(await trustDirectory({ targetDir, runner }))) failed.push(url);
       continue;
