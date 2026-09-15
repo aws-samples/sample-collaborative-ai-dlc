@@ -6,14 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-14
+
+This release adds portable workspace exports, managed toolchains, personal and shared agent credentials, and tracker delivery updates, alongside runtime, authentication, and deployment fixes.
+
 ### Added
 
-- Optional static egress for OAuth connectors, credential resolution, and seed-blocks through `lambda_vpc_scope = "public-egress"`, with NAT public IP outputs and addresses printed in the deployment summary for external allow-lists.
-- Configurable container runtime via `DOCKER_HOST` — any Docker-API-socket runtime works without requiring a container CLI (Podman, Rancher Desktop verified); Finch unsupported ([#420](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/420)).
+- Native AI-DLC workspace exports for Claude, Codex, Kiro CLI, Kiro IDE, and OpenCode. Download an intent's pinned methodology, workflow state, artifacts, questions and answers, audit trail, and repository setup instructions to continue locally. Running intents export their latest completed checkpoint; waiting and terminal intents export their current state ([#403](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/403)).
+- Managed tools and build environments. Platform administrators can import, verify, scan, and publish exact ARM64 tool versions, compose them into immutable environment revisions, and assign published environments to projects. Standard provides Node.js and Python; the shipped catalog includes Java, Go, Rust, Maven, and Gradle, with support for administrator-defined tools such as .NET. New intents pin their environment revision, image digest, and runtime endpoint ([#397](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/397)).
+- Hierarchical Bedrock and Kiro credentials with `personal > space > platform` precedence, managed through Account Settings, project settings, and Platform Admin. Users explicitly select an available agent CLI for each new intent, with a project recommendation. Intent starts pin the selected CLI and credential binding; draft composition and discussion assists use the requesting user's effective credentials ([#405](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/405)).
+- Delivery updates for GitHub Issues, GitLab Issues, and Jira Cloud when final delivery pull/merge requests are created. The platform posts a comment on the originating issue with links to the intent, branch, and delivery requests, then posts another comment when all delivery requests have merged. GitHub and GitLab issues also close after all delivery requests merge; Jira receives comments without a status transition. Posting these Jira comments requires the new `write:jira-work` OAuth scope and reauthorization of existing connections (see Notes below) ([#399](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/399)).
+- Generated pull/merge requests link back to their AI-DLC intent, so reviewers can reach its workflow context and artifacts ([#393](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/393)).
+- Optional static egress for OAuth connectors, credential resolution, and seed-blocks through `lambda_vpc_scope = "public-egress"`, with NAT public IP outputs and addresses printed in the deployment summary for external allow-lists ([#410](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/410)).
+- Configurable container runtime via `DOCKER_HOST` — any Docker-API-socket runtime works without requiring a container CLI (Podman, Rancher Desktop verified); Finch unsupported ([#429](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/429)).
+- Automatic deployment of `main` to an isolated demo environment, with separate Terraform state and deployment protection from the release demo ([#441](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/441)).
+
+### Changed
+
+- Managed tool and environment catalogs now provide searchable, filterable navigation, clearer lifecycle status and next actions, simpler distribution/version forms, and a guided environment builder. Administrators can add alternative distributions such as Amazon Corretto, replace recommended versions, and inspect source provenance, scan limitations, and revision evidence ([#437](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/437)).
+- Intent headers and pipeline navigation now expose configuration, scope, stage selection, and activity more clearly, with improved navigation between intent views ([#435](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/435)).
+- DynamoDB tables now use on-demand billing in every environment, including production, removing fixed provisioned-throughput settings ([#445](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/445)).
+- Reduced AgentCore image size and hardened image builds with pinned downloads, checksum verification, and readable runtime files ([#421](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/421)).
+- Expanded documentation of the graph data model, DynamoDB execution state, and building blocks, and added a hosted overview video to the README ([#419](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/419), [#430](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/430)).
 
 ### Fixed
 
-- Intents Lambda's outer error handler discarded the caught exception (`catch {}` bound nothing, and the log statement was a static `'intents handler error'` string), so every 500 arrived in CloudWatch as an identical opaque line and 500s on `/api/projects/*/intents/*` were undiagnosable in production. The catch now binds the error and logs its `message`, `name`, `code`, `stack`, plus API-Gateway request context (`resource`, `httpMethod`, `projectId`, `intentId`). The 500 response contract is unchanged.
+- Paused stages restore their saved workspace when resuming, and failed intents retry from the failed stage. Restored construction lanes and conflict-resolution checkouts are trusted explicitly so Git ownership checks do not prevent recovery ([#402](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/402), [#434](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/434), [#454](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/454)).
+- Workflow checkpoints now advance correctly after granting the AgentCore role `dynamodb:ConditionCheckItem`. Previously, checkpoint transactions were denied and workspace exports could remain on an older checkpoint even as the intent continued running. Apply the Terraform update to deploy the corrected role policy ([#465](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/465)).
+- Transient authentication, network, and service errors no longer sign users out. Sign-out occurs only after definitive session expiry, consistently across API requests and real-time connections ([#414](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/414)).
+- Repository discovery and read operations respect the project's bound GitHub authentication method, and GitHub App read tokens include issue permissions. GitHub App tracker bindings no longer show an OAuth reconnect action, and Bitbucket is no longer offered as an issue tracker ([#392](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/392), [#411](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/411), [#412](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/412), [#423](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/423)).
+- Persisted project-cache hydration now notifies subscribers, preventing stale or empty views after reload ([#413](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/413)).
+- Managed installer checkouts preserve readable directory and file permissions, including installations created with a restrictive umask ([#422](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/422)).
+- Intents Lambda errors now log the caught exception and API Gateway request context, making HTTP 500 failures diagnosable in CloudWatch ([#442](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/442)).
+- Demo deployments build Lambda packages before Terraform planning, preserve reproducible package inputs, support ARM64 image builds, and serialize deployments by Terraform backend ([#391](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/391), [#395](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/395), [#396](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/396)).
+- GitHub Pages documentation deployments now queue instead of cancelling one another and allow more time for deployment completion ([#385](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/385)).
+
+### Security
+
+- Engine-owned Git operations disable repository hooks and sanitize inherited Git configuration overrides. Repository hooks can no longer break stage commits or run during credential-bearing pushes, and directory trust is scoped to the required checkouts ([#446](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/446)).
+- Updated dependencies to address security advisories, including `js-yaml`, `fast-uri`, `dompurify`, `mermaid`, `browserslist`, and `pymdown-extensions` ([#386](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/386), [#388](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/388), [#389](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/389), [#394](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/394), [#408](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/408), [#424](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/424), [#426](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/426)).
+- Applied further security fixes for `js-yaml`, `brace-expansion`, Hono, `qs`, Nano ID, and Vitest, including exact pins in AgentCore's separately installed runtime dependencies. Removed an SSM parameter path from realtime-secret error logs and isolated the release test helper's fixed shell probe to address CodeQL findings ([#456](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/456)).
+
+### Notes
+
+- Existing Jira connections must be reauthorized with `write:jira-work` to post delivery comments. Add this scope to the Atlassian OAuth application before reconnecting; existing read scopes and `offline_access` remain required.
+- Projects without an assigned managed environment use Standard. Environment assignment and publication changes apply to newly created intents; existing intents retain their pinned runtime. Deploying the managed tool catalog adds build infrastructure and automatically queues initial tool imports.
+- Rotating a credential at the scope pinned by an intent takes effect on the next invocation. Removing or invalidating that credential fails the run instead of silently selecting a different scope.
+- Workspace export is a one-way handoff. Source repositories and credentials are excluded, local changes do not synchronize back, and exporting does not stop the collaborative intent.
 
 ## [2.0.0] - 2026-08-06
 
