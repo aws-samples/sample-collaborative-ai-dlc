@@ -546,6 +546,14 @@ describe('PUT /projects/:id', () => {
       gitProvider: 'gitlab',
       agentCli: 'claude',
     });
+    const listed = await handler({
+      ...reposEvent('GET', id),
+      ...claims(sub),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.body)).toContainEqual(
+      expect.objectContaining({ url: 'g2-org/g2', provider: 'gitlab' }),
+    );
   });
 
   it('returns 400 when gitRepo is not a safe repository path', async () => {
@@ -1969,7 +1977,7 @@ describe.each([
       ...claims(sub),
     });
     expect(listed.statusCode).toBe(200);
-    expect(JSON.parse(listed.body)).toContainEqual(expect.objectContaining({ url }));
+    expect(JSON.parse(listed.body)).toContainEqual(expect.objectContaining({ url, provider }));
   });
 });
 
@@ -2178,8 +2186,8 @@ describe('POST /projects with repos[] array', () => {
     const created = await createProject(sub, {
       name: 'MainRepoSwitch',
       repos: [
-        { url: 'org/old-main', role: 'primary' },
-        { url: 'org/other', role: 'secondary' },
+        { url: 'org/old-main', provider: 'github', role: 'primary' },
+        { url: 'org/other', provider: 'gitlab', role: 'secondary' },
       ],
     });
 
@@ -2206,9 +2214,15 @@ describe('POST /projects with repos[] array', () => {
 
     const primaryRepos = project.repos.filter((repo) => repo.role === 'primary');
     expect(primaryRepos).toHaveLength(1);
-    expect(primaryRepos[0].url).toBe('org/other');
+    expect(primaryRepos[0]).toMatchObject({ url: 'org/other', provider: 'gitlab' });
     expect(project.repos).toEqual(
-      expect.arrayContaining([expect.objectContaining({ url: 'org/old-main', role: 'secondary' })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          url: 'org/old-main',
+          provider: 'github',
+          role: 'secondary',
+        }),
+      ]),
     );
   });
 });

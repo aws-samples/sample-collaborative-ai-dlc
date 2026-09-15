@@ -334,7 +334,7 @@ const guessRole = (url) => {
 
 // Ensure a HAS_REPO edge + Repository vertex exists for a legacy git_repo value.
 // Called lazily on read — idempotent.
-const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
+const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo, projectProvider) => {
   if (!legacyGitRepo) return;
   // Defense-in-depth: this is the final gate before a value becomes a cloneable
   // Repository vertex (and flows into the v2 workspace's git clone).
@@ -355,12 +355,19 @@ const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
     .hasNext();
   if (exists) return;
 
+  const provider =
+    projectProvider ||
+    getVal(
+      (await g.V().has('Project', 'id', projectId).valueMap('git_provider').next()).value,
+      'git_provider',
+    ) ||
+    'github';
   const repoId = `repo-${randomUUID()}`;
   await g
     .addV('Repository')
     .property('id', repoId)
     .property('url', legacyGitRepo)
-    .property('provider', 'github')
+    .property('provider', provider)
     .property('role', 'primary')
     .property('detected_stack', '')
     .property('added_at', new Date().toISOString())
@@ -1658,7 +1665,7 @@ export const handler = async (event) => {
             .property(cardinality.single, 'git_repo', data.gitRepo)
             .next();
           if (data.gitRepo) {
-            await ensureLegacyRepoMigrated(g, projectId, data.gitRepo);
+            await ensureLegacyRepoMigrated(g, projectId, data.gitRepo, data.gitProvider);
             await syncPrimaryRepo(g, projectId, data.gitRepo);
           }
         }
