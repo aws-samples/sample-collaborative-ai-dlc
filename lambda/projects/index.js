@@ -287,10 +287,13 @@ const syncPrimaryRepo = async (g, projectId, primaryUrl, preloadedRepos) => {
   }
 };
 
-// Permissive owner/repo format check for the multi-repo `repos[]` API.
-// Owners allow underscores for GitHub Enterprise Managed Users (max 39 chars).
-// Repo names allow alphanumeric, dots, hyphens, and underscores (max 100 chars).
-const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,38}\/[a-zA-Z0-9._-]{1,100}$/;
+// Validate safe repository paths, leaving naming rules and length limits to
+// the provider. Multiple namespace segments support GitLab subgroups.
+const REPO_PATH_PATTERN = /^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)+$/;
+const isValidRepoPath = (value) =>
+  typeof value === 'string' &&
+  REPO_PATH_PATTERN.test(value) &&
+  value.split('/').every((segment) => segment !== '.' && segment !== '..');
 
 // The legacy `gitRepo` field is historically a freeform string (bare names,
 // SSH URLs). We can't tighten it to owner/repo without breaking that contract,
@@ -346,7 +349,7 @@ const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
   // Legacy git_repo is freeform, so we only enforce shell-safety here (not strict
   // owner/repo). Skip (don't throw) on a dangerous value — this runs on read paths
   // and must not break GETs of old projects.
-  if (!isSafeRepo(legacyGitRepo)) {
+  if (!isValidRepoPath(legacyGitRepo) && !isSafeRepo(legacyGitRepo)) {
     console.error(
       `[projects] Skipping migration of unsafe git_repo value for ${projectId}: ${JSON.stringify(legacyGitRepo)}`,
     );
@@ -1129,8 +1132,8 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 
     const data = JSON.parse(event.body || '{}');
     if (!data.url) return response(400, { error: 'url is required' });
-    if (!REPO_URL_PATTERN.test(data.url)) {
-      return response(400, { error: 'url must be in owner/repo format' });
+    if (!isValidRepoPath(data.url)) {
+      return response(400, { error: 'url must be a namespace/repository path' });
     }
     const repoInputError = validateRepoRoleAndProvider(data);
     if (repoInputError) return response(400, { error: repoInputError });
@@ -1450,9 +1453,9 @@ export const handler = async (event) => {
 
         // Support both legacy `gitRepo` (string) and new `repos` (array) input.
         // SECURITY: repo urls become `git clone` targets in the v2 workspace.
-        // The multi-repo `repos[]` entries are real clone targets,
-        // so they must be strict owner/repo. The legacy `gitRepo` string stays
-        // freeform but must be shell-safe (no injection chars).
+        // The multi-repo `repos[]` entries must be safe namespace/repository
+        // paths. The legacy `gitRepo` string also accepts shell-safe freeform
+        // values for backward compatibility.
         if (data.repos !== undefined && !Array.isArray(data.repos)) {
           return response(400, { error: 'repos must be an array' });
         }
@@ -1461,15 +1464,15 @@ export const handler = async (event) => {
         const legacyGitRepo = data.gitRepo || '';
 
         for (const repo of inputRepos) {
-          if (!repo.url || !REPO_URL_PATTERN.test(repo.url)) {
+          if (!isValidRepoPath(repo.url)) {
             return response(400, {
-              error: `Invalid repository url "${repo.url}". Expected "owner/repo" format.`,
+              error: `Invalid repository url "${repo.url}". Expected "namespace/repository" path.`,
             });
           }
           const repoInputError = validateRepoRoleAndProvider(repo);
           if (repoInputError) return response(400, { error: repoInputError });
         }
-        if (legacyGitRepo && !isSafeRepo(legacyGitRepo)) {
+        if (legacyGitRepo && !isValidRepoPath(legacyGitRepo) && !isSafeRepo(legacyGitRepo)) {
           return response(400, { error: `Invalid gitRepo "${legacyGitRepo}".` });
         }
 
@@ -1650,13 +1653,11 @@ export const handler = async (event) => {
         if (data.gitRepo !== undefined) {
           // SECURITY: same execSync sink as POST. This value also feeds
           // ensureLegacyRepoMigrated/syncPrimaryRepo, which can create a
-          // Repository vertex — so enforce the same strict owner/repo format
-          // as POST /repos. A looser value (full URL, extra path segments)
-          // passes the shell-safe check but later makes parseOwnerRepo throw
-          // inside trigger_pr_creation, bricking PR creation for the project.
-          if (data.gitRepo && !REPO_URL_PATTERN.test(data.gitRepo)) {
+          // Repository vertex — so enforce the same safe repository path
+          // as POST /repos, including nested namespaces.
+          if (data.gitRepo && !isValidRepoPath(data.gitRepo)) {
             return response(400, {
-              error: `Invalid gitRepo "${data.gitRepo}": expected "owner/repo".`,
+              error: `Invalid gitRepo "${data.gitRepo}": expected "namespace/repository" path.`,
             });
           }
           await g

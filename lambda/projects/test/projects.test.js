@@ -548,10 +548,10 @@ describe('PUT /projects/:id', () => {
     });
   });
 
-  it('returns 400 when gitRepo is not in strict owner/repo format', async () => {
+  it('returns 400 when gitRepo is not a safe repository path', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub, { name: 'Old' });
-    for (const gitRepo of ['g2', 'https://github.com/o/r', 'o/r/extra']) {
+    for (const gitRepo of ['g2', 'https://github.com/o/r', 'o//r']) {
       const res = await handler({
         httpMethod: 'PUT',
         pathParameters: { projectId: id },
@@ -1685,7 +1685,7 @@ describe('POST /projects/:id/repos', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'url is required' });
   });
 
-  it('returns 400 when url is not in owner/repo format', async () => {
+  it('returns 400 when url is not a namespace/repository path', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub);
     const res = await handler({
@@ -1693,7 +1693,7 @@ describe('POST /projects/:id/repos', () => {
       ...claims(sub),
     });
     expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body)).toEqual({ error: 'url must be in owner/repo format' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'url must be a namespace/repository path' });
   });
 
   it('returns 201 and persists the repo for an owner', async () => {
@@ -1892,21 +1892,29 @@ describe('DELETE /projects/:id/repos', () => {
 
 // ---------------------------------------------------------------------------
 // Injection / validation guards — regression tests for the shell-safety and
-// owner/repo patterns. If a future change relaxes these regexes, these fail.
+// repository paths.
 // ---------------------------------------------------------------------------
 
 describe.each([
-  'developer_enterprise/example-repo',
-  'owner/.github',
-  'owner/_repo',
-  'owner/-repo',
-  `${'a'.repeat(39)}/${'b'.repeat(100)}`,
-])('GitHub repository names: %s', (url) => {
+  { provider: 'github', url: 'developer_enterprise/example-repo' },
+  { provider: 'github', url: 'owner/.github' },
+  { provider: 'github', url: 'owner/_repo' },
+  { provider: 'github', url: 'owner/-repo' },
+  { provider: 'github', url: 'owner/repo..name' },
+  { provider: 'gitlab', url: 'team.platform/repo' },
+  { provider: 'gitlab', url: 'team/subgroup/nested/repo' },
+  { provider: 'gitlab', url: `${'a'.repeat(255)}/${'b'.repeat(255)}` },
+  { provider: 'bitbucket', url: 'team_workspace/.repo' },
+  { provider: 'bitbucket', url: '_workspace/_repo' },
+  { provider: 'bitbucket', url: '-workspace/repo' },
+])('repository paths: $provider $url', ({ provider, url }) => {
   it('creates a project and persists its repository', async () => {
     const sub = `u-${randomUUID()}`;
     const created = await createProject(sub, {
       name: 'RepoName',
-      repos: [{ url, provider: 'github', role: 'primary' }],
+      gitProvider: provider,
+      gitRepo: url,
+      repos: [{ url, provider, role: 'primary' }],
     });
     expect(created.gitRepo).toBe(url);
     const listed = await handler({
@@ -1915,16 +1923,16 @@ describe.each([
     });
     expect(listed.statusCode).toBe(200);
     expect(JSON.parse(listed.body)).toContainEqual(
-      expect.objectContaining({ url, provider: 'github', role: 'primary' }),
+      expect.objectContaining({ url, provider, role: 'primary' }),
     );
   });
 
   it('adds a repository to an existing project', async () => {
     const sub = `u-${randomUUID()}`;
-    const { id } = await createProject(sub, { name: 'RepoName' });
+    const { id } = await createProject(sub, { name: 'RepoName', gitProvider: provider });
     const added = await handler({
       ...reposEvent('POST', id, {
-        body: JSON.stringify({ url, provider: 'github', role: 'primary' }),
+        body: JSON.stringify({ url, provider, role: 'primary' }),
       }),
       ...claims(sub),
     });
@@ -1935,13 +1943,13 @@ describe.each([
     });
     expect(listed.statusCode).toBe(200);
     expect(JSON.parse(listed.body)).toContainEqual(
-      expect.objectContaining({ url, provider: 'github', role: 'primary' }),
+      expect.objectContaining({ url, provider, role: 'primary' }),
     );
   });
 
   it('updates the primary repository of an existing project', async () => {
     const sub = `u-${randomUUID()}`;
-    const { id } = await createProject(sub, { name: 'RepoName' });
+    const { id } = await createProject(sub, { name: 'RepoName', gitProvider: provider });
     const updated = await handler({
       httpMethod: 'PUT',
       pathParameters: { projectId: id },
@@ -1955,16 +1963,38 @@ describe.each([
       ...claims(sub),
     });
     expect(fetched.statusCode).toBe(200);
-    expect(JSON.parse(fetched.body).gitRepo).toBe(url);
+    expect(JSON.parse(fetched.body)).toMatchObject({ gitRepo: url, gitProvider: provider });
+    const listed = await handler({
+      ...reposEvent('GET', id),
+      ...claims(sub),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.body)).toContainEqual(expect.objectContaining({ url }));
   });
 });
 
-describe.each([
-  'owner/repo\n',
-  'owner/repo\r\n',
-  `${'a'.repeat(40)}/repo`,
-  `owner/${'b'.repeat(101)}`,
-])('invalid repository names: %j', (url) => {
+describe.each(
+  [
+    'owner/repo\n',
+    'owner/repo\r\n',
+    '/owner/repo',
+    'owner/repo/',
+    'owner//repo',
+    './repo',
+    '../repo',
+    'owner/./repo',
+    'owner/../repo',
+    'owner/.',
+    'owner/..',
+    'owner/repo with spaces',
+    'owner/repo;id',
+    'owner/repo$(id)',
+    'owner/repo\\name',
+    'owner/%2e%2e/repo',
+    ['owner/repo'],
+    { url: 'owner/repo' },
+  ].map((url) => ({ url })),
+)('invalid repository paths: $url', ({ url }) => {
   it('rejects project creation before persisting a project', async () => {
     const sub = `u-${randomUUID()}`;
     const created = await handler({
@@ -1987,7 +2017,7 @@ describe.each([
       ...claims(sub),
     });
     expect(added.statusCode).toBe(400);
-    expect(JSON.parse(added.body)).toEqual({ error: 'url must be in owner/repo format' });
+    expect(JSON.parse(added.body)).toEqual({ error: 'url must be a namespace/repository path' });
     const updated = await handler({
       httpMethod: 'PUT',
       pathParameters: { projectId: id },
@@ -2020,7 +2050,7 @@ describe('repo URL validation (injection guards)', () => {
         ...claims(sub),
       });
       expect(res.statusCode, `expected 400 for ${JSON.stringify(url)}`).toBe(400);
-      expect(JSON.parse(res.body)).toEqual({ error: 'url must be in owner/repo format' });
+      expect(JSON.parse(res.body)).toEqual({ error: 'url must be a namespace/repository path' });
     }
   });
 
