@@ -287,10 +287,10 @@ const syncPrimaryRepo = async (g, projectId, primaryUrl, preloadedRepos) => {
   }
 };
 
-// Validates owner/repo format. GitHub allows alphanumeric, hyphens,
-// underscores, and dots; max 39 chars for owner and 100 for repo.
-// Used for the multi-repo `repos[]` API — these are real clone targets.
-const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/;
+// Permissive owner/repo format check for the multi-repo `repos[]` API.
+// Owners allow underscores for GitHub Enterprise Managed Users (max 39 chars).
+// Repo names allow alphanumeric, dots, hyphens, and underscores (max 100 chars).
+const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,38}\/[a-zA-Z0-9._-]{1,100}$/;
 
 // The legacy `gitRepo` field is historically a freeform string (bare names,
 // SSH URLs). We can't tighten it to owner/repo without breaking that contract,

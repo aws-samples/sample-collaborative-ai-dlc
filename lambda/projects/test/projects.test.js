@@ -1895,6 +1895,110 @@ describe('DELETE /projects/:id/repos', () => {
 // owner/repo patterns. If a future change relaxes these regexes, these fail.
 // ---------------------------------------------------------------------------
 
+describe.each([
+  'developer_enterprise/example-repo',
+  'owner/.github',
+  'owner/_repo',
+  'owner/-repo',
+  `${'a'.repeat(39)}/${'b'.repeat(100)}`,
+])('GitHub repository names: %s', (url) => {
+  it('creates a project and persists its repository', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await createProject(sub, {
+      name: 'RepoName',
+      repos: [{ url, provider: 'github', role: 'primary' }],
+    });
+    expect(created.gitRepo).toBe(url);
+    const listed = await handler({
+      ...reposEvent('GET', created.id),
+      ...claims(sub),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.body)).toContainEqual(
+      expect.objectContaining({ url, provider: 'github', role: 'primary' }),
+    );
+  });
+
+  it('adds a repository to an existing project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'RepoName' });
+    const added = await handler({
+      ...reposEvent('POST', id, {
+        body: JSON.stringify({ url, provider: 'github', role: 'primary' }),
+      }),
+      ...claims(sub),
+    });
+    expect(added.statusCode).toBe(201);
+    const listed = await handler({
+      ...reposEvent('GET', id),
+      ...claims(sub),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(JSON.parse(listed.body)).toContainEqual(
+      expect.objectContaining({ url, provider: 'github', role: 'primary' }),
+    );
+  });
+
+  it('updates the primary repository of an existing project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'RepoName' });
+    const updated = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      body: JSON.stringify({ gitRepo: url }),
+      ...claims(sub),
+    });
+    expect(updated.statusCode).toBe(200);
+    const fetched = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(fetched.statusCode).toBe(200);
+    expect(JSON.parse(fetched.body).gitRepo).toBe(url);
+  });
+});
+
+describe.each([
+  'owner/repo\n',
+  'owner/repo\r\n',
+  `${'a'.repeat(40)}/repo`,
+  `owner/${'b'.repeat(101)}`,
+])('invalid repository names: %j', (url) => {
+  it('rejects project creation before persisting a project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const created = await handler({
+      httpMethod: 'POST',
+      body: JSON.stringify({ name: 'InvalidRepoName', repos: [{ url }] }),
+      ...claims(sub),
+    });
+    expect(created.statusCode).toBe(400);
+    expect(JSON.parse(created.body).error).toMatch(/Invalid repository url/);
+    expect(
+      await g.V().has('User', 'id', sub).inE('HAS_MEMBER').outV().hasLabel('Project').hasNext(),
+    ).toBe(false);
+  });
+
+  it('rejects adding or updating a repository', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub, { name: 'InvalidRepoName' });
+    const added = await handler({
+      ...reposEvent('POST', id, { body: JSON.stringify({ url }) }),
+      ...claims(sub),
+    });
+    expect(added.statusCode).toBe(400);
+    expect(JSON.parse(added.body)).toEqual({ error: 'url must be in owner/repo format' });
+    const updated = await handler({
+      httpMethod: 'PUT',
+      pathParameters: { projectId: id },
+      body: JSON.stringify({ gitRepo: url }),
+      ...claims(sub),
+    });
+    expect(updated.statusCode).toBe(400);
+    expect(JSON.parse(updated.body).error).toMatch(/Invalid gitRepo/);
+  });
+});
+
 describe('repo URL validation (injection guards)', () => {
   const MALICIOUS = [
     'owner/repo;rm -rf /',
