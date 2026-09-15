@@ -427,6 +427,18 @@ resource "aws_iam_role_policy" "status_instances" {
         Resource = "*"
       },
       {
+        # First capacity provider in an account creates the Instances
+        # service-linked role on the caller's behalf.
+        Effect   = "Allow"
+        Action   = ["iam:CreateServiceLinkedRole"]
+        Resource = "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/runtime-instances.bedrock-agentcore.${local.dns_suffix}/*"
+        Condition = {
+          StringEquals = {
+            "iam:AWSServiceName" = "runtime-instances.bedrock-agentcore.${local.dns_suffix}"
+          }
+        }
+      },
+      {
         Effect   = "Allow"
         Action   = ["iam:PassRole"]
         Resource = aws_iam_role.instances_operator[0].arn
