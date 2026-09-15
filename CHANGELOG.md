@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-15
+
+Hotfix for repository paths and workspace setup ([#467](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/467)).
+
+### Fixed
+
+- Space creation, repository addition, and primary-repository updates now accept safe paths returned by GitHub, GitLab, and Bitbucket, including GitHub Enterprise Managed User names, nested GitLab namespaces, and names exceeding GitHub-specific length limits. Legacy repository migration accepts these paths while preserving support for previously accepted freeform values.
+- Primary-repository updates and legacy repository migration preserve the project's Git provider instead of defaulting newly created repository records to GitHub.
+- Workspace checkout, recovery, lane operations, and native exports reject unsafe repository paths before resolving checkout directories. Repository batches are validated before checkout or recovery begins, preventing `.` and `..` path components from collapsing onto another checkout or the workspace root.
+- Native export setup commands correctly handle repository directories beginning with a hyphen, including fresh clones and commands for existing checkouts.
+
 ## [2.1.0] - 2026-09-14
 
 This release adds portable workspace exports, managed toolchains, personal and shared agent credentials, and tracker delivery updates, alongside runtime, authentication, and deployment fixes.
