@@ -18,6 +18,27 @@ import { runGitCommand, withGitHooksDisabled } from './git-runner.js';
 // re-deriving the GitHub-only scheme here. Defaults to github for legacy/blank.
 const cloneUrl = (repo, gitProvider) => buildCloneUrl(gitProvider, repo, '');
 
+// Entries created by the filesystem itself on a freshly formatted volume.
+// Block-device workspace mounts (the Instances compute type attaches an EBS
+// volume at /mnt/workspace) are never empty: mkfs.ext4 creates `lost+found`
+// at the root, and `git clone` refuses a non-empty destination. Removing only
+// these well-known entries keeps any real (unexpected) residue loud.
+const FRESH_FILESYSTEM_ENTRIES = new Set(['lost+found']);
+
+const clearFreshFilesystemResidue = async (dir) => {
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return; // directory absent — git clone will create it
+  }
+  for (const entry of entries) {
+    if (FRESH_FILESYSTEM_ENTRIES.has(entry)) {
+      await rm(path.join(dir, entry), { recursive: true, force: true }).catch(() => {});
+    }
+  }
+};
+
 // Managed-session storage can restore a checkout with an owner that differs
 // from the runtime node user. Trust only the exact repository root selected by
 // the validated project configuration; never opt out globally with '*'.
@@ -160,6 +181,13 @@ export const checkoutRepo = async ({
     const branchOk = await ensureBranch();
     return { repo, targetDir, cloned: true, reused: true, branchOk };
   }
+
+  // Workspace mounts backed by a block device (the Instances compute type
+  // mounts an EBS volume at /mnt/workspace) come formatted, so the directory
+  // is never empty: ext4 creates `lost+found` at the filesystem root, and
+  // `git clone` refuses any non-empty destination. Clear residue only when
+  // there is no git checkout to protect (guarded by hasCheckout above).
+  await clearFreshFilesystemResidue(targetDir);
 
   let clone;
   try {
