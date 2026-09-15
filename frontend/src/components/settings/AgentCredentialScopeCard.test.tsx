@@ -63,6 +63,69 @@ beforeEach(() => {
 });
 
 describe('AgentCredentialScopeCard', () => {
+  it('disables personal Bedrock keys under IAM while keeping personal Kiro usable', async () => {
+    getPersonalCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: true,
+      kiroApiKeySet: false,
+      bedrockAuth: {
+        mode: 'iam',
+        iam: { roleArn: 'arn:aws:iam::222222222222:role/Inference', region: 'eu-west-1' },
+      },
+    });
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="personal" />);
+    await screen.findByText('Bedrock uses IAM');
+    expect(screen.queryByLabelText('Bedrock Bearer Token')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /IAM role/ })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText(/Kiro API Key/), 'kiro-still-supported');
+    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await waitFor(() =>
+      expect(updatePersonalCredentials).toHaveBeenCalledWith({
+        kiroApiKey: 'kiro-still-supported',
+      }),
+    );
+  });
+
+  it('allows a platform admin to remove a space IAM override', async () => {
+    getProjectCredentials.mockResolvedValue({
+      canManageIam: true,
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      bedrockAuth: {
+        mode: 'iam',
+        iam: { roleArn: 'arn:aws:iam::222222222222:role/Platform', region: 'us-east-1' },
+      },
+      bedrockIam: { roleArn: 'arn:aws:iam::333333333333:role/Space', region: 'eu-west-1' },
+    });
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="space" projectId="space-one" />);
+    await user.click(await screen.findByRole('button', { name: 'Inherit platform IAM' }));
+    await waitFor(() =>
+      expect(updateProjectCredentials).toHaveBeenCalledWith('space-one', { bedrockIam: null }),
+    );
+  });
+
+  it('shows the role to a space owner without allowing IAM changes', async () => {
+    getProjectCredentials.mockResolvedValue({
+      canManageIam: false,
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      bedrockAuth: {
+        mode: 'iam',
+        iam: { roleArn: 'arn:aws:iam::222222222222:role/Platform', region: 'us-east-1' },
+      },
+      bedrockIam: { roleArn: 'arn:aws:iam::333333333333:role/Space', region: 'eu-west-1' },
+    });
+    render(<AgentCredentialScopeCard scope="space" projectId="space-one" />);
+    expect(await screen.findByText('arn:aws:iam::333333333333:role/Space')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', {
+        name: /Configure IAM|Inherit platform IAM|Set up a space IAM/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByLabelText(/Kiro API Key/)).toBeInTheDocument();
+  });
+
   it('writes a personal credential without reading a secret value back', async () => {
     const user = userEvent.setup();
     render(<AgentCredentialScopeCard scope="personal" />);

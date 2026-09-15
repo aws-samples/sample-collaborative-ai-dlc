@@ -7,8 +7,8 @@
 //      inference profiles), so the only source is `kiro-cli --list-models`, which
 //      must run inside this container where the binary lives.
 //
-// Claude/OpenCode models are Bedrock inference profiles and are listed by the
-// control-plane lambda via ListInferenceProfiles, NOT here.
+// IAM model discovery uses the invocation's broker credentials here so a
+// central inference account or different region is reflected in the picker.
 //
 // Pure of process spawning: the CLI discovery + the Kiro model spawn are injected
 // so the command is unit-tested without a real kiro-cli.
@@ -16,6 +16,7 @@
 import { SUPPORTED_CLIS, buildKiroListModels, parseKiroModels } from '../cli/drivers.js';
 import { discoverInstalledClis as defaultDiscover } from '../cli/discover.js';
 import { captureChild as defaultCapture } from '../cli/spawn.js';
+import { listIamBedrockModels } from '../bedrock-iam.js';
 
 // The env var that proves each CLI is authed (mirrors auth-resolver's targets).
 const AUTH_ENV = {
@@ -30,6 +31,7 @@ export const capabilities = async (_payload, deps = {}) => {
     discoverInstalledClis = defaultDiscover,
     captureChild = defaultCapture,
     env = process.env,
+    listBedrockModels = listIamBedrockModels,
   } = deps;
 
   let installed = [];
@@ -45,8 +47,15 @@ export const capabilities = async (_payload, deps = {}) => {
   const clis = SUPPORTED_CLIS.map((cli) => {
     const isInstalled = installed.includes(cli);
     const authEnv = AUTH_ENV[cli];
-    const isAuthed = authEnv ? Boolean(env[authEnv]) : true;
-    return { cli, installed: isInstalled, authed: isAuthed, available: isInstalled && isAuthed };
+    const iam = cli !== 'kiro' && Boolean(env.BEDROCK_IAM_CREDENTIALS_URI);
+    const isAuthed = iam || (authEnv ? Boolean(env[authEnv]) : true);
+    return {
+      cli,
+      installed: isInstalled,
+      authed: isAuthed,
+      available: isInstalled && isAuthed,
+      ...(iam ? { authType: 'iam', region: env.BEDROCK_REGION } : {}),
+    };
   });
 
   // Kiro models — only when kiro is installed (the binary must exist to ask it).
@@ -61,5 +70,8 @@ export const capabilities = async (_payload, deps = {}) => {
     }
   }
 
-  return { ok: true, clis, kiroModels };
+  const bedrockModels = env.BEDROCK_IAM_CREDENTIALS_URI
+    ? await listBedrockModels(env).catch(() => [])
+    : null;
+  return { ok: true, clis, kiroModels, ...(bedrockModels ? { bedrockModels } : {}) };
 };

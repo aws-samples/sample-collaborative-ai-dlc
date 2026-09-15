@@ -46,6 +46,8 @@ coverage/
 *.png
 # Curated public README screenshots
 !docs/assets/readme/*.png
+# Curated IAM setup and verification screenshots
+!docs/assets/bedrock-iam/*.png
 
 # Full-length README media is published externally, never committed.
 docs/assets/readme/*.mp4

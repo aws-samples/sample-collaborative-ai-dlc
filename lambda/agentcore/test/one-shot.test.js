@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runOneShotPrompt, parseClaudeOneShot, extractJsonObject } from '../cli/one-shot.js';
 import { EventEmitter } from 'node:events';
+import { credentialFailureError, withCredentialSignal } from '../invocation-credentials.js';
 
 // Fake child factory for captureChild: emits the given stdout/stderr then closes.
 // `stdin.end` records the piped prompt so tests can assert it goes on stdin (not
@@ -58,6 +59,26 @@ describe('extractJsonObject', () => {
 });
 
 describe('runOneShotPrompt', () => {
+  it('reports IAM cancellation even if the CLI prints no credential error', async () => {
+    const controller = new AbortController();
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => child.emit('close', 0);
+    const result = await withCredentialSignal(controller.signal, () =>
+      runOneShotPrompt({
+        prompt: 'test',
+        availableClis: ['claude'],
+        spawnFn: () => {
+          setImmediate(() =>
+            controller.abort(credentialFailureError('bedrock_credentials_expired')),
+          );
+          return child;
+        },
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'bedrock_credentials_expired', text: '' });
+  });
   it('returns no_cli when nothing usable is installed', async () => {
     const out = await runOneShotPrompt({ prompt: 'p', availableClis: [] });
     expect(out).toMatchObject({ ok: false, reason: 'no_cli', cli: null });

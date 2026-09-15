@@ -64,13 +64,41 @@ export interface RuntimeCliStatus {
   authed: boolean;
   available: boolean;
   credentialSource?: AgentCredentialSource | null;
+  authType?: 'iam';
+  region?: string;
 }
 
 export type AgentCredentialSource = 'user' | 'space' | 'platform';
 
+export interface BedrockIamConfig {
+  roleArn: string;
+  region: string;
+  externalId?: string;
+}
+
+export interface BedrockAuth {
+  mode: 'api-key' | 'iam';
+  iam?: BedrockIamConfig;
+}
+
+export interface BedrockIamSetup {
+  config: BedrockIamConfig;
+  brokerRoleArn: string;
+  applicationAccountId: string;
+  inferenceAccountId: string;
+  trustPolicy: object;
+  assumeRolePolicy: object;
+  inferencePolicy: object;
+  inferenceCommands: string;
+  applicationCommands: string;
+}
+
 export interface AgentCredentialStatus {
+  canManageIam?: boolean;
   bedrockBearerTokenSet: boolean;
   kiroApiKeySet: boolean;
+  bedrockAuth?: BedrockAuth;
+  bedrockIam?: BedrockIamConfig | null;
 }
 
 export interface SpaceAgentCredentialStatus extends AgentCredentialStatus {
@@ -89,6 +117,7 @@ export interface AgentCapabilities {
 }
 
 export interface AgentSettings {
+  bedrockAuth?: BedrockAuth;
   /** True when a bearer token is stored in SSM (value is never returned to the browser) */
   bedrockBearerTokenSet: boolean;
   /** True when a Kiro API key is stored in SSM */
@@ -148,6 +177,8 @@ export interface McpVerifyResponse {
 }
 
 export interface AgentSettingsUpdate {
+  bedrockAuth?: BedrockAuth;
+  bedrockIam?: BedrockIamConfig | null;
   /** New bearer token value. Pass empty string to clear. Omit to leave unchanged. */
   bedrockBearerToken?: string;
   /** New Kiro API key value. Pass empty string to clear. Omit to leave unchanged. */
@@ -218,13 +249,37 @@ export const agentsService = {
 
   async updateProjectCredentials(
     projectId: string,
-    update: Pick<AgentSettingsUpdate, 'bedrockBearerToken' | 'kiroApiKey'>,
+    update: Pick<AgentSettingsUpdate, 'bedrockBearerToken' | 'kiroApiKey' | 'bedrockIam'>,
   ): Promise<{ saved: boolean }> {
     return api.put(`/projects/${projectId}/agent-credentials`, update);
   },
 
   async getProjectCapabilities(projectId: string, withModels = false): Promise<AgentCapabilities> {
     return api.get(`/projects/${projectId}/agent-capabilities${withModels ? '?models=1' : ''}`);
+  },
+
+  async getBedrockIamDefaults(
+    projectId?: string,
+  ): Promise<{ brokerRoleArn: string; region: string }> {
+    return api.post('/agents/bedrock-iam', { action: 'defaults', projectId });
+  },
+
+  async generateBedrockIamSetup(
+    config: BedrockIamConfig,
+    projectId?: string,
+  ): Promise<BedrockIamSetup> {
+    return api.post('/agents/bedrock-iam', { action: 'setup', config, projectId });
+  },
+
+  async verifyBedrockIam(
+    config: BedrockIamConfig,
+    projectId?: string,
+  ): Promise<{
+    verified: boolean;
+    models?: AgentModel[];
+    error?: string;
+  }> {
+    return api.post('/agents/bedrock-iam', { action: 'verify', config, projectId });
   },
 
   // Probe custom MCP servers inside the AgentCore container (same image/egress

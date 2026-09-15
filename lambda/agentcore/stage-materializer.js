@@ -233,8 +233,22 @@ export const buildStagePrompt = ({
 export const CUSTOM_MCP_AUTH_ENV_SCRUB = Object.freeze(
   Object.fromEntries(AGENT_CREDENTIAL_ENV_NAMES.map((name) => [name, ''])),
 );
+const CUSTOM_MCP_IAM_ENV_SCRUB = Object.freeze({
+  BEDROCK_IAM_CREDENTIALS_URI: '',
+  BEDROCK_IAM_AUTHORIZATION_TOKEN: '',
+  AIDLC_RUNTIME_AWS_ENV: '',
+  AIDLC_RESTORE_RUNTIME_AWS: '',
+  AWS_CONTAINER_CREDENTIALS_FULL_URI: '',
+  AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '',
+  AWS_CONTAINER_AUTHORIZATION_TOKEN: '',
+  AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '',
+  AWS_PROFILE: '',
+  AWS_DEFAULT_PROFILE: '',
+  AWS_CONFIG_FILE: '/dev/null',
+  AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+});
 
-const scrubCustomMcpAuth = (customServers = {}) =>
+const scrubCustomMcpAuth = (customServers = {}, iam = false) =>
   Object.fromEntries(
     Object.entries(customServers ?? {}).map(([name, server]) => {
       if (!server?.command) return [name, server];
@@ -245,6 +259,7 @@ const scrubCustomMcpAuth = (customServers = {}) =>
           env: {
             ...server.env,
             ...CUSTOM_MCP_AUTH_ENV_SCRUB,
+            ...(iam ? CUSTOM_MCP_IAM_ENV_SCRUB : {}),
           },
         },
       ];
@@ -259,7 +274,7 @@ const scrubCustomMcpAuth = (customServers = {}) =>
 // custom entry can never override the runtime bridge.
 export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }) => ({
   mcpServers: {
-    ...scrubCustomMcpAuth(customServers),
+    ...scrubCustomMcpAuth(customServers, Boolean(env.BEDROCK_IAM_CREDENTIALS_URI)),
     aidlc: {
       command: 'node',
       args: [mcpEntry],
@@ -296,6 +311,9 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         CONNECTIONS_TABLE: env.CONNECTIONS_TABLE ?? '',
         WEBSOCKET_ENDPOINT: env.WEBSOCKET_ENDPOINT ?? '',
         AWS_REGION: env.AWS_REGION ?? '',
+        // The original runtime provider environment is inherited/forwarded by
+        // NAME. Only this child restores it before constructing AWS clients.
+        ...(env.BEDROCK_IAM_CREDENTIALS_URI ? { AIDLC_RESTORE_RUNTIME_AWS: '1' } : {}),
         ARTIFACTS_BUCKET: env.ARTIFACTS_BUCKET ?? '',
         V2_QUESTION_POLL_MS: env.V2_QUESTION_POLL_MS ?? '',
         V2_QUESTION_PARK_GRACE_MS: env.V2_QUESTION_PARK_GRACE_MS ?? '',
@@ -479,6 +497,7 @@ const FULL_REF_TOKEN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 // this list (a user-configured server must not silently inherit runtime
 // credentials).
 const CODEX_AIDLC_FORWARD_ENV = [
+  'AIDLC_RUNTIME_AWS_ENV',
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
@@ -677,6 +696,9 @@ export const materializeCliContext = async ({
   customServers = {},
   secretEnv = {},
 }) => {
+  // Quorum starts in a new discussion directory. Codex keeps its home elsewhere
+  // and OpenCode uses inline config, so neither creates the process cwd itself.
+  await mkdir(workspaceDir, { recursive: true });
   if (cli === 'kiro') {
     return {
       agentName: await materializeKiroAgent({

@@ -29,6 +29,7 @@ import { parseCodexJsonl } from './codex-parser.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from './codex-store.js';
 import { isCredentialFailure } from './credential-errors.js';
+import { credentialFailureResult } from '../invocation-credentials.js';
 
 // Extract the assistant text + token usage from Claude's `--output-format
 // stream-json` stdout (one JSON event per line). Per the headless CLI docs the
@@ -160,6 +161,10 @@ export const runOneShotPrompt = async ({
   }
   const { exitCode, stdout, stderr, timedOut } = capture;
 
+  const authFailure = credentialFailureResult();
+  if (authFailure) {
+    return { ...authFailure, text: '', cli, model: model ?? null, exitCode, metrics: null };
+  }
   if (timedOut) {
     return {
       ok: false,

@@ -23,13 +23,13 @@ Day-to-day project access is _not_ managed here — it lives in each project's [
 
 Everything the agent runtime needs to run:
 
-- **Platform Agent Credentials** — fallback **Bedrock Bearer Token** (used by Claude Code, OpenCode, and Codex) and **Kiro API Key** values. Platform admins manage these SecureString parameters; a personal or space credential takes precedence. See [Credential hierarchy](#credential-hierarchy) and [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
+- **Platform Agent Credentials** — choose **API keys** or **IAM roles** for new Bedrock runs (Claude Code, OpenCode, and Codex). The IAM setup wizard generates AWS commands and policies, supports a separate inference account and region, and checks the connection before activation. Kiro continues to use its separate API key. See [Bedrock IAM setup](bedrock-iam.md) and [Credential hierarchy](#credential-hierarchy).
 - **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. Projects can override these per-CLI in [Project Settings → Agent](projects.md#agent).
 - **Graph Enrichment** — a switch controlling whether the platform adds LLM-generated summaries to derived artifacts in the knowledge graph (`llm` or `off`). The setting takes effect for the _next_ intent, never mid-run; enrichment spend is metered and surfaced on each intent's Audit page.
 
 ### Credential hierarchy
 
-Bedrock and Kiro credentials are resolved independently with this precedence:
+In API-key mode, Bedrock and Kiro credentials are resolved independently with this precedence:
 
 ```text
 personal > space > platform
@@ -39,9 +39,11 @@ personal > space > platform
 - Space owners and admins manage shared credentials in **Space Settings → Agent**.
 - Platform admins manage fallback credentials in **Admin → Agents**.
 
-The APIs return configured state and the effective source, never secret values. When a user selects a CLI for draft AI composition, a Quorum discussion assist, or intent start, the backend resolves that user's effective credential and sends only an opaque binding to AgentCore. AgentCore reads the bound SecureString for each invocation rather than retaining secrets in the long-lived process environment.
+In **IAM mode**, new Bedrock runs use the space IAM role if configured, otherwise the platform role. Personal and space Bedrock keys cannot override IAM. Only platform administrators can configure platform or space IAM roles. Users cannot configure personal IAM roles. Kiro retains the key hierarchy above.
 
-Starting an intent pins the selected CLI and credential binding for the run's lifetime. Rotating the value at that same scope takes effect on the next invocation; clearing or invalidating it fails the run instead of falling through to another scope.
+The APIs return configured state and the effective source, never secret values. When a user selects a CLI for draft AI composition, a Quorum discussion assist, or intent start, the backend resolves that user's effective credential and sends a signed binding to AgentCore. API-key invocations read the bound SecureString; IAM invocations obtain temporary credentials from the existing credential broker and renew through an authenticated local endpoint. The shared runtime cannot assume inference roles directly.
+
+Starting an intent pins the selected CLI and credential binding for the run's lifetime. Existing API-key runs can finish after IAM is enabled; saved keys are retained for those runs. Key rotation at the bound scope takes effect on the next invocation. IAM runs pin the role ARN, region, and optional external ID; later settings changes affect new runs. Removing AWS permissions can still stop an existing run. Runs never silently switch credential sources.
 
 There is no intent-level credential store in this feature. An intent binds to one of the three managed scopes above but never owns a separate API key. Dedicated per-intent secrets would require a separate lifecycle and authorization design.
 

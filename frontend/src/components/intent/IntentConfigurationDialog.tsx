@@ -197,9 +197,14 @@ export function IntentConfigurationDialog({
               />
               <Definition
                 label="Credentials"
+                secondaryValue={
+                  intent.credentialAuthType === 'iam'
+                    ? `${intent.credentialRoleArn ?? ''} · ${intent.credentialRegion ?? ''}`
+                    : undefined
+                }
                 value={
                   intent.credentialSource
-                    ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                    ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} ${intent.credentialAuthType === 'iam' ? 'IAM role' : 'key'}`
                     : 'Default'
                 }
               />

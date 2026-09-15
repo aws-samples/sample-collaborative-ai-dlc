@@ -22,6 +22,11 @@ import {
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
+import { restoreRuntimeAwsAuth } from './runtime-aws-auth.js';
+
+// Only the built-in MCP child sets this marker. The runtime server itself keeps
+// its original process environment; invocation credentials never enter it.
+restoreRuntimeAwsAuth(process.env);
 
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;

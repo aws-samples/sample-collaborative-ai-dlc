@@ -59,6 +59,8 @@ export const readCredentialScopeStatusViaBroker = async (request, deps) => {
   return {
     bedrockBearerTokenSet: result.status.bedrockBearerTokenSet === true,
     kiroApiKeySet: result.status.kiroApiKeySet === true,
+    ...(result.status.bedrockAuth ? { bedrockAuth: result.status.bedrockAuth } : {}),
+    ...(Object.hasOwn(result.status, 'bedrockIam') ? { bedrockIam: result.status.bedrockIam } : {}),
   };
 };
 

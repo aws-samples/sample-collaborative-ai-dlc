@@ -6,11 +6,13 @@ import {
   agentsService,
   type AgentCredentialStatus,
   type SpaceAgentCredentialStatus,
+  type BedrockIamConfig,
 } from '@/services/agents';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
+import { BedrockIamWizard } from '@/components/settings/BedrockIamWizard';
 
 // Credential storage scopes. Intents pin an opaque binding to one of these;
 // they do not store a separate secret.
@@ -57,6 +59,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   const [clearingSecret, setClearingSecret] = useState<SecretName | null>(null);
   const [saveResult, setSaveResult] = useState<SaveResult>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [iamWizardOpen, setIamWizardOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!isCurrentIdentity()) return false;
@@ -92,6 +95,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     setClearingSecret(null);
     setSaveResult(null);
     setErrorMessage(null);
+    setIamWizardOpen(false);
     load()
       .catch((error) => {
         if (!isCurrentIdentity()) return;
@@ -112,7 +116,49 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     return agentsService.updateProjectCredentials(projectId, value);
   };
 
-  const hasChanges = bearerToken !== '' || kiroApiKey !== '';
+  const iamEnabled = settings?.bedrockAuth?.mode === 'iam';
+  const canManageIam =
+    scope === 'platform' || (scope === 'space' && settings?.canManageIam === true);
+  const activeIam =
+    scope === 'space'
+      ? (settings?.bedrockIam ?? settings?.bedrockAuth?.iam)
+      : settings?.bedrockAuth?.iam;
+  const hasChanges = (!iamEnabled && bearerToken !== '') || kiroApiKey !== '';
+
+  const saveIam = async (config: BedrockIamConfig) => {
+    if (scope === 'platform') {
+      await agentsService.updateSettings({ bedrockAuth: { mode: 'iam', iam: config } });
+    } else if (scope === 'space' && projectId) {
+      await agentsService.updateProjectCredentials(projectId, { bedrockIam: config });
+    } else {
+      throw new Error('Personal IAM roles are not supported');
+    }
+    if (!isCurrentIdentity() || !(await load())) return;
+    setBearerToken('');
+  };
+
+  const changeIamSetting = async (inheritSpace: boolean) => {
+    setSaving(true);
+    setErrorMessage(null);
+    try {
+      if (inheritSpace && projectId) {
+        await agentsService.updateProjectCredentials(projectId, { bedrockIam: null });
+      } else {
+        await agentsService.updateSettings({
+          bedrockAuth: {
+            mode: 'api-key',
+            ...(settings?.bedrockAuth?.iam ? { iam: settings.bedrockAuth.iam } : {}),
+          },
+        });
+      }
+      if (isCurrentIdentity()) await load();
+    } catch (error) {
+      if (isCurrentIdentity())
+        setErrorMessage(error instanceof Error ? error.message : 'Could not update IAM');
+    } finally {
+      if (isCurrentIdentity()) setSaving(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -120,7 +166,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     setErrorMessage(null);
     try {
       const value: { bedrockBearerToken?: string; kiroApiKey?: string } = {};
-      if (bearerToken !== '') value.bedrockBearerToken = bearerToken;
+      if (!iamEnabled && bearerToken !== '') value.bedrockBearerToken = bearerToken;
       if (kiroApiKey !== '') value.kiroApiKey = kiroApiKey;
       await update(value);
       if (!isCurrentIdentity() || !(await load())) return;
@@ -172,7 +218,8 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   };
 
   const configuredCount =
-    Number(Boolean(settings?.bedrockBearerTokenSet)) + Number(Boolean(settings?.kiroApiKeySet));
+    Number(iamEnabled || Boolean(settings?.bedrockBearerTokenSet)) +
+    Number(Boolean(settings?.kiroApiKeySet));
   const fallbackText = (provider: 'bedrock' | 'kiro') => {
     if (scope !== 'space') return null;
     const available =
@@ -186,7 +233,11 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     <SettingsCard
       icon={<KeyRound />}
       title={COPY[scope].title}
-      description={COPY[scope].description}
+      description={
+        iamEnabled
+          ? 'Bedrock uses IAM managed by platform administrators. Kiro credentials are configured separately.'
+          : COPY[scope].description
+      }
       badge={
         !loading && (
           <ConfigStatusBadge
@@ -238,19 +289,85 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         </div>
       ) : (
         <div className="space-y-5">
-          <SecretField
-            id={`${scope}-bedrock-bearer-token`}
-            label="Bedrock Bearer Token"
-            isSet={Boolean(settings?.bedrockBearerTokenSet)}
-            value={bearerToken}
-            onChange={setBearerToken}
-            emptyPlaceholder="Enter AWS_BEARER_TOKEN_BEDROCK value"
-            rotatePlaceholder="Enter a new token to rotate, or leave blank"
-            onClear={() => clearSecret('bedrockBearerToken')}
-            clearing={clearingSecret === 'bedrockBearerToken'}
-            disabled={saving || clearingSecret !== null}
-            helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
-          />
+          {scope === 'platform' && (
+            <label className="block space-y-2 text-sm font-medium">
+              Bedrock authentication for new runs
+              <select
+                aria-label="Bedrock authentication for new runs"
+                value={iamEnabled ? 'iam' : 'api-key'}
+                disabled={saving}
+                className="block w-full rounded-md border bg-background px-3 py-2 text-sm"
+                onChange={(event) => {
+                  if (event.target.value === 'iam') setIamWizardOpen(true);
+                  else void changeIamSetting(false);
+                }}
+              >
+                <option value="api-key">API keys — personal, space, or platform</option>
+                <option value="iam">IAM roles — platform or space</option>
+              </select>
+            </label>
+          )}
+          {iamEnabled ? (
+            <div className="space-y-3 rounded-md border bg-muted/30 p-4 text-sm">
+              <p className="font-medium">
+                {scope === 'space' && settings?.bedrockIam
+                  ? 'Space IAM role'
+                  : scope === 'personal'
+                    ? 'Bedrock uses IAM'
+                    : 'Platform IAM role'}
+              </p>
+              {scope !== 'personal' && activeIam && (
+                <div className="space-y-1">
+                  <p className="break-all font-mono text-xs">{activeIam.roleArn}</p>
+                  <p className="text-muted-foreground">Region: {activeIam.region}</p>
+                </div>
+              )}
+              <p className="text-muted-foreground">
+                Bedrock API keys are disabled for new runs. Existing runs keep their original
+                credentials.
+                {scope === 'personal' &&
+                  ' Your platform administrator selects a role for your space or uses the platform role.'}
+              </p>
+              {canManageIam && (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={saving}
+                    onClick={() => setIamWizardOpen(true)}
+                  >
+                    {scope === 'space' && !settings?.bedrockIam
+                      ? 'Set up a space IAM role'
+                      : 'Configure IAM role'}
+                  </Button>
+                  {scope === 'space' && settings?.bedrockIam && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={saving}
+                      onClick={() => changeIamSetting(true)}
+                    >
+                      Inherit platform IAM
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <SecretField
+              id={`${scope}-bedrock-bearer-token`}
+              label="Bedrock Bearer Token"
+              isSet={Boolean(settings?.bedrockBearerTokenSet)}
+              value={bearerToken}
+              onChange={setBearerToken}
+              emptyPlaceholder="Enter AWS_BEARER_TOKEN_BEDROCK value"
+              rotatePlaceholder="Enter a new token to rotate, or leave blank"
+              onClear={() => clearSecret('bedrockBearerToken')}
+              clearing={clearingSecret === 'bedrockBearerToken'}
+              disabled={saving || clearingSecret !== null}
+              helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
+            />
+          )}
           <SecretField
             id={`${scope}-kiro-api-key`}
             label="Kiro API Key"
@@ -272,6 +389,17 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
             result={saveResult}
             errorMessage={errorMessage}
           />
+          {iamWizardOpen && canManageIam && (
+            <BedrockIamWizard
+              key={identity}
+              projectId={scope === 'space' ? projectId : undefined}
+              initial={
+                scope === 'space' ? (settings?.bedrockIam ?? undefined) : settings?.bedrockAuth?.iam
+              }
+              onClose={() => setIamWizardOpen(false)}
+              onSave={saveIam}
+            />
+          )}
         </div>
       )}
     </SettingsCard>

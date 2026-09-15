@@ -60,6 +60,7 @@ module "agents_lambda" {
     # v2 model discovery: lets GET /agents/capabilities?models=1 invoke the
     # runtime's `capabilities` command for Kiro's model list + auth state.
     AGENTCORE_RUNTIME_ARN         = var.agentcore_runtime_arn
+    CREDENTIAL_BROKER_ROLE_ARN    = var.credential_broker_role_arn
     ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
   }
@@ -312,6 +313,36 @@ module "cors_agent_verify_mcp" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.agent_verify_mcp.id
+}
+
+# /agents/bedrock-iam — setup documents and a broker-authorized connection check.
+resource "aws_api_gateway_resource" "agent_bedrock_iam" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.agents_root.id
+  path_part   = "bedrock-iam"
+}
+
+resource "aws_api_gateway_method" "agent_bedrock_iam_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.agent_bedrock_iam.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "agent_bedrock_iam_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.agent_bedrock_iam.id
+  http_method             = aws_api_gateway_method.agent_bedrock_iam_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+module "cors_agent_bedrock_iam" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.agent_bedrock_iam.id
 }
 
 # /agents/settings

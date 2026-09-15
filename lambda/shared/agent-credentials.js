@@ -4,6 +4,12 @@ import {
   GetParametersCommand,
   PutParameterCommand,
 } from '@aws-sdk/client-ssm';
+import {
+  normalizeBedrockIam,
+  readBedrockAuth,
+  writeBedrockAuth,
+  bedrockAuthPath,
+} from './bedrock-iam.js';
 
 export const AGENT_CREDENTIAL_PROVIDERS = ['bedrock', 'kiro'];
 export const AGENT_CREDENTIAL_SOURCES = ['user', 'space', 'platform'];
@@ -38,7 +44,13 @@ export const AGENT_CREDENTIAL_ENV_NAMES = Object.freeze(
   AGENT_CREDENTIAL_PROVIDERS.map((provider) => PROVIDER_CONFIG[provider].envName),
 );
 
-const normalizeBase = (base) => String(base || '').replace(/\/+$/, '');
+const normalizeBase = (base) => {
+  const value = String(base || '');
+  let end = value.length;
+  // Scan backwards to avoid regex backtracking over embedded slash sequences.
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+};
 
 const assertIdentifier = (value, label) => {
   const normalized = String(value || '');
@@ -101,10 +113,19 @@ export const normalizeCredentialBinding = (binding) => {
   if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return null;
   const provider = assertProvider(binding.provider);
   const source = assertSource(binding.source);
+  if (binding.authType && binding.authType !== 'iam') {
+    throw new Error('Unsupported agent authentication type');
+  }
+  if (binding.authType === 'iam' && (provider !== 'bedrock' || source === 'user')) {
+    throw new Error('IAM credentials are supported only for platform and space Bedrock bindings');
+  }
   return {
     provider,
     source,
     ...(source === 'user' ? { userId: assertIdentifier(binding.userId, 'userId') } : {}),
+    ...(binding.authType === 'iam'
+      ? { authType: 'iam', iam: normalizeBedrockIam(binding.iam) }
+      : {}),
   };
 };
 
@@ -147,13 +168,20 @@ export const readCredentialScopeStatus = async (
   { base, source, projectId = null, userId = null },
 ) => {
   const paths = scopePaths({ base, source, projectId, userId });
-  const values = await fetchValues(ssm, paths);
-  return Object.fromEntries(
-    AGENT_CREDENTIAL_PROVIDERS.map((provider) => [
-      PROVIDER_CONFIG[provider].setField,
-      isConfiguredCredentialValue(values[paths[provider]]),
-    ]),
-  );
+  const [values, auth] = await Promise.all([
+    fetchValues(ssm, paths),
+    readBedrockAuth(ssm, { base, projectId: source === 'space' ? projectId : null }),
+  ]);
+  return {
+    ...Object.fromEntries(
+      AGENT_CREDENTIAL_PROVIDERS.map((provider) => [
+        PROVIDER_CONFIG[provider].setField,
+        isConfiguredCredentialValue(values[paths[provider]]),
+      ]),
+    ),
+    ...(auth.platform.mode === 'iam' || auth.platform.iam ? { bedrockAuth: auth.platform } : {}),
+    ...(source === 'space' && auth.space ? { bedrockIam: auth.space } : {}),
+  };
 };
 
 export const writeCredentialScope = async (
@@ -161,6 +189,7 @@ export const writeCredentialScope = async (
   { base, source, projectId = null, userId = null, update = {} },
 ) => {
   assertSource(source);
+  await writeBedrockAuth(ssm, { base, source, projectId, update });
   const written = [];
   const cleared = [];
   for (const provider of AGENT_CREDENTIAL_PROVIDERS) {
@@ -218,18 +247,35 @@ export const deleteCredentialScope = async (
     if (await deleteParameterIfPresent(ssm, path)) deleted.push(provider);
     else missing.push(provider);
   }
+  if (normalizedSource === 'space') {
+    await deleteParameterIfPresent(ssm, bedrockAuthPath(base, projectId));
+  }
   return { deleted, missing };
 };
 
-export const resolveEffectiveCredentialBindings = async (ssm, { base, projectId, userId }) => {
+export const resolveEffectiveCredentialBindings = async (
+  ssm,
+  { base, projectId = null, userId = null },
+) => {
+  const auth = await readBedrockAuth(ssm, { base, projectId });
   const sources = {
-    user: scopePaths({ base, source: 'user', userId }),
-    space: scopePaths({ base, source: 'space', projectId }),
+    ...(userId ? { user: scopePaths({ base, source: 'user', userId }) } : {}),
+    ...(projectId ? { space: scopePaths({ base, source: 'space', projectId }) } : {}),
     platform: scopePaths({ base, source: 'platform' }),
   };
   const bindings = {};
   const unresolved = new Set(AGENT_CREDENTIAL_PROVIDERS);
+  if (auth.platform.mode === 'iam') {
+    bindings.bedrock = {
+      provider: 'bedrock',
+      source: auth.space ? 'space' : 'platform',
+      authType: 'iam',
+      iam: auth.space ?? auth.platform.iam,
+    };
+    unresolved.delete('bedrock');
+  }
   for (const source of AGENT_CREDENTIAL_SOURCES) {
+    if (!sources[source]) continue;
     const paths = Object.fromEntries(
       [...unresolved].map((provider) => [provider, sources[source][provider]]),
     );
@@ -253,6 +299,7 @@ export const resolveEffectiveCredentialBindings = async (ssm, { base, projectId,
 export const readCredentialBindingValue = async (ssm, { base, binding, projectId = null }) => {
   const normalized = normalizeCredentialBinding(binding);
   if (!normalized) return '';
+  if (normalized.authType === 'iam') return '';
   const path = agentCredentialPath({
     base,
     source: normalized.source,

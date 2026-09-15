@@ -371,6 +371,13 @@ resource "aws_iam_role_policy" "agentcore" {
           ]
         },
         {
+          # A shared runtime must not bypass the broker by assuming a different
+          # space's inference role, even if an additional Allow is attached.
+          Effect   = "Deny"
+          Action   = ["sts:AssumeRole"]
+          Resource = "*"
+        },
+        {
           Effect   = "Allow"
           Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
           Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
@@ -393,6 +400,12 @@ resource "aws_iam_role_policy" "agentcore" {
             var.connections_table_arn,
             var.connections_table_arn != "" ? "${var.connections_table_arn}/index/*" : "",
           ])
+        },
+        {
+          # Workflow checkpoints transactionally check the execution header.
+          Effect   = "Allow"
+          Action   = ["dynamodb:ConditionCheckItem"]
+          Resource = aws_dynamodb_table.v2_executions.arn
         },
         {
           # Block bodies + the commit-pinned runtime snapshot (read).
@@ -469,11 +482,11 @@ resource "aws_cloudwatch_log_group" "agentcore" {
 #   root-level `moved` blocks preserve the stored values across the migration.
 # ---------------------------------------------------------------------------
 
-# Bedrock bearer token — optional alternative to IAM role auth.
+# Bedrock bearer token — used when the platform selects API-key authentication.
 # Created with a placeholder value; updated at runtime via the Admin UI.
 resource "aws_ssm_parameter" "bedrock_bearer_token" {
   name        = "/${var.project_name}/${var.environment}/bedrock-bearer-token"
-  description = "AWS_BEARER_TOKEN_BEDROCK for Claude Code / OpenCode (leave blank to use IAM role)"
+  description = "Bedrock API key for Claude Code / OpenCode / Codex; IAM is enabled separately in Admin settings"
   type        = "SecureString"
   value       = "placeholder"
 

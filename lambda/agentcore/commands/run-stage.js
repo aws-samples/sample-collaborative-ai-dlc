@@ -39,6 +39,7 @@ import {
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
 import { isCredentialFailure } from '../cli/credential-errors.js';
+import { credentialFailureResult, currentCredentialSignal } from '../invocation-credentials.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
@@ -175,6 +176,9 @@ const credentialFailureDetail = ({ binding, state }) => {
   const provider = CREDENTIAL_PROVIDER_LABELS[binding.provider] ?? binding.provider;
   const source = CREDENTIAL_SOURCE_LABELS[binding.source] ?? binding.source;
   const condition = state === 'rejected' ? 'was rejected' : 'is no longer available';
+  if (binding.authType === 'iam') {
+    return `The ${source} Bedrock IAM role pinned to this run ${condition}. Ask an administrator to check the credential broker's AssumeRole permission, the inference role's trust policy, and Bedrock model access, then retry. Existing runs keep their selected role and do not fall back to API keys.`;
+  }
   const remediation = {
     user: 'Restore or rotate it in Account Settings, then restart the run.',
     space:
@@ -499,6 +503,7 @@ const runReviewer = async ({
       await cleanupCodexHome({ codexHome: mcpKwargs.codexHome, env }).catch(() => false);
     }
   }
+  if (credentialFailureResult()) throw currentCredentialSignal().reason;
   const verdict = await latestReviewerVerdict({
     store,
     executionId,
@@ -2372,6 +2377,21 @@ export const runStage = async (
       { clearPending: true },
     );
   }
+  // Cancellation stops the child independently of its retry/error behavior.
+  // Reach this only after conversation persistence and the engine checkpoint,
+  // so partial code is preserved before reporting IAM failure. A durable human
+  // gate still parks normally; its resumed invocation gets fresh credentials.
+  const authFailure = credentialFailureResult();
+  if (!parked && authFailure) {
+    return fail(
+      stageInstanceId,
+      authFailure.reason,
+      authFailure.detail +
+        (gitResult.ok
+          ? ''
+          : ' The Git checkpoint also failed; some generated work may remain only in the runtime workspace.'),
+    );
+  }
   if (!parked && exitCode !== 0) {
     // Kiro's benign empty-final-completion crash: the turn's work completed, the
     // agent just ended without closing text and kiro-cli's ACP rejected the empty
@@ -2519,6 +2539,9 @@ export const runStage = async (
       store,
       publish,
     }).catch(() => null);
+    const sensorAuthFailure = credentialFailureResult();
+    if (sensorAuthFailure)
+      return fail(stageInstanceId, sensorAuthFailure.reason, sensorAuthFailure.detail);
     if (held) {
       return fail(stageInstanceId, 'sensor_blocked', held);
     }
@@ -2584,6 +2607,9 @@ export const runStage = async (
           .catch(() => {});
         return null;
       });
+      const reviewerAuthFailure = credentialFailureResult();
+      if (reviewerAuthFailure)
+        return fail(stageInstanceId, reviewerAuthFailure.reason, reviewerAuthFailure.detail);
       const ready = verdict?.result === 'PASS' || verdict?.detail?.verdict === 'READY';
       const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';
       if (ready || !notReady) break;
@@ -2599,6 +2625,9 @@ export const runStage = async (
   }
 
   // 7. Terminal success.
+  const finalAuthFailure = credentialFailureResult();
+  if (finalAuthFailure)
+    return fail(stageInstanceId, finalAuthFailure.reason, finalAuthFailure.detail);
   await store.updateStageState({
     executionId,
     stageInstanceId,

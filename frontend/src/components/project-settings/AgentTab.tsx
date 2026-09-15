@@ -33,6 +33,7 @@ import { TierModelsSection, canonicalTierModels } from '@/components/settings/Ti
 import { AgentCredentialScopeCard } from '@/components/settings/AgentCredentialScopeCard';
 import type { CustomRule } from '@/services/projects';
 import { AGENT_CLIS, AGENT_CLI_METADATA } from '@/lib/agentCli';
+import { useAuth } from '@/contexts/AuthContext';
 
 // Radix Select can't hold an empty-string value, so the "use the default" choice
 // carries this sentinel; it maps back to '' (cleared override) on change.
@@ -45,6 +46,7 @@ interface Props {
 }
 
 export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
+  const { isPlatformAdmin } = useAuth();
   // Capabilities — which CLIs are usable, per-CLI model lists, runtime status.
   const [availableCliNames, setAvailableCliNames] = useState<AgentCli[]>([]);
   const [runtimeModelOverride, setRuntimeModelOverride] = useState<Record<AgentCli, boolean>>({
@@ -264,7 +266,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
 
   return (
     <div className="space-y-6">
-      {canEdit && (
+      {(canEdit || isPlatformAdmin) && (
         <AgentCredentialScopeCard key={project.id} scope="space" projectId={project.id} />
       )}
 

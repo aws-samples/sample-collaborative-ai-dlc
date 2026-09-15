@@ -52,6 +52,11 @@ import {
 } from '../shared/agent-credential-metadata.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import {
+  generateBedrockIamSetup,
+  normalizeBedrockIam,
+  writeBedrockAuth,
+} from '../shared/bedrock-iam.js';
+import {
   authorizeLegacyProjectRead,
   authorizeLegacySprintRead,
   fetchProjectIdForExecution,
@@ -349,6 +354,81 @@ export const handler = async (event) => {
     const credentialUserId = event.requestContext?.authorizer?.claims?.sub || '';
     const credentialBase = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
 
+    if (httpMethod === 'POST' && path.endsWith('/bedrock-iam')) {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      if (!input || typeof input !== 'object' || Array.isArray(input))
+        return response(400, { error: 'Invalid IAM setup request' });
+      let runtimeTarget = coreRuntimeTarget();
+      if (input.projectId) {
+        runtimeTarget = await withNeptune((g) => resolveProjectRuntimeTarget(g, input.projectId));
+        if (!runtimeTarget) return response(404, { error: 'Space not found' });
+      }
+      if (input.action === 'defaults') {
+        return response(200, {
+          brokerRoleArn: process.env.CREDENTIAL_BROKER_ROLE_ARN || '',
+          region: process.env.AWS_REGION || 'us-east-1',
+        });
+      }
+      try {
+        if (input.action === 'setup') {
+          return response(
+            200,
+            generateBedrockIamSetup({
+              brokerRoleArn: process.env.CREDENTIAL_BROKER_ROLE_ARN,
+              config: input.config,
+            }),
+          );
+        }
+        if (input.action !== 'verify')
+          return response(400, { error: 'Unsupported IAM setup action' });
+        const config = normalizeBedrockIam(input.config);
+        if (!runtimeTarget.agentRuntimeArn)
+          return response(503, { error: 'Agent runtime is not configured' });
+        const binding = {
+          provider: 'bedrock',
+          source: input.projectId ? 'space' : 'platform',
+          authType: 'iam',
+          iam: config,
+        };
+        const agentCredentialGrant = await issueAgentCredentialGrant(ssm, {
+          purpose: 'capabilities',
+          projectId: input.projectId || null,
+          bindings: [binding],
+        });
+        const result = await agentcore.send(
+          new InvokeAgentRuntimeCommand({
+            ...runtimeTarget,
+            runtimeSessionId: randomUUID(),
+            contentType: 'application/json',
+            accept: 'application/json',
+            payload: Buffer.from(
+              JSON.stringify({
+                command: 'verify-bedrock-iam',
+                projectId: input.projectId || null,
+                credentialBindings: { bedrock: binding },
+                agentCredentialGrant,
+              }),
+            ),
+          }),
+        );
+        const text = result.response ? await result.response.transformToString() : '';
+        return response(
+          200,
+          text ? JSON.parse(text) : { verified: false, error: 'Empty response from runtime' },
+        );
+      } catch (error) {
+        if (error?.code === 'INVALID_BEDROCK_AUTH') return response(400, { error: error.message });
+        return response(502, { error: 'Could not reach the runtime to check IAM. Try again.' });
+      }
+    }
+
     // ===== HIERARCHICAL AGENT CREDENTIALS =====
 
     // GET/PUT /users/me/agent-credentials — the authenticated user's personal
@@ -385,6 +465,8 @@ export const handler = async (event) => {
           });
           return response(200, { saved: true });
         } catch (error) {
+          if (error?.code === 'INVALID_BEDROCK_AUTH')
+            return response(400, { error: error.message });
           console.error('[user agent credentials] PUT failed:', error.message);
           return response(500, { error: 'Failed to save personal agent credentials' });
         }
@@ -396,7 +478,25 @@ export const handler = async (event) => {
     // Owners/admins may inspect set-state and rotate/clear; values never return.
     if (projectId && path.endsWith('/agent-credentials')) {
       if (!credentialUserId) return response(401, { error: 'Unauthorized' });
-      const role = await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
+      const platformAdmin = isPlatformAdmin(event);
+      let input;
+      if (httpMethod === 'PUT') {
+        try {
+          input = JSON.parse(body || '{}');
+        } catch {
+          return response(400, { error: 'Invalid JSON body' });
+        }
+        if (!input || typeof input !== 'object' || Array.isArray(input))
+          return response(400, { error: 'Invalid credential update' });
+        if ((input.bedrockIam !== undefined || input.bedrockAuth !== undefined) && !platformAdmin) {
+          return response(403, {
+            error: 'Only platform administrators can configure space IAM roles',
+          });
+        }
+      }
+      const role = platformAdmin
+        ? 'admin'
+        : await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
       if (role !== 'owner' && role !== 'admin') {
         return response(403, {
           error: 'Only space owners and admins can manage agent credentials',
@@ -413,19 +513,13 @@ export const handler = async (event) => {
               source: 'platform',
             }),
           ]);
-          return response(200, { ...space, platformFallback });
+          return response(200, { ...space, platformFallback, canManageIam: platformAdmin });
         } catch (error) {
           console.error('[space agent credentials] GET failed:', error.message);
           return response(500, { error: 'Failed to load space agent credentials' });
         }
       }
       if (httpMethod === 'PUT') {
-        let input;
-        try {
-          input = JSON.parse(body || '{}');
-        } catch {
-          return response(400, { error: 'Invalid JSON body' });
-        }
         try {
           await writeCredentialScope(ssm, {
             base: credentialBase,
@@ -435,6 +529,8 @@ export const handler = async (event) => {
           });
           return response(200, { saved: true });
         } catch (error) {
+          if (error?.code === 'INVALID_BEDROCK_AUTH')
+            return response(400, { error: error.message });
           console.error('[space agent credentials] PUT failed:', error.message);
           return response(500, { error: 'Failed to save space agent credentials' });
         }
@@ -459,8 +555,8 @@ export const handler = async (event) => {
       }
       const withModels = event.queryStringParameters?.models === '1';
       if (withModels) refreshModelPricing().catch(() => {});
-      const [claudeModels, runtimeCaps] = await Promise.all([
-        withModels
+      const [defaultClaudeModels, runtimeCaps] = await Promise.all([
+        withModels && credentialBindings.bedrock?.authType !== 'iam'
           ? listClaudeModels({
               listInferenceProfiles: async () => {
                 const out = await bedrock.send(
@@ -472,6 +568,10 @@ export const handler = async (event) => {
           : [],
         fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
       ]);
+      const claudeModels =
+        credentialBindings.bedrock?.authType === 'iam'
+          ? (runtimeCaps?.bedrockModels ?? [])
+          : defaultClaudeModels;
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
       const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
         ...cli,
@@ -626,6 +726,12 @@ export const handler = async (event) => {
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
       const input = JSON.parse(body || '{}');
       const errors = [];
+      try {
+        await writeBedrockAuth(ssm, { base: prefix, source: 'platform', update: input });
+      } catch (error) {
+        if (error?.code === 'INVALID_BEDROCK_AUTH') return response(400, { error: error.message });
+        throw error;
+      }
 
       if (typeof input.bedrockBearerToken === 'string') {
         // Empty string clears the token (stored as literal "placeholder" sentinel)
@@ -967,6 +1073,9 @@ export const handler = async (event) => {
           return response(500, { error: 'Failed to resolve agent credentials' });
         }
       }
+      if (!capabilitiesProjectId) {
+        credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({});
+      }
 
       if (event.queryStringParameters?.models !== '1') {
         const caps = await fetchRuntimeCapabilities(
@@ -988,15 +1097,23 @@ export const handler = async (event) => {
 
       // Bedrock (claude/opencode) + runtime (kiro + auth state) discovery, in
       // parallel. Both are best-effort — a failure yields empty models, never a 500.
-      const [claudeModels, runtimeCaps] = await Promise.all([
-        listClaudeModels({
-          listInferenceProfiles: async () => {
-            const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
-            return out.inferenceProfileSummaries ?? [];
-          },
-        }),
+      const [defaultClaudeModels, runtimeCaps] = await Promise.all([
+        credentialBindings.bedrock?.authType === 'iam'
+          ? []
+          : listClaudeModels({
+              listInferenceProfiles: async () => {
+                const out = await bedrock.send(
+                  new ListInferenceProfilesCommand({ maxResults: 100 }),
+                );
+                return out.inferenceProfileSummaries ?? [];
+              },
+            }),
         fetchRuntimeCapabilities(runtimeTarget, credentialBindings, capabilitiesProjectId || null),
       ]);
+      const claudeModels =
+        credentialBindings.bedrock?.authType === 'iam'
+          ? (runtimeCaps?.bedrockModels ?? [])
+          : defaultClaudeModels;
       const kiroModels = runtimeCaps?.kiroModels?.models ?? [];
       // OpenCode drives the SAME Bedrock profiles as claude but requires the
       // `amazon-bedrock/` provider prefix (see cli-models validation).

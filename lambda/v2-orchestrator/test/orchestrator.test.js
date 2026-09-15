@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { __durableHandler } from '../index.js';
+import {
+  signAgentCredentialGrant,
+  verifyAgentCredentialGrant,
+} from '../../shared/agent-credential-grants.js';
 
 // The orchestrator's control flow is driven through an injected `deps` bag and a
 // fake DurableContext — no real AWS/Neptune. This isolates the sequencing logic
@@ -218,6 +222,56 @@ describe('orchestrator durable handler', () => {
     expect(deps.issueAgentCredentialGrant).toHaveBeenCalledWith(
       expect.objectContaining({ bindings: [pinnedBinding] }),
     );
+  });
+
+  it('issues a fresh grant for the pinned IAM role when a human answers three hours later', async () => {
+    const binding = {
+      provider: 'bedrock',
+      source: 'space',
+      authType: 'iam',
+      iam: { roleArn: 'arn:aws:iam::222222222222:role/SpaceInference', region: 'eu-west-1' },
+    };
+    const secret = 's'.repeat(48);
+    let time = Date.now();
+    const initialTime = time;
+    deps.store.getExecution.mockResolvedValue({
+      ...META,
+      agentCli: 'claude',
+      credentialBinding: binding,
+      pendingHumanTaskId: 'h1',
+    });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.issueAgentCredentialGrant = vi.fn(async (claims) =>
+      signAgentCredentialGrant(claims, secret, { now: () => time }),
+    );
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      if (n === 2) {
+        time += 3 * 3600_000;
+        return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      }
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    const result = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    const starts = stageStarts();
+    expect(starts).toHaveLength(2);
+    expect(starts[1].resumeFrom).toBe('h1');
+    expect(
+      verifyAgentCredentialGrant(starts[0].agentCredentialGrant, secret, { now: () => initialTime })
+        .bindings,
+    ).toEqual([binding]);
+    expect(() =>
+      verifyAgentCredentialGrant(starts[0].agentCredentialGrant, secret, { now: () => time }),
+    ).toThrow();
+    expect(
+      verifyAgentCredentialGrant(starts[1].agentCredentialGrant, secret, { now: () => time })
+        .bindings,
+    ).toEqual([binding]);
   });
 
   it('parks on WAITING_FOR_HUMAN, binds a callback, then resumes', async () => {

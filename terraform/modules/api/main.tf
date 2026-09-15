@@ -86,6 +86,7 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.agent_settings_get,
     aws_api_gateway_integration.agent_settings_put,
     aws_api_gateway_integration.agent_verify_mcp_post,
+    aws_api_gateway_integration.agent_bedrock_iam_post,
     aws_api_gateway_integration.project_agent_credentials_get,
     aws_api_gateway_integration.project_agent_credentials_put,
     aws_api_gateway_integration.project_agent_capabilities_get,
@@ -169,6 +170,7 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_agent_capabilities,
     module.cors_agent_settings,
     module.cors_agent_verify_mcp,
+    module.cors_agent_bedrock_iam,
     # Every method must have its integration BEFORE the deployment is
     # created, or the first apply that introduces a route fails with
     # "No integration defined for method" (the deployment races the new
@@ -487,6 +489,9 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.agent_capabilities.id,
       aws_api_gateway_resource.agent_settings.id,
       aws_api_gateway_resource.agent_verify_mcp.id,
+      aws_api_gateway_resource.agent_bedrock_iam.id,
+      aws_api_gateway_method.agent_bedrock_iam_post.id,
+      aws_api_gateway_integration.agent_bedrock_iam_post.id,
       aws_api_gateway_resource.users_me.id,
       aws_api_gateway_resource.user_agent_credentials.id,
       aws_api_gateway_method.user_agent_credentials_get.id,
