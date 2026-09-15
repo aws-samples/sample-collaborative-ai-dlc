@@ -9,7 +9,6 @@
 //   V2_MCP_ROLE          author | reviewer | reader
 //   V2_PROCESS_TABLE, NEPTUNE_ENDPOINT, CONNECTIONS_TABLE, WEBSOCKET_ENDPOINT
 
-import { Logger } from '@aws-lambda-powertools/logger';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -19,8 +18,6 @@ import { createGraphManager } from './graph-manager.js';
 import { createProcessBridge } from './process-bridge.js';
 import { buildToolHandlers, registerTools } from './server.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
-
-const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'mcp' } });
 
 const scopeFromEnv = (env = process.env) => ({
   executionId: env.V2_EXECUTION_ID,
@@ -74,14 +71,14 @@ export const startMcpServer = async ({ env = process.env } = {}) => {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  logger.info('mcp connected', { role, tools: registered.length });
+  console.error(`[agentcore-mcp] connected (role=${role}, tools=${registered.length})`);
   return server;
 };
 
 // Only start when run directly as the MCP child process.
 if (import.meta.url === `file://${process.argv[1]}`) {
   startMcpServer().catch((e) => {
-    logger.error('error starting MCP server', e);
+    console.error('[agentcore-mcp] fatal:', e);
     process.exit(1);
   });
 }
