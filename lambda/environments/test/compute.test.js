@@ -49,9 +49,7 @@ describe('normalizeCompute', () => {
   });
 
   it('rejects x86_64 on microVMs (arm64-only compute type)', () => {
-    expect(() => normalizeCompute({ type: 'microvms', architecture: 'x86_64' })).toThrow(
-      /arm64/,
-    );
+    expect(() => normalizeCompute({ type: 'microvms', architecture: 'x86_64' })).toThrow(/arm64/);
   });
 
   it('accepts instances and defaults the architecture to x86_64', () => {
@@ -204,8 +202,8 @@ describe('ensureCapacityProvider', () => {
         ],
       }),
     };
-    await expect(
-      ensureCapacityProvider({ controlClient, architecture: 'x86_64' }),
-    ).rejects.toThrow(/bad subnet/);
+    await expect(ensureCapacityProvider({ controlClient, architecture: 'x86_64' })).rejects.toThrow(
+      /bad subnet/,
+    );
   });
 });

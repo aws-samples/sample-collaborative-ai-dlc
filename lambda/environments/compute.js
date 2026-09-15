@@ -40,8 +40,8 @@ const parseJsonEnv = (name, fallback) => {
 export const instancesComputeConfigured = () =>
   Boolean(
     process.env.MANAGED_INSTANCES_OPERATOR_ROLE_ARN &&
-      parseJsonEnv('MANAGED_INSTANCES_SUBNETS', []).length > 0 &&
-      parseJsonEnv('MANAGED_INSTANCES_SECURITY_GROUPS', []).length > 0,
+    parseJsonEnv('MANAGED_INSTANCES_SUBNETS', []).length > 0 &&
+    parseJsonEnv('MANAGED_INSTANCES_SECURITY_GROUPS', []).length > 0,
   );
 
 export const amd64CoreImageConfigured = () =>
@@ -61,10 +61,9 @@ export const normalizeCompute = (input) => {
   }
   const type = input.type ?? 'microvms';
   if (!COMPUTE_TYPES.includes(type)) {
-    throw Object.assign(
-      new Error(`compute.type must be one of: ${COMPUTE_TYPES.join(', ')}`),
-      { statusCode: 400 },
-    );
+    throw Object.assign(new Error(`compute.type must be one of: ${COMPUTE_TYPES.join(', ')}`), {
+      statusCode: 400,
+    });
   }
   const architecture = input.architecture ?? (type === 'instances' ? 'x86_64' : 'arm64');
   if (!ARCHITECTURES.includes(architecture)) {
@@ -91,10 +90,10 @@ export const normalizeCompute = (input) => {
     );
   }
   if (architecture === 'x86_64' && !amd64CoreImageConfigured()) {
-    throw Object.assign(
-      new Error('No x86_64 core image is published on this deployment'),
-      { statusCode: 409, code: 'AMD64_CORE_IMAGE_MISSING' },
-    );
+    throw Object.assign(new Error('No x86_64 core image is published on this deployment'), {
+      statusCode: 409,
+      code: 'AMD64_CORE_IMAGE_MISSING',
+    });
   }
   return { type, architecture };
 };

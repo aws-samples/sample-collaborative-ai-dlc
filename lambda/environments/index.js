@@ -207,9 +207,7 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
           {
             name: 'IMAGE_PLATFORM',
             value:
-              environmentArchitecture(environment) === 'x86_64'
-                ? 'linux/amd64'
-                : 'linux/arm64',
+              environmentArchitecture(environment) === 'x86_64' ? 'linux/amd64' : 'linux/arm64',
             type: 'PLAINTEXT',
           },
         ],
