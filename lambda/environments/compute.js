@@ -171,7 +171,7 @@ export const ensureCapacityProvider = async ({ controlClient, architecture }) =>
               operatingSystem: OPERATING_SYSTEMS[architecture] ?? OPERATING_SYSTEMS.x86_64,
               instanceRequirements: {
                 allowedInstanceTypes: parseJsonEnv('MANAGED_INSTANCES_ALLOWED_TYPES', [
-                  't3.large',
+                  'm6i.large',
                 ]),
               },
             },

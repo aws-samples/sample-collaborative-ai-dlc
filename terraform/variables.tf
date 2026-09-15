@@ -167,5 +167,5 @@ variable "enable_instances_compute" {
 variable "instances_allowed_instance_types" {
   description = "EC2 instance types allowed on the platform-managed capacity providers"
   type        = list(string)
-  default     = ["t3.large"]
+  default     = ["m6i.large"] # burstable (t-family) is not supported by AgentCore Instances
 }
