@@ -131,16 +131,16 @@ jobs:
             echo "::add-mask::$ACM_CERTIFICATE_ARN"
           fi
           if [[ -n "$APP_DOMAIN_ALIASES" ]]; then
-            node --input-type=module <<'NODE'
-            const aliases = JSON.parse(process.env.APP_DOMAIN_ALIASES);
-            if (!Array.isArray(aliases) || aliases.some(alias => typeof alias !== 'string')) {
-              throw new Error('APP_DOMAIN_ALIASES must be a JSON array of hostnames.');
-            }
-            for (const alias of aliases) {
-              console.log(`::add-mask::${alias}`);
-              console.log(`::add-mask::https://${alias}`);
-            }
-            NODE
+            node --input-type=module -e '
+              const aliases = JSON.parse(process.env.APP_DOMAIN_ALIASES);
+              if (!Array.isArray(aliases) || aliases.some(alias => typeof alias !== "string")) {
+                throw new Error("APP_DOMAIN_ALIASES must be a JSON array of hostnames.");
+              }
+              for (const alias of aliases) {
+                console.log(`::add-mask::${alias}`);
+                console.log(`::add-mask::https://${alias}`);
+              }
+            '
           fi
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -264,17 +264,17 @@ jobs:
             exit 1
           fi
           if [[ -n "$APP_DOMAIN" ]]; then
-            node --input-type=module <<'NODE'
-            import { lookup } from 'node:dns/promises';
+            node --input-type=module -e '
+              import { lookup } from "node:dns/promises";
 
-            const domains = [
-              process.env.APP_DOMAIN,
-              ...JSON.parse(process.env.APP_DOMAIN_ALIASES),
-            ];
-            for (const domain of domains) {
-              await lookup(domain);
-            }
-            NODE
+              const domains = [
+                process.env.APP_DOMAIN,
+                ...JSON.parse(process.env.APP_DOMAIN_ALIASES),
+              ];
+              for (const domain of domains) {
+                await lookup(domain);
+              }
+            '
           fi
 
       - name: Configure AWS credentials
