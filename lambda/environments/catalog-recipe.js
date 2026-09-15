@@ -390,7 +390,9 @@ export const generateCatalogEnvironmentVerificationScript = (recipe) => {
   const toolChecks = recipe.resolvedTools
     .map((tool) => `run_tool_check ${quote(tool.toolId)} ${quote(encodedVerifier(tool))}`)
     .join('\n');
-  return `${verificationPrologue()}
+  // docker image inspect reports x86_64 images as "amd64".
+  const expectedArchitecture = recipe.architecture === 'x86_64' ? 'amd64' : 'arm64';
+  return `${verificationPrologue(expectedArchitecture)}
 docker network disconnect bridge "$container"
 docker exec "$container" node --version >/dev/null
 docker exec "$container" python3 --version >/dev/null
