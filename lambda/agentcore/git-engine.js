@@ -27,6 +27,7 @@ import { mkdir, readFile, writeFile, rm, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
 import { NO_HOOKS_PATH, runGitCommand } from './git-runner.js';
+import { repoTargetDir } from './repo-paths.js';
 import {
   resolveGitCommitter as defaultResolveGitCommitter,
   withGitCredential as defaultWithGitCredential,
@@ -522,11 +523,8 @@ export const pushBranch = async ({
   }
 };
 
-// The on-disk target dir for a repo — MUST match workspace.js#repoTargetDir
-// (single repo → workspaceDir; multi → workspaceDir/<owner>/<repo>). Exported
-// for the lane commands (init-lane / merge-lane) that loop repos themselves.
-export const repoTargetDir = ({ url, workspaceDir, multi }) =>
-  multi ? path.join(workspaceDir, url) : workspaceDir;
+// Keep lane operations on the same validated layout as checkout and recovery.
+export { repoTargetDir };
 
 // Authenticated fetch — lane branching and merge-back need current remote refs.
 //   { fetched: true }                    — remote refs are current

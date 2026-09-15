@@ -40,7 +40,7 @@ import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
-import { isSafeRepo } from '../shared/repo-validation.js';
+import { isSafeRepo, isValidRepoPath } from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { deleteCredentialScope } from '../shared/agent-credentials.js';
@@ -286,14 +286,6 @@ const syncPrimaryRepo = async (g, projectId, primaryUrl, preloadedRepos) => {
       .next();
   }
 };
-
-// Validate safe repository paths, leaving naming rules and length limits to
-// the provider. Multiple namespace segments support GitLab subgroups.
-const REPO_PATH_PATTERN = /^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)+$/;
-const isValidRepoPath = (value) =>
-  typeof value === 'string' &&
-  REPO_PATH_PATTERN.test(value) &&
-  value.split('/').every((segment) => segment !== '.' && segment !== '..');
 
 // The legacy `gitRepo` field is historically a freeform string (bare names,
 // SSH URLs). We can't tighten it to owner/repo without breaking that contract,

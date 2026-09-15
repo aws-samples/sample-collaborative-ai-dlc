@@ -32,4 +32,22 @@ describe('native repository projection', () => {
     expect(repositoryId('git@github.com:owner/repo.git')).toBe('owner/repo');
     expect(repositoryId('https://github.com/owner/repo.git')).toBe('owner/repo');
   });
+
+  it.each(['owner/.', 'owner/..', 'owner/../repo', './repo', '../repo'])(
+    'rejects unsafe repository paths before assigning directories: %s',
+    (id) => {
+      expect(() => assignNativeRepositoryDirectories([{ id }])).toThrow(
+        'native-export: invalid repository path',
+      );
+    },
+  );
+
+  it.each(['-repo', '.github', 'test...plop'])(
+    'preserves safe repository basenames: %s',
+    (name) => {
+      expect(assignNativeRepositoryDirectories([{ id: `owner/${name}` }])).toEqual([
+        { id: `owner/${name}`, directory: name },
+      ]);
+    },
+  );
 });
