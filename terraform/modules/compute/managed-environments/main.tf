@@ -476,6 +476,18 @@ resource "aws_iam_role_policy" "status" {
         Resource = var.environment_repository_arn
       },
       {
+        # In accounts with ECR enhanced scanning, DescribeImageScanFindings is
+        # served by Amazon Inspector and the caller also needs inspector2 read
+        # access. Inspector2 does not support resource-level scoping for these
+        # list actions.
+        Effect = "Allow"
+        Action = [
+          "inspector2:ListCoverage",
+          "inspector2:ListFindings",
+        ]
+        Resource = "*"
+      },
+      {
         Effect = "Allow"
         Action = [
           "bedrock-agentcore:CreateAgentRuntime",
