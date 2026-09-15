@@ -427,6 +427,13 @@ resource "aws_iam_role_policy" "status_instances" {
         Resource = "*"
       },
       {
+        # CreateAgentRuntime with a capacityProviderConfiguration requires
+        # permission to "pass" the capacity provider to the runtime.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:PassCapacityProvider"]
+        Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
+      },
+      {
         # First capacity provider in an account creates the Instances
         # service-linked role on the caller's behalf.
         Effect   = "Allow"
