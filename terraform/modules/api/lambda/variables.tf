@@ -8,10 +8,14 @@ variable "environment" {
   type        = string
 }
 
+variable "powertools_service_name" {
+  description = "Service name included in Powertools structured logs"
+  type        = string
+}
+
 variable "powertools_log_level" {
   description = "Log level for Powertools structured logging (DEBUG/INFO/WARN/ERROR)"
   type        = string
-  default     = "INFO"
 
   validation {
     condition     = contains(["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL", "SILENT"], var.powertools_log_level)
@@ -20,9 +24,8 @@ variable "powertools_log_level" {
 }
 
 variable "powertools_log_event" {
-  description = "When true, Powertools logs the full incoming event (debug only; default off). Central switch for all API Lambdas."
+  description = "When true, Powertools logs sanitized incoming API events"
   type        = bool
-  default     = false
 }
 
 variable "application_url" {

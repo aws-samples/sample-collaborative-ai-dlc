@@ -39,6 +39,7 @@ import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
@@ -1516,7 +1517,7 @@ const authorize = async (g, projectId, sub, response) => {
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
-  logger.logEventIfEnabled(event);
+  logSafeEventIfEnabled(logger, event);
   const response = buildResponse(event);
   if (event?.source === 'aws.s3') {
     await ingestAttachmentUpload(event);

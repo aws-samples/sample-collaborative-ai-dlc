@@ -4,6 +4,7 @@ import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
 import { S3Client } from '@aws-sdk/client-s3';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import {
   generateToolBuildContext,
@@ -288,6 +289,7 @@ export const createToolsHandler = ({
   environmentStore = defaultEnvironmentStore,
   s3Client = s3,
   codebuildClient = codebuild,
+  eventLogger = logger,
 } = {}) => {
   const initialize = createRetryableInitializer(async () => {
     await store.seedSystemTools();
@@ -317,6 +319,7 @@ export const createToolsHandler = ({
 
   return async (event, context) => {
     if (context) logger.addContext(context);
+    if (event?.httpMethod) logSafeEventIfEnabled(eventLogger, event);
     if (event?.action === 'bootstrap') {
       await initialize();
       return { initialized: true };

@@ -13,6 +13,7 @@ import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, PutParameterCommand, DeleteParameterCommand } from '@aws-sdk/client-ssm';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from './response.js';
+import { redactEventForLogging } from './safe-event-logger.js';
 import {
   getOAuthCredentials,
   createSignedState,
@@ -119,31 +120,7 @@ export const createGitHandler = (provider, routes) => {
 
   return async (event) => {
     const response = buildResponse(event, { methods: 'GET,POST,DELETE,OPTIONS' });
-    const {
-      gitToken: _gitToken,
-      code: _code,
-      state: _state,
-      accessToken: _accessToken,
-      ...safeEvent
-    } = event;
-    // The OAuth secrets travel in the callback's QUERY STRING (?code=&state=),
-    // not the top-level event — stripping the top-level keys above is not
-    // enough. Redact the nested query params too so authorization codes and
-    // signed state never reach CloudWatch (they grant account access if leaked).
-    const redactQuery = (q) => {
-      if (!q || typeof q !== 'object') return q;
-      const SENSITIVE = ['code', 'state', 'access_token', 'refresh_token', 'client_secret'];
-      const out = { ...q };
-      for (const k of SENSITIVE) {
-        if (k in out) out[k] = '[REDACTED]';
-      }
-      return out;
-    };
-    logger.info('Request', {
-      ...safeEvent,
-      body: '[REDACTED]',
-      queryStringParameters: redactQuery(safeEvent.queryStringParameters),
-    });
+    logger.info('Request', { event: redactEventForLogging(event) });
 
     if (event.httpMethod === 'OPTIONS') return response(200, {});
 

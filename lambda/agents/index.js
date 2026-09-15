@@ -28,6 +28,7 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin, isPlatformAdmin } from '../shared/authz.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
@@ -344,7 +345,7 @@ async function refreshModelPricing() {
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
-  logger.logEventIfEnabled(event);
+  logSafeEventIfEnabled(logger, event);
   const response = buildResponse(event);
   const { httpMethod, path = '', pathParameters, body } = event;
   const projectId = pathParameters?.projectId;

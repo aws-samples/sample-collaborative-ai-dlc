@@ -212,7 +212,11 @@ resource "aws_ecs_task_definition" "yjs_server" {
       },
       {
         name  = "POWERTOOLS_SERVICE_NAME"
-        value = "collaborative-aidlc"
+        value = var.powertools_service_name
+      },
+      {
+        name  = "POWERTOOLS_LOG_LEVEL"
+        value = var.powertools_log_level
       },
     ]
     secrets = [

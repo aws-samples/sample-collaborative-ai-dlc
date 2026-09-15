@@ -7,7 +7,7 @@ locals {
   dns_suffix           = data.aws_partition.current.dns_suffix
   enable_public_egress = var.lambda_vpc_scope == "public-egress"
 
-  powertools_service_name = "collaborative-aidlc"
+  powertools_service_name = var.powertools_service_name
 
   # Lambdas that bundle code from lambda/shared/** via esbuild are packaged by
   # the terraform-aws-modules/lambda module,

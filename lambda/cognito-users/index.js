@@ -22,6 +22,7 @@ import {
   AdminRemoveUserFromGroupCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin, PLATFORM_ADMIN_GROUP } from '../shared/authz.js';
 import { evaluateSsoRoles, parseRoleConfig } from '../shared/sso-roles.js';
 import { Logger } from '@aws-lambda-powertools/logger';
@@ -98,7 +99,7 @@ const listPlatformAdminUsernames = async (userPoolId) => {
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
-  logger.logEventIfEnabled(event);
+  logSafeEventIfEnabled(logger, event);
   const response = buildResponse(event, { methods: 'GET,PUT,OPTIONS' });
   if (event.httpMethod === 'OPTIONS') {
     return response(200, {});

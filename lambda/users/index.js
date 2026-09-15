@@ -4,6 +4,7 @@ import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { invalidateProjectBindingsByDelegator } from '../shared/source-control-bindings.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
@@ -41,7 +42,7 @@ const getConnection = async () => {
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
-  logger.logEventIfEnabled(event);
+  logSafeEventIfEnabled(logger, event);
   const response = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') {
     return response(200, {});

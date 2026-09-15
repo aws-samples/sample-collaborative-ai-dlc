@@ -26,6 +26,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
@@ -336,7 +337,7 @@ const toApi = (item) => {
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
-  logger.logEventIfEnabled(event);
+  logSafeEventIfEnabled(logger, event);
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 

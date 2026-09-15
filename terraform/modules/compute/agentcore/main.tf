@@ -675,7 +675,8 @@ locals {
     SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
     MCP_SECRETS_SSM_PREFIX        = "/${var.project_name}/${var.environment}"
     RUNTIME_COMPATIBILITY_VERSION = "1"
-    POWERTOOLS_SERVICE_NAME       = "collaborative-aidlc"
+    POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
   }
 }
 

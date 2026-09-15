@@ -83,10 +83,12 @@ module "connection_lambda" {
   lambda_role = aws_iam_role.lambda.arn
 
   environment_variables = {
-    CONNECTIONS_TABLE     = var.connections_table_name
-    WEBSOCKET_ENDPOINT    = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.region}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
-    REALTIME_SECRET_PARAM = aws_ssm_parameter.realtime_doc_secret.name
-    DOC_TOKEN_ENFORCE     = var.doc_token_enforce ? "true" : "false"
+    POWERTOOLS_SERVICE_NAME = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
+    CONNECTIONS_TABLE       = var.connections_table_name
+    WEBSOCKET_ENDPOINT      = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.region}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
+    REALTIME_SECRET_PARAM   = aws_ssm_parameter.realtime_doc_secret.name
+    DOC_TOKEN_ENFORCE       = var.doc_token_enforce ? "true" : "false"
   }
 }
 
@@ -113,8 +115,10 @@ module "message_lambda" {
   lambda_role = aws_iam_role.lambda.arn
 
   environment_variables = {
-    CONNECTIONS_TABLE  = var.connections_table_name
-    WEBSOCKET_ENDPOINT = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.region}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
+    POWERTOOLS_SERVICE_NAME = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
+    CONNECTIONS_TABLE       = var.connections_table_name
+    WEBSOCKET_ENDPOINT      = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.region}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
   }
 }
 
@@ -141,7 +145,9 @@ module "authorizer_lambda" {
   lambda_role = aws_iam_role.lambda.arn
 
   environment_variables = {
-    COGNITO_USER_POOL_ID = var.cognito_user_pool_id
-    COGNITO_CLIENT_ID    = var.cognito_client_id
+    POWERTOOLS_SERVICE_NAME = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
+    COGNITO_USER_POOL_ID    = var.cognito_user_pool_id
+    COGNITO_CLIENT_ID       = var.cognito_client_id
   }
 }

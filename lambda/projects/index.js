@@ -21,6 +21,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Logger } from '@aws-lambda-powertools/logger';
 import nodePath from 'node:path';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import {
   isEnvironmentResolutionError,
   resolvePublishedEnvironment,
@@ -1215,7 +1216,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   logger.resetKeys();
-  logger.logEventIfEnabled(event);
+  logSafeEventIfEnabled(logger, event);
   const response = buildResponse(event);
 
   // Handle OPTIONS for CORS

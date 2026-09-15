@@ -19,6 +19,7 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import {
   trackerBindingProjectionStep,
@@ -525,7 +526,7 @@ const disconnectTracker = async (response, userId, provider, instance) => {
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
-  logger.logEventIfEnabled(event);
+  logSafeEventIfEnabled(logger, event);
   if (event?.action === 'reconcile-tracker-deliveries') {
     return runTrackerDeliveryMaintenance(event);
   }

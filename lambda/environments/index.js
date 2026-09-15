@@ -4,6 +4,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { isPlatformAdmin, requirePlatformAdmin } from '../shared/authz.js';
 import {
   applyToolPrerequisites,
@@ -319,11 +320,13 @@ export const createHandler = ({
   toolStore = defaultToolStore,
   s3Client = s3,
   codebuildClient = codebuild,
+  eventLogger = logger,
 } = {}) => {
   const deps = { s3: s3Client, codebuild: codebuildClient };
   const initialize = createRetryableInitializer(() => ensureSeeded(store));
   return async (event, context) => {
     if (context) logger.addContext(context);
+    if (event?.httpMethod) logSafeEventIfEnabled(eventLogger, event);
     const response = buildResponse(event);
     if (event.httpMethod === 'OPTIONS') return response(200, {});
     const missingUser = requireUser(event);

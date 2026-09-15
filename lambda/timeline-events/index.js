@@ -1,6 +1,7 @@
 import gremlin from 'gremlin';
 import { create } from 'neptune-lambda-client';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
@@ -45,7 +46,7 @@ const mapEvent = (v) => ({
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
-  logger.logEventIfEnabled(event);
+  logSafeEventIfEnabled(logger, event);
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 

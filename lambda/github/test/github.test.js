@@ -1219,11 +1219,16 @@ describe('github handler', () => {
 
       const handler = await loadHandler();
       await handler({
-        ...makeEvent('OPTIONS', '/github/test'),
-        gitToken: 'secret-token',
-        code: 'secret-code',
-        state: 'secret-state',
-        accessToken: 'secret-access',
+        ...makeEvent('OPTIONS', '/github/callback', {
+          headers: {
+            origin: 'https://app.example.com',
+            Authorization: 'Bearer secret-authorization',
+          },
+          queryStringParameters: {
+            code: 'secret-query-code',
+            state: 'secret-query-state',
+          },
+        }),
         body: '{"password": "secret"}',
       });
 
@@ -1237,15 +1242,25 @@ describe('github handler', () => {
         })
         .find((o) => o && o.message === 'Request');
       expect(logged).toBeDefined();
-      expect(logged.gitToken).toBeUndefined();
-      expect(logged.code).toBeUndefined();
-      expect(logged.state).toBeUndefined();
-      expect(logged.accessToken).toBeUndefined();
-      expect(logged.body).toBe('[REDACTED]');
+      expect(logged.event).toMatchObject({
+        httpMethod: 'OPTIONS',
+        path: '/github/callback',
+        headers: {
+          origin: 'https://app.example.com',
+          Authorization: '[REDACTED]',
+        },
+        queryStringParameters: {
+          code: '[REDACTED]',
+          state: '[REDACTED]',
+        },
+      });
+      expect(JSON.parse(logged.event.body)).toEqual({ password: '[REDACTED]' });
       // Belt-and-suspenders: no secret value leaks anywhere in the raw output.
       const raw = lines.join('');
-      expect(raw).not.toContain('secret-token');
-      expect(raw).not.toContain('secret-access');
+      expect(raw).not.toContain('secret-authorization');
+      expect(raw).not.toContain('secret-query-code');
+      expect(raw).not.toContain('secret-query-state');
+      expect(raw).not.toContain('"password": "secret"');
 
       stdoutSpy.mockRestore();
     });
