@@ -119,6 +119,7 @@ export interface ManagedEnvironment {
   system: boolean;
   status: EnvironmentStatus;
   baseEnvironmentId: string | null;
+  compute?: { type: 'microvms' | 'instances'; architecture: 'arm64' | 'x86_64' } | null;
   currentRevisionId: string;
   publishedRevisionId: string | null;
   updateAvailable: boolean;
@@ -303,6 +304,7 @@ export const environmentsService = {
     name: string;
     description?: string;
     baseEnvironmentId: string;
+    compute?: { type: 'microvms' | 'instances'; architecture?: 'arm64' | 'x86_64' };
     recipe: EnvironmentRecipeInput;
   }) => api.post<EnvironmentMutationResult>('/environments', input),
   update: (

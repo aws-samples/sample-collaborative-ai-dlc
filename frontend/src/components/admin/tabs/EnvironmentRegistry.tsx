@@ -310,6 +310,9 @@ export function EnvironmentRegistry() {
         name: form.name.trim(),
         description: form.description.trim(),
         baseEnvironmentId: form.baseEnvironmentId,
+        ...(form.compute === 'instances-x86_64'
+          ? { compute: { type: 'instances' as const, architecture: 'x86_64' as const } }
+          : {}),
         recipe: recipeFromForm(form),
       });
       setCreating(false);
