@@ -1061,10 +1061,17 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
-  // Reset a stage row for a rewind: back to PENDING with attempt+1, conversation
-  // handle + terminal fields cleared. A stage that never ran (no row yet) needs
-  // no reset — returns null. The prior attempt's history stays in EVENT#/OUTPUT#.
-  const resetStageRow = async ({ executionId, stageInstanceId }) => {
+  // Reset a stage row for a rewind/retry: back to PENDING with attempt+1,
+  // conversation handle + terminal fields cleared. Plain retries preserve compact
+  // commit refs until successful CodeFile projection; corrective rewinds clear
+  // them because the prior implementation is intentionally being replaced.
+  // A stage that never ran (no row yet) needs no reset — returns null. The prior
+  // attempt's history stays in EVENT#/OUTPUT#.
+  const resetStageRow = async ({
+    executionId,
+    stageInstanceId,
+    preservePendingCodeCommitRefs = false,
+  }) => {
     const existing = await getStage(executionId, stageInstanceId);
     if (!existing) return null;
     // A previous rewind attempt may have reset this row before its caller
@@ -1075,7 +1082,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       existing.startedAt == null &&
       existing.cliSessionId == null &&
       existing.runtimeError == null &&
-      existing.pendingCodeCommitRefs == null
+      (preservePendingCodeCommitRefs || existing.pendingCodeCommitRefs == null)
     ) {
       return null;
     }
@@ -1088,7 +1095,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           'SET #state = :state, attempt = :attempt, cli = :null, cliSessionId = :null, ' +
           'runtimeError = :null, startedAt = :null, completedAt = :null, ' +
           'parkedAt = :null, pendingHumanTaskId = :null, waitMs = :zero, ' +
-          'pendingCodeCommitRefs = :null, ' +
+          'pendingCodeCommitRefs = :pendingCodeCommitRefs, ' +
           'updatedAt = :ts, GSI2SK = :g2sk',
         ExpressionAttributeNames: { '#state': 'state' },
         ExpressionAttributeValues: {
@@ -1096,6 +1103,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           ':attempt': Number(existing.attempt ?? 0) + 1,
           ':null': null,
           ':zero': 0,
+          ':pendingCodeCommitRefs': preservePendingCodeCommitRefs
+            ? (existing.pendingCodeCommitRefs ?? null)
+            : null,
           ':ts': ts,
           ':g2sk': executionTypeStateIndex({
             executionId,

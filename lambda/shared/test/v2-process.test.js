@@ -103,9 +103,14 @@ describe('v2-process-keys', () => {
       stageInstanceId: 'si-1',
       cli: 'claude',
       cliSessionId: 'sess-7',
+      pendingCodeCommitRefs: [{ repo: 'owner/repo', sha: 'a'.repeat(40) }],
       now: 'T',
     });
-    expect(linked).toMatchObject({ cli: 'claude', cliSessionId: 'sess-7' });
+    expect(linked).toMatchObject({
+      cli: 'claude',
+      cliSessionId: 'sess-7',
+      pendingCodeCommitRefs: [{ repo: 'owner/repo', sha: 'a'.repeat(40) }],
+    });
   });
 
   it('builds a question human-task carrying the structured payload', () => {
@@ -438,9 +443,32 @@ describe('createProcessStore', () => {
     await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.UpdateExpression).toContain('parkedAt = :null');
-    expect(input.UpdateExpression).toContain('pendingCodeCommitRefs = :null');
+    expect(input.UpdateExpression).toContain('pendingCodeCommitRefs = :pendingCodeCommitRefs');
+    expect(input.ExpressionAttributeValues[':pendingCodeCommitRefs']).toBeNull();
     expect(input.UpdateExpression).toContain('waitMs = :zero');
     expect(input.ExpressionAttributeValues[':zero']).toBe(0);
+  });
+
+  it('resetStageRow preserves pending commit refs for a plain retry', async () => {
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: 'a'.repeat(40) }];
+    ddb.on(GetCommand).resolves({
+      Item: {
+        attempt: 0,
+        state: 'FAILED',
+        runtimeError: 'cli_nonzero_exit',
+        pendingCodeCommitRefs,
+      },
+    });
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.resetStageRow({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      preservePendingCodeCommitRefs: true,
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':pendingCodeCommitRefs']).toEqual(
+      pendingCodeCommitRefs,
+    );
   });
 
   it('answerHumanTask is a CAS on pending and returns null on a lost race', async () => {

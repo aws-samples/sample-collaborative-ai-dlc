@@ -1090,6 +1090,11 @@ export const runStage = async (
   const publish = (payload) =>
     broadcast({ executionId, intentId, projectId, ...payload }).catch(() => {});
 
+  // Compact repo+SHA refs for work committed before projection. Once populated,
+  // every post-commit failure persists them so a clean retry can reconstruct the
+  // complete file set instead of losing traceability because Git has no new diff.
+  let retainedCodeCommitRefs = null;
+
   const emitLifecycleEvent = async ({
     type,
     summary,
@@ -1129,6 +1134,9 @@ export const runStage = async (
           state: 'FAILED',
           runtimeError: reason,
           completedAt: true,
+          ...(retainedCodeCommitRefs?.length
+            ? { pendingCodeCommitRefs: retainedCodeCommitRefs }
+            : {}),
           ...(clearPending ? { pendingHumanTaskId: null } : {}),
         })
         .catch(() => {});
@@ -1539,6 +1547,10 @@ export const runStage = async (
   // stage row + threaded to the MCP scope for read-time token pricing.
   const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
   const priorStageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
+  const carriedCodeCommitRefs = Array.isArray(priorStageRow?.pendingCodeCommitRefs)
+    ? priorStageRow.pendingCodeCommitRefs
+    : [];
+  retainedCodeCommitRefs = carriedCodeCommitRefs.length ? carriedCodeCommitRefs : null;
   if (priorStageRow?.aidlcRepoRef && aidlcRepoRef && priorStageRow.aidlcRepoRef !== aidlcRepoRef) {
     return fail(
       stageInstanceId,
@@ -1643,6 +1655,7 @@ export const runStage = async (
       resolvedModel: model,
       stageCallbackId,
       aidlcRepoRef,
+      pendingCodeCommitRefs: retainedCodeCommitRefs,
     });
   }
   await store.updateExecution({
@@ -2321,11 +2334,8 @@ export const runStage = async (
       ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
       : `aidlc(${stageId}): ${executionId}`,
   });
-  const carriedCodeCommitRefs =
-    resumeFrom && Array.isArray(priorStageRow?.pendingCodeCommitRefs)
-      ? priorStageRow.pendingCodeCommitRefs
-      : [];
   const stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
+  retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')

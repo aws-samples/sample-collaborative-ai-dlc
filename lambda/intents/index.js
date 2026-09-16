@@ -3861,7 +3861,11 @@ export const handler = async (event) => {
       });
 
       await mapWithConcurrency(resetInstances, 12, async ({ stage, slug, stageInstanceId }) => {
-        const reset = await store.resetStageRow({ executionId: intentId, stageInstanceId });
+        const reset = await store.resetStageRow({
+          executionId: intentId,
+          stageInstanceId,
+          preservePendingCodeCommitRefs: true,
+        });
         if (!reset) return;
         await store
           .appendEvent({
@@ -4253,6 +4257,10 @@ export const handler = async (event) => {
           const reset = await store.resetStageRow({
             executionId: intentId,
             stageInstanceId,
+            // A guidance-less restart is a retry of the same work. Preserve any
+            // commits made before failure so the clean retry can still project
+            // their CodeFiles. Guided rewinds intentionally replace prior work.
+            preservePendingCodeCommitRefs: !guidance,
           });
           if (reset) {
             await store

@@ -527,6 +527,9 @@ const buildStageRow = ({
   // stage exits. Persisted for traceability + manual operator recovery of a
   // stuck stage. Null for rows written outside the async path.
   stageCallbackId = null,
+  // Compact Git provenance retained until CodeFile projection succeeds. This
+  // survives both human park/resume and ordinary failure/retry legs.
+  pendingCodeCommitRefs = null,
   // The HUMAN# gate this stage is currently parked on. This is the scheduling
   // source of truth for agent questions; META.pendingHumanTaskId is only a
   // legacy/display mirror and cannot represent concurrent lane questions.
@@ -557,10 +560,9 @@ const buildStageRow = ({
   resolvedModel,
   stageCallbackId,
   pendingHumanTaskId,
-  // Compact Git provenance retained while a stage is parked. File paths are
-  // reconstructed from these commits on successful resume to keep the stage
-  // row safely below DynamoDB's item-size limit.
-  pendingCodeCommitRefs: null,
+  // File paths are reconstructed from these commits on successful completion
+  // to keep the stage row safely below DynamoDB's item-size limit.
+  pendingCodeCommitRefs,
   runtimeError: null,
   startedAt: state === 'RUNNING' ? now : null,
   completedAt: null,
