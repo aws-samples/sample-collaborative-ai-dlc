@@ -146,6 +146,9 @@ After those resources are removed, destroy the logical deployment:
 unset AIDLC_TEST_ENV
 ```
 
+The script refuses production environments and performs the required deletion-protection update for non-production data stores.
+A bare `terraform destroy` remains blocked by those protections.
+
 ## Enterprise SSO integration test
 
 The repository includes a disposable Cognito User Pool that behaves as an

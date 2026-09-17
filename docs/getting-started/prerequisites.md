@@ -75,14 +75,14 @@ export DOCKER_HOST="unix://$HOME/.rd/docker.sock"
 
 You must also have an AWS account with permissions to manage the following services.
 
-| Category      | Services                                                                                                           |
-| ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Compute       | AWS Lambda, Amazon ECS with Fargate (Yjs collaboration server), Amazon Bedrock AgentCore (agent runtime)           |
-| Networking    | Amazon VPC, Amazon API Gateway (REST and WebSocket), Amazon CloudFront, Elastic Load Balancing                     |
-| Storage       | Amazon S3, Amazon DynamoDB, Amazon Neptune                                                                         |
-| Security      | Amazon Cognito, AWS Identity and Access Management (IAM), AWS Secrets Manager, AWS Systems Manager Parameter Store |
-| Integration   | Amazon Elastic Container Registry (Amazon ECR)                                                                     |
-| Observability | Amazon CloudWatch Logs                                                                                             |
+| Category      | Services                                                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Compute       | AWS Lambda, Amazon ECS with Fargate (Yjs collaboration server), Amazon Bedrock AgentCore (agent runtime)                    |
+| Networking    | Amazon VPC, Amazon API Gateway (REST and WebSocket), Amazon CloudFront, Elastic Load Balancing                              |
+| Storage       | Amazon S3, Amazon DynamoDB, Amazon Neptune                                                                                  |
+| Security      | Amazon Cognito, AWS Identity and Access Management (IAM), AWS KMS, AWS Secrets Manager, AWS Systems Manager Parameter Store |
+| Integration   | Amazon Elastic Container Registry (Amazon ECR)                                                                              |
+| Observability | Amazon CloudWatch Logs                                                                                                      |
 
 ## Optional tools
 
@@ -130,3 +130,9 @@ The credential name is `bedrock-bearer-token` or `kiro-api-key`. An unset platfo
 AIDLC Collaborative infrastructure still requires valid AWS credentials for deployment and AWS resource management. Agent CLI model calls do not use ambient AWS credentials; they use the effective Kiro or Bedrock key selected through the hierarchy above.
 
 Without an effective agent credential, users can still browse the application and edit draft intents, but credential-backed AI composition, Quorum assists, and intent start are unavailable.
+
+### KMS permissions for infrastructure encryption
+
+The example tfvars leaves `kms_key_arn` empty. DynamoDB remains encrypted at rest with the AWS-owned key, and the deployment principal does not need KMS administration permissions.
+
+To use a customer-managed key, supply its full key ARN in `kms_key_arn`. The key must be managed outside this Terraform stack, and its policy must already delegate the required DynamoDB and Neptune service access.

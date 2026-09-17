@@ -7,11 +7,12 @@ locals {
 }
 
 resource "aws_dynamodb_table" "sessions" {
-  name           = "${var.project_name}-sessions-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "sessionId"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-sessions-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "sessionId"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "sessionId"
@@ -23,16 +24,26 @@ resource "aws_dynamodb_table" "sessions" {
     enabled        = true
   }
 
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
   tags = var.tags
 }
 
 resource "aws_dynamodb_table" "notifications" {
-  name           = "${var.project_name}-notifications-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "userId"
-  range_key      = "timestamp"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-notifications-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "userId"
+  range_key                   = "timestamp"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "userId"
@@ -44,15 +55,25 @@ resource "aws_dynamodb_table" "notifications" {
     type = "N"
   }
 
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
   tags = var.tags
 }
 
 resource "aws_dynamodb_table" "agent_questions" {
-  name           = "${var.project_name}-agent-questions-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "questionId"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-agent-questions-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "questionId"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "questionId"
@@ -76,19 +97,38 @@ resource "aws_dynamodb_table" "agent_questions" {
     }
   }
 
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
   tags = var.tags
 }
 
 resource "aws_dynamodb_table" "yjs_documents" {
-  name           = "${var.project_name}-yjs-documents-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "documentId"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-yjs-documents-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "documentId"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "documentId"
     type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags
@@ -145,17 +185,23 @@ resource "aws_dynamodb_table" "connections" {
     enabled        = true
   }
 
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
   tags = var.tags
 }
 
 
 resource "aws_dynamodb_table" "agent_outputs" {
-  name           = "${var.project_name}-agent-outputs-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "executionId"
-  range_key      = "agentType"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-agent-outputs-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "executionId"
+  range_key                   = "agentType"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "executionId"
@@ -170,6 +216,15 @@ resource "aws_dynamodb_table" "agent_outputs" {
   ttl {
     attribute_name = "expiresAt"
     enabled        = true
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags
@@ -198,6 +253,11 @@ resource "aws_dynamodb_table" "discussion_locks" {
     enabled        = true
   }
 
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
   tags = var.tags
 }
 
@@ -210,12 +270,13 @@ resource "aws_dynamodb_table" "discussion_locks" {
 # bodies/scripts live in the artifacts S3 bucket under blocks/, referenced by a
 # content-addressed pointer — never inline.
 resource "aws_dynamodb_table" "blocks" {
-  name           = "${var.project_name}-blocks-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "pk"
-  range_key      = "sk"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-blocks-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "pk"
+  range_key                   = "sk"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "pk"
@@ -251,18 +312,28 @@ resource "aws_dynamodb_table" "blocks" {
       attribute_name = "GSI1SK"
       key_type       = "RANGE"
     }
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags
 }
 
 resource "aws_dynamodb_table" "environment_registry" {
-  name           = "${var.project_name}-environment-registry-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "pk"
-  range_key      = "sk"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-environment-registry-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "pk"
+  range_key                   = "sk"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "pk"
@@ -299,6 +370,11 @@ resource "aws_dynamodb_table" "environment_registry" {
       attribute_name = "GSI1SK"
       key_type       = "RANGE"
     }
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
   }
 
   point_in_time_recovery {
@@ -312,12 +388,13 @@ resource "aws_dynamodb_table" "environment_registry" {
 # lastReadMessageId, sprintId}. High-churn per-user KV — wrong shape for the
 # graph.
 resource "aws_dynamodb_table" "discussion_read_state" {
-  name           = "${var.project_name}-discussion-read-state-${var.environment}"
-  billing_mode   = local.billing_mode
-  hash_key       = "userId"
-  range_key      = "discussionId"
-  read_capacity  = local.read_capacity
-  write_capacity = local.write_capacity
+  name                        = "${var.project_name}-discussion-read-state-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "userId"
+  range_key                   = "discussionId"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "userId"
@@ -327,6 +404,15 @@ resource "aws_dynamodb_table" "discussion_read_state" {
   attribute {
     name = "discussionId"
     type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags
