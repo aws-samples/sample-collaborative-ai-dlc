@@ -39,16 +39,26 @@ if [[ ! -f "$BACKEND_FILE" ]]; then
     exit 1
 fi
 
-TFVARS_ENVIRONMENT="$(
-    awk -F= '$1 ~ /^[[:space:]]*environment[[:space:]]*$/ {
-        value = $2
-        sub(/#.*/, "", value)
-        gsub(/[[:space:]\"]/, "", value)
-        print value
-        exit
-    }' "$TFVARS_FILE"
-)"
-if [[ "$ENVIRONMENT" == "prod" || "${TF_VAR_environment:-}" == "prod" || "$TFVARS_ENVIRONMENT" == "prod" ]]; then
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aidlc-destroy.XXXXXX")"
+cleanup() {
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+cp "$TF_DIR/variables.tf" "$TEMP_DIR/variables.tf"
+if ! EFFECTIVE_ENVIRONMENT_IS_PROD="$(
+    printf '%s\n' 'var.environment == "prod"' |
+        terraform -chdir="$TEMP_DIR" console -var-file="$TFVARS_FILE" 2>"$TEMP_DIR/console.stderr"
+)"; then
+    echo "Error: Terraform could not resolve the effective environment from $TFVARS_FILE." >&2
+    cat "$TEMP_DIR/console.stderr" >&2
+    exit 1
+fi
+if [[ "$EFFECTIVE_ENVIRONMENT_IS_PROD" != "true" && "$EFFECTIVE_ENVIRONMENT_IS_PROD" != "false" ]]; then
+    echo "Error: Terraform returned an unexpected result while resolving the effective environment." >&2
+    exit 1
+fi
+if [[ "$ENVIRONMENT" == "prod" || "$EFFECTIVE_ENVIRONMENT_IS_PROD" == "true" ]]; then
     echo "Refusing automated destruction of a production environment." >&2
     echo "Use the documented production break-glass procedure with independently reviewed backups and plans." >&2
     exit 1
@@ -96,11 +106,31 @@ PROTECTION_TARGETS=(
     -target=module.git.aws_dynamodb_table.tracker_connections
     -target=module.agentcore.aws_dynamodb_table.v2_executions
 )
-terraform -chdir="$TF_DIR" apply \
-    -var-file="$TFVARS_FILE" \
-    -var="deletion_protection=false" \
-    "${PROTECTION_TARGETS[@]}" \
-    -auto-approve
+STATE_RESOURCES="$(terraform -chdir="$TF_DIR" state list)"
+EXISTING_PROTECTION_TARGETS=()
+for target in "${PROTECTION_TARGETS[@]}"; do
+    address="${target#-target=}"
+    if grep -Fqx "$address" <<< "$STATE_RESOURCES"; then
+        EXISTING_PROTECTION_TARGETS+=("$target")
+    fi
+done
+
+if (( ${#EXISTING_PROTECTION_TARGETS[@]} > 0 )); then
+    PREPARATION_PLAN="$TEMP_DIR/teardown-preparation.tfplan"
+    PREPARATION_PLAN_JSON="$TEMP_DIR/teardown-preparation.tfplan.json"
+    terraform -chdir="$TF_DIR" plan \
+        -var-file="$TFVARS_FILE" \
+        -var="deletion_protection=false" \
+        "${EXISTING_PROTECTION_TARGETS[@]}" \
+        -out="$PREPARATION_PLAN"
+    terraform -chdir="$TF_DIR" show -json "$PREPARATION_PLAN" > "$PREPARATION_PLAN_JSON"
+    node "$SCRIPT_DIR/inspect-terraform-plan.mjs" \
+        "$PREPARATION_PLAN_JSON" \
+        --deletion-protection-only
+    terraform -chdir="$TF_DIR" apply -auto-approve "$PREPARATION_PLAN"
+else
+    echo "No protected data stores remain in Terraform state; skipping protection updates."
+fi
 
 echo "Destroying AI-DLC environment: $ENVIRONMENT"
 terraform -chdir="$TF_DIR" destroy \

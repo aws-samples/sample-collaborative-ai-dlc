@@ -73,29 +73,25 @@ test('Neptune and production S3 resources resist accidental deletion', () => {
   assert.equal(count(frontend, /force_destroy = var\.environment != "prod"/g), 1);
 });
 
-test('root KMS modes preserve default installs and keep customer-managed keys opt-in', () => {
+test('root KMS configuration accepts existing keys without owning their lifecycle', () => {
   const rootVariables = read('terraform/variables.tf');
-  assert.match(rootVariables, /variable "kms_mode"[\s\S]*?default\s+= "default"/);
-  assert.match(rootVariables, /contains\(\["default", "create", "existing"\], var\.kms_mode\)/);
+  assert.doesNotMatch(rootVariables, /variable "kms_mode"/);
+  assert.match(rootVariables, /variable "kms_key_arn"[\s\S]*?default\s+= ""/);
   assert.match(rootVariables, /variable "skip_final_snapshot"[\s\S]*?default\s+= false/);
 
   const rootMain = read('terraform/main.tf');
-  assert.match(rootMain, /module "data_kms"[\s\S]*?count\s+= var\.kms_mode == "create" \? 1 : 0/);
-  assert.match(rootMain, /kms_key_arn\s+= local\.kms_key_arn/);
+  assert.doesNotMatch(rootMain, /module "data_kms"/);
+  assert.doesNotMatch(rootMain, /resource "aws_kms_(key|alias)"/);
+  assert.match(rootMain, /kms_key_arn\s+= var\.kms_key_arn/);
   assert.match(
     rootMain,
     /module "neptune"[\s\S]*?skip_final_snapshot\s+= var\.skip_final_snapshot/,
   );
   assert.match(rootMain, /condition\s+= var\.environment != "prod" \|\| !var\.skip_final_snapshot/);
 
-  const kms = read('terraform/modules/kms/main.tf');
-  assert.match(kms, /enable_key_rotation\s+= true/);
-  assert.match(kms, /deletion_window_in_days = 30/);
-  assert.match(kms, /variable = "kms:CallerAccount"/);
-  assert.match(kms, /variable = "kms:ViaService"/);
-
   const example = read('terraform/environments/dev.tfvars.example');
-  assert.match(example, /^kms_mode\s+= "default"$/m);
+  assert.doesNotMatch(example, /^kms_mode\s+=/m);
+  assert.match(example, /^kms_key_arn\s+= ""$/m);
   assert.match(example, /^deletion_protection\s+= true$/m);
   assert.match(example, /^backup_retention_period\s+= 7$/m);
   assert.match(example, /^skip_final_snapshot\s+= false$/m);
@@ -120,10 +116,19 @@ test('teardown covers every protected data store and cannot automate production'
     .map((match) => match[1])
     .toSorted();
   assert.deepEqual(teardownTargets, protectedResources);
+  assert.match(destroy, /cp "\$TF_DIR\/variables\.tf" "\$TEMP_DIR\/variables\.tf"/);
+  assert.match(destroy, /terraform -chdir="\$TEMP_DIR" console -var-file="\$TFVARS_FILE"/);
+  assert.match(destroy, /STATE_RESOURCES="\$\(terraform -chdir="\$TF_DIR" state list\)"/);
   assert.match(
     destroy,
-    /\[\[ "\$ENVIRONMENT" == "prod" \|\| "\$\{TF_VAR_environment:-\}" == "prod" \|\| "\$TFVARS_ENVIRONMENT" == "prod" \]\]/,
+    /grep -Fqx "\$address"[\s\S]*?EXISTING_PROTECTION_TARGETS\+=\("\$target"\)/,
   );
+  assert.match(
+    destroy,
+    /terraform -chdir="\$TF_DIR" plan[\s\S]*?"\$\{EXISTING_PROTECTION_TARGETS\[@\]\}"/,
+  );
+  assert.match(destroy, /--deletion-protection-only/);
+  assert.match(destroy, /terraform -chdir="\$TF_DIR" apply -auto-approve "\$PREPARATION_PLAN"/);
 
   const installer = read('scripts/install.sh');
   assert.match(installer, /destroy_command\(\)[\s\S]*?\[\[ "\$ENVIRONMENT" == "prod" \]\]/);

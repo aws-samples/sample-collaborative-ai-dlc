@@ -133,13 +133,6 @@ Without an effective agent credential, users can still browse the application an
 
 ### KMS permissions for infrastructure encryption
 
-The example tfvars uses `kms_mode = "default"`. DynamoDB remains encrypted at rest with the AWS-owned key, and the deployment principal does not need KMS administration permissions.
+The example tfvars leaves `kms_key_arn` empty. DynamoDB remains encrypted at rest with the AWS-owned key, and the deployment principal does not need KMS administration permissions.
 
-If you select `kms_mode = "create"`, the deployment principal must be allowed to create and administer the data-encryption key and alias. Its lifecycle permissions include:
-
-- Key creation and policy: `kms:CreateKey`, `kms:DescribeKey`, `kms:GetKeyPolicy`, `kms:PutKeyPolicy`
-- Rotation and tags: `kms:GetKeyRotationStatus`, `kms:EnableKeyRotation`, `kms:TagResource`, `kms:UntagResource`, `kms:ListResourceTags`
-- Alias management: `kms:CreateAlias`, `kms:UpdateAlias`, `kms:DeleteAlias`, `kms:ListAliases`
-- Eventual teardown: `kms:ScheduleKeyDeletion`
-
-Use `kms_mode = "existing"` instead when a security team manages the key. Supply its full key ARN in `kms_key_arn` and ensure its policy already delegates the required DynamoDB and Neptune service access.
+To use a customer-managed key, supply its full key ARN in `kms_key_arn`. The key must be managed outside this Terraform stack, and its policy must already delegate the required DynamoDB and Neptune service access.

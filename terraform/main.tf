@@ -61,12 +61,6 @@ locals {
   partition  = data.aws_partition.current.partition
   dns_suffix = data.aws_partition.current.dns_suffix
 
-  kms_key_arn = (
-    var.kms_mode == "create" ? module.data_kms[0].key_arn :
-    var.kms_mode == "existing" ? var.kms_key_arn :
-    ""
-  )
-
   custom_domain_enabled = var.app_domain != ""
 
   # Canonical hostname and URL for the deployment. Every consumer — OAuth
@@ -190,23 +184,6 @@ resource "terraform_data" "domain_preconditions" {
     precondition {
       condition     = var.app_domain != "" || (var.acm_certificate_arn == "" && var.route53_zone_id == "")
       error_message = "acm_certificate_arn or route53_zone_id is set but app_domain is empty. Set app_domain to enable the custom domain, or clear both to serve on the CloudFront domain."
-    }
-  }
-}
-
-resource "terraform_data" "kms_preconditions" {
-  input = {
-    mode    = var.kms_mode
-    key_arn = var.kms_key_arn
-  }
-
-  lifecycle {
-    precondition {
-      condition = (
-        var.kms_mode == "existing" ? var.kms_key_arn != "" :
-        var.kms_key_arn == ""
-      )
-      error_message = "kms_key_arn must be set only when kms_mode is existing."
     }
   }
 }
@@ -342,21 +319,6 @@ module "vpc_endpoints" {
   }
 }
 
-# Optional shared customer-managed key for DynamoDB now and Neptune after the
-# opt-in encryption migration. The default mode creates no resources and
-# preserves the service-owned key posture of existing deployments.
-module "data_kms" {
-  count  = var.kms_mode == "create" ? 1 : 0
-  source = "./modules/kms"
-
-  name_prefix = "${var.project_name}-${var.environment}"
-
-  tags = {
-    Environment = var.environment
-    Project     = var.project_name
-  }
-}
-
 # S3 Data Storage
 module "s3" {
   source = "./modules/data/s3"
@@ -376,7 +338,7 @@ module "dynamodb" {
 
   project_name        = var.project_name
   environment         = var.environment
-  kms_key_arn         = local.kms_key_arn
+  kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
 
   tags = {
@@ -621,7 +583,7 @@ module "agentcore" {
   # failing every stage with cli_nonzero_exit. Let kiro resolve the model.
   kiro_model          = "auto"
   codex_model         = var.codex_model
-  kms_key_arn         = local.kms_key_arn
+  kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
@@ -702,7 +664,7 @@ module "git" {
 
   project_name        = var.project_name
   environment         = var.environment
-  kms_key_arn         = local.kms_key_arn
+  kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
 
   tags = {
