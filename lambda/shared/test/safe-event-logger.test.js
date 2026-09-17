@@ -56,7 +56,10 @@ const sensitiveRouteEvents = [
       body: JSON.stringify({
         mcpSecrets: { GITHUB_TOKEN: 'mcp-secret-value' },
         customMcpServers: {
-          private: { headers: { Authorization: 'Bearer mcp-header-secret' } },
+          private: {
+            url: 'https://example.com/mcp?api_key=mcp-url-secret',
+            headers: { Authorization: 'Bearer mcp-header-secret' },
+          },
         },
       }),
     },
@@ -71,6 +74,7 @@ const sensitiveRouteEvents = [
         mcpServers: {
           private: {
             command: 'npx',
+            args: ['server.js', '--api-key', 'mcp-args-secret'],
             env: { API_KEY: 'inline-mcp-env-secret' },
             headers: { Authorization: 'Bearer inline-mcp-header-secret' },
           },
@@ -137,7 +141,9 @@ describe('redactEventForLogging', () => {
       'bedrock-bearer-secret',
       'kiro-api-secret',
       'mcp-secret-value',
+      'mcp-url-secret',
       'mcp-header-secret',
+      'mcp-args-secret',
       'inline-mcp-env-secret',
       'inline-mcp-header-secret',
       'just-typed-mcp-secret',
@@ -164,6 +170,8 @@ describe('redactEventForLogging', () => {
         customMcpServers: JSON.stringify({
           private: {
             command: 'npx',
+            args: ['server.js', '--api-key', 'args-secret'],
+            url: 'https://example.com/mcp?api_key=url-secret',
             env: { SAFE_SETTING: 'secret-env-value' },
             headers: { Authorization: 'Bearer custom-secret' },
           },
@@ -179,13 +187,9 @@ describe('redactEventForLogging', () => {
       cliModels: { claude: 'model-id' },
       mcpSecrets: { GITHUB_TOKEN: '[REDACTED]' },
     });
-    expect(JSON.parse(body.customMcpServers)).toEqual({
-      private: {
-        command: 'npx',
-        env: { SAFE_SETTING: '[REDACTED]' },
-        headers: { Authorization: '[REDACTED]' },
-      },
-    });
+    expect(body.customMcpServers).toBe('[REDACTED]');
+    expect(JSON.stringify(body)).not.toContain('args-secret');
+    expect(JSON.stringify(body)).not.toContain('url-secret');
   });
 
   it('redacts values from managed environment-variable maps', () => {
@@ -214,7 +218,7 @@ describe('redactEventForLogging', () => {
     });
   });
 
-  it('keeps MCP verification structure while redacting draft and inline credentials', () => {
+  it('redacts the full MCP verification config and draft credentials', () => {
     const redacted = redactEventForLogging({
       httpMethod: 'POST',
       path: '/agents/verify-mcp',
@@ -223,7 +227,8 @@ describe('redactEventForLogging', () => {
         mcpServers: JSON.stringify({
           context7: {
             command: 'npx',
-            args: ['-y', '@upstash/context7-mcp'],
+            args: ['-y', '@upstash/context7-mcp', '--api-key', 'args-secret'],
+            url: 'https://example.com/mcp?api_key=url-secret',
             env: { CONTEXT7_API_KEY: 'inline-secret' },
             headers: { 'X-Api-Key': 'inline-header-secret' },
           },
@@ -237,22 +242,18 @@ describe('redactEventForLogging', () => {
     const body = JSON.parse(redacted.body);
     expect(body.projectId).toBe('project-1');
     expect(body.unsavedSecrets).toEqual({ CONTEXT7_API_KEY: '[REDACTED]' });
-    expect(JSON.parse(body.mcpServers)).toEqual({
-      context7: {
-        command: 'npx',
-        args: ['-y', '@upstash/context7-mcp'],
-        env: { CONTEXT7_API_KEY: '[REDACTED]' },
-        headers: { 'X-Api-Key': '[REDACTED]' },
-      },
-    });
+    expect(body.mcpServers).toBe('[REDACTED]');
+    expect(JSON.stringify(body)).not.toContain('args-secret');
+    expect(JSON.stringify(body)).not.toContain('url-secret');
   });
 
-  it('preserves non-sensitive REST event fields while visibly redacting credentials', () => {
+  it('preserves non-sensitive REST event fields while removing headers', () => {
     const redacted = redactEventForLogging({
       version: '2.0',
       routeKey: 'PUT /agents/settings',
       rawPath: '/agents/settings',
       headers: { Authorization: 'secret', 'Content-Type': 'application/json' },
+      multiValueHeaders: { 'X-Origin-Verify': ['cloudfront-origin-secret'] },
       queryStringParameters: { state: 'open', page: '2' },
       multiValueQueryStringParameters: { tag: ['a', 'b'] },
       pathParameters: { projectId: 'project-secret' },
@@ -266,10 +267,6 @@ describe('redactEventForLogging', () => {
     });
 
     expect(redacted).toMatchObject({
-      headers: {
-        Authorization: '[REDACTED]',
-        'Content-Type': 'application/json',
-      },
       queryStringParameters: { state: 'open', page: '2' },
       multiValueQueryStringParameters: { tag: ['a', 'b'] },
       pathParameters: { projectId: 'project-secret' },
@@ -280,9 +277,12 @@ describe('redactEventForLogging', () => {
       },
       body: '{}',
     });
+    expect(redacted).not.toHaveProperty('headers');
+    expect(redacted).not.toHaveProperty('multiValueHeaders');
+    expect(JSON.stringify(redacted)).not.toContain('cloudfront-origin-secret');
   });
 
-  it('redacts normalized credential names in header and query maps', () => {
+  it('redacts normalized credential names in query maps', () => {
     const redacted = redactEventForLogging({
       path: '/example',
       headers: {
@@ -295,10 +295,7 @@ describe('redactEventForLogging', () => {
       },
     });
 
-    expect(redacted.headers).toEqual({
-      token: '[REDACTED]',
-      'Content-Type': 'application/json',
-    });
+    expect(redacted).not.toHaveProperty('headers');
     expect(redacted.queryStringParameters).toEqual({
       accessToken: '[REDACTED]',
       state: 'open',
@@ -333,8 +330,9 @@ describe('logSafeEventIfEnabled', () => {
       const output = lines.join('');
       expect(output).toContain('"message":"Lambda invocation event"');
       expect(output).toContain('"path":"/agents/settings"');
-      expect(output).toContain('"Authorization":"[REDACTED]"');
-      expect(output).toContain('"Cookie":"[REDACTED]"');
+      expect(output).not.toContain('"headers"');
+      expect(output).not.toContain('"Authorization"');
+      expect(output).not.toContain('"Cookie"');
       expect(output).toContain('\\"bedrockBearerToken\\":\\"[REDACTED]\\"');
       expect(output).toContain('\\"cliModels\\":{\\"claude\\":\\"model-id\\"}');
       expect(output).not.toContain('cognito-jwt-secret');

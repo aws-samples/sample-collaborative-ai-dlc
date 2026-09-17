@@ -3,15 +3,6 @@
 
 const REDACTED = '[REDACTED]';
 
-const SENSITIVE_HEADER_NAMES = new Set([
-  'authorization',
-  'cookie',
-  'proxy-authorization',
-  'set-cookie',
-  'x-api-key',
-  'x-amz-security-token',
-]);
-
 const SENSITIVE_QUERY_NAMES = new Set([
   'access_token',
   'api_key',
@@ -64,9 +55,9 @@ const redactMapValues = (value) => {
   return Object.fromEntries(Object.keys(value).map((key) => [key, REDACTED]));
 };
 
-const redactKnownValues = (value, { inMcpConfig = false, route = '' } = {}) => {
+const redactKnownValues = (value, { route = '' } = {}) => {
   if (Array.isArray(value)) {
-    return value.map((item) => redactKnownValues(item, { inMcpConfig, route }));
+    return value.map((item) => redactKnownValues(item, { route }));
   }
   if (!value || typeof value !== 'object') return value;
 
@@ -78,23 +69,8 @@ const redactKnownValues = (value, { inMcpConfig = false, route = '' } = {}) => {
       if (normalized === 'ticket' && route.includes('/trackers/connections/')) {
         return [key, REDACTED];
       }
-      if (inMcpConfig && (normalized === 'headers' || normalized === 'env')) {
-        return [key, redactMapValues(child)];
-      }
-      if (MCP_CONFIG_KEYS.has(normalized)) {
-        if (typeof child === 'string') {
-          try {
-            return [
-              key,
-              JSON.stringify(redactKnownValues(JSON.parse(child), { inMcpConfig: true, route })),
-            ];
-          } catch {
-            return [key, REDACTED];
-          }
-        }
-        return [key, redactKnownValues(child, { inMcpConfig: true, route })];
-      }
-      return [key, redactKnownValues(child, { inMcpConfig, route })];
+      if (MCP_CONFIG_KEYS.has(normalized)) return [key, REDACTED];
+      return [key, redactKnownValues(child, { route })];
     }),
   );
 };
@@ -120,12 +96,8 @@ export const redactEventForLogging = (event) => {
     ? new Set([...SENSITIVE_QUERY_NAMES, 'code', 'state'])
     : SENSITIVE_QUERY_NAMES;
 
-  if (event.headers !== undefined) {
-    redacted.headers = redactNamedValues(event.headers, SENSITIVE_HEADER_NAMES);
-  }
-  if (event.multiValueHeaders !== undefined) {
-    redacted.multiValueHeaders = redactNamedValues(event.multiValueHeaders, SENSITIVE_HEADER_NAMES);
-  }
+  delete redacted.headers;
+  delete redacted.multiValueHeaders;
   if (event.queryStringParameters !== undefined) {
     redacted.queryStringParameters = redactNamedValues(
       event.queryStringParameters,

@@ -32,7 +32,7 @@ describe('managed tool control API', () => {
     vi.stubEnv('CORE_IMAGE_DIGEST', `sha256:${'a'.repeat(64)}`);
   });
 
-  it('logs a redacted API Gateway event when event logging is enabled', async () => {
+  it('logs a sanitized API Gateway event when event logging is enabled', async () => {
     const eventLogger = { logEventIfEnabled: vi.fn() };
     const handler = createToolsHandler({ store: baseStore(), eventLogger });
 
@@ -46,7 +46,8 @@ describe('managed tool control API', () => {
     });
 
     const logged = eventLogger.logEventIfEnabled.mock.calls[0][0];
-    expect(logged.headers.Authorization).toBe('[REDACTED]');
+    expect(logged).not.toHaveProperty('headers');
+    expect(JSON.stringify(logged)).not.toContain('admin-secret');
     expect(JSON.parse(logged.body).environmentVariables).toEqual({
       TOOL_TOKEN: '[REDACTED]',
     });

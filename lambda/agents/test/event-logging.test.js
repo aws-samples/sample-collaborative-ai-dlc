@@ -68,15 +68,12 @@ describe('credential-safe event logging', () => {
       expect(logged?.event).toMatchObject({
         httpMethod: 'PUT',
         path: '/agents/settings',
-        headers: {
-          Authorization: '[REDACTED]',
-          'Content-Type': 'application/json',
-        },
         requestContext: {
           requestId: 'request-settings-1',
           authorizer: '[REDACTED]',
         },
       });
+      expect(logged?.event).not.toHaveProperty('headers');
       expect(JSON.parse(logged.event.body)).toEqual({
         bedrockBearerToken: '[REDACTED]',
         kiroApiKey: '[REDACTED]',

@@ -1245,15 +1245,12 @@ describe('github handler', () => {
       expect(logged.event).toMatchObject({
         httpMethod: 'OPTIONS',
         path: '/github/callback',
-        headers: {
-          origin: 'https://app.example.com',
-          Authorization: '[REDACTED]',
-        },
         queryStringParameters: {
           code: '[REDACTED]',
           state: '[REDACTED]',
         },
       });
+      expect(logged.event).not.toHaveProperty('headers');
       expect(JSON.parse(logged.event.body)).toEqual({ password: '[REDACTED]' });
       // Belt-and-suspenders: no secret value leaks anywhere in the raw output.
       const raw = lines.join('');
