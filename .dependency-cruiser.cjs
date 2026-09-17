@@ -13,6 +13,17 @@
  *
  * Docs: https://github.com/sverweij/dependency-cruiser/blob/main/doc/rules-reference.md
  */
+// The root manifest contains both tooling and dependencies shared by Lambda
+// workspaces. Treat only the tooling subset as forbidden in runtime modules.
+const rootDevDependencies = Object.keys(require('./package.json').devDependencies);
+const runtimeRootDependency =
+  /^(?:@aws-sdk\/|@smithy\/|gremlin$|gremlin-aws-sigv4$|neptune-lambda-client$)/;
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const devOnlyDependencyPath = `^node_modules/(?:${rootDevDependencies
+  .filter((dependency) => !runtimeRootDependency.test(dependency))
+  .map(escapeRegExp)
+  .join('|')})(?:/|$)`;
+
 module.exports = {
   forbidden: [
     {
@@ -87,9 +98,8 @@ module.exports = {
         pathNot: '\\.(test|spec)\\.(js|mjs|ts)$|/test/',
       },
       to: {
-        dependencyTypes: ['npm-dev'],
+        path: devOnlyDependencyPath,
         dependencyTypesNot: ['type-only'],
-        pathNot: ['node_modules/@types/'],
       },
     },
     {
@@ -179,14 +189,14 @@ module.exports = {
     doNotFollow: {
       path: ['node_modules'],
     },
+    // Keep imported targets in the graph so rules can validate edges from
+    // Lambda code to devDependencies and files outside lambda/. `doNotFollow`
+    // above prevents dependency-cruiser from traversing external packages.
     // NB: test files are intentionally NOT excluded here so the `not-to-test`
     // rule can see (and forbid) any prod -> test edge. The report/metrics/graph
     // npm scripts pass `--exclude` on the CLI to keep those outputs source-only.
     exclude: {
-      path: ['node_modules', '\\.build/', '(^|/)coverage/', '(^|/)\\.stryker-tmp/'],
-    },
-    includeOnly: {
-      path: '^lambda',
+      path: ['\\.build/', '(^|/)coverage/', '(^|/)\\.stryker-tmp/'],
     },
     moduleSystems: ['es6', 'cjs'],
     enhancedResolveOptions: {
