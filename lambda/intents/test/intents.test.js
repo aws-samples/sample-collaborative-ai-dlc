@@ -5119,6 +5119,8 @@ describe('POST /rewind', () => {
     setStatus(intent.id, { status: 'SUCCEEDED' });
     seedStageRow(intent.id, 'design');
     seedStageRow(intent.id, 'implement');
+    procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`)).pendingCodeCommitRefs =
+      [{ repo: 'owner/repo', sha: 'a'.repeat(40) }];
     procStore.set(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'), {
       pk: `EXEC#${intent.id}`,
       sk: 'CHECKPOINT',
@@ -5159,7 +5161,12 @@ describe('POST /rewind', () => {
 
     // The target stage is reset (attempt+1, session cleared); upstream is untouched.
     const implRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`));
-    expect(implRow).toMatchObject({ state: 'PENDING', attempt: 1, cliSessionId: null });
+    expect(implRow).toMatchObject({
+      state: 'PENDING',
+      attempt: 1,
+      cliSessionId: null,
+      pendingCodeCommitRefs: null,
+    });
     const designRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('design')}`));
     expect(designRow.state).toBe('SUCCEEDED');
 
@@ -5326,6 +5333,9 @@ describe('POST /rewind', () => {
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
     seedStageRow(intent.id, 'design');
     seedStageRow(intent.id, 'implement', 'FAILED');
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: 'a'.repeat(40) }];
+    procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`)).pendingCodeCommitRefs =
+      pendingCodeCommitRefs;
     setStatus(intent.id, { status: 'FAILED' });
     const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
     expect(res.statusCode).toBe(202);
@@ -5336,7 +5346,11 @@ describe('POST /rewind', () => {
     expect([...procStore.keys()].filter((k) => k.includes('|STEER#'))).toHaveLength(0);
     // The failed stage is reset for attempt 2; upstream is untouched.
     const implRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`));
-    expect(implRow).toMatchObject({ state: 'PENDING', attempt: 1 });
+    expect(implRow).toMatchObject({
+      state: 'PENDING',
+      attempt: 1,
+      pendingCodeCommitRefs,
+    });
     const designRow = procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('design')}`));
     expect(designRow.state).toBe('SUCCEEDED');
     // Relaunched at the retried stage.

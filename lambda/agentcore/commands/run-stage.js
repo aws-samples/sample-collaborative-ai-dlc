@@ -76,9 +76,14 @@ import {
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
   redirectHeavyDirs as defaultRedirectHeavyDirs,
 } from '../workspace.js';
-import { commitAndPushAll as defaultCommitAndPushAll, freeDiskBytes } from '../git-engine.js';
+import {
+  commitAndPushAll as defaultCommitAndPushAll,
+  freeDiskBytes,
+  gitResultForCommitRefs as defaultGitResultForCommitRefs,
+} from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner } from '../sensor-runner.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
@@ -913,6 +918,25 @@ const pendingGate = async ({ store, executionId, stageInstanceId, unitSlug, sect
     : null;
 };
 
+const mergeCodeCommitRefs = (priorRefs, gitResult) => {
+  const refs = [];
+  const seen = new Set();
+  const add = (ref) => {
+    const repo = typeof ref?.repo === 'string' ? ref.repo : '';
+    const sha = typeof ref?.sha === 'string' ? ref.sha : '';
+    if (!repo || !sha) return;
+    const key = `${repo}\0${sha}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    refs.push({ repo, sha });
+  };
+  for (const ref of Array.isArray(priorRefs) ? priorRefs : []) add(ref);
+  for (const change of gitResult?.results ?? []) {
+    if (change?.committed === true) add(change);
+  }
+  return refs;
+};
+
 export const runStage = async (
   {
     projectId,
@@ -1036,6 +1060,13 @@ export const runStage = async (
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
+    // Project committed files into Neptune after all stage gates pass. The
+    // adapter detects traceability capability from a valid produced artifact,
+    // never from workflowVersion, and is deliberately best-effort.
+    ingestStageCodeTraceability = defaultIngestStageCodeTraceability,
+    // Reconstruct file lists for compact repo+SHA refs retained across a park.
+    // Injected for tests; Git remains authoritative after workspace re-clones.
+    gitResultForCommitRefs = defaultGitResultForCommitRefs,
     compileContextPack = defaultCompileContextPack,
     // Fetch project custom agent rules (.md bodies) from S3 → written into the
     // selected CLI's native rules dir by the materializer. Injected for tests.
@@ -1058,6 +1089,11 @@ export const runStage = async (
   // a stage (mirrors the process bridge's broadcast contract).
   const publish = (payload) =>
     broadcast({ executionId, intentId, projectId, ...payload }).catch(() => {});
+
+  // Compact repo+SHA refs for work committed before projection. Once populated,
+  // every post-commit failure persists them so a clean retry can reconstruct the
+  // complete file set instead of losing traceability because Git has no new diff.
+  let retainedCodeCommitRefs = null;
 
   const emitLifecycleEvent = async ({
     type,
@@ -1098,6 +1134,9 @@ export const runStage = async (
           state: 'FAILED',
           runtimeError: reason,
           completedAt: true,
+          ...(retainedCodeCommitRefs?.length
+            ? { pendingCodeCommitRefs: retainedCodeCommitRefs }
+            : {}),
           ...(clearPending ? { pendingHumanTaskId: null } : {}),
         })
         .catch(() => {});
@@ -1508,6 +1547,10 @@ export const runStage = async (
   // stage row + threaded to the MCP scope for read-time token pricing.
   const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
   const priorStageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
+  const carriedCodeCommitRefs = Array.isArray(priorStageRow?.pendingCodeCommitRefs)
+    ? priorStageRow.pendingCodeCommitRefs
+    : [];
+  retainedCodeCommitRefs = carriedCodeCommitRefs.length ? carriedCodeCommitRefs : null;
   if (priorStageRow?.aidlcRepoRef && aidlcRepoRef && priorStageRow.aidlcRepoRef !== aidlcRepoRef) {
     return fail(
       stageInstanceId,
@@ -1612,6 +1655,7 @@ export const runStage = async (
       resolvedModel: model,
       stageCallbackId,
       aidlcRepoRef,
+      pendingCodeCommitRefs: retainedCodeCommitRefs,
     });
   }
   await store.updateExecution({
@@ -2290,6 +2334,8 @@ export const runStage = async (
       ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
       : `aidlc(${stageId}): ${executionId}`,
   });
+  const stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
+  retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
@@ -2418,6 +2464,7 @@ export const runStage = async (
         parkedAt: parked.createdAt ?? true,
         cli,
         cliSessionId,
+        pendingCodeCommitRefs: stageCodeCommitRefs.length ? stageCodeCommitRefs : null,
       })
       .catch(() => {});
     await store.appendEvent({
@@ -2598,6 +2645,79 @@ export const runStage = async (
     }
   }
 
+  // The set of changed files comes from this stage's git commit — a source
+  // every workflow has, so we always create CodeFile nodes + their Intent/Unit
+  // topology from it. A valid, stage/unit-produced traceability.json is an
+  // OPTIONAL extra source (capability-detected) that only adds requirement→file
+  // evidence edges on top. Projection is intentionally best-effort: missing or
+  // malformed evidence and Neptune outages must not turn successful
+  // implementation work into an execution failure.
+  let completedGitResult = gitResult;
+  try {
+    if (carriedCodeCommitRefs.length > 0) {
+      completedGitResult = await gitResultForCommitRefs({
+        commitRefs: stageCodeCommitRefs,
+        repos,
+        workspaceDir,
+      });
+    }
+    const projected = await ingestStageCodeTraceability({
+      openGraph,
+      scope: {
+        projectId,
+        intentId,
+        executionId,
+        stageInstanceId,
+        sectionIndex,
+        unitSlug,
+      },
+      gitResult: completedGitResult,
+      repos,
+      workspaceDir,
+      stageId,
+      stageInstanceId,
+      unitSlug,
+    });
+    if (projected.codeFiles > 0) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.code_files.ingested',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Projected ${projected.codeFiles} code file revision(s) with ${projected.evidenceEdges} evidence edge(s)`,
+        })
+        .catch(() => {});
+    }
+    if (projected.statuses.includes('invalid')) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.traceability.degraded',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Stage ${stageLabel} produced invalid traceability.json; Git code topology was retained without evidence links`,
+        })
+        .catch(() => {});
+    }
+  } catch (error) {
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.traceability.degraded',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: `Code traceability projection skipped: ${error?.message ?? String(error)}`,
+      })
+      .catch(() => {});
+  }
+
   // 7. Terminal success.
   await store.updateStageState({
     executionId,
@@ -2606,6 +2726,7 @@ export const runStage = async (
     completedAt: true,
     cli,
     cliSessionId,
+    pendingCodeCommitRefs: null,
   });
   // Steering provenance: link the corrections this stage consumed to the
   // artifacts it produced (Steering --INFLUENCES--> Artifact), mirroring the
@@ -2647,10 +2768,11 @@ export const runStage = async (
     state: 'SUCCEEDED',
   });
   const changedFiles = [
-    ...new Set(gitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
+    ...new Set(completedGitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
   ].toSorted();
   const commitSha =
-    gitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ?? null;
+    completedGitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ??
+    null;
   return {
     ok: true,
     state: 'SUCCEEDED',
