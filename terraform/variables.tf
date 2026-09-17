@@ -33,19 +33,8 @@ variable "powertools_log_event" {
   default     = false
 }
 
-variable "kms_mode" {
-  description = "Data-store KMS mode: default uses service-owned keys, create provisions a shared CMK, existing uses kms_key_arn"
-  type        = string
-  default     = "default"
-
-  validation {
-    condition     = contains(["default", "create", "existing"], var.kms_mode)
-    error_message = "kms_mode must be one of: default, create, existing."
-  }
-}
-
 variable "kms_key_arn" {
-  description = "Existing customer-managed KMS key ARN. Required only when kms_mode is existing."
+  description = "Optional existing customer-managed KMS key ARN. Leave empty to use service-owned encryption."
   type        = string
   default     = ""
 

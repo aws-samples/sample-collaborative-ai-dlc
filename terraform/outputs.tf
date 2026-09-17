@@ -138,17 +138,6 @@ output "code_snapshots_bucket_arn" {
   value       = module.s3.code_snapshots_bucket_arn
 }
 
-# Data encryption
-output "kms_mode" {
-  description = "Configured data-store KMS mode"
-  value       = var.kms_mode
-}
-
-output "data_kms_key_arn" {
-  description = "Resolved customer-managed data key ARN, or empty when using service-owned keys"
-  value       = local.kms_key_arn
-}
-
 # DynamoDB Tables
 output "sessions_table_name" {
   description = "Name of the sessions table"
