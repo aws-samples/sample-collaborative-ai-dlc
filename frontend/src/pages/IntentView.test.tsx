@@ -200,32 +200,35 @@ describe('IntentView', () => {
     expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
   });
 
-  it('explains a removed pinned credential and links to its settings', async () => {
-    get.mockResolvedValue(
-      baseDetail({
-        status: 'FAILED',
-        agentCli: 'kiro',
-        credentialSource: 'space',
-        failureReason: 'stage_failed: backend wording may change independently',
-        failure: {
-          code: 'credential_unavailable',
-          message:
-            'The Space Kiro credential pinned to this run is no longer available. A Space owner or admin must restore or rotate it in Space Settings, then restart the run. Active runs do not fall back to Platform credentials.',
-        },
-      }),
-    );
-    renderAt();
+  it.each(['credential_unavailable', 'credential_quota_exhausted'])(
+    'links %s to its pinned credential settings',
+    async (code) => {
+      get.mockResolvedValue(
+        baseDetail({
+          status: 'FAILED',
+          agentCli: 'kiro',
+          credentialSource: 'space',
+          failureReason: 'stage_failed: backend wording may change independently',
+          failure: {
+            code,
+            message:
+              'The Space Kiro credential pinned to this run is no longer available. A Space owner or admin must restore or rotate it in Space Settings, then restart the run. Active runs do not fall back to Platform credentials.',
+          },
+        }),
+      );
+      renderAt();
 
-    expect(
-      await screen.findByText(
-        /The Space Kiro credential pinned to this run is no longer available/,
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/stage_failed:/)).not.toBeInTheDocument();
+      expect(
+        await screen.findByText(
+          /The Space Kiro credential pinned to this run is no longer available/,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/stage_failed:/)).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Credential settings' }));
-    expect(await screen.findByTestId('space-settings')).toBeInTheDocument();
-  });
+      await userEvent.click(screen.getByRole('button', { name: 'Credential settings' }));
+      expect(await screen.findByTestId('space-settings')).toBeInTheDocument();
+    },
+  );
 
   it('retries a failed run from its earliest failed stage', async () => {
     compiled.mockResolvedValue({

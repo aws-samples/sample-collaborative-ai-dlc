@@ -5,6 +5,7 @@ import {
   WaitingOperationStatus,
 } from '@aws/durable-execution-sdk-js-testing';
 import { __durableHandler } from '../index.js';
+import { awaitEngineGate } from '../section.js';
 
 // ---------------------------------------------------------------------------
 // REAL replay coverage for the orchestrator's async stage flow (WP1).
@@ -34,6 +35,49 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await LocalDurableTestRunner.teardownTestEnvironment();
+});
+
+it('completes an engine gate on a racing saved answer without a callback delivery', async () => {
+  let gate = null;
+  let binds = 0;
+  let opened = 0;
+  let resumed = 0;
+  const store = {
+    getExecution: async () => ({ orchestratorRunId: 'run1' }),
+    getHumanTask: async () => gate,
+    createHumanTask: async (input) => {
+      opened++;
+      gate = { ...input, status: 'pending' };
+    },
+    setGateCallbackId: async () => {
+      binds++;
+      return null; // the human answered before the pending-only bind
+    },
+    updateExecution: async (input) => {
+      if (input.status === 'RUNNING') resumed++;
+      return {};
+    },
+  };
+  const handler = withDurableExecution((_event, ctx) =>
+    awaitEngineGate(
+      ctx,
+      {
+        store,
+        runId: 'run1',
+        ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+        broadcast: async () => {
+          gate = { ...gate, status: 'answered', answer: { decision: 'retry' } };
+        },
+      },
+      { name: 'halt-s1-r1', prompt: 'Retry?' },
+    ),
+  );
+  const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+  const execution = await runner.run({ payload: {} });
+  expect(execution.getResult()).toMatchObject({
+    gate: { status: 'answered', answer: { decision: 'retry' } },
+  });
+  expect({ opened, binds, resumed }).toEqual({ opened: 1, binds: 1, resumed: 1 });
 });
 
 const META = {

@@ -1197,7 +1197,11 @@ const normalizeSource = (raw, trackers) => {
 
 // ── DTO assembly ──
 
-const CREDENTIAL_FAILURE_CODES = ['credential_unavailable', 'credential_invalid'];
+const CREDENTIAL_FAILURE_CODES = [
+  'credential_unavailable',
+  'credential_invalid',
+  'credential_quota_exhausted',
+];
 
 // New execution rows persist a structured failure. Older rows only have the
 // concatenated failureReason string, so normalize those once at the API

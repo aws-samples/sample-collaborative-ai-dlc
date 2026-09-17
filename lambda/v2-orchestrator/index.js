@@ -55,6 +55,7 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
+import { bindGateCallback } from './gate-callback.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -847,7 +848,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // can resume THIS execution. Then suspend (zero compute) until answered.
         const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
         const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
-          store.setGateCallbackId({
+          bindGateCallback(store, {
             executionId,
             humanTaskId,
             callbackId,
@@ -873,7 +874,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // ignored"). Re-read AFTER binding: an already-answered gate skips
         // the wait entirely and resumes now.
         const answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
-          const gate = await store.getHumanTask(executionId, humanTaskId);
+          const gate = await store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
           return Boolean(gate?.status) && gate.status !== 'pending';
         });
         if (!answeredEarly) {
@@ -909,7 +910,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // wakes this callback with a cancel sentinel. The cancel/rewind path owns
         // META from here — exit WITHOUT any further write (docs/v2-steering.md).
         const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, () =>
-          store.getHumanTask(executionId, humanTaskId),
+          store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
         );
         if (gateAfter?.status === 'superseded') {
           ctx.logger?.info?.('run retired while parked', { intentId, humanTaskId });
@@ -926,7 +927,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // over the fresh row — field incident). Verify we still own the run
         // BEFORE dispatching anything.
         const ownerRunId = await ctxArg.step(`run-owner-${humanTaskId}`, async () => {
-          const currentMeta = await store.getExecution(executionId);
+          const currentMeta = await store.getExecution(executionId, { consistentRead: true });
           return currentMeta?.orchestratorRunId ?? null;
         });
         if (runId && ownerRunId && ownerRunId !== runId) {

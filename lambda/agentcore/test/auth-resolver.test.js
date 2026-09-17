@@ -3,6 +3,34 @@ import { authenticatedClisForEnv, resolveInvocationAgentAuth } from '../auth-res
 import { AGENT_AUTH_MODES } from '../command-registry.js';
 
 describe('resolveInvocationAgentAuth', () => {
+  it('reads a rotated key for the same existing intent on the next invocation', async () => {
+    const binding = { provider: 'kiro', source: 'space' };
+    let value = 'fixture-old';
+    const broker = vi.fn(async () => ({
+      purpose: 'execution',
+      projectId: 'p1',
+      executionId: 'e1',
+      credentials: [{ binding, value }],
+    }));
+    const options = {
+      payload: { executionId: 'e1', requestedCli: 'kiro', agentCredentialGrant: 'fixture-grant' },
+      store: {
+        getExecution: async () => ({
+          projectId: 'p1',
+          agentCli: 'kiro',
+          credentialBinding: binding,
+        }),
+      },
+      env: { KIRO_API_KEY: 'fixture-stale-process-key' },
+      broker,
+    };
+    expect((await resolveInvocationAgentAuth(options)).env.KIRO_API_KEY).toBe('fixture-old');
+    value = 'fixture-rotated';
+    expect((await resolveInvocationAgentAuth(options)).env.KIRO_API_KEY).toBe('fixture-rotated');
+    expect(broker).toHaveBeenCalledTimes(2);
+    expect(options.env.KIRO_API_KEY).toBe('fixture-stale-process-key');
+  });
+
   it('strongly reads the credential pin before verifying a grant', async () => {
     const pinnedBinding = { provider: 'kiro', source: 'user', userId: 'starter' };
     const getExecution = vi.fn(async (_executionId, options) =>
