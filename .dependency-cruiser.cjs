@@ -103,6 +103,27 @@ module.exports = {
       },
     },
     {
+      name: 'high-fan-in',
+      comment:
+        'This module is imported by a large number of others (high afferent ' +
+        'coupling). A change here has a wide blast radius. If it is a thin, ' +
+        'stable utility that is fine; if it is a transversal concern branched ' +
+        'on everywhere (like the credential subsystem), it likely needs an ' +
+        'owning abstraction so callers depend on one interface instead of ' +
+        'threading logic by hand. Investigate with: npm run dep:reaches -- "<file>".',
+      severity: 'warn',
+      // `module` selects the modules to check and the threshold; `from`
+      // filters which dependents count. Caveat: only path/pathNot are honoured
+      // here, so `from.pathNot` keeps the count to production importers.
+      module: {
+        path: '^lambda/',
+        numberOfDependentsMoreThan: 10,
+      },
+      from: {
+        pathNot: '(^|/)test/|\\.(test|spec)\\.(js|mjs|cjs|ts|tsx)$',
+      },
+    },
+    {
       name: 'not-to-test',
       comment:
         'Non-test code must not import a test file. Test helpers belong in ' +
