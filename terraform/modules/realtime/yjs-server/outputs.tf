@@ -48,3 +48,17 @@ output "yjs_image_tag" {
   description = "Image tag (hash) for the deployed yjs-server image"
   value       = local.yjs_image_tag
 }
+
+output "scaling" {
+  description = "Effective Yjs capacity and CloudWatch metric identity"
+  value = {
+    cluster_enabled = var.scaling.cluster_enabled
+    cpu             = local.worker_cpu
+    memory          = local.worker_memory
+    min_capacity    = local.min_capacity
+    max_capacity    = local.max_capacity
+    automatic       = var.scaling.autoscaling != null
+    metric_service  = local.metric_service
+    members_table   = try(aws_dynamodb_table.members[0].name, null)
+  }
+}

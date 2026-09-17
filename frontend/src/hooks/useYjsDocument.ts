@@ -40,13 +40,28 @@ export function useYjsDocument(
   // though the factory doesn't read documentId (the rule flags it as unnecessary).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const doc = useMemo(() => new Y.Doc(), [documentId]);
+  const currentDocRef = useRef(doc);
+  currentDocRef.current = doc;
   const awareness = useMemo(() => new awarenessProtocol.Awareness(doc), [doc]);
-  const [synced, setSynced] = useState(false);
+  const [syncState, setSyncState] = useState({ doc, synced: false });
+  const synced = syncState.doc === doc && syncState.synced;
+  const setSynced = useCallback((value: boolean) => setSyncState({ doc, synced: value }), [doc]);
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
+  const [localChange, setLocalChange] = useState({ doc, revision: 0 });
   const wsRef = useRef<WebSocket | null>(null);
+  const readySocketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
-  const pingIntervalRef = useRef<number | null>(null);
+  const handshakeTimerRef = useRef<number | null>(null);
   const tokenRefreshRef = useRef<number | null>(null);
+  const persistenceRef = useRef(false);
+  const flushSequenceRef = useRef(0);
+  const pendingFlushRef = useRef<{
+    id: number;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  const flushQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingDestroyRef = useRef<{
     doc: Y.Doc;
     awareness: awarenessProtocol.Awareness;
@@ -66,6 +81,7 @@ export function useYjsDocument(
 
     let cancelled = false;
     let reconnectAttempts = 0;
+    let awarenessTimer: ReturnType<typeof setTimeout> | null = null;
     const awarenessProt = awareness;
     setSynced(false);
     setRemoteUsers(new Map());
@@ -83,7 +99,8 @@ export function useYjsDocument(
     let connect: () => Promise<void>;
     const scheduleReconnect = () => {
       if (cancelled || reconnectTimeoutRef.current !== null) return;
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+      const maximum = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+      const delay = Math.floor(maximum * (0.5 + Math.random() * 0.5));
       reconnectAttempts = Math.min(reconnectAttempts + 1, 5);
       if (import.meta.env.DEV)
         console.log(`Yjs: reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
@@ -141,7 +158,14 @@ export function useYjsDocument(
         return;
       }
       wsRef.current = ws;
+      readySocketRef.current = null;
       ws.binaryType = 'arraybuffer';
+      persistenceRef.current = false;
+      handshakeTimerRef.current = window.setTimeout(() => {
+        if (!cancelled && wsRef.current === ws && ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+      }, 15_000);
 
       if (userName) {
         const color = userColor || '#888888';
@@ -159,8 +183,13 @@ export function useYjsDocument(
       // unicorn/prefer-add-event-listener is disabled for this file in
       // .oxlintrc.json for that reason.
       ws.onopen = () => {
+        if (cancelled || wsRef.current !== ws) {
+          ws.close();
+          return;
+        }
+        if (handshakeTimerRef.current) clearTimeout(handshakeTimerRef.current);
+        handshakeTimerRef.current = null;
         if (import.meta.env.DEV) console.log('Yjs WebSocket connected');
-        reconnectAttempts = 0;
 
         // Proactively reconnect shortly before the scope token expires — the
         // server force-closes the socket at expiry (close code 4401), so
@@ -174,13 +203,16 @@ export function useYjsDocument(
         // recorded expiry lets that handler decide whether a refresh is due.
         tokenExpRef.current = docToken.exp;
         if (tokenRefreshRef.current) clearTimeout(tokenRefreshRef.current);
-        tokenRefreshRef.current = window.setTimeout(() => {
-          tokenRefreshRef.current = null;
-          if (cancelled || wsRef.current !== ws) return;
-          invalidateRealtimeToken(target);
-          if (import.meta.env.DEV) console.log('Yjs: scope token expiring — reconnecting');
-          ws.close();
-        }, msUntilRefresh(docToken.exp));
+        tokenRefreshRef.current = window.setTimeout(
+          () => {
+            tokenRefreshRef.current = null;
+            if (cancelled || wsRef.current !== ws) return;
+            invalidateRealtimeToken(target);
+            if (import.meta.env.DEV) console.log('Yjs: scope token expiring — reconnecting');
+            ws.close();
+          },
+          Math.max(0, msUntilRefresh(docToken.exp) - Math.random() * 15_000),
+        );
 
         // Send sync step 1 immediately to request document state
         const encoder = encoding.createEncoder();
@@ -201,18 +233,12 @@ export function useYjsDocument(
 
         // Do NOT setSynced(true) here — wait until server sync response arrives
 
-        // Start ping interval to keep connection alive
-        pingIntervalRef.current = window.setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            const pingEncoder = encoding.createEncoder();
-            encoding.writeVarUint(pingEncoder, 0);
-            syncProtocol.writeSyncStep1(pingEncoder, doc);
-            ws.send(encoding.toUint8Array(pingEncoder));
-          }
-        }, 30000);
+        // Liveness uses server WebSocket ping/pong. Awareness renewals below
+        // keep presence live without computing a document delta every 30 s.
       };
 
       ws.onmessage = (event) => {
+        if (cancelled || wsRef.current !== ws) return;
         const data = new Uint8Array(event.data);
         try {
           const decoder = decoding.createDecoder(data);
@@ -229,6 +255,8 @@ export function useYjsDocument(
             // syncMessageType: 0 = step1, 1 = step2, 2 = update
             if (!initialSyncDone && syncMessageType === 1) {
               initialSyncDone = true;
+              reconnectAttempts = 0;
+              readySocketRef.current = ws;
               setSynced(true);
             }
           } else if (messageType === 1) {
@@ -237,6 +265,16 @@ export function useYjsDocument(
               decoding.readVarUint8Array(decoder),
               ws,
             );
+          } else if (messageType === 4) {
+            const subtype = decoding.readVarUint(decoder);
+            const value = decoding.readVarUint(decoder);
+            if (subtype === 0) persistenceRef.current = value === 1;
+            else if (subtype === 2 && pendingFlushRef.current?.id === value) {
+              const pending = pendingFlushRef.current;
+              clearTimeout(pending.timer);
+              pendingFlushRef.current = null;
+              pending.resolve();
+            }
           }
         } catch (e) {
           if (import.meta.env.DEV) console.log('Yjs message error:', e);
@@ -244,18 +282,24 @@ export function useYjsDocument(
       };
 
       ws.onclose = (event) => {
-        if (cancelled) return;
+        if (cancelled || wsRef.current !== ws) return;
         if (import.meta.env.DEV) console.log('Yjs WebSocket closed:', event.code, event.reason);
         setSynced(false);
+        readySocketRef.current = null;
         const remoteClientIds = [...awarenessProt.getStates().keys()].filter(
           (clientId) => clientId !== doc.clientID,
         );
         if (remoteClientIds.length) {
           awarenessProtocol.removeAwarenessStates(awarenessProt, remoteClientIds, ws);
         }
-        if (pingIntervalRef.current) {
-          clearInterval(pingIntervalRef.current);
-          pingIntervalRef.current = null;
+        if (handshakeTimerRef.current) {
+          clearTimeout(handshakeTimerRef.current);
+          handshakeTimerRef.current = null;
+        }
+        if (pendingFlushRef.current) {
+          clearTimeout(pendingFlushRef.current.timer);
+          pendingFlushRef.current.reject(new Error('Collaboration disconnected before saving'));
+          pendingFlushRef.current = null;
         }
         if (tokenRefreshRef.current) {
           clearTimeout(tokenRefreshRef.current);
@@ -273,7 +317,18 @@ export function useYjsDocument(
       ws.onerror = (event) => console.error('Yjs WebSocket error:', event);
     };
 
-    const updateHandler = (update: Uint8Array, origin: any) => {
+    const updateHandler = (
+      update: Uint8Array,
+      origin: any,
+      _doc: Y.Doc,
+      transaction: Y.Transaction,
+    ) => {
+      if (transaction.local) {
+        setLocalChange((previous) => ({
+          doc,
+          revision: previous.doc === doc ? previous.revision + 1 : 1,
+        }));
+      }
       const ws = wsRef.current;
       if (ws && origin !== ws && ws.readyState === WebSocket.OPEN) {
         const encoder = encoding.createEncoder();
@@ -283,26 +338,26 @@ export function useYjsDocument(
       }
     };
 
-    const awarenessHandler = ({
-      added,
-      updated,
-      removed,
-    }: {
-      added: number[];
-      updated: number[];
-      removed: number[];
-    }) => {
+    const sendAwareness = () => {
+      awarenessTimer = null;
       const ws = wsRef.current;
-      const changed = added.concat(updated, removed);
       if (ws && ws.readyState === WebSocket.OPEN) {
         const encoder = encoding.createEncoder();
         encoding.writeVarUint(encoder, 1);
         encoding.writeVarUint8Array(
           encoder,
-          awarenessProtocol.encodeAwarenessUpdate(awarenessProt, changed),
+          awarenessProtocol.encodeAwarenessUpdate(awarenessProt, [doc.clientID]),
         );
         ws.send(encoding.toUint8Array(encoder));
       }
+    };
+    const awarenessUpdateHandler = (_changes: unknown, origin: unknown) => {
+      if (origin !== 'local') return;
+      // Coalesce cursor events, but also send unchanged-state clock renewals.
+      // Remote identities are never echoed or claimed by this connection.
+      if (awarenessTimer === null) awarenessTimer = setTimeout(sendAwareness, 50);
+    };
+    const awarenessHandler = () => {
       const users = new Map<number, AwarenessUser>();
       awarenessProt.getStates().forEach((state, clientId) => {
         if (clientId !== doc.clientID && state.user) {
@@ -335,6 +390,7 @@ export function useYjsDocument(
 
     doc.on('update', updateHandler);
     awarenessProt.on('change', awarenessHandler);
+    awarenessProt.on('update', awarenessUpdateHandler);
     window.addEventListener('focus', refreshIfStale);
     document.addEventListener('visibilitychange', refreshIfStale);
     connect().catch((e) => console.error('Yjs initial connect failed:', e));
@@ -343,6 +399,8 @@ export function useYjsDocument(
       cancelled = true;
       doc.off('update', updateHandler);
       awarenessProt.off('change', awarenessHandler);
+      awarenessProt.off('update', awarenessUpdateHandler);
+      if (awarenessTimer) clearTimeout(awarenessTimer);
       window.removeEventListener('focus', refreshIfStale);
       document.removeEventListener('visibilitychange', refreshIfStale);
       awarenessProtocol.removeAwarenessStates(awarenessProt, [doc.clientID], 'disconnect');
@@ -350,23 +408,29 @@ export function useYjsDocument(
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
-        pingIntervalRef.current = null;
+      if (handshakeTimerRef.current) {
+        clearTimeout(handshakeTimerRef.current);
+        handshakeTimerRef.current = null;
       }
       if (tokenRefreshRef.current) {
         clearTimeout(tokenRefreshRef.current);
         tokenRefreshRef.current = null;
       }
       tokenExpRef.current = null;
+      if (pendingFlushRef.current) {
+        clearTimeout(pendingFlushRef.current.timer);
+        pendingFlushRef.current.reject(new Error('Collaboration closed before saving'));
+        pendingFlushRef.current = null;
+      }
       wsRef.current?.close();
       wsRef.current = null;
+      readySocketRef.current = null;
     };
     // scopeTarget is intentionally not a dep: it is derived from documentId
     // (same identity across renders for a given doc) and re-running on a new
     // object reference would needlessly recycle the socket.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, doc, awareness, userName, userColor]);
+  }, [documentId, doc, awareness, userName, userColor, setSynced]);
 
   // Registered after the connection effect so its cleanup runs only after the
   // socket listeners have released the old document and awareness instance.
@@ -403,5 +467,38 @@ export function useYjsDocument(
     [awareness],
   );
 
-  return { doc, synced, awareness, remoteUsers, setCursor };
+  const flushDocument = useCallback((): Promise<void> => {
+    const expectedDoc = doc;
+    const operation = flushQueueRef.current
+      .catch(() => {})
+      .then(() => {
+        if (currentDocRef.current !== expectedDoc)
+          throw new Error('Collaboration document changed');
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN || readySocketRef.current !== ws) {
+          throw new Error('Collaboration has not synchronized');
+        }
+        // Capability is delivered before initial sync. An interrupted handshake
+        // must not accidentally downgrade a cluster save to legacy REST-only.
+        if (!persistenceRef.current) return;
+        return new Promise<void>((resolve, reject) => {
+          const id = ++flushSequenceRef.current;
+          const timer = setTimeout(() => {
+            if (pendingFlushRef.current?.id === id) pendingFlushRef.current = null;
+            reject(new Error('Collaboration checkpoint timed out'));
+          }, 20_000);
+          pendingFlushRef.current = { id, resolve, reject, timer };
+          const encoder = encoding.createEncoder();
+          encoding.writeVarUint(encoder, 4);
+          encoding.writeVarUint(encoder, 1);
+          encoding.writeVarUint(encoder, id);
+          ws.send(encoding.toUint8Array(encoder));
+        });
+      });
+    flushQueueRef.current = operation;
+    return operation;
+  }, [doc]);
+
+  const localRevision = localChange.doc === doc ? localChange.revision : 0;
+  return { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument };
 }

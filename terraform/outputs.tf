@@ -274,6 +274,11 @@ output "yjs_image_tag" {
   value       = module.yjs_server.yjs_image_tag
 }
 
+output "yjs_scaling" {
+  description = "Effective worker sizing, scaling bounds, and metrics"
+  value       = module.yjs_server.scaling
+}
+
 output "private_subnet_ids" {
   description = "Private subnet IDs"
   value       = module.networking.private_subnet_ids
