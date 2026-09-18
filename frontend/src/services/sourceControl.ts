@@ -5,7 +5,8 @@ export type SourceControlAuthType =
   | 'github-oauth'
   | 'github-app'
   | 'gitlab-oauth'
-  | 'bitbucket-oauth';
+  | 'bitbucket-oauth'
+  | 'codecommit-role';
 export type SourceControlBindingState = 'active' | 'invalid' | 'unbound';
 
 // Per-provider source-control auth options + default, centralized so the
@@ -53,6 +54,15 @@ export const SOURCE_CONTROL_AUTH_OPTIONS: Record<GitProvider, SourceControlAuthO
       requiresDelegationConfirmation: true,
     },
   ],
+  codecommit: [
+    {
+      authType: 'codecommit-role',
+      label: 'IAM role in the repository account',
+      description:
+        'You create an IAM role that trusts this platform; it is assumed per request with a session policy scoped to the repository. No personal connection, no OAuth app.',
+      requiresDelegationConfirmation: false,
+    },
+  ],
 };
 
 // The preferred (default) auth type for a provider — first option in the list.
@@ -83,6 +93,11 @@ export interface SourceControlRepositoryStatus {
   delegatedBy?: string | null;
   installationId?: string | null;
   installationAccount?: string | null;
+  // codecommit-role: identity the tenant wrote into their own trust policy.
+  roleArn?: string | null;
+  externalId?: string | null;
+  roleAccountId?: string | null;
+  region?: string | null;
   actor?: string | null;
 }
 
@@ -97,6 +112,11 @@ export type SourceControlProviderSelection = Partial<
     {
       authType: SourceControlAuthType;
       confirmDelegation?: boolean;
+      // codecommit-role only.
+      roleArn?: string;
+      externalId?: string;
+      committerName?: string;
+      committerEmail?: string;
     }
   >
 >;

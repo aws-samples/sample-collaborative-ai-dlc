@@ -1,3 +1,4 @@
+import { isGitProvider, repoWebUrl } from '@/services/gitProvider';
 import type { IntentDetail } from '@/services/intents';
 
 // Code-items builder: one entry per repo that has real code on the remote (the
@@ -20,11 +21,8 @@ const branchWebUrl = (
   repo: string,
   branch: string,
 ): string | null => {
-  const enc = branch.split('/').map(encodeURIComponent).join('/');
-  if (provider === 'gitlab') return `https://gitlab.com/${repo}/-/tree/${enc}`;
-  if (provider === 'github') return `https://github.com/${repo}/tree/${enc}`;
-  if (provider === 'bitbucket') return `https://bitbucket.org/${repo}/src/${enc}`;
-  return null;
+  if (!isGitProvider(provider)) return null;
+  return repoWebUrl(provider, repo, { branch });
 };
 
 export function buildCodeItems(detail: IntentDetail): CodeItem[] {

@@ -17,9 +17,56 @@ vi.mock('../hooks/useGitProviderStatus', () => ({
   }),
 }));
 vi.mock('./GitConnectButton', () => ({ GitConnectButton: () => null }));
+// The CodeCommit connect form is stubbed to a single "verify" button that
+// reports a proven role plus the repositories it can see, standing in for the
+// trust-policy + STS round-trip.
+const CODECOMMIT_ARN = 'arn:aws:codecommit:eu-west-1:123456789012:widgets';
+vi.mock('./CodeCommitConnectForm', () => ({
+  CodeCommitConnectForm: ({
+    onVerified,
+  }: {
+    onVerified: (result: {
+      connection: { roleArn: string; externalId: string; region: string };
+      repos: { accountId: string; region: string; repositories: { fullName: string }[] };
+    }) => void;
+  }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onVerified({
+          connection: {
+            roleArn: 'arn:aws:iam::123456789012:role/aidlc-access',
+            externalId: 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
+            region: 'eu-west-1',
+          },
+          repos: {
+            accountId: '123456789012',
+            region: 'eu-west-1',
+            repositories: [{ fullName: CODECOMMIT_ARN }],
+          },
+        })
+      }
+    >
+      verify-codecommit
+    </button>
+  ),
+}));
 vi.mock('./GitRepoSelect', () => ({
-  GitRepoSelect: ({ onChange }: { onChange: (repos: { fullName: string }[]) => void }) => (
-    <button type="button" onClick={() => onChange([{ fullName: 'acme/widgets' }])}>
+  GitRepoSelect: ({
+    onChange,
+    repoSource,
+    repos,
+  }: {
+    onChange: (repos: { fullName: string }[]) => void;
+    repoSource?: string;
+    repos?: { fullName: string }[];
+  }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onChange(repoSource === 'codecommit-role' ? (repos ?? []) : [{ fullName: 'acme/widgets' }])
+      }
+    >
       select-repo
     </button>
   ),
@@ -229,5 +276,47 @@ describe('CreateProjectModal', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     expect(projectsService.delete).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+  it('connects CodeCommit through a verified IAM role and binds with the role and external id', async () => {
+    oauthConnected = false;
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={onCreated} initialProvider="codecommit" />,
+    );
+
+    // No OAuth connection exists and none is needed, but Next stays blocked
+    // until the role has been proven.
+    const nextButton = screen.getByRole('button', { name: 'Next' });
+    expect(nextButton).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'verify-codecommit' }));
+    await waitFor(() => expect(nextButton).toBeEnabled());
+    await user.click(nextButton);
+
+    // Step 2 lists the repositories the role returned (ARN ids).
+    await user.click(screen.getByRole('button', { name: 'select-repo' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    const createBtn = await screen.findByRole('button', { name: 'Create Space' });
+    await waitFor(() => expect(createBtn).toBeEnabled());
+    await user.click(createBtn);
+
+    await waitFor(() => expect(projectsService.create).toHaveBeenCalledTimes(1));
+    expect(projectsService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitProvider: 'codecommit',
+        gitRepo: CODECOMMIT_ARN,
+        // Space name derives from the repository name, not the ARN.
+        name: 'widgets',
+        repos: [{ url: CODECOMMIT_ARN, role: 'primary' }],
+      }),
+    );
+    expect(sourceControlService.bind).toHaveBeenCalledWith('p1', {
+      codecommit: {
+        authType: 'codecommit-role',
+        roleArn: 'arn:aws:iam::123456789012:role/aidlc-access',
+        externalId: 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
+      },
+    });
+    expect(onCreated).toHaveBeenCalled();
   });
 });

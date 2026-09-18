@@ -40,3 +40,26 @@ export const BitbucketIcon = ({ className }: { className?: string }) => (
     <path d="M.778 1.213a.768.768 0 00-.768.892l3.263 19.81c.084.5.515.868 1.022.873H19.95a.772.772 0 00.77-.646l3.27-20.03a.768.768 0 00-.768-.891zM14.52 15.53H9.522L8.17 8.466h7.561z" />
   </svg>
 );
+
+// A generic branching-graph glyph; there is no brand mark to reproduce for a
+// service that lives inside the AWS console.
+export const CodeCommitIcon = ({ className }: { className?: string }) => (
+  <svg
+    role="img"
+    viewBox="0 0 24 24"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-label="AWS CodeCommit"
+    className={className}
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="6" cy="5" r="2.2" />
+    <circle cx="6" cy="19" r="2.2" />
+    <circle cx="18" cy="9" r="2.2" />
+    <path d="M6 7.2v9.6" />
+    <path d="M18 11.2c0 3.2-3.5 4.3-7.5 4.6-2.3.2-3.7.5-4.5 1.4" />
+  </svg>
+);

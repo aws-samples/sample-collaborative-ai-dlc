@@ -1,5 +1,11 @@
 import { useState, useEffect } from 'react';
-import { GitHubIcon, GitLabIcon, BitbucketIcon } from '@/components/icons/git-providers';
+import {
+  GitHubIcon,
+  GitLabIcon,
+  BitbucketIcon,
+  CodeCommitIcon,
+} from '@/components/icons/git-providers';
+import { CodeCommitConnectForm, type CodeCommitConnectResult } from './CodeCommitConnectForm';
 import { projectsService, type CreateProjectInput } from '../services/projects';
 import { workflowsService, type WorkflowSummary } from '../services/workflows';
 import { trackersService } from '../services/trackers';
@@ -9,6 +15,9 @@ import { GitRepoSelect } from './GitRepoSelect';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import {
   githubAppService,
+  gitProviderTerminology,
+  isOAuthGitProvider,
+  repoDisplayName,
   trackerIdForGitProvider,
   type GitProvider,
   type GitRepo,
@@ -29,7 +38,10 @@ interface Props {
   initialProvider?: GitProvider | '';
 }
 
-const repoShortName = (fullName: string) => fullName.split('/').pop() || '';
+// Short name for space naming: the last path segment for owner/repo ids, the
+// repository name for a CodeCommit ARN (whose last ':' segment is the name).
+const repoShortName = (fullName: string) =>
+  (fullName.startsWith('arn:') ? fullName.split(':').pop() : fullName.split('/').pop()) || '';
 
 // Local form shape: gitProvider may be '' before the user selects one.
 type ProjectForm = Omit<CreateProjectInput, 'gitProvider'> & { gitProvider: GitProvider | '' };
@@ -59,6 +71,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   // step 1. null = still loading.
   const [appConfigured, setAppConfigured] = useState<boolean | null>(null);
   const [delegationConfirmed, setDelegationConfirmed] = useState(false);
+  // CodeCommit: the proven role + the repositories it can see, from the connect
+  // form. Step 2 lists these; submit binds with the same role and external id.
+  const [codecommit, setCodecommit] = useState<CodeCommitConnectResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -140,6 +155,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   const handleProviderChange = (provider: GitProvider) => {
     setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
     setSourceControlAuthType(defaultAuthTypeFor(provider));
+    setCodecommit(null);
+    setSelectedRepos([]);
+    setPrimaryRepo('');
     setDelegationConfirmed(false);
     setSelectedRepos([]);
     setPrimaryRepo('');
@@ -198,6 +216,12 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           [gitProvider]: {
             authType: sourceControlAuthType,
             ...(sourceControlAuthType.endsWith('-oauth') ? { confirmDelegation: true } : {}),
+            ...(sourceControlAuthType === 'codecommit-role' && codecommit
+              ? {
+                  roleArn: codecommit.connection.roleArn,
+                  externalId: codecommit.connection.externalId,
+                }
+              : {}),
           },
         });
       } catch (bindingError) {
@@ -206,9 +230,10 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         onClose();
         return;
       }
-      if (formData.issueIntegrationEnabled && formData.gitRepo) {
-        // GitHub and GitLab issues both reuse the project's git connection.
-        const trackerProvider = trackerIdForGitProvider(gitProvider);
+      // GitHub and GitLab issues both reuse the project's git connection; code-
+      // host-only providers (Bitbucket, CodeCommit) have no tracker to add.
+      const trackerProvider = trackerIdForGitProvider(gitProvider);
+      if (formData.issueIntegrationEnabled && formData.gitRepo && trackerProvider) {
         try {
           await trackersService.addToProject(project.id, {
             provider: trackerProvider,
@@ -235,7 +260,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   const canProceedStep1 = formData.gitProvider
     ? sourceControlAuthType === 'github-app'
       ? appConfigured === true
-      : gitStatus?.connected
+      : sourceControlAuthType === 'codecommit-role'
+        ? codecommit !== null
+        : gitStatus?.connected
     : false;
   const canProceedStep2 = selectedRepos.length > 0;
   const repoCount = selectedRepos.length;
@@ -315,13 +342,21 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                     Bitbucket
                   </span>
                 </SelectItem>
+                <SelectItem value="codecommit">
+                  <span className="flex items-center gap-2">
+                    <CodeCommitIcon className="h-4 w-4" />
+                    AWS CodeCommit
+                  </span>
+                </SelectItem>
               </SelectContent>
             </Select>
-            {gitStatusError && sourceControlAuthType !== 'github-app' && (
-              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
-                {gitStatusError}
-              </div>
-            )}
+            {gitStatusError &&
+              sourceControlAuthType !== 'github-app' &&
+              sourceControlAuthType !== 'codecommit-role' && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
+                  {gitStatusError}
+                </div>
+              )}
             {!formData.gitProvider ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 Select a git provider to continue.
@@ -368,7 +403,17 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                     </label>
                   </div>
                 )}
-                {sourceControlAuthType === 'github-app' ? (
+                {sourceControlAuthType === 'codecommit-role' ? (
+                  <CodeCommitConnectForm
+                    onVerified={(result) => {
+                      setCodecommit(result);
+                      setSelectedRepos([]);
+                      setPrimaryRepo('');
+                    }}
+                    onInvalidated={() => setCodecommit(null)}
+                    compact
+                  />
+                ) : sourceControlAuthType === 'github-app' ? (
                   appConfigured === null ? (
                     <p className="text-sm text-gray-500 dark:text-gray-400">
                       Checking GitHub App configuration...
@@ -376,7 +421,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                   ) : null
                 ) : gitStatusLoading ? (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Checking connection...</p>
-                ) : (
+                ) : isOAuthGitProvider(formData.gitProvider) ? (
                   <GitConnectButton
                     provider={formData.gitProvider}
                     connected={gitStatus?.connected || false}
@@ -384,7 +429,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                     missingScopes={gitStatus?.missingScopes}
                     onDisconnect={gitRefresh}
                   />
-                )}
+                ) : null}
               </>
             )}
             <div className="flex justify-end gap-2 mt-6">
@@ -418,7 +463,14 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               multiple
               value={selectedRepos}
               onChange={handleReposChange}
-              repoSource={sourceControlAuthType === 'github-app' ? 'github-app' : 'oauth'}
+              repoSource={
+                sourceControlAuthType === 'github-app'
+                  ? 'github-app'
+                  : sourceControlAuthType === 'codecommit-role'
+                    ? 'codecommit-role'
+                    : 'oauth'
+              }
+              repos={codecommit?.repos.repositories}
             />
             {selectedRepos.length > 1 && (
               <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
@@ -439,8 +491,11 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                       onChange={() => handleSetPrimary(repo)}
                       className="accent-indigo-600"
                     />
-                    <span className="text-sm text-gray-900 dark:text-gray-100 truncate flex-1">
-                      {repo}
+                    <span
+                      className="text-sm text-gray-900 dark:text-gray-100 truncate flex-1"
+                      title={repo}
+                    >
+                      {formData.gitProvider ? repoDisplayName(formData.gitProvider, repo) : repo}
                     </span>
                     {primaryRepo === repo && (
                       <span className="text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300 px-1.5 py-0.5 rounded">
@@ -512,7 +567,9 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <p className="text-sm text-gray-700 dark:text-gray-300">
                 {sourceControlAuthType === 'github-app'
                   ? 'GitHub App installation'
-                  : `Delegated ${formData.gitProvider === 'github' ? 'GitHub' : 'GitLab'} OAuth identity`}
+                  : sourceControlAuthType === 'codecommit-role'
+                    ? `IAM role ${codecommit?.connection.roleArn ?? ''}`
+                    : `Delegated ${formData.gitProvider ? gitProviderTerminology(formData.gitProvider).label : 'Git'} OAuth identity`}
                 <span className="block text-xs text-gray-500 dark:text-gray-400">
                   Chosen in step 1 — go back to change it.
                 </span>
