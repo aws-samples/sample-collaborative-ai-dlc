@@ -16,10 +16,33 @@ const SHELL_SAFE_REPO_PATTERN = /^[A-Za-z0-9._@:/-]+$/;
 // Provider-returned repository paths may contain nested namespaces. Enforce
 // filesystem-safe segments, leaving provider naming rules and lengths alone.
 const REPO_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+$/;
-const isValidRepoPath = (value) =>
-  typeof value === 'string' &&
-  REPO_PATH_PATTERN.test(value) &&
-  value.split('/').every((segment) => segment !== '.' && segment !== '..');
+
+// CodeCommit repositories are identified by ARN (there is no owner/name pair;
+// region and account are part of the identity). Kept as a regex here rather
+// than importing the provider module so this file stays a leaf. The name
+// charset is CodeCommit's own (\w . -), a strict subset of REPO_PATH_PATTERN.
+const CODECOMMIT_REPO_ARN_PATTERN =
+  /^arn:(aws|aws-cn|aws-us-gov):codecommit:([a-z]{2}(?:-[a-z]+)+-\d):(\d{12}):([\w.-]{1,100})$/;
+
+// Where a repository checks out under the workspace root, relative. Path-shaped
+// ids (github/gitlab/bitbucket "owner/repo", nested groups) are used verbatim;
+// a CodeCommit ARN maps to "<account>/<name>" so multi-repo layouts keep the
+// same two-segment shape and a repository name can never collide with an
+// owner directory from another provider.
+const repoRelativePath = (value) => {
+  if (typeof value !== 'string') return null;
+  const arn = CODECOMMIT_REPO_ARN_PATTERN.exec(value);
+  return arn ? `${arn[3]}/${arn[4]}` : value;
+};
+
+const isValidRepoPath = (value) => {
+  const rel = repoRelativePath(value);
+  return (
+    typeof rel === 'string' &&
+    REPO_PATH_PATTERN.test(rel) &&
+    rel.split('/').every((segment) => segment !== '.' && segment !== '..')
+  );
+};
 
 // Git refs: letters, digits, ., _, /, - only. No leading dash (arg injection),
 // no ".." and no "@{" (git revision syntax).
@@ -44,5 +67,21 @@ const isSafeRef = (v) =>
   !v.includes('..') &&
   !v.includes('@{');
 
-export { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef, isValidRepoPath };
-export default { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef, isValidRepoPath };
+export {
+  SHELL_SAFE_REPO_PATTERN,
+  GIT_REF_PATTERN,
+  CODECOMMIT_REPO_ARN_PATTERN,
+  isSafeRepo,
+  isSafeRef,
+  isValidRepoPath,
+  repoRelativePath,
+};
+export default {
+  SHELL_SAFE_REPO_PATTERN,
+  GIT_REF_PATTERN,
+  CODECOMMIT_REPO_ARN_PATTERN,
+  isSafeRepo,
+  isSafeRef,
+  isValidRepoPath,
+  repoRelativePath,
+};
