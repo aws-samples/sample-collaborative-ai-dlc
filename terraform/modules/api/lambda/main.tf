@@ -901,6 +901,18 @@ resource "aws_iam_role_policy" "source_control" {
           var.bitbucket_oauth_secret_arn,
         ])
       },
+      {
+        # CodeCommit (`codecommit-role` bindings): assume the tenant's repository
+        # access role. The caller-side ExternalId condition means this role can
+        # only ever assume a role whose trust policy names a platform-issued
+        # external id — never a role that happens to trust the account broadly.
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = "arn:${local.partition}:iam::*:role/*"
+        Condition = {
+          StringLike = { "sts:ExternalId" = "aidlc:*" }
+        }
+      },
     ]
   })
 }
@@ -1020,6 +1032,18 @@ resource "aws_iam_role_policy" "credential_broker" {
           var.gitlab_oauth_secret_arn,
           var.bitbucket_oauth_secret_arn,
         ])
+      },
+      {
+        # CodeCommit (`codecommit-role` bindings): assume the tenant's repository
+        # access role. The caller-side ExternalId condition means this role can
+        # only ever assume a role whose trust policy names a platform-issued
+        # external id — never a role that happens to trust the account broadly.
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = "arn:${local.partition}:iam::*:role/*"
+        Condition = {
+          StringLike = { "sts:ExternalId" = "aidlc:*" }
+        }
       },
     ]
   })
@@ -1793,6 +1817,98 @@ module "bitbucket_lambda" {
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
     BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Role 3e: codecommit-connector (1 Lambda — codecommit)
+# No OAuth, no token storage, no tables: the only thing this function does with
+# AWS is assume a tenant-owned repository access role (discover-only session
+# policy) to list repositories while a project is being connected.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "codecommit_connector" {
+  name               = "${var.project_name}-codecommit-connector-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "codecommit_connector_basic" {
+  role       = aws_iam_role.codecommit_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "codecommit_connector_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.codecommit_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "codecommit_connector" {
+  name = "codecommit-tenant-role-discovery"
+  role = aws_iam_role.codecommit_connector.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = "arn:${local.partition}:iam::*:role/*"
+        Condition = {
+          StringLike = { "sts:ExternalId" = "aidlc:*" }
+        }
+      },
+    ]
+  })
+}
+
+# The execution roles a tenant must trust on their CodeCommit access role. The
+# broker mints runtime git/API credentials, source-control verifies bindings
+# and runs project operations, codecommit discovers repositories at connect
+# time. Rendered into the trust policy shown by the connect flow.
+locals {
+  codecommit_platform_principals = join(",", [
+    aws_iam_role.credential_broker.arn,
+    aws_iam_role.source_control.arn,
+    aws_iam_role.codecommit_connector.arn,
+  ])
+}
+
+# CodeCommit Lambda
+module "codecommit_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-codecommit-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/codecommit"
+      commands = [
+        "cd ../.. && npm run build -w codecommit-lambda",
+        ":zip lambda/codecommit/.build",
+      ]
+    }
+  ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.codecommit_connector.arn
+
+  vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
+
+  environment_variables = {
+    POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
+    CODECOMMIT_PLATFORM_PRINCIPALS = local.codecommit_platform_principals
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }

@@ -76,8 +76,10 @@ export const codeCommitRepoPath = (repositoryName) => {
 export const codeCommitCloneUrl = (region, repositoryName, options) =>
   `https://${codeCommitGitHost(region, options)}${codeCommitRepoPath(repositoryName)}`;
 
+export const isCodeCommitRegion = (region) => typeof region === 'string' && REGION.test(region);
+
 const assertRegion = (region) => {
-  if (typeof region !== 'string' || !REGION.test(region)) {
+  if (!isCodeCommitRegion(region)) {
     throw new TypeError(`Invalid AWS region: ${String(region)}`);
   }
 };
@@ -147,6 +149,7 @@ export const signCodeCommitGitCredential = ({
 };
 
 export default {
+  isCodeCommitRegion,
   sha256Hex,
   deriveSigningKey,
   signStringToSign,

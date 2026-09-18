@@ -8,20 +8,30 @@
 // effective permission is the intersection of the tenant role's policy and the
 // session policy, so a generous tenant role is still clamped per call.
 //
-// The external ID is derived from the project id. This is the standard
-// confused-deputy guard: a repository owner's trust policy admits only the
-// external ID of the project they meant to connect, so a third party cannot
-// bind that role ARN from their own project.
+// The external ID is minted per connection and recorded on the binding. This is
+// the standard confused-deputy guard: a repository owner's trust policy admits
+// only the external ID they were shown while connecting, and the platform only
+// ever presents the external ID stored on the binding it is serving, so a third
+// party cannot bind that role ARN from their own project.
+import { randomUUID } from 'node:crypto';
 import { AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
 
 const SESSION_DURATION_SECONDS = 900; // STS minimum; ample for one git op or API burst.
 const ROLE_ARN = /^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;
 
-export const codeCommitExternalId = (projectId) => {
-  if (!projectId || typeof projectId !== 'string') throw new Error('projectId is required');
-  return `aidlc:${projectId}`;
-};
+// External ID handed to the tenant for their role trust policy. Minted once per
+// connection (not derived from the project: the trust policy must exist before
+// the project does, since repository discovery already needs the role) and
+// stored on the binding like a GitHub App installation id. The confused-deputy
+// guarantee is that the platform only ever presents the external id recorded
+// on the binding it is serving, never one supplied at request time.
+const EXTERNAL_ID_PREFIX = 'aidlc:';
+const EXTERNAL_ID = /^aidlc:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export const newCodeCommitExternalId = () => `${EXTERNAL_ID_PREFIX}${randomUUID()}`;
+
+export const isCodeCommitExternalId = (value) => EXTERNAL_ID.test(String(value ?? '').trim());
 
 export const isCodeCommitRoleArn = (value) => ROLE_ARN.test(String(value ?? '').trim());
 
@@ -121,14 +131,17 @@ const sessionName = (executionId) => {
 export const assumeCodeCommitRole = async ({
   sts,
   roleArn,
-  projectId,
-  repoArn,
+  externalId,
+  repoArn = null,
   access = 'write',
   executionId = null,
   durationSeconds = SESSION_DURATION_SECONDS,
 }) => {
   if (!isCodeCommitRoleArn(roleArn)) {
     throw Object.assign(new Error('Invalid IAM role ARN'), { code: 'BINDING_INVALID' });
+  }
+  if (!isCodeCommitExternalId(externalId)) {
+    throw Object.assign(new Error('Invalid CodeCommit external ID'), { code: 'BINDING_INVALID' });
   }
   const policy = codeCommitSessionPolicy({ repoArn, access });
   let result;
@@ -137,7 +150,7 @@ export const assumeCodeCommitRole = async ({
       new AssumeRoleCommand({
         RoleArn: roleArn,
         RoleSessionName: sessionName(executionId),
-        ExternalId: codeCommitExternalId(projectId),
+        ExternalId: externalId,
         DurationSeconds: durationSeconds,
         Policy: JSON.stringify(policy),
       }),
@@ -172,23 +185,33 @@ export const assumeCodeCommitRole = async ({
 
 // The trust policy a tenant must attach to their role. Rendered for the UI so
 // the operator copies exact JSON instead of reconstructing it from prose.
-export const codeCommitTrustPolicy = ({ brokerRoleArn, projectId }) => ({
-  Version: '2012-10-17',
-  Statement: [
-    {
-      Sid: 'AllowCollaborativeAIDLCBroker',
-      Effect: 'Allow',
-      Principal: { AWS: brokerRoleArn },
-      Action: 'sts:AssumeRole',
-      Condition: { StringEquals: { 'sts:ExternalId': codeCommitExternalId(projectId) } },
-    },
-  ],
-});
+// `principals` are the platform execution roles that assume tenant roles: the
+// credential broker (runtime git + API), the source-control API (bind-time
+// verification and project operations) and the codecommit API (repository
+// discovery while connecting).
+export const codeCommitTrustPolicy = ({ principals, externalId }) => {
+  const list = [principals].flat().filter(Boolean);
+  if (list.length === 0) throw new Error('At least one platform principal is required');
+  if (!isCodeCommitExternalId(externalId)) throw new Error('Invalid CodeCommit external ID');
+  return {
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Sid: 'AllowCollaborativeAIDLC',
+        Effect: 'Allow',
+        Principal: { AWS: list.length === 1 ? list[0] : list },
+        Action: 'sts:AssumeRole',
+        Condition: { StringEquals: { 'sts:ExternalId': externalId } },
+      },
+    ],
+  };
+};
 
 export { READ_API_ACTIONS, WRITE_API_ACTIONS, SESSION_DURATION_SECONDS };
 
 export default {
-  codeCommitExternalId,
+  newCodeCommitExternalId,
+  isCodeCommitExternalId,
   isCodeCommitRoleArn,
   roleAccountId,
   codeCommitSessionPolicy,

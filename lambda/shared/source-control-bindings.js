@@ -333,10 +333,11 @@ const sanitizeBinding = (binding, { privileged = false } = {}) => {
       out.installationAccount = binding.installationAccount || null;
     }
     if (binding.authType === 'codecommit-role') {
-      // Role ARN, account and region are identity, not secrets: the tenant
-      // wrote them. The external ID is derived from the project id and shown
-      // by the connect flow, never stored.
+      // Role ARN, external ID, account and region are identity, not secrets:
+      // the tenant wrote all of them into their own trust policy. Exposing
+      // the external ID lets the settings page re-render that policy.
       out.roleArn = binding.roleArn || null;
+      out.externalId = binding.externalId || null;
       out.roleAccountId = binding.roleAccountId || null;
       out.region = binding.region || null;
     }

@@ -14,7 +14,12 @@ import {
   oauthCredentialRef,
   roleCredentialRef,
 } from './source-control-bindings.js';
-import { assumeCodeCommitRole, isCodeCommitRoleArn, roleAccountId } from './codecommit-role.js';
+import {
+  assumeCodeCommitRole,
+  isCodeCommitExternalId,
+  isCodeCommitRoleArn,
+  roleAccountId,
+} from './codecommit-role.js';
 import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
 import { signCodeCommitGitCredential } from './git-providers/codecommit-credential.js';
 
@@ -167,7 +172,7 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
 const DEFAULT_COMMITTER_NAME = 'Collaborative AI-DLC';
 const defaultCommitterEmail = (accountId) => `aidlc-bot@${accountId || 'codecommit'}.invalid`;
 
-const verifyCodeCommitRoleBinding = async ({ sts, projectId, repo, selection = {} }) => {
+const verifyCodeCommitRoleBinding = async ({ sts, repo, selection = {} }) => {
   if (!sts) {
     throw Object.assign(new Error('STS client is required for CodeCommit role verification'), {
       code: 'STS_UNAVAILABLE',
@@ -177,6 +182,12 @@ const verifyCodeCommitRoleBinding = async ({ sts, projectId, repo, selection = {
   if (!isCodeCommitRoleArn(roleArn)) {
     throw Object.assign(new Error('A valid IAM role ARN is required for CodeCommit'), {
       code: 'ROLE_ARN_REQUIRED',
+    });
+  }
+  const externalId = String(selection.externalId || '').trim();
+  if (!isCodeCommitExternalId(externalId)) {
+    throw Object.assign(new Error('The CodeCommit connection external ID is required'), {
+      code: 'EXTERNAL_ID_REQUIRED',
     });
   }
   const target = parseCodeCommitRepo(repo);
@@ -192,7 +203,7 @@ const verifyCodeCommitRoleBinding = async ({ sts, projectId, repo, selection = {
   const credentials = await assumeCodeCommitRole({
     sts,
     roleArn,
-    projectId,
+    externalId,
     repoArn: target.arn,
     access: 'write',
     executionId: 'verify',
@@ -217,6 +228,7 @@ const verifyCodeCommitRoleBinding = async ({ sts, projectId, repo, selection = {
     authType: 'codecommit-role',
     credentialRef: roleCredentialRef(roleArn),
     roleArn,
+    externalId,
     roleAccountId: accountId,
     region: target.region,
     repositoryAccountId: target.accountId,
@@ -241,7 +253,6 @@ const verifyBindingCredential = async ({
   repo,
   authType,
   userId,
-  projectId = null,
   confirmDelegation = false,
   actorName = null,
   selection = {},
@@ -253,7 +264,7 @@ const verifyBindingCredential = async ({
   if (authType === 'codecommit-role') {
     if (provider !== 'codecommit')
       throw new Error('CodeCommit role auth is only valid for CodeCommit');
-    return verifyCodeCommitRoleBinding({ sts, projectId, repo, selection });
+    return verifyCodeCommitRoleBinding({ sts, repo, selection });
   }
   if (authType !== `${provider}-oauth`) {
     throw new Error(`Invalid auth type ${authType} for ${provider}`);
@@ -285,7 +296,12 @@ const resolveBindingCredential = async ({
     });
   }
   if (binding.authType === 'codecommit-role') {
-    if (!sts || !binding.roleArn || binding.credentialRef !== roleCredentialRef(binding.roleArn)) {
+    if (
+      !sts ||
+      !binding.roleArn ||
+      !binding.externalId ||
+      binding.credentialRef !== roleCredentialRef(binding.roleArn)
+    ) {
       throw Object.assign(new Error('CodeCommit role binding is incomplete'), {
         code: 'BINDING_INVALID',
       });
@@ -294,7 +310,7 @@ const resolveBindingCredential = async ({
     const credentials = await assumeCodeCommitRole({
       sts,
       roleArn: binding.roleArn,
-      projectId: binding.projectId,
+      externalId: binding.externalId,
       repoArn: target.arn,
       access: requiredAccess === 'read' ? 'read' : 'write',
       executionId,

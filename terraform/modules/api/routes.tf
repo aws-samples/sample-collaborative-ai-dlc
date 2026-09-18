@@ -2991,6 +2991,123 @@ resource "aws_lambda_permission" "bitbucket" {
 }
 
 # =============================================================================
+# CodeCommit Routes
+#
+# No OAuth: a CodeCommit repository is reached through an IAM role the tenant
+# creates and trusts the platform with. Three authenticated routes serve the
+# connect flow (platform principals, trust policy + external id, repository
+# discovery). Project-scoped git operations go through /projects/{id}/
+# source-control like every other provider.
+# =============================================================================
+
+resource "aws_api_gateway_resource" "codecommit" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "codecommit"
+}
+
+resource "aws_api_gateway_resource" "codecommit_status" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.codecommit.id
+  path_part   = "status"
+}
+
+resource "aws_api_gateway_resource" "codecommit_connect_info" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.codecommit.id
+  path_part   = "connect-info"
+}
+
+resource "aws_api_gateway_resource" "codecommit_repos" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.codecommit.id
+  path_part   = "repos"
+}
+
+# GET /codecommit/status (authenticated)
+resource "aws_api_gateway_method" "codecommit_status_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.codecommit_status.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "codecommit_status_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.codecommit_status.id
+  http_method             = aws_api_gateway_method.codecommit_status_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.codecommit_lambda_invoke_arn
+}
+
+# GET /codecommit/connect-info (authenticated)
+resource "aws_api_gateway_method" "codecommit_connect_info_get" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.codecommit_connect_info.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "codecommit_connect_info_get" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.codecommit_connect_info.id
+  http_method             = aws_api_gateway_method.codecommit_connect_info_get.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.codecommit_lambda_invoke_arn
+}
+
+# POST /codecommit/repos (authenticated) — body carries roleArn/externalId/region
+resource "aws_api_gateway_method" "codecommit_repos_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.codecommit_repos.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "codecommit_repos_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.codecommit_repos.id
+  http_method             = aws_api_gateway_method.codecommit_repos_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.codecommit_lambda_invoke_arn
+}
+
+module "cors_codecommit_status" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.codecommit_status.id
+}
+
+module "cors_codecommit_connect_info" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.codecommit_connect_info.id
+}
+
+module "cors_codecommit_repos" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.codecommit_repos.id
+}
+
+# -----------------------------------------------------------------------------
+# CodeCommit Lambda Permission
+# -----------------------------------------------------------------------------
+resource "aws_lambda_permission" "codecommit" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = var.codecommit_lambda_name
+  principal     = "apigateway.${local.dns_suffix}"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# =============================================================================
 # GitLab OAuth Routes
 # =============================================================================
 

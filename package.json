@@ -17,6 +17,7 @@
     "lambda/intents",
     "lambda/gitlab",
     "lambda/bitbucket",
+    "lambda/codecommit",
     "lambda/migrate-tracker-fields",
     "lambda/seed-blocks",
     "lambda/sso-token",

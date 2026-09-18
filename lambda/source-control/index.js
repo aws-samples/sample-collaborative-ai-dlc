@@ -146,6 +146,7 @@ const normalizeProviderSelections = (data = {}) => {
         confirmDelegation: item.confirmDelegation,
         // codecommit-role: the tenant role and the committer identity.
         ...(item.roleArn ? { roleArn: item.roleArn } : {}),
+        ...(item.externalId ? { externalId: item.externalId } : {}),
         ...(item.committerName ? { committerName: item.committerName } : {}),
         ...(item.committerEmail ? { committerEmail: item.committerEmail } : {}),
       };
@@ -529,7 +530,6 @@ export const handler = async (event, context) => {
             repo: repo.repo,
             authType: selection.authType,
             userId,
-            projectId,
             selection,
             confirmDelegation:
               selection.confirmDelegation === true || data.confirmDelegation === true,
