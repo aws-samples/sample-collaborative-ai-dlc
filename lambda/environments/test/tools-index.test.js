@@ -32,6 +32,27 @@ describe('managed tool control API', () => {
     vi.stubEnv('CORE_IMAGE_DIGEST', `sha256:${'a'.repeat(64)}`);
   });
 
+  it('logs a sanitized API Gateway event when event logging is enabled', async () => {
+    const eventLogger = { logEventIfEnabled: vi.fn() };
+    const handler = createToolsHandler({ store: baseStore(), eventLogger });
+
+    await handler({
+      httpMethod: 'OPTIONS',
+      path: '/tools',
+      headers: { Authorization: 'Bearer admin-secret' },
+      body: JSON.stringify({
+        environmentVariables: { TOOL_TOKEN: 'tool-secret' },
+      }),
+    });
+
+    const logged = eventLogger.logEventIfEnabled.mock.calls[0][0];
+    expect(logged).not.toHaveProperty('headers');
+    expect(JSON.stringify(logged)).not.toContain('admin-secret');
+    expect(JSON.parse(logged.body).environmentVariables).toEqual({
+      TOOL_TOKEN: '[REDACTED]',
+    });
+  });
+
   it('rejects non-admin catalog mutations', async () => {
     const handler = createToolsHandler({ store: baseStore() });
     const response = await handler({

@@ -3,6 +3,9 @@ import {
   DeleteObjectsCommand,
   ListObjectVersionsCommand,
 } from '@aws-sdk/client-s3';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'intent-attachments' } });
 
 export const MAX_ATTACHMENTS = 5;
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB
@@ -125,7 +128,7 @@ export const createAttachmentCleanupService = ({ s3, store, bucket }) => {
       try {
         await purgeObject(attachment.s3Key);
       } catch (error) {
-        console.error(`Attachment purge retry failed (${attachment.s3Key}):`, error.message);
+        logger.error('Attachment purge retry failed', error, { s3Key: attachment.s3Key });
         remaining.push(attachment);
       }
     }
@@ -137,10 +140,9 @@ export const createAttachmentCleanupService = ({ s3, store, bucket }) => {
         pendingAttachmentDeletions: remaining,
       });
     } catch (error) {
-      console.error(
-        `Attachment cleanup tombstone update failed (${meta.executionId}):`,
-        error.message,
-      );
+      logger.error('Attachment cleanup tombstone update failed', error, {
+        executionId: meta.executionId,
+      });
       return meta;
     }
   };

@@ -14,6 +14,9 @@ import {
   requiredScopeForChannel,
   isTokenLive,
 } from '../shared/realtime-token.js';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'ws-connection' } });
 
 const client = new DynamoDBClient();
 const ssm = new SSMClient();
@@ -36,14 +39,15 @@ const getSecret = async () => {
   return cachedSecret;
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const connectionId = event.requestContext.connectionId;
   const routeKey = event.requestContext.routeKey;
   const userId = event.requestContext.authorizer?.userId || 'anonymous';
   const userName = event.requestContext.authorizer?.userName || userId;
   const documentId = event.queryStringParameters?.documentId || 'default';
 
-  console.log('Connection event:', routeKey, connectionId, documentId);
+  logger.info('Connection event', { routeKey, connectionId, documentId });
 
   if (routeKey === '$connect') {
     // Scope-token check: signature, expiry, scope coverage for the
@@ -59,12 +63,16 @@ export const handler = async (event) => {
     });
     if (!access.ok) {
       if (docTokenEnforce()) {
-        console.warn(`$connect rejected: doc token ${access.reason} for document "${documentId}"`);
+        logger.warn('$connect rejected: doc token for document', {
+          reason: access.reason,
+          documentId,
+        });
         return { statusCode: 403, body: 'Forbidden' };
       }
-      console.warn(
-        `$connect allowed despite doc token ${access.reason} for document "${documentId}" (DOC_TOKEN_ENFORCE=false)`,
-      );
+      logger.warn('$connect allowed despite doc token for document (DOC_TOKEN_ENFORCE=false)', {
+        reason: access.reason,
+        documentId,
+      });
     }
 
     const item = {

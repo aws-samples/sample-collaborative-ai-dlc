@@ -3,6 +3,9 @@
 // Installation IDs are discovered per repository and never stored globally.
 
 import { GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'github-auth-config' } });
 
 const CONFIG_CACHE_TTL_MS = 60 * 1000;
 
@@ -25,7 +28,7 @@ const getGitHubAppConfig = async (ssm) => {
     const parsed = JSON.parse(param.Parameter?.Value || '{}');
     value = { appId: parsed.appId ? String(parsed.appId) : null };
   } catch (error) {
-    console.error('[github-auth-config] failed to read app config:', error.message);
+    logger.error('failed to read app config', error);
   }
   appConfigCache = { value, fetchedAt: Date.now() };
   return value;

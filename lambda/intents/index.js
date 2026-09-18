@@ -24,6 +24,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
+import { Logger } from '@aws-lambda-powertools/logger';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -38,6 +39,7 @@ import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
@@ -115,6 +117,7 @@ const s3 = new S3Client({});
 const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
+const logger = new Logger({ persistentKeys: { component: 'intents' } });
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
@@ -247,9 +250,7 @@ const ingestAttachmentUpload = async (event) => {
             VersionId: source.versionId,
           }),
         )
-        .catch((error) =>
-          console.error(`Attachment staging cleanup failed (${key}):`, error.message),
-        );
+        .catch((error) => logger.error('Attachment staging cleanup failed', error, { key }));
       return;
     }
 
@@ -307,9 +308,7 @@ const ingestAttachmentUpload = async (event) => {
           VersionId: source.versionId,
         }),
       )
-      .catch((error) =>
-        console.error(`Attachment staging cleanup failed (${key}):`, error.message),
-      );
+      .catch((error) => logger.error('Attachment staging cleanup failed', error, { key }));
     return;
   }
 };
@@ -376,7 +375,7 @@ const validateSourceControlForLaunch = async (meta) => {
 
 const sourceControlNotReadyResponse = (response, validation, projectId) => {
   const blocked = (validation?.repositories ?? []).filter((repo) => !repo.ready);
-  console.error('[intents] source control not ready', {
+  logger.error('source control not ready', {
     projectId,
     reasonCodes: [...new Set(blocked.map((repo) => repo.code).filter(Boolean))].join(','),
   });
@@ -394,7 +393,7 @@ const sourceControlLaunchGuard = async (meta, response) => {
       ? null
       : sourceControlNotReadyResponse(response, validation, meta.projectId);
   } catch (error) {
-    console.error('Source-control launch validation failed:', error.code || error.message);
+    logger.error('Source-control launch validation failed', error);
     return response(503, {
       error: 'Source-control validation is temporarily unavailable',
       code: 'SOURCE_CONTROL_VALIDATION_FAILED',
@@ -451,7 +450,7 @@ const stopRuntimeSessions = async (
         }),
       );
     } catch (err) {
-      console.log(`stop-runtime-session best-effort miss (${id}): ${err?.message ?? err}`);
+      logger.warn('stop-runtime-session best-effort miss', err, { id });
     }
   });
 };
@@ -1515,7 +1514,10 @@ const authorize = async (g, projectId, sub, response) => {
   return { role };
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logger.resetKeys();
+  logSafeEventIfEnabled(logger, event);
   const response = buildResponse(event);
   if (event?.source === 'aws.s3') {
     await ingestAttachmentUpload(event);
@@ -1543,6 +1545,13 @@ export const handler = async (event) => {
   const versionId = pathParameters?.versionId;
   const editId = pathParameters?.editId;
   const sub = event.requestContext?.authorizer?.claims?.sub;
+
+  // Correlation context for all subsequent logs in this request.
+  logger.appendKeys({
+    ...(projectId && { projectId }),
+    ...(intentId && { intentId }),
+    ...(sub && { userId: sub }),
+  });
 
   let conn;
   try {
@@ -1606,7 +1615,7 @@ export const handler = async (event) => {
             args: { number: pr.number },
           });
         } catch (error) {
-          console.error('Review comment refresh failed:', error.code || error.message);
+          logger.error('Review comment refresh failed', error);
           return response(error.code === 'SOURCE_CONTROL_NOT_READY' ? 409 : 502, {
             error:
               error.code === 'SOURCE_CONTROL_NOT_READY'
@@ -1733,9 +1742,7 @@ export const handler = async (event) => {
             await wakeUnitPrWait(wait, {
               reason: 'queued_feedback',
               detail: { batchId, commentCount: selected.length },
-            }).catch((error) =>
-              console.error('Queued feedback PR-wait wake failed:', error.message),
-            );
+            }).catch((error) => logger.error('Queued feedback PR-wait wake failed', error));
           }
         }
         return response(created.created ? 202 : 200, mapFeedbackBatch(created.item));
@@ -1915,10 +1922,10 @@ export const handler = async (event) => {
             actor: exporter.displayName || exporter.sub,
             summary: `${exporter.displayName || 'Someone'} exported the ${harness} native workspace (export ${exported.exportId})`,
           })
-          .catch((err) => console.error('Export event append failed:', err.message));
+          .catch((err) => logger.error('Export event append failed', err));
         return response(201, exported);
       } catch (error) {
-        console.error('Native workflow export failed:', error);
+        logger.error('Native workflow export failed', error);
         if (error.code === 'export_snapshot_changed') {
           return response(409, {
             error: error.message,
@@ -2141,7 +2148,7 @@ export const handler = async (event) => {
         intentId,
         artifactId: canonicalArtifactId,
       }).catch((err) => {
-        console.error('Downstream closure failed:', err.message);
+        logger.error('Downstream closure failed', err);
         return [];
       });
       const edit = await applyArtifactEdit({
@@ -2160,7 +2167,7 @@ export const handler = async (event) => {
         artifactIds: downstream.map((d) => d.id),
         reason: `edit:${canonicalArtifactId}:${edit.editedAt}`,
       }).catch((err) => {
-        console.error('Stale marking failed:', err.message);
+        logger.error('Stale marking failed', err);
         return [];
       });
       // Mid-run edit (the run is parked WAITING on a gate): the parked CLI
@@ -2179,12 +2186,12 @@ export const handler = async (event) => {
             createdByName: responder.displayName,
           })
           .catch((err) => {
-            console.error('Artifact-edit steering record failed:', err.message);
+            logger.error('Artifact-edit steering record failed', err);
             return null;
           });
         if (steer) {
           await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-            console.error('Steering graph mirror failed:', err.message),
+            logger.error('Steering graph mirror failed', err),
           );
         }
       }
@@ -2200,7 +2207,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary,
         })
-        .catch((err) => console.error('Edit event append failed:', err.message));
+        .catch((err) => logger.error('Edit event append failed', err));
       await broadcastToIntentChannel(intentId, {
         action: 'agent.note',
         intentId,
@@ -2250,7 +2257,7 @@ export const handler = async (event) => {
           const text = res.response ? await res.response.transformToString() : '';
           derived = text ? JSON.parse(text).ok !== false : false;
         } catch (err) {
-          console.error('[artifact-edit] derive dispatch failed:', err.message);
+          logger.error('[artifact-edit] derive dispatch failed', err);
         }
       }
       return response(200, {
@@ -2292,7 +2299,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary,
         })
-        .catch((err) => console.error('Verify event append failed:', err.message));
+        .catch((err) => logger.error('Verify event append failed', err));
       await broadcastToIntentChannel(intentId, {
         action: 'agent.note',
         intentId,
@@ -2360,7 +2367,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary,
         })
-        .catch((err) => console.error('Quorum edit event append failed:', err.message));
+        .catch((err) => logger.error('Quorum edit event append failed', err));
       await broadcastToIntentChannel(intentId, {
         action: 'agent.note',
         intentId,
@@ -2454,7 +2461,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary,
         })
-        .catch((err) => console.error('Quorum decision event append failed:', err.message));
+        .catch((err) => logger.error('Quorum decision event append failed', err));
       await broadcastToIntentChannel(intentId, {
         action: 'agent.note',
         intentId,
@@ -2526,9 +2533,9 @@ export const handler = async (event) => {
             actor: responder.displayName || responder.sub,
             summary: `${responder.displayName || 'Someone'} added a course correction with their answer`,
           })
-          .catch((err) => console.error('Steering event append failed:', err.message));
+          .catch((err) => logger.error('Steering event append failed', err));
         await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-          console.error('Steering graph mirror failed:', err.message),
+          logger.error('Steering graph mirror failed', err),
         );
       }
       await syncAnsweredQuestionVertex({
@@ -2538,9 +2545,9 @@ export const handler = async (event) => {
         answer: answered.answer,
         responder,
         answeredAt: answered.answeredAt,
-      }).catch((err) => console.error('Question graph sync failed:', err.message));
+      }).catch((err) => logger.error('Question graph sync failed', err));
       await linkQuestionToStageArtifacts(g, intentId, gate).catch((err) =>
-        console.error('Question artifact link sync failed:', err.message),
+        logger.error('Question artifact link sync failed', err),
       );
       // Resume the suspended orchestrator ONLY if this gate is the one the
       // durable run actually parked on (it carries the callbackId). Answering an
@@ -2559,7 +2566,7 @@ export const handler = async (event) => {
               actor: responder.displayName || responder.sub,
               summary: `${responder.displayName || 'Someone'} answered after the durable execution expired; the run was marked failed and can be restarted`,
             }).catch((repairErr) =>
-              console.error('Durable callback expiry repair failed:', repairErr.message),
+              logger.error('Durable callback expiry repair failed', repairErr),
             );
             return response(409, {
               error: 'Durable execution expired before this answer could resume the run',
@@ -2574,9 +2581,7 @@ export const handler = async (event) => {
               actor: responder.displayName || responder.sub,
               summary: `Gate answer was recorded, but the durable callback could not be completed: ${err?.message ?? 'unknown error'}`,
             })
-            .catch((eventErr) =>
-              console.error('Gate resume failure event append failed:', eventErr.message),
-            );
+            .catch((eventErr) => logger.error('Gate resume failure event append failed', eventErr));
           return response(503, {
             error:
               'Gate answer was recorded, but the durable callback could not be completed. Retry after refreshing the intent.',
@@ -2629,9 +2634,9 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary: `${responder.displayName || 'Someone'} revised their answer to "${questionText(gate.questions)}"`,
         })
-        .catch((err) => console.error('Revise event append failed:', err.message));
+        .catch((err) => logger.error('Revise event append failed', err));
       await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-        console.error('Steering graph mirror failed:', err.message),
+        logger.error('Steering graph mirror failed', err),
       );
       // Tell the caller when the correction will reach the agent: a WAITING run
       // delivers on the pending gate's resume; otherwise at the next stage start.
@@ -2824,7 +2829,7 @@ export const handler = async (event) => {
               executionId: intentId,
               durableExecutionArn: invoked.durableExecutionArn,
             })
-            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
         }
       } catch (err) {
         await store.updateExecution({
@@ -2882,7 +2887,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary: `Run cancelled by ${responder.displayName || 'a project member'}`,
         })
-        .catch((err) => console.error('Cancel event append failed:', err.message));
+        .catch((err) => logger.error('Cancel event append failed', err));
       return response(200, mapIntent(updated));
     }
 
@@ -3517,9 +3522,12 @@ export const handler = async (event) => {
         throw err;
       }
 
-      console.log(
-        `Intent ${intentId} deleted by ${responder.sub} (project ${projectId}, was ${meta.status})`,
-      );
+      logger.info('Intent deleted', {
+        intentId,
+        deletedBy: responder.sub,
+        projectId,
+        priorStatus: meta.status,
+      });
       return response(204, {});
     }
 
@@ -3595,7 +3603,7 @@ export const handler = async (event) => {
           enriched: out.enriched ?? 0,
         });
       } catch (err) {
-        console.error('[derive] runtime invoke failed:', err.message);
+        logger.error('[derive] runtime invoke failed', err);
         return response(502, { error: 'Failed to invoke the derive runtime' });
       }
     }
@@ -3779,7 +3787,7 @@ export const handler = async (event) => {
           remotePrs.set(pr.sk, { status, mergedHeadIsAncestor });
         }
       } catch (error) {
-        console.error('Repair provider reconciliation failed:', error.code || error.message);
+        logger.error('Repair provider reconciliation failed', error);
         return response(502, {
           error: 'Pull request state could not be reconciled; repair made no changes',
           code: 'provider_reconciliation_failed',
@@ -4011,9 +4019,7 @@ export const handler = async (event) => {
               executionId: intentId,
               durableExecutionArn: invoked.durableExecutionArn,
             })
-            .catch((error) =>
-              console.error('Repair durable execution ARN stamp failed:', error.message),
-            );
+            .catch((error) => logger.error('Repair durable execution ARN stamp failed', error));
         }
       } catch (error) {
         await store.updateExecution({
@@ -4295,14 +4301,12 @@ export const handler = async (event) => {
               state: 'PENDING',
               fields: { failureReason: null, blockedOn: null },
             })
-            .catch((err) =>
-              console.error(`Unit lane reset failed (s${sectionIndex}:${slug}):`, err.message),
-            ),
+            .catch((err) => logger.error('Unit lane reset failed', err, { sectionIndex, slug })),
         );
       }
       if (steer) {
         await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-          console.error('Steering graph mirror failed:', err.message),
+          logger.error('Steering graph mirror failed', err),
         );
       }
       await store
@@ -4312,7 +4316,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${fromStageId !== requestedFromStageId ? ` (requested ${requestedFromStageId}; restarted the incomplete unit section from its first stage)` : ''}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${archivedArtifacts.length} artifact(s) archived)`,
         })
-        .catch((err) => console.error('Rewind event append failed:', err.message));
+        .catch((err) => logger.error('Rewind event append failed', err));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
       const durableExecutionName = durableExecutionNameForIntent(intentId);
       await store.deleteWorkflowCheckpoint(intentId);
@@ -4354,7 +4358,7 @@ export const handler = async (event) => {
               executionId: intentId,
               durableExecutionArn: invoked.durableExecutionArn,
             })
-            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
         }
       } catch (err) {
         await store.updateExecution({
@@ -4563,7 +4567,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary: `${responder.displayName || 'Someone'} recomposed the run (${newPlan.summary.executedStages} of ${newPlan.summary.totalStages} stages, scope label "${newScope}") — relaunching at ${fromStage.stageId}`,
         })
-        .catch((err) => console.error('Recompose event append failed:', err.message));
+        .catch((err) => logger.error('Recompose event append failed', err));
       const priorStatus = meta.status;
       const durableExecutionName = durableExecutionNameForIntent(intentId);
       await store.deleteWorkflowCheckpoint(intentId);
@@ -4608,7 +4612,7 @@ export const handler = async (event) => {
               executionId: intentId,
               durableExecutionArn: invoked.durableExecutionArn,
             })
-            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
         }
       } catch (err) {
         await store.updateExecution({
@@ -5022,11 +5026,11 @@ export const handler = async (event) => {
     // every 500 in CloudWatch was an identical opaque string with no stack
     // and no way to distinguish the offending path. The 500 response
     // contract is preserved — the body still exposes only a generic message.
-    console.error('intents handler error', {
-      message: error?.message,
-      name: error?.name,
+    // The Error is passed as the second arg so Powertools serializes its
+    // name/message/stack into a structured `error` field (the `message` key is
+    // reserved by the logger and would be dropped if set on the context bag).
+    logger.error('intents handler error', error, {
       code: error?.code,
-      stack: error?.stack,
       resource: event?.resource,
       httpMethod: event?.httpMethod,
       projectId: event?.pathParameters?.projectId,
@@ -5049,7 +5053,7 @@ export const handler = async (event) => {
 const invokeOrchestrator = async (payload, { durableExecutionName = null } = {}) => {
   const fn = ORCHESTRATOR_FN();
   if (!fn) {
-    console.error('V2_ORCHESTRATOR_FUNCTION not configured — cannot start');
+    logger.error('V2_ORCHESTRATOR_FUNCTION not configured — cannot start');
     return;
   }
   const res = await lambdaClient.send(
@@ -5125,7 +5129,7 @@ const wakeUnitPrWait = async (wait, { reason, detail = null } = {}) => {
       claimId,
       reason,
     })
-    .catch((error) => console.error('PR-wait completion cleanup failed:', error.message));
+    .catch((error) => logger.error('PR-wait completion cleanup failed', error));
   return { woken: true };
 };
 
@@ -5204,7 +5208,7 @@ const repairExpiredDurableExecution = async ({
       actor,
       summary,
     })
-    .catch((err) => console.error('Durable expiry event append failed:', err.message));
+    .catch((err) => logger.error('Durable expiry event append failed', err));
   return updated;
 };
 
@@ -5404,7 +5408,7 @@ const retireParkedRun = async (executionId, reason) => {
         supersededBy: reason,
       })
       .catch((err) => {
-        console.error('Gate supersede failed:', err.message);
+        logger.error('Gate supersede failed', err);
         return null;
       });
     if (superseded && gate.callbackId) {
@@ -5415,14 +5419,14 @@ const retireParkedRun = async (executionId, reason) => {
             Result: Buffer.from(JSON.stringify({ cancelled: true, reason })),
           }),
         )
-        .catch((err) => console.error('Cancel callback send failed:', err.message));
+        .catch((err) => logger.error('Cancel callback send failed', err));
     }
   }
   for (const wait of (records.units ?? []).filter((unit) => unit.prWaitCallbackId)) {
     await wakeUnitPrWait(wait, {
       reason: 'retired',
       detail: { reason },
-    }).catch((error) => console.error('Retired PR-wait callback send failed:', error.message));
+    }).catch((error) => logger.error('Retired PR-wait callback send failed', error));
   }
 };
 

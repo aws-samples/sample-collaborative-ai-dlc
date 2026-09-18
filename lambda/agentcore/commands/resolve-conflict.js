@@ -27,6 +27,7 @@
 // Failures are VALUES ({ ok:false, reason, detail }) — policy lives in the
 // orchestrator.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import {
   beginConflictMerge as defaultBeginConflictMerge,
   concludeConflictMerge as defaultConcludeConflictMerge,
@@ -50,6 +51,10 @@ import {
 import { withOpenCodeStore as defaultWithOpenCodeStore } from '../cli/opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from '../cli/codex-store.js';
 import { repoUrl, repoProvider } from '../../shared/repo-provider.js';
+
+const logger = new Logger({
+  persistentKeys: { component: 'agentcore', module: 'resolve-conflict' },
+});
 
 // The focused prompt. PURE — exported for tests. Hard boundaries: the agent
 // edits ONLY the listed files; the engine performs all git.
@@ -276,10 +281,7 @@ export const resolveConflict = async (
       result =
         cli === 'opencode' ? await withOpenCodeStore({ env, operation: execute }) : await execute();
     } catch (e) {
-      console.error(
-        `[resolve-conflict] cli_error cli=${cli} code=${e?.code ?? '-'} msg=${e?.message}`,
-      );
-      if (e?.stack) console.error(e.stack);
+      logger.error('cli_error', e, { cli });
       await abortAll(conflictedByRepo, dirFor);
       return { ok: false, reason: 'cli_error', detail: e.message };
     } finally {

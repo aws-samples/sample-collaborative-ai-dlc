@@ -1,8 +1,11 @@
 import crypto from 'crypto';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { putGitConnection } from './git-connection-store.js';
 import { clearGitHubAuthConfigCache } from './github-auth-config.js';
+
+const logger = new Logger({ persistentKeys: { component: 'git-token' } });
 
 // Matches the git-token SSM parameter path. Legacy connections used a
 // 4-segment path (/PREFIX/env/git-token/userId); per-provider connections add a
@@ -88,13 +91,13 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
     if (data.error === 'invalid_grant') {
       const stored = await readTokenValue(ssm, item.parameterName).catch(() => null);
       if (stored?.refreshToken && stored.refreshToken !== tokens.refreshToken) {
-        console.log('[git-token:refresh] refresh race lost, using rotated token', {
+        logger.info('refresh race lost, using rotated token', {
           userId: item?.userId,
         });
         return stored.accessToken;
       }
     }
-    console.error('[git-token:refresh] failed', {
+    logger.error('refresh failed', {
       httpStatus: res.status,
       error: data.error,
       errorDescription: data.error_description,
@@ -106,7 +109,7 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
       status: res.status || 401,
     });
   }
-  console.log('[git-token:refresh] ok', { userId: item?.userId, expiresIn: data.expires_in });
+  logger.info('refresh ok', { userId: item?.userId, expiresIn: data.expires_in });
   const expiresAt = data.expires_in ? Date.now() + Number(data.expires_in) * 1000 : undefined;
   const newValue = {
     accessToken: data.access_token,
@@ -137,7 +140,7 @@ const refreshGitlabToken = async ({ ssm, secrets, ddb, item, tokens }) => {
     } catch (e) {
       // Best-effort: the access token is already persisted in SSM, so a failure
       // here only loses the metadata refresh, not the token itself.
-      console.error('Failed to persist refreshed git connection metadata:', e.message);
+      logger.error('Failed to persist refreshed git connection metadata', e);
     }
   }
   return data.access_token;
@@ -168,7 +171,7 @@ const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error || !data.access_token) {
-    console.error('[git-token:refresh:bitbucket] failed', {
+    logger.error('bitbucket refresh failed', {
       httpStatus: res.status,
       error: data.error,
       errorDescription: data.error_description,
@@ -176,7 +179,7 @@ const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
     });
     throw new Error(data.error_description || data.error || `HTTP ${res.status}`);
   }
-  console.log('[git-token:refresh:bitbucket] ok', {
+  logger.info('bitbucket refresh ok', {
     userId: item?.userId,
     expiresIn: data.expires_in,
   });
@@ -206,7 +209,7 @@ const refreshBitbucketToken = async ({ ssm, secrets, ddb, item, tokens }) => {
         updatedAt: new Date().toISOString(),
       });
     } catch (e) {
-      console.error('Failed to persist refreshed git connection metadata:', e.message);
+      logger.error('Failed to persist refreshed git connection metadata', e);
     }
   }
   return data.access_token;
@@ -612,7 +615,7 @@ const getInstallationToken = async ({
   );
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.token) {
-    console.error('[git-token:app] installation token mint failed', {
+    logger.error('installation token mint failed', {
       httpStatus: res.status,
       message: data.message,
       installationId: resolvedInstallationId,
@@ -629,7 +632,7 @@ const getInstallationToken = async ({
 
   const expiresAt = data.expires_at ? Date.parse(data.expires_at) : Date.now() + 60 * 60 * 1000;
   _installationTokenCache.set(cacheKey, { token: data.token, expiresAt });
-  console.log('[git-token:app] minted installation token', {
+  logger.info('minted installation token', {
     installationId: resolvedInstallationId,
     scopedRepos,
     expiresAt: new Date(expiresAt).toISOString(),

@@ -50,6 +50,9 @@ module "agents_lambda" {
   vpc_security_group_ids = var.lambda_security_group_ids
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME             = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     QUESTIONS_TABLE                     = var.agent_questions_table_name
     NEPTUNE_ENDPOINT                    = var.neptune_endpoint
     AGENT_OUTPUTS_TABLE                 = var.agent_outputs_table_name

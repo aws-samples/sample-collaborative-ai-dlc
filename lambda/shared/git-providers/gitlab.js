@@ -5,7 +5,10 @@
 // optional onRefresh callback that re-mints + persists a token on 401). This
 // module only knows how to talk to GitLab once it has a token.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { ProviderError } from './errors.js';
+
+const logger = new Logger({ persistentKeys: { component: 'git-provider', module: 'gitlab' } });
 
 const API_BASE = 'https://gitlab.com/api/v4';
 
@@ -57,10 +60,7 @@ const glFetch = async (ctx, url, options = {}) => {
       ctx.token = newToken;
       return doFetch(url, withAuth(newToken));
     } catch (e) {
-      console.error('[gitlab:glFetch] token refresh failed, returning original 401', {
-        url,
-        error: e && e.message ? e.message : String(e),
-      });
+      logger.error('token refresh failed, returning original 401', e, { url });
       return res;
     }
   }
@@ -136,7 +136,7 @@ const oauth = {
     });
     const data = await res.json();
     if (data.error) {
-      console.error('[gitlab:refresh] failed', {
+      logger.error('refresh failed', {
         httpStatus: res.status,
         error: data.error,
         errorDescription: data.error_description,
@@ -144,7 +144,7 @@ const oauth = {
       });
       throw new ProviderError(400, data.error_description || data.error);
     }
-    console.log('[gitlab:refresh] ok', { expiresIn: data.expires_in });
+    logger.info('refresh ok', { expiresIn: data.expires_in });
     return {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
@@ -204,7 +204,7 @@ const listBranches = async (ctx, repoId) => {
   if (res.status === 404) return [];
   const data = await res.json();
   if (!Array.isArray(data)) {
-    console.error('[gitlab:listBranches] non-array response', {
+    logger.error('listBranches non-array response', {
       httpStatus: res.status,
       message: data && (data.message || data.error),
     });
@@ -600,7 +600,7 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
   try {
     taskBranches = await listConstructionTaskBranches(ctx, repoId, branch);
   } catch (err) {
-    console.error(err.message);
+    logger.error('Failed to list construction task branches', err);
     return { deleted: 0, failed: 1, skipped: 0 };
   }
   let deleted = 0;
@@ -612,12 +612,12 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
       merged = await isBranchMergedInto(ctx, repoId, taskBranch, branch);
     } catch (err) {
       failed += 1;
-      console.error(err.message);
+      logger.error('Failed to check merge status of construction task branch', err);
       continue;
     }
     if (!merged) {
       skipped += 1;
-      console.error(`Skipping unmerged construction task branch ${taskBranch}`);
+      logger.error('Skipping unmerged construction task branch', { taskBranch });
       continue;
     }
     const delRes = await glFetch(
@@ -630,13 +630,11 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
     } else {
       failed += 1;
       const errorText = await delRes.text().catch(() => '');
-      console.error(`Failed to delete construction task branch ${taskBranch}:`, errorText);
+      logger.error('Failed to delete construction task branch', { taskBranch, errorText });
     }
   }
   if (deleted || failed || skipped) {
-    console.log(
-      `Construction task branch cleanup complete: deleted=${deleted}, failed=${failed}, skipped=${skipped}`,
-    );
+    logger.info('Construction task branch cleanup complete', { deleted, failed, skipped });
   }
   return { deleted, failed, skipped };
 };
