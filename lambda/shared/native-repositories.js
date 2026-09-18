@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isValidRepoPath } from './repo-validation.js';
 
 // Reduce supported repository references and clone URLs to their canonical
 // provider identity, such as `owner/repo`.
@@ -28,6 +29,7 @@ const assignNativeRepositoryDirectories = (repositories) => {
   const normalized = repositories.map((repository) => {
     const id = repositoryId(repository.id);
     if (!id) throw new Error('native-export: repository identity is required');
+    if (!isValidRepoPath(id)) throw new Error('native-export: invalid repository path');
     return { ...repository, id, basename: repositoryBasename(id) };
   });
 

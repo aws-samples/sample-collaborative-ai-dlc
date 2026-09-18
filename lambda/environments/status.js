@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { Logger } from '@aws-lambda-powertools/logger';
 import {
   ECRClient,
   DescribeImagesCommand,
@@ -39,6 +40,8 @@ const ecr = new ECRClient({});
 const control = new BedrockAgentCoreControlClient({});
 const runtime = new BedrockAgentCoreClient({});
 const defaultStore = createEnvironmentStore({ ddb });
+
+const logger = new Logger({ persistentKeys: { component: 'environments' } });
 
 const parseJsonEnv = (name, fallback) => {
   try {
@@ -590,9 +593,10 @@ const verifyRuntime = async ({
             }),
           );
         } catch (error) {
-          console.warn(
-            `Managed runtime validation session cleanup failed (${session}): ${error?.message ?? error}`,
-          );
+          logger.warn('Managed runtime validation session cleanup failed', {
+            session,
+            error: error?.message ?? String(error),
+          });
         }
         // Instances sessions keep their EBS volume across stop/idle/lifetime;
         // only an explicit session delete releases it. Validation sessions are
@@ -608,9 +612,10 @@ const verifyRuntime = async ({
               }),
             );
           } catch (error) {
-            console.warn(
-              `Managed runtime validation session delete failed (${session}): ${error?.message ?? error}`,
-            );
+            logger.warn('Managed runtime validation session delete failed', {
+              session,
+              error: error?.message ?? String(error),
+            });
           }
         }
       }

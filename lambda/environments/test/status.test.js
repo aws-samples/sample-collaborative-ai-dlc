@@ -553,7 +553,14 @@ describe('managed environment status handler', () => {
       controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
       runtimeClient,
     });
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnLines = [];
+    const captureStream = (chunk) => {
+      warnLines.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    };
+    // Powertools routes WARN to stderr — capture both streams.
+    vi.spyOn(process.stdout, 'write').mockImplementation(captureStream);
+    const warning = vi.spyOn(process.stderr, 'write').mockImplementation(captureStream);
     try {
       const result = await handler({ action: 'poll' });
       expect(result.results[0]).not.toHaveProperty('pending');
@@ -567,7 +574,19 @@ describe('managed environment status handler', () => {
       expect(runtimeClient.send.mock.calls[2][0].constructor.name).toBe(
         'StopRuntimeSessionCommand',
       );
-      expect(warning).toHaveBeenCalledWith(expect.stringContaining('runtime session not found'));
+      const cleanupWarn = warnLines
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .find(
+          (o) => o && o.level === 'WARN' && String(o.message).includes('session cleanup failed'),
+        );
+      expect(cleanupWarn).toBeDefined();
+      expect(cleanupWarn.error).toContain('runtime session not found');
     } finally {
       warning.mockRestore();
     }

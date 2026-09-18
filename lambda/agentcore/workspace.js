@@ -6,11 +6,16 @@
 // temporary GIT_ASKPASS environment, never argv or the remote URL. Multi-repo lays out under
 // <workspaceDir>/<owner>/<repo>; single-repo clones into <workspaceDir> directly.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { mkdir, stat, readdir, rm, symlink, lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
 import { withGitCredential as defaultWithGitCredential } from './git-auth.js';
 import { runGitCommand, withGitHooksDisabled } from './git-runner.js';
+import { isValidRepoPath } from '../shared/repo-validation.js';
+import { repoTargetDir } from './repo-paths.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'workspace' } });
 
 // Provider-aware clone-URL builder — the single source of truth for the per-
 // provider auth scheme (GitHub `x-access-token:`, GitLab `oauth2:`) and host.
@@ -88,6 +93,7 @@ export const checkoutRepo = async ({
   readGitConfig = (d) => readFile(path.join(d, '.git', 'config'), 'utf8'),
   trustDirectory = trustGitDirectory,
 }) => {
+  if (!isValidRepoPath(repo)) throw new Error('Invalid repository path');
   const runner = withGitHooksDisabled(injectedRunner);
   await ensureDir(targetDir);
   if (!(await trustDirectory({ targetDir, runner }))) {
@@ -206,7 +212,7 @@ export const checkoutRepo = async ({
   }
   const cloned = clone.code === 0;
   if (!cloned) {
-    console.error('[workspace] clone failed', {
+    logger.error('clone failed', {
       provider: gitProvider,
       reason: clone.error || 'clone_failed',
     });
@@ -228,12 +234,6 @@ export const checkoutRepo = async ({
   const branchOk = await ensureBranch();
   return { repo, targetDir, cloned, branchOk };
 };
-
-// The on-disk target dir for a repo, given the intent's repo count. Single-repo
-// clones straight into <workspaceDir>; multi lays out under <workspaceDir>/<url>.
-// The single source of truth for the layout so init and self-heal agree.
-const repoTargetDir = ({ url, workspaceDir, multi }) =>
-  multi ? path.join(workspaceDir, url) : workspaceDir;
 
 // Per-repo base-branch override wins; the legacy single string is the
 // project-wide fallback; a repo absent from both resolves to null, which
@@ -260,14 +260,17 @@ export const checkoutRepos = async ({
 }) => {
   const out = [];
   const multi = repos.length > 1;
-  for (const repo of repos) {
+  // Validate the entire batch before creating directories or cloning anything.
+  const targets = repos.map((repo) => {
     const url = typeof repo === 'string' ? repo : repo.url;
+    return { repo, url, targetDir: repoTargetDir({ url, workspaceDir, multi }) };
+  });
+  for (const { repo, url, targetDir } of targets) {
     const provider =
       (typeof repo === 'object' && repo?.provider) ||
       repoProviders?.[url] ||
       gitProvider ||
       'github';
-    const targetDir = repoTargetDir({ url, workspaceDir, multi });
     out.push(
       await checkoutRepo({
         repo: url,
@@ -341,7 +344,7 @@ export const redirectHeavyDirs = async ({
   maxDepth = 5,
   maxPackages = 50,
   fsOps = { mkdir, readdir, rm, symlink, lstat },
-  log = (...a) => console.error('[workspace]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
   // Find every directory holding a package.json (each is an install root).
   const pkgDirs = [];
@@ -429,14 +432,16 @@ export const ensureWorkspaceSource = async ({
   const multi = repos.length > 1;
   const restoredRepos = [];
   const failed = [];
-  for (const repo of repos) {
+  const targets = repos.map((repo) => {
     const url = typeof repo === 'string' ? repo : repo.url;
+    return { repo, url, targetDir: repoTargetDir({ url, workspaceDir, multi }) };
+  });
+  for (const { repo, url, targetDir } of targets) {
     const provider =
       (typeof repo === 'object' && repo?.provider) ||
       repoProviders?.[url] ||
       gitProvider ||
       'github';
-    const targetDir = repoTargetDir({ url, workspaceDir, multi });
     if (await hasCheckout(targetDir, statFn)) {
       if (!(await trustDirectory({ targetDir, runner }))) failed.push(url);
       continue;

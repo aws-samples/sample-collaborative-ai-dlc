@@ -410,11 +410,12 @@ export const toolSchemas = (z) => ({
   },
 });
 
-// Wrap a tool handler with a one-line stderr trace (stderr flows to the
-// container log). Records the call, its arg keys, latency, error flag, and —
-// critically — the RESULT envelope size, so an oversized tool_result that
-// wedges the CLI's next model turn is visible without guessing. Tracing is on
-// by default; set V2_MCP_TRACE=off to silence. Never throws (best-effort).
+// Wrap a tool handler with a one-line stderr trace. stdout is reserved
+// exclusively for the StdioServerTransport JSON-RPC stream. Records the call,
+// its arg keys, latency, error flag, and — critically — the RESULT envelope
+// size, so an oversized tool_result that wedges the CLI's next model turn is
+// visible without guessing. Tracing is on by default; set V2_MCP_TRACE=off to
+// silence. Never throws (best-effort).
 const traceHandler = (name, fn, { enabled }) => {
   if (!enabled) return fn;
   return async (args) => {

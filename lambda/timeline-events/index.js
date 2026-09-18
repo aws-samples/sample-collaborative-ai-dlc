@@ -1,7 +1,11 @@
 import gremlin from 'gremlin';
 import { create } from 'neptune-lambda-client';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'timeline-events' } });
 
 const order = gremlin.process.order;
 
@@ -40,7 +44,9 @@ const mapEvent = (v) => ({
   questionId: v.get('question_id')?.[0] || '',
 });
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logSafeEventIfEnabled(logger, event);
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
@@ -72,7 +78,7 @@ export const handler = async (event) => {
         return res(405, { error: 'Method not allowed' });
     }
   } catch (err) {
-    console.error('Error:', err);
+    logger.error('Error', err);
     return res(500, { error: 'Internal server error' });
   }
 };

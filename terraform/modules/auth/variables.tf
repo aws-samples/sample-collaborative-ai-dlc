@@ -8,6 +8,21 @@ variable "environment" {
   type        = string
 }
 
+variable "powertools_service_name" {
+  description = "Service name included in Powertools structured logs"
+  type        = string
+}
+
+variable "powertools_log_level" {
+  description = "Log level for Powertools structured logging"
+  type        = string
+
+  validation {
+    condition     = contains(["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL", "SILENT"], var.powertools_log_level)
+    error_message = "powertools_log_level must be one of DEBUG, INFO, WARN, ERROR, CRITICAL or SILENT."
+  }
+}
+
 variable "app_url" {
   description = "Canonical public application URL used for Cognito callbacks and logout."
   type        = string

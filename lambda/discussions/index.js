@@ -33,6 +33,7 @@
 //   handlers.js     — one HTTP handler per route
 // This file is just the dispatcher.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 // Importing clients.js constructs the shared Neptune connection; importing
 // constants.js asserts the takeover-safety invariant at module load.
@@ -54,7 +55,10 @@ import {
 // Exported for test teardown only — production reuses the connection.
 export { close };
 
-export const handler = async (event) => {
+const logger = new Logger({ persistentKeys: { component: 'discussions' } });
+
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
@@ -90,8 +94,8 @@ export const handler = async (event) => {
     }
 
     return res(404, { error: 'Not found' });
-  } catch {
-    console.error('discussions handler error');
+  } catch (err) {
+    logger.error('discussions handler error', err);
     return res(500, { error: 'Internal server error' });
   }
 };
