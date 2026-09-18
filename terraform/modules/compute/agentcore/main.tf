@@ -221,6 +221,42 @@ data "aws_ecr_image" "agentcore" {
   depends_on = [module.agentcore_docker_build]
 }
 
+# Optional amd64 build of the same core image. AgentCore microVMs are
+# arm64-only, but the Instances compute type also runs x86_64 — managed
+# environments targeting x86_64 instances need an amd64 core to build FROM.
+# Gated behind var.build_amd64_image so default installs pay no extra build.
+module "agentcore_docker_build_amd64" {
+  count = var.build_amd64_image ? 1 : 0
+
+  source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
+  version = "~> 8.0"
+
+  create_ecr_repo = false
+  ecr_repo        = aws_ecr_repository.agentcore.name
+  ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
+
+  use_image_tag    = true
+  image_tag        = "${local.agentcore_image_tag}-amd64"
+  source_path      = local.agentcore_source_path
+  docker_file_path = "${local.agentcore_source_path}/agentcore/Dockerfile"
+  platform         = "linux/amd64"
+  builder          = "default"
+  build_args       = var.docker_build_args
+
+  triggers = {
+    dir_sha = local.agentcore_files_sha
+  }
+}
+
+data "aws_ecr_image" "agentcore_amd64" {
+  count = var.build_amd64_image ? 1 : 0
+
+  repository_name = aws_ecr_repository.agentcore.name
+  image_tag       = "${local.agentcore_image_tag}-amd64"
+
+  depends_on = [module.agentcore_docker_build_amd64]
+}
+
 # ---------------------------------------------------------------------------
 # v2 process/state table (EXEC#/STAGE#/EVENT#/HUMAN#/METRIC#/OUTPUT#)
 #   GSI1 = project-status browse, GSI2 = per-execution type/state

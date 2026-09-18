@@ -18,6 +18,7 @@ export interface EnvironmentForm {
   name: string;
   description: string;
   baseEnvironmentId: string;
+  compute: 'microvms' | 'instances-x86_64';
   toolVersionIds: string[];
   aptPackages: KeyValueEntry[];
   environmentVariables: KeyValueEntry[];
@@ -29,6 +30,7 @@ export const emptyEnvironmentForm = (): EnvironmentForm => ({
   name: '',
   description: '',
   baseEnvironmentId: 'standard',
+  compute: 'microvms',
   toolVersionIds: [],
   aptPackages: [],
   environmentVariables: [],
@@ -70,6 +72,10 @@ export const formFromRevision = (
       environment.environmentId === 'standard'
         ? ''
         : (recipe?.base?.environmentId ?? environment.baseEnvironmentId ?? 'standard'),
+    compute:
+      environment.compute?.type === 'instances' && environment.compute.architecture === 'x86_64'
+        ? 'instances-x86_64'
+        : 'microvms',
     toolVersionIds: directToolVersionIds(revision),
     aptPackages: (recipe?.aptPackages ?? []).map((pkg) => ({
       name: pkg.name,

@@ -203,6 +203,53 @@ describe('managed environment handler', () => {
     expect(codebuildClient.send).not.toHaveBeenCalled();
   });
 
+  it('rejects a default microVM environment derived from a published x86_64 base', async () => {
+    const x86Parent = {
+      environmentId: 'x86-parent',
+      status: 'PUBLISHED',
+      baseEnvironmentId: 'standard',
+      publishedRevisionId: 'r-x86',
+      currentRevisionId: 'r-x86',
+    };
+    const x86Revision = {
+      environmentId: 'x86-parent',
+      revisionId: 'r-x86',
+      status: 'PUBLISHED',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/environments',
+      imageDigest: `sha256:${'d'.repeat(64)}`,
+      recipe: { ...CATALOG_RECIPE, architecture: 'x86_64' },
+      flattenedRecipe: { ...CATALOG_RECIPE, architecture: 'x86_64' },
+    };
+    const store = {
+      ...storeBase(),
+      getEnvironment: vi
+        .fn()
+        .mockImplementation(async (environmentId) =>
+          environmentId === 'x86-parent' ? x86Parent : null,
+        ),
+      getRevision: vi.fn().mockResolvedValue(x86Revision),
+      createEnvironment: vi.fn(),
+    };
+    const handler = createHandler({ store });
+
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/environments',
+      body: JSON.stringify({
+        name: 'Derived',
+        baseEnvironmentId: 'x86-parent',
+        recipe: CATALOG_RECIPE,
+      }),
+      ...claims('platform-admin'),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({
+      code: 'BASE_ARCHITECTURE_MISMATCH',
+    });
+    expect(store.createEnvironment).not.toHaveBeenCalled();
+  });
+
   it('rejects retrying a failed revision pinned to an outdated base', async () => {
     const environment = {
       environmentId: 'go',

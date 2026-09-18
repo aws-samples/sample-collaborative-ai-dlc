@@ -259,7 +259,14 @@ export function EnvironmentRegistry() {
     (environment) =>
       environment.publishedRevisionId &&
       environment.status !== 'RETIRED' &&
-      (creating || environment.environmentId !== selectedId),
+      (creating || environment.environmentId !== selectedId) &&
+      // arm64 builds cannot start FROM an x86_64 base; x86_64 must derive from Standard.
+      (form.compute === 'instances-x86_64'
+        ? environment.environmentId === 'standard'
+        : !(
+            environment.compute?.type === 'instances' &&
+            environment.compute.architecture === 'x86_64'
+          )),
   );
   const updates = environments.filter((environment) => environment.updateAvailable);
   const activeBaseDetail =
@@ -310,6 +317,9 @@ export function EnvironmentRegistry() {
         name: form.name.trim(),
         description: form.description.trim(),
         baseEnvironmentId: form.baseEnvironmentId,
+        ...(form.compute === 'instances-x86_64'
+          ? { compute: { type: 'instances' as const, architecture: 'x86_64' as const } }
+          : {}),
         recipe: recipeFromForm(form),
       });
       setCreating(false);
