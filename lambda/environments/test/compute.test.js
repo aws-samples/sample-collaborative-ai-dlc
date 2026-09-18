@@ -105,15 +105,49 @@ describe('applyComputeBase', () => {
     ).toBe(recipe);
   });
 
-  it('swaps the base image for the amd64 core on x86_64', () => {
+  it('swaps the base image for the amd64 variant stored on the base revision', () => {
+    const baseRevision = {
+      revisionId: 'core-1',
+      amd64Image: { imageUri: 'amd64-uri', imageDigest: 'sha256:amd' },
+    };
     const swapped = applyComputeBase({
       recipe,
       compute: { type: 'instances', architecture: 'x86_64' },
+      baseRevision,
     });
-    expect(swapped.base.imageUri).toBe(INSTANCES_ENV.CORE_IMAGE_URI_AMD64);
-    expect(swapped.base.imageDigest).toBe(INSTANCES_ENV.CORE_IMAGE_DIGEST_AMD64);
+    expect(swapped.base.imageUri).toBe('amd64-uri');
+    expect(swapped.base.imageDigest).toBe('sha256:amd');
     expect(swapped.architecture).toBe('x86_64');
     expect(swapped.base.environmentId).toBe('core');
+  });
+
+  it('uses the published revision variant even when a newer core is deployed (upgrade window)', () => {
+    // Deployment env vars carry the NEW core; the published Standard revision
+    // still points at the OLD one until publication. The x86 base must follow
+    // the revision, not the deployment.
+    process.env.CORE_IMAGE_URI_AMD64 = 'newer-deployment-uri';
+    process.env.CORE_IMAGE_DIGEST_AMD64 = `sha256:${'f'.repeat(64)}`;
+    const publishedRevision = {
+      revisionId: 'core-old',
+      amd64Image: { imageUri: 'published-amd64-uri', imageDigest: 'sha256:published-amd' },
+    };
+    const swapped = applyComputeBase({
+      recipe,
+      compute: { type: 'instances', architecture: 'x86_64' },
+      baseRevision: publishedRevision,
+    });
+    expect(swapped.base.imageUri).toBe('published-amd64-uri');
+    expect(swapped.base.imageDigest).toBe('sha256:published-amd');
+  });
+
+  it('rejects an x86_64 recipe when the base revision has no amd64 variant', () => {
+    expect(() =>
+      applyComputeBase({
+        recipe,
+        compute: { type: 'instances', architecture: 'x86_64' },
+        baseRevision: { revisionId: 'core-1' },
+      }),
+    ).toThrow(/no x86_64 variant/);
   });
 
   it('rejects x86_64 recipes that select catalog tools', () => {
