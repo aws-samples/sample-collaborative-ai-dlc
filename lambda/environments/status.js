@@ -123,6 +123,8 @@ const failRevision = async (store, environmentId, revision, reason, detail = nul
     revision.revisionId,
     {
       status: 'FAILED',
+      validationSessionId: null,
+      validationAttempts: null,
       failure: {
         reason,
         detail,
@@ -503,9 +505,27 @@ const verifyRuntime = async ({
     if (endpoint.status !== 'READY') {
       throw new Error(endpoint.failureReason || `endpoint is ${endpoint.status}`);
     }
-    const session = `managed-environment-${revision.revisionId}-${randomUUID()}`.padEnd(33, '0');
+    // One validation session per revision on the Instances compute type: the
+    // first invocation provisions an EC2 instance, so on a transient error the
+    // session is kept alive and the next poll reattaches to it instead of
+    // starting a new cold start (and stopping the one that was provisioning).
+    // microVM validation keeps the original per-poll session semantics.
+    const instances = environment.compute?.type === 'instances';
+    let session = instances ? revision.validationSessionId : null;
+    if (!session) {
+      session = `managed-environment-${revision.revisionId}-${randomUUID()}`.padEnd(33, '0');
+      if (instances) {
+        revision = await store.updateRevision(
+          environment.environmentId,
+          revision.revisionId,
+          { validationSessionId: session, validationAttempts: 0 },
+          { fromStatus: 'VERIFYING' },
+        );
+      }
+    }
     let capabilities;
     let deterministic;
+    let keepSessionForRetry = false;
     try {
       capabilities = await invokeValidationCommand({
         runtimeClient,
@@ -531,19 +551,44 @@ const verifyRuntime = async ({
       ) {
         throw new Error('deterministic runtime validation failed');
       }
+    } catch (error) {
+      keepSessionForRetry =
+        instances &&
+        (INSTANCES_TRANSIENT_ERRORS.has(error?.name) || RETRYABLE_CONTROL_ERRORS.has(error?.name));
+      if (keepSessionForRetry) {
+        // Bounded retry: give the cold start a deadline instead of letting the
+        // revision stay VERIFYING indefinitely. The poller runs every minute.
+        const attempts = Number(revision.validationAttempts ?? 0) + 1;
+        const maxAttempts = Number(process.env.MANAGED_INSTANCES_VALIDATION_MAX_POLLS || 30);
+        if (attempts > maxAttempts) {
+          keepSessionForRetry = false; // exhausted — stop the session and fail below
+          throw new Error(
+            `runtime validation did not complete within ${maxAttempts} polls: ${error?.message ?? error}`,
+          );
+        }
+        await store.updateRevision(
+          environment.environmentId,
+          revision.revisionId,
+          { validationAttempts: attempts },
+          { fromStatus: 'VERIFYING' },
+        );
+      }
+      throw error;
     } finally {
-      try {
-        await runtimeClient.send(
-          new StopRuntimeSessionCommand({
-            agentRuntimeArn: revision.runtimeArn,
-            qualifier: revision.runtimeEndpoint,
-            runtimeSessionId: session,
-          }),
-        );
-      } catch (error) {
-        console.warn(
-          `Managed runtime validation session cleanup failed (${session}): ${error?.message ?? error}`,
-        );
+      if (!keepSessionForRetry) {
+        try {
+          await runtimeClient.send(
+            new StopRuntimeSessionCommand({
+              agentRuntimeArn: revision.runtimeArn,
+              qualifier: revision.runtimeEndpoint,
+              runtimeSessionId: session,
+            }),
+          );
+        } catch (error) {
+          console.warn(
+            `Managed runtime validation session cleanup failed (${session}): ${error?.message ?? error}`,
+          );
+        }
       }
     }
     const completedAt = new Date().toISOString();
@@ -556,6 +601,8 @@ const verifyRuntime = async ({
       revision.revisionId,
       {
         status: 'READY',
+        validationSessionId: null,
+        validationAttempts: null,
         verification: {
           status: 'PASSED',
           completedAt,

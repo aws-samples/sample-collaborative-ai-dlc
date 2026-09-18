@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createRuntimeForRevision } from '../status.js';
+import { createRuntimeForRevision, verifyRuntime } from '../status.js';
 
 const INSTANCES_ENV = {
   MANAGED_INSTANCES_OPERATOR_ROLE_ARN: 'arn:aws:iam::123456789012:role/operator',
@@ -135,5 +135,166 @@ describe('createRuntimeForRevision on the Instances compute type', () => {
     expect(createInput.filesystemConfigurations).toEqual([
       { sessionStorage: { mountPath: '/mnt/workspace' } },
     ]);
+  });
+});
+
+const verifyingRevision = {
+  environmentId: 'x86-build',
+  revisionId: 'r-1',
+  status: 'VERIFYING',
+  runtimeCompatibilityVersion: '1',
+  imageUri: 'uri',
+  imageDigest: `sha256:${'c'.repeat(64)}`,
+  runtimeArn: 'arn:aws:bedrock-agentcore:us-east-1:111111111111:runtime/x86',
+  runtimeId: 'runtime-1',
+  runtimeVersion: '1',
+  runtimeEndpoint: 'revision_r_1',
+  runtimeEndpointArn: 'arn:aws:bedrock-agentcore:us-east-1:111111111111:runtime-endpoint/x86',
+};
+
+const mutableStore = (initialRevision) => {
+  let current = initialRevision;
+  return {
+    get current() {
+      return current;
+    },
+    getRevision: vi.fn().mockImplementation(async () => current),
+    updateRevision: vi.fn().mockImplementation(async (_e, _r, patch) => {
+      current = { ...current, ...patch };
+      return current;
+    }),
+    updateEnvironment: vi.fn().mockResolvedValue(instancesEnvironment),
+  };
+};
+
+const validationOk = () => [
+  {
+    response: {
+      transformToString: async () => JSON.stringify({ ok: true, clis: ['claude'] }),
+    },
+  },
+  {
+    response: {
+      transformToString: async () =>
+        JSON.stringify({
+          ok: true,
+          nonce: 'check-r-1',
+          compatibilityVersion: '1',
+          nonRoot: true,
+          workspaceWritable: true,
+          protectedRuntime: true,
+        }),
+    },
+  },
+];
+
+const transientError = () => Object.assign(new Error('socket timed out'), { name: 'TimeoutError' });
+
+describe('verifyRuntime validation session reuse on the Instances compute type', () => {
+  it('reuses the same validation session across polls during a cold start', async () => {
+    const store = mutableStore({ ...verifyingRevision });
+    const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
+
+    // Poll 1: the first invocation is still provisioning the EC2 instance.
+    const failingRuntime = { send: vi.fn().mockRejectedValue(transientError()) };
+    const first = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: store.current,
+        controlClient,
+        runtimeClient: failingRuntime,
+      }),
+    );
+    expect(first.pending).toBe(true);
+    // The provisioning session was NOT stopped — the only runtime call is the invoke.
+    expect(failingRuntime.send).toHaveBeenCalledTimes(1);
+    expect(failingRuntime.send.mock.calls[0][0].constructor.name).toBe('InvokeAgentRuntimeCommand');
+    const sessionId = failingRuntime.send.mock.calls[0][0].input.runtimeSessionId;
+    expect(store.current.validationSessionId).toBe(sessionId);
+    expect(store.current.validationAttempts).toBe(1);
+
+    // Poll 2: the instance is up — the SAME session completes validation.
+    const [capabilities, deterministic] = validationOk();
+    const healthyRuntime = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce(capabilities)
+        .mockResolvedValueOnce(deterministic)
+        .mockResolvedValueOnce({}),
+    };
+    const second = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: store.current,
+        controlClient,
+        runtimeClient: healthyRuntime,
+      }),
+    );
+    expect(second.revision.status).toBe('READY');
+    expect(healthyRuntime.send.mock.calls[0][0].input.runtimeSessionId).toBe(sessionId);
+    expect(healthyRuntime.send.mock.calls[2][0].constructor.name).toBe('StopRuntimeSessionCommand');
+    expect(healthyRuntime.send.mock.calls[2][0].input.runtimeSessionId).toBe(sessionId);
+    expect(store.current.validationSessionId).toBeNull();
+  });
+
+  it('fails the revision and stops the session when the retry budget is exhausted', async () => {
+    const store = mutableStore({
+      ...verifyingRevision,
+      validationSessionId: 'managed-environment-r-1-persisted-session',
+      validationAttempts: 30,
+    });
+    const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
+    const runtimeClient = {
+      send: vi.fn().mockImplementation(async (command) => {
+        if (command.constructor.name === 'StopRuntimeSessionCommand') return {};
+        throw transientError();
+      }),
+    };
+    const result = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: store.current,
+        controlClient,
+        runtimeClient,
+      }),
+    );
+    expect(result.revision.status).toBe('FAILED');
+    expect(result.revision.failure.reason).toBe('runtime_validation_failed');
+    expect(result.revision.failure.detail).toContain('did not complete within');
+    const stop = runtimeClient.send.mock.calls.find(
+      (call) => call[0].constructor.name === 'StopRuntimeSessionCommand',
+    );
+    expect(stop[0].input.runtimeSessionId).toBe('managed-environment-r-1-persisted-session');
+    expect(store.current.validationSessionId).toBeNull();
+  });
+
+  it('keeps stopping the per-poll session for microVM environments (unchanged behavior)', async () => {
+    const store = mutableStore({ ...verifyingRevision, environmentId: 'plain' });
+    const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
+    const runtimeClient = {
+      send: vi.fn().mockImplementation(async (command) => {
+        if (command.constructor.name === 'StopRuntimeSessionCommand') return {};
+        throw transientError();
+      }),
+    };
+    const result = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: { environmentId: 'plain', status: 'VERIFYING' },
+        revision: store.current,
+        controlClient,
+        runtimeClient,
+      }),
+    );
+    // TimeoutError is not retryable on microVMs — permanent failure, session stopped.
+    expect(result.revision.status).toBe('FAILED');
+    const stop = runtimeClient.send.mock.calls.find(
+      (call) => call[0].constructor.name === 'StopRuntimeSessionCommand',
+    );
+    expect(stop).toBeDefined();
+    expect(store.current.validationSessionId).toBeNull();
   });
 });
