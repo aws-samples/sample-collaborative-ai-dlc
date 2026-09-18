@@ -16,6 +16,7 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import {
   BedrockAgentCoreClient,
+  DeleteCapacityProviderSessionCommand,
   InvokeAgentRuntimeCommand,
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
@@ -29,6 +30,7 @@ import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
 import {
   WORKSPACE_VOLUME_NAME,
+  capacityProviderIdFromArn,
   ensureCapacityProvider,
   environmentArchitecture,
 } from './compute.js';
@@ -149,6 +151,7 @@ const createRuntimeForRevision = async ({
   controlClient = control,
 }) => {
   let created;
+  let capacityProviderArn = null;
   try {
     const resourceTags = {
       ...parseJsonEnv('MANAGED_RUNTIME_TAGS', {}),
@@ -171,6 +174,7 @@ const createRuntimeForRevision = async ({
         architecture: environmentArchitecture(environment),
       });
       if (provider.pending) return { environment, revision, pending: true };
+      capacityProviderArn = provider.capacityProviderArn;
       computeParams = {
         capacityProviderConfiguration: {
           capacityProviderArn: provider.capacityProviderArn,
@@ -261,6 +265,7 @@ const createRuntimeForRevision = async ({
         runtimeVersion: created.agentRuntimeVersion,
         runtimeEndpoint: endpointNameFor(revision.revisionId),
         runtimeEndpointArn: null,
+        capacityProviderArn,
         failure: null,
       },
       { fromStatus: revision.status },
@@ -592,6 +597,25 @@ const verifyRuntime = async ({
             session,
             error: error?.message ?? String(error),
           });
+        }
+        // Instances sessions keep their EBS volume across stop/idle/lifetime;
+        // only an explicit session delete releases it. Validation sessions are
+        // disposable, so delete on every terminal outcome. Best-effort: a miss
+        // leaves one volume that the capacity provider delete reclaims.
+        const capacityProviderId = capacityProviderIdFromArn(revision.capacityProviderArn);
+        if (instances && capacityProviderId) {
+          try {
+            await runtimeClient.send(
+              new DeleteCapacityProviderSessionCommand({
+                capacityProviderId,
+                sessionId: session,
+              }),
+            );
+          } catch (error) {
+            console.warn(
+              `Managed runtime validation session delete failed (${session}): ${error?.message ?? error}`,
+            );
+          }
         }
       }
     }

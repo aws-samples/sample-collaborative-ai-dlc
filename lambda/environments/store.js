@@ -348,6 +348,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'runtimeVersion',
       'runtimeEndpoint',
       'runtimeEndpointArn',
+      'capacityProviderArn',
       'validationSessionId',
       'validationAttempts',
       'verification',
