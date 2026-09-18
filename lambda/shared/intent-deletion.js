@@ -18,7 +18,10 @@
 import gremlin from 'gremlin';
 import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { SendDurableExecutionCallbackSuccessCommand } from '@aws-sdk/client-lambda';
-import { StopRuntimeSessionCommand } from '@aws-sdk/client-bedrock-agentcore';
+import {
+  DeleteCapacityProviderSessionCommand,
+  StopRuntimeSessionCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import { DeleteObjectsCommand, ListObjectVersionsCommand, S3Client } from '@aws-sdk/client-s3';
 
 const __ = gremlin.process.statics;
@@ -98,6 +101,46 @@ const stopRuntimeSessions = async (
       );
     } catch (err) {
       console.log(`stop-runtime-session best-effort miss (${id}): ${err?.message ?? err}`);
+    }
+  }
+};
+
+// Instances sessions keep their EBS volumes across stop/idle/lifetime — only
+// an explicit DeleteCapacityProviderSession releases them. A permanently
+// deleted intent must not leave its workspace volumes (and their charges)
+// behind, so this THROWS on an unexpected error: the cascade deletes META
+// last, the intent still lists, and the whole delete is simply re-run. A
+// session that never existed is tolerated (ResourceNotFound/Validation) —
+// the lane id set is a superset of what actually ran. Park/resume never
+// reaches here; it stops sessions and retains volumes by design.
+const deleteRuntimeSessions = async (
+  agentcore,
+  capacityProviderArn,
+  intentId,
+  { sectionIndexes = [], unitSlugs = [] } = {},
+) => {
+  const capacityProviderId = String(capacityProviderArn ?? '')
+    .split('/')
+    .pop();
+  if (!agentcore || !capacityProviderId) return;
+  const ids = [runtimeSessionIdFor(intentId)];
+  for (const idx of sectionIndexes) {
+    for (const slug of unitSlugs) ids.push(laneSessionIdFor(intentId, idx, slug));
+  }
+  for (const id of ids) {
+    try {
+      await agentcore.send(
+        new DeleteCapacityProviderSessionCommand({
+          capacityProviderId,
+          sessionId: id,
+        }),
+      );
+    } catch (err) {
+      if (['ResourceNotFoundException', 'ValidationException'].includes(err?.name)) {
+        console.log(`delete-capacity-provider-session miss (${id}): ${err?.message ?? err}`);
+        continue;
+      }
+      throw err;
     }
   }
 };
@@ -206,6 +249,24 @@ const deleteIntentCascade = async ({
     await retireParkedRun({ store, lambdaClient, executionId: intentId, reason });
   }
   await stopRuntimeSessions(agentcore, agentcoreRuntimeTarget ?? agentcoreRuntimeArn, intentId);
+  // Instances runs: delete the sessions so their persistent EBS volumes go
+  // with the intent. The lane id set is rebuilt as a superset from the stage
+  // rows and the unit plan; deleting a session that never started is a
+  // tolerated miss.
+  const capacityProviderArn =
+    meta?.environment?.capacityProviderArn ?? meta?.environmentSnapshot?.capacityProviderArn;
+  if (capacityProviderArn) {
+    await deleteRuntimeSessions(agentcore, capacityProviderArn, intentId, {
+      sectionIndexes: [
+        ...new Set(
+          (records.stages ?? [])
+            .map((stage) => stage.parallelSection)
+            .filter((section) => Number.isInteger(section)),
+        ),
+      ],
+      unitSlugs: (records.unitPlan?.units ?? []).map((unit) => unit.slug),
+    });
+  }
 
   // Yjs docs — best-effort: they are unreachable once the intent is gone (doc
   // ids are derived from the intent id), so a failed delete here only leaves
@@ -285,6 +346,7 @@ const deleteIntentCascade = async ({
 
 export {
   deleteIntentCascade,
+  deleteRuntimeSessions,
   retireParkedRun,
   stopRuntimeSessions,
   runtimeSessionIdFor,
@@ -293,6 +355,7 @@ export {
 };
 export default {
   deleteIntentCascade,
+  deleteRuntimeSessions,
   retireParkedRun,
   stopRuntimeSessions,
   runtimeSessionIdFor,

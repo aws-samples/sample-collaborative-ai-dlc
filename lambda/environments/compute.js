@@ -33,6 +33,14 @@ const OPERATING_SYSTEMS = {
 
 export const WORKSPACE_VOLUME_NAME = 'workspace';
 
+// arn:<partition>:bedrock-agentcore:<region>:<account>:capacity-provider/<id>
+export const capacityProviderIdFromArn = (arn) => {
+  const id = String(arn ?? '')
+    .split('/')
+    .pop();
+  return id || null;
+};
+
 const parseJsonEnv = (name, fallback) => {
   try {
     const value = process.env[name];

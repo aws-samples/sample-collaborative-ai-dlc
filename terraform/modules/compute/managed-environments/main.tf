@@ -428,9 +428,14 @@ resource "aws_iam_role_policy" "status_instances" {
       },
       {
         # CreateAgentRuntime with a capacityProviderConfiguration requires
-        # permission to "pass" the capacity provider to the runtime.
-        Effect   = "Allow"
-        Action   = ["bedrock-agentcore:PassCapacityProvider"]
+        # permission to "pass" the capacity provider to the runtime. Validation
+        # sessions are disposable — deleting them releases their persistent
+        # EBS volumes.
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:PassCapacityProvider",
+          "bedrock-agentcore:DeleteCapacityProviderSession",
+        ]
         Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
       },
       {

@@ -110,6 +110,8 @@ describe('createRuntimeForRevision on the Instances compute type', () => {
     expect(createInput.filesystemConfigurations).toEqual([
       { capacityProviderVolume: { volumeName: 'workspace', mountPath: '/mnt/workspace' } },
     ]);
+    // The capacity provider is retained on the revision for session cleanup.
+    expect(store.updateRevision.mock.calls[0][2].capacityProviderArn).toBe('arn:cp');
   });
 
   it('keeps the microVMs path unchanged for default environments', async () => {
@@ -152,6 +154,7 @@ const verifyingRevision = {
   runtimeVersion: '1',
   runtimeEndpoint: 'revision_r_1',
   runtimeEndpointArn: 'arn:aws:bedrock-agentcore:us-east-1:111111111111:runtime-endpoint/x86',
+  capacityProviderArn: 'arn:aws:bedrock-agentcore:us-east-1:111111111111:capacity-provider/cp-1',
 };
 
 const mutableStore = (initialRevision) => {
@@ -238,6 +241,15 @@ describe('verifyRuntime validation session reuse on the Instances compute type',
     expect(healthyRuntime.send.mock.calls[0][0].input.runtimeSessionId).toBe(sessionId);
     expect(healthyRuntime.send.mock.calls[2][0].constructor.name).toBe('StopRuntimeSessionCommand');
     expect(healthyRuntime.send.mock.calls[2][0].input.runtimeSessionId).toBe(sessionId);
+    // Disposable validation session: deleted on the terminal outcome so its
+    // EBS volume is released.
+    expect(healthyRuntime.send.mock.calls[3][0].constructor.name).toBe(
+      'DeleteCapacityProviderSessionCommand',
+    );
+    expect(healthyRuntime.send.mock.calls[3][0].input).toEqual({
+      capacityProviderId: 'cp-1',
+      sessionId,
+    });
     expect(store.current.validationSessionId).toBeNull();
   });
 
@@ -270,6 +282,10 @@ describe('verifyRuntime validation session reuse on the Instances compute type',
       (call) => call[0].constructor.name === 'StopRuntimeSessionCommand',
     );
     expect(stop[0].input.runtimeSessionId).toBe('managed-environment-r-1-persisted-session');
+    const deletion = runtimeClient.send.mock.calls.find(
+      (call) => call[0].constructor.name === 'DeleteCapacityProviderSessionCommand',
+    );
+    expect(deletion[0].input.sessionId).toBe('managed-environment-r-1-persisted-session');
     expect(store.current.validationSessionId).toBeNull();
   });
 

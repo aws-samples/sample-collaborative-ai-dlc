@@ -699,6 +699,13 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
         Resource = local.v2_orchestrator_function_arns
       },
       {
+        # Permanent intent deletion removes the intent's Instances sessions so
+        # their persistent EBS volumes are released with the intent.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:DeleteCapacityProviderSession"]
+        Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
+      },
+      {
         # Stop a deleted intent's live AgentCore session(s).
         Effect = "Allow"
         Action = ["bedrock-agentcore:StopRuntimeSession"]
@@ -2433,6 +2440,13 @@ resource "aws_iam_role_policy" "intents" {
         Effect   = "Allow"
         Action   = ["s3:ListBucketVersions"]
         Resource = var.artifacts_bucket_arn
+      },
+      {
+        # Permanent intent deletion removes the intent's Instances sessions so
+        # their persistent EBS volumes are released with the intent.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:DeleteCapacityProviderSession"]
+        Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
       },
       {
         # Manual graph-projection backfill (POST .../intents/{id}/derive):
