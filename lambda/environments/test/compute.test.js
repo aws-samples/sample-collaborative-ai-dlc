@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyComputeBase,
+  capacityProviderName,
   ensureCapacityProvider,
   environmentArchitecture,
   normalizeCompute,
@@ -140,7 +141,7 @@ describe('ensureCapacityProvider', () => {
       send: vi.fn().mockResolvedValue({
         capacityProviders: [
           {
-            name: 'test_platform_x86',
+            name: capacityProviderName('x86_64'),
             status: 'READY',
             capacityProviderArn: 'arn:aws:bedrock-agentcore:us-east-1:1:capacity-provider/x',
           },
@@ -158,7 +159,7 @@ describe('ensureCapacityProvider', () => {
   it('reports pending while the provider is CREATING', async () => {
     const controlClient = {
       send: vi.fn().mockResolvedValue({
-        capacityProviders: [{ name: 'test_platform_x86', status: 'CREATING' }],
+        capacityProviders: [{ name: capacityProviderName('x86_64'), status: 'CREATING' }],
       }),
     };
     await expect(
@@ -178,7 +179,7 @@ describe('ensureCapacityProvider', () => {
     ).resolves.toEqual({ pending: true });
 
     const createInput = controlClient.send.mock.calls[1][0].input;
-    expect(createInput.name).toBe('test_platform_x86');
+    expect(createInput.name).toBe(capacityProviderName('x86_64'));
     expect(createInput.permissionsConfiguration.capacityProviderOperatorRoleArn).toBe(
       INSTANCES_ENV.MANAGED_INSTANCES_OPERATOR_ROLE_ARN,
     );
@@ -198,12 +199,55 @@ describe('ensureCapacityProvider', () => {
     const controlClient = {
       send: vi.fn().mockResolvedValue({
         capacityProviders: [
-          { name: 'test_platform_x86', status: 'CREATE_FAILED', statusReason: 'bad subnet' },
+          {
+            name: capacityProviderName('x86_64'),
+            status: 'CREATE_FAILED',
+            statusReason: 'bad subnet',
+          },
         ],
       }),
     };
     await expect(ensureCapacityProvider({ controlClient, architecture: 'x86_64' })).rejects.toThrow(
       /bad subnet/,
     );
+  });
+
+  it('derives a new provider identity when the configuration changes', () => {
+    const before = capacityProviderName('x86_64');
+    process.env.MANAGED_INSTANCES_ALLOWED_TYPES = '["m6i.xlarge"]';
+    const after = capacityProviderName('x86_64');
+    expect(after).not.toBe(before);
+    // Same prefix and architecture tag — only the fingerprint differs.
+    expect(before.startsWith('test_platform_x86_')).toBe(true);
+    expect(after.startsWith('test_platform_x86_')).toBe(true);
+    expect(before.length).toBeLessThanOrEqual(48);
+  });
+
+  it('creates a fresh provider after a failed configuration is corrected', async () => {
+    const failedName = capacityProviderName('x86_64');
+    // Correcting the configuration changes the fingerprint, so the failed
+    // provider no longer occupies the lookup identity.
+    process.env.MANAGED_INSTANCES_SUBNETS = '["subnet-fixed"]';
+    const correctedName = capacityProviderName('x86_64');
+    expect(correctedName).not.toBe(failedName);
+
+    const controlClient = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce({
+          capacityProviders: [
+            { name: failedName, status: 'CREATE_FAILED', statusReason: 'bad subnet' },
+          ],
+        })
+        .mockResolvedValueOnce({ capacityProviderArn: 'arn:new', status: 'CREATING' }),
+    };
+    await expect(
+      ensureCapacityProvider({ controlClient, architecture: 'x86_64' }),
+    ).resolves.toEqual({ pending: true });
+    const createInput = controlClient.send.mock.calls[1][0].input;
+    expect(createInput.name).toBe(correctedName);
+    expect(createInput.computeConfiguration.ec2Configuration.vpcConfiguration.subnets).toEqual([
+      'subnet-fixed',
+    ]);
   });
 });

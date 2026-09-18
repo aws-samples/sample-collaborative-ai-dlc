@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRuntimeForRevision, verifyRuntime } from '../status.js';
+import { capacityProviderName } from '../compute.js';
 
 const INSTANCES_ENV = {
   MANAGED_INSTANCES_OPERATOR_ROLE_ARN: 'arn:aws:iam::123456789012:role/operator',
@@ -51,52 +52,53 @@ const storeStub = () => ({
 
 describe('createRuntimeForRevision on the Instances compute type', () => {
   it('waits for the capacity provider before creating the runtime', async () => {
-    const controlClient = {
-      send: vi.fn().mockResolvedValue({
-        capacityProviders: [{ name: 'test_platform_x86', status: 'CREATING' }],
-      }),
-    };
-    const result = await withEnv(() =>
-      createRuntimeForRevision({
+    const result = await withEnv(() => {
+      const controlClient = {
+        send: vi.fn().mockResolvedValue({
+          capacityProviders: [{ name: capacityProviderName('x86_64'), status: 'CREATING' }],
+        }),
+      };
+      return createRuntimeForRevision({
         store: storeStub(),
         environment: instancesEnvironment,
         revision: scannedRevision,
         controlClient,
-      }),
-    );
-    expect(result.pending).toBe(true);
+      }).then((outcome) => ({ outcome, controlClient }));
+    });
+    expect(result.outcome.pending).toBe(true);
     // Only the capacity provider lookup ran — no CreateAgentRuntime call.
-    expect(controlClient.send).toHaveBeenCalledTimes(1);
+    expect(result.controlClient.send).toHaveBeenCalledTimes(1);
   });
 
   it('creates the runtime from the capacity provider without networkConfiguration', async () => {
-    const controlClient = {
-      send: vi
-        .fn()
-        .mockResolvedValueOnce({
-          capacityProviders: [
-            {
-              name: 'test_platform_x86',
-              status: 'READY',
-              capacityProviderArn: 'arn:cp',
-            },
-          ],
-        })
-        .mockResolvedValueOnce({
-          agentRuntimeArn: 'arn:runtime',
-          agentRuntimeId: 'rt-1',
-          agentRuntimeVersion: '1',
-        }),
-    };
     const store = storeStub();
-    const result = await withEnv(() =>
-      createRuntimeForRevision({
+    const { result, controlClient } = await withEnv(async () => {
+      const client = {
+        send: vi
+          .fn()
+          .mockResolvedValueOnce({
+            capacityProviders: [
+              {
+                name: capacityProviderName('x86_64'),
+                status: 'READY',
+                capacityProviderArn: 'arn:cp',
+              },
+            ],
+          })
+          .mockResolvedValueOnce({
+            agentRuntimeArn: 'arn:runtime',
+            agentRuntimeId: 'rt-1',
+            agentRuntimeVersion: '1',
+          }),
+      };
+      const outcome = await createRuntimeForRevision({
         store,
         environment: instancesEnvironment,
         revision: scannedRevision,
-        controlClient,
-      }),
-    );
+        controlClient: client,
+      });
+      return { result: outcome, controlClient: client };
+    });
     expect(result.revision.status).toBe('VERIFYING');
 
     const createInput = controlClient.send.mock.calls[1][0].input;
