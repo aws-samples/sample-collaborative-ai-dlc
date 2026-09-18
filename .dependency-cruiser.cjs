@@ -13,16 +13,12 @@
  *
  * Docs: https://github.com/sverweij/dependency-cruiser/blob/main/doc/rules-reference.md
  */
-// The root manifest contains both tooling and dependencies shared by Lambda
-// workspaces. Treat only the tooling subset as forbidden in runtime modules.
-const rootDevDependencies = Object.keys(require('./package.json').devDependencies);
-const runtimeRootDependency =
-  /^(?:@aws-sdk\/|@smithy\/|gremlin$|gremlin-aws-sigv4$|neptune-lambda-client$)/;
-const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const devOnlyDependencyPath = `^node_modules/(?:${rootDevDependencies
-  .filter((dependency) => !runtimeRootDependency.test(dependency))
-  .map(escapeRegExp)
-  .join('|')})(?:/|$)`;
+// Shared modules resolve these runtime packages against the root manifest,
+// where they are devDependencies for the workspace build. They are intentional
+// runtime imports; all other npm-dev/npm-no-pkg imports from production code
+// are forbidden below.
+const sharedRuntimeDependencyPath =
+  '^node_modules/(?:@aws-lambda-powertools/|@aws-sdk/|@smithy/|gremlin(?:/|$)|gremlin-aws-sigv4(?:/|$)|js-yaml(?:/|$)|neptune-lambda-client(?:/|$)|tar-stream(?:/|$))';
 
 module.exports = {
   forbidden: [
@@ -98,8 +94,9 @@ module.exports = {
         pathNot: '\\.(test|spec)\\.(js|mjs|ts)$|/test/',
       },
       to: {
-        path: devOnlyDependencyPath,
+        dependencyTypes: ['npm-dev', 'npm-no-pkg'],
         dependencyTypesNot: ['type-only'],
+        pathNot: sharedRuntimeDependencyPath,
       },
     },
     {
