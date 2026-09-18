@@ -470,7 +470,9 @@ export function EnvironmentBuilder({
                       onChange({
                         ...form,
                         compute: compute as EnvironmentForm['compute'],
-                        ...(compute === 'instances-x86_64' ? { toolVersionIds: [] } : {}),
+                        ...(compute === 'instances-x86_64'
+                          ? { toolVersionIds: [], baseEnvironmentId: 'standard' }
+                          : {}),
                       })
                     }
                     disabled={disabled}
