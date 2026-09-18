@@ -29,7 +29,12 @@ import {
 } from './request.js';
 import { createEnvironmentStore } from './store.js';
 import { createToolStore } from './tool-store.js';
-import { applyComputeBase, environmentArchitecture, normalizeCompute } from './compute.js';
+import {
+  applyComputeBase,
+  assertBaseArchitecture,
+  environmentArchitecture,
+  normalizeCompute,
+} from './compute.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -95,8 +100,9 @@ const assertAcyclicBase = async (store, environmentId, baseEnvironmentId) => {
   }
 };
 
-const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId) => {
+const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId, compute) => {
   const { revision: baseRevision } = await requirePublishedBaseImage(store, baseEnvironmentId);
+  assertBaseArchitecture({ compute, baseRevision, baseEnvironmentId });
   return resolveCatalogEnvironmentRecipe({
     input: {
       ...input,
@@ -316,6 +322,11 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
     store,
     environment.baseEnvironmentId,
   );
+  assertBaseArchitecture({
+    compute: environment.compute,
+    baseRevision: latestBase,
+    baseEnvironmentId: environment.baseEnvironmentId,
+  });
   const { recipe, flattenedRecipe } = rebuildCatalogEnvironmentRecipe({
     sourceRecipe: sourceRevision.recipe,
     baseEnvironmentId: environment.baseEnvironmentId,
@@ -389,6 +400,7 @@ export const createHandler = ({
           toolStore,
           data.recipe,
           baseEnvironmentId,
+          compute,
         );
         const recipe = compute
           ? applyComputeBase({ recipe: prepared.recipe, compute })
@@ -492,6 +504,7 @@ export const createHandler = ({
           toolStore,
           data.recipe,
           baseEnvironmentId,
+          environment.compute,
         );
         const revision = await store.createRevision({
           environment,
