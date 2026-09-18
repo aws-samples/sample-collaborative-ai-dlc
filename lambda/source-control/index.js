@@ -5,6 +5,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { STSClient } from '@aws-sdk/client-sts';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { getProvider } from '../shared/git-providers.js';
@@ -29,6 +30,7 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const sts = new STSClient({});
 const logger = new Logger({ persistentKeys: { component: 'source-control' } });
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
@@ -142,6 +144,10 @@ const normalizeProviderSelections = (data = {}) => {
       selections[item.provider] = {
         authType: item.authType,
         confirmDelegation: item.confirmDelegation,
+        // codecommit-role: the tenant role and the committer identity.
+        ...(item.roleArn ? { roleArn: item.roleArn } : {}),
+        ...(item.committerName ? { committerName: item.committerName } : {}),
+        ...(item.committerEmail ? { committerEmail: item.committerEmail } : {}),
       };
     }
     return selections;
@@ -518,10 +524,13 @@ export const handler = async (event, context) => {
             ddb,
             ssm,
             secrets,
+            sts,
             provider: repo.provider,
             repo: repo.repo,
             authType: selection.authType,
             userId,
+            projectId,
+            selection,
             confirmDelegation:
               selection.confirmDelegation === true || data.confirmDelegation === true,
             actorName:

@@ -7,15 +7,24 @@ import {
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 
+import { canonicalCodeCommitRepo } from './git-providers/codecommit-repo.js';
+
 const CREDENTIAL_REF_INDEX = 'CredentialRefIndex';
 const ACTIVE = 'active';
 const INVALID = 'invalid';
-const AUTH_TYPES = Object.freeze(['github-oauth', 'github-app', 'gitlab-oauth', 'bitbucket-oauth']);
+const AUTH_TYPES = Object.freeze([
+  'github-oauth',
+  'github-app',
+  'gitlab-oauth',
+  'bitbucket-oauth',
+  'codecommit-role',
+]);
 const AUTH_TYPE_PROVIDER = Object.freeze({
   'github-oauth': 'github',
   'github-app': 'github',
   'gitlab-oauth': 'gitlab',
   'bitbucket-oauth': 'bitbucket',
+  'codecommit-role': 'codecommit',
 });
 
 const tableName = () => process.env.SOURCE_CONTROL_BINDINGS_TABLE;
@@ -31,8 +40,17 @@ const trimSlashes = (value) => {
 };
 
 const canonicalRepo = (provider, value) => {
-  if (!['github', 'gitlab', 'bitbucket'].includes(provider)) {
+  if (!['github', 'gitlab', 'bitbucket', 'codecommit'].includes(provider)) {
     throw new Error(`Unsupported source-control provider: ${provider}`);
+  }
+  // CodeCommit has no owner/name pair: the identity is the repository ARN
+  // (partition, region, account, name) and names are case-sensitive.
+  if (provider === 'codecommit') {
+    try {
+      return canonicalCodeCommitRepo(value);
+    } catch {
+      throw new Error('Invalid codecommit repository reference');
+    }
   }
   const raw = trimSlashes(
     String(value || '')
@@ -54,6 +72,9 @@ const credentialBindingKeyFor = (projectId, provider, repo) =>
 
 const oauthCredentialRef = (provider, userId) => `oauth#${provider}#${userId}`;
 const appCredentialRef = (installationId) => `github-app#${installationId}`;
+// One ref per tenant role: invalidating the role (trust removed, role deleted)
+// fans out to every binding that depends on it, like an app installation.
+const roleCredentialRef = (roleArn) => `codecommit-role#${roleArn}`;
 
 const assertBinding = (binding) => {
   if (!binding?.projectId || !binding?.provider || !binding?.repo || !binding?.authType) {
@@ -311,6 +332,14 @@ const sanitizeBinding = (binding, { privileged = false } = {}) => {
       out.installationId = binding.installationId || null;
       out.installationAccount = binding.installationAccount || null;
     }
+    if (binding.authType === 'codecommit-role') {
+      // Role ARN, account and region are identity, not secrets: the tenant
+      // wrote them. The external ID is derived from the project id and shown
+      // by the connect flow, never stored.
+      out.roleArn = binding.roleArn || null;
+      out.roleAccountId = binding.roleAccountId || null;
+      out.region = binding.region || null;
+    }
     out.actor = binding.actorLogin || binding.actorName || null;
   }
   return out;
@@ -327,6 +356,7 @@ export {
   credentialBindingKeyFor,
   oauthCredentialRef,
   appCredentialRef,
+  roleCredentialRef,
   prepareBinding,
   getBinding,
   listProjectBindings,
@@ -347,6 +377,7 @@ export default {
   bindingKeyFor,
   oauthCredentialRef,
   appCredentialRef,
+  roleCredentialRef,
   prepareBinding,
   getBinding,
   listProjectBindings,
