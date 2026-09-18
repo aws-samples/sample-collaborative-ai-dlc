@@ -2,12 +2,12 @@
 
 AIDLC Collaborative integrates with external systems on two independent axes:
 
-- **Code host** — GitHub, GitLab or Bitbucket. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub / Bitbucket) or merge request (GitLab).
+- **Code host** — GitHub, GitLab, Bitbucket or AWS CodeCommit. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub / Bitbucket / CodeCommit) or merge request (GitLab).
 - **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
 
 A project can attach one or more repositories and zero or more trackers. Repository authorization is configured explicitly per project in **Project Settings**.
 
-GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues), so you authenticate once per provider. Bitbucket is a code host only. Jira Cloud is a tracker only.
+GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues), so you authenticate once per provider. Bitbucket and CodeCommit are code hosts only. Jira Cloud is a tracker only.
 
 ## Operator setup (one time per deployment)
 
@@ -32,6 +32,7 @@ GitHub OAuth and GitHub App configuration remain available at the same time. The
 - OAuth delegation is explicit. The owner/admin can delegate only their own connected identity and must confirm that the project may act through it.
 - For GitHub App bindings, the platform discovers and stores the installation for each repository. No global installation ID is configured.
 - GitLab repositories use an explicitly delegated GitLab OAuth connection.
+- CodeCommit repositories use an **IAM role** the repository's account owner creates and trusts the platform with (no OAuth, no personal connection). The platform assumes it per request with a session policy narrowed to the one repository and the actions that request needs. See [CodeCommit](#codecommit) below.
 
 Every repository is verified before any binding is written. Existing repository-backed projects remain unbound after upgrade and cannot start until an owner/admin completes this step. Repository-free projects are unaffected.
 
@@ -42,6 +43,7 @@ Each user connects their own GitHub / GitLab / Atlassian account once. A persona
 - **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
 - **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
 - **Bitbucket**: choose **Bitbucket** as the provider in the project-creation flow, then click **Connect Bitbucket** and approve the OAuth flow. The connection requests the `account`, `email`, `repository`, `repository:write`, `pullrequest` and `pullrequest:write` scopes (the `email` scope is used for commit attribution). The button stays disabled until your administrator has configured Bitbucket OAuth credentials. Bitbucket access tokens are short-lived (~2h); the platform refreshes them automatically from the stored refresh token, so you don't need to reconnect periodically.
+- **AWS CodeCommit**: there is nothing to connect on your account. Choose **AWS CodeCommit** in the project-creation flow and follow the role handshake described in [CodeCommit](#codecommit).
 - **Jira Cloud**: open **Project Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
 
 A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab project (and vice versa). Each project uses the connection matching its selected code host.
@@ -49,12 +51,26 @@ A connection is scoped to its provider: connecting GitHub does not satisfy a Git
 ## Selecting a code repository
 
 1. Click **Create new Project** in the project overview.
-2. Choose the code host — **GitHub**, **GitLab** or **Bitbucket**.
-3. For GitHub, choose the authentication type: **GitHub App** (uses the platform App's installations — no personal connection needed) or **My GitHub OAuth identity** (delegates your own connection). GitLab and Bitbucket always delegate your OAuth identity. On the OAuth paths the platform prompts you to connect if no active connection exists.
-4. Pick the repository (GitHub / Bitbucket) or project (GitLab) that should back the collaborative project. On the App path the picker lists the repositories the App is installed on; on the OAuth paths it lists your own.
+2. Choose the code host — **GitHub**, **GitLab**, **Bitbucket** or **AWS CodeCommit**.
+3. For GitHub, choose the authentication type: **GitHub App** (uses the platform App's installations — no personal connection needed) or **My GitHub OAuth identity** (delegates your own connection). GitLab and Bitbucket always delegate your OAuth identity. On the OAuth paths the platform prompts you to connect if no active connection exists. CodeCommit uses an IAM role instead (see below).
+4. Pick the repository (GitHub / Bitbucket / CodeCommit) or project (GitLab) that should back the collaborative project. On the App path the picker lists the repositories the App is installed on; on the OAuth paths it lists your own; on the CodeCommit path it lists what the role can see in the chosen region.
 5. Confirm the binding (OAuth delegation requires an explicit confirmation). If verification fails, the project is created unbound — rebind it in **Project Settings → Repositories** before starting intents.
 
 The repository is cloned into the agent workspace and becomes available to the agents while an intent executes. Additional repositories can be added later in **Project Settings → Repositories**; the project binding must then be reverified.
+
+### CodeCommit
+
+CodeCommit has no OAuth. A space reaches its repositories through an IAM role that lives in the AWS account owning them, and that role trusts the platform's execution roles under a per-connection **external ID**. The whole handshake happens in the project-creation flow (and again under **Project Settings → Repositories** to rebind):
+
+1. Choose **AWS CodeCommit**. The form shows a trust policy: the three platform principals (credential broker, source-control API, CodeCommit connector) and a freshly minted external ID of the form `aidlc:<uuid>`. Copy it.
+2. In the repository account, create an IAM role with that trust policy and a permissions policy that allows `codecommit:*` on the repositories this space may use. The role policy only sets the outer bound: every call the platform makes is narrowed to **one repository ARN** by a session policy — `GitPull` plus the read API for reads, `GitPush` plus the pull request / merge / branch API for writes, and `ListRepositories` only while connecting.
+3. Paste the role ARN, pick the repositories' region and click **Test connection**. The platform assumes the role with the discover-only policy and lists the repositories it can see; pick the ones the space uses.
+
+The external ID is what stops another space (or another tenant) from using your role: the platform only ever presents the external ID recorded on the binding it is serving, and its own IAM policy refuses to assume any role unless an `aidlc:*` external ID is presented. Keep the trust policy exactly as shown; rotating the role or removing the trust invalidates every binding on it, which the settings page reports.
+
+Repository identity is the **ARN** (region and account are part of it), so CodeCommit repositories appear as `name (region)` and link to the regional console. Commits made by the engine carry the committer configured on the binding (CodeCommit has no user-identity API to discover one).
+
+What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new one is opened instead), no issues tracker, no CI check statuses (approval rules are read instead). Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
 
 ## Branches
 
@@ -130,7 +146,7 @@ Why nothing is removed: this is open source. Downstream forks are on their own u
 
 The platform supports two delivery strategies:
 
-- **Intent PR** — completed unit branches are engine-merged into the intent branch. After shared stages pass, one pull request (GitHub / Bitbucket) or merge request (GitLab) opens from intent to base.
+- **Intent PR** — completed unit branches are engine-merged into the intent branch. After shared stages pass, one pull request (GitHub / Bitbucket / CodeCommit) or merge request (GitLab) opens from intent to base.
 - **PR per unit** — every changed repository gets a draft unit-to-intent PR/MR. Draft reviews may happen concurrently, but the platform promotes one dependency-ready unit at a time after reconciling it with the latest intent branch. The final intent-to-base PR/MR still opens after all units and shared stages complete.
 
 In the intent view, each unit card shows repository-specific review state and links. Project members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.

@@ -346,7 +346,7 @@ UI or with downstream Cognito group membership. See
 
 ### Configure provider OAuth apps
 
-The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app.
+The platform integrates with external providers as code hosts (GitHub, GitLab, Bitbucket, AWS CodeCommit) and issue trackers (GitHub Issues, GitLab Issues, Jira Cloud) so an intent can be started from a tracker issue. For each OAuth provider you want to enable, register an OAuth app and paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. CodeCommit needs no OAuth app and no secret: each space connects an IAM role from the repository account (see [CodeCommit](#codecommit-code-host) below).
 
 For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only. All providers are optional — skip a section if you don't need that provider; the corresponding **Connect** buttons in the UI stay disabled with a hint pointing to this admin panel.
 
@@ -394,6 +394,18 @@ Existing projects must be explicitly bound by an owner/admin before intents can 
 4. In the deployed app, sign in and open **Admin → Trackers → GitLab Issues**. Paste both values and click **Save**.
 
 GitLab's `api` scope includes repository writes, including changes to `.gitlab-ci.yml`; there is no separate workflow-file scope. Connections missing `api` are reported as requiring reauthorization.
+
+#### CodeCommit (code host)
+
+Nothing to register and no secret to store. Terraform gives the credential broker, the source-control API and the `codecommit` connector Lambda permission to `sts:AssumeRole` **only when an `aidlc:*` external ID is presented**, and publishes those three execution role ARNs:
+
+```bash
+terraform -chdir=terraform output -raw codecommit_platform_principals
+```
+
+They are also shown on **Admin → Source Control → AWS CodeCommit**. A space owner connects a repository by creating, in the account that owns it, an IAM role whose trust policy names these principals with the external ID the connect flow shows them, and whose permissions policy allows `codecommit:*` on the repositories the space may use. The platform narrows every call to a single repository ARN with a session policy, so the role policy is only the outer bound. The end-user side of the handshake is described in [Git integration → CodeCommit](../using-the-platform/git-integration.md#codecommit).
+
+The deployment region does not need to match the repositories' region: the git host and API endpoint are derived from each repository's ARN.
 
 #### Bitbucket (code host)
 
