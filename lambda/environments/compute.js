@@ -106,6 +106,21 @@ export const normalizeCompute = (input) => {
 export const environmentArchitecture = (environment) =>
   environment?.compute?.architecture === 'x86_64' ? 'x86_64' : 'arm64';
 
+// An arm64 build cannot start FROM an amd64 base image. x86_64 targets are
+// covered by applyComputeBase (which swaps in the amd64 core); every other
+// target must reject an x86_64 base revision.
+export const assertBaseArchitecture = ({ compute, baseRevision, baseEnvironmentId }) => {
+  if (compute?.architecture === 'x86_64') return;
+  if (baseRevision?.recipe?.architecture === 'x86_64') {
+    throw Object.assign(
+      new Error(
+        `Base environment ${baseEnvironmentId} is x86_64 and cannot be used by an arm64 environment`,
+      ),
+      { statusCode: 409, code: 'BASE_ARCHITECTURE_MISMATCH' },
+    );
+  }
+};
+
 // Rewrites the resolved recipe base to the amd64 core image for x86_64
 // environments. The catalog resolver derives the base from the parent
 // environment's published (arm64) revision; an x86_64 image cannot be built
