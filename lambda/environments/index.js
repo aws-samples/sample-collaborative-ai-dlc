@@ -50,6 +50,13 @@ const configuredCore = () => ({
   coreRuntimeArn: process.env.CORE_RUNTIME_ARN,
   coreRuntimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
   coreImageSizeBytes: Number(process.env.CORE_IMAGE_SIZE_BYTES || 0) || null,
+  coreAmd64Image:
+    process.env.CORE_IMAGE_URI_AMD64 && process.env.CORE_IMAGE_DIGEST_AMD64
+      ? {
+          imageUri: process.env.CORE_IMAGE_URI_AMD64,
+          imageDigest: process.env.CORE_IMAGE_DIGEST_AMD64,
+        }
+      : null,
 });
 
 const ensureSeeded = async (store) => {
@@ -103,7 +110,7 @@ const assertAcyclicBase = async (store, environmentId, baseEnvironmentId) => {
 const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId, compute) => {
   const { revision: baseRevision } = await requirePublishedBaseImage(store, baseEnvironmentId);
   assertBaseArchitecture({ compute, baseRevision, baseEnvironmentId });
-  return resolveCatalogEnvironmentRecipe({
+  const resolved = await resolveCatalogEnvironmentRecipe({
     input: {
       ...input,
       schemaVersion: CATALOG_RECIPE_SCHEMA_VERSION,
@@ -112,6 +119,7 @@ const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId, 
     baseRevision,
     toolStore,
   });
+  return { ...resolved, baseRevision };
 };
 
 const assertCatalogRevision = (environmentId, revision) => {
@@ -335,10 +343,14 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
   return store.createRevision({
     environment,
     recipe: environment.compute
-      ? applyComputeBase({ recipe, compute: environment.compute })
+      ? applyComputeBase({ recipe, compute: environment.compute, baseRevision: latestBase })
       : recipe,
     flattenedRecipe: environment.compute
-      ? applyComputeBase({ recipe: flattenedRecipe, compute: environment.compute })
+      ? applyComputeBase({
+          recipe: flattenedRecipe,
+          compute: environment.compute,
+          baseRevision: latestBase,
+        })
       : flattenedRecipe,
     createdBy: actor,
     reason: 'latest-base',
@@ -403,10 +415,18 @@ export const createHandler = ({
           compute,
         );
         const recipe = compute
-          ? applyComputeBase({ recipe: prepared.recipe, compute })
+          ? applyComputeBase({
+              recipe: prepared.recipe,
+              compute,
+              baseRevision: prepared.baseRevision,
+            })
           : prepared.recipe;
         const flattenedRecipe = compute
-          ? applyComputeBase({ recipe: prepared.flattenedRecipe, compute })
+          ? applyComputeBase({
+              recipe: prepared.flattenedRecipe,
+              compute,
+              baseRevision: prepared.baseRevision,
+            })
           : prepared.flattenedRecipe;
         const created = await store.createEnvironment({
           environmentId: id,
@@ -509,12 +529,17 @@ export const createHandler = ({
         const revision = await store.createRevision({
           environment,
           recipe: environment.compute
-            ? applyComputeBase({ recipe: prepared.recipe, compute: environment.compute })
+            ? applyComputeBase({
+                recipe: prepared.recipe,
+                compute: environment.compute,
+                baseRevision: prepared.baseRevision,
+              })
             : prepared.recipe,
           flattenedRecipe: environment.compute
             ? applyComputeBase({
                 recipe: prepared.flattenedRecipe,
                 compute: environment.compute,
+                baseRevision: prepared.baseRevision,
               })
             : prepared.flattenedRecipe,
           createdBy: actor,

@@ -337,6 +337,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'imageUri',
       'imageDigest',
       'imageSizeBytes',
+      'amd64Image',
       'projectedImageSizeBytes',
       'scanFindings',
       'highFindingsAcknowledgedAt',
@@ -572,6 +573,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreRuntimeArn,
     coreRuntimeVersion = '1',
     coreImageSizeBytes = null,
+    coreAmd64Image = null,
     actor = 'platform',
   }) => {
     const createdAt = now();
@@ -646,6 +648,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         imageUri: template.id === 'standard' ? coreImageUri : null,
         imageDigest: template.id === 'standard' ? coreImageDigest : null,
         imageSizeBytes: template.id === 'standard' ? coreImageSizeBytes : null,
+        amd64Image: template.id === 'standard' ? coreAmd64Image : null,
         runtimeArn: template.id === 'standard' ? coreRuntimeArn : null,
         runtimeVersion: template.id === 'standard' ? coreRuntimeVersion : null,
         runtimeEndpoint: null,
@@ -696,16 +699,24 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreRuntimeArn,
     coreRuntimeVersion = '1',
     coreImageSizeBytes = null,
+    coreAmd64Image = null,
     actor = 'platform',
   }) => {
     const environment = await getEnvironment('standard');
     if (!environment?.publishedRevisionId) return null;
     const published = await getRevision('standard', environment.publishedRevisionId);
     if (published?.imageDigest === coreImageDigest) {
-      if (!published.imageSizeBytes && coreImageSizeBytes) {
-        await updateRevision('standard', published.revisionId, {
-          imageSizeBytes: coreImageSizeBytes,
-        });
+      // Same core as this deployment — backfill fields that predate them being
+      // stored with the revision. The amd64 variant belongs to THIS digest, so
+      // attaching it here is exact (pre-existing revisions gain their variant).
+      const backfill = {
+        ...(!published.imageSizeBytes && coreImageSizeBytes
+          ? { imageSizeBytes: coreImageSizeBytes }
+          : {}),
+        ...(!published.amd64Image && coreAmd64Image ? { amd64Image: coreAmd64Image } : {}),
+      };
+      if (Object.keys(backfill).length) {
+        await updateRevision('standard', published.revisionId, backfill);
       }
       return null;
     }
@@ -744,6 +755,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       imageUri: coreImageUri,
       imageDigest: coreImageDigest,
       imageSizeBytes: coreImageSizeBytes,
+      amd64Image: coreAmd64Image,
       runtimeArn: coreRuntimeArn,
       runtimeVersion: coreRuntimeVersion,
       runtimeEndpoint: null,
