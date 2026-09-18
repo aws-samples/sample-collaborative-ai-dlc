@@ -60,11 +60,6 @@ export const instancesComputeConfigured = () =>
 export const amd64CoreImageConfigured = () =>
   Boolean(process.env.CORE_IMAGE_URI_AMD64 && process.env.CORE_IMAGE_DIGEST_AMD64);
 
-export const amd64CoreImage = () => ({
-  imageUri: process.env.CORE_IMAGE_URI_AMD64,
-  imageDigest: process.env.CORE_IMAGE_DIGEST_AMD64,
-});
-
 // Normalizes and validates the `compute` field of an environment. Returns
 // null for the default (microVMs, arm64) so existing records stay untouched.
 export const normalizeCompute = (input) => {
@@ -133,10 +128,13 @@ export const assertBaseArchitecture = ({ compute, baseRevision, baseEnvironmentI
 // environments. The catalog resolver derives the base from the parent
 // environment's published (arm64) revision; an x86_64 image cannot be built
 // FROM an arm64 base, so the base ref is swapped for the amd64 build of the
-// same core. Restricted to bases whose published image IS the core image —
-// derived (tool-carrying) bases are arm64-only until the tool catalog gains
-// per-architecture binaries.
-export const applyComputeBase = ({ recipe, compute }) => {
+// same core. The amd64 variant is resolved from the SELECTED base revision
+// (stored alongside it), never from the deployment's environment variables —
+// during a platform upgrade the staged core is newer than the published one
+// and the two must not be mixed. Restricted to bases whose published image
+// IS the core image — derived (tool-carrying) bases are arm64-only until the
+// tool catalog gains per-architecture binaries.
+export const applyComputeBase = ({ recipe, compute, baseRevision = null }) => {
   if (compute?.architecture !== 'x86_64') return recipe;
   if ((recipe.toolVersionIds ?? []).length > 0 || (recipe.resolvedTools ?? []).length > 0) {
     throw Object.assign(
@@ -150,7 +148,13 @@ export const applyComputeBase = ({ recipe, compute }) => {
       { statusCode: 409, code: 'X86_64_BASE_MUST_BE_STANDARD' },
     );
   }
-  const amd64 = amd64CoreImage();
+  const amd64 = baseRevision?.amd64Image;
+  if (!amd64?.imageUri || !amd64?.imageDigest) {
+    throw Object.assign(
+      new Error('The published core revision has no x86_64 variant; publish the staged core first'),
+      { statusCode: 409, code: 'AMD64_CORE_IMAGE_MISSING' },
+    );
+  }
   return {
     ...recipe,
     architecture: 'x86_64',
