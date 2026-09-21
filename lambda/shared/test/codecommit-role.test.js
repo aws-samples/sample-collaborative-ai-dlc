@@ -31,8 +31,8 @@ const stsStub = (response) => {
 const okCredentials = {
   Credentials: {
     AccessKeyId: 'ASIAEXAMPLE',
-    SecretAccessKey: 'secret',
-    SessionToken: 'token',
+    SecretAccessKey: 'secret', // pragma: allowlist secret
+    SessionToken: 'token', // pragma: allowlist secret
     Expiration: new Date('2026-09-18T12:15:00Z'),
   },
   AssumedRoleUser: {
@@ -118,8 +118,8 @@ describe('assumeCodeCommitRole', () => {
     expect(JSON.parse(input.Policy).Statement.map((s) => s.Sid)).toContain('GitWrite');
     expect(out).toMatchObject({
       accessKeyId: 'ASIAEXAMPLE',
-      secretAccessKey: 'secret',
-      sessionToken: 'token',
+      secretAccessKey: 'secret', // pragma: allowlist secret
+      sessionToken: 'token', // pragma: allowlist secret
       expiration: new Date('2026-09-18T12:15:00.000Z'),
       assumedRoleArn: okCredentials.AssumedRoleUser.Arn,
     });

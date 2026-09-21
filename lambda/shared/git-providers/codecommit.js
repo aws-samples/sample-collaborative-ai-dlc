@@ -1051,15 +1051,15 @@ const mergeBranch = async (ctx, repoId, { base, head, message }) => {
 // ---------------------------------------------------------------------------
 
 // Declared contract gaps, so a caller can branch BEFORE it calls a method that
-// can only throw. `events: 'eventbridge'` says change notification arrives as
-// in-account EventBridge events (source `aws.codecommit`), not an HTTP webhook.
+// can only throw. CodeCommit has no webhook integration here; the existing
+// scheduled watchdog polls pull-request state for reconciliation.
 const capabilities = Object.freeze({
   issues: false,
   draftPullRequests: false,
   reopenPullRequest: false,
   checkStatuses: false,
   approvalRules: true,
-  events: 'eventbridge',
+  events: 'polling',
 });
 
 export {

@@ -82,7 +82,7 @@ describe('codecommit provider: registry and identity', () => {
       reopenPullRequest: false,
       checkStatuses: false,
       approvalRules: true,
-      events: 'eventbridge',
+      events: 'polling',
     });
     // The OAuth providers keep their historical "everything supported" shape.
     expect(getCapabilities('github')).toMatchObject({ issues: true, events: 'webhook' });
@@ -103,9 +103,8 @@ describe('codecommit provider: registry and identity', () => {
     // The engine injects credentials through GIT_ASKPASS (workspace.js and
     // git-engine.js always pass ''); a signed SigV4 credential must never be
     // serialised into a remote URL where it would land in .git/config.
-    expect(() => cc.buildCloneUrl(ARN, { username: 'AKIA%tok', password: '2026Zsig' })).toThrow(
-      ProviderError,
-    );
+    const credentialFixture = { username: 'AKIA%tok', password: '2026Zsig' }; // pragma: allowlist secret
+    expect(() => cc.buildCloneUrl(ARN, credentialFixture)).toThrow(ProviderError);
   });
 
   it('rejects a repoId that is not a CodeCommit ARN', () => {

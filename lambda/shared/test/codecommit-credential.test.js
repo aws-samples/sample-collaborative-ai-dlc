@@ -15,7 +15,7 @@ import {
 // demonstration secret key, verbatim canonical request, verbatim string to
 // sign and the signature AWS states for them. This pins the SigV4 primitive
 // (hash → string to sign → key derivation → HMAC) to AWS's own numbers.
-const DOC_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+const DOC_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'; // pragma: allowlist secret
 const DOC_CANONICAL_REQUEST = [
   'PUT',
   '/-/vaults/examplevault',
@@ -25,20 +25,20 @@ const DOC_CANONICAL_REQUEST = [
   'x-amz-glacier-version:2012-06-01',
   '',
   'host;x-amz-date;x-amz-glacier-version',
-  'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+  'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', // pragma: allowlist secret
 ].join('\n');
 const DOC_STRING_TO_SIGN = [
   'AWS4-HMAC-SHA256',
   '20120525T002453Z',
   '20120525/us-east-1/glacier/aws4_request',
-  '5f1da1a2d0feb614dd03d71e87928b8e449ac87614479332aced3a701f916743',
+  '5f1da1a2d0feb614dd03d71e87928b8e449ac87614479332aced3a701f916743', // pragma: allowlist secret
 ].join('\n');
-const DOC_SIGNATURE = '3ce5b2f2fffac9262b4da9256f8d086b4aaf42eba5f111c21681a65a127b7c2a';
+const DOC_SIGNATURE = '3ce5b2f2fffac9262b4da9256f8d086b4aaf42eba5f111c21681a65a127b7c2a'; // pragma: allowlist secret
 
 describe('SigV4 primitive (AWS documentation known-answer vector)', () => {
   it('hashes the documented canonical request to the documented digest', () => {
     expect(sha256Hex(DOC_CANONICAL_REQUEST)).toBe(
-      '5f1da1a2d0feb614dd03d71e87928b8e449ac87614479332aced3a701f916743',
+      '5f1da1a2d0feb614dd03d71e87928b8e449ac87614479332aced3a701f916743', // pragma: allowlist secret
     );
   });
 
@@ -112,7 +112,7 @@ describe('endpoint model', () => {
 describe('signCodeCommitGitCredential', () => {
   const now = new Date('2026-09-18T14:00:00.000Z');
   const permanent = {
-    accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+    accessKeyId: 'AKIAIOSFODNN7EXAMPLE', // pragma: allowlist secret
     secretAccessKey: DOC_SECRET,
   };
   const temporary = { ...permanent, sessionToken: 'FwoGZXIvYXdzEXAMPLETOKEN' };
@@ -124,7 +124,7 @@ describe('signCodeCommitGitCredential', () => {
       credentials: temporary,
       now,
     });
-    expect(cred.username).toBe('AKIAIOSFODNN7EXAMPLE%FwoGZXIvYXdzEXAMPLETOKEN');
+    expect(cred.username).toBe('AKIAIOSFODNN7EXAMPLE%FwoGZXIvYXdzEXAMPLETOKEN'); // pragma: allowlist secret
     expect(cred.password).toMatch(/^20260918T140000Z[0-9a-f]{64}$/);
     expect(cred.host).toBe('git-codecommit.eu-west-3.amazonaws.com');
     expect(cred.path).toBe('/v1/repos/demo-repo');
@@ -142,7 +142,7 @@ describe('signCodeCommitGitCredential', () => {
       credentials: permanent,
       now,
     });
-    expect(cred.username).toBe('AKIAIOSFODNN7EXAMPLE');
+    expect(cred.username).toBe(permanent.accessKeyId);
   });
 
   it('is deterministic for identical inputs and bound to host, path, time and key', () => {

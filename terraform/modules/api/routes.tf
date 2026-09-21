@@ -3026,6 +3026,7 @@ resource "aws_api_gateway_resource" "codecommit_repos" {
 
 # GET /codecommit/status (authenticated)
 resource "aws_api_gateway_method" "codecommit_status_get" {
+  #checkov:skip=CKV2_AWS_53:Cognito-authenticated GET has no request body to validate.
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.codecommit_status.id
   http_method   = "GET"
@@ -3044,6 +3045,7 @@ resource "aws_api_gateway_integration" "codecommit_status_get" {
 
 # GET /codecommit/connect-info (authenticated)
 resource "aws_api_gateway_method" "codecommit_connect_info_get" {
+  #checkov:skip=CKV2_AWS_53:Cognito-authenticated GET query is validated by the Lambda handler.
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.codecommit_connect_info.id
   http_method   = "GET"
@@ -3062,6 +3064,7 @@ resource "aws_api_gateway_integration" "codecommit_connect_info_get" {
 
 # POST /codecommit/repos (authenticated) — body carries roleArn/externalId/region
 resource "aws_api_gateway_method" "codecommit_repos_post" {
+  #checkov:skip=CKV2_AWS_53:Cognito-authenticated proxy body is validated by the Lambda handler.
   rest_api_id   = aws_api_gateway_rest_api.main.id
   resource_id   = aws_api_gateway_resource.codecommit_repos.id
   http_method   = "POST"

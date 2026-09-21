@@ -1877,6 +1877,7 @@ locals {
 
 # CodeCommit Lambda
 module "codecommit_lambda" {
+  #checkov:skip=CKV_TF_1:Terraform Registry module follows the repository-wide version constraint.
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
