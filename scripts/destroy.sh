@@ -45,12 +45,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp "$TF_DIR/variables.tf" "$TEMP_DIR/variables.tf"
 if ! EFFECTIVE_ENVIRONMENT_IS_PROD="$(
     printf '%s\n' 'var.environment == "prod"' |
-        terraform -chdir="$TEMP_DIR" console -var-file="$TFVARS_FILE" 2>"$TEMP_DIR/console.stderr"
+        terraform -chdir="$TF_DIR" console \
+            -var-file="$TFVARS_FILE" \
+            -var="deletion_protection=false" \
+            2>"$TEMP_DIR/console.stderr"
 )"; then
-    echo "Error: Terraform could not resolve the effective environment from $TFVARS_FILE." >&2
+    echo "Error: Terraform could not resolve the effective environment using the teardown inputs." >&2
     cat "$TEMP_DIR/console.stderr" >&2
     exit 1
 fi

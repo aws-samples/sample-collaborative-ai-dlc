@@ -116,8 +116,11 @@ test('teardown covers every protected data store and cannot automate production'
     .map((match) => match[1])
     .toSorted();
   assert.deepEqual(teardownTargets, protectedResources);
-  assert.match(destroy, /cp "\$TF_DIR\/variables\.tf" "\$TEMP_DIR\/variables\.tf"/);
-  assert.match(destroy, /terraform -chdir="\$TEMP_DIR" console -var-file="\$TFVARS_FILE"/);
+  assert.doesNotMatch(destroy, /cp "\$TF_DIR\/variables\.tf"/);
+  assert.match(
+    destroy,
+    /terraform -chdir="\$TF_DIR" console[\s\S]*?-var-file="\$TFVARS_FILE"[\s\S]*?-var="deletion_protection=false"/,
+  );
   assert.match(destroy, /STATE_RESOURCES="\$\(terraform -chdir="\$TF_DIR" state list\)"/);
   assert.match(
     destroy,

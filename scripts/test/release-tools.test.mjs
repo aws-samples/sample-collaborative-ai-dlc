@@ -1021,6 +1021,40 @@ exit 0
   assert.doesNotMatch(commands, / init | plan | apply | destroy | state /);
 });
 
+test('standalone destroy loads production from auto tfvars with real Terraform', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-auto-tfvars-'));
+  const scripts = join(dir, 'scripts');
+  const terraformDir = join(dir, 'terraform');
+  const environments = join(terraformDir, 'environments');
+  const fixtureDestroy = join(scripts, 'destroy.sh');
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(environments, { recursive: true });
+  cpSync(destroyTerraform, fixtureDestroy);
+  cpSync(join(root, 'terraform/variables.tf'), join(terraformDir, 'variables.tf'));
+  writeFileSync(join(terraformDir, 'production.auto.tfvars'), 'environment = "prod"\n');
+  writeFileSync(join(environments, 'live.tfvars'), 'aws_region = "us-east-1"\n');
+  writeFileSync(join(environments, 'live.s3.tfbackend'), 'bucket = "live-state"\n');
+
+  try {
+    const destroyed = run('bash', [fixtureDestroy, 'live', '--yes'], {
+      env: {
+        TF_CLI_ARGS: '',
+        TF_CLI_ARGS_console: '',
+        TF_CLI_ARGS_plan: '',
+        TF_CLI_ARGS_destroy: '',
+        TF_DATA_DIR: join(dir, '.terraform-data'),
+        TF_IN_AUTOMATION: '1',
+      },
+    });
+
+    assert.equal(destroyed.status, 1, destroyed.stderr);
+    assert.match(destroyed.stderr, /Refusing automated destruction of a production environment/);
+    assert.doesNotMatch(destroyed.stdout, /Initializing Terraform/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('standalone destroy skips protection targets already removed from state', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-retry-'));
   const bin = join(dir, 'bin');
