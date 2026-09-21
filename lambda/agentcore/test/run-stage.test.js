@@ -2511,6 +2511,39 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     ).toBe(true);
   });
 
+  it('preserves sibling Kiro sessions when recovering a wait with no session ID after a restart', async () => {
+    let durableSessions = ['kiro-sibling'];
+    let localSessions = [];
+    const spawn = sessionSpawn();
+    const restoreKiroStore = vi.fn(async () => {
+      localSessions = [...durableSessions];
+      return true;
+    });
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
+      baseDeps({
+        availableClis: ['kiro'],
+        env: kiroStoreEnv,
+        store: spyStore(ownedMissingSession()),
+        restoreKiroStore,
+        spawnFn: (command, args) => {
+          if (!args.includes('--list-sessions') && !args.includes('/usage')) {
+            localSessions.push('kiro-new');
+          }
+          return spawn(command, args);
+        },
+        persistKiroStore: async () => {
+          // The real sync replaces the entire durable store with the local copy.
+          durableSessions = [...localSessions];
+          return true;
+        },
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
+    expect(durableSessions).toEqual(['kiro-sibling', 'kiro-new']);
+    expect(restoreKiroStore).toHaveBeenCalledExactlyOnceWith({ env: kiroStoreEnv });
+  });
+
   it.each([
     [
       'reset stage',

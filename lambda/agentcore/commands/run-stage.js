@@ -1399,10 +1399,11 @@ export const runStage = async (
   let cliSessionId = null;
   let resumeAnswer = null;
   let resumeGate = null;
-  // A resume we had to demote to a fresh run because the parked conversation was
-  // lost with the wiped mount (D2 recoverable path): re-runs fresh with the human's
-  // answer injected into the prompt so the agent does not re-ask.
+  // A resume we had to demote to a fresh run because its conversation is
+  // unavailable: re-runs fresh with the human's answer injected into the prompt.
+  // A missing session ID does not imply that the shared Kiro store was lost.
   let demotedResume = false;
+  let kiroStoreRestoreAttempted = false;
   const recoverLostConversation = async () => {
     const age = resumeGate ? gateAgeMs(resumeGate, now()) : null;
     if (!reviewFeedback && age !== null && age >= FOURTEEN_DAYS_MS) {
@@ -1524,6 +1525,7 @@ export const runStage = async (
     // home is resolved below. Checkout restoration is not a loss signal for it.
     let conversationLost = !demotedResume && cli !== 'codex' && sourceRestored;
     if (!demotedResume && cli === 'kiro') {
+      kiroStoreRestoreAttempted = true;
       const kiroRestored = await restoreKiroStore({ env }).catch(() => false);
       if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
       else if (!kiroRestored)
@@ -1943,8 +1945,8 @@ export const runStage = async (
       attachments: attachmentRefs,
     });
     prompt = materialized.prompt;
-    // Demoted resume (D2): the parked conversation was lost with the wiped mount,
-    // so we re-run the stage fresh — but prepend the human's already-given answer
+    // Demoted resume: the parked conversation is unavailable, so we re-run the
+    // stage fresh — but prepend the human's already-given answer
     // so the agent applies it instead of re-asking the same question.
     if (demotedResume && resumeAnswer) {
       prompt = `## Previously answered\n${resumeAnswer}\n\n---\n\n${prompt}`;
@@ -1996,12 +1998,13 @@ export const runStage = async (
 
   // Kiro store handling for a RESUME is done in step 2b (restore + the D2 wiped-
   // mount decision) so a lost parked conversation is recovered, not run blind. For
-  // a plain FRESH Kiro run we still restore the durable store here: Kiro keeps ALL
+  // a FRESH Kiro run we still restore the durable store here: Kiro keeps ALL
   // conversations in one SQLite DB and persistKiroStore does rm+cp at exit, so
   // without a prior restore this run would clobber sibling stages' conversations on
-  // the mount. A missing store is fine (Kiro just starts new). Skip for a demoted
-  // resume — its mount was wiped, so there is nothing to restore.
-  if (freshRun && !demotedResume && cli === 'kiro') {
+  // the mount. A missing store is fine (Kiro just starts new). Only skip if step
+  // 2b already attempted restoration: a missing session ID starts a fresh
+  // conversation but may still have a durable store with sibling sessions.
+  if (freshRun && !kiroStoreRestoreAttempted && cli === 'kiro') {
     const restored = await restoreKiroStore({ env }).catch(() => false);
     if (!restored) console.error(`[run-stage] kiro store not restored (fresh) ${stageInstanceId}`);
   }
