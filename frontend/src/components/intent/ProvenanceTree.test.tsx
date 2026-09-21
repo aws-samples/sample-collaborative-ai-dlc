@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { ProvenanceTree } from './ProvenanceTree';
 import type { IntentArtifact, IntentDetail, IntentGraphNode } from '@/services/intents';
 import type { IntentStageRow } from '@/contexts/IntentContext';
@@ -71,6 +71,7 @@ const renderTree = (overrides: Partial<React.ComponentProps<typeof ProvenanceTre
       itemsByArtifact={new Map()}
       derivedItems={[]}
       codeItems={[]}
+      unitBranchItems={[]}
       openArtifactPreview={() => {}}
       openItemPreview={() => {}}
       {...overrides}
@@ -78,6 +79,48 @@ const renderTree = (overrides: Partial<React.ComponentProps<typeof ProvenanceTre
   );
 
 describe('ProvenanceTree — cross-phase stage collision (CHANGE 1)', () => {
+  it.each([
+    { documentOrder: 'oldest-first' as const, codeFirst: false },
+    { documentOrder: 'newest-first' as const, codeFirst: true },
+  ])('places Code according to $documentOrder ordering', ({ documentOrder, codeFirst }) => {
+    renderTree({
+      detail: {
+        artifacts: [
+          doc({
+            id: 'construction-doc',
+            title: 'Construction document',
+            createdByStageInstanceId: 'si-construction',
+          }),
+        ],
+      } as IntentDetail,
+      stageRows: [
+        row({
+          stageId: 'code-generation',
+          stageInstanceId: 'si-construction',
+          phase: '02',
+        }),
+      ],
+      codeItems: [
+        {
+          repo: 'acme/api',
+          provider: 'github',
+          branch: 'aidlc/i1',
+          baseBranch: 'main',
+          branchUrl: 'https://github.com/acme/api/tree/aidlc/i1',
+          prUrl: 'https://github.com/acme/api/pull/7',
+          prNumber: '7',
+        },
+      ],
+      documentOrder,
+    });
+
+    const code = document.getElementById('provenance-code')!;
+    const construction = document.getElementById('provenance-phase-02')!;
+    const first = codeFirst ? code : construction;
+    const second = codeFirst ? construction : code;
+    expect(first.compareDocumentPosition(second)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it('two docs with the same stageId in different phases render under their own phases', async () => {
     const artifacts = [
       doc({ id: 'd1', title: 'Doc Phase1', createdByStageInstanceId: 'si-1' }),
@@ -161,7 +204,7 @@ describe('ProvenanceTree — document ordering', () => {
   });
 
   it('reverses phases, stages, and documents together', () => {
-    const artifacts = [
+    const reversedArtifacts = [
       doc({
         id: 'inception-first',
         title: 'Inception first',
@@ -182,7 +225,7 @@ describe('ProvenanceTree — document ordering', () => {
       }),
     ];
     renderTree({
-      detail: { artifacts } as IntentDetail,
+      detail: { artifacts: reversedArtifacts } as IntentDetail,
       stageRows: [
         row({
           stageId: 'research',
@@ -300,6 +343,145 @@ describe('ProvenanceTree — unit-lane split (CHANGE 2)', () => {
 
     const stageLabels = screen.getAllByText('Code Generation');
     expect(stageLabels).toHaveLength(2);
+  });
+
+  it('places each unit branch between its code generation plan and code summary', () => {
+    const artifacts = [
+      doc({
+        id: 'plan',
+        artifactType: 'code-generation-plan',
+        title: 'Code generation plan',
+        createdByStageInstanceId: 'si-auth',
+        createdAt: '2026-01-01T10:00:00Z',
+      }),
+      doc({
+        id: 'summary',
+        artifactType: 'code-summary',
+        title: 'Code summary',
+        createdByStageInstanceId: 'si-auth',
+        createdAt: '2026-01-01T11:00:00Z',
+      }),
+    ];
+    renderTree({
+      detail: { artifacts } as IntentDetail,
+      stageRows: [
+        row({
+          stageId: 'code-generation',
+          stageInstanceId: 'si-auth',
+          phase: '02',
+          order: 3,
+          unitSlug: 'auth',
+          sectionIndex: 1,
+        }),
+      ],
+      unitBranchItems: [
+        {
+          sectionIndex: 1,
+          unitSlug: 'auth',
+          branch: 'aidlc/i1--s1-unit-auth',
+          targets: [
+            {
+              repo: 'acme/api',
+              provider: 'github',
+              url: 'https://github.com/acme/api/tree/aidlc/i1--s1-unit-auth',
+              prUrl: 'https://github.com/acme/api/pull/12',
+              prNumber: 12,
+            },
+            {
+              repo: 'acme/web',
+              provider: 'gitlab',
+              url: 'https://gitlab.com/acme/web/-/tree/aidlc/i1--s1-unit-auth',
+              prUrl: null,
+              prNumber: null,
+            },
+          ],
+        },
+      ],
+    });
+
+    const planRow = screen.getByText('Code generation plan');
+    const branchRows = screen.getAllByRole('link', { name: 'aidlc/i1--s1-unit-auth' });
+    const branchRow = branchRows[0];
+    const summaryRow = screen.getByText('Code summary');
+    expect(branchRows).toHaveLength(2);
+    expect(
+      screen.getByTestId('unit-branch-1-auth').querySelectorAll('.lucide-git-branch'),
+    ).toHaveLength(2);
+    expect(planRow.compareDocumentPosition(branchRow)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(branchRow.compareDocumentPosition(summaryRow)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(branchRow).toHaveAttribute('target', '_blank');
+    expect(branchRow).toHaveAttribute('title', 'acme/api · aidlc/i1--s1-unit-auth');
+    const unitPrLink = screen.getByRole('link', { name: 'Open PR #12 for acme/api' });
+    expect(unitPrLink).toHaveAttribute('href', 'https://github.com/acme/api/pull/12');
+    expect(unitPrLink).toHaveTextContent('Open PR #12');
+    expect(unitPrLink.querySelector('[aria-label="GitHub"]')).not.toBeNull();
+    expect(screen.queryByText('Branch')).not.toBeInTheDocument();
+    expect(screen.queryByText('acme/api')).not.toBeInTheDocument();
+    expect(screen.queryByText('acme/web')).not.toBeInTheDocument();
+  });
+
+  it('shows a clear unavailable state instead of a broken unit branch link', () => {
+    renderTree({
+      detail: {
+        artifacts: [
+          doc({
+            artifactType: 'code-summary',
+            title: 'Code summary',
+            createdByStageInstanceId: 'si-auth',
+          }),
+        ],
+      } as IntentDetail,
+      stageRows: [
+        row({
+          stageId: 'code-generation',
+          stageInstanceId: 'si-auth',
+          phase: '02',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+        }),
+      ],
+      unitBranchItems: [
+        {
+          sectionIndex: 1,
+          unitSlug: 'auth',
+          branch: 'aidlc/i1--s1-unit-auth',
+          targets: [
+            {
+              repo: 'acme/api',
+              provider: 'github',
+              url: null,
+              prUrl: null,
+              prNumber: null,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(screen.getByText(/link unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'aidlc/i1--s1-unit-auth' })).not.toBeInTheDocument();
+  });
+
+  it('shows the provider icon next to the final intent PR link', () => {
+    renderTree({
+      codeItems: [
+        {
+          repo: 'acme/api',
+          provider: 'bitbucket',
+          branch: 'aidlc/i1',
+          baseBranch: 'main',
+          branchUrl: 'https://bitbucket.org/acme/api/src/aidlc/i1',
+          prUrl: 'https://bitbucket.org/acme/api/pull-requests/4',
+          prNumber: '4',
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByText('Code'));
+    const intentPrLink = screen.getByRole('link', { name: 'Open PR #4 for acme/api' });
+    expect(intentPrLink).toHaveAttribute('href', 'https://bitbucket.org/acme/api/pull-requests/4');
+    expect(intentPrLink).toHaveTextContent('Open PR #4');
+    expect(intentPrLink.querySelector('[aria-label="Bitbucket"]')).not.toBeNull();
   });
 
   it('each unit stage node contains only its own docs', () => {

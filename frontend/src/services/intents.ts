@@ -67,8 +67,11 @@ export interface Intent {
   // branch. null when the caller didn't override anything (the common case).
   baseBranches: Record<string, string> | null;
   repos: string[] | null;
-  // Code host the intent's repos live on ('github' | 'gitlab'), used to build
-  // branch/PR web links. null on older executions.
+  // Per-repository provider override ({ [repoUrl or repo slug]: provider }).
+  // Present for mixed-provider projects; `gitProvider` remains the fallback.
+  repoProviders?: Record<string, string> | null;
+  // Default code host for the intent's repos, used to build branch/PR web
+  // links. Supported values are GitHub, GitLab and Bitbucket wire IDs.
   gitProvider?: string | null;
   workflowId: string;
   workflowVersion: number | null;

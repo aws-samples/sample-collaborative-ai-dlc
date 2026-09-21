@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { IntentDetail, IntentGate } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useIntentGraph } from '@/hooks/useIntentGraph';
-import { buildCodeItems } from '@/components/intent/CodeSection';
+import { buildCodeItems, buildUnitBranchItems } from '@/components/intent/CodeSection';
 import { ProvenanceTree } from '@/components/intent/ProvenanceTree';
 import { HistorySection } from '@/components/intent/HistorySection';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -44,6 +44,7 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
   );
 
   const codeItems = useMemo(() => buildCodeItems(detail), [detail]);
+  const unitBranchItems = useMemo(() => buildUnitBranchItems(detail), [detail]);
 
   if (
     detail.artifacts.length === 0 &&
@@ -125,6 +126,7 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
             itemsByArtifact={itemsByArtifact}
             derivedItems={derivedItems}
             codeItems={codeItems}
+            unitBranchItems={unitBranchItems}
             openArtifactPreview={openArtifactPreview}
             openItemPreview={openItemPreview}
             documentOrder={documentOrder}

@@ -9,7 +9,9 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
 import { IntentGraphPopover } from '@/components/intent/IntentGraphPopover';
 import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
-import { type CodeItem } from '@/components/intent/CodeSection';
+import { type CodeItem, type UnitBranchItem } from '@/components/intent/CodeSection';
+import { GitProviderIcon } from '@/components/icons/git-providers';
+import { UnitBranchEntry } from '@/components/intent/UnitBranchEntry';
 import {
   isDocumentArtifact,
   stripDocSuffix,
@@ -35,6 +37,7 @@ interface ProvenanceTreeProps {
   itemsByArtifact: Map<string, IntentGraphNode[]>;
   derivedItems: IntentGraphNode[];
   codeItems: CodeItem[];
+  unitBranchItems: UnitBranchItem[];
   openArtifactPreview: (id: string) => void;
   openItemPreview: (id: string) => void;
   documentOrder?: 'oldest-first' | 'newest-first';
@@ -50,6 +53,7 @@ interface StageNode {
   stageId: string;
   stageLabel: string;
   unitSlug: string | null;
+  sectionIndex: number | null;
   documents: IntentArtifact[];
   order: number;
 }
@@ -64,6 +68,7 @@ export function ProvenanceTree({
   itemsByArtifact,
   derivedItems,
   codeItems,
+  unitBranchItems,
   openArtifactPreview,
   openItemPreview,
   documentOrder = 'oldest-first',
@@ -208,8 +213,28 @@ export function ProvenanceTree({
     return null;
   }
 
+  const codeBranch =
+    codeItems.length > 0 ? (
+      <TreeBranch
+        icon={<GitPullRequest className="h-3.5 w-3.5 text-muted-foreground" />}
+        label="Code"
+        count={codeItems.length}
+        expanded={codeExpanded}
+        onToggle={() => setCodeExpanded(!codeExpanded)}
+        id="provenance-code"
+      >
+        <div className="space-y-1 pl-5">
+          {codeItems.map((item) => (
+            <CodeItemRow key={item.repo} item={item} />
+          ))}
+        </div>
+      </TreeBranch>
+    ) : null;
+
   return (
     <div className="space-y-1" role="tree" aria-label="Work products">
+      {documentOrder === 'newest-first' && codeBranch}
+
       {tree.map((phase) => (
         <TreeBranch
           key={phase.phasePath}
@@ -222,13 +247,36 @@ export function ProvenanceTree({
         >
           <div className="space-y-0.5 pl-5">
             {phase.stages.map((stage) => {
-              const stageKey = `${phase.phasePath}/${stage.stageId}/${stage.unitSlug ?? '__common__'}`;
+              const laneKey =
+                stage.unitSlug && stage.sectionIndex != null
+                  ? `s${stage.sectionIndex}:${stage.unitSlug}`
+                  : (stage.unitSlug ?? '__common__');
+              const stageKey = `${phase.phasePath}/${stage.stageId}/${laneKey}`;
+              const unitBranchItem = stage.unitSlug
+                ? unitBranchItems.find(
+                    (item) =>
+                      item.unitSlug === stage.unitSlug &&
+                      (stage.sectionIndex == null || item.sectionIndex === stage.sectionIndex),
+                  )
+                : null;
+              const planIndex = stage.documents.findIndex(isCodeGenerationPlan);
+              const summaryIndex = stage.documents.findIndex(isCodeSummary);
+              const renderedBranchItem =
+                planIndex >= 0 || summaryIndex >= 0 ? unitBranchItem : null;
+              const branchBeforeIndex =
+                renderedBranchItem && summaryIndex >= 0
+                  ? planIndex >= 0
+                    ? Math.max(planIndex, summaryIndex)
+                    : summaryIndex
+                  : -1;
+              const branchAfterIndex =
+                renderedBranchItem && summaryIndex < 0 && planIndex >= 0 ? planIndex : -1;
               return (
                 <TreeBranch
                   key={stageKey}
                   icon={<Layers className="h-3 w-3 text-muted-foreground" />}
                   label={stage.stageLabel}
-                  count={stage.documents.length}
+                  count={stage.documents.length + (renderedBranchItem ? 1 : 0)}
                   expanded={!collapsedStages.has(stageKey)}
                   onToggle={() => toggleStage(stageKey)}
                   id={`provenance-stage-${stageKey}`}
@@ -236,7 +284,7 @@ export function ProvenanceTree({
                   unitSlug={stage.unitSlug}
                 >
                   <div className="space-y-0.5 pl-5">
-                    {stage.documents.map((doc) => {
+                    {stage.documents.map((doc, documentIndex) => {
                       const docItems = itemsByArtifact.get(doc.id) ?? [];
                       const visibleItems = docItems.filter((i) => !HIDDEN_ITEM_TYPES.has(i.type));
                       const hasItems = visibleItems.length > 0;
@@ -244,6 +292,13 @@ export function ProvenanceTree({
 
                       return (
                         <Fragment key={doc.id}>
+                          {documentIndex === branchBeforeIndex && renderedBranchItem && (
+                            <UnitBranchEntry
+                              item={renderedBranchItem}
+                              alignWithDocuments
+                              showPullRequests
+                            />
+                          )}
                           <DocumentRow
                             doc={doc}
                             commonSuffix={commonSuffix}
@@ -266,6 +321,13 @@ export function ProvenanceTree({
                               ))}
                             </div>
                           )}
+                          {documentIndex === branchAfterIndex && renderedBranchItem && (
+                            <UnitBranchEntry
+                              item={renderedBranchItem}
+                              alignWithDocuments
+                              showPullRequests
+                            />
+                          )}
                         </Fragment>
                       );
                     })}
@@ -277,24 +339,7 @@ export function ProvenanceTree({
         </TreeBranch>
       ))}
 
-      {/* Code renders after the phases — in workflow order it is the final
-          output of construction, not the first thing produced. */}
-      {codeItems.length > 0 && (
-        <TreeBranch
-          icon={<GitPullRequest className="h-3.5 w-3.5 text-muted-foreground" />}
-          label="Code"
-          count={codeItems.length}
-          expanded={codeExpanded}
-          onToggle={() => setCodeExpanded(!codeExpanded)}
-          id="provenance-code"
-        >
-          <div className="space-y-1 pl-5">
-            {codeItems.map((item) => (
-              <CodeItemRow key={item.repo} item={item} />
-            ))}
-          </div>
-        </TreeBranch>
-      )}
+      {documentOrder === 'oldest-first' && codeBranch}
 
       {unlinkedItems.length > 0 && (
         <TreeBranch
@@ -467,7 +512,6 @@ function CodeItemRow({ item }: { item: CodeItem }) {
       <div className="min-w-0 space-y-1">
         <div className="flex items-center gap-2 text-sm font-medium">
           <span className="truncate">{item.repo || 'Repository'}</span>
-          {item.prNumber && <span className="text-muted-foreground">PR #{item.prNumber}</span>}
         </div>
         {item.branch && (
           <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
@@ -498,9 +542,11 @@ function CodeItemRow({ item }: { item: CodeItem }) {
           href={item.prUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="shrink-0 text-xs text-primary hover:underline"
+          aria-label={`Open PR${item.prNumber ? ` #${item.prNumber}` : ''} for ${item.repo}`}
+          className="inline-flex shrink-0 items-center gap-1 text-xs text-primary hover:underline"
         >
-          Open PR
+          <GitProviderIcon provider={item.provider} className="h-3 w-3" />
+          Open PR{item.prNumber ? ` #${item.prNumber}` : ''}
         </a>
       )}
     </div>
@@ -508,6 +554,15 @@ function CodeItemRow({ item }: { item: CodeItem }) {
 }
 
 const artifactTs = (a: IntentArtifact) => (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+
+const artifactIdentity = (artifact: IntentArtifact) =>
+  `${artifact.artifactType ?? ''} ${artifact.title ?? ''}`.toLowerCase().replaceAll(/[_\s]+/g, '-');
+
+const isCodeGenerationPlan = (artifact: IntentArtifact) =>
+  artifactIdentity(artifact).includes('code-generation-plan');
+
+const isCodeSummary = (artifact: IntentArtifact) =>
+  artifactIdentity(artifact).includes('code-summary');
 
 function buildPhaseTree(
   documents: IntentArtifact[],
@@ -526,13 +581,18 @@ function buildPhaseTree(
       phases.set(phasePath, { phasePath, phaseLabel, stages: [] });
     }
 
-    const stageKey = `${phasePath}/${prov.stageId ?? '__none__'}/${prov.unitSlug ?? '__common__'}`;
+    const laneKey =
+      prov.unitSlug && prov.sectionIndex != null
+        ? `s${prov.sectionIndex}:${prov.unitSlug}`
+        : (prov.unitSlug ?? '__common__');
+    const stageKey = `${phasePath}/${prov.stageId ?? '__none__'}/${laneKey}`;
     let stageNode = stageNodeMap.get(stageKey);
     if (!stageNode) {
       stageNode = {
         stageId: prov.stageId ?? '__none__',
         stageLabel: prov.stageLabel ?? 'General',
         unitSlug: prov.unitSlug,
+        sectionIndex: prov.sectionIndex,
         documents: [],
         order: prov.stageOrder,
       };
