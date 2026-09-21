@@ -8,6 +8,26 @@ variable "environment" {
   type        = string
 }
 
+variable "powertools_service_name" {
+  description = "Service name included in Powertools structured logs"
+  type        = string
+}
+
+variable "powertools_log_level" {
+  description = "Log level for Powertools structured logging (DEBUG/INFO/WARN/ERROR)"
+  type        = string
+
+  validation {
+    condition     = contains(["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL", "SILENT"], var.powertools_log_level)
+    error_message = "powertools_log_level must be one of DEBUG, INFO, WARN, ERROR, CRITICAL or SILENT."
+  }
+}
+
+variable "powertools_log_event" {
+  description = "When true, Powertools logs sanitized incoming API events"
+  type        = bool
+}
+
 variable "application_url" {
   description = "Canonical public URL for links back to the application"
   type        = string
@@ -67,7 +87,6 @@ variable "blocks_table_arn" {
 variable "aidlc_repo_ref" {
   description = "Pinned ref (commit SHA, tag, or branch) of awslabs/aidlc-workflows the seed-blocks lambda fetches the baseline from"
   type        = string
-  default     = "ba0cfe999856033ecb909a9135b46fe10811bf55"
 }
 
 variable "github_oauth_secret_name" {

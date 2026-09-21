@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   BatchWriteCommand,
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
@@ -11,6 +12,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import {
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   humanTaskKey,
   steeringKey,
@@ -49,6 +51,7 @@ import { createProcessStore } from '../v2-process-store.js';
 describe('v2-process-keys', () => {
   it('namespaces every record under EXEC#<id>', () => {
     expect(executionMetaKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'META' });
+    expect(workflowCheckpointKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'CHECKPOINT' });
     expect(stageKey('e1', 'si-1')).toEqual({ pk: 'EXEC#e1', sk: 'STAGE#si-1' });
     expect(humanTaskKey('e1', 'h1')).toEqual({ pk: 'EXEC#e1', sk: 'HUMAN#h1' });
     expect(trackerSyncKey('e1')).toEqual({ pk: 'EXEC#e1', sk: 'TRACKERSYNC' });
@@ -90,15 +93,24 @@ describe('v2-process-keys', () => {
 
   it('carries the CLI session linkage (null by default) for park/resume', () => {
     const fresh = buildStageRow({ executionId: 'e1', stageInstanceId: 'si-1', now: 'T' });
-    expect(fresh).toMatchObject({ cli: null, cliSessionId: null });
+    expect(fresh).toMatchObject({
+      cli: null,
+      cliSessionId: null,
+      pendingCodeCommitRefs: null,
+    });
     const linked = buildStageRow({
       executionId: 'e1',
       stageInstanceId: 'si-1',
       cli: 'claude',
       cliSessionId: 'sess-7',
+      pendingCodeCommitRefs: [{ repo: 'owner/repo', sha: 'a'.repeat(40) }],
       now: 'T',
     });
-    expect(linked).toMatchObject({ cli: 'claude', cliSessionId: 'sess-7' });
+    expect(linked).toMatchObject({
+      cli: 'claude',
+      cliSessionId: 'sess-7',
+      pendingCodeCommitRefs: [{ repo: 'owner/repo', sha: 'a'.repeat(40) }],
+    });
   });
 
   it('builds a question human-task carrying the structured payload', () => {
@@ -183,6 +195,43 @@ describe('createProcessStore', () => {
     });
   });
 
+  it('stores and retrieves the latest workflow checkpoint', async () => {
+    ddb.on(TransactWriteCommand).resolves({});
+    ddb.on(GetCommand).resolves({
+      Item: { pk: 'EXEC#e1', sk: 'CHECKPOINT', executionId: 'e1', checkpointId: 'cp1' },
+    });
+    await store.putWorkflowCheckpoint({
+      executionId: 'e1',
+      checkpointId: 'cp1',
+      orchestratorRunId: 'run-1',
+    });
+    const transaction = ddb.commandCalls(TransactWriteCommand)[0].args[0].input.TransactItems;
+    expect(transaction[0].ConditionCheck).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'META' },
+      ConditionExpression: 'orchestratorRunId = :orchestratorRunId',
+      ExpressionAttributeValues: { ':orchestratorRunId': 'run-1' },
+    });
+    expect(transaction[1].Put.Item).toMatchObject({
+      pk: 'EXEC#e1',
+      sk: 'CHECKPOINT',
+      checkpointId: 'cp1',
+      orchestratorRunId: 'run-1',
+      updatedAt: 'T',
+    });
+    await expect(store.getWorkflowCheckpoint('e1')).resolves.toMatchObject({
+      checkpointId: 'cp1',
+    });
+  });
+
+  it('deletes the latest workflow checkpoint', async () => {
+    ddb.on(DeleteCommand).resolves({ Attributes: { checkpointId: 'cp1' } });
+    await expect(store.deleteWorkflowCheckpoint('e1')).resolves.toEqual({ checkpointId: 'cp1' });
+    expect(ddb.commandCalls(DeleteCommand)[0].args[0].input).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'CHECKPOINT' },
+      ReturnValues: 'ALL_OLD',
+    });
+  });
+
   it('updateExecution sets status + re-stamps both indexes', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { status: 'RUNNING' } });
     await store.updateExecution({
@@ -221,6 +270,14 @@ describe('createProcessStore', () => {
         failure: { code: '', message: 'Missing code.' },
       }),
     ).rejects.toThrow('failure must be {code, message} or null');
+  });
+
+  it('persists a validated workspace classification', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { projectType: 'greenfield' } });
+    await store.updateExecution({ executionId: 'e1', projectType: 'greenfield' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':pt']).toBe('greenfield');
+    expect(input.UpdateExpression).toContain('projectType = :pt');
   });
 
   it('removes the sparse active projection on a terminal execution state', async () => {
@@ -271,15 +328,19 @@ describe('createProcessStore', () => {
 
   it('updateStageState stamps parkedAt on a park (human-wait accounting)', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: 'a'.repeat(40) }];
     await store.updateStageState({
       executionId: 'e1',
       stageInstanceId: 'si-1',
       state: 'WAITING_FOR_HUMAN',
       parkedAt: true,
+      pendingCodeCommitRefs,
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.UpdateExpression).toContain('parkedAt = :pa');
     expect(input.ExpressionAttributeValues[':pa']).toBe('T');
+    expect(input.UpdateExpression).toContain('pendingCodeCommitRefs = :pccr');
+    expect(input.ExpressionAttributeValues[':pccr']).toEqual(pendingCodeCommitRefs);
   });
 
   it('updateStageState leaves parkedAt untouched when not supplied', async () => {
@@ -351,6 +412,7 @@ describe('createProcessStore', () => {
       cli: 'claude',
       cliSessionId: 'sess-1',
       stageCallbackId: 'cb-2',
+      aidlcRepoRef: 'a'.repeat(40),
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ExpressionAttributeValues[':state']).toBe('RUNNING');
@@ -360,8 +422,11 @@ describe('createProcessStore', () => {
     // The patch never touches first-start or attempt bookkeeping.
     expect(input.UpdateExpression).not.toContain('startedAt');
     expect(input.UpdateExpression).not.toContain('attempt');
+    expect(input.UpdateExpression).not.toContain('pendingCodeCommitRefs');
     expect(input.ExpressionAttributeValues[':csid']).toBe('sess-1');
     expect(input.ExpressionAttributeValues[':scb']).toBe('cb-2');
+    expect(input.UpdateExpression).toContain('aidlcRepoRef = :aidlcRepoRef');
+    expect(input.ExpressionAttributeValues[':aidlcRepoRef']).toBe('a'.repeat(40));
   });
 
   it('resumeStageRow tolerates a missing/unparsable park stamp (waitMs unchanged, no NaN)', async () => {
@@ -378,8 +443,32 @@ describe('createProcessStore', () => {
     await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.UpdateExpression).toContain('parkedAt = :null');
+    expect(input.UpdateExpression).toContain('pendingCodeCommitRefs = :pendingCodeCommitRefs');
+    expect(input.ExpressionAttributeValues[':pendingCodeCommitRefs']).toBeNull();
     expect(input.UpdateExpression).toContain('waitMs = :zero');
     expect(input.ExpressionAttributeValues[':zero']).toBe(0);
+  });
+
+  it('resetStageRow preserves pending commit refs for a plain retry', async () => {
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: 'a'.repeat(40) }];
+    ddb.on(GetCommand).resolves({
+      Item: {
+        attempt: 0,
+        state: 'FAILED',
+        runtimeError: 'cli_nonzero_exit',
+        pendingCodeCommitRefs,
+      },
+    });
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.resetStageRow({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      preservePendingCodeCommitRefs: true,
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':pendingCodeCommitRefs']).toEqual(
+      pendingCodeCommitRefs,
+    );
   });
 
   it('answerHumanTask is a CAS on pending and returns null on a lost race', async () => {

@@ -17,6 +17,7 @@
 // orchestrator must never deadlock on a dead job; heartbeats distinguish
 // "slow model" from "dead container".
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { closeGraphSource } from '../mcp/graph-writer.js';
 import { fetchDownstreamClosure } from '../../shared/artifact-edit.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
@@ -29,6 +30,10 @@ import {
   fetchArtifactForEdit,
   makeProgressEmitter,
 } from './quorum-edit-shared.js';
+
+const logger = new Logger({
+  persistentKeys: { component: 'agentcore', module: 'quorum-edit-plan-start' },
+});
 
 const PLAN_ONE_SHOT_TIMEOUT_MS = 300_000;
 
@@ -85,7 +90,7 @@ export const createQuorumEditPlanStart = ({
   heartbeatIntervalMs = 60_000,
   busy = null,
   activeJobs = new Map(),
-  log = (...args) => console.error('[quorum-edit-plan-start]', ...args),
+  log = (...args) => logger.error(...args), // TODO: remove this (only used in tests)
 }) => {
   const start = async (payload = {}) => {
     const {

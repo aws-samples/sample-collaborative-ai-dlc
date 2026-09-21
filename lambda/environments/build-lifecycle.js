@@ -1,4 +1,7 @@
 import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'environments' } });
 
 export const RETRYABLE_ECR_ERRORS = new Set([
   'ImageNotFoundException',
@@ -76,7 +79,7 @@ export const createBuildLifecycleHandler =
       if (event?.source === 'aws.ecr') return await handleScanEvent(event);
       return { ignored: true };
     } catch (error) {
-      console.error(`${label} status handling failed:`, error?.message ?? error);
+      logger.error('status handling failed', error, { label });
       throw error;
     }
   };

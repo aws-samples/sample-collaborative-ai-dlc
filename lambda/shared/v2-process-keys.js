@@ -38,6 +38,7 @@
 //     (sparse maintenance index for live execution and integration work)
 
 const META = 'META';
+const WORKFLOW_CHECKPOINT = 'CHECKPOINT';
 
 // ── Partition keys ──
 const executionPk = (executionId) => `EXEC#${executionId}`;
@@ -48,6 +49,10 @@ const TRACKER_SYNCS_INDEX_PK = 'TRACKER_SYNCS';
 
 // ── Item keys ──
 const executionMetaKey = (executionId) => ({ pk: executionPk(executionId), sk: META });
+const workflowCheckpointKey = (executionId) => ({
+  pk: executionPk(executionId),
+  sk: WORKFLOW_CHECKPOINT,
+});
 const stageKey = (executionId, stageInstanceId) => ({
   pk: executionPk(executionId),
   sk: `STAGE#${stageInstanceId}`,
@@ -291,6 +296,12 @@ const buildExecutionMeta = ({
   status = 'CREATED',
   workflowId,
   workflowVersion,
+  // Commit-pinned native AI-DLC distribution used by this intent. Export
+  // prefers this snapshot over the deployment's current baseline ref.
+  aidlcRepoRef = null,
+  // Exact supporting block versions resolved when the intent was created.
+  // Stage versions remain pinned by workflow placements.
+  methodologyPins = null,
   scope = null,
   currentPhase = null,
   currentStage = null,
@@ -373,6 +384,10 @@ const buildExecutionMeta = ({
   // 'gated' (one approval gate per parallel batch). null until the ladder
   // prompt after the walking-skeleton gate is answered.
   constructionAutonomyMode = null,
+  // Structured result of the always-run workspace-detection stage. Persisted
+  // through a stage-scoped MCP tool so downstream consumers never need to
+  // infer methodology context from repository presence or agent prose.
+  projectType = null,
   // Optional tracker reference the intent was kicked off from (GitHub issue,
   // Jira artifact, …). The imported text lives in `prompt`; this is just the
   // provenance link surfaced in the UI. null when typed by hand. Mirrors the v1
@@ -434,6 +449,8 @@ const buildExecutionMeta = ({
   status,
   workflowId,
   workflowVersion,
+  aidlcRepoRef,
+  methodologyPins,
   scope,
   currentPhase,
   currentStage,
@@ -463,6 +480,7 @@ const buildExecutionMeta = ({
   maxParallelUnits,
   prStrategy,
   constructionAutonomyMode,
+  projectType,
   source,
   planWarnings,
   orchestratorRunId,
@@ -509,6 +527,9 @@ const buildStageRow = ({
   // stage exits. Persisted for traceability + manual operator recovery of a
   // stuck stage. Null for rows written outside the async path.
   stageCallbackId = null,
+  // Compact Git provenance retained until CodeFile projection succeeds. This
+  // survives both human park/resume and ordinary failure/retry legs.
+  pendingCodeCommitRefs = null,
   // The HUMAN# gate this stage is currently parked on. This is the scheduling
   // source of truth for agent questions; META.pendingHumanTaskId is only a
   // legacy/display mirror and cannot represent concurrent lane questions.
@@ -518,6 +539,7 @@ const buildStageRow = ({
   // instances so every stage row is attributable to its lane.
   unitSlug = null,
   sectionIndex = null,
+  aidlcRepoRef = null,
   now,
 }) => ({
   ...stageKey(executionId, stageInstanceId),
@@ -528,6 +550,7 @@ const buildStageRow = ({
   stageId: stageId ?? null,
   unitSlug,
   sectionIndex,
+  aidlcRepoRef,
   phase,
   state,
   attempt,
@@ -537,6 +560,9 @@ const buildStageRow = ({
   resolvedModel,
   stageCallbackId,
   pendingHumanTaskId,
+  // File paths are reconstructed from these commits on successful completion
+  // to keep the stage row safely below DynamoDB's item-size limit.
+  pendingCodeCommitRefs,
   runtimeError: null,
   startedAt: state === 'RUNNING' ? now : null,
   completedAt: null,
@@ -1122,9 +1148,11 @@ const buildTrackerSyncRow = ({
 
 export {
   META,
+  WORKFLOW_CHECKPOINT,
   executionPk,
   projectPk,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   eventKey,
   humanTaskKey,
@@ -1188,9 +1216,11 @@ export {
 };
 export default {
   META,
+  WORKFLOW_CHECKPOINT,
   executionPk,
   projectPk,
   executionMetaKey,
+  workflowCheckpointKey,
   stageKey,
   eventKey,
   humanTaskKey,

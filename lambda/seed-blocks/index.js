@@ -10,6 +10,8 @@
 //   - the INTERNAL RUNTIME files (engine tools, hooks, protocols, conductor) to
 //     a commit-pinned S3 snapshot under aidlc-runtime/<ref>/<repo-path> — NOT
 //     editable blocks, but available for the execution layer to inject.
+//   - a body-free METHODOLOGY CATALOG under aidlc-catalogs/v1/<ref>.json so
+//     historical exports survive replacement of the mutable SYSTEM catalog.
 //
 // The pinned ref comes from the AIDLC_REPO_REF env var (set by Terraform) and
 // can be overridden per-invoke with {"ref":"<sha|tag|branch>"}.
@@ -46,6 +48,7 @@
 //     Combine with dryRun to preview the clear without deleting.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { Logger } from '@aws-lambda-powertools/logger';
 import {
   DynamoDBDocumentClient,
   PutCommand,
@@ -55,7 +58,13 @@ import {
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchCoreFiles } from '../shared/repo-fetch.js';
+import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
+import {
+  buildMethodologyCatalog,
+  methodologyCatalogKey,
+  writeMethodologyCatalog,
+} from '../shared/methodology-catalog.js';
 import {
   LATEST,
   blockPk,
@@ -75,6 +84,7 @@ import {
   workflowGsi1Pk,
 } from '../shared/workflows.js';
 
+const logger = new Logger({ persistentKeys: { component: 'seed-blocks' } });
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
 
@@ -90,7 +100,7 @@ const runtimeKey = (ref, repoPath) => `${runtimePrefix(ref)}/${repoPath}`;
 
 // Builds the two stored items (V#latest pointer + V#1 snapshot) for a block,
 // with its body (and, for a sensor, its script) externalized to S3.
-const buildItems = (block, bodyRef, scriptRef, now) => {
+const buildItems = (block, bodyRef, scriptRef, now, sourceRef) => {
   const { type, id, name, body, script, ...attrs } = block;
   void body; // externalized into bodyRef
   void script; // externalized into scriptRef
@@ -101,6 +111,7 @@ const buildItems = (block, bodyRef, scriptRef, now) => {
     blockId: id,
     name,
     version: 1,
+    sourceRef,
     bodyRef,
     ...(scriptRef ? { scriptRef } : {}),
     createdAt: now,
@@ -127,7 +138,7 @@ const workflowSnapshotItem = (item, version) => {
 // Builds the items for a baseline workflow partition: the META header (carrying
 // the workflow catalog GSI1 keys), the inline phase tree, stage placements, rule
 // refs, and immutable V#1 workflow snapshot rows.
-const buildWorkflowItems = (wf, now) => {
+const buildWorkflowItems = (wf, now, sourceRef) => {
   const pk = workflowPk(SYSTEM_TENANT, wf.id);
   const meta = {
     pk,
@@ -141,6 +152,7 @@ const buildWorkflowItems = (wf, now) => {
     defaultScope: wf.defaultScope ?? null,
     status: 'PUBLISHED',
     version: 1,
+    sourceRef,
     createdAt: now,
     updatedAt: now,
     GSI1PK: workflowGsi1Pk(SYSTEM_TENANT),
@@ -240,13 +252,15 @@ const putObject = (key, body, contentType) =>
     }),
   );
 
-export const handler = async (event = {}) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const dryRun = event?.dryRun === true;
   const reseed = event?.reseed === true;
-  const ref = event?.ref || defaultRef();
-  if (!ref) {
+  const configuredRef = event?.ref || defaultRef();
+  if (!configuredRef) {
     throw new Error('seed-blocks: no repo ref — set AIDLC_REPO_REF or pass {"ref":"<sha>"}');
   }
+  const ref = await resolveAidlcRepoRef(configuredRef);
   const now = new Date().toISOString();
   const seeded = [];
   const skipped = [];
@@ -255,6 +269,23 @@ export const handler = async (event = {}) => {
   // stale seed is worse than a clear failure the operator retries.
   const files = await fetchCoreFiles(ref);
   const { blocks, workflow, sensorScripts, runtimeFiles } = buildFromFiles(files);
+  const methodologyCatalog = buildMethodologyCatalog({
+    ref,
+    blocks,
+    workflow,
+    sensorScripts,
+  });
+
+  // Preserve the structured methodology before a reseed replaces the mutable
+  // SYSTEM catalog. Historical intents can reconstruct their exact plan from
+  // this commit-pinned snapshot without retaining duplicate Markdown bodies.
+  if (!dryRun) {
+    await writeMethodologyCatalog({
+      s3,
+      bucket: artifactsBucket(),
+      catalog: methodologyCatalog,
+    });
+  }
 
   // Reseed: clear the SYSTEM baseline first so the writes below land fresh.
   let cleared = 0;
@@ -279,7 +310,7 @@ export const handler = async (event = {}) => {
       await putObject(scriptRef.s3Key, script, 'text/plain');
     }
 
-    const { latest, snapshot } = buildItems(block, bodyRef, scriptRef, now);
+    const { latest, snapshot } = buildItems(block, bodyRef, scriptRef, now, ref);
     try {
       // Guard on V#latest only — its absence means the block is new. The
       // snapshot write follows unconditionally so a half-seeded block heals.
@@ -307,7 +338,7 @@ export const handler = async (event = {}) => {
   if (dryRun) {
     seeded.push(`WORKFLOW#${wf.id}`);
   } else {
-    const { meta, children } = buildWorkflowItems(wf, now);
+    const { meta, children } = buildWorkflowItems(wf, now, ref);
     try {
       await ddb.send(
         new PutCommand({
@@ -370,9 +401,10 @@ export const handler = async (event = {}) => {
     total: blocks.length + 1,
     runtimeFiles: runtimeWritten,
     sensorScripts: sensorScripts.size,
+    methodologyCatalog: methodologyCatalogKey(ref),
     seeded,
     skipped,
   };
-  console.log('seed-blocks result:', JSON.stringify({ ...result, seeded: seeded.length }));
+  logger.info('seed-blocks result', { ...result, seeded: seeded.length });
   return result;
 };

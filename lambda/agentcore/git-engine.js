@@ -23,10 +23,12 @@
 // failure fails the stage only when THIS stage created commits that did not
 // reach the remote (new work at risk = the documented v2 loss mode).
 
-import { spawn } from 'node:child_process';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { mkdir, readFile, writeFile, rm, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { buildCloneUrl } from '../shared/git-providers.js';
+import { NO_HOOKS_PATH, runGitCommand } from './git-runner.js';
+import { repoTargetDir } from './repo-paths.js';
 import {
   knownChangedFileProvenance,
   mapKnownChangedFiles,
@@ -36,6 +38,8 @@ import {
   resolveGitCommitter as defaultResolveGitCommitter,
   withGitCredential as defaultWithGitCredential,
 } from './git-auth.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'git-engine' } });
 
 // Neutral committer identity, passed per-command via `-c` so the repo config
 // is never mutated (and the agent can't inherit it for its own commits).
@@ -50,8 +54,8 @@ const DEFAULT_COMMITTER = {
 // GitHub App identity returned by the broker. Implemented via
 // `-c author.name/author.email` (git >=2.22):
 // unlike `--author` it works for `merge` too, and unlike GIT_AUTHOR_* env it
-// survives sanitizedGitEnv (which must keep stripping ambient overrides so
-// the agent can't spoof authorship).
+// survives the shared runner's environment sanitization (which strips ambient
+// overrides so the agent can't spoof authorship).
 //
 // Fields are sanitized to a valid git ident (no newlines/angle brackets); an
 // unusable identity falls back to the engine-only identity — attribution is
@@ -109,56 +113,50 @@ export const ensureRuntimeExcludes = async ({ dir }) => {
   } catch (e) {
     // Never let hygiene bookkeeping break a commit — but a failure here means
     // runtime files could leak into the repo, so it must be visible.
-    console.error('[git-engine] runtime-exclude write failed:', e?.message);
+    logger.error('runtime-exclude write failed', e);
     return { ensured: false, error: e?.message };
   }
-};
-
-// Ambient GIT_* environment variables redirect git to a DIFFERENT repository
-// (GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE) or override the engine identity
-// (GIT_AUTHOR_*/GIT_COMMITTER_*). Any process that spawns the engine from
-// inside a git hook (or any git-managed context) would leak them in — strip
-// them so engine git is deterministic regardless of the caller's environment.
-const AMBIENT_GIT_ENV =
-  /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|PREFIX|NAMESPACE|CEILING_DIRECTORIES|AUTHOR_|COMMITTER_)/;
-
-const sanitizedGitEnv = (overrides = {}) => {
-  const env = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (!AMBIENT_GIT_ENV.test(k)) env[k] = v;
-  }
-  return { ...env, ...overrides };
 };
 
 // argv-based git runner: captures stdout/stderr, resolves { exitCode, stdout,
 // stderr }, never rejects (spawn errors → exitCode null). Mirrors
 // cli/spawn.js#captureChild but is git-scoped and dependency-free.
-export const runGit = (args, { cwd, env = {}, spawnFn = spawn } = {}) =>
-  new Promise((resolve) => {
-    let settled = false;
-    const settle = (v) => {
-      if (!settled) {
-        settled = true;
-        resolve(v);
-      }
-    };
-    const child = spawnFn('git', args, {
-      cwd,
-      shell: false,
-      env: sanitizedGitEnv(env),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (c) => {
-      stdout += c.toString();
-    });
-    child.stderr?.on('data', (c) => {
-      stderr += c.toString();
-    });
-    child.on('error', () => settle({ exitCode: null, stdout, stderr }));
-    child.on('close', (exitCode) => settle({ exitCode, stdout, stderr }));
+// Engine-owned git invocations must NEVER execute the cloned repository's hooks.
+//
+// Two reasons, both observed in production:
+//
+//  1. CORRECTNESS. A repo using husky + lint-staged installs hooks that shell
+//     out to npm/npx. The runtime deliberately never installs the checkout's
+//     dependencies (see the inode-budget notes in workspace.js), so the hook
+//     exits non-zero and the commit fails — losing a stage's completed work for
+//     a reason unrelated to that work. Seen as a `git_commit_failed` whose only
+//     detail was npm's "Unknown project config" warnings.
+//
+//  2. SECURITY. Repo hooks are arbitrary, untrusted code. They would run inside
+//     the agent runtime, and pushes carry a short-lived credential in the
+//     environment — a `pre-push` hook could read it, abort the push, and surface
+//     the value in the error detail. Running customer hooks is an attack
+//     surface, not a safeguard.
+//
+// `--no-verify` is NOT sufficient: it covers `pre-commit` and `commit-msg` only,
+// leaving `prepare-commit-msg` able to abort a commit and `pre-push` able to run
+// on every push. Setting `core.hooksPath` to a directory with no hooks disables
+// EVERY hook for the invocation, uniformly, and without mutating the
+// repository's own configuration (unlike `git config core.hooksPath`).
+//
+// Applied by git-runner.js, the single production Git process choke point used
+// by both the engine and workspace paths.
+export { NO_HOOKS_PATH };
+
+export const runGit = async (args, { cwd, env = {}, spawnFn } = {}) => {
+  const { exitCode, stdout, stderr } = await runGitCommand('git', args, {
+    cwd,
+    env,
+    spawnFn,
+    captureOutput: true,
   });
+  return { exitCode, stdout, stderr };
+};
 
 // Token-free remote URL — what `.git/config` holds at rest.
 export const cleanRemoteUrl = (repo, gitProvider) => buildCloneUrl(gitProvider, repo, '');
@@ -274,7 +272,7 @@ export const commitAll = async ({
   git = runGit,
   attempts = 3,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  log = (...a) => console.error('[git-engine]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
   rmDir = (p) => rm(p, { recursive: true, force: true }),
 }) => {
   // Runtime files (.aidlc/.claude/…) must never enter the user's history —
@@ -316,7 +314,31 @@ export const commitAll = async ({
       };
     }
     const head = await git(['rev-parse', 'HEAD'], { cwd: dir });
-    return { committed: true, sha: head.stdout.trim() || null, provenance };
+    // Pre-stage porcelain collapses wholly-untracked trees to directory names
+    // (for example `src/`). Once committed, enumerate the exact paths recorded
+    // by Git so downstream traceability receives files rather than directories.
+    const committedDiff = await git(
+      ['diff-tree', '--root', '--format=', '--name-only', '-r', '-z', 'HEAD'],
+      { cwd: dir },
+    );
+    const committedFiles =
+      committedDiff.exitCode === 0 ? committedDiff.stdout.split('\0').filter(Boolean) : [];
+    return {
+      committed: true,
+      sha: head.stdout.trim() || null,
+      files: committedFiles.length ? committedFiles : (provenance.files ?? null),
+      provenance:
+        provenance.state === 'known' && committedFiles.length
+          ? knownChangedFileProvenance(
+              [
+                ...new Set([
+                  ...committedFiles,
+                  ...provenance.files.filter((file) => !file.endsWith('/')),
+                ]),
+              ].toSorted(),
+            )
+          : provenance,
+    };
   };
 
   let last = null;
@@ -424,7 +446,7 @@ export const reclaimIgnoredDirs = async ({
   dir,
   git = runGit,
   rmDir = (p) => rm(p, { recursive: true, force: true }),
-  log = (...a) => console.error('[git-engine]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
   const status = await git(['status', '--porcelain', '--ignored'], { cwd: dir });
   if (status.exitCode !== 0) return [];
@@ -595,7 +617,7 @@ export const pushBranch = async ({
   git = runGit,
   withGitCredential = defaultWithGitCredential,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  log = (...a) => console.error('[git-engine]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
   if (!branch) return { pushed: false, reason: 'no_branch' };
 
@@ -666,17 +688,14 @@ export const pushBranch = async ({
   }
 };
 
-// The on-disk target dir for a repo — MUST match workspace.js#repoTargetDir
-// (single repo → workspaceDir; multi → workspaceDir/<owner>/<repo>). Exported
-// for the lane commands (init-lane / merge-lane) that loop repos themselves.
 export const toWorkspaceRelative = (files = [], { url, multi }) => {
   if (!multi) return [...files];
   const projectPrefix = `${url}/`;
   return files.map((file) => (file.startsWith(projectPrefix) ? file : `${projectPrefix}${file}`));
 };
 
-export const repoTargetDir = ({ url, workspaceDir, multi }) =>
-  multi ? path.join(workspaceDir, url) : workspaceDir;
+// Keep lane operations on the same validated layout as checkout and recovery.
+export { repoTargetDir };
 
 // Authenticated fetch — lane branching and merge-back need current remote refs.
 //   { fetched: true }                    — remote refs are current
@@ -798,7 +817,7 @@ export const ensureLaneBranch = async ({
   git = runGit,
   withGitCredential = defaultWithGitCredential,
   sleep,
-  log = (...a) => console.error('[git-engine]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
   if (!unitBranch || !intentBranch) return { ready: false, reason: 'missing_branch' };
   const fetch = await fetchOrigin({
@@ -945,7 +964,7 @@ export const mergeBranchNoFf = async ({
   withGitCredential = defaultWithGitCredential,
   resolveGitCommitter = defaultResolveGitCommitter,
   sleep,
-  log = (...a) => console.error('[git-engine]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
   if (!unitBranch || !intentBranch) return { merged: false, reason: 'missing_branch' };
   const fetch = await fetchOrigin({
@@ -1185,7 +1204,7 @@ export const concludeConflictMerge = async ({
   withGitCredential = defaultWithGitCredential,
   resolveGitCommitter = defaultResolveGitCommitter,
   sleep,
-  log = (...a) => console.error('[git-engine]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
   const abort = async () => {
     await git(['merge', '--abort'], { cwd: dir });
@@ -1286,7 +1305,7 @@ export const commitAndPushAll = async ({
   withGitCredential = defaultWithGitCredential,
   resolveGitCommitter = defaultResolveGitCommitter,
   sleep,
-  log = (...a) => console.error('[git-engine]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 }) => {
   const results = [];
   const multi = repos.length > 1;
@@ -1378,4 +1397,58 @@ export const commitAndPushAll = async ({
   );
   const committed = results.some((r) => r.committed === true);
   return { ok, committed, results };
+};
+
+// Rehydrate the complete file set for a stage that committed across one or
+// more park/resume legs. Stage rows persist only compact repo+SHA references;
+// Git remains the source of truth for the potentially large path list.
+export const gitResultForCommitRefs = async ({
+  commitRefs = [],
+  repos = [],
+  workspaceDir,
+  git = runGit,
+}) => {
+  const repoUrls = repos.map((repo) => (typeof repo === 'string' ? repo : repo.url));
+  const allowedRepos = new Set(repoUrls);
+  const multi = repoUrls.length > 1;
+  const byRepo = new Map();
+
+  for (const ref of commitRefs) {
+    const repo = typeof ref?.repo === 'string' ? ref.repo : '';
+    const sha = typeof ref?.sha === 'string' ? ref.sha : '';
+    if (!allowedRepos.has(repo) || !/^[0-9a-f]{40,64}$/i.test(sha)) {
+      throw new Error(`invalid parked-stage commit reference for ${repo || 'unknown repository'}`);
+    }
+    const dir = repoTargetDir({ url: repo, workspaceDir, multi });
+    const diff = await git(
+      ['diff-tree', '--root', '--format=', '--name-only', '-r', '-z', sha, '--'],
+      { cwd: dir },
+    );
+    if (diff.exitCode !== 0) {
+      throw new Error(
+        `could not read parked-stage commit ${repo}@${sha.slice(0, 8)}: ${
+          diff.stderr.trim() || 'git diff-tree failed'
+        }`,
+      );
+    }
+    let entry = byRepo.get(repo);
+    if (!entry) {
+      entry = { repo, sha, files: new Set() };
+      byRepo.set(repo, entry);
+    }
+    entry.sha = sha;
+    for (const file of diff.stdout.split('\0').filter(Boolean)) entry.files.add(file);
+  }
+
+  const results = [...byRepo.values()].map(({ repo, sha, files }) => ({
+    repo,
+    committed: true,
+    pushed: true,
+    sha,
+    files: [...files].toSorted(),
+    provenance: knownChangedFileProvenance(
+      toWorkspaceRelative([...files].toSorted(), { url: repo, multi }),
+    ),
+  }));
+  return { ok: true, committed: results.length > 0, results };
 };

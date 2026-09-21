@@ -347,6 +347,9 @@ module "control_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT     = tostring(var.powertools_log_event)
     ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
     BUILD_CONTEXT_BUCKET            = aws_s3_bucket.build_context.id
     ENVIRONMENT_CODEBUILD_PROJECT   = aws_codebuild_project.managed_environments.name
@@ -470,6 +473,8 @@ module "status_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
     ENVIRONMENT_ECR_REPOSITORY_NAME = var.environment_repository_name
     ENVIRONMENT_ECR_REPOSITORY_URI  = var.environment_repository_url
@@ -759,6 +764,9 @@ module "tool_control_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
     ENVIRONMENT_REGISTRY_TABLE    = var.registry_table_name
     BUILD_CONTEXT_BUCKET          = aws_s3_bucket.build_context.id
     TOOL_CODEBUILD_PROJECT        = aws_codebuild_project.managed_tools.name
@@ -873,6 +881,8 @@ module "tool_status_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME    = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL       = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE = var.registry_table_name
     BUILD_CONTEXT_BUCKET       = aws_s3_bucket.build_context.id
     TOOL_ECR_REPOSITORY_NAME   = aws_ecr_repository.managed_tools.name

@@ -72,6 +72,7 @@ export interface Intent {
   gitProvider?: string | null;
   workflowId: string;
   workflowVersion: number | null;
+  aidlcRepoRef?: string | null;
   scope: string | null;
   currentPhase: string | null;
   currentStage: string | null;
@@ -131,6 +132,42 @@ export interface IntentAttachmentUpload {
   fields: Record<string, string>;
   expiresIn: number;
 }
+
+export interface NativeWorkflowExport {
+  exportId: string;
+  filename: string;
+  downloadUrl: string;
+  expiresAt: string;
+  warnings: string[];
+  checkpoint?: {
+    checkpointId: string;
+    createdAt: string;
+    sourceStageInstanceId: string | null;
+  };
+  setup: {
+    workspaceLayout: 'flat' | 'spaces';
+    mode: 'extract-only' | 'workspace-sync' | 'manual-workspace' | 'manual-clone';
+    harnessDir: string | null;
+    syncCommand?: string;
+    launchCommand: string | null;
+    continueCommand: string;
+    showWorkspaceSetup: boolean;
+    repositories: Array<{
+      id: string;
+      directory: string;
+      url: string;
+      branch: string;
+    }>;
+    construction?: {
+      nextUnit: string | null;
+      completedUnits: string[];
+      readyUnits: string[];
+      perUnitIteration: boolean;
+    };
+  };
+}
+
+export type NativeExportHarness = AgentCli | 'kiro-ide';
 
 // Shape mirrors the plan resolver's error objects (lambda/shared/v2-execution-plan.js).
 export interface PlanWarning {
@@ -779,7 +816,7 @@ export interface IntentGraphNode {
   // Derived-layer fields (typed items mirrored from artifact structured
   // blocks — docs/v2-granular-graph.md). `artifactId` joins an item back to
   // its source artifact node/card.
-  graphLayer?: 'derived';
+  graphLayer?: 'derived' | 'implementation';
   slug?: string | null;
   artifactId?: string | null;
   artifactType?: string | null;
@@ -1058,6 +1095,11 @@ export const intentsService = {
   ) => api.post<Intent>(`/projects/${projectId}/intents/${intentId}/start`, input ?? {}),
   cancel: (projectId: string, intentId: string) =>
     api.post<Intent>(`/projects/${projectId}/intents/${intentId}/cancel`, {}),
+  exportWorkflow: (projectId: string, intentId: string, harness?: NativeExportHarness) =>
+    api.post<NativeWorkflowExport>(
+      `/projects/${projectId}/intents/${intentId}/export`,
+      harness ? { harness } : {},
+    ),
   // Permanent delete: removes the intent's graph data, process state and
   // realtime docs. Owner/admin only; refused (409) while RUNNING.
   delete: (projectId: string, intentId: string) =>

@@ -219,7 +219,7 @@ All tagged releases, including previews such as `v2.0.0-preview0`, are shown by 
 ```bash
 bash /tmp/aidlc-install.sh versions
 bash /tmp/aidlc-install.sh install --version 2.0.0-preview0 ...
-bash /tmp/aidlc-install.sh install --version 2.0.0 ...
+bash /tmp/aidlc-install.sh install --version 2.1.0 ...
 bash /tmp/aidlc-install.sh update
 ```
 
@@ -236,7 +236,7 @@ bash /tmp/aidlc-install.sh adopt \
   --profile <aws-profile> \
   --admin <existing-administrator-email>
 
-bash /tmp/aidlc-install.sh update --version 2.0.0
+bash /tmp/aidlc-install.sh update --version 2.1.0
 ```
 
 An update backs up Terraform state, rejects unexpected destruction of Cognito, Neptune, S3, or persistent DynamoDB resources, deploys infrastructure, grants the existing administrator `platform-admin`, and deploys the frontend. Removal of the retired v1 ECS agent runtime and agent-pool table is expected. If any step fails, `current` remains on the working version. Application-data backup beyond Terraform state remains the operator's responsibility. v1 work stays viewable but read-only after the upgrade.
@@ -321,6 +321,13 @@ Useful environment variables when iterating:
 | `AIDLC_BACKEND_FILE`  | Path to an alternative `.s3.tfbackend`                                              |
 | `AIDLC_CONFIG_DIR`    | Directory holding `environments/`, for Terraform configuration outside the checkout |
 
+Use `--skip-seed` when applying infrastructure-only changes that do not modify
+the upstream AI-DLC pin, baseline blocks, or default workflow:
+
+```bash
+./scripts/deploy-terraform.sh dev --skip-seed
+```
+
 </details>
 
 ## Post-install configuration
@@ -333,16 +340,16 @@ In local/hybrid mode, the installer creates the first Cognito user and grants `p
 
 The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud), so an intent can be started from a tracker issue. All providers are optional; skip any you don't need and the corresponding **Connect** buttons in the UI stay disabled.
 
-For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only, and the Jira Cloud and GitLab Issues tracker integrations are read-only.
+For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only. Tracker integrations post delivery comments; GitHub and GitLab issues also close after all final delivery requests merge.
 
 `<your-app-domain>` is the deployment's canonical hostname: the custom domain when one is configured, otherwise the CloudFront domain. The Admin page shows it, and each provider's setup guide shows the exact callback URL to copy. To read it directly: `terraform -chdir=terraform output -raw application_domain`.
 
-| Provider     | Callback URL                                             | Scopes / permissions                                           |
-| ------------ | -------------------------------------------------------- | -------------------------------------------------------------- |
-| GitHub OAuth | `https://<your-app-domain>/github/callback`              | `repo`, `workflow`, `read:user`                                |
-| GitLab       | `https://<your-app-domain>/gitlab/callback`              | `api`, `read_user` (Confidential enabled)                      |
-| Bitbucket    | `https://<your-app-domain>/bitbucket/callback`           | Account (Read, Email), Repositories (R/W), Pull requests (R/W) |
-| Jira Cloud   | `https://<your-app-domain>/trackers/callback/jira-cloud` | `read:jira-work`, `read:jira-user`, `offline_access`           |
+| Provider     | Callback URL                                             | Scopes / permissions                                                    |
+| ------------ | -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| GitHub OAuth | `https://<your-app-domain>/github/callback`              | `repo`, `workflow`, `read:user`                                         |
+| GitLab       | `https://<your-app-domain>/gitlab/callback`              | `api`, `read_user` (Confidential enabled)                               |
+| Bitbucket    | `https://<your-app-domain>/bitbucket/callback`           | Account (Read, Email), Repositories (R/W), Pull requests (R/W)          |
+| Jira Cloud   | `https://<your-app-domain>/trackers/callback/jira-cloud` | `read:jira-work`, `read:jira-user`, `write:jira-work`, `offline_access` |
 
 GitHub also supports a **GitHub App** authentication type, configured independently in **Admin → Source Control → GitHub** with the App ID and private key; OAuth and App can be enabled simultaneously, and each project chooses its authentication type. Installation IDs are discovered per repository when a project is bound. See [Setup → Configure provider OAuth apps](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/setup/#configure-provider-oauth-apps) for the full step-by-step per provider, including GitHub App permissions and reauthorization notes.
 
@@ -439,6 +446,29 @@ npm run secretlint       # scan the repo for committed secrets
 npm run audit:prod:all   # npm audit on production deps for root + frontend (high+ severity)
 npm run typecheck:frontend  # tsc -b on the frontend package
 ```
+
+Analyze backend module coupling with [dependency-cruiser](https://github.com/sverweij/dependency-cruiser). The rules — no circular dependencies, no cross-workspace imports, `lambda/shared/` kept as a leaf foundation, and no production code importing test files — live in `.dependency-cruiser.cjs` and are enforced by the pre-commit hook and CI:
+
+```bash
+npm run dep:check        # enforce the rules (fails on any violation)
+npm run dep:report       # HTML dependency matrix -> reports/dependency/report.html
+npm run dep:metrics      # coupling / instability table -> reports/dependency/metrics.txt
+npm run dep:graph        # mermaid module graph -> reports/dependency/graph.mmd
+npm run dep:all          # report + metrics + graph
+```
+
+Two scripts take a module/subsystem pattern (a regex, passed after `--`) to explore coupling for one area:
+
+```bash
+# Focused HTML matrix of one subsystem -> reports/dependency/focus.html
+npm run dep:focus -- "shared/agent-credential"
+
+# Blast radius: every module that transitively depends on a file
+# (escape the dots to match an exact file)
+npm run dep:reaches -- "shared/agent-credential-grants\.js"
+```
+
+Generated reports land in `reports/dependency/` (git-ignored). In the HTML matrix, a filled cell means the **row** module imports the **column** module — so a dense column is a widely-depended-on module (high fan-in), and a dense row is one that depends on many others (high fan-out).
 
 A pre-commit hook (managed by Husky + lint-staged) runs these checks plus Terraform formatting/linting and the affected unit tests before each commit. It is installed automatically by `npm install`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 

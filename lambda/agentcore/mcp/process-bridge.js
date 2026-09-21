@@ -39,6 +39,7 @@ export const createProcessBridge = ({
   const {
     executionId,
     intentId = null,
+    stageId = null,
     stageInstanceId = null,
     unitSlug = null,
     sectionIndex = null,
@@ -180,6 +181,32 @@ export const createProcessBridge = ({
     return { seq: row.seq, kind };
   };
 
+  const recordProjectType = async ({ projectType }) => {
+    if (stageId !== 'workspace-detection') {
+      throw new Error('record_project_type is available only during workspace-detection');
+    }
+    if (projectType !== 'greenfield' && projectType !== 'brownfield') {
+      throw new Error('projectType must be greenfield or brownfield');
+    }
+    await store.updateExecution({ executionId, projectType });
+    await store.appendEvent({
+      executionId,
+      type: 'v2.workspace.classified',
+      stageInstanceId,
+      actor: stageInstanceId ?? 'agent',
+      summary: `Workspace classified as ${projectType}`,
+    });
+    await broadcast({
+      action: 'agent.note',
+      executionId,
+      intentId,
+      stageInstanceId,
+      noteType: 'v2.workspace.classified',
+      summary: `Workspace classified as ${projectType}`,
+    });
+    return { projectType };
+  };
+
   // Record a numeric metric sample (token usage, context-window %, etc.) and
   // broadcast it live so the UI can render usage in real time.
   const collectMetric = async ({ metrics }) => {
@@ -305,5 +332,13 @@ export const createProcessBridge = ({
     });
   };
 
-  return { askQuestion, sendOutput, collectMetric, emitStageNote, recordGraphRead, submitReview };
+  return {
+    askQuestion,
+    sendOutput,
+    recordProjectType,
+    collectMetric,
+    emitStageNote,
+    recordGraphRead,
+    submitReview,
+  };
 };

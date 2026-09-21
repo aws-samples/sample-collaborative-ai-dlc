@@ -14,7 +14,8 @@ PLAN_FILE="$TF_DIR/tfplan"
 TF_VAR_ARGS=()
 AUTH_MODE_OVERRIDE=""
 SSO_CONFIG_FILE=""
-USAGE="Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path] [--auth-mode local|hybrid|sso-only] [--sso-config path] [--var KEY=VALUE]..."
+SKIP_SEED="false"
+USAGE="Usage: $0 [environment] [--phase plan|apply|all] [--plan-file path] [--auth-mode local|hybrid|sso-only] [--sso-config path] [--skip-seed] [--var KEY=VALUE]..."
 
 if [[ $# -gt 0 && "$1" != --* ]]; then
     ENVIRONMENT="$1"
@@ -48,6 +49,10 @@ while [[ $# -gt 0 ]]; do
         --sso-config)
             SSO_CONFIG_FILE="${2:?--sso-config requires a JSON file}"
             shift 2
+            ;;
+        --skip-seed)
+            SKIP_SEED="true"
+            shift
             ;;
         *)
             echo "$USAGE" >&2
@@ -323,34 +328,37 @@ if [[ "${AIDLC_KEEP_PLAN:-0}" != "1" ]]; then
     rm -f "$PLAN_FILE"
 fi
 
-# Reseed the SYSTEM baseline (vendor-owned blocks + default workflow). reseed
-# clears the existing SYSTEM partitions and rewrites them from the current
-# baseline, so a deploy that changed baseline-blocks.js actually takes effect —
-# the default insert-only mode would skip every already-existing block. Scoped
-# to SYSTEM only; customer forks (per-tenant partitions) are never touched.
-echo "Applying AI-DLC default workflow and building blocks (reseed)"
-# Pin --region to the deployed stack's region: without it the AWS CLI falls
-# back to the profile default, which fails with "Function not found" whenever
-# the profile region differs from the deployment region.
-SEED_RESULT_FILE="$(mktemp "${TMPDIR:-/tmp}/aidlc-seed.XXXXXX")"
-SEED_FUNCTION_ERROR="$(
-    aws lambda invoke \
-        --function-name "$(tf_output seed_blocks_lambda_name)" \
-        --region "$(tf_output aws_region)" \
-        --payload '{"reseed":true}' \
-        --cli-binary-format raw-in-base64-out \
-        "$SEED_RESULT_FILE" \
-        --query FunctionError \
-        --output text
-)"
-if [[ -n "$SEED_FUNCTION_ERROR" && "$SEED_FUNCTION_ERROR" != "None" ]]; then
-    echo "Error: baseline seed Lambda failed ($SEED_FUNCTION_ERROR):" >&2
-    cat "$SEED_RESULT_FILE" >&2
+if [[ "$SKIP_SEED" == "true" ]]; then
+    echo "Skipping AI-DLC default workflow and building-block reseed (--skip-seed)."
+else
+    # Reseed the SYSTEM baseline (vendor-owned blocks + default workflow).
+    # reseed clears the existing SYSTEM partitions and rewrites them from the
+    # current baseline. Scoped to SYSTEM only; customer forks are untouched.
+    echo "Applying AI-DLC default workflow and building blocks (reseed)"
+    # Pin --region to the deployed stack's region: without it the AWS CLI falls
+    # back to the profile default. Disable AWS CLI retries because Lambda Invoke
+    # is not idempotent, and let the Lambda's 300-second timeout bound the job.
+    SEED_RESULT_FILE="$(mktemp "${TMPDIR:-/tmp}/aidlc-seed.XXXXXX")"
+    SEED_FUNCTION_ERROR="$(
+        AWS_MAX_ATTEMPTS=1 aws lambda invoke \
+            --function-name "$(tf_output seed_blocks_lambda_name)" \
+            --region "$(tf_output aws_region)" \
+            --payload '{"reseed":true}' \
+            --cli-binary-format raw-in-base64-out \
+            --cli-read-timeout 0 \
+            "$SEED_RESULT_FILE" \
+            --query FunctionError \
+            --output text
+    )"
+    if [[ -n "$SEED_FUNCTION_ERROR" && "$SEED_FUNCTION_ERROR" != "None" ]]; then
+        echo "Error: baseline seed Lambda failed ($SEED_FUNCTION_ERROR):" >&2
+        cat "$SEED_RESULT_FILE" >&2
+        rm -f "$SEED_RESULT_FILE"
+        exit 1
+    fi
     rm -f "$SEED_RESULT_FILE"
-    exit 1
+    echo "AI-DLC default workflow and building blocks applied."
 fi
-rm -f "$SEED_RESULT_FILE"
-echo "AI-DLC default workflow and building blocks applied."
 
 if [[ "${AIDLC_MANAGED_INSTALL:-0}" != "1" ]]; then
     print_deployment_summary

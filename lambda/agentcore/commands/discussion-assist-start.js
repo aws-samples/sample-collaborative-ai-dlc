@@ -5,6 +5,7 @@
 // quickly, runs one bounded CLI prompt in the background, updates the SAME
 // message vertex, and broadcasts `discussion.message` on the intent channel.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import gremlin from 'gremlin';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { closeGraphSource } from '../mcp/graph-writer.js';
@@ -20,6 +21,10 @@ import {
   selectCanonicalArtifact,
   selectCurrentArtifactHeads,
 } from '../../shared/artifact-versioning.js';
+
+const logger = new Logger({
+  persistentKeys: { component: 'agentcore', module: 'discussion-assist-start' },
+});
 
 const { cardinality } = gremlin.process;
 const __ = gremlin.process.statics;
@@ -352,7 +357,7 @@ export const createDiscussionAssistStart = ({
   mcpEntry = process.env.V2_MCP_ENTRY || new URL('../mcp/index.js', import.meta.url).pathname,
   busy = null,
   activeJobs = new Map(),
-  log = (...args) => console.error('[discussion-assist-start]', ...args),
+  log = (...args) => logger.error(...args), // TODO: remove this (only used in tests)
 }) => {
   const start = async (payload = {}) => {
     const {

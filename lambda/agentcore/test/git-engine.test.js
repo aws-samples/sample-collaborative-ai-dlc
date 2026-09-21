@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -12,6 +12,7 @@ import {
   pushBranch,
   remoteBranchExists,
   commitAndPushAll,
+  gitResultForCommitRefs,
   seedInitialCommit,
   parsePorcelainZ,
   toWorkspaceRelative,
@@ -266,6 +267,152 @@ describe('commitAll', () => {
     const show = await git(['show', '--stat', '--format='], work);
     expect(show.stdout).toContain('new.txt');
     expect(show.stdout).toContain('README.md');
+  });
+});
+
+// The engine must never execute the CLONED REPO's hooks. Two reasons:
+// correctness (hooks that shell out to npm cannot work — the runtime never
+// installs the checkout's dependencies, so a stage lost completed work to a
+// husky/lint-staged pre-commit) and security (hooks are arbitrary untrusted code
+// and pushes carry a credential in the environment).
+//
+// `--no-verify` is insufficient: it covers pre-commit and commit-msg only. These
+// cases pin the hooks via `core.hooksPath` — the strongest form, because it
+// proves the engine's own `-c core.hooksPath` overrides a hooksPath the
+// repository configured for itself, not just the default `.git/hooks`.
+describe('engine git ignores repository hooks', () => {
+  const globalConfig = () => path.join(root, 'global.gitconfig');
+  const isolatedGit = (args, options = {}) =>
+    runGit(args, {
+      ...options,
+      env: { GIT_CONFIG_GLOBAL: globalConfig(), ...options.env },
+    });
+  const isolatedGitAt = (args, cwd) => isolatedGit(args, { cwd });
+
+  // Install a hook that records that it ran and then fails the operation.
+  const installHook = async (work, name, { viaConfig = false, body } = {}) => {
+    const dir = viaConfig ? path.join(work, '.custom-hooks') : path.join(work, '.git', 'hooks');
+    await mkdir(dir, { recursive: true });
+    const marker = path.join(work, `${name}-ran.txt`);
+    await writeFile(
+      path.join(dir, name),
+      body ?? `#!/bin/sh\necho ran > "${marker}"\necho "${name} rejected" >&2\nexit 1\n`,
+      { mode: 0o755 },
+    );
+    if (viaConfig) await isolatedGitAt(['config', '--local', 'core.hooksPath', dir], work);
+    return marker;
+  };
+  const configureGlobalHooksPath = async () => {
+    const dir = path.join(root, 'global-hooks');
+    await mkdir(dir, { recursive: true });
+    await isolatedGitAt(['config', '--global', 'core.hooksPath', dir], root);
+    return dir;
+  };
+  const readHooksPaths = async (work) => ({
+    repository: (
+      await isolatedGitAt(['config', '--local', '--get', 'core.hooksPath'], work)
+    ).stdout.trim(),
+    global: (
+      await isolatedGitAt(['config', '--global', '--get', 'core.hooksPath'], work)
+    ).stdout.trim(),
+  });
+  const ran = async (marker) => {
+    try {
+      await readFile(marker, 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  for (const hook of ['pre-commit', 'prepare-commit-msg', 'commit-msg']) {
+    it(`commits with a failing ${hook} hook configured via core.hooksPath`, async () => {
+      const { work } = await initRemoteAndClone();
+      const globalHooks = await configureGlobalHooksPath();
+      const marker = await installHook(work, hook, { viaConfig: true });
+      const hooksPathsBefore = await readHooksPaths(work);
+      expect(hooksPathsBefore).toEqual({
+        repository: path.join(work, '.custom-hooks'),
+        global: globalHooks,
+      });
+      await writeFile(path.join(work, 'agent-work.txt'), 'artifacts the agent produced\n');
+
+      const res = await commitAll({
+        dir: work,
+        message: 'aidlc(functional-design): e1',
+        git: isolatedGit,
+      });
+
+      expect(res.committed).toBe(true);
+      expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(await ran(marker)).toBe(false);
+      expect(await readHooksPaths(work)).toEqual(hooksPathsBefore);
+      const show = await isolatedGitAt(['show', '--stat', '--format='], work);
+      expect(show.stdout).toContain('agent-work.txt');
+    });
+  }
+
+  it('does not leave a dirty tree when prepare-commit-msg would abort', async () => {
+    // prepare-commit-msg is the gap --no-verify left open: it can abort a commit,
+    // which previously returned commit_failed with the work still uncommitted.
+    const { work } = await initRemoteAndClone();
+    await configureGlobalHooksPath();
+    await installHook(work, 'prepare-commit-msg', { viaConfig: true });
+    const hooksPathsBefore = await readHooksPaths(work);
+    await writeFile(path.join(work, 'agent-work.txt'), 'work\n');
+
+    const res = await commitAll({
+      dir: work,
+      message: 'aidlc(x): e1',
+      git: isolatedGit,
+    });
+
+    expect(res.committed).toBe(true);
+    expect(res.dirty).toBeFalsy();
+    expect(await readHooksPaths(work)).toEqual(hooksPathsBefore);
+    const status = await isolatedGitAt(['status', '--porcelain'], work);
+    expect(status.stdout.trim()).toBe('');
+  });
+
+  it('does not run pre-push, so a hook cannot read the push credential', async () => {
+    // A pre-push hook runs with the push environment, which carries
+    // AIDLC_GIT_PASSWORD. If it executed it could exfiltrate the token, abort the
+    // push, and surface the value in the returned error detail.
+    const { work, remote } = await initRemoteAndClone();
+    const globalHooks = await configureGlobalHooksPath();
+    const leak = path.join(work, 'leaked-credential.txt');
+    await installHook(work, 'pre-push', {
+      viaConfig: true,
+      body: `#!/bin/sh\nprintf '%s' "$AIDLC_GIT_PASSWORD" > "${leak}"\necho "pre-push rejected" >&2\nexit 1\n`,
+    });
+    const hooksPathsBefore = await readHooksPaths(work);
+    expect(hooksPathsBefore).toEqual({
+      repository: path.join(work, '.custom-hooks'),
+      global: globalHooks,
+    });
+    await writeFile(path.join(work, 'agent-work.txt'), 'work\n');
+    const commit = await commitAll({ dir: work, message: 'aidlc(x): e1', git: isolatedGit });
+    expect(commit.committed).toBe(true);
+
+    const res = await pushBranch({
+      dir: work,
+      repo: 'o/r',
+      branch: 'main',
+      urls: { clean: remote, tokenized: remote },
+      git: isolatedGit,
+      withGitCredential: async (_o, fn) =>
+        fn({ AIDLC_GIT_PASSWORD: 'super-secret-token', GIT_TERMINAL_PROMPT: '0' }),
+      log: () => {},
+    });
+
+    expect(res.pushed).toBe(true);
+    expect(await ran(leak)).toBe(false);
+    expect(JSON.stringify(res)).not.toContain('super-secret-token');
+    expect(await readHooksPaths(work)).toEqual(hooksPathsBefore);
+    const localHead = await isolatedGitAt(['rev-parse', 'HEAD'], work);
+    expect(localHead.stdout.trim()).toBe(commit.sha);
+    const remoteHead = await isolatedGitAt(['rev-parse', 'refs/heads/main'], remote);
+    expect(remoteHead.stdout.trim()).toBe(localHead.stdout.trim());
   });
 });
 
@@ -630,6 +777,47 @@ describe('pushBranch', () => {
 });
 
 describe('commitAndPushAll — the stage-exit hook', () => {
+  it('reconstructs the complete file set from commits spanning parked stage legs', async () => {
+    const { work } = await initRemoteAndClone();
+    await mkdir(path.join(work, 'src'), { recursive: true });
+    await writeFile(path.join(work, 'src', 'app.ts'), 'export const app = true;\n');
+    const first = await commitAll({ dir: work, message: 'aidlc(code-generation): park' });
+
+    await mkdir(path.join(work, 'records', 'billing'), { recursive: true });
+    await writeFile(
+      path.join(work, 'records', 'billing', 'traceability.json'),
+      '{"stage":"code-generation","unit":"billing","coverage":[]}\n',
+    );
+    const second = await commitAll({ dir: work, message: 'aidlc(code-generation): resume' });
+
+    const result = await gitResultForCommitRefs({
+      commitRefs: [
+        { repo: 'o/r', sha: first.sha },
+        { repo: 'o/r', sha: second.sha },
+      ],
+      repos: ['o/r'],
+      workspaceDir: work,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      committed: true,
+      results: [
+        {
+          repo: 'o/r',
+          committed: true,
+          pushed: true,
+          sha: second.sha,
+          files: ['records/billing/traceability.json', 'src/app.ts'],
+          provenance: {
+            state: 'known',
+            files: ['records/billing/traceability.json', 'src/app.ts'],
+          },
+        },
+      ],
+    });
+  });
+
   it('single repo: commits + pushes new work and reports ok', async () => {
     const { work, remote } = await initRemoteAndClone();
     await git(['checkout', '-b', 'ai-dlc/i1'], work);
@@ -1456,7 +1644,6 @@ describe('findRemainingConflictMarkers', () => {
 // including stages that produce no repo work at all.
 
 import { ensureRuntimeExcludes, RUNTIME_EXCLUDES } from '../git-engine.js';
-import { mkdir } from 'node:fs/promises';
 
 const seedRuntimeFiles = async (work) => {
   await mkdir(path.join(work, '.aidlc'), { recursive: true });
@@ -1759,31 +1946,32 @@ describe('rename and copy endpoint provenance', () => {
       await git(['push', remote, 'main'], seed);
     }
 
-    const sourceDir = path.join(root, 'source');
-    const destinationDir = path.join(root, 'destination');
+    await mkdir(path.join(root, 'acme'));
+    const sourceDir = path.join(root, 'acme', 'source');
+    const destinationDir = path.join(root, 'acme', 'destination');
     await git(['clone', sourceRemote, sourceDir], root);
     await git(['clone', destinationRemote, destinationDir], root);
     await writeFile(path.join(destinationDir, 'moved.ts'), 'shared content\n');
     await rm(path.join(sourceDir, 'legacy.ts'));
 
     const result = await commitAndPushAll({
-      repos: ['source', 'destination'],
+      repos: ['acme/source', 'acme/destination'],
       workspaceDir: root,
       branch: 'main',
       gitProvider: 'github',
       message: 'aidlc(cross-project-rename): e1',
       urlsFor: (repo) => ({
-        auth: repo === 'source' ? sourceRemote : destinationRemote,
-        clean: `https://github.com/acme/${repo}.git`,
+        auth: repo === 'acme/source' ? sourceRemote : destinationRemote,
+        clean: `https://github.com/${repo}.git`,
       }),
     });
 
     expect(result.ok).toBe(true);
     const byRepo = Object.fromEntries(result.results.map((entry) => [entry.repo, entry]));
-    expect(byRepo.source.files).toEqual(['source/legacy.ts']);
-    expect(byRepo.destination.files).toEqual(['destination/moved.ts']);
+    expect(byRepo['acme/source'].files).toEqual(['acme/source/legacy.ts']);
+    expect(byRepo['acme/destination'].files).toEqual(['acme/destination/moved.ts']);
     expect(result.results.flatMap((entry) => entry.files)).toEqual(
-      expect.arrayContaining(['source/legacy.ts', 'destination/moved.ts']),
+      expect.arrayContaining(['acme/source/legacy.ts', 'acme/destination/moved.ts']),
     );
   });
 });

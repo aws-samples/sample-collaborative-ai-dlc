@@ -24,6 +24,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
+import { Logger } from '@aws-lambda-powertools/logger';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -38,6 +39,7 @@ import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
@@ -66,17 +68,32 @@ import {
   artifactAliases,
   artifactLogicalKeyFromRow,
   legacyVersionId,
+  readCheckpointArtifactVersions,
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
+import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
+import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
+import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
+import { assignNativeRepositoryDirectories, repositoryId } from '../shared/native-repositories.js';
+import {
+  executionPlanFromMethodologyCatalog,
+  loadOrCreateMethodologyCatalog,
+} from '../shared/methodology-catalog.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
 import { buildArtifactImpact, editBlockReason, activeQuorumEdit } from './impact.js';
+import {
+  createNativeExport,
+  EXPORT_MISCONFIGURED,
+  EXPORT_SOURCE_UNAVAILABLE,
+} from './native-export.js';
 import {
   ATTACHMENT_UPLOAD_TTL_SECONDS,
   MAX_ATTACHMENTS,
@@ -100,6 +117,7 @@ const s3 = new S3Client({});
 const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
+const logger = new Logger({ persistentKeys: { component: 'intents' } });
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
@@ -112,6 +130,7 @@ const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION || '';
 // Compose report uploads land here (presigned PUT) and are read back at
 // compose dispatch. Key shape: compose-reports/<intentId>/<uuid>.json.
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
+const AIDLC_REPO_REF = () => process.env.AIDLC_REPO_REF || '';
 const attachmentCleanup = createAttachmentCleanupService({
   s3,
   store,
@@ -231,9 +250,7 @@ const ingestAttachmentUpload = async (event) => {
             VersionId: source.versionId,
           }),
         )
-        .catch((error) =>
-          console.error(`Attachment staging cleanup failed (${key}):`, error.message),
-        );
+        .catch((error) => logger.error('Attachment staging cleanup failed', error, { key }));
       return;
     }
 
@@ -291,9 +308,7 @@ const ingestAttachmentUpload = async (event) => {
           VersionId: source.versionId,
         }),
       )
-      .catch((error) =>
-        console.error(`Attachment staging cleanup failed (${key}):`, error.message),
-      );
+      .catch((error) => logger.error('Attachment staging cleanup failed', error, { key }));
     return;
   }
 };
@@ -360,7 +375,7 @@ const validateSourceControlForLaunch = async (meta) => {
 
 const sourceControlNotReadyResponse = (response, validation, projectId) => {
   const blocked = (validation?.repositories ?? []).filter((repo) => !repo.ready);
-  console.error('[intents] source control not ready', {
+  logger.error('source control not ready', {
     projectId,
     reasonCodes: [...new Set(blocked.map((repo) => repo.code).filter(Boolean))].join(','),
   });
@@ -378,7 +393,7 @@ const sourceControlLaunchGuard = async (meta, response) => {
       ? null
       : sourceControlNotReadyResponse(response, validation, meta.projectId);
   } catch (error) {
-    console.error('Source-control launch validation failed:', error.code || error.message);
+    logger.error('Source-control launch validation failed', error);
     return response(503, {
       error: 'Source-control validation is temporarily unavailable',
       code: 'SOURCE_CONTROL_VALIDATION_FAILED',
@@ -435,7 +450,7 @@ const stopRuntimeSessions = async (
         }),
       );
     } catch (err) {
-      console.log(`stop-runtime-session best-effort miss (${id}): ${err?.message ?? err}`);
+      logger.warn('stop-runtime-session best-effort miss', err, { id });
     }
   });
 };
@@ -551,7 +566,7 @@ const getSecret = async () => {
   if (!paramName) throw new Error('REALTIME_SECRET_PARAM is not configured');
   const result = await ssm.send(new GetParameterCommand({ Name: paramName, WithDecryption: true }));
   cachedSecret = result.Parameter?.Value;
-  if (!cachedSecret) throw new Error(`SSM parameter ${paramName} is empty`);
+  if (!cachedSecret) throw new Error('Realtime secret SSM parameter is empty');
   return cachedSecret;
 };
 
@@ -880,6 +895,7 @@ const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   sectionIndex:
     row.section_index === undefined || row.section_index === '' ? null : Number(row.section_index),
   unitSlug: row.unit_slug || null,
+  repository: row.repository || null,
   stageAttempt: Number(row.stage_attempt) || 0,
   generation: Math.max(1, Number(row.generation) || 1),
   versionCount: Math.max(0, Number(row.version_count) || 0) + legacyVersionCount,
@@ -899,6 +915,15 @@ const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   enrichmentModel: row.enrichment_model ?? null,
   content: row.content ?? null,
 });
+
+const mapCheckpointArtifact = (row) =>
+  mapArtifactHead(
+    {
+      ...row,
+      id: row.artifact_id,
+    },
+    0,
+  );
 
 // The fan-in PR record(s), anchored Intent --HAS_PR--> PullRequest.
 const fetchPullRequests = async (g, intentId) => {
@@ -1225,6 +1250,7 @@ const mapIntent = (meta) => ({
   gitProvider: meta.gitProvider ?? null,
   workflowId: meta.workflowId,
   workflowVersion: meta.workflowVersion ?? null,
+  aidlcRepoRef: meta.aidlcRepoRef ?? null,
   scope: meta.scope ?? null,
   currentPhase: meta.currentPhase ?? null,
   currentStage: meta.currentStage ?? null,
@@ -1252,6 +1278,209 @@ const mapIntent = (meta) => ({
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
 });
+
+const NATIVE_EXPORT_HARNESSES = new Set(['claude', 'codex', 'kiro', 'kiro-ide', 'opencode']);
+const NATIVE_EXPORT_BLOCKED_STATUSES = new Set(['DRAFT', 'CREATED']);
+const NATIVE_EXPORT_REF_REQUIRED_STAGE_STATES = new Set([
+  'SUCCEEDED',
+  'FAILED',
+  'RUNNING',
+  'WAITING_FOR_HUMAN',
+]);
+const ACTIVE_UNIT_STATES = new Set([
+  'RUNNING',
+  'MERGING',
+  'PR_DRAFT',
+  'RECONCILING',
+  'PR_READY',
+  'ADDRESSING_FEEDBACK',
+]);
+
+// Parallel lane questions do not park execution-level META. Treat RUNNING as
+// safely parked only when every active lane is waiting on a persisted human
+// task and no sibling stage can still mutate the snapshot.
+const isGloballyParkedForExport = (records) => {
+  if (records?.meta?.status !== 'RUNNING') return true;
+  const pendingStageIds = new Set(
+    (records.humanTasks ?? [])
+      .filter((task) => task.status === 'pending' && task.stageInstanceId)
+      .map((task) => task.stageInstanceId),
+  );
+  const parkedStages = (records.stages ?? []).filter(
+    (stage) => stage.state === 'WAITING_FOR_HUMAN' && pendingStageIds.has(stage.stageInstanceId),
+  );
+  if (parkedStages.length === 0) return false;
+  if ((records.stages ?? []).some((stage) => stage.state === 'RUNNING')) return false;
+
+  return (records.units ?? [])
+    .filter((unit) => ACTIVE_UNIT_STATES.has(unit.state))
+    .every(
+      (unit) =>
+        unit.state === 'RUNNING' &&
+        parkedStages.some(
+          (stage) =>
+            stage.unitSlug === unit.slug &&
+            Number(stage.sectionIndex) === Number(unit.sectionIndex),
+        ),
+    );
+};
+
+const repositoryCloneUrl = (repository, provider) => {
+  const value = String(repository ?? '');
+  if (/^(?:https?|ssh):\/\//.test(value) || value.startsWith('git@')) return value;
+  if (provider === 'gitlab') return `git@gitlab.com:${value}.git`;
+  if (provider === 'bitbucket') return `git@bitbucket.org:${value}.git`;
+  return `git@github.com:${value}.git`;
+};
+
+const exportRepositories = (meta) =>
+  assignNativeRepositoryDirectories(
+    (meta.repos ?? []).map((repository) => {
+      const provider = meta.repoProviders?.[repository] || meta.gitProvider || 'github';
+      return {
+        id: repositoryId(repository),
+        url: repositoryCloneUrl(repository, provider),
+        branch: meta.branch || meta.baseBranches?.[repository] || meta.baseBranch || '',
+      };
+    }),
+  );
+
+const exportSnapshotToken = (projection) =>
+  createHash('sha256')
+    .update(
+      canonicalJson({
+        ...projection,
+        artifacts: [...(projection.artifacts ?? [])].toSorted((a, b) =>
+          String(a.id).localeCompare(String(b.id)),
+        ),
+        stageRows: [...(projection.stageRows ?? [])].toSorted((a, b) =>
+          String(a.stageInstanceId).localeCompare(String(b.stageInstanceId)),
+        ),
+        humanTasks: [...(projection.humanTasks ?? [])].toSorted((a, b) =>
+          String(a.humanTaskId).localeCompare(String(b.humanTaskId)),
+        ),
+        unitRows: [...(projection.unitRows ?? [])].toSorted((a, b) =>
+          String(a.slug).localeCompare(String(b.slug)),
+        ),
+      }),
+    )
+    .digest('hex');
+
+const findNativeIncompatibleBlocks = async (plan) => {
+  const agentIds = new Set();
+  const sensorIds = new Set();
+  const ruleIds = new Set();
+  for (const stage of plan.stages) {
+    for (const id of [
+      stage.agentRef,
+      ...(stage.supportAgentRefs ?? []),
+      stage.reviewer?.reviewerAgent,
+    ]) {
+      if (id && id !== 'orchestrator') agentIds.add(id);
+    }
+    for (const sensor of stage.sensors ?? []) sensorIds.add(sensor.sensorId);
+    for (const id of [...(stage.rules?.universal ?? []), ...(stage.rules?.phase ?? [])]) {
+      ruleIds.add(id);
+    }
+  }
+  const [agents, sensors, rules, knowledge] = await Promise.all([
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'AGENT'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'SENSOR'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'RULE'),
+    listMergedBlocks(ddb, BLOCKS_TABLE(), 'KNOWLEDGE'),
+  ]);
+  const custom = [
+    ...plan.stages
+      .filter((stage) => stage.stageTenant && stage.stageTenant !== SYSTEM_TENANT)
+      .map((stage) => `STAGE:${stage.stageId}`),
+    ...agents
+      .filter(
+        (block) => block.tenantId !== SYSTEM_TENANT && agentIds.has(block.id ?? block.blockId),
+      )
+      .map((block) => `AGENT:${block.id ?? block.blockId}`),
+    ...sensors
+      .filter(
+        (block) => block.tenantId !== SYSTEM_TENANT && sensorIds.has(block.id ?? block.blockId),
+      )
+      .map((block) => `SENSOR:${block.id ?? block.blockId}`),
+    ...rules
+      .filter((block) => block.tenantId !== SYSTEM_TENANT && ruleIds.has(block.id ?? block.blockId))
+      .map((block) => `RULE:${block.id ?? block.blockId}`),
+    ...knowledge
+      .filter(
+        (block) =>
+          block.tenantId !== SYSTEM_TENANT &&
+          (block.agentRef === 'shared' || agentIds.has(block.agentRef)),
+      )
+      .map((block) => `KNOWLEDGE:${block.id ?? block.blockId}`),
+  ];
+  return [...new Set(custom)].toSorted();
+};
+
+const hasNonSystemMethodologyPins = (methodologyPins) =>
+  Object.values(methodologyPins ?? {}).some((pins) =>
+    Object.values(pins ?? {}).some((pin) => pin?.tenantId !== SYSTEM_TENANT),
+  );
+
+const methodologyRefsMatch = (planResult, expectedRef) => {
+  const refs = planResult?.methodologySourceRefs ?? [];
+  return refs.length === 1 && refs[0] === expectedRef;
+};
+
+// Prefer the normal DynamoDB workflow snapshot. If a SYSTEM reseed replaced
+// those version keys, reconstruct the same plan from the intent's commit-pinned
+// S3 catalog instead. Customer-edited methodology remains intentionally
+// unsupported by native export and never falls back to the SYSTEM catalog.
+const loadNativeExportPlan = async (meta) => {
+  const options = {
+    workflowId: meta.workflowId,
+    workflowVersion: meta.workflowVersion,
+    scope: meta.scope,
+    ...(Array.isArray(meta.skipStageIds) && meta.skipStageIds.length
+      ? { skipStageIds: meta.skipStageIds }
+      : {}),
+    ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+    ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+  };
+  let currentResult = null;
+  let currentError = null;
+  try {
+    currentResult = await loadExecutionPlan({
+      ddb,
+      tableName: BLOCKS_TABLE(),
+      ...options,
+    });
+  } catch (error) {
+    currentError = error;
+  }
+
+  const canUseCatalog = meta.aidlcRepoRef && !hasNonSystemMethodologyPins(meta.methodologyPins);
+  if (
+    currentResult?.valid &&
+    currentResult.plan &&
+    (!canUseCatalog || methodologyRefsMatch(currentResult, meta.aidlcRepoRef))
+  ) {
+    return currentResult;
+  }
+  if (!canUseCatalog) {
+    if (currentError) throw currentError;
+    return currentResult;
+  }
+
+  const catalog = await loadOrCreateMethodologyCatalog({
+    s3,
+    bucket: ARTIFACTS_BUCKET(),
+    ref: meta.aidlcRepoRef,
+  });
+  return executionPlanFromMethodologyCatalog({
+    catalog,
+    workflowId: meta.workflowId,
+    workflowVersion: meta.workflowVersion,
+    scope: meta.scope,
+    skipStageIds: options.skipStageIds,
+    composedGrid: options.composedGrid,
+  });
+};
 
 // Map a QEDIT# row (Quorum-supported artifact edit session) to the wire shape.
 const mapQuorumEdit = (q) => ({
@@ -1285,7 +1514,10 @@ const authorize = async (g, projectId, sub, response) => {
   return { role };
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logger.resetKeys();
+  logSafeEventIfEnabled(logger, event);
   const response = buildResponse(event);
   if (event?.source === 'aws.s3') {
     await ingestAttachmentUpload(event);
@@ -1313,6 +1545,13 @@ export const handler = async (event) => {
   const versionId = pathParameters?.versionId;
   const editId = pathParameters?.editId;
   const sub = event.requestContext?.authorizer?.claims?.sub;
+
+  // Correlation context for all subsequent logs in this request.
+  logger.appendKeys({
+    ...(projectId && { projectId }),
+    ...(intentId && { intentId }),
+    ...(sub && { userId: sub }),
+  });
 
   let conn;
   try {
@@ -1376,7 +1615,7 @@ export const handler = async (event) => {
             args: { number: pr.number },
           });
         } catch (error) {
-          console.error('Review comment refresh failed:', error.code || error.message);
+          logger.error('Review comment refresh failed', error);
           return response(error.code === 'SOURCE_CONTROL_NOT_READY' ? 409 : 502, {
             error:
               error.code === 'SOURCE_CONTROL_NOT_READY'
@@ -1503,14 +1742,243 @@ export const handler = async (event) => {
             await wakeUnitPrWait(wait, {
               reason: 'queued_feedback',
               detail: { batchId, commentCount: selected.length },
-            }).catch((error) =>
-              console.error('Queued feedback PR-wait wake failed:', error.message),
-            );
+            }).catch((error) => logger.error('Queued feedback PR-wait wake failed', error));
           }
         }
         return response(created.created ? 202 : 200, mapFeedbackBatch(created.item));
       }
       return response(405, { error: 'Method not allowed' });
+    }
+
+    // POST /projects/{projectId}/intents/{intentId}/export — materialize a
+    // native AI-DLC workspace snapshot and return a short-lived S3 download.
+    // RUNNING executions export their latest completed immutable checkpoint.
+    // Parked and terminal executions export current live state with a final
+    // consistency recheck so post-stage human edits are preserved.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/export')) {
+      const liveRecords = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const liveMeta = liveRecords.meta;
+      if (!liveMeta || liveMeta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      if (NATIVE_EXPORT_BLOCKED_STATUSES.has(liveMeta.status)) {
+        return response(409, {
+          error: 'The intent is not in an exportable state',
+        });
+      }
+      const useLiveSnapshot = isGloballyParkedForExport(liveRecords);
+      const checkpoint = useLiveSnapshot ? null : await store.getWorkflowCheckpoint(intentId);
+      if (!useLiveSnapshot && !checkpoint) {
+        return response(409, {
+          error: 'No completed workflow checkpoint is available yet',
+          code: 'export_checkpoint_unavailable',
+        });
+      }
+      const records = checkpoint ? checkpointProjection(checkpoint) : liveRecords;
+      const meta = records.meta;
+      const data = body ? JSON.parse(body) : {};
+      const harness = data.harness || meta.agentCli || 'kiro';
+      if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
+        return response(400, { error: `Unsupported native AI-DLC harness: ${harness}` });
+      }
+      const refRequiredStages = (records.stages ?? []).filter((stage) =>
+        NATIVE_EXPORT_REF_REQUIRED_STAGE_STATES.has(stage.state),
+      );
+      const executionRefsMatch = meta.aidlcRepoRef
+        ? refRequiredStages.every((stage) => stage.aidlcRepoRef === meta.aidlcRepoRef)
+        : new Set(refRequiredStages.map((stage) => stage.aidlcRepoRef).filter(Boolean)).size <= 1;
+      if (!executionRefsMatch) {
+        return response(409, {
+          error:
+            'This workflow has incomplete or mixed AI-DLC revision attribution and cannot be exported',
+          code: 'export_mixed_aidlc_refs',
+        });
+      }
+      const planResult = await loadNativeExportPlan(meta);
+      if (!planResult.valid || !planResult.plan) {
+        return response(409, {
+          error: 'The workflow snapshot cannot be resolved for native export',
+          errors: planResult.errors ?? [],
+        });
+      }
+      const incompatibleBlocks = await findNativeIncompatibleBlocks(planResult.plan);
+      if (incompatibleBlocks.length > 0) {
+        return response(409, {
+          error: 'The workflow uses edited methodology blocks that cannot yet be exported',
+          incompatibleBlocks,
+        });
+      }
+      const stages = [
+        ...planResult.plan.stages,
+        ...(planResult.plan.skippedStages ?? []).map((stage) => ({ ...stage, excluded: true })),
+      ];
+      try {
+        const artifactRows = checkpoint
+          ? (
+              await readCheckpointArtifactVersions({
+                g,
+                intentId,
+                refs: checkpoint.artifactRefs ?? [],
+              })
+            ).map(mapCheckpointArtifact)
+          : await fetchArtifacts(g, intentId);
+        const customRules = checkpoint
+          ? (checkpoint.customRuleRefs ?? [])
+          : await pinCustomRuleVersions({
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+              rules: meta.customRules ?? [],
+            });
+        const buildProjection = (projectionRecords, projectionArtifacts, projectionRules) => {
+          const projectionMeta = projectionRecords.meta;
+          const projectionStagesByInstance = new Map(
+            (projectionRecords.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+          );
+          return {
+            intent: {
+              intentId,
+              projectId,
+              title: projectionMeta.title,
+              prompt: projectionMeta.prompt,
+              scope: projectionMeta.scope,
+              workflowId: projectionMeta.workflowId,
+              workflowVersion: projectionMeta.workflowVersion,
+              createdAt: projectionMeta.startedAt,
+              branch: projectionMeta.branch,
+              projectType: projectionMeta.projectType,
+              customRules: projectionRules,
+            },
+            stages,
+            stageRows: projectionRecords.stages ?? [],
+            artifacts: projectionArtifacts.map((artifact) => {
+              const producer = projectionStagesByInstance.get(artifact.createdByStageInstanceId);
+              return {
+                ...artifact,
+                stageId: producer?.stageId ?? null,
+                phase: producer?.phase ?? null,
+                repository: artifact.repository ?? producer?.repository ?? null,
+              };
+            }),
+            humanTasks: projectionRecords.humanTasks ?? [],
+            repositories: exportRepositories(projectionMeta),
+            unitPlan: projectionRecords.unitPlan,
+            unitRows: projectionRecords.units ?? [],
+          };
+        };
+        const projection = buildProjection(records, artifactRows, customRules);
+        const initialSnapshotToken = checkpoint ? null : exportSnapshotToken(projection);
+        const legacyRefWarning = meta.aidlcRepoRef
+          ? []
+          : [
+              'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+            ];
+        const upstreamRef = meta.aidlcRepoRef || (await resolveAidlcRepoRef(AIDLC_REPO_REF()));
+        const exported = await createNativeExport({
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+          upstreamRef,
+          harness,
+          warnings: legacyRefWarning,
+          projection,
+          sourceCheckpoint: checkpoint
+            ? {
+                checkpointId: checkpoint.checkpointId,
+                createdAt: checkpoint.createdAt,
+                sourceStageInstanceId: checkpoint.sourceStageInstanceId ?? null,
+              }
+            : null,
+          validateSnapshot: checkpoint
+            ? null
+            : async () => {
+                const latestRecords = await store.getExecutionRecords(intentId, {
+                  includeOutputs: false,
+                });
+                if (
+                  !latestRecords.meta ||
+                  latestRecords.meta.projectId !== projectId ||
+                  NATIVE_EXPORT_BLOCKED_STATUSES.has(latestRecords.meta.status) ||
+                  !isGloballyParkedForExport(latestRecords)
+                ) {
+                  return false;
+                }
+                const latestArtifacts = await fetchArtifacts(g, intentId);
+                const latestRules = await pinCustomRuleVersions({
+                  s3,
+                  bucket: ARTIFACTS_BUCKET(),
+                  rules: latestRecords.meta.customRules ?? [],
+                });
+                return (
+                  exportSnapshotToken(
+                    buildProjection(latestRecords, latestArtifacts, latestRules),
+                  ) === initialSnapshotToken
+                );
+              },
+        });
+        const exporter = getResponder(event);
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.execution.exported',
+            actor: exporter.displayName || exporter.sub,
+            summary: `${exporter.displayName || 'Someone'} exported the ${harness} native workspace (export ${exported.exportId})`,
+          })
+          .catch((err) => logger.error('Export event append failed', err));
+        return response(201, exported);
+      } catch (error) {
+        logger.error('Native workflow export failed', error);
+        if (error.code === 'export_snapshot_changed') {
+          return response(409, {
+            error: error.message,
+            code: error.code,
+          });
+        }
+        if (error.code === 'export_checkpoint_unavailable') {
+          return response(409, {
+            error: 'The latest completed checkpoint is incomplete or unavailable',
+            code: error.code,
+          });
+        }
+        // A configured AI-DLC ref that cannot be resolved is a deployment
+        // misconfiguration; name it rather than blaming the workflow snapshot.
+        if (/AI-DLC repository ref/.test(String(error.message ?? ''))) {
+          return response(409, {
+            error: 'The deployment AI-DLC repository ref is misconfigured',
+            detail: error.message,
+          });
+        }
+        // A transient upstream fetch failure is retryable and not the caller's
+        // fault, so surface it as 502 rather than an un-exportable workflow.
+        if (error.code === EXPORT_SOURCE_UNAVAILABLE) {
+          return response(502, {
+            error: 'The AI-DLC distribution source is temporarily unavailable',
+            code: error.code,
+            detail: error.message,
+          });
+        }
+        // A server-side invariant violation (unset bucket/ref) is a deployment
+        // bug the caller cannot fix -- surface it as 500.
+        if (error.code === EXPORT_MISCONFIGURED) {
+          return response(500, {
+            error: 'The native workspace export is misconfigured',
+            code: error.code,
+            detail: error.message,
+          });
+        }
+        // `native-export:`-prefixed errors are deterministic snapshot/distribution
+        // incompatibilities the caller cannot retry away (409). Anything else is an
+        // unexpected runtime failure (S3, bug) and must surface as 500 so it is not
+        // mistaken for an un-exportable workflow.
+        if (String(error.message ?? '').startsWith('native-export:')) {
+          return response(409, {
+            error: 'This workflow snapshot is not compatible with native AI-DLC export',
+            detail: error.message,
+          });
+        }
+        return response(500, {
+          error: 'The native workspace export failed unexpectedly',
+          detail: error.message,
+        });
+      }
     }
 
     // POST /projects/{projectId}/intents/{intentId}/realtime-token
@@ -1627,6 +2095,9 @@ export const handler = async (event) => {
             ? { skipStageIds: records.meta.skipStageIds }
             : {}),
           ...(records.meta.composedGrid ? { composedGrid: records.meta.composedGrid } : {}),
+          ...(records.meta.methodologyPins
+            ? { methodologyPins: records.meta.methodologyPins }
+            : {}),
         });
         plan = planResult.valid ? planResult.plan : null;
       } catch {
@@ -1677,7 +2148,7 @@ export const handler = async (event) => {
         intentId,
         artifactId: canonicalArtifactId,
       }).catch((err) => {
-        console.error('Downstream closure failed:', err.message);
+        logger.error('Downstream closure failed', err);
         return [];
       });
       const edit = await applyArtifactEdit({
@@ -1696,7 +2167,7 @@ export const handler = async (event) => {
         artifactIds: downstream.map((d) => d.id),
         reason: `edit:${canonicalArtifactId}:${edit.editedAt}`,
       }).catch((err) => {
-        console.error('Stale marking failed:', err.message);
+        logger.error('Stale marking failed', err);
         return [];
       });
       // Mid-run edit (the run is parked WAITING on a gate): the parked CLI
@@ -1715,12 +2186,12 @@ export const handler = async (event) => {
             createdByName: responder.displayName,
           })
           .catch((err) => {
-            console.error('Artifact-edit steering record failed:', err.message);
+            logger.error('Artifact-edit steering record failed', err);
             return null;
           });
         if (steer) {
           await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-            console.error('Steering graph mirror failed:', err.message),
+            logger.error('Steering graph mirror failed', err),
           );
         }
       }
@@ -1736,7 +2207,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary,
         })
-        .catch((err) => console.error('Edit event append failed:', err.message));
+        .catch((err) => logger.error('Edit event append failed', err));
       await broadcastToIntentChannel(intentId, {
         action: 'agent.note',
         intentId,
@@ -1786,7 +2257,7 @@ export const handler = async (event) => {
           const text = res.response ? await res.response.transformToString() : '';
           derived = text ? JSON.parse(text).ok !== false : false;
         } catch (err) {
-          console.error('[artifact-edit] derive dispatch failed:', err.message);
+          logger.error('[artifact-edit] derive dispatch failed', err);
         }
       }
       return response(200, {
@@ -1828,7 +2299,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary,
         })
-        .catch((err) => console.error('Verify event append failed:', err.message));
+        .catch((err) => logger.error('Verify event append failed', err));
       await broadcastToIntentChannel(intentId, {
         action: 'agent.note',
         intentId,
@@ -1896,7 +2367,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary,
         })
-        .catch((err) => console.error('Quorum edit event append failed:', err.message));
+        .catch((err) => logger.error('Quorum edit event append failed', err));
       await broadcastToIntentChannel(intentId, {
         action: 'agent.note',
         intentId,
@@ -1990,7 +2461,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary,
         })
-        .catch((err) => console.error('Quorum decision event append failed:', err.message));
+        .catch((err) => logger.error('Quorum decision event append failed', err));
       await broadcastToIntentChannel(intentId, {
         action: 'agent.note',
         intentId,
@@ -2062,9 +2533,9 @@ export const handler = async (event) => {
             actor: responder.displayName || responder.sub,
             summary: `${responder.displayName || 'Someone'} added a course correction with their answer`,
           })
-          .catch((err) => console.error('Steering event append failed:', err.message));
+          .catch((err) => logger.error('Steering event append failed', err));
         await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-          console.error('Steering graph mirror failed:', err.message),
+          logger.error('Steering graph mirror failed', err),
         );
       }
       await syncAnsweredQuestionVertex({
@@ -2074,9 +2545,9 @@ export const handler = async (event) => {
         answer: answered.answer,
         responder,
         answeredAt: answered.answeredAt,
-      }).catch((err) => console.error('Question graph sync failed:', err.message));
+      }).catch((err) => logger.error('Question graph sync failed', err));
       await linkQuestionToStageArtifacts(g, intentId, gate).catch((err) =>
-        console.error('Question artifact link sync failed:', err.message),
+        logger.error('Question artifact link sync failed', err),
       );
       // Resume the suspended orchestrator ONLY if this gate is the one the
       // durable run actually parked on (it carries the callbackId). Answering an
@@ -2095,7 +2566,7 @@ export const handler = async (event) => {
               actor: responder.displayName || responder.sub,
               summary: `${responder.displayName || 'Someone'} answered after the durable execution expired; the run was marked failed and can be restarted`,
             }).catch((repairErr) =>
-              console.error('Durable callback expiry repair failed:', repairErr.message),
+              logger.error('Durable callback expiry repair failed', repairErr),
             );
             return response(409, {
               error: 'Durable execution expired before this answer could resume the run',
@@ -2110,9 +2581,7 @@ export const handler = async (event) => {
               actor: responder.displayName || responder.sub,
               summary: `Gate answer was recorded, but the durable callback could not be completed: ${err?.message ?? 'unknown error'}`,
             })
-            .catch((eventErr) =>
-              console.error('Gate resume failure event append failed:', eventErr.message),
-            );
+            .catch((eventErr) => logger.error('Gate resume failure event append failed', eventErr));
           return response(503, {
             error:
               'Gate answer was recorded, but the durable callback could not be completed. Retry after refreshing the intent.',
@@ -2165,9 +2634,9 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary: `${responder.displayName || 'Someone'} revised their answer to "${questionText(gate.questions)}"`,
         })
-        .catch((err) => console.error('Revise event append failed:', err.message));
+        .catch((err) => logger.error('Revise event append failed', err));
       await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-        console.error('Steering graph mirror failed:', err.message),
+        logger.error('Steering graph mirror failed', err),
       );
       // Tell the caller when the correction will reach the agent: a WAITING run
       // delivers on the pending gate's resume; otherwise at the next stage start.
@@ -2293,6 +2762,7 @@ export const handler = async (event) => {
           scope: meta.scope,
           ...(effectiveSkips?.length ? { skipStageIds: effectiveSkips } : {}),
           ...(effectiveGrid ? { composedGrid: effectiveGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -2359,7 +2829,7 @@ export const handler = async (event) => {
               executionId: intentId,
               durableExecutionArn: invoked.durableExecutionArn,
             })
-            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
         }
       } catch (err) {
         await store.updateExecution({
@@ -2417,7 +2887,7 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary: `Run cancelled by ${responder.displayName || 'a project member'}`,
         })
-        .catch((err) => console.error('Cancel event append failed:', err.message));
+        .catch((err) => logger.error('Cancel event append failed', err));
       return response(200, mapIntent(updated));
     }
 
@@ -2699,6 +3169,7 @@ export const handler = async (event) => {
             workflowId: meta.workflowId,
             workflowVersion: meta.workflowVersion,
             scope: match.scopeId,
+            ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
           });
           if (planCheck.valid) {
             const row = await store.createCompose({
@@ -2985,6 +3456,7 @@ export const handler = async (event) => {
           scope: effScope,
           ...(effSkips?.length ? { skipStageIds: effSkips } : {}),
           ...(effGrid ? { composedGrid: effGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -3050,9 +3522,12 @@ export const handler = async (event) => {
         throw err;
       }
 
-      console.log(
-        `Intent ${intentId} deleted by ${responder.sub} (project ${projectId}, was ${meta.status})`,
-      );
+      logger.info('Intent deleted', {
+        intentId,
+        deletedBy: responder.sub,
+        projectId,
+        priorStatus: meta.status,
+      });
       return response(204, {});
     }
 
@@ -3128,7 +3603,7 @@ export const handler = async (event) => {
           enriched: out.enriched ?? 0,
         });
       } catch (err) {
-        console.error('[derive] runtime invoke failed:', err.message);
+        logger.error('[derive] runtime invoke failed', err);
         return response(502, { error: 'Failed to invoke the derive runtime' });
       }
     }
@@ -3232,6 +3707,7 @@ export const handler = async (event) => {
           ? { skipStageIds: meta.skipStageIds }
           : {}),
         ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -3311,7 +3787,7 @@ export const handler = async (event) => {
           remotePrs.set(pr.sk, { status, mergedHeadIsAncestor });
         }
       } catch (error) {
-        console.error('Repair provider reconciliation failed:', error.code || error.message);
+        logger.error('Repair provider reconciliation failed', error);
         return response(502, {
           error: 'Pull request state could not be reconciled; repair made no changes',
           code: 'provider_reconciliation_failed',
@@ -3393,7 +3869,11 @@ export const handler = async (event) => {
       });
 
       await mapWithConcurrency(resetInstances, 12, async ({ stage, slug, stageInstanceId }) => {
-        const reset = await store.resetStageRow({ executionId: intentId, stageInstanceId });
+        const reset = await store.resetStageRow({
+          executionId: intentId,
+          stageInstanceId,
+          preservePendingCodeCommitRefs: true,
+        });
         if (!reset) return;
         await store
           .appendEvent({
@@ -3503,6 +3983,7 @@ export const handler = async (event) => {
 
       const fromStageId = sectionStages[0].stageId;
       const durableExecutionName = durableExecutionNameForIntent(intentId);
+      await store.deleteWorkflowCheckpoint(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -3538,9 +4019,7 @@ export const handler = async (event) => {
               executionId: intentId,
               durableExecutionArn: invoked.durableExecutionArn,
             })
-            .catch((error) =>
-              console.error('Repair durable execution ARN stamp failed:', error.message),
-            );
+            .catch((error) => logger.error('Repair durable execution ARN stamp failed', error));
         }
       } catch (error) {
         await store.updateExecution({
@@ -3609,6 +4088,7 @@ export const handler = async (event) => {
         scope: meta.scope,
         ...(rewindSkipIds.length ? { skipStageIds: rewindSkipIds } : {}),
         ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
       });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
@@ -3783,6 +4263,10 @@ export const handler = async (event) => {
           const reset = await store.resetStageRow({
             executionId: intentId,
             stageInstanceId,
+            // A guidance-less restart is a retry of the same work. Preserve any
+            // commits made before failure so the clean retry can still project
+            // their CodeFiles. Guided rewinds intentionally replace prior work.
+            preservePendingCodeCommitRefs: !guidance,
           });
           if (reset) {
             await store
@@ -3817,14 +4301,12 @@ export const handler = async (event) => {
               state: 'PENDING',
               fields: { failureReason: null, blockedOn: null },
             })
-            .catch((err) =>
-              console.error(`Unit lane reset failed (s${sectionIndex}:${slug}):`, err.message),
-            ),
+            .catch((err) => logger.error('Unit lane reset failed', err, { sectionIndex, slug })),
         );
       }
       if (steer) {
         await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-          console.error('Steering graph mirror failed:', err.message),
+          logger.error('Steering graph mirror failed', err),
         );
       }
       await store
@@ -3834,9 +4316,10 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${fromStageId !== requestedFromStageId ? ` (requested ${requestedFromStageId}; restarted the incomplete unit section from its first stage)` : ''}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${archivedArtifacts.length} artifact(s) archived)`,
         })
-        .catch((err) => console.error('Rewind event append failed:', err.message));
+        .catch((err) => logger.error('Rewind event append failed', err));
       // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
       const durableExecutionName = durableExecutionNameForIntent(intentId);
+      await store.deleteWorkflowCheckpoint(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -3875,7 +4358,7 @@ export const handler = async (event) => {
               executionId: intentId,
               durableExecutionArn: invoked.durableExecutionArn,
             })
-            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
         }
       } catch (err) {
         await store.updateExecution({
@@ -3991,6 +4474,7 @@ export const handler = async (event) => {
           scope: meta.scope,
           ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
           ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
+          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         });
         const currentSectionIds = new Set(
           (currentPlanResult.plan?.stages ?? [])
@@ -4023,6 +4507,7 @@ export const handler = async (event) => {
         scope: newScope,
         composedGrid: newGrid,
         ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
+        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
         strict: true,
       });
       if (!planResult.valid || !planResult.plan) {
@@ -4065,6 +4550,11 @@ export const handler = async (event) => {
       });
 
       // Retire only after every affected artifact was durably snapshotted.
+      await store.updateExecution({
+        executionId: intentId,
+        fromStatus: meta.status,
+        orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+      });
       await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
       await stopRuntimeSessions(intentId, meta);
       for (const stageInstanceId of resetIds) {
@@ -4077,9 +4567,10 @@ export const handler = async (event) => {
           actor: responder.displayName || responder.sub,
           summary: `${responder.displayName || 'Someone'} recomposed the run (${newPlan.summary.executedStages} of ${newPlan.summary.totalStages} stages, scope label "${newScope}") — relaunching at ${fromStage.stageId}`,
         })
-        .catch((err) => console.error('Recompose event append failed:', err.message));
+        .catch((err) => logger.error('Recompose event append failed', err));
       const priorStatus = meta.status;
       const durableExecutionName = durableExecutionNameForIntent(intentId);
+      await store.deleteWorkflowCheckpoint(intentId);
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -4121,7 +4612,7 @@ export const handler = async (event) => {
               executionId: intentId,
               durableExecutionArn: invoked.durableExecutionArn,
             })
-            .catch((err) => console.error('Durable execution ARN stamp failed:', err.message));
+            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
         }
       } catch (err) {
         await store.updateExecution({
@@ -4424,6 +4915,24 @@ export const handler = async (event) => {
         });
       }
       const planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+      let aidlcRepoRef = null;
+      if (AIDLC_REPO_REF()) {
+        try {
+          aidlcRepoRef = await resolveAidlcRepoRef(AIDLC_REPO_REF());
+        } catch (error) {
+          return response(503, {
+            error: 'The configured AI-DLC repository ref could not be resolved',
+            detail: error.message,
+          });
+        }
+      }
+      if ((planCheck.methodologySourceRefs ?? []).length > 1) {
+        return response(409, {
+          error: 'The selected workflow combines blocks from multiple AI-DLC revisions',
+          refs: planCheck.methodologySourceRefs,
+        });
+      }
+      aidlcRepoRef = planCheck.methodologySourceRefs?.[0] ?? aidlcRepoRef;
       // Optional per-repo base-branch override (see validateBaseBranches) —
       // validated against THIS intent's repo set before anything is written.
       const { value: baseBranches, error: baseBranchesError } = validateBaseBranches(
@@ -4480,6 +4989,8 @@ export const handler = async (event) => {
         status: 'DRAFT',
         workflowId,
         workflowVersion,
+        aidlcRepoRef,
+        methodologyPins: planCheck.methodologyPins,
         scope,
         startedBy: sub,
         title: data.title || null,
@@ -4515,11 +5026,11 @@ export const handler = async (event) => {
     // every 500 in CloudWatch was an identical opaque string with no stack
     // and no way to distinguish the offending path. The 500 response
     // contract is preserved — the body still exposes only a generic message.
-    console.error('intents handler error', {
-      message: error?.message,
-      name: error?.name,
+    // The Error is passed as the second arg so Powertools serializes its
+    // name/message/stack into a structured `error` field (the `message` key is
+    // reserved by the logger and would be dropped if set on the context bag).
+    logger.error('intents handler error', error, {
       code: error?.code,
-      stack: error?.stack,
       resource: event?.resource,
       httpMethod: event?.httpMethod,
       projectId: event?.pathParameters?.projectId,
@@ -4542,7 +5053,7 @@ export const handler = async (event) => {
 const invokeOrchestrator = async (payload, { durableExecutionName = null } = {}) => {
   const fn = ORCHESTRATOR_FN();
   if (!fn) {
-    console.error('V2_ORCHESTRATOR_FUNCTION not configured — cannot start');
+    logger.error('V2_ORCHESTRATOR_FUNCTION not configured — cannot start');
     return;
   }
   const res = await lambdaClient.send(
@@ -4618,7 +5129,7 @@ const wakeUnitPrWait = async (wait, { reason, detail = null } = {}) => {
       claimId,
       reason,
     })
-    .catch((error) => console.error('PR-wait completion cleanup failed:', error.message));
+    .catch((error) => logger.error('PR-wait completion cleanup failed', error));
   return { woken: true };
 };
 
@@ -4697,7 +5208,7 @@ const repairExpiredDurableExecution = async ({
       actor,
       summary,
     })
-    .catch((err) => console.error('Durable expiry event append failed:', err.message));
+    .catch((err) => logger.error('Durable expiry event append failed', err));
   return updated;
 };
 
@@ -4897,7 +5408,7 @@ const retireParkedRun = async (executionId, reason) => {
         supersededBy: reason,
       })
       .catch((err) => {
-        console.error('Gate supersede failed:', err.message);
+        logger.error('Gate supersede failed', err);
         return null;
       });
     if (superseded && gate.callbackId) {
@@ -4908,14 +5419,14 @@ const retireParkedRun = async (executionId, reason) => {
             Result: Buffer.from(JSON.stringify({ cancelled: true, reason })),
           }),
         )
-        .catch((err) => console.error('Cancel callback send failed:', err.message));
+        .catch((err) => logger.error('Cancel callback send failed', err));
     }
   }
   for (const wait of (records.units ?? []).filter((unit) => unit.prWaitCallbackId)) {
     await wakeUnitPrWait(wait, {
       reason: 'retired',
       detail: { reason },
-    }).catch((error) => console.error('Retired PR-wait callback send failed:', error.message));
+    }).catch((error) => logger.error('Retired PR-wait callback send failed', error));
   }
 };
 

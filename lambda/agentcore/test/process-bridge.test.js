@@ -88,6 +88,44 @@ describe('sendOutput', () => {
   });
 });
 
+describe('recordProjectType', () => {
+  it('persists and audits the workspace classification', async () => {
+    const store = fakeStore();
+    const sent = [];
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, stageId: 'workspace-detection' },
+      broadcast: (payload) => sent.push(payload),
+    });
+
+    await expect(bridge.recordProjectType({ projectType: 'greenfield' })).resolves.toEqual({
+      projectType: 'greenfield',
+    });
+    expect(store.execPatches).toContainEqual({
+      executionId: 'exec-1',
+      projectType: 'greenfield',
+    });
+    expect(store.events.at(-1)).toMatchObject({
+      type: 'v2.workspace.classified',
+      summary: 'Workspace classified as greenfield',
+    });
+    expect(sent.at(-1)).toMatchObject({
+      action: 'agent.note',
+      noteType: 'v2.workspace.classified',
+    });
+  });
+
+  it('restricts classification recording to workspace detection', async () => {
+    const bridge = createProcessBridge({
+      store: fakeStore(),
+      scope: { ...SCOPE, stageId: 'requirements-analysis' },
+    });
+    await expect(bridge.recordProjectType({ projectType: 'greenfield' })).rejects.toThrow(
+      /workspace-detection/,
+    );
+  });
+});
+
 describe('collectMetric + emitStageNote', () => {
   it('records a metric bag and broadcasts it live', async () => {
     const store = fakeStore();

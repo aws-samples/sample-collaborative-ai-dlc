@@ -1,6 +1,6 @@
 {
   "name": "sample-collaborative-ai-dlc",
-  "version": "2.0.0",
+  "version": "2.1.1",
   "private": true,
   "workspaces": [
     "lambda/agentcore",
@@ -51,6 +51,14 @@
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "audit:prod:frontend": "npm --prefix frontend audit --omit=dev --audit-level=high",
     "audit:prod:all": "npm run audit:prod && npm run audit:prod:frontend",
+    "dep:check": "depcruise lambda",
+    "dep:prepare-report-dir": "mkdir -p reports/dependency",
+    "dep:report": "npm run dep:prepare-report-dir && depcruise lambda --include-only \"^lambda\" --exclude \"node_modules|\\.build/|(^|/)coverage/|(^|/)\\.stryker-tmp/|(^|/)test/|\\.(test|spec)\\.(js|mjs|cjs|ts|tsx)$\" --output-type html --output-to reports/dependency/report.html",
+    "dep:metrics": "npm run dep:prepare-report-dir && depcruise lambda --include-only \"^lambda\" --exclude \"node_modules|\\.build/|(^|/)coverage/|(^|/)\\.stryker-tmp/|(^|/)test/|\\.(test|spec)\\.(js|mjs|cjs|ts|tsx)$\" --output-type metrics --output-to reports/dependency/metrics.txt",
+    "dep:graph": "npm run dep:prepare-report-dir && depcruise lambda --include-only \"^lambda\" --exclude \"node_modules|\\.build/|(^|/)coverage/|(^|/)\\.stryker-tmp/|(^|/)test/|\\.(test|spec)\\.(js|mjs|cjs|ts|tsx)$\" --collapse \"^lambda/[^/]+/\" --output-type mermaid --output-to reports/dependency/graph.mmd",
+    "dep:all": "npm run dep:report && npm run dep:metrics && npm run dep:graph",
+    "dep:focus": "npm run dep:prepare-report-dir && depcruise lambda --include-only \"^lambda\" --exclude \"node_modules|\\.build/|(^|/)coverage/|(^|/)\\.stryker-tmp/|(^|/)test/|\\.(test|spec)\\.(js|mjs|cjs|ts|tsx)$\" --output-type html --output-to reports/dependency/focus.html --focus",
+    "dep:reaches": "depcruise lambda --include-only \"^lambda\" --exclude \"node_modules|\\.build/|(^|/)coverage/|(^|/)\\.stryker-tmp/|(^|/)test/|\\.(test|spec)\\.(js|mjs|cjs|ts|tsx)$\" --output-type text --reaches",
     "sdk:sync": "node scripts/sync-aws-sdk.mjs",
     "sdk:check": "node scripts/sync-aws-sdk.mjs --check",
     "typecheck:frontend": "npm --prefix frontend run typecheck",
@@ -72,9 +80,10 @@
     "@secretlint/secretlint-rule-preset-recommend": "13.0.2",
     "@smithy/config-resolver": "^4.6.10",
     "@smithy/node-config-provider": "^3.0.0",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "aws-sdk-client-mock": "^4.1.0",
     "aws-sdk-client-mock-vitest": "^7.1.0",
+    "dependency-cruiser": "^16.10.4",
     "esbuild": "^0.28.1",
     "gremlin": "^3.8.1",
     "gremlin-aws-sigv4": "^3.6.1",
@@ -85,7 +94,7 @@
     "oxlint": "^1.74.0",
     "secretlint": "13.0.2",
     "testcontainers": "^11.0.0",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "@aws/durable-execution-sdk-js-testing": {
@@ -97,7 +106,7 @@
     "archiver-utils": {
       "glob": "^13.0.6"
     },
-    "js-yaml": "4.3.1",
+    "js-yaml": "4.3.2",
     "uuid": "^11.1.1"
   }
 }

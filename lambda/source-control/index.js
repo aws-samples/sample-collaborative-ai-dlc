@@ -5,6 +5,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { getProvider } from '../shared/git-providers.js';
 import {
@@ -28,6 +29,7 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const logger = new Logger({ persistentKeys: { component: 'source-control' } });
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 
@@ -274,7 +276,7 @@ const validateProjectBindings = async ({
   }
   const ready = results.every((result) => result.ready);
   if (!ready) {
-    console.error('[source-control] project validation failed', {
+    logger.error('project validation failed', {
       projectId,
       reasonCodes: [
         ...new Set(results.filter((result) => !result.ready).map((result) => result.code)),
@@ -396,7 +398,7 @@ const executeSourceControlOperation = async ({
     if (invalidReason) {
       await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
     }
-    console.error('[source-control] provider operation failed', {
+    logger.error('provider operation failed', {
       provider,
       operation,
       code: loggableErrorCode(error),
@@ -417,7 +419,8 @@ const apiOperation = (path) => {
 const reviewNumberFromPath = (path) =>
   path.match(/\/source-control\/reviews\/([^/]+)\/comments$/)?.[1] || null;
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   // Internal Lambda-only API. IAM is the authentication boundary.
   if (event?.action === 'validate-project' || event?.action === 'operate') {
     let conn;
@@ -432,7 +435,7 @@ export const handler = async (event) => {
       return { ok: true, result };
     } catch (error) {
       const code = loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
-      console.error('[source-control] internal operation failed', {
+      logger.error('internal operation failed', {
         action: event.action === 'validate-project' ? 'validate-project' : 'operate',
         code,
       });
@@ -548,7 +551,7 @@ export const handler = async (event) => {
         }
       }
       if (failures.length) {
-        console.error('[source-control] binding verification failed', {
+        logger.error('binding verification failed', {
           projectId,
           reasonCodes: [...new Set(failures.map((failure) => failure.code))]
             .filter(Boolean)
@@ -595,7 +598,7 @@ export const handler = async (event) => {
     return response(200, result);
   } catch (error) {
     const code = loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
-    console.error('[source-control] request failed', { code });
+    logger.error('request failed', { code });
     const status =
       error.code === 'REPOSITORY_NOT_ON_PROJECT'
         ? 403

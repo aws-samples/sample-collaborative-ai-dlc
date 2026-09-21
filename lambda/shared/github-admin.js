@@ -13,9 +13,11 @@ import { requirePlatformAdmin } from './authz.js';
 import { getUserId } from './git-oauth.js';
 import { getGitHubAppConfig, writeGitHubAppConfig } from './github-auth-config.js';
 import { clearAppAuthCaches, getGitHubAppIdentity } from './git-token.js';
+import { Logger } from '@aws-lambda-powertools/logger';
 
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const logger = new Logger({ persistentKeys: { component: 'github-admin' } });
 const ID_PATTERN = /^\d{1,32}$/;
 const MAX_PEM_LENGTH = 16 * 1024;
 
@@ -143,10 +145,10 @@ export const handleGitHubAdminConfig = async (event) => {
     if (appId !== undefined) {
       await writeGitHubAppConfig(ssm, { appId: candidateAppId });
     }
-    console.log('[github-admin] integration config updated', { by: userId });
+    logger.info('integration config updated', { by: userId });
     return response(200, await currentState());
   } catch (error) {
-    console.error('[github-admin] error:', error);
+    logger.error('error', error);
     return response(500, { error: 'Internal server error' });
   }
 };
