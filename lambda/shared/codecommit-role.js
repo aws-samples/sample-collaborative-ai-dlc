@@ -178,7 +178,7 @@ export const assumeCodeCommitRole = async ({
     accessKeyId: c.AccessKeyId,
     secretAccessKey: c.SecretAccessKey,
     sessionToken: c.SessionToken,
-    expiration: c.Expiration ? new Date(c.Expiration).toISOString() : null,
+    expiration: c.Expiration ? new Date(c.Expiration) : undefined,
     assumedRoleArn: result.AssumedRoleUser?.Arn || null,
   };
 };

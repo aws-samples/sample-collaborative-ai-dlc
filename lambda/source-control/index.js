@@ -184,6 +184,7 @@ const validateProjectBindings = async ({
   ddbClient = ddb,
   ssmClient = ssm,
   secretsClient = secrets,
+  stsClient = sts,
   live = true,
 }) => {
   if (repos.length === 0) return { ready: true, repositories: [] };
@@ -238,6 +239,7 @@ const validateProjectBindings = async ({
         ddb: ddbClient,
         ssm: ssmClient,
         secrets: secretsClient,
+        sts: stsClient,
         binding,
         requiredAccess: 'write',
       });
@@ -362,6 +364,7 @@ const executeSourceControlOperation = async ({
   ddbClient = ddb,
   ssmClient = ssm,
   secretsClient = secrets,
+  stsClient = sts,
 }) => {
   if (!SOURCE_CONTROL_OPERATIONS[operation]) {
     throw Object.assign(new Error('Unsupported source-control operation'), {
@@ -384,6 +387,7 @@ const executeSourceControlOperation = async ({
       ddb: ddbClient,
       ssm: ssmClient,
       secrets: secretsClient,
+      sts: stsClient,
       binding,
       requiredAccess: SOURCE_CONTROL_OPERATIONS[operation],
     });

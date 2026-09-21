@@ -120,7 +120,7 @@ describe('assumeCodeCommitRole', () => {
       accessKeyId: 'ASIAEXAMPLE',
       secretAccessKey: 'secret',
       sessionToken: 'token',
-      expiration: '2026-09-18T12:15:00.000Z',
+      expiration: new Date('2026-09-18T12:15:00.000Z'),
       assumedRoleArn: okCredentials.AssumedRoleUser.Arn,
     });
   });

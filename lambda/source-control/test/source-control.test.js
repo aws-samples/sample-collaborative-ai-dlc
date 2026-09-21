@@ -5,7 +5,40 @@ import {
   executeSourceControlOperation,
   isSupportedProvider,
   normalizeProviderSelections,
+  validateProjectBindings,
 } from '../index.js';
+
+const CODECOMMIT_REPO = 'arn:aws:codecommit:eu-west-1:123456789012:demo';
+const CODECOMMIT_ROLE = 'arn:aws:iam::123456789012:role/aidlc-codecommit-access';
+const CODECOMMIT_BINDING = {
+  projectId: 'p1',
+  provider: 'codecommit',
+  repo: CODECOMMIT_REPO,
+  authType: 'codecommit-role',
+  credentialRef: `codecommit-role#${CODECOMMIT_ROLE}`,
+  roleArn: CODECOMMIT_ROLE,
+  externalId: 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
+  status: 'active',
+  capabilities: { repositoryWrite: true },
+};
+
+const incompleteSts = () => {
+  const calls = [];
+  return {
+    calls,
+    send: async (command) => {
+      calls.push(command);
+      return { Credentials: {} };
+    },
+  };
+};
+
+const ddbWithBinding = {
+  send: async (command) =>
+    command.constructor.name === 'QueryCommand'
+      ? { Items: [CODECOMMIT_BINDING] }
+      : { Item: CODECOMMIT_BINDING },
+};
 
 describe('source-control project contract', () => {
   it('classifies tracker closure as a project-bound write operation', () => {
@@ -64,13 +97,11 @@ describe('source-control project contract', () => {
     expect(bindingStatusForProject([], [])).toEqual({ ready: true, repositories: [] });
   });
 
-  it('accepts every provider the binding contract knows (github, gitlab, bitbucket)', () => {
-    // Guards the PUT /projects/{id}/source-control allowlist: a provider wired
-    // into AUTH_TYPE_PROVIDER must not be rejected here. Regression cover for
-    // Bitbucket, which was 400'd by a stale ['github','gitlab'] list.
+  it('accepts every provider the binding contract knows', () => {
     expect(isSupportedProvider('github')).toBe(true);
     expect(isSupportedProvider('gitlab')).toBe(true);
     expect(isSupportedProvider('bitbucket')).toBe(true);
+    expect(isSupportedProvider('codecommit')).toBe(true);
     expect(isSupportedProvider('subversion')).toBe(false);
   });
 
@@ -84,5 +115,37 @@ describe('source-control project contract', () => {
         repos: [{ provider: 'github', repo: 'acme/allowed' }],
       }),
     ).rejects.toMatchObject({ code: 'REPOSITORY_NOT_ON_PROJECT' });
+  });
+
+  it('passes STS into live CodeCommit project validation', async () => {
+    const stsClient = incompleteSts();
+    const result = await validateProjectBindings({
+      projectId: 'p1',
+      repos: [{ provider: 'codecommit', repo: CODECOMMIT_REPO }],
+      ddbClient: ddbWithBinding,
+      ssmClient: {},
+      secretsClient: {},
+      stsClient,
+    });
+    expect(stsClient.calls).toHaveLength(1);
+    expect(result.repositories[0].code).toBe('ROLE_ASSUMPTION_FAILED');
+  });
+
+  it('passes STS into CodeCommit runtime operations', async () => {
+    const stsClient = incompleteSts();
+    await expect(
+      executeSourceControlOperation({
+        projectId: 'p1',
+        provider: 'codecommit',
+        repo: CODECOMMIT_REPO,
+        operation: 'branches',
+        repos: [{ provider: 'codecommit', repo: CODECOMMIT_REPO }],
+        ddbClient: ddbWithBinding,
+        ssmClient: {},
+        secretsClient: {},
+        stsClient,
+      }),
+    ).rejects.toMatchObject({ code: 'ROLE_ASSUMPTION_FAILED' });
+    expect(stsClient.calls).toHaveLength(1);
   });
 });
