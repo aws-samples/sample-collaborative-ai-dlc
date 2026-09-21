@@ -2411,13 +2411,27 @@ export const runStage = async (
     sectionIndex,
   });
   const failUnresumableGate = async (reason, detail) => {
-    await store.supersedeHumanTask({
-      executionId,
-      humanTaskId: parked.humanTaskId,
-      supersededBy: reason,
-    });
+    // Cleanup can hit the same storage outage as the park write. Attempt each
+    // write independently and preserve the original structured stage failure.
+    await store
+      .supersedeHumanTask({
+        executionId,
+        humanTaskId: parked.humanTaskId,
+        supersededBy: reason,
+      })
+      .catch((error) => {
+        console.error(
+          `[run-stage] failed to supersede unresumable gate ${parked.humanTaskId} stage=${stageInstanceId} reason=${reason}`,
+          error,
+        );
+      });
     if (!unitSlug) {
-      await store.updateExecution({ executionId, pendingHumanTaskId: null });
+      await store.updateExecution({ executionId, pendingHumanTaskId: null }).catch((error) => {
+        console.error(
+          `[run-stage] failed to clear pending gate execution=${executionId} stage=${stageInstanceId} reason=${reason}`,
+          error,
+        );
+      });
     }
     return fail(stageInstanceId, reason, detail, { clearPending: true });
   };

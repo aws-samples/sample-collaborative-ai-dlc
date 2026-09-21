@@ -2708,6 +2708,78 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     ).toBe(false);
   });
 
+  it('returns the original park failure when the park and all cleanup writes reject', async () => {
+    const store = spyStore(pendingGateSeed('q-1'));
+    const storageError = new Error('Storage unavailable');
+    store.updateStageState = vi.fn().mockRejectedValue(storageError);
+    store.supersedeHumanTask = vi.fn().mockRejectedValue(storageError);
+    const updateExecution = store.updateExecution;
+    store.updateExecution = vi.fn(async (row) => {
+      if (row.pendingHumanTaskId === null) throw storageError;
+      return updateExecution(row);
+    });
+    const broadcast = vi.fn().mockResolvedValue(undefined);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runStage(
+        { ...baseArgs, requestedCli: 'kiro' },
+        baseDeps({
+          availableClis: ['kiro'],
+          env: kiroStoreEnv,
+          store,
+          broadcast,
+          spawnFn: sessionSpawn(),
+          persistKiroStore: async () => true,
+        }),
+      );
+      expect(res).toEqual({
+        ok: false,
+        reason: 'stage_park_persist_failed',
+        detail:
+          'The conversation metadata could not be saved. Retry the stage when storage is available; the unresumable question has been retired.',
+      });
+      expect(store.updateStageState).toHaveBeenCalledWith(
+        expect.objectContaining({ state: 'WAITING_FOR_HUMAN' }),
+      );
+      expect(store.supersedeHumanTask).toHaveBeenCalledExactlyOnceWith({
+        executionId: 'e1',
+        humanTaskId: 'q-1',
+        supersededBy: 'stage_park_persist_failed',
+      });
+      expect(store.updateExecution).toHaveBeenCalledWith({
+        executionId: 'e1',
+        pendingHumanTaskId: null,
+      });
+      expect(store.updateStageState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          state: 'FAILED',
+          runtimeError: 'stage_park_persist_failed',
+          pendingHumanTaskId: null,
+        }),
+      );
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining('failed to supersede unresumable gate q-1'),
+        storageError,
+      );
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining('failed to clear pending gate'),
+        storageError,
+      );
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'agent.stage',
+          state: 'FAILED',
+          reason: 'stage_park_persist_failed',
+        }),
+      );
+      expect(
+        store.calls.some(([op, row]) => op === 'appendEvent' && row.type === 'v2.stage.parked'),
+      ).toBe(false);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('recovers a resume with a lost Kiro store by re-running fresh (recent gate)', async () => {
     // D2 recoverable path: mount wiped (restore fails, mount configured) but the
     // gate is recent → re-run the stage FRESH with the answer injected, not a blind
