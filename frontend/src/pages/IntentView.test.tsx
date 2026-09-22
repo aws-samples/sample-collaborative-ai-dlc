@@ -705,8 +705,12 @@ describe('IntentView', () => {
     expect(screen.getByText(/unzip "\$HOME\/Downloads\/workspace.zip" -d \./)).toBeInTheDocument();
     expect(screen.getByText('Fresh clone: org-a/api')).toBeInTheDocument();
     expect(screen.getByText('Fresh clone: org-b/api')).toBeInTheDocument();
-    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'org-a_api'/)).toBeInTheDocument();
-    expect(screen.getByText(/git clone --branch 'aidlc\/i1'.*'org-b_api'/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/git clone --branch 'aidlc\/i1' -- .*'\.\/org-a_api'/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/git clone --branch 'aidlc\/i1' -- .*'\.\/org-b_api'/),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/aidlc-workspace-sync/)).not.toBeInTheDocument();
     expect(screen.getByText('Start the selected harness:')).toBeInTheDocument();
     expect(screen.getByText('codex')).toBeInTheDocument();

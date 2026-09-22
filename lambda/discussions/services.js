@@ -8,11 +8,14 @@ import {
 import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { InvokeAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { isTokenLive } from '../shared/realtime-token.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { agentcore, ddb, ssm, query } from './clients.js';
 import { fetchProjectIdForSprint, fetchProjectIdForIntent } from './data-access.js';
+
+const logger = new Logger({ persistentKeys: { component: 'discussions' } });
 
 // ─── Authorization ───
 
@@ -73,7 +76,7 @@ export const broadcastToScope = async (scope, payload) => {
   } catch (err) {
     // Fanout is best-effort — persistence already succeeded; clients have the
     // change-delta reconciliation backstop.
-    console.error('WS fanout failed:', err.message);
+    logger.error('WS fanout failed', err);
   }
 };
 
@@ -105,7 +108,7 @@ export const broadcastToUser = async (userId, payload) => {
         ),
     );
   } catch (err) {
-    console.error('Mention notification failed:', err.message);
+    logger.error('Mention notification failed', err);
   }
 };
 
@@ -141,11 +144,12 @@ const discussionRuntimeTargetFor = async (intentId, fallbackRuntimeArn) => {
       }),
     );
     if (meta) return runtimeTargetInput(meta, fallbackRuntimeArn);
-    console.warn(`Discussion assist runtime snapshot missing for ${intentId}; using core runtime`);
+    logger.warn('Discussion assist runtime snapshot missing; using core runtime', { intentId });
   } catch (error) {
-    console.warn(
-      `Discussion assist runtime snapshot lookup failed for ${intentId}; using core runtime: ${error?.message ?? error}`,
-    );
+    logger.warn('Discussion assist runtime snapshot lookup failed; using core runtime', {
+      intentId,
+      error: error?.message ?? String(error),
+    });
   }
   return fallbackTarget;
 };

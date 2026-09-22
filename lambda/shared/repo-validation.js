@@ -13,6 +13,14 @@
 // ("  `  $  \  whitespace). Freeform values (bare names, SSH URLs) still pass.
 const SHELL_SAFE_REPO_PATTERN = /^[A-Za-z0-9._@:/-]+$/;
 
+// Provider-returned repository paths may contain nested namespaces. Enforce
+// filesystem-safe segments, leaving provider naming rules and lengths alone.
+const REPO_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+$/;
+const isValidRepoPath = (value) =>
+  typeof value === 'string' &&
+  REPO_PATH_PATTERN.test(value) &&
+  value.split('/').every((segment) => segment !== '.' && segment !== '..');
+
 // Git refs: letters, digits, ., _, /, - only. No leading dash (arg injection),
 // no ".." and no "@{" (git revision syntax).
 const GIT_REF_PATTERN = /^[A-Za-z0-9._/-]+$/;
@@ -36,5 +44,5 @@ const isSafeRef = (v) =>
   !v.includes('..') &&
   !v.includes('@{');
 
-export { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef };
-export default { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef };
+export { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef, isValidRepoPath };
+export default { SHELL_SAFE_REPO_PATTERN, GIT_REF_PATTERN, isSafeRepo, isSafeRef, isValidRepoPath };

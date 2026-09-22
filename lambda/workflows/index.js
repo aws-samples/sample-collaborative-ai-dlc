@@ -53,6 +53,9 @@ import { blockPk, catalogGsi1Pk, LATEST, RULE_LAYERS, versionSk } from '../share
 import { compileWorkflow } from '../shared/compile.js';
 import { buildExecutionPlan } from '../shared/v2-execution-plan.js';
 import { normalizeComposedGrid } from '../shared/composed-grid.js';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'workflows' } });
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const blocksTable = () => process.env.BLOCKS_TABLE;
@@ -951,7 +954,8 @@ const composeWorkflow = (owner, items) => {
 
 // ─── Router ───
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
@@ -972,6 +976,7 @@ export const handler = async (event) => {
     }
 
     const { workflowId, stageId, scopeId, layer, ruleId } = event.pathParameters || {};
+    if (workflowId) logger.appendKeys({ workflowId });
     const tenant = resolveTenant(getClaims(event));
 
     if (path.endsWith('/placements/{stageId}')) {
@@ -1034,7 +1039,7 @@ export const handler = async (event) => {
   } catch (err) {
     // Log name + message (no PII in these handlers) so failures are diagnosable
     // from CloudWatch without a redeploy.
-    console.error('workflows handler error:', err?.name || 'error', '-', err?.message || '');
+    logger.error('workflows handler error', err);
     return res(500, { error: 'Internal server error' });
   }
 };

@@ -11,6 +11,7 @@ import {
   pushBranch,
   remoteBranchExists,
   commitAndPushAll,
+  gitResultForCommitRefs,
   seedInitialCommit,
 } from '../git-engine.js';
 
@@ -662,6 +663,43 @@ describe('pushBranch', () => {
 });
 
 describe('commitAndPushAll — the stage-exit hook', () => {
+  it('reconstructs the complete file set from commits spanning parked stage legs', async () => {
+    const { work } = await initRemoteAndClone();
+    await mkdir(path.join(work, 'src'), { recursive: true });
+    await writeFile(path.join(work, 'src', 'app.ts'), 'export const app = true;\n');
+    const first = await commitAll({ dir: work, message: 'aidlc(code-generation): park' });
+
+    await mkdir(path.join(work, 'records', 'billing'), { recursive: true });
+    await writeFile(
+      path.join(work, 'records', 'billing', 'traceability.json'),
+      '{"stage":"code-generation","unit":"billing","coverage":[]}\n',
+    );
+    const second = await commitAll({ dir: work, message: 'aidlc(code-generation): resume' });
+
+    const result = await gitResultForCommitRefs({
+      commitRefs: [
+        { repo: 'o/r', sha: first.sha },
+        { repo: 'o/r', sha: second.sha },
+      ],
+      repos: ['o/r'],
+      workspaceDir: work,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      committed: true,
+      results: [
+        {
+          repo: 'o/r',
+          committed: true,
+          pushed: true,
+          sha: second.sha,
+          files: ['records/billing/traceability.json', 'src/app.ts'],
+        },
+      ],
+    });
+  });
+
   it('single repo: commits + pushes new work and reports ok', async () => {
     const { work, remote } = await initRemoteAndClone();
     await git(['checkout', '-b', 'ai-dlc/i1'], work);

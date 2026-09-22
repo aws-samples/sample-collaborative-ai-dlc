@@ -8,6 +8,7 @@
 // invocations reuse the SAME AgentCore session, so the checkout persists. Every
 // effect is injected for testing.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import gremlin from 'gremlin';
 import { closeGraphSource } from '../mcp/graph-writer.js';
 import {
@@ -18,6 +19,8 @@ import {
 import { resolveGitCommitter as defaultResolveGitCommitter } from '../git-auth.js';
 import { invokeSourceControlOperation } from '../clients.js';
 import { materializeAttachments } from '../attachments.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'init-ws' } });
 
 const { cardinality } = gremlin.process;
 
@@ -109,7 +112,7 @@ export const initWs = async (
       workspaceDir,
     });
   } catch (e) {
-    console.error('[init-ws] checkout_failed:', e?.message, e?.stack);
+    logger.error('checkout_failed', e);
     return { ok: false, reason: 'checkout_failed', detail: e.message };
   }
   // An empty remote clones successfully. Any `cloned:false` row is a real

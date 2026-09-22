@@ -27,6 +27,7 @@
 // run; this command owns ONLY process state. Every effect is injected so the
 // whole flow is unit-tested with the CLI + AWS mocked.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { randomUUID } from 'node:crypto';
 import { scopeStageAttempt } from '../../shared/stage-attempt.js';
 import {
@@ -77,9 +78,14 @@ import {
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
   redirectHeavyDirs as defaultRedirectHeavyDirs,
 } from '../workspace.js';
-import { commitAndPushAll as defaultCommitAndPushAll, freeDiskBytes } from '../git-engine.js';
+import {
+  commitAndPushAll as defaultCommitAndPushAll,
+  freeDiskBytes,
+  gitResultForCommitRefs as defaultGitResultForCommitRefs,
+} from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner } from '../sensor-runner.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
@@ -90,6 +96,9 @@ import {
 } from '../../shared/v2-execution-plan.js';
 import { credentialProviderForCli } from '../../shared/agent-credentials.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'run-stage' } });
+
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
@@ -927,6 +936,25 @@ const pendingGate = async ({ store, executionId, stageInstanceId, unitSlug, sect
     : null;
 };
 
+const mergeCodeCommitRefs = (priorRefs, gitResult) => {
+  const refs = [];
+  const seen = new Set();
+  const add = (ref) => {
+    const repo = typeof ref?.repo === 'string' ? ref.repo : '';
+    const sha = typeof ref?.sha === 'string' ? ref.sha : '';
+    if (!repo || !sha) return;
+    const key = `${repo}\0${sha}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    refs.push({ repo, sha });
+  };
+  for (const ref of Array.isArray(priorRefs) ? priorRefs : []) add(ref);
+  for (const change of gitResult?.results ?? []) {
+    if (change?.committed === true) add(change);
+  }
+  return refs;
+};
+
 const runStageAttempt = async (
   {
     projectId,
@@ -1051,6 +1079,13 @@ const runStageAttempt = async (
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
+    // Project committed files into Neptune after all stage gates pass. The
+    // adapter detects traceability capability from a valid produced artifact,
+    // never from workflowVersion, and is deliberately best-effort.
+    ingestStageCodeTraceability = defaultIngestStageCodeTraceability,
+    // Reconstruct file lists for compact repo+SHA refs retained across a park.
+    // Injected for tests; Git remains authoritative after workspace re-clones.
+    gitResultForCommitRefs = defaultGitResultForCommitRefs,
     compileContextPack = defaultCompileContextPack,
     // Fetch project custom agent rules (.md bodies) from S3 → written into the
     // selected CLI's native rules dir by the materializer. Injected for tests.
@@ -1074,6 +1109,11 @@ const runStageAttempt = async (
   // a stage (mirrors the process bridge's broadcast contract).
   const publish = (payload) =>
     broadcast({ executionId, intentId, projectId, ...payload }).catch(() => {});
+
+  // Compact repo+SHA refs for work committed before projection. Once populated,
+  // every post-commit failure persists them so a clean retry can reconstruct the
+  // complete file set instead of losing traceability because Git has no new diff.
+  let retainedCodeCommitRefs = null;
 
   const emitLifecycleEvent = async ({
     type,
@@ -1114,6 +1154,9 @@ const runStageAttempt = async (
           state: 'FAILED',
           runtimeError: reason,
           completedAt: true,
+          ...(retainedCodeCommitRefs?.length
+            ? { pendingCodeCommitRefs: retainedCodeCommitRefs }
+            : {}),
           ...(clearPending ? { pendingHumanTaskId: null } : {}),
         })
         .then(() => true)
@@ -1551,7 +1594,7 @@ const runStageAttempt = async (
       const kiroRestored = await restoreKiroStore({ env }).catch(() => false);
       if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
       else if (!kiroRestored)
-        console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
+        logger.error('kiro store not restored for resume', { stageInstanceId });
     } else if (!demotedResume && cli === 'opencode') {
       const storePresent = await hasOpenCodeStore({ env }).catch(() => false);
       if (!storePresent && resolveOpenCodeStore(env)) conversationLost = true;
@@ -1595,6 +1638,10 @@ const runStageAttempt = async (
   // stage row + threaded to the MCP scope for read-time token pricing.
   const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
   const priorStageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
+  const carriedCodeCommitRefs = Array.isArray(priorStageRow?.pendingCodeCommitRefs)
+    ? priorStageRow.pendingCodeCommitRefs
+    : [];
+  retainedCodeCommitRefs = carriedCodeCommitRefs.length ? carriedCodeCommitRefs : null;
   if (priorStageRow?.aidlcRepoRef && aidlcRepoRef && priorStageRow.aidlcRepoRef !== aidlcRepoRef) {
     return fail(
       stageInstanceId,
@@ -1645,9 +1692,11 @@ const runStageAttempt = async (
       const detail = `${restoreStatus ?? 'restore_failed'}${
         restored?.error?.code ? ` (${restored.error.code})` : ''
       }`;
-      console.error(
-        `[run-stage] codex rollout not restored stage=${stageInstanceId} thread=${cliSessionId} status=${detail}`,
-      );
+      logger.error('codex rollout not restored', {
+        stage: stageInstanceId,
+        thread: cliSessionId,
+        status: detail,
+      });
       await store
         .appendEvent({
           executionId,
@@ -1662,7 +1711,7 @@ const runStageAttempt = async (
       const recoveryFailure = await recoverLostConversation();
       if (recoveryFailure) return recoveryFailure;
     } else if (!restoredOk) {
-      console.error(`[run-stage] codex rollout store not configured for resume ${stageInstanceId}`);
+      logger.error('codex rollout store not configured for resume', { stageInstanceId });
     }
   }
 
@@ -1701,6 +1750,7 @@ const runStageAttempt = async (
       resolvedModel: model,
       stageCallbackId,
       aidlcRepoRef,
+      pendingCodeCommitRefs: retainedCodeCommitRefs,
     });
   }
   await store.updateExecution({
@@ -1768,7 +1818,7 @@ const runStageAttempt = async (
         metrics: { agentLaunchMs },
       });
     } catch (e) {
-      console.error(`[run-stage] agentLaunchMs not recorded for ${stageInstanceId}: ${e.message}`);
+      logger.error('agentLaunchMs not recorded', e, { stageInstanceId });
     }
   }
 
@@ -1812,7 +1862,7 @@ const runStageAttempt = async (
   } catch (e) {
     // Fail closed: a collision or an unset referenced secret aborts the stage
     // with a clear, actionable error (never a silent drop / a generic CLI 401).
-    console.error(`[run-stage] mcp secret resolution failed: ${e.message}`);
+    logger.error('mcp secret resolution failed', e);
     return fail(stageInstanceId, 'mcp_secret_error', e.message);
   }
   const customServers = {
@@ -2030,7 +2080,7 @@ const runStageAttempt = async (
   // conversation but may still have a durable store with sibling sessions.
   if (freshRun && !kiroStoreRestoreAttempted && cli === 'kiro') {
     const restored = await restoreKiroStore({ env }).catch(() => false);
-    if (!restored) console.error(`[run-stage] kiro store not restored (fresh) ${stageInstanceId}`);
+    if (!restored) logger.error('kiro store not restored (fresh)', { stageInstanceId });
   }
 
   // 4. Spawn the headless CLI.
@@ -2113,11 +2163,14 @@ const runStageAttempt = async (
   });
   // Correlate the [spawn:size] line below to THIS stage/cli — the diagnostic for
   // the 2026-07 nfr-design E2BIG (prompt now piped on stdin; this confirms it).
-  console.info(
-    `[run-stage] spawning cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
-      `promptBytes=${Buffer.byteLength(prompt ?? invocation.prompt ?? '', 'utf8')} ` +
-      `promptViaStdin=${invocation.promptViaStdin} argc=${invocation.args.length}`,
-  );
+  logger.info('spawning cli', {
+    cli,
+    stage: stageId,
+    unit: unitSlug ?? '-',
+    promptBytes: Buffer.byteLength(prompt ?? invocation.prompt ?? '', 'utf8'),
+    promptViaStdin: invocation.promptViaStdin,
+    argc: invocation.args.length,
+  });
   const spawnCli = () =>
     runChild({
       command: invocation.command,
@@ -2198,9 +2251,11 @@ const runStageAttempt = async (
       const detail = `${codexPersistResult?.status ?? 'persist_failed'}${
         codexPersistResult?.error?.code ? ` (${codexPersistResult.error.code})` : ''
       }`;
-      console.error(
-        `[run-stage] codex rollout not persisted stage=${stageInstanceId} thread=${cliSessionId ?? '-'} status=${detail}`,
-      );
+      logger.error('codex rollout not persisted', {
+        stage: stageInstanceId,
+        thread: cliSessionId ?? '-',
+        status: detail,
+      });
       await store
         .appendEvent({
           executionId,
@@ -2220,18 +2275,24 @@ const runStageAttempt = async (
     // Log the failure at the catch point — fail() only records it to DynamoDB
     // (the UI's cli_error), never to the container log. This makes the E2BIG (or
     // any spawn failure) visible + attributable to THIS stage/cli.
-    console.error(
-      `[run-stage] cli_error cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
-        `code=${spawnError?.code ?? '-'} msg=${spawnError?.message}`,
-    );
-    if (spawnError?.stack) console.error(spawnError.stack);
+    logger.error('cli_error', {
+      cli,
+      stage: stageId,
+      unit: unitSlug ?? '-',
+      code: spawnError?.code ?? '-',
+      msg: spawnError?.message,
+    });
+    if (spawnError?.stack) logger.error(spawnError.stack);
     return fail(stageInstanceId, 'cli_error', spawnError.message);
   }
 
   const exitCode = result?.exitCode ?? 0;
-  console.error(
-    `[run-stage] cli=${cli} stage=${stageId} exitCode=${exitCode} model=${model ?? '(default)'}`,
-  );
+  logger.error('cli exit', {
+    cli,
+    stage: stageId,
+    exitCode,
+    model: model ?? '(default)',
+  });
 
   // Kiro only: persist the live local store back to the durable mount after the
   // run. Runs on ANY exit (success, park, or crash). A parked stage must have a
@@ -2240,7 +2301,7 @@ const runStageAttempt = async (
   if (cli === 'kiro') {
     kiroStorePersisted = await persistKiroStore({ env }).catch(() => false);
     if (!kiroStorePersisted) {
-      console.error(`[run-stage] kiro store not persisted for ${stageInstanceId}`);
+      logger.error('kiro store not persisted', { stageInstanceId });
     }
   }
 
@@ -2283,7 +2344,7 @@ const runStageAttempt = async (
         });
       }
     } catch (e) {
-      console.error(`[run-stage] kiro credits not recorded for ${stageInstanceId}: ${e.message}`);
+      logger.error('kiro credits not recorded', e, { stageInstanceId });
     }
   }
 
@@ -2380,6 +2441,8 @@ const runStageAttempt = async (
       ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
       : `aidlc(${stageId}): ${executionId}`,
   });
+  const stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
+  retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
@@ -2444,10 +2507,12 @@ const runStageAttempt = async (
         supersededBy: reason,
       })
       .catch((error) => {
-        console.error(
-          `[run-stage] failed to supersede unresumable gate ${parked.humanTaskId} stage=${stageInstanceId} reason=${reason}`,
+        logger.error('failed to supersede unresumable gate', {
+          humanTaskId: parked.humanTaskId,
+          stageInstanceId,
+          reason,
           error,
-        );
+        });
       });
     if (!unitSlug) {
       await store
@@ -2459,10 +2524,12 @@ const runStageAttempt = async (
             : {}),
         })
         .catch((error) => {
-          console.error(
-            `[run-stage] failed to clear pending gate execution=${executionId} stage=${stageInstanceId} reason=${reason}`,
+          logger.error('failed to clear pending gate', {
+            executionId,
+            stageInstanceId,
+            reason,
             error,
-          );
+          });
         });
     }
     return fail(stageInstanceId, reason, detail, { clearPending: true });
@@ -2522,9 +2589,10 @@ const runStageAttempt = async (
           'The provider credit allowance is exhausted. Replenish it or rotate the pinned credential, then retry the failed stage.',
       );
     } else if (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail)) {
-      console.error(
-        `[run-stage] kiro empty-completion (benign) on ${stageId}; exitCode=${exitCode} — treating as success`,
-      );
+      logger.error('kiro empty-completion (benign); treating as success', {
+        stage: stageId,
+        exitCode,
+      });
       await store
         .appendEvent({
           executionId,
@@ -2562,6 +2630,7 @@ const runStageAttempt = async (
         parkedAt: parked.createdAt ?? true,
         cli,
         cliSessionId,
+        pendingCodeCommitRefs: stageCodeCommitRefs.length ? stageCodeCommitRefs : null,
       });
     let parkSaved = false;
     for (let attempt = 0; attempt < 2 && !parkSaved; attempt++) {
@@ -2773,6 +2842,79 @@ const runStageAttempt = async (
     }
   }
 
+  // The set of changed files comes from this stage's git commit — a source
+  // every workflow has, so we always create CodeFile nodes + their Intent/Unit
+  // topology from it. A valid, stage/unit-produced traceability.json is an
+  // OPTIONAL extra source (capability-detected) that only adds requirement→file
+  // evidence edges on top. Projection is intentionally best-effort: missing or
+  // malformed evidence and Neptune outages must not turn successful
+  // implementation work into an execution failure.
+  let completedGitResult = gitResult;
+  try {
+    if (carriedCodeCommitRefs.length > 0) {
+      completedGitResult = await gitResultForCommitRefs({
+        commitRefs: stageCodeCommitRefs,
+        repos,
+        workspaceDir,
+      });
+    }
+    const projected = await ingestStageCodeTraceability({
+      openGraph,
+      scope: {
+        projectId,
+        intentId,
+        executionId,
+        stageInstanceId,
+        sectionIndex,
+        unitSlug,
+      },
+      gitResult: completedGitResult,
+      repos,
+      workspaceDir,
+      stageId,
+      stageInstanceId,
+      unitSlug,
+    });
+    if (projected.codeFiles > 0) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.code_files.ingested',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Projected ${projected.codeFiles} code file revision(s) with ${projected.evidenceEdges} evidence edge(s)`,
+        })
+        .catch(() => {});
+    }
+    if (projected.statuses.includes('invalid')) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.traceability.degraded',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Stage ${stageLabel} produced invalid traceability.json; Git code topology was retained without evidence links`,
+        })
+        .catch(() => {});
+    }
+  } catch (error) {
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.traceability.degraded',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: `Code traceability projection skipped: ${error?.message ?? String(error)}`,
+      })
+      .catch(() => {});
+  }
+
   // 7. Terminal success.
   await store.updateStageState({
     executionId,
@@ -2781,6 +2923,7 @@ const runStageAttempt = async (
     completedAt: true,
     cli,
     cliSessionId,
+    pendingCodeCommitRefs: null,
   });
   // Steering provenance: link the corrections this stage consumed to the
   // artifacts it produced (Steering --INFLUENCES--> Artifact), mirroring the
@@ -2822,10 +2965,11 @@ const runStageAttempt = async (
     state: 'SUCCEEDED',
   });
   const changedFiles = [
-    ...new Set(gitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
+    ...new Set(completedGitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
   ].toSorted();
   const commitSha =
-    gitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ?? null;
+    completedGitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ??
+    null;
   return {
     ok: true,
     state: 'SUCCEEDED',

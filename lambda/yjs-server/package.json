@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@aws-lambda-powertools/logger": "^2.35.0",
     "aws-jwt-verify": "^4.0.0",
     "lib0": "^0.2.117",
     "ws": "^8.21.0",

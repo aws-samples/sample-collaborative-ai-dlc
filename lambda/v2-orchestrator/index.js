@@ -22,6 +22,7 @@
 // and all store writes) MUST be inside ctx.step(...) or it re-executes on replay.
 
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
@@ -63,6 +64,8 @@ const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
 
+const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
+
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
@@ -93,7 +96,20 @@ const defaultInvokeRuntime = async (
     }),
   );
   const text = res.response ? await streamToString(res.response) : '';
-  return text ? JSON.parse(text) : {};
+  const parsed = text ? JSON.parse(text) : {};
+  // The AgentCore transport succeeds even when the agentcore HTTP server returns
+  // an error: only the response BODY reaches us here (the { statusCode } is the
+  // HTTP status, not part of the payload). Every agentcore error body is shaped
+  // { error: '...' } (missing/unknown command, invalid JSON, or a handler throw),
+  // so surface that so a runtime error is diagnosable instead of silently
+  // flowing downstream as an opaque failure.
+  if (parsed?.error) {
+    logger.error('runtime returned error', {
+      command: payload?.command,
+      error: parsed.error,
+    });
+  }
+  return parsed;
 };
 
 // Free a parked stage's warm microVM compute (D1 release-on-park). Resume
@@ -305,6 +321,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     applicationUrl,
   } = deps;
   const { intentId, executionId } = event;
+  logger.resetKeys();
+  logger.appendKeys({
+    ...(intentId && { intentId }),
+    ...(executionId && { executionId }),
+  });
   // Quorum-supported artifact edit (post-hoc document editing): its own small
   // durable flow — plan → human approval → apply — fully independent of the
   // stage loop below (an edit is refused while a run is active anyway).
@@ -314,7 +335,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   if (event.action !== 'start') {
     // Resume is handled out-of-band via SendDurableExecutionCallbackSuccess
     // against the suspended callback — there is no separate resume invocation.
-    ctx.logger?.info?.('ignoring non-start invocation', { action: event.action });
+    logger.info('ignoring non-start invocation', { action: event.action });
     return { ok: false, reason: 'not_a_start' };
   }
 
@@ -429,7 +450,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
     });
     if (!owned) {
-      ctx.logger?.info?.('retired run skipped terminal write', { intentId, reason });
+      logger.info('retired run skipped terminal write', { reason });
       return { ok: false, reason: 'retired', supersededBy: 'relaunch' };
     }
     await emitEvent(ctx, `fail-event-${reason}`, 'v2.execution.failed', message);
@@ -482,6 +503,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             sessionId,
           );
         } catch (error) {
+          logger.error('create-workflow-checkpoint failed', {
+            stepName,
+            sourceStageInstanceId,
+            error: error?.message,
+          });
           return { ok: false, reason: 'checkpoint_failed', detail: error.message };
         }
       });
@@ -913,7 +939,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
         );
         if (gateAfter?.status === 'superseded') {
-          ctx.logger?.info?.('run retired while parked', { intentId, humanTaskId });
+          logger.info('run retired while parked', { humanTaskId });
           return {
             state: 'TERMINAL',
             value: { ok: false, reason: 'retired', intentId, humanTaskId },
@@ -931,8 +957,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           return currentMeta?.orchestratorRunId ?? null;
         });
         if (runId && ownerRunId && ownerRunId !== runId) {
-          ctx.logger?.info?.('run retired while parked (ownership lost)', {
-            intentId,
+          logger.info('run retired while parked (ownership lost)', {
             humanTaskId,
           });
           return {
@@ -948,7 +973,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           unparkGate(store, { executionId, humanTaskId, runId }),
         );
         if (!ownedUnpark) {
-          ctx.logger?.info?.('run retired while unparking gate', { intentId, humanTaskId });
+          logger.info('run retired while unparking gate', { humanTaskId });
           return {
             state: 'TERMINAL',
             value: { ok: false, reason: 'retired', intentId, humanTaskId },
@@ -1459,7 +1484,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
     });
     if (!ownedFinish) {
-      ctx.logger?.info?.('retired run skipped terminal success write', { intentId });
+      logger.info('retired run skipped terminal success write');
       return { ok: false, reason: 'retired', intentId };
     }
     await emitEvent(ctx, 'succeeded-event', 'v2.execution.succeeded', 'All stages completed');
@@ -1477,7 +1502,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         meta,
         executionId,
         applicationUrl,
-        log: (m) => ctx.logger?.info?.(m, { intentId }),
+        log: (m) => logger.info(m),
       }),
     );
     for (let i = 0; i < prResults.length; i++) {
@@ -1506,10 +1531,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             });
             return true;
           } catch (error) {
-            ctx.logger?.error?.('tracker sync publication failed', {
-              intentId,
-              error: error?.message,
-            });
+            logger.error('tracker sync publication failed', error);
             return false;
           }
         });
@@ -1529,7 +1551,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             sessionId,
           );
         } catch (e) {
-          ctx.logger?.error?.('record-pr dispatch failed', { intentId, error: e?.message });
+          logger.error('record-pr dispatch failed', e);
           return { ok: false, reason: 'dispatch_failed' };
         }
       });
@@ -1551,7 +1573,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // it so the UI shows FAILED + the message rather than the run silently dying
     // at the durable-function boundary (module INIT crashes used to fail with
     // zero user-visible feedback).
-    ctx.logger?.error?.('orchestrator failed', { intentId, error: err?.message });
+    logger.error('orchestrator failed', err);
     return await fail('orchestrator_error', err?.message ?? String(err));
   }
 };

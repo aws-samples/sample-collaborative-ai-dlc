@@ -1,11 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import nodePath from 'node:path';
 import {
   runStage,
   resetKiroCreditRateCache,
   withPlatformSensors,
   __test,
 } from '../commands/run-stage.js';
+import {
+  commitAndPushAll as realCommitAndPushAll,
+  gitResultForCommitRefs as realGitResultForCommitRefs,
+  runGit,
+} from '../git-engine.js';
+import { collectCodeTraceabilityBatches } from '../code-traceability.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 import { awaitEngineGate } from '../../v2-orchestrator/section.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
@@ -241,6 +251,70 @@ describe('runStage — happy path', () => {
       currentStage: 'requirements-analysis',
       currentPhase: 'inception',
     });
+  });
+});
+
+describe('runStage — CodeFile traceability projection', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+
+  it('projects per-repository Git files after successful stage gates', async () => {
+    const ingestStageCodeTraceability = vi.fn(async () => ({
+      batches: 1,
+      codeFiles: 2,
+      evidenceEdges: 1,
+      statuses: ['valid'],
+    }));
+    const gitResult = {
+      ok: true,
+      committed: true,
+      results: [
+        {
+          repo: 'owner/repo',
+          committed: true,
+          pushed: true,
+          sha: 'a'.repeat(40),
+          files: ['src/auth.ts', 'traceability.json'],
+        },
+      ],
+    };
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      commitAndPushAll: async () => gitResult,
+      ingestStageCodeTraceability,
+    });
+    const result = await runStage({ ...baseArgs, repos: ['owner/repo'] }, deps);
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitResult,
+        repos: ['owner/repo'],
+        stageId: 'requirements-analysis',
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+      }),
+    );
+    const event = deps.store.calls.find(
+      (call) => call[0] === 'appendEvent' && call[1].type === 'v2.code_files.ingested',
+    );
+    expect(event[1].summary).toContain('2 code file revision(s)');
+  });
+
+  it('keeps stage execution successful when traceability projection fails', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ingestStageCodeTraceability: async () => {
+        throw new Error('malformed traceability');
+      },
+    });
+    const result = await runStage(baseArgs, deps);
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const event = deps.store.calls.find(
+      (call) => call[0] === 'appendEvent' && call[1].type === 'v2.traceability.degraded',
+    );
+    expect(event[1].summary).toContain('malformed traceability');
   });
 });
 
@@ -2970,7 +3044,7 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
       return updateExecution(row);
     });
     const broadcast = vi.fn().mockResolvedValue(undefined);
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
     try {
       const res = await runStage(
         { ...baseArgs, requestedCli: 'kiro' },
@@ -3009,12 +3083,12 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
         }),
       );
       expect(log).toHaveBeenCalledWith(
-        expect.stringContaining('failed to supersede unresumable gate q-1'),
-        storageError,
+        'failed to supersede unresumable gate',
+        expect.objectContaining({ humanTaskId: 'q-1', error: storageError }),
       );
       expect(log).toHaveBeenCalledWith(
         expect.stringContaining('failed to clear pending gate'),
-        storageError,
+        expect.objectContaining({ error: storageError }),
       );
       expect(broadcast).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3970,6 +4044,7 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       stdin: { end() {} },
     });
     const calls = [];
+    const commitSha = 'a'.repeat(40);
     const deps = baseDeps({
       ...sourcePresent,
       spawnFn: crash,
@@ -3978,13 +4053,17 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
         return {
           ok: true,
           committed: true,
-          results: [{ repo: 'owner/repo', committed: true, sha: 'abc', pushed: true }],
+          results: [{ repo: 'owner/repo', committed: true, sha: commitSha, pushed: true }],
         };
       },
     });
     const res = await runStage(gitArgs, deps);
     expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit' });
     expect(calls).toHaveLength(1); // work committed+pushed BEFORE the failure verdict
+    const failurePatch = deps.store.calls.find(
+      (call) => call[0] === 'updateStageState' && call[1].state === 'FAILED',
+    )[1];
+    expect(failurePatch.pendingCodeCommitRefs).toEqual([{ repo: 'owner/repo', sha: commitSha }]);
   });
 });
 
@@ -4116,6 +4195,328 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     );
     expect(messages).toEqual(['aidlc(code-generation): billing — e1']);
   });
+
+  it('retains committed code refs when a unit stage parks before projection', async () => {
+    const stageInstanceId = planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing');
+    const humanTaskId = 'q-code-billing';
+    const commitSha = 'a'.repeat(40);
+    const ingestStageCodeTraceability = vi.fn();
+    const deps = unitDeps({
+      store: spyStore({
+        unitPlan: UNIT_PLAN,
+        execution: { pendingHumanTaskId: humanTaskId },
+        stage: { stageInstanceId, pendingHumanTaskId: humanTaskId },
+        humanTask: {
+          humanTaskId,
+          stageInstanceId,
+          unitSlug: 'billing',
+          status: 'pending',
+        },
+      }),
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      redirectHeavyDirs: async () => ({ links: [] }),
+      commitAndPushAll: async () => ({
+        ok: true,
+        committed: true,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: true,
+            pushed: true,
+            sha: commitSha,
+            files: ['app.ts', 'records/billing/traceability.json'],
+          },
+        ],
+      }),
+      ingestStageCodeTraceability,
+    });
+
+    const result = await runStage({ ...unitArgs, repos: ['owner/repo'], branch: 'aidlc/i1' }, deps);
+
+    expect(result).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId });
+    expect(ingestStageCodeTraceability).not.toHaveBeenCalled();
+    const parkPatch = deps.store.calls.find(
+      (call) => call[0] === 'updateStageState' && call[1].state === 'WAITING_FOR_HUMAN',
+    )[1];
+    expect(parkPatch.pendingCodeCommitRefs).toEqual([{ repo: 'owner/repo', sha: commitSha }]);
+  });
+
+  it('projects parked unit-stage commits after a clean resume with no additional edits', async () => {
+    const stageInstanceId = planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing');
+    const humanTaskId = 'q-code-billing';
+    const commitSha = 'a'.repeat(40);
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: commitSha }];
+    const parkedGitResult = {
+      ok: true,
+      committed: true,
+      results: [
+        {
+          repo: 'owner/repo',
+          committed: true,
+          pushed: true,
+          sha: commitSha,
+          files: ['app.ts', 'records/billing/traceability.json'],
+        },
+      ],
+    };
+    const gitResultForCommitRefs = vi.fn(async () => parkedGitResult);
+    const ingestStageCodeTraceability = vi.fn(async () => ({
+      batches: 1,
+      codeFiles: 2,
+      evidenceEdges: 1,
+      statuses: ['valid'],
+    }));
+    const deps = unitDeps({
+      store: spyStore({
+        unitPlan: UNIT_PLAN,
+        humanTask: {
+          humanTaskId,
+          stageInstanceId,
+          unitSlug: 'billing',
+          status: 'answered',
+          answer: { freeText: 'continue' },
+        },
+        stage: {
+          stageInstanceId,
+          cli: 'claude',
+          cliSessionId: 'session-billing',
+          pendingCodeCommitRefs,
+        },
+      }),
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      redirectHeavyDirs: async () => ({ links: [] }),
+      commitAndPushAll: async () => ({
+        ok: true,
+        committed: false,
+        results: [{ repo: 'owner/repo', committed: false, reason: 'clean', pushed: 'up_to_date' }],
+      }),
+      gitResultForCommitRefs,
+      ingestStageCodeTraceability,
+    });
+
+    const result = await runStage(
+      {
+        ...unitArgs,
+        repos: ['owner/repo'],
+        branch: 'aidlc/i1',
+        resumeFrom: humanTaskId,
+      },
+      deps,
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'SUCCEEDED',
+      changedFiles: ['app.ts', 'records/billing/traceability.json'],
+      commitSha,
+    });
+    expect(gitResultForCommitRefs).toHaveBeenCalledWith({
+      commitRefs: pendingCodeCommitRefs,
+      repos: ['owner/repo'],
+      workspaceDir: '/ws',
+    });
+    expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
+      expect.objectContaining({ gitResult: parkedGitResult, unitSlug: 'billing' }),
+    );
+    const successPatch = deps.store.calls.find(
+      (call) => call[0] === 'updateStageState' && call[1].state === 'SUCCEEDED',
+    )[1];
+    expect(successPatch.pendingCodeCommitRefs).toBeNull();
+  });
+
+  it('projects failed unit-stage commits after a clean fresh retry with no additional edits', async () => {
+    const stageInstanceId = planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing');
+    const commitSha = 'b'.repeat(40);
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: commitSha }];
+    const failedGitResult = {
+      ok: true,
+      committed: true,
+      results: [
+        {
+          repo: 'owner/repo',
+          committed: true,
+          pushed: true,
+          sha: commitSha,
+          files: ['app.ts', 'records/billing/traceability.json'],
+        },
+      ],
+    };
+    const gitResultForCommitRefs = vi.fn(async () => failedGitResult);
+    const ingestStageCodeTraceability = vi.fn(async () => ({
+      batches: 1,
+      codeFiles: 2,
+      evidenceEdges: 1,
+      statuses: ['valid'],
+    }));
+    const deps = unitDeps({
+      store: spyStore({
+        unitPlan: UNIT_PLAN,
+        stage: {
+          stageInstanceId,
+          state: 'PENDING',
+          attempt: 1,
+          pendingCodeCommitRefs,
+        },
+      }),
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      redirectHeavyDirs: async () => ({ links: [] }),
+      commitAndPushAll: async () => ({
+        ok: true,
+        committed: false,
+        results: [{ repo: 'owner/repo', committed: false, reason: 'clean', pushed: 'up_to_date' }],
+      }),
+      gitResultForCommitRefs,
+      ingestStageCodeTraceability,
+    });
+
+    const result = await runStage({ ...unitArgs, repos: ['owner/repo'], branch: 'aidlc/i1' }, deps);
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'SUCCEEDED',
+      changedFiles: ['app.ts', 'records/billing/traceability.json'],
+      commitSha,
+    });
+    expect(deps.store.calls.find((call) => call[0] === 'putStage')[1]).toMatchObject({
+      pendingCodeCommitRefs,
+    });
+    expect(gitResultForCommitRefs).toHaveBeenCalledWith({
+      commitRefs: pendingCodeCommitRefs,
+      repos: ['owner/repo'],
+      workspaceDir: '/ws',
+    });
+    expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
+      expect.objectContaining({ gitResult: failedGitResult, unitSlug: 'billing' }),
+    );
+  });
+
+  it('retains real Git changes across a failed attempt and projects them on a clean retry', async () => {
+    const root = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-traceability-retry-'));
+    try {
+      const remote = nodePath.join(root, 'remote.git');
+      const seed = nodePath.join(root, 'seed');
+      const workspaceDir = nodePath.join(root, 'work');
+      const git = (args, cwd) => runGit(args, { cwd });
+
+      await git(['init', '--bare', '-b', 'main', remote], root);
+      await git(['init', '-b', 'main', seed], root);
+      await writeFile(nodePath.join(seed, 'README.md'), 'seed\n');
+      await git(['add', '-A'], seed);
+      await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'seed'], seed);
+      await git(['push', remote, 'main'], seed);
+      await git(['clone', remote, workspaceDir], root);
+
+      await writeFile(nodePath.join(workspaceDir, 'app.ts'), 'export const billed = true;\n');
+      await mkdir(nodePath.join(workspaceDir, 'records', 'billing'), { recursive: true });
+      await writeFile(
+        nodePath.join(workspaceDir, 'records', 'billing', 'traceability.json'),
+        JSON.stringify({
+          stage: 'code-generation',
+          unit: 'billing',
+          coverage: [{ id: 'REQ1', status: 'OK', target: 'app.ts' }],
+        }),
+      );
+
+      const engineCommit = (input) =>
+        realCommitAndPushAll({
+          ...input,
+          urlsFor: () => ({ auth: remote, clean: 'https://github.com/o/r.git' }),
+          resolveGitCommitter: async () => null,
+        });
+      const crash = () => ({
+        on: (event, callback) => event === 'close' && setImmediate(() => callback(1)),
+        stdin: { end() {} },
+      });
+      const firstDeps = unitDeps({
+        store: spyStore({ unitPlan: UNIT_PLAN }),
+        spawnFn: crash,
+        ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+        redirectHeavyDirs: async () => ({ links: [] }),
+        commitAndPushAll: engineCommit,
+      });
+
+      const first = await runStage(
+        {
+          ...unitArgs,
+          repos: ['o/r'],
+          branch: 'main',
+          gitProvider: 'github',
+          workspaceDir,
+        },
+        firstDeps,
+      );
+      expect(first).toMatchObject({ ok: false, reason: 'cli_nonzero_exit' });
+      const failurePatch = firstDeps.store.calls.find(
+        (call) => call[0] === 'updateStageState' && call[1].state === 'FAILED',
+      )[1];
+      const pendingCodeCommitRefs = failurePatch.pendingCodeCommitRefs;
+      expect(pendingCodeCommitRefs).toEqual([
+        { repo: 'o/r', sha: expect.stringMatching(/^[0-9a-f]{40}$/) },
+      ]);
+
+      const projectedBatches = [];
+      const ingestStageCodeTraceability = async (input) => {
+        const batches = await collectCodeTraceabilityBatches(input);
+        projectedBatches.push(...batches);
+        return {
+          batches: batches.length,
+          codeFiles: batches.reduce((sum, batch) => sum + batch.files.length, 0),
+          evidenceEdges: batches.reduce(
+            (sum, batch) =>
+              sum + batch.files.reduce((fileSum, file) => fileSum + file.evidenceIds.length, 0),
+            0,
+          ),
+          statuses: batches.map((batch) => batch.traceabilityStatus),
+        };
+      };
+      const stageInstanceId = planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing');
+      const secondDeps = unitDeps({
+        store: spyStore({
+          unitPlan: UNIT_PLAN,
+          stage: {
+            stageInstanceId,
+            state: 'PENDING',
+            attempt: 1,
+            pendingCodeCommitRefs,
+          },
+        }),
+        ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+        redirectHeavyDirs: async () => ({ links: [] }),
+        commitAndPushAll: engineCommit,
+        gitResultForCommitRefs: realGitResultForCommitRefs,
+        ingestStageCodeTraceability,
+      });
+
+      const second = await runStage(
+        {
+          ...unitArgs,
+          repos: ['o/r'],
+          branch: 'main',
+          gitProvider: 'github',
+          workspaceDir,
+        },
+        secondDeps,
+      );
+
+      expect(second).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(second.changedFiles).toEqual(
+        expect.arrayContaining(['app.ts', 'records/billing/traceability.json']),
+      );
+      expect(projectedBatches).toHaveLength(1);
+      expect(projectedBatches[0]).toMatchObject({
+        repository: 'o/r',
+        commitRef: pendingCodeCommitRefs[0].sha,
+        traceabilityStatus: 'valid',
+      });
+      expect(projectedBatches[0].files).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ filePath: 'app.ts', evidenceIds: ['REQ1'] }),
+        ]),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('fails unit_required when a forEach stage is dispatched without a unit', async () => {
     const deps = unitDeps();

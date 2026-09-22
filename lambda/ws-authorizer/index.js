@@ -1,4 +1,7 @@
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'ws-authorizer' } });
 
 let verifier;
 const getVerifier = () => {
@@ -12,12 +15,13 @@ const getVerifier = () => {
   return verifier;
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const token = event.queryStringParameters?.token;
   const methodArn = event.methodArn;
 
   if (!token) {
-    console.log('No token provided');
+    logger.info('No token provided');
     return generatePolicy('user', 'Deny', methodArn);
   }
 
@@ -28,7 +32,7 @@ export const handler = async (event) => {
       userName: payload['cognito:username'] || payload.email || payload.sub,
     });
   } catch (err) {
-    console.error('Token verification failed:', err.message);
+    logger.error('Token verification failed', err);
     return generatePolicy('user', 'Deny', methodArn);
   }
 };
