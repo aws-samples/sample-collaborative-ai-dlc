@@ -162,14 +162,15 @@ export const awaitEngineGate = async (
     const meta = await store.getExecution(executionId, { consistentRead: true });
     return Boolean(meta) && (!runId || !meta.orchestratorRunId || meta.orchestratorRunId === runId);
   };
-  if (!(await ctxArg.step(`gate-owner-${name}`, ownsRun))) return { superseded: true };
-
   // A prior attempt of THIS run may have already opened and even answered the
   // gate (resume after a suspend) — reuse the decision instead of hanging on
   // a callback nobody will complete.
-  const existing = await ctxArg.step(`gate-pre-${name}`, () =>
-    store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
-  );
+  // Preserve the deployed operation sequence: durable checkpoints address
+  // steps by position as well as name. New checks belong inside existing steps.
+  const existing = await ctxArg.step(`gate-pre-${name}`, async () => {
+    if (!(await ownsRun())) return { status: 'superseded' };
+    return store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
+  });
   if (existing && existing.status === 'superseded') return { superseded: true };
   if (existing && existing.status !== 'pending') return { gate: existing };
 
@@ -229,31 +230,30 @@ export const awaitEngineGate = async (
   if (opened === false) return { superseded: true };
 
   const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
-  const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
-    bindGateCallback(store, {
+  const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, async () => {
+    const bound = await bindGateCallback(store, {
       executionId,
       humanTaskId,
       callbackId,
       stageInstanceId: stageInstanceId ?? null,
       callbackOwner: `engine:${humanTaskId}`,
-    }),
-  );
+    });
+    if (!bound) return null;
+    // An answer can win immediately after binding. Save that observation in
+    // the existing bind checkpoint, retaining compatibility with old row values.
+    return store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
+  });
   if (!callbackBound) {
     throw new Error(
       `gate_callback_conflict: ${humanTaskId} already has a different callback owner`,
     );
   }
-  const answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, () =>
-    store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
-  );
-  if (answeredEarly?.status === 'pending') await callbackPromise;
+  if (!callbackBound.status || callbackBound.status === 'pending') await callbackPromise;
 
-  // Re-read after a callback wake. An answer already read consistently needs
-  // no second read; the unpark CAS below still fences cancellation or rewind.
+  // Re-read after the wake (or an answer observed while binding), so a
+  // subsequent cancellation is not hidden by the bind checkpoint.
   const gate = await ctxArg.step(`gate-after-${name}`, () =>
-    answeredEarly && answeredEarly.status !== 'pending'
-      ? answeredEarly
-      : store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
+    store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
   );
   if (!gate || gate.status === 'superseded') return { superseded: true };
   const unparked = await ctxArg.step(`gate-unpark-${name}`, async () => {

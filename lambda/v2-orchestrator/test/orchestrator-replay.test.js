@@ -6,6 +6,7 @@ import {
 } from '@aws/durable-execution-sdk-js-testing';
 import { __durableHandler } from '../index.js';
 import { awaitEngineGate } from '../section.js';
+import { awaitEngineGate as previousEngineGate } from './fixtures/engine-gate-before-recovery.js';
 
 // ---------------------------------------------------------------------------
 // REAL replay coverage for the orchestrator's async stage flow (WP1).
@@ -35,6 +36,62 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await LocalDurableTestRunner.teardownTestEnvironment();
+});
+
+it('resumes deployed engine-gate checkpoints with the recovery implementation', async () => {
+  let gate;
+  let opens = 0;
+  let binds = 0;
+  const meta = { orchestratorRunId: 'run1', status: 'RUNNING' };
+  const store = {
+    getExecution: async () => ({ ...meta }),
+    getHumanTask: async () => gate && { ...gate },
+    createHumanTask: async (input) => {
+      opens++;
+      gate = { ...input, status: 'pending' };
+    },
+    setGateCallbackId: async (input) => {
+      binds++;
+      Object.assign(gate, input);
+      return { ...gate };
+    },
+    updateExecution: async (input) => Object.assign(meta, input),
+  };
+  const toolkit = {
+    store,
+    runId: 'run1',
+    ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+  };
+  const args = { name: 'legacy', prompt: 'Continue?' };
+  const oldHandler = withDurableExecution((_event, ctx) => previousEngineGate(ctx, toolkit, args));
+  const newHandler = withDurableExecution((_event, ctx) => awaitEngineGate(ctx, toolkit, args));
+  let upgraded = false;
+  let suspended;
+  const suspension = new Promise((resolve) => {
+    suspended = resolve;
+  });
+  const runner = new LocalDurableTestRunner({
+    handlerFunction: async (...input) => {
+      const result = await (upgraded ? newHandler : oldHandler)(...input);
+      if (result.Status === 'PENDING') {
+        upgraded = true;
+        suspended();
+      }
+      return result;
+    },
+  });
+  const completion = runner.run({ payload: {} });
+  await suspension;
+  gate.status = 'approved';
+  gate.answer = { decision: 'approve' };
+  await runner
+    .getOperation('await-eg-legacy-run1')
+    .sendCallbackSuccess(JSON.stringify(gate.answer));
+  const execution = await completion;
+  expect(execution.getResult()).toMatchObject({ gate: { status: 'approved' } });
+  expect(execution.getInvocations().length).toBeGreaterThan(1);
+  expect({ opens, binds }).toEqual({ opens: 1, binds: 1 });
+  expect(meta.status).toBe('RUNNING');
 });
 
 it('completes an engine gate on a racing saved answer without a callback delivery', async () => {
