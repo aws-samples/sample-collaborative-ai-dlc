@@ -1089,6 +1089,28 @@ describe('steering store methods', () => {
     expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
   });
 
+  it('unparks only the expected run and pending gate', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { status: 'RUNNING' } });
+    ddb.on(GetCommand).resolves({ Item: { projectId: 'p1' } });
+    await store.updateExecution({
+      executionId: 'e1',
+      status: 'RUNNING',
+      pendingHumanTaskId: null,
+      fromStatus: 'WAITING',
+      ifOrchestratorRunId: 'run1',
+      ifPendingHumanTaskId: 'h1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      '#status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
+    );
+    expect(input.ExpressionAttributeValues).toMatchObject({
+      ':fromStatus': 'WAITING',
+      ':ifOrid': 'run1',
+      ':ifPendingHumanTaskId': 'h1',
+    });
+  });
+
   it('getExecutionRecords groups STEER rows', async () => {
     ddb.on(QueryCommand).resolves({ Items: [{ sk: 'META' }, { sk: 'STEER#T#st-1' }] });
     const grouped = await store.getExecutionRecords('e1');

@@ -20,3 +20,28 @@ export const bindGateCallback = async (store, input) => {
   }
   return gate;
 };
+
+// Shared by engine and stage gates. The mutation and its recovery check must
+// agree on ownership: a committed write with a lost checkpoint is success.
+export const unparkGate = async (store, { executionId, humanTaskId, runId }) => {
+  try {
+    await store.updateExecution({
+      executionId,
+      status: 'RUNNING',
+      pendingHumanTaskId: null,
+      fromStatus: 'WAITING',
+      ifOrchestratorRunId: runId,
+      ifPendingHumanTaskId: humanTaskId,
+    });
+    return true;
+  } catch (error) {
+    if (error?.name !== 'ConditionalCheckFailedException') throw error;
+    const meta = await store.getExecution(executionId, { consistentRead: true });
+    return Boolean(
+      meta &&
+      meta.orchestratorRunId === runId &&
+      meta.status === 'RUNNING' &&
+      !meta.pendingHumanTaskId,
+    );
+  }
+};

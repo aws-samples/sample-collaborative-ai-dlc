@@ -55,7 +55,7 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
-import { bindGateCallback } from './gate-callback.js';
+import { bindGateCallback, unparkGate } from './gate-callback.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -944,21 +944,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Credential resolution only permits active executions. Unpark META
         // before AgentCore restores a released session's workspace, otherwise
         // the re-clone is rejected while the execution still reads WAITING.
-        const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, async () => {
-          try {
-            await store.updateExecution({
-              executionId,
-              status: 'RUNNING',
-              pendingHumanTaskId: null,
-              fromStatus: 'WAITING',
-              ifOrchestratorRunId: runId,
-            });
-            return true;
-          } catch (e) {
-            if (e?.name === 'ConditionalCheckFailedException') return false;
-            throw e;
-          }
-        });
+        const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, () =>
+          unparkGate(store, { executionId, humanTaskId, runId }),
+        );
         if (!ownedUnpark) {
           ctx.logger?.info?.('run retired while unparking gate', { intentId, humanTaskId });
           return {
