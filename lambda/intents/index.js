@@ -2551,9 +2551,11 @@ export const handler = async (event) => {
       // older sibling gate just records the durable Q&A — the run is parked on a
       // different callback. SendDurableExecutionCallbackSuccess resumes the
       // EXISTING execution; a fresh Invoke would start a new one.
-      if (gate.callbackId) {
+      // Binding can finish after the initial GET. ALL_NEW from the answer CAS
+      // is the authoritative callback owner at the instant the answer commits.
+      if (answered.callbackId) {
         try {
-          await resumeDurableCallback(gate.callbackId, answered.answer);
+          await resumeDurableCallback(answered.callbackId, answered.answer);
         } catch (err) {
           if (isCallbackTimeoutError(err)) {
             await repairExpiredDurableExecution({
