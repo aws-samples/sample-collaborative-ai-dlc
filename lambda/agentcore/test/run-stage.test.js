@@ -1671,7 +1671,11 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(failedEvent?.[1].summary).not.toContain('secret');
   });
 
-  it('classifies exhausted Kiro credits before generic authentication errors', async () => {
+  it.each([
+    '403: insufficient credits',
+    'Your credit balance is too low to access the Anthropic API',
+    'You exceeded your current quota usage limit reached',
+  ])('shows scoped recovery guidance for provider exhaustion: %s', async (message) => {
     const deps = baseDeps({
       availableClis: ['kiro'],
       credentialBindings: [{ provider: 'kiro', source: 'space' }],
@@ -1682,7 +1686,7 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
           on: (event, cb) =>
             event === 'data' &&
             !args.includes('--list-sessions') &&
-            cb(Buffer.from('403: insufficient credits (fixture-secret)')),
+            cb(Buffer.from(`${message} (fixture-secret)`)),
         },
       }),
     });
