@@ -440,3 +440,56 @@ describe('environment registry store', () => {
     });
   });
 });
+
+describe('session cleanup records', () => {
+  it('persists the provider/session identity into the shared GSI1 partition', async () => {
+    const sends = [];
+    const ddb = {
+      send: vi.fn().mockImplementation(async (command) => {
+        sends.push(command);
+        if (command.constructor.name === 'QueryCommand') return { Items: [] };
+        return {};
+      }),
+    };
+    const store = createEnvironmentStore({
+      ddb,
+      tableName: 'registry',
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+
+    const item = await store.putSessionCleanup({
+      sessionId: 'managed-environment-r-1-session',
+      capacityProviderArn: 'arn:aws:bedrock-agentcore:us-east-1:1:capacity-provider/cp-1',
+      environmentId: 'x86-build',
+      revisionId: 'r-1',
+      reason: 'internal error',
+    });
+    expect(item).toMatchObject({
+      pk: 'SESSION_CLEANUP#managed-environment-r-1-session',
+      sk: 'LOOKUP',
+      GSI1PK: 'SESSION_CLEANUP',
+      sessionId: 'managed-environment-r-1-session',
+      capacityProviderArn: 'arn:aws:bedrock-agentcore:us-east-1:1:capacity-provider/cp-1',
+      attempts: 0,
+    });
+
+    await store.listSessionCleanups();
+    const query = sends.find((command) => command.constructor.name === 'QueryCommand');
+    expect(query.input.ExpressionAttributeValues[':pk']).toBe('SESSION_CLEANUP');
+
+    await store.deleteSessionCleanup('managed-environment-r-1-session');
+    const deletion = sends.find((command) => command.constructor.name === 'DeleteCommand');
+    expect(deletion.input.Key).toEqual({
+      pk: 'SESSION_CLEANUP#managed-environment-r-1-session',
+      sk: 'LOOKUP',
+    });
+  });
+
+  it('refuses to persist a record without the session or provider identity', async () => {
+    const ddb = { send: vi.fn() };
+    const store = createEnvironmentStore({ ddb, tableName: 'registry' });
+    expect(await store.putSessionCleanup({ sessionId: 's-1' })).toBeNull();
+    expect(await store.putSessionCleanup({ capacityProviderArn: 'arn:cp' })).toBeNull();
+    expect(ddb.send).not.toHaveBeenCalled();
+  });
+});
