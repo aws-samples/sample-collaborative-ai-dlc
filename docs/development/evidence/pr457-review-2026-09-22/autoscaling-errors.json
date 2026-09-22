@@ -1,0 +1,32 @@
+{
+  "source": "CloudWatch FilterLogEvents",
+  "filter": "?\"failed\" ?\"error\"",
+  "startTime": "2026-09-22T13:27:41.250Z",
+  "endTime": "2026-09-22T13:39:52.763Z",
+  "matchingEvents": 635,
+  "counts": {
+    "checkpoint transaction conflict": 308,
+    "renewal other": 75,
+    "checkpoint expired": 237,
+    "renewal conditional": 15
+  },
+  "representativeEvents": {
+    "checkpoint transaction conflict": {
+      "timestamp": 1790083679931,
+      "message": "Yjs checkpoint failed: Transaction cancelled, please refer cancellation reasons for specific reasons [TransactionConflict, None]"
+    },
+    "renewal other": {
+      "timestamp": 1790083690026,
+      "message": "Yjs lease renewal failed: TransactionCanceledException TransactionConflict,None"
+    },
+    "checkpoint expired": {
+      "timestamp": 1790083695604,
+      "message": "Yjs checkpoint failed: Lease expired before checkpoint"
+    },
+    "renewal conditional": {
+      "timestamp": 1790083709104,
+      "message": "Yjs lease renewal failed: TransactionCanceledException None,ConditionalCheckFailed"
+    }
+  },
+  "interpretation": "Log counts are not unique failed edits or documents. Initial admission and token expiry also affect reconnect totals."
+}

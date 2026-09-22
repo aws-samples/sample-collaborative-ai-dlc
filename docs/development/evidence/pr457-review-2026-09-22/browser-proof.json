@@ -1,0 +1,33 @@
+{
+  "startedAt": "2026-09-22T13:15:53.920Z",
+  "identity": "Two isolated browser tabs, same disposable Cognito identity",
+  "saves": [
+    {
+      "at": "2026-09-22T13:16:05.477Z",
+      "page": 0,
+      "method": "PATCH"
+    },
+    {
+      "at": "2026-09-22T13:16:10.484Z",
+      "page": 1,
+      "method": "PATCH"
+    }
+  ],
+  "errors": [],
+  "markers": [
+    "PR457 browser A cfc2c6f7-5bf7-4bdd-992d-aa55486232b7",
+    "PR457 browser B 21ddc5d7-278d-4e35-b9d5-ff365ca5c7d1"
+  ],
+  "afterFirstEdit": [
+    {
+      "at": "2026-09-22T13:16:05.477Z",
+      "page": 0,
+      "method": "PATCH"
+    }
+  ],
+  "businessPrompt": "PR457 browser A cfc2c6f7-5bf7-4bdd-992d-aa55486232b7\nPR457 browser B 21ddc5d7-278d-4e35-b9d5-ff365ca5c7d1",
+  "status": "DRAFT",
+  "reopenPassed": true,
+  "passed": true,
+  "finishedAt": "2026-09-22T13:16:14.937Z"
+}

@@ -162,3 +162,18 @@ run "reject_invalid_fargate_size" {
   }
   expect_failures = [aws_ecs_task_definition.yjs_server]
 }
+
+run "reject_single_worker_autoscaling" {
+  command = plan
+  module {
+    source = "./modules/realtime/yjs-server"
+  }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  variables {
+    scaling = { cluster_enabled = true, autoscaling = { min_capacity = 1, max_capacity = 4 } }
+  }
+  expect_failures = [var.scaling]
+}

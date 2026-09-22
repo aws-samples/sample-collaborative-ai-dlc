@@ -1,0 +1,47 @@
+{
+  "run": "87131468-ff3a-4287-877e-9d3bc8115ceb",
+  "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-87131468-ff3a-4287-877e-9d3bc8115ceb-0",
+  "startedAt": "2026-09-22T12:58:12.950Z",
+  "events": [
+    {
+      "at": "2026-09-22T12:58:38.397Z",
+      "event": "baseline",
+      "manifest": {
+        "snapshotSequence": 11,
+        "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/62972a2ebd9f6b89c25be35f5cd3c4234421630115270ea0935a56d6f5b5bc5e/f8697184-4d95-4706-a50f-20de646ba065.bin",
+        "snapshotVersion": "aimJl1mNu3F4URug7yZYX6RdUGfALqGO",
+        "snapshotBytes": 6545,
+        "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-87131468-ff3a-4287-877e-9d3bc8115ceb-0",
+        "leaseTokenSha256": "e9c3d540d8801ba158eacfa04ece10a1431053be9f3c83437801fd98b62019f5",
+        "ownerId": "arn:aws:ecs:eu-central-1:ACCOUNT:task/collaborative-ai-dlc-review/d043ec4f47174422972b47651983b0ca",
+        "leaseUntil": 1790081946468
+      }
+    },
+    {
+      "at": "2026-09-22T12:58:39.477Z",
+      "event": "deny-installed"
+    },
+    {
+      "at": "2026-09-22T12:59:29.502Z",
+      "event": "lease-expired-under-denial",
+      "manifest": {
+        "snapshotBytes": 22162,
+        "snapshotSequence": 36,
+        "snapshotVersion": "mJKQXfQoEgfKw_Pzj77tlpUzrTPgFUFF",
+        "leaseUntil": 1790081996454,
+        "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-87131468-ff3a-4287-877e-9d3bc8115ceb-0",
+        "leaseTokenSha256": "e9c3d540d8801ba158eacfa04ece10a1431053be9f3c83437801fd98b62019f5",
+        "ownerId": "arn:aws:ecs:eu-central-1:ACCOUNT:task/collaborative-ai-dlc-review/d043ec4f47174422972b47651983b0ca",
+        "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/62972a2ebd9f6b89c25be35f5cd3c4234421630115270ea0935a56d6f5b5bc5e/18f41811-42fc-447e-b764-5338737e0778.bin"
+      },
+      "expired": false
+    },
+    {
+      "at": "2026-09-22T12:59:29.504Z",
+      "event": "failure",
+      "error": "Lease did not expire under denied renewals"
+    }
+  ],
+  "passed": false,
+  "finishedAt": "2026-09-22T13:00:45.046Z"
+}

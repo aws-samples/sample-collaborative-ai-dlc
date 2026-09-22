@@ -5,6 +5,9 @@ across ECS tasks. A document has one owner. Adding workers increases capacity fo
 many documents; it does not divide the CPU or fan-out cost of one busy document.
 Use the load workload below to distinguish those cases before setting capacity.
 
+Deployed measurements, fault results, and availability limitations are recorded
+in the [2026-09-22 review validation](evidence/pr457-review-2026-09-22/README.md).
+
 ## Configuration
 
 Set `yjs_scaling` in the environment's Terraform variables. Production defaults to
@@ -248,11 +251,46 @@ YJS_LOAD_CLIENTS=100 YJS_LOAD_DOCUMENTS=25 YJS_LOAD_SECONDS=180 \
 ```
 
 The workload uses isolated review-room names, refreshes scope tokens, edits
-unique writer keys, and sends presence updates. It reports join p95, propagation
-p95/p99, bytes received, reconnect/close counts, and final convergence. Its
-sequence check verifies that every connected peer sees every writer's final
-value; it does not by itself prove durable cold recovery or REST autosave rates.
-The server integration suite tests cold recovery separately.
+unique writer keys, and sends presence updates. Each generated edit also enters
+an append-only CRDT journal. An independent journal in the load process supplies
+the expected entry count and SHA-256 digest; every reader must match it, the
+writer sequences, and the initial payload. This detects missing intermediate
+edits even when the final writer values match.
+
+Edits continue in the local CRDT while a client is disconnected. Results include
+`offlineWrites`, rejected upgrade status codes, reconnect/close counts, and each
+client's time awaiting synchronization. `syncAvailability` includes initial joins
+and observed reconnect gaps. It does not detect a broken connection before the
+transport notices it, nor prove that another peer received every edit immediately.
+Propagation p95/p99 covers received updates only and is capped at the first
+1,000,000 observations. Neither statistic measures REST autosave availability.
+
+Set `YJS_LOAD_REQUIRE_DURABILITY=true` to require a checkpoint receipt from every
+writer before the run succeeds. Save the JSON result, then independently inspect
+the exact object versions referenced by the committed manifests:
+
+```bash
+YJS_LOAD_REQUIRE_DURABILITY=true node lambda/yjs-server/load.js > run.json
+
+# Use the deployment's table/bucket names and an AWS profile with read access.
+export YJS_DOCUMENTS_TABLE=your-yjs-documents-table
+export YJS_MEMBERS_TABLE=your-yjs-members-table
+export YJS_SNAPSHOTS_BUCKET=your-artifacts-bucket
+node lambda/yjs-server/verify-snapshots.js run.json > snapshots.json
+```
+
+For a cold recovery check, wait until the load process has exited, replace the
+owner (or wait for idle eviction), and run:
+
+```bash
+YJS_LOAD_EXPECTED_FILE=run.json YJS_LOAD_REQUIRE_DURABILITY=true \
+  node lambda/yjs-server/load.js > recovery.json
+```
+
+Recovery creates one empty client per room, generates no edits, and applies no
+initial payload or business-data seed. It checks the same independent journal.
+Record the old/new task IDs and whether shutdown was graceful or abrupt; reading
+a checkpoint or opening another client on a live owner alone is not cold recovery.
 
 Repeat with many rooms and with `YJS_LOAD_DOCUMENTS=1`, larger
 `YJS_LOAD_INITIAL_BYTES`, bursty joins (`YJS_LOAD_RAMP_MS=0`), and higher edit

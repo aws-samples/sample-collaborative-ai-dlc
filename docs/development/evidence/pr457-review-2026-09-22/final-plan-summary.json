@@ -1,0 +1,26 @@
+[
+  {
+    "actions": ["delete"]
+  },
+  {
+    "actions": ["delete"]
+  },
+  {
+    "actions": ["delete"]
+  },
+  {
+    "actions": ["update"]
+  },
+  {
+    "actions": ["update"]
+  },
+  {
+    "actions": ["delete", "create"]
+  },
+  {
+    "actions": ["delete", "create"]
+  },
+  {
+    "actions": ["delete", "create"]
+  }
+]

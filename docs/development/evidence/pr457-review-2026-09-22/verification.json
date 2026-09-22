@@ -1,0 +1,61 @@
+{
+  "baseCommit": "25f625486ef5cea26dd05e677ad98a520020ca2f",
+  "environment": "review",
+  "region": "eu-central-1",
+  "node": "v24.21.0",
+  "runtimeSha256": {
+    "server.js": "3728e6c0463f22b2b40153146be249a0136dda10a4ca390882253b4e1ebe3bf4",
+    "service.js": "371ff863950fe0856883609e6cf1cb2ab11efe6c1f776ca3a8d9e720648a204e",
+    "rooms.js": "7041c2e7af40983ea4a5afb8a2fde4cbc31376ac1275fe4fed0ba071bd865d81",
+    "protocol.js": "b555b2252f8b4a76a6fa6e332974a28c089fc883fff75f935274529138a7184d",
+    "cluster.js": "f15a7d531d2835b7a666044d3b08f2f1bf1cd7e70c27a3d2d0b50eabf3b7d111",
+    "aws-store.js": "05103b12530872036348fb482ac42e4c315b136cbea352a55850e4d16a3aebeb",
+    "config.js": "5a4353d038c5cb2c75707d9266aa64d97cb6f396065501118832f08113b59631",
+    "doc-name.js": "3575508b1408b1d95f9fc6a038665a1807f96fee8f828c06211e0ee6858eab70",
+    "realtime-token.js": "999eb93a0c0bc720f12ae5873e23817d02b1e6391661a0cf75fb4374c1016688",
+    "Dockerfile": "3cf65c727f967668fbd8609fc0e7dd9514687ecd70374d178f5fdd34a17a2d91",
+    "package-lock.json": "1cf7774b9e6e90b81f1260a1507577455e7402e85225598bf094540ff1e4f02e"
+  },
+  "checks": {
+    "backend": {
+      "tests": 534,
+      "files": 12,
+      "command": "npm test -- --project yjs-server --project intents --project projects"
+    },
+    "frontend": {
+      "tests": 550,
+      "files": 79,
+      "command": "npm --prefix frontend test"
+    },
+    "terraform": {
+      "tests": 6,
+      "command": "terraform -chdir=terraform test -filter=tests/yjs.tftest.hcl"
+    },
+    "release": {
+      "tests": 53,
+      "command": "npm run test:release"
+    }
+  },
+  "deployedImageRuntimeSha256": {
+    "aws-store.js": "05103b12530872036348fb482ac42e4c315b136cbea352a55850e4d16a3aebeb",
+    "cluster.js": "f15a7d531d2835b7a666044d3b08f2f1bf1cd7e70c27a3d2d0b50eabf3b7d111",
+    "config.js": "5a4353d038c5cb2c75707d9266aa64d97cb6f396065501118832f08113b59631",
+    "doc-name.js": "3575508b1408b1d95f9fc6a038665a1807f96fee8f828c06211e0ee6858eab70",
+    "protocol.js": "b555b2252f8b4a76a6fa6e332974a28c089fc883fff75f935274529138a7184d",
+    "realtime-token.js": "999eb93a0c0bc720f12ae5873e23817d02b1e6391661a0cf75fb4374c1016688",
+    "rooms.js": "7041c2e7af40983ea4a5afb8a2fde4cbc31376ac1275fe4fed0ba071bd865d81",
+    "server.js": "3728e6c0463f22b2b40153146be249a0136dda10a4ca390882253b4e1ebe3bf4",
+    "service.js": "371ff863950fe0856883609e6cf1cb2ab11efe6c1f776ca3a8d9e720648a204e",
+    "package-lock.json": "1cf7774b9e6e90b81f1260a1507577455e7402e85225598bf094540ff1e4f02e"
+  },
+  "snapshotCliRecheck": {
+    "at": "2026-09-22T13:58:10.639Z",
+    "run": "d5948e4d-260a-4665-930b-e635204fd0cf",
+    "verified": true,
+    "writes": 287200,
+    "documents": 200,
+    "command": "node lambda/yjs-server/verify-snapshots.js autoscaling.json"
+  },
+  "loadHarnessSha256": "a7a95b141513f38718422370b57eab2d09beb367bfe5d5e16d257cc755395124",
+  "finalImageRuntimeHashesMatch": true
+}

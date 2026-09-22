@@ -1,0 +1,12 @@
+{
+  "AlarmHistoryItems": [
+    {
+      "AlarmName": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-ab17b15b-7557-4a26-b156-08cd82448b24",
+      "AlarmType": "MetricAlarm",
+      "Timestamp": "2026-09-22T15:49:14.015000+02:00",
+      "HistoryItemType": "Action",
+      "HistorySummary": "Successfully executed action arn:aws:autoscaling:eu-central-1:ACCOUNT:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-capacity:createdBy/5276b4e6-61e2-4578-b522-15c4a75e81d8",
+      "HistoryData": "{\"actionState\":\"Succeeded\",\"stateUpdateTimestamp\":1790084953887,\"notificationResource\":\"arn:aws:autoscaling:eu-central-1:ACCOUNT:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-capacity:createdBy/5276b4e6-61e2-4578-b522-15c4a75e81d8\",\"publishedMessage\":null,\"error\":null,\"muteWindowEndTimestamp\":null}"
+    }
+  ]
+}

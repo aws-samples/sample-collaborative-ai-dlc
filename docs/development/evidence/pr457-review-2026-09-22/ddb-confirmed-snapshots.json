@@ -1,0 +1,53 @@
+{
+  "at": "2026-09-22T13:10:34.360Z",
+  "run": "f1489dd2-d303-430b-b78f-9fa8534640d4",
+  "verified": true,
+  "writes": 11960,
+  "checks": [
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-f1489dd2-d303-430b-b78f-9fa8534640d4-0",
+      "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/78cc632b759b3c71867eab0deb5600ec44f0961255be5d16f91585dc1955e1c8/371f7706-ff88-4e49-be6d-1ef9e8d497c8.bin",
+      "snapshotVersion": "KLGzFCYNUeXLXLuINADcVow_pxonjlNl",
+      "snapshotSequence": 38,
+      "expectedWrites": 2392,
+      "actualWrites": 2392,
+      "verified": true
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-f1489dd2-d303-430b-b78f-9fa8534640d4-1",
+      "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/4f8bac7b4b0c58bd6b1e0e90148c11c1950a684af2f18ef7b99fd379cbbbcb86/86ca9c1c-0adc-4410-a17e-c8d33e211cfb.bin",
+      "snapshotVersion": "gd3uwPZ8HujpF0lWLXCPeW.cXQVw9Bky",
+      "snapshotSequence": 62,
+      "expectedWrites": 2392,
+      "actualWrites": 2392,
+      "verified": true
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-f1489dd2-d303-430b-b78f-9fa8534640d4-2",
+      "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/530875b2668b092fe65a488432d5feaff3285015052332ac9d847449b9bf2afb/d5231137-6fb7-411a-bb0c-7f2b2c0a7a5c.bin",
+      "snapshotVersion": "dTcoohE1qNeUZp5d5DvI8Qo2BuHb1I0u",
+      "snapshotSequence": 72,
+      "expectedWrites": 2392,
+      "actualWrites": 2392,
+      "verified": true
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-f1489dd2-d303-430b-b78f-9fa8534640d4-3",
+      "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/09a5ad7cc43dd54bc3358dc10a4b35fed07e2a55300d8fba93d73d1c6475cfe9/44e2d3c0-7e96-4869-b35c-b100be345f5a.bin",
+      "snapshotVersion": "2n7D77lDGsQhiHhInlt.ss50rIjhll6G",
+      "snapshotSequence": 70,
+      "expectedWrites": 2392,
+      "actualWrites": 2392,
+      "verified": true
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-f1489dd2-d303-430b-b78f-9fa8534640d4-4",
+      "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/135703604aab7b3088bd2c49d9f5425ea495781e35f5ee048f4183e9e94aaf5d/5855ca12-740a-427a-9e9a-fd7031cfb76c.bin",
+      "snapshotVersion": "DtUwaPgbHvEjAMO1AacO18BEtrnId3CG",
+      "snapshotSequence": 39,
+      "expectedWrites": 2392,
+      "actualWrites": 2392,
+      "verified": true
+    }
+  ]
+}

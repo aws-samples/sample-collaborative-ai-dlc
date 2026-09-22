@@ -1,0 +1,12 @@
+{
+  "matchingEvents": 101,
+  "first": {
+    "at": 1790082346723,
+    "message": "Yjs checkpoint failed: User: arn:aws:sts::ACCOUNT:assumed-role/collaborative-ai-dlc-yjs-task-review/d043ec4f47174422972b47651983b0ca is not authorized to perform: dynamodb:GetItem on resource: arn:aws:dynamodb:eu-central-1:ACCOUNT:table/collaborative-ai-dlc-yjs-documents-review with an explicit deny in a resource-based policy"
+  },
+  "last": {
+    "at": 1790082500530,
+    "message": "Yjs checkpoint failed: User: arn:aws:sts::ACCOUNT:assumed-role/collaborative-ai-dlc-yjs-task-review/e81884d07f7e4ebca603c3694072b89e is not authorized to perform: dynamodb:ConditionCheckItem on resource: arn:aws:dynamodb:eu-central-1:ACCOUNT:table/collaborative-ai-dlc-yjs-documents-review with an explicit deny in a resource-based policy"
+  },
+  "interpretation": "Explicit resource-policy denial observed in task logs; installation/removal timestamps do not bound data-plane denial duration."
+}
