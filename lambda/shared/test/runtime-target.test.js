@@ -33,8 +33,7 @@ describe('runtime target snapshots', () => {
       qualifier: 'revision_r_1',
     };
     await stopRuntimeSessions(agentcore, target, 'intent-1', {
-      sectionIndexes: [2],
-      unitSlugs: ['api', 'ui'],
+      sessionIds: [laneSessionIdFor('intent-1', 2, 'api'), laneSessionIdFor('intent-1', 2, 'ui')],
     });
 
     expect(agentcore.send).toHaveBeenCalledTimes(3);

@@ -82,17 +82,14 @@ const stopRuntimeSessions = async (
   agentcore,
   agentcoreRuntimeTarget,
   intentId,
-  { sectionIndexes = [], unitSlugs = [] } = {},
+  { sessionIds = [] } = {},
 ) => {
   const target =
     typeof agentcoreRuntimeTarget === 'string'
       ? { agentRuntimeArn: agentcoreRuntimeTarget }
       : agentcoreRuntimeTarget;
   if (!agentcore || !target?.agentRuntimeArn) return;
-  const ids = [runtimeSessionIdFor(intentId)];
-  for (const idx of sectionIndexes) {
-    for (const slug of unitSlugs) ids.push(laneSessionIdFor(intentId, idx, slug));
-  }
+  const ids = [...new Set([runtimeSessionIdFor(intentId), ...sessionIds])];
   for (const id of ids) {
     try {
       await agentcore.send(
@@ -110,6 +107,34 @@ const stopRuntimeSessions = async (
   }
 };
 
+// Every session an intent may have opened on the Instances compute type,
+// rebuilt from the PERSISTED records (not the current unit plan). The UNIT#
+// rows are the source of truth: the orchestrator stamps each lane's sessionId
+// on the row when the lane starts, and the rows survive plan rewinds — so
+// historical/orphaned lanes that are no longer in the current plan are still
+// covered. A row without a stamped sessionId (a lane that never started, or a
+// legacy row) falls back to the deterministic lane id derived from its
+// persisted sectionIndex + slug, and lane STAGE# rows (which persist
+// sectionIndex + unitSlug) contribute the same derivation as a second net.
+// The result is a superset — callers tolerate deleting/stopping a session
+// that never existed.
+const collectIntentSessionIds = (intentId, records = {}) => {
+  const ids = new Set([runtimeSessionIdFor(intentId)]);
+  for (const unit of records.units ?? []) {
+    if (typeof unit.sessionId === 'string' && unit.sessionId.length > 0) {
+      ids.add(unit.sessionId);
+    } else if (Number.isInteger(unit.sectionIndex) && unit.slug) {
+      ids.add(laneSessionIdFor(intentId, unit.sectionIndex, unit.slug));
+    }
+  }
+  for (const stage of records.stages ?? []) {
+    if (Number.isInteger(stage.sectionIndex) && stage.unitSlug) {
+      ids.add(laneSessionIdFor(intentId, stage.sectionIndex, stage.unitSlug));
+    }
+  }
+  return [...ids];
+};
+
 // Instances sessions keep their EBS volumes across stop/idle/lifetime — only
 // an explicit DeleteCapacityProviderSession releases them. A permanently
 // deleted intent must not leave its workspace volumes (and their charges)
@@ -122,16 +147,13 @@ const deleteRuntimeSessions = async (
   agentcore,
   capacityProviderArn,
   intentId,
-  { sectionIndexes = [], unitSlugs = [] } = {},
+  { sessionIds = [] } = {},
 ) => {
   const capacityProviderId = String(capacityProviderArn ?? '')
     .split('/')
     .pop();
   if (!agentcore || !capacityProviderId) return;
-  const ids = [runtimeSessionIdFor(intentId)];
-  for (const idx of sectionIndexes) {
-    for (const slug of unitSlugs) ids.push(laneSessionIdFor(intentId, idx, slug));
-  }
+  const ids = [...new Set([runtimeSessionIdFor(intentId), ...sessionIds])];
   for (const id of ids) {
     try {
       await agentcore.send(
@@ -253,24 +275,20 @@ const deleteIntentCascade = async ({
   if (!['DRAFT', 'SUCCEEDED', 'CANCELLED'].includes(meta?.status)) {
     await retireParkedRun({ store, lambdaClient, executionId: intentId, reason });
   }
-  await stopRuntimeSessions(agentcore, agentcoreRuntimeTarget ?? agentcoreRuntimeArn, intentId);
+  const sessionIds = collectIntentSessionIds(intentId, records);
+  await stopRuntimeSessions(agentcore, agentcoreRuntimeTarget ?? agentcoreRuntimeArn, intentId, {
+    sessionIds,
+  });
   // Instances runs: delete the sessions so their persistent EBS volumes go
-  // with the intent. The lane id set is rebuilt as a superset from the stage
-  // rows and the unit plan; deleting a session that never started is a
-  // tolerated miss.
+  // with the intent. The session set is rebuilt from the persisted UNIT#/STAGE#
+  // rows (see collectIntentSessionIds) — deleting a session that never started
+  // is a tolerated miss. deleteRuntimeSessions throws on an unexpected error
+  // BEFORE the intent records are deleted below, so a failed session delete
+  // keeps the records and the whole cascade stays retryable.
   const capacityProviderArn =
     meta?.environment?.capacityProviderArn ?? meta?.environmentSnapshot?.capacityProviderArn;
   if (capacityProviderArn) {
-    await deleteRuntimeSessions(agentcore, capacityProviderArn, intentId, {
-      sectionIndexes: [
-        ...new Set(
-          (records.stages ?? [])
-            .map((stage) => stage.parallelSection)
-            .filter((section) => Number.isInteger(section)),
-        ),
-      ],
-      unitSlugs: (records.unitPlan?.units ?? []).map((unit) => unit.slug),
-    });
+    await deleteRuntimeSessions(agentcore, capacityProviderArn, intentId, { sessionIds });
   }
 
   // Yjs docs — best-effort: they are unreachable once the intent is gone (doc
@@ -351,6 +369,7 @@ const deleteIntentCascade = async ({
 };
 
 export {
+  collectIntentSessionIds,
   deleteIntentCascade,
   deleteRuntimeSessions,
   retireParkedRun,
@@ -360,6 +379,7 @@ export {
   IntentRunningError,
 };
 export default {
+  collectIntentSessionIds,
   deleteIntentCascade,
   deleteRuntimeSessions,
   retireParkedRun,
