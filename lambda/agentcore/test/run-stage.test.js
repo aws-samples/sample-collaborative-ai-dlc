@@ -1944,6 +1944,65 @@ describe('runStage — resume mode', () => {
     expect(store.calls.some(([op]) => op === 'updateStageState' || op === 'putStage')).toBe(false);
   });
 
+  it.each(['getHumanTask', 'getStage', 'conflict'])(
+    'leaves an owned recovery retryable after %s',
+    async (failure) => {
+      const seed = {
+        stage: {
+          state: 'WAITING_FOR_HUMAN',
+          cli: 'kiro',
+          cliSessionId: 'saved-session',
+          pendingHumanTaskId: 'q1',
+          stageCallbackId: 'cb1',
+        },
+        humanTask: {
+          humanTaskId: 'q1',
+          status: 'answered',
+          stageInstanceId: failure === 'conflict' ? 'sibling' : BASE_STAGE_INSTANCE_ID,
+        },
+      };
+      const store = spyStore(seed);
+      store.claimStageAttempt = vi.fn(async () => {});
+      const write = store.updateStageState;
+      store.updateStageState = vi.fn(async (input) => {
+        Object.assign(seed.stage, { state: input.state, runtimeError: input.runtimeError });
+        return write(input);
+      });
+      if (failure !== 'conflict')
+        store[failure] = vi.fn(async () => {
+          throw new Error('unavailable');
+        });
+      const spawnFn = vi.fn();
+      const result = await runStage(
+        {
+          ...baseArgs,
+          resumeFrom: 'q1',
+          stageCallbackId: 'cb1',
+          orchestratorRunId: 'run1',
+        },
+        baseDeps({ store, spawnFn }),
+      );
+      const reason = failure === 'conflict' ? 'resume_state_conflict' : 'resume_state_unavailable';
+      expect(result).toMatchObject({ ok: false, reason });
+      expect(seed.stage).toMatchObject({
+        state: 'FAILED',
+        runtimeError: reason,
+        cliSessionId: 'saved-session',
+      });
+      expect(store.updateStageState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stageInstanceId: BASE_STAGE_INSTANCE_ID,
+          ownership: {
+            stageInstanceId: BASE_STAGE_INSTANCE_ID,
+            orchestratorRunId: 'run1',
+            stageCallbackId: 'cb1',
+          },
+        }),
+      );
+      expect(spawnFn).not.toHaveBeenCalled();
+    },
+  );
+
   it('explains a removed pinned credential when resuming a parked stage', async () => {
     const deps = baseDeps({
       availableClis: [],

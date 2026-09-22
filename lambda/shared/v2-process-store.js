@@ -178,7 +178,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     ]);
   };
 
-  const claimStageAttempt = async ({ executionId, ownership }) => {
+  const claimStageAttempt = async ({ executionId, ownership, stageId = null, phase = null }) => {
     await writeStageAttempt({
       executionId,
       ownership,
@@ -192,12 +192,28 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
             // callback may claim only a parked/terminal/reset stage.
             ConditionExpression:
               'attribute_not_exists(pk) OR #state <> :running OR stageCallbackId = :callback',
-            UpdateExpression: 'SET stageCallbackId = :callback, orchestratorRunId = :run',
+            UpdateExpression:
+              'SET stageCallbackId = :callback, orchestratorRunId = :run' +
+              (stageId
+                ? ', stageId = if_not_exists(stageId, :stageId), phase = if_not_exists(phase, :phase), GSI2PK = if_not_exists(GSI2PK, :g2pk)'
+                : ''),
             ExpressionAttributeNames: { '#state': 'state' },
             ExpressionAttributeValues: {
               ':running': 'RUNNING',
               ':callback': ownership.stageCallbackId,
               ':run': ownership.orchestratorRunId,
+              ...(stageId
+                ? {
+                    ':stageId': stageId,
+                    ':phase': phase,
+                    ':g2pk': executionTypeStateIndex({
+                      executionId,
+                      type: 'STAGE',
+                      state: 'PENDING',
+                      id: ownership.stageInstanceId,
+                    }).GSI2PK,
+                  }
+                : {}),
             },
           },
         },

@@ -1247,7 +1247,7 @@ const runStageAttempt = async (
       : null;
   store = scopeStageAttempt(processStore, ownership);
   if (ownership) {
-    await processStore.claimStageAttempt({ executionId, ownership });
+    await processStore.claimStageAttempt({ executionId, ownership, stageId, phase: stage.phase });
   }
 
   // A lane run must reference a unit the promoted UNITPLAN actually knows —
@@ -1461,7 +1461,7 @@ const runStageAttempt = async (
       row = await store.getStage(executionId, stageInstanceId, { consistentRead: true });
     } catch {
       return fail(
-        null,
+        ownership ? stageInstanceId : null,
         'resume_state_unavailable',
         'The saved stage or answer could not be read. Retry when storage is available; the saved conversation has not been reset.',
       );
@@ -1485,7 +1485,7 @@ const runStageAttempt = async (
         (row?.state === 'WAITING_FOR_HUMAN' && row.pendingHumanTaskId !== resumeFrom))
     ) {
       return fail(
-        null,
+        ownership ? stageInstanceId : null,
         'resume_state_conflict',
         'The answer no longer belongs to this parked stage.',
       );
