@@ -1457,7 +1457,7 @@ export const runStage = async (
     if (
       resumeFrom &&
       ((resumeGate.stageInstanceId != null && resumeGate.stageInstanceId !== stageInstanceId) ||
-        (resumeGate.unitSlug ?? null) !== unitSlug ||
+        (resumeGate.unitSlug != null && resumeGate.unitSlug !== unitSlug) ||
         (resumeGate.sectionIndex ?? null) !== sectionIndex ||
         (row?.state != null && !['WAITING_FOR_HUMAN', 'SUCCEEDED'].includes(row.state)) ||
         (row?.pendingHumanTaskId != null && row.pendingHumanTaskId !== resumeFrom))

@@ -7,6 +7,7 @@ import {
   __test,
 } from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
+import { awaitEngineGate } from '../../v2-orchestrator/section.js';
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
@@ -3756,6 +3757,55 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       ...overrides,
     });
   const unitArgs = { ...baseArgs, stageId: 'code-generation', unitSlug: 'billing' };
+
+  it('passes a batch request-changes gate through real resume validation for every lane', async () => {
+    let gate;
+    const store = {
+      getExecution: async () => ({ orchestratorRunId: 'run1' }),
+      getHumanTask: async () => gate,
+      createHumanTask: async (row) => {
+        gate = { ...row, status: 'pending' };
+      },
+      updateExecution: async () => ({}),
+      setGateCallbackId: async () => null,
+    };
+    const result = await awaitEngineGate(
+      { step: async (_name, fn) => fn(), createCallback: async () => [Promise.resolve(), 'cb1'] },
+      {
+        store,
+        runId: 'run1',
+        ids: baseArgs,
+        broadcast: async () => {
+          gate.status = 'answered';
+          gate.answer = { decision: 'request-changes', feedback: 'Handle refunds in both lanes' };
+        },
+      },
+      { name: 'batch-s1-w1', prompt: 'Approve batch?', sectionIndex: 1 },
+    );
+    expect(result.gate).toMatchObject({ unitSlug: null, stageInstanceId: null });
+    for (const unitSlug of ['auth', 'billing']) {
+      const prompts = [];
+      const deps = unitDeps({
+        store: spyStore({
+          unitPlan: UNIT_PLAN,
+          humanTask: gate,
+          stage: { state: 'SUCCEEDED', cli: 'claude', cliSessionId: `session-${unitSlug}` },
+        }),
+        spawnFn: () => ({ ...okSpawn(), stdin: { end: (text) => prompts.push(text) } }),
+      });
+      const resumed = await runStage(
+        {
+          ...unitArgs,
+          unitSlug,
+          sectionIndex: 1,
+          resumeFrom: gate.humanTaskId,
+        },
+        deps,
+      );
+      expect(resumed).toMatchObject({ ok: true, state: 'SUCCEEDED', unitSlug });
+      expect(prompts.join('\n')).toContain('Handle refunds in both lanes');
+    }
+  });
 
   it('runs a per-unit stage under its unit-dimension instance id and stamps unitSlug on every write', async () => {
     const deps = unitDeps();
