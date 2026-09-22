@@ -58,6 +58,10 @@ interface Props {
   tools: ManagedTool[];
   disabled: boolean;
   showId: boolean;
+  // Whether this deployment can build the Instances (EC2) compute type
+  // (enable_instances_compute). When false the EC2 option is hidden so a
+  // draft can never be created against an unconfigured compute type.
+  instancesComputeEnabled: boolean;
   actionLabel: string;
   actionBusy: boolean;
   actionDisabled: boolean;
@@ -253,6 +257,7 @@ export function EnvironmentBuilder({
   tools,
   disabled,
   showId,
+  instancesComputeEnabled,
   actionLabel,
   actionBusy,
   actionDisabled,
@@ -459,7 +464,7 @@ export function EnvironmentBuilder({
                   </SelectContent>
                 </Select>
               </div>
-              {showId && (
+              {showId && (instancesComputeEnabled || form.compute === 'instances-x86_64') && (
                 <div className="max-w-md space-y-1.5">
                   <Label htmlFor="environment-compute" className="text-xs">
                     Compute

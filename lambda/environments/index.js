@@ -30,9 +30,11 @@ import {
 import { createEnvironmentStore } from './store.js';
 import { createToolStore } from './tool-store.js';
 import {
+  amd64CoreImageConfigured,
   applyComputeBase,
   assertBaseArchitecture,
   environmentArchitecture,
+  instancesComputeConfigured,
   normalizeCompute,
 } from './compute.js';
 
@@ -391,6 +393,16 @@ export const createHandler = ({
         return response(200, await store.listEnvironments({ publishedOnly }));
       }
 
+      // Deployment capabilities — lets the settings UI hide compute types the
+      // deployment cannot build (e.g. Instances when enable_instances_compute
+      // is off) instead of surfacing a 409 at draft creation.
+      if (event.httpMethod === 'GET' && tail.length === 1 && environmentId === 'capabilities') {
+        return response(200, {
+          instancesCompute: instancesComputeConfigured(),
+          amd64CoreImage: amd64CoreImageConfigured(),
+        });
+      }
+
       if (event.httpMethod === 'POST' && tail.length === 0) {
         const denied = requirePlatformAdmin(event);
         if (denied)
@@ -401,7 +413,7 @@ export const createHandler = ({
         const data = parseBody(event);
         if (!data.name?.trim()) return response(400, { error: 'name is required' });
         const id = normalizeEnvironmentId(data.environmentId || data.name);
-        if (id === 'rebuild') {
+        if (id === 'rebuild' || id === 'capabilities') {
           return response(400, { error: 'environmentId is reserved by the platform' });
         }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';
