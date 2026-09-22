@@ -1459,8 +1459,14 @@ export const runStage = async (
       ((resumeGate.stageInstanceId != null && resumeGate.stageInstanceId !== stageInstanceId) ||
         (resumeGate.unitSlug != null && resumeGate.unitSlug !== unitSlug) ||
         (resumeGate.sectionIndex ?? null) !== sectionIndex ||
-        (row?.state != null && !['WAITING_FOR_HUMAN', 'SUCCEEDED'].includes(row.state)) ||
-        (row?.pendingHumanTaskId != null && row.pendingHumanTaskId !== resumeFrom))
+        (row?.state != null &&
+          !['WAITING_FOR_HUMAN', 'SUCCEEDED'].includes(row.state) &&
+          !(
+            row.state === 'RUNNING' &&
+            stageCallbackId &&
+            row.stageCallbackId === stageCallbackId
+          )) ||
+        (row?.state === 'WAITING_FOR_HUMAN' && row.pendingHumanTaskId !== resumeFrom))
     ) {
       return fail(
         null,

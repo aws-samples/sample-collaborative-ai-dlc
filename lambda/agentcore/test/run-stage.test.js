@@ -1863,6 +1863,47 @@ describe('runStage — resume mode', () => {
     expect(put).toMatchObject({ state: 'RUNNING', attempt: 2 });
   });
 
+  it.each([
+    ['RUNNING', 'cb-resume', 'SUCCEEDED'],
+    ['SUCCEEDED', 'cb-previous', 'SUCCEEDED'],
+    ['RUNNING', 'cb-other', 'resume_state_conflict'],
+  ])(
+    'resumes %s with callback %s and stale gate bookkeeping',
+    async (state, rowCallback, expected) => {
+      const store = spyStore({
+        humanTask: {
+          humanTaskId: 'feedback',
+          status: 'answered',
+          stageInstanceId: BASE_STAGE_INSTANCE_ID,
+          answer: { decision: 'request-changes', feedback: 'Add validation' },
+        },
+        stage: {
+          state,
+          stageCallbackId: rowCallback,
+          pendingHumanTaskId: 'old-question',
+          cli: 'claude',
+          cliSessionId: 'session-1',
+        },
+      });
+      const spawnFn = vi.fn(okSpawn);
+      const result = await runStage(
+        {
+          ...baseArgs,
+          resumeFrom: 'feedback',
+          stageCallbackId: 'cb-resume',
+        },
+        baseDeps({ store, spawnFn }),
+      );
+      if (expected === 'SUCCEEDED') {
+        expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+        expect(spawnFn).toHaveBeenCalled();
+      } else {
+        expect(result).toMatchObject({ ok: false, reason: expected });
+        expect(spawnFn).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('fails gate_not_answered when the gate is still pending', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,
