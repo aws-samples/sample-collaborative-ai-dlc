@@ -28,6 +28,7 @@
 // whole flow is unit-tested with the CLI + AWS mocked.
 
 import { randomUUID } from 'node:crypto';
+import { scopeStageAttempt } from '../../shared/stage-attempt.js';
 import {
   selectCli,
   getDriver,
@@ -926,7 +927,7 @@ const pendingGate = async ({ store, executionId, stageInstanceId, unitSlug, sect
     : null;
 };
 
-export const runStage = async (
+const runStageAttempt = async (
   {
     projectId,
     intentId,
@@ -1001,6 +1002,7 @@ export const runStage = async (
     // traceability/operator recovery; the callback itself is completed by
     // run-stage-start's background job, not here. Null on the legacy sync path.
     stageCallbackId = null,
+    orchestratorRunId = null,
     // Agent launching time (cold start) in ms — orchestrator dispatch → job
     // accept, computed by run-stage-start. Recorded below as an `agentLaunchMs`
     // metric sample (gauge). Null on the legacy sync path / old dispatchers.
@@ -1009,7 +1011,7 @@ export const runStage = async (
   deps,
 ) => {
   const {
-    store,
+    store: processStore,
     loadLibrary,
     loadBlockBody,
     loadBlockScript = async () => '',
@@ -1058,6 +1060,7 @@ export const runStage = async (
     resolveMcpSecrets = defaultResolveMcpSecrets,
     verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
   } = deps;
+  let store = processStore;
 
   const now = () => clock();
   const reviewFeedbackPrompt =
@@ -1104,7 +1107,7 @@ export const runStage = async (
 
   const fail = async (stageInstanceId, reason, detail, { clearPending = false } = {}) => {
     if (stageInstanceId) {
-      await store
+      const saved = await store
         .updateStageState({
           executionId,
           stageInstanceId,
@@ -1113,7 +1116,12 @@ export const runStage = async (
           completedAt: true,
           ...(clearPending ? { pendingHumanTaskId: null } : {}),
         })
-        .catch(() => {});
+        .then(() => true)
+        .catch((error) => {
+          if (error?.name === 'ConditionalCheckFailedException') return false;
+          return true; // preserve the original failure during a storage outage
+        });
+      if (!saved) return { ok: false, reason: 'retired' };
     }
     await store
       .appendEvent({
@@ -1233,6 +1241,14 @@ export const runStage = async (
   const stageInstanceId = unitSlug
     ? planStageInstanceId(plan.namespace, stageId, unitSlug, sectionIndex)
     : stage.stageInstanceId;
+  const ownership =
+    orchestratorRunId && stageCallbackId
+      ? { orchestratorRunId, stageCallbackId, stageInstanceId }
+      : null;
+  store = scopeStageAttempt(processStore, ownership);
+  if (ownership) {
+    await processStore.claimStageAttempt({ executionId, ownership });
+  }
 
   // A lane run must reference a unit the promoted UNITPLAN actually knows —
   // scheduling truth is the DDB snapshot, never the dispatch payload alone.
@@ -1595,6 +1611,8 @@ export const runStage = async (
     unitSlug,
     sectionIndex,
     stageAttempt: priorStageRow?.attempt ?? 0,
+    orchestratorRunId,
+    stageCallbackId,
     role: 'author',
     model,
   };
@@ -2432,12 +2450,20 @@ export const runStage = async (
         );
       });
     if (!unitSlug) {
-      await store.updateExecution({ executionId, pendingHumanTaskId: null }).catch((error) => {
-        console.error(
-          `[run-stage] failed to clear pending gate execution=${executionId} stage=${stageInstanceId} reason=${reason}`,
-          error,
-        );
-      });
+      await store
+        .updateExecution({
+          executionId,
+          pendingHumanTaskId: null,
+          ...(ownership
+            ? { ifOrchestratorRunId: orchestratorRunId, ifPendingHumanTaskId: parked.humanTaskId }
+            : {}),
+        })
+        .catch((error) => {
+          console.error(
+            `[run-stage] failed to clear pending gate execution=${executionId} stage=${stageInstanceId} reason=${reason}`,
+            error,
+          );
+        });
     }
     return fail(stageInstanceId, reason, detail, { clearPending: true });
   };
@@ -2813,6 +2839,15 @@ export const runStage = async (
       withPlatformSensors(stage).length > 0 ? 'Stage sensors passed' : 'Stage completed',
     reviewTargetCheck,
   };
+};
+
+export const runStage = async (...args) => {
+  try {
+    return await runStageAttempt(...args);
+  } catch (error) {
+    if (error?.name === 'ConditionalCheckFailedException') return { ok: false, reason: 'retired' };
+    throw error;
+  }
 };
 
 // Exposed for unit tests (pure helpers; the runStage flow is integration-tested).

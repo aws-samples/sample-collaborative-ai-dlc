@@ -358,6 +358,19 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
     expect(world.statusWrites).not.toContain('FAILED');
   });
 
+  it('does not fail a replacement attempt when an old worker returns retired', async () => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const completion = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    await completeStage(runner, 'stage-cb-a', { ok: false, state: 'FAILED', reason: 'retired' });
+    expect((await completion).getResult()).toMatchObject({ ok: false, reason: 'retired' });
+    expect(world.statusWrites).not.toContain('FAILED');
+    expect(world.statusWrites).not.toContain('SUCCEEDED');
+  });
+
   it('runs init-ws → stage a (park → human answer → resume) → stage b to SUCCEEDED with exactly-once side effects', async () => {
     const world = makeWorld();
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));

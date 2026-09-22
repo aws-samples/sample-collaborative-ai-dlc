@@ -8,6 +8,7 @@ import {
 } from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 import { awaitEngineGate } from '../../v2-orchestrator/section.js';
+import { createProcessStore } from '../../shared/v2-process-store.js';
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
@@ -2564,6 +2565,117 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
       stageInstanceId: BASE_STAGE_INSTANCE_ID,
     },
   });
+
+  it.each(['new-run', 'new-callback'])(
+    'leaves a replacement gate untouched when an old Kiro worker exits: %s',
+    async (replacement) => {
+      const seed = pendingGateSeed('q-new');
+      const rows = new Map([
+        [
+          'META',
+          { projectId: 'p1', startedAt: 'T', status: 'RUNNING', orchestratorRunId: 'old-run' },
+        ],
+        [
+          `STAGE#${BASE_STAGE_INSTANCE_ID}`,
+          { ...seed.stage, state: 'PENDING', stageCallbackId: 'old-cb' },
+        ],
+        ['HUMAN#q-new', { ...seed.humanTask, stageCallbackId: 'new-cb' }],
+      ]);
+      const ddb = {
+        send: async ({ input }) => {
+          if (!input.TransactItems) return { Item: rows.get(input.Key.sk) };
+          for (const item of input.TransactItems) {
+            const op = item.ConditionCheck ?? item.Update ?? item.Put;
+            const row = rows.get((op.Key ?? op.Item).sk) ?? {};
+            const values = op.ExpressionAttributeValues ?? {};
+            const condition = op.ConditionExpression ?? '';
+            const mismatch = [
+              [':ownedRun', 'orchestratorRunId'],
+              [':ownedCallback', 'stageCallbackId'],
+              [':ownedStage', 'stageInstanceId'],
+              [':ifPendingHumanTaskId', 'pendingHumanTaskId'],
+            ].some(([token, key]) => condition.includes(token) && row[key] !== values[token]);
+            if (mismatch)
+              throw Object.assign(new Error('ownership lost'), {
+                name: 'TransactionCanceledException',
+                CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+              });
+          }
+          for (const item of input.TransactItems) {
+            if (item.Put) rows.set(item.Put.Item.sk, { ...item.Put.Item });
+            if (item.Update) {
+              const op = item.Update;
+              const row = rows.get(op.Key.sk) ?? {};
+              for (const assignment of op.UpdateExpression.replace(/^SET /, '').split(', ')) {
+                const [name, token] = assignment.split(' = ');
+                row[op.ExpressionAttributeNames?.[name] ?? name] =
+                  op.ExpressionAttributeValues[token];
+              }
+              rows.set(op.Key.sk, row);
+            }
+          }
+          return {};
+        },
+      };
+      const process = createProcessStore({ ddb, tableName: 'test', clock: () => 'T' });
+      const store = {
+        ...spyStore(),
+        ...Object.fromEntries(
+          [
+            'claimStageAttempt',
+            'getStage',
+            'getExecution',
+            'getHumanTask',
+            'putStage',
+            'updateStageState',
+            'updateExecution',
+            'supersedeHumanTask',
+          ].map((method) => [method, process[method]]),
+        ),
+      };
+      const spawn = sessionSpawn(false);
+      let replaced = false;
+      const broadcast = vi.fn(async () => {});
+      const result = await runStage(
+        {
+          ...baseArgs,
+          requestedCli: 'kiro',
+          stageCallbackId: 'old-cb',
+          orchestratorRunId: 'old-run',
+        },
+        baseDeps({
+          store,
+          availableClis: ['kiro'],
+          broadcast,
+          spawnFn: (command, args) => {
+            if (!replaced) {
+              replaced = true;
+              Object.assign(rows.get('META'), {
+                orchestratorRunId: replacement === 'new-run' ? 'new-run' : 'old-run',
+                status: 'WAITING',
+                pendingHumanTaskId: 'q-new',
+              });
+              Object.assign(rows.get(`STAGE#${BASE_STAGE_INSTANCE_ID}`), {
+                state: 'WAITING_FOR_HUMAN',
+                stageCallbackId: 'new-cb',
+                pendingHumanTaskId: 'q-new',
+              });
+            }
+            return spawn(command, args);
+          },
+        }),
+      );
+      expect(result).toMatchObject({ ok: false, reason: 'retired' });
+      expect(rows.get('META')).toMatchObject({ status: 'WAITING', pendingHumanTaskId: 'q-new' });
+      expect(rows.get(`STAGE#${BASE_STAGE_INSTANCE_ID}`)).toMatchObject({
+        state: 'WAITING_FOR_HUMAN',
+        stageCallbackId: 'new-cb',
+        pendingHumanTaskId: 'q-new',
+      });
+      expect(rows.get('HUMAN#q-new').status).toBe('pending');
+      expect(broadcast.mock.calls.some(([event]) => event.state === 'FAILED')).toBe(false);
+    },
+  );
 
   it('recovers an owned legacy Kiro wait with no session ID and injects its saved answer', async () => {
     const prompts = [];

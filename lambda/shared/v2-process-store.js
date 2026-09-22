@@ -95,6 +95,116 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   const now = () => (clock ? clock() : new Date().toISOString());
   const nextId = () => (ids ? ids() : randomUUID());
 
+  // Ownership invariant for worker writes: META still names this run and
+  // STAGE still names this callback attempt. Check both in the SAME transaction
+  // as the mutation; a read followed by an unconditional write cannot fence a
+  // rewind. Repeating the same owner's mutation is allowed.
+  const writeStageAttempt = async ({ executionId, ownership, writes, claim = false }) => {
+    const stage = stageKey(executionId, ownership.stageInstanceId);
+    const ownsStage = {
+      TableName: table(),
+      Key: stage,
+      ConditionExpression: 'stageCallbackId = :ownedCallback',
+      ExpressionAttributeValues: { ':ownedCallback': ownership.stageCallbackId },
+    };
+    const ownsRun = {
+      TableName: table(),
+      Key: executionMetaKey(executionId),
+      ConditionExpression:
+        'orchestratorRunId = :ownedRun AND #ownedStatus IN (:ownedRunning, :ownedWaiting)',
+      ExpressionAttributeNames: { '#ownedStatus': 'status' },
+      ExpressionAttributeValues: {
+        ':ownedRun': ownership.orchestratorRunId,
+        ':ownedRunning': 'RUNNING',
+        ':ownedWaiting': 'WAITING',
+      },
+    };
+    let writesStage = false;
+    let writesMeta = false;
+    const guarded = writes.map((item) => {
+      const type = item.Put ? 'Put' : 'Update';
+      const input = { ...item[type] };
+      delete input.ReturnValues;
+      const key = input.Key ?? input.Item;
+      if (key.sk === 'META') {
+        writesMeta = true;
+        input.ConditionExpression = [input.ConditionExpression, ownsRun.ConditionExpression]
+          .filter(Boolean)
+          .join(' AND ');
+        input.ExpressionAttributeNames = {
+          ...input.ExpressionAttributeNames,
+          ...ownsRun.ExpressionAttributeNames,
+        };
+        input.ExpressionAttributeValues = {
+          ...input.ExpressionAttributeValues,
+          ...ownsRun.ExpressionAttributeValues,
+        };
+      }
+      if (key.sk === stage.sk) {
+        writesStage = true;
+        if (!claim) {
+          input.ConditionExpression = [input.ConditionExpression, ownsStage.ConditionExpression]
+            .filter(Boolean)
+            .join(' AND ');
+          input.ExpressionAttributeValues = {
+            ...input.ExpressionAttributeValues,
+            ...ownsStage.ExpressionAttributeValues,
+          };
+        }
+      }
+      return { [type]: input };
+    });
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            ...(!writesMeta ? [{ ConditionCheck: ownsRun }] : []),
+            ...(!writesStage ? [{ ConditionCheck: ownsStage }] : []),
+            ...guarded,
+          ],
+        }),
+      );
+    } catch (error) {
+      if (
+        error?.name === 'TransactionCanceledException' &&
+        error.CancellationReasons?.some((reason) => reason.Code === 'ConditionalCheckFailed')
+      ) {
+        throw Object.assign(new Error('Stage attempt no longer owns this execution'), {
+          name: 'ConditionalCheckFailedException',
+          cause: error,
+        });
+      }
+      throw error;
+    }
+  };
+
+  const claimStageAttempt = async ({ executionId, ownership }) => {
+    await writeStageAttempt({
+      executionId,
+      ownership,
+      claim: true,
+      writes: [
+        {
+          Update: {
+            TableName: table(),
+            Key: stageKey(executionId, ownership.stageInstanceId),
+            // A repeated dispatch can claim its own RUNNING row. A different
+            // callback may claim only a parked/terminal/reset stage.
+            ConditionExpression:
+              'attribute_not_exists(pk) OR #state <> :running OR stageCallbackId = :callback',
+            UpdateExpression: 'SET stageCallbackId = :callback, orchestratorRunId = :run',
+            ExpressionAttributeNames: { '#state': 'state' },
+            ExpressionAttributeValues: {
+              ':running': 'RUNNING',
+              ':callback': ownership.stageCallbackId,
+              ':run': ownership.orchestratorRunId,
+            },
+          },
+        },
+      ],
+    });
+  };
+
   // Create the execution META row. Conditional so a re-invoke (same session)
   // never clobbers an in-flight execution. `init-ws` calls this once.
   const createExecution = async (input) => {
@@ -187,6 +297,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     fromStatus = null,
     ifOrchestratorRunId = null,
     ifPendingHumanTaskId,
+    ownership = null,
+    additionalWrites = [],
     orchestratorRunId,
     durableExecutionName,
     durableExecutionArn,
@@ -480,6 +592,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       params.ExpressionAttributeValues[':ifAttachmentRevision'] = ifAttachmentRevision;
     }
     if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
+    if (ownership) {
+      await writeStageAttempt({
+        executionId,
+        ownership,
+        writes: [...additionalWrites, { Update: params }],
+      });
+      return { executionId, status };
+    }
     const { Attributes } = await ddb.send(new UpdateCommand(params));
     return Attributes;
   };
@@ -487,9 +607,22 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // Upsert a stage row in a given state (the container marks RUNNING at start and
   // a terminal state at end). Not a CAS — the container owns its stage lifecycle
   // within a session; idempotent re-writes are fine.
-  const putStage = async (input) => {
+  const putStage = async ({ ownership = null, ...input }) => {
     const item = buildStageRow({ ...input, now: now() });
-    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    if (ownership) {
+      await writeStageAttempt({
+        executionId: input.executionId,
+        ownership,
+        writes: [
+          {
+            Put: {
+              TableName: table(),
+              Item: { ...item, orchestratorRunId: ownership.orchestratorRunId },
+            },
+          },
+        ],
+      });
+    } else await ddb.send(new PutCommand({ TableName: table(), Item: item }));
     return item;
   };
 
@@ -520,6 +653,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     cliSessionId,
     resolvedModel,
     pendingHumanTaskId,
+    ownership = null,
   }) => {
     const ts = now();
     const sets = ['#state = :state', 'updatedAt = :ts', 'GSI2SK = :g2sk', 'runtimeError = :err'];
@@ -554,16 +688,19 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('pendingHumanTaskId = :ph');
       values[':ph'] = pendingHumanTaskId;
     }
-    const { Attributes } = await ddb.send(
-      new UpdateCommand({
-        TableName: table(),
-        Key: stageKey(executionId, stageInstanceId),
-        UpdateExpression: `SET ${sets.join(', ')}`,
-        ExpressionAttributeNames: { '#state': 'state' },
-        ExpressionAttributeValues: values,
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
+    const input = {
+      TableName: table(),
+      Key: stageKey(executionId, stageInstanceId),
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeNames: { '#state': 'state' },
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_NEW',
+    };
+    if (ownership) {
+      await writeStageAttempt({ executionId, ownership, writes: [{ Update: input }] });
+      return { stageInstanceId, state };
+    }
+    const { Attributes } = await ddb.send(new UpdateCommand(input));
     return Attributes;
   };
 
@@ -628,8 +765,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     resolvedModel,
     stageCallbackId,
     aidlcRepoRef,
+    ownership = null,
   }) => {
-    const existing = await getStage(executionId, stageInstanceId);
+    const existing = await getStage(executionId, stageInstanceId, { consistentRead: true });
     const ts = now();
     // Fold the open park window into the accumulator. Guarded parses: an
     // unparsable timestamp contributes 0 rather than poisoning waitMs with NaN.
@@ -680,16 +818,19 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('aidlcRepoRef = :aidlcRepoRef');
       values[':aidlcRepoRef'] = aidlcRepoRef;
     }
-    const { Attributes } = await ddb.send(
-      new UpdateCommand({
-        TableName: table(),
-        Key: stageKey(executionId, stageInstanceId),
-        UpdateExpression: `SET ${sets.join(', ')}`,
-        ExpressionAttributeNames: { '#state': 'state' },
-        ExpressionAttributeValues: values,
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
+    const input = {
+      TableName: table(),
+      Key: stageKey(executionId, stageInstanceId),
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ExpressionAttributeNames: { '#state': 'state' },
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_NEW',
+    };
+    if (ownership) {
+      await writeStageAttempt({ executionId, ownership, writes: [{ Update: input }] });
+      return { ...existing, state: 'RUNNING', stageCallbackId };
+    }
+    const { Attributes } = await ddb.send(new UpdateCommand(input));
     return Attributes;
   };
 
@@ -740,6 +881,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     recomposeTargets,
     nextStageId,
     humanTaskId,
+    ownership = null,
   }) => {
     const id = humanTaskId ?? nextId();
     const item = buildHumanTaskRow({
@@ -757,6 +899,52 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       nextStageId,
       now: now(),
     });
+    if (ownership) {
+      Object.assign(item, {
+        orchestratorRunId: ownership.orchestratorRunId,
+        stageCallbackId: ownership.stageCallbackId,
+      });
+      const ts = now();
+      const writes = [
+        {
+          Put: {
+            TableName: table(),
+            Item: item,
+            ConditionExpression: 'attribute_not_exists(pk)',
+          },
+        },
+        {
+          Update: {
+            TableName: table(),
+            Key: stageKey(executionId, stageInstanceId),
+            UpdateExpression:
+              'SET #state = :waiting, pendingHumanTaskId = :gate, parkedAt = :ts, updatedAt = :ts, GSI2SK = :g2',
+            ExpressionAttributeNames: { '#state': 'state' },
+            ExpressionAttributeValues: {
+              ':waiting': 'WAITING_FOR_HUMAN',
+              ':gate': id,
+              ':ts': ts,
+              ':g2': executionTypeStateIndex({
+                executionId,
+                type: 'STAGE',
+                state: 'WAITING_FOR_HUMAN',
+                id: stageInstanceId,
+              }).GSI2SK,
+            },
+          },
+        },
+      ];
+      if (unitSlug) await writeStageAttempt({ executionId, ownership, writes });
+      else
+        await updateExecution({
+          executionId,
+          status: 'WAITING',
+          pendingHumanTaskId: id,
+          ownership,
+          additionalWrites: writes,
+        });
+      return item;
+    }
     await ddb.send(
       new PutCommand({
         TableName: table(),
@@ -877,32 +1065,44 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // Retire a still-pending gate whose run is being cancelled/rewound (CAS on
   // pending — an already-answered gate is left alone). The gate stays as the
   // audit record; `supersededBy` names the steering row / action that retired it.
-  const supersedeHumanTask = async ({ executionId, humanTaskId, supersededBy = null }) => {
+  const supersedeHumanTask = async ({
+    executionId,
+    humanTaskId,
+    supersededBy = null,
+    ownership = null,
+  }) => {
     const ts = now();
     try {
-      const { Attributes } = await ddb.send(
-        new UpdateCommand({
-          TableName: table(),
-          Key: humanTaskKey(executionId, humanTaskId),
-          ConditionExpression: '#status = :pending',
-          UpdateExpression:
-            'SET #status = :status, supersededAt = :ts, supersededBy = :by, GSI2SK = :g2sk',
-          ExpressionAttributeNames: { '#status': 'status' },
-          ExpressionAttributeValues: {
-            ':pending': 'pending',
-            ':status': 'superseded',
-            ':ts': ts,
-            ':by': supersededBy,
-            ':g2sk': executionTypeStateIndex({
-              executionId,
-              type: 'HUMAN',
-              state: 'superseded',
-              id: humanTaskId,
-            }).GSI2SK,
-          },
-          ReturnValues: 'ALL_NEW',
-        }),
-      );
+      const input = {
+        TableName: table(),
+        Key: humanTaskKey(executionId, humanTaskId),
+        ConditionExpression: '#status = :pending',
+        UpdateExpression:
+          'SET #status = :status, supersededAt = :ts, supersededBy = :by, GSI2SK = :g2sk',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':pending': 'pending',
+          ':status': 'superseded',
+          ':ts': ts,
+          ':by': supersededBy,
+          ':g2sk': executionTypeStateIndex({
+            executionId,
+            type: 'HUMAN',
+            state: 'superseded',
+            id: humanTaskId,
+          }).GSI2SK,
+        },
+        ReturnValues: 'ALL_NEW',
+      };
+      if (ownership) {
+        input.ConditionExpression +=
+          ' AND stageInstanceId = :ownedStage AND (attribute_not_exists(stageCallbackId) OR stageCallbackId = :ownedCallback)';
+        input.ExpressionAttributeValues[':ownedStage'] = ownership.stageInstanceId;
+        input.ExpressionAttributeValues[':ownedCallback'] = ownership.stageCallbackId;
+        await writeStageAttempt({ executionId, ownership, writes: [{ Update: input }] });
+        return { humanTaskId, status: 'superseded' };
+      }
+      const { Attributes } = await ddb.send(new UpdateCommand(input));
       return Attributes;
     } catch (e) {
       if (e?.name === 'ConditionalCheckFailedException') return null;
@@ -2477,6 +2677,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     updateExecution,
     deleteExecution,
     putStage,
+    claimStageAttempt,
     getStage,
     updateStageState,
     failRunningStageAttempt,

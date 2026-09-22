@@ -779,7 +779,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex)),
         store,
         suffix,
-        ids: { projectId, intentId, executionId },
+        ids: { projectId, intentId, executionId, orchestratorRunId: runId },
         workflowId,
         workflowVersion,
         ...(meta.aidlcRepoRef ? { aidlcRepoRef: meta.aidlcRepoRef } : {}),
@@ -961,6 +961,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         });
       }
 
+      if (result?.reason === 'retired') {
+        return { state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId } };
+      }
       if (result?.state === 'FAILED') {
         return {
           state: 'FAILED',

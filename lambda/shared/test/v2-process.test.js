@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   BatchWriteCommand,
@@ -47,6 +47,90 @@ import {
   TRACKER_SYNC_STATES,
 } from '../v2-process-keys.js';
 import { createProcessStore } from '../v2-process-store.js';
+
+describe('stage attempt ownership transactions', () => {
+  const ownership = { orchestratorRunId: 'run1', stageCallbackId: 'cb1', stageInstanceId: 's1' };
+  const setup = () => {
+    const ddb = {
+      send: vi.fn(async (command) =>
+        command instanceof GetCommand ? { Item: { projectId: 'p1', startedAt: 'T' } } : {},
+      ),
+    };
+    return { ddb, store: createProcessStore({ ddb, tableName: 't', clock: () => 'T' }) };
+  };
+  it.each(['FAILED', 'SUCCEEDED', 'WAITING_FOR_HUMAN'])(
+    'fences %s by run AND callback in the write',
+    async (state) => {
+      const { ddb, store } = setup();
+      await store.updateStageState({ executionId: 'e1', stageInstanceId: 's1', state, ownership });
+      const { TransactItems: items } = ddb.send.mock.calls[0][0].input;
+      expect(items[0].ConditionCheck).toMatchObject({
+        Key: { sk: 'META' },
+        ExpressionAttributeValues: { ':ownedRun': 'run1' },
+      });
+      expect(items[1].Update).toMatchObject({
+        Key: { sk: 'STAGE#s1' },
+        ConditionExpression: 'stageCallbackId = :ownedCallback',
+        ExpressionAttributeValues: { ':ownedCallback': 'cb1' },
+      });
+    },
+  );
+  it('retires only a gate belonging to this stage callback', async () => {
+    const { ddb, store } = setup();
+    await store.supersedeHumanTask({ executionId: 'e1', humanTaskId: 'h1', ownership });
+    const { TransactItems: items } = ddb.send.mock.calls[0][0].input;
+    expect(items.map((item) => (item.ConditionCheck ?? item.Update).Key.sk)).toEqual([
+      'META',
+      'STAGE#s1',
+      'HUMAN#h1',
+    ]);
+    expect(items[2].Update.ConditionExpression).toContain('stageInstanceId = :ownedStage');
+    expect(items[2].Update.ConditionExpression).toContain('stageCallbackId = :ownedCallback');
+  });
+  it('opens the question and parks its stage and execution atomically', async () => {
+    const { ddb, store } = setup();
+    await store.createHumanTask({
+      executionId: 'e1',
+      stageInstanceId: 's1',
+      humanTaskId: 'h1',
+      ownership,
+    });
+    const writes = ddb.send.mock.calls
+      .map(([cmd]) => cmd)
+      .filter((cmd) => cmd instanceof TransactWriteCommand);
+    expect(writes).toHaveLength(1);
+    const items = writes[0].input.TransactItems;
+    expect(items).toHaveLength(3);
+    expect(items[0].Put.Item).toMatchObject({ stageCallbackId: 'cb1', orchestratorRunId: 'run1' });
+    expect(items[1].Update.ConditionExpression).toContain('stageCallbackId = :ownedCallback');
+    expect(items[2].Update.ConditionExpression).toContain('orchestratorRunId = :ownedRun');
+    expect(items[2].Update.UpdateExpression).toContain('GSI1SK');
+  });
+  it('distinguishes lost ownership from transaction storage failures', async () => {
+    const { ddb, store } = setup();
+    const write = () =>
+      store.updateStageState({
+        executionId: 'e1',
+        stageInstanceId: 's1',
+        state: 'FAILED',
+        ownership,
+      });
+    ddb.send.mockRejectedValue(
+      Object.assign(new Error('replaced'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+      }),
+    );
+    await expect(write()).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+    ddb.send.mockRejectedValue(
+      Object.assign(new Error('capacity'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ProvisionedThroughputExceeded' }],
+      }),
+    );
+    await expect(write()).rejects.toMatchObject({ name: 'TransactionCanceledException' });
+  });
+});
 
 describe('v2-process-keys', () => {
   it('namespaces every record under EXEC#<id>', () => {

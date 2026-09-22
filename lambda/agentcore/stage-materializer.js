@@ -269,6 +269,8 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         V2_PROJECT_ID: scope.projectId ?? '',
         V2_STAGE_ID: scope.stageId ?? '',
         V2_STAGE_INSTANCE_ID: scope.stageInstanceId ?? '',
+        V2_ORCHESTRATOR_RUN_ID: scope.orchestratorRunId ?? '',
+        V2_STAGE_CALLBACK_ID: scope.stageCallbackId ?? '',
         V2_SECTION_INDEX:
           scope.sectionIndex === undefined || scope.sectionIndex === null
             ? ''
