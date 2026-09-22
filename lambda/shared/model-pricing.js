@@ -26,15 +26,34 @@
 
 const TOKENS_PER_UNIT = 1_000_000;
 
-// Static fallback — current published Anthropic-on-Bedrock token prices
-// (USD / 1M tokens). Keyed by canonical family. Used when the cached table lacks
-// an entry. Update when a model ships or a price changes.
+// Static fallback — current published Bedrock token prices (USD / 1M tokens).
+// Keyed by canonical family. Used when the cached table lacks an entry. Cache
+// rates are optional because the Price List refresh currently discovers the
+// common input/output pair only. `inputIncludesCache` documents CLIs whose
+// reported input total includes the separately reported cache categories.
 const FALLBACK_PRICES = {
   'claude-opus-4-8': { input: 5, output: 25 },
   'claude-opus-4-7': { input: 5, output: 25 },
   'claude-opus-4-6': { input: 5, output: 25 },
   'claude-sonnet-4-6': { input: 3, output: 15 },
   'claude-haiku-4-5': { input: 1, output: 5 },
+  // OpenAI GPT-5.6-Sol through the Bedrock Mantle in-region endpoint. The
+  // repository's Codex contract accepts this exact unprefixed model id.
+  // `codex exec --json` reports input_tokens as uncached + cache write + cache
+  // read, so cost must separate those categories. Requests over 272K input
+  // tokens use the published long-context tier.
+  'openai.gpt-5.6-sol': {
+    input: 4.4,
+    output: 22,
+    cacheWrite: 5.5,
+    cacheRead: 0.44,
+    inputIncludesCache: true,
+    longContextThreshold: 272_000,
+    longInput: 8.8,
+    longOutput: 33,
+    longCacheWrite: 11,
+    longCacheRead: 0.88,
+  },
 };
 
 // Normalize a resolved model id to a canonical family key.
@@ -43,18 +62,23 @@ const FALLBACK_PRICES = {
 //   global.anthropic.claude-haiku-4-5-20251001-v1:0 → claude-haiku-4-5
 //   amazon-bedrock/us.anthropic.claude-...    → claude-...
 //   claude-opus-4.6 (Kiro), auto              → (no family — stays as-is / null)
-//   openai.gpt-5.5 (Codex)                    → (no family — stays as-is)
+//   openai.gpt-5.6-sol (Codex Mantle)         → openai.gpt-5.6-sol
+//   global.openai.gpt-5.6-sol (unsupported)   → global.openai.gpt-5.6-sol
+//   us.openai.gpt-5.6-sol (unsupported)       → us.openai.gpt-5.6-sol
 // Dots in a Kiro version (4.6) are intentionally NOT converted to dashes, so a
 // Kiro id never collides with a Bedrock family and gets token-priced.
-// Codex ids ("openai.*") likewise resolve to no family and report UNPRICED —
-// tokens are still recorded; add openai families here once Bedrock's OpenAI
-// token prices are confirmed, rather than guessing a rate.
+// OpenAI ids stay dotted so their published Global and in-region entries remain
+// explicit rather than colliding with Anthropic family normalization.
 const modelFamily = (modelId) => {
   if (!modelId) return null;
   let id = String(modelId).trim().toLowerCase();
   if (!id) return null;
   // Drop an opencode-style provider prefix.
   if (id.startsWith('amazon-bedrock/')) id = id.slice('amazon-bedrock/'.length);
+  // Codex uses Bedrock Mantle's exact unprefixed model id. Preserve any
+  // Bedrock Runtime profile prefix so an unsupported endpoint can never be
+  // silently priced as Mantle.
+  if (/^(us|eu|apac|global)\.openai\./.test(id)) return id;
   // Drop a cross-region inference-profile geo prefix.
   id = id.replace(/^(us|eu|apac|global)\./, '');
   // Drop the anthropic provider prefix.
@@ -66,21 +90,41 @@ const modelFamily = (modelId) => {
   return id;
 };
 
-// Build a priceFor(modelId) → { model, family, currency, inputPerToken,
-// outputPerToken, priced } resolver over a given table (falling back to the
+// Build a priceFor(modelId) resolver over a given table (falling back to the
 // static seed). Per-token rates are derived from the per-1M table entry.
 const makePriceResolver = (table = {}) => {
-  const lookup = { ...FALLBACK_PRICES, ...table };
+  // Merge each family rather than replacing the fallback row wholesale. The
+  // Price List refresh may update input/output while the fallback still owns
+  // parser-contract metadata and cache rates that the generic SKU parser does
+  // not discover.
+  const lookup = { ...FALLBACK_PRICES };
+  for (const [family, entry] of Object.entries(table ?? {})) {
+    lookup[family] = { ...lookup[family], ...entry };
+  }
   return (modelId) => {
     const family = modelFamily(modelId);
     const entry = family ? lookup[family] : null;
-    if (!entry) {
+    if (
+      !entry ||
+      typeof entry.input !== 'number' ||
+      !Number.isFinite(entry.input) ||
+      typeof entry.output !== 'number' ||
+      !Number.isFinite(entry.output)
+    ) {
       return {
         model: modelId ?? null,
         family,
         currency: 'USD',
         inputPerToken: 0,
         outputPerToken: 0,
+        cacheWritePerToken: null,
+        cacheReadPerToken: null,
+        inputIncludesCache: false,
+        longContextThreshold: null,
+        longInputPerToken: null,
+        longOutputPerToken: null,
+        longCacheWritePerToken: null,
+        longCacheReadPerToken: null,
         priced: false,
       };
     }
@@ -90,16 +134,29 @@ const makePriceResolver = (table = {}) => {
       currency: 'USD',
       inputPerToken: entry.input / TOKENS_PER_UNIT,
       outputPerToken: entry.output / TOKENS_PER_UNIT,
+      cacheWritePerToken:
+        typeof entry.cacheWrite === 'number' ? entry.cacheWrite / TOKENS_PER_UNIT : null,
+      cacheReadPerToken:
+        typeof entry.cacheRead === 'number' ? entry.cacheRead / TOKENS_PER_UNIT : null,
+      inputIncludesCache: entry.inputIncludesCache === true,
+      longContextThreshold:
+        typeof entry.longContextThreshold === 'number' ? entry.longContextThreshold : null,
+      longInputPerToken:
+        typeof entry.longInput === 'number' ? entry.longInput / TOKENS_PER_UNIT : null,
+      longOutputPerToken:
+        typeof entry.longOutput === 'number' ? entry.longOutput / TOKENS_PER_UNIT : null,
+      longCacheWritePerToken:
+        typeof entry.longCacheWrite === 'number' ? entry.longCacheWrite / TOKENS_PER_UNIT : null,
+      longCacheReadPerToken:
+        typeof entry.longCacheRead === 'number' ? entry.longCacheRead / TOKENS_PER_UNIT : null,
       priced: true,
     };
   };
 };
 
-// Compute the cost of one metric bag given a price resolver. Reads tokensInput /
-// tokensOutput (token-billed models) and `credits` (Kiro); other keys are
-// ignored (context % has no cost). Always returns a cost object so the DTO shape
-// is stable; `priced: false` means "usage known, price unavailable" (newer model,
-// or Kiro without a captured credit rate) — the UI must not render this as $0.
+// Compute the cost of one metric bag given a price resolver. Reads token usage,
+// optional cache categories, and `credits` (Kiro). Always returns a stable cost
+// object; `priced: false` means "usage known, price unavailable".
 //
 // Credits: Kiro is credit-based, so a `credits` sample is priced as
 // `credits × creditRate` (the $/credit overage rate the runtime scraped from
@@ -112,26 +169,56 @@ const costForMetrics = (metrics = {}, modelId, resolver, creditRate = null) => {
   const price = priceFor(modelId);
   const tin = typeof metrics.tokensInput === 'number' ? metrics.tokensInput : 0;
   const tout = typeof metrics.tokensOutput === 'number' ? metrics.tokensOutput : 0;
+  const cacheWrite = typeof metrics.tokensCacheWrite === 'number' ? metrics.tokensCacheWrite : 0;
+  const cacheRead = typeof metrics.tokensCacheRead === 'number' ? metrics.tokensCacheRead : 0;
   const credits = typeof metrics.credits === 'number' ? metrics.credits : 0;
   const rate = typeof creditRate === 'number' && creditRate > 0 ? creditRate : null;
-  const inputCost = tin * price.inputPerToken;
-  const outputCost = tout * price.outputPerToken;
+  const longContext = price.longContextThreshold != null && tin > price.longContextThreshold;
+  const inputPerToken = longContext ? price.longInputPerToken : price.inputPerToken;
+  const outputPerToken = longContext ? price.longOutputPerToken : price.outputPerToken;
+  const cacheWritePerToken = longContext ? price.longCacheWritePerToken : price.cacheWritePerToken;
+  const cacheReadPerToken = longContext ? price.longCacheReadPerToken : price.cacheReadPerToken;
+  // Codex/OpenAI reports input_tokens as the total across ordinary input,
+  // cache writes, and cache reads. Other integrations historically report a
+  // single input count whose semantics must remain unchanged.
+  const ordinaryInput = price.inputIncludesCache ? Math.max(0, tin - cacheWrite - cacheRead) : tin;
+  const inputCost = ordinaryInput * (inputPerToken ?? 0);
+  const outputCost = tout * (outputPerToken ?? 0);
+  const cacheWriteCost =
+    cacheWrite > 0 && cacheWritePerToken != null ? cacheWrite * cacheWritePerToken : 0;
+  const cacheReadCost =
+    cacheRead > 0 && cacheReadPerToken != null ? cacheRead * cacheReadPerToken : 0;
   const creditCost = credits > 0 && rate ? credits * rate : 0;
   // Priced iff every spend the sample carries has a price: token spend needs a
-  // model price entry; credit spend needs a captured rate. A no-spend sample
-  // (context % only) inherits the model's priceability as before.
+  // model price entry, cache spend needs its category rates, and credit spend
+  // needs a captured rate. A no-spend sample inherits model priceability.
   const tokenSpendPriced = tin + tout === 0 || price.priced;
+  const contextTierPriced =
+    !longContext ||
+    (inputPerToken != null &&
+      outputPerToken != null &&
+      (!price.inputIncludesCache || (cacheWritePerToken != null && cacheReadPerToken != null)));
+  const cacheSpendPriced =
+    !price.inputIncludesCache ||
+    ((cacheWrite === 0 || cacheWritePerToken != null) &&
+      (cacheRead === 0 || cacheReadPerToken != null));
   const creditSpendPriced = credits === 0 || rate != null;
-  const priced = credits > 0 ? tokenSpendPriced && creditSpendPriced : price.priced;
+  const priced =
+    credits > 0
+      ? tokenSpendPriced && contextTierPriced && cacheSpendPriced && creditSpendPriced
+      : tokenSpendPriced && contextTierPriced && cacheSpendPriced && price.priced;
   return {
     model: price.model,
     currency: price.currency,
     inputCost,
     outputCost,
+    cacheWriteCost,
+    cacheReadCost,
     creditCost,
-    totalCost: inputCost + outputCost + creditCost,
+    totalCost: inputCost + outputCost + cacheWriteCost + cacheReadCost + creditCost,
     priced,
     estimated: creditCost > 0,
+    longContext,
   };
 };
 

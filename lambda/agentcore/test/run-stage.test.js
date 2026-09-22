@@ -1928,7 +1928,7 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
   };
 
   const openCodeSpawn =
-    ({ sessionId = 'ses_open_1', emitSession = true, capture } = {}) =>
+    ({ sessionId = 'ses_open_1', emitSession = true, capture, usage = null } = {}) =>
     (command, args) => {
       capture?.({ command, args });
       const child = new EventEmitter();
@@ -1947,13 +1947,24 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
             ),
           );
         }
+        if (usage) {
+          child.stdout.emit(
+            'data',
+            Buffer.from(
+              `${JSON.stringify({
+                type: 'step_finish',
+                part: { type: 'step-finish', tokens: usage },
+              })}\n`,
+            ),
+          );
+        }
         child.emit('close', 0);
       });
       return child;
     };
 
   const codexSpawn =
-    ({ threadId = 'thread_7', emitSession = true, capture, exitCode = 0 } = {}) =>
+    ({ threadId = 'thread_7', emitSession = true, capture, exitCode = 0, usage = null } = {}) =>
     (command, args) => {
       capture?.({ command, args });
       const child = new EventEmitter();
@@ -1972,10 +1983,208 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
             `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } })}\n`,
           ),
         );
+        for (const sample of Array.isArray(usage) ? usage : usage ? [usage] : []) {
+          child.stdout.emit(
+            'data',
+            Buffer.from(`${JSON.stringify({ type: 'turn.completed', usage: sample })}\n`),
+          );
+        }
         child.emit('close', exitCode);
       });
       return child;
     };
+
+  it('persists OpenCode usage before parking on a human gate', async () => {
+    const store = spyStore(pendingGateSeed('q-open', { createdAt: '2026-07-15T00:00:00Z' }));
+    const res = await runStage(
+      {
+        ...baseArgs,
+        requestedCli: 'opencode',
+        cliModels: { opencode: 'amazon-bedrock/global.anthropic.claude-sonnet-5' },
+      },
+      baseDeps({
+        store,
+        availableClis: ['opencode'],
+        spawnFn: openCodeSpawn({
+          usage: {
+            input: 120,
+            output: 30,
+            reasoning: 7,
+            cache: { read: 40, write: 5 },
+          },
+        }),
+        withOpenCodeStore: async ({ operation }) => operation(),
+      }),
+    );
+
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      cli: 'opencode',
+      humanTaskId: 'q-open',
+    });
+    const usageWrite = store.calls.find(
+      (call) => call[0] === 'recordMetric' && call[1].metrics?.tokensInput !== undefined,
+    );
+    expect(usageWrite?.[1]).toMatchObject({
+      executionId: 'e1',
+      stageInstanceId: BASE_STAGE_INSTANCE_ID,
+      resolvedModel: 'amazon-bedrock/global.anthropic.claude-sonnet-5',
+      metrics: {
+        tokensInput: 120,
+        tokensOutput: 30,
+        tokensReasoning: 7,
+        tokensCacheRead: 40,
+        tokensCacheWrite: 5,
+      },
+    });
+    const waitingWrite = store.calls.find(
+      (call) => call[0] === 'updateStageState' && call[1].state === 'WAITING_FOR_HUMAN',
+    );
+    expect(store.calls.indexOf(usageWrite)).toBeLessThan(store.calls.indexOf(waitingWrite));
+  });
+
+  it('persists and broadcasts Codex usage with the trusted stage model', async () => {
+    const store = spyStore();
+    const sent = [];
+    const metrics = {
+      input_tokens: 263_946,
+      cached_input_tokens: 224_278,
+      cache_write_input_tokens: 39_654,
+      output_tokens: 739,
+      reasoning_output_tokens: 106,
+    };
+    const res = await runStage(
+      {
+        ...baseArgs,
+        requestedCli: 'codex',
+        cliModels: { codex: 'openai.gpt-5.6-sol' },
+      },
+      baseDeps({
+        store,
+        availableClis: ['codex'],
+        env: codexStoreEnv,
+        spawnFn: codexSpawn({ usage: metrics }),
+        broadcast: async (payload) => sent.push(payload),
+        persistCodexRollout: async () => ({ ok: true, status: 'persisted' }),
+        cleanupCodexHome: async () => true,
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'codex' });
+    const usageWrite = store.calls.find(
+      (call) => call[0] === 'recordMetric' && call[1].metrics?.tokensInput !== undefined,
+    );
+    expect(usageWrite?.[1]).toMatchObject({
+      executionId: 'e1',
+      stageInstanceId: BASE_STAGE_INSTANCE_ID,
+      resolvedModel: 'openai.gpt-5.6-sol',
+      metrics: {
+        tokensInput: 263_946,
+        tokensCacheRead: 224_278,
+        tokensCacheWrite: 39_654,
+        tokensOutput: 739,
+        tokensReasoning: 106,
+      },
+    });
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        action: 'agent.metric',
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+        metrics: expect.objectContaining({ tokensInput: 263_946, tokensOutput: 739 }),
+      }),
+    );
+  });
+
+  it('persists every Codex usage event before handling a non-zero exit', async () => {
+    const store = spyStore();
+    const sent = [];
+    const usages = [
+      { input_tokens: 120, cached_input_tokens: 20, output_tokens: 8 },
+      { input_tokens: 240, cached_input_tokens: 40, output_tokens: 16 },
+    ];
+    const res = await runStage(
+      {
+        ...baseArgs,
+        requestedCli: 'codex',
+        cliModels: { codex: 'openai.gpt-5.6-sol' },
+      },
+      baseDeps({
+        store,
+        availableClis: ['codex'],
+        env: codexStoreEnv,
+        spawnFn: codexSpawn({ usage: usages, exitCode: 2 }),
+        broadcast: async (payload) => sent.push(payload),
+        persistCodexRollout: async () => ({ ok: true, status: 'persisted' }),
+        cleanupCodexHome: async () => true,
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: false, reason: 'cli_nonzero_exit' });
+    const writes = store.calls.filter(
+      (call) => call[0] === 'recordMetric' && call[1].metrics?.tokensInput !== undefined,
+    );
+    expect(writes.map((call) => call[1].metrics.tokensInput)).toEqual([120, 240]);
+    const broadcasts = sent.filter(
+      (payload) => payload.action === 'agent.metric' && payload.metrics?.tokensInput !== undefined,
+    );
+    expect(broadcasts.map((payload) => payload.metrics.tokensInput)).toEqual([120, 240]);
+  });
+
+  it('keeps the stage successful when a Codex usage metric write fails', async () => {
+    const store = spyStore();
+    const originalRecordMetric = store.recordMetric;
+    store.recordMetric = async (args) => {
+      if (args.metrics?.tokensInput !== undefined) throw new Error('metric table unavailable');
+      return originalRecordMetric(args);
+    };
+    const res = await runStage(
+      {
+        ...baseArgs,
+        requestedCli: 'codex',
+        cliModels: { codex: 'openai.gpt-5.6-sol' },
+      },
+      baseDeps({
+        store,
+        availableClis: ['codex'],
+        env: codexStoreEnv,
+        spawnFn: codexSpawn({ usage: { input_tokens: 120, output_tokens: 8 } }),
+        persistCodexRollout: async () => ({ ok: true, status: 'persisted' }),
+        cleanupCodexHome: async () => true,
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+  });
+
+  it('persists Codex usage even when its live metric broadcast fails', async () => {
+    const store = spyStore();
+    const res = await runStage(
+      {
+        ...baseArgs,
+        requestedCli: 'codex',
+        cliModels: { codex: 'openai.gpt-5.6-sol' },
+      },
+      baseDeps({
+        store,
+        availableClis: ['codex'],
+        env: codexStoreEnv,
+        spawnFn: codexSpawn({ usage: { input_tokens: 120, output_tokens: 8 } }),
+        broadcast: async () => {
+          throw new Error('websocket unavailable');
+        },
+        persistCodexRollout: async () => ({ ok: true, status: 'persisted' }),
+        cleanupCodexHome: async () => true,
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(
+      store.calls.some(
+        (call) => call[0] === 'recordMetric' && call[1].metrics?.tokensInput === 120,
+      ),
+    ).toBe(true);
+  });
 
   it('persists the first observed session id before marking a parked stage waiting', async () => {
     const store = spyStore(
