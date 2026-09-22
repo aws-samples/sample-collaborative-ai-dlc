@@ -262,7 +262,9 @@ export function ProvenanceTree({
               const planIndex = stage.documents.findIndex(isCodeGenerationPlan);
               const summaryIndex = stage.documents.findIndex(isCodeSummary);
               const renderedBranchItem =
-                planIndex >= 0 || summaryIndex >= 0 ? unitBranchItem : null;
+                (planIndex >= 0 || summaryIndex >= 0) && unitBranchItem?.branch
+                  ? unitBranchItem
+                  : null;
               const branchBeforeIndex =
                 renderedBranchItem && summaryIndex >= 0
                   ? planIndex >= 0

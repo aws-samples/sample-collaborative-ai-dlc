@@ -26,17 +26,7 @@ export function UnitBranchEntry({
   );
 
   if (!item.branch) {
-    return (
-      <div
-        className={rowClassName}
-        data-testid={`unit-branch-${item.sectionIndex ?? 'unknown'}-${item.unitSlug}`}
-      >
-        {icon}
-        <span className="truncate text-xs text-muted-foreground">
-          Unavailable — branch not recorded
-        </span>
-      </div>
-    );
+    return null;
   }
 
   if (item.targets.length === 0) {
@@ -46,11 +36,10 @@ export function UnitBranchEntry({
         data-testid={`unit-branch-${item.sectionIndex ?? 'unknown'}-${item.unitSlug}`}
       >
         {icon}
-        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
           <code className="font-mono text-foreground" title={item.branch}>
             {item.branch}
           </code>
-          {' — link unavailable'}
         </span>
       </div>
     );
@@ -71,17 +60,16 @@ export function UnitBranchEntry({
               target="_blank"
               rel="noopener noreferrer"
               title={`${target.repo} · ${item.branch}`}
-              className="min-w-0 flex-1 truncate font-mono text-primary underline-offset-2 hover:underline"
+              className="min-w-0 flex-1 truncate font-mono text-[13px] text-primary underline-offset-2 hover:underline"
             >
               {item.branch}
             </a>
           ) : (
             <span
-              className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+              className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground"
               title={`${target.repo} · ${item.branch} · link unavailable`}
             >
               <code className="font-mono text-foreground">{item.branch}</code>
-              {' — link unavailable'}
             </span>
           )}
           {showPullRequests && target.prUrl && (

@@ -1744,7 +1744,7 @@ describe('IntentView — WP7 construction UI', () => {
     );
   });
 
-  it('shows an unavailable state when a walking-skeleton branch URL cannot be built', async () => {
+  it('shows plain branch text when a walking-skeleton branch URL cannot be built', async () => {
     get.mockResolvedValue({
       ...baseDetail({
         status: 'WAITING',
@@ -1787,7 +1787,7 @@ describe('IntentView — WP7 construction UI', () => {
 
     renderAt();
 
-    expect(await screen.findByText(/link unavailable/i)).toBeInTheDocument();
+    expect(await screen.findByText('aidlc/i1--s1-unit-auth')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'aidlc/i1--s1-unit-auth' })).not.toBeInTheDocument();
   });
 });

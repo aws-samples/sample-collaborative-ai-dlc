@@ -420,7 +420,7 @@ describe('ProvenanceTree — unit-lane split (CHANGE 2)', () => {
     expect(screen.queryByText('acme/web')).not.toBeInTheDocument();
   });
 
-  it('shows a clear unavailable state instead of a broken unit branch link', () => {
+  it('shows plain branch text instead of a broken link when its URL is unavailable', () => {
     renderTree({
       detail: {
         artifacts: [
@@ -458,8 +458,41 @@ describe('ProvenanceTree — unit-lane split (CHANGE 2)', () => {
       ],
     });
 
-    expect(screen.getByText(/link unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText('aidlc/i1--s1-unit-auth')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'aidlc/i1--s1-unit-auth' })).not.toBeInTheDocument();
+  });
+
+  it('omits the unit branch row when no branch was recorded', () => {
+    renderTree({
+      detail: {
+        artifacts: [
+          doc({
+            artifactType: 'code-summary',
+            title: 'Code summary',
+            createdByStageInstanceId: 'si-auth',
+          }),
+        ],
+      } as IntentDetail,
+      stageRows: [
+        row({
+          stageId: 'code-generation',
+          stageInstanceId: 'si-auth',
+          phase: '02',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+        }),
+      ],
+      unitBranchItems: [
+        {
+          sectionIndex: 1,
+          unitSlug: 'auth',
+          branch: null,
+          targets: [],
+        },
+      ],
+    });
+
+    expect(screen.queryByTestId('unit-branch-1-auth')).not.toBeInTheDocument();
   });
 
   it('shows the provider icon next to the final intent PR link', () => {
