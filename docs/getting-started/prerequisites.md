@@ -135,4 +135,4 @@ Without an effective agent credential, users can still browse the application an
 
 The example tfvars leaves `kms_key_arn` empty. DynamoDB remains encrypted at rest with the AWS-owned key, and the deployment principal does not need KMS administration permissions.
 
-To use a customer-managed key, supply its full key ARN in `kms_key_arn`. The key must be managed outside this Terraform stack, and its policy must already delegate the required DynamoDB and Neptune service access.
+To use a customer-managed key for DynamoDB, supply its full key ARN in `kms_key_arn`. The key must be managed outside this Terraform stack, and its policy must already delegate the required DynamoDB service access.

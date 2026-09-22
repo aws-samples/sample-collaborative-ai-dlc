@@ -1017,11 +1017,16 @@ exit 0
     assert.match(destroyed.stderr, /Refusing automated destruction of a production environment/);
   }
   const commands = readFileSync(terraformLog, 'utf8');
-  assert.equal(commands.trim().split('\n').length, 4);
-  assert.doesNotMatch(commands, / init | plan | apply | destroy | state /);
+  const commandLines = commands.trim().split('\n');
+  assert.equal(commandLines.length, 8);
+  for (let index = 0; index < commandLines.length; index += 2) {
+    assert.match(commandLines[index], / init -reconfigure /);
+    assert.match(commandLines[index + 1], / console /);
+  }
+  assert.doesNotMatch(commands, / plan | apply | destroy | state /);
 });
 
-test('standalone destroy loads production from auto tfvars with real Terraform', () => {
+test('standalone destroy initializes its backend before loading production from auto tfvars', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-auto-tfvars-'));
   const scripts = join(dir, 'scripts');
   const terraformDir = join(dir, 'terraform');
@@ -1031,9 +1036,13 @@ test('standalone destroy loads production from auto tfvars with real Terraform',
   mkdirSync(environments, { recursive: true });
   cpSync(destroyTerraform, fixtureDestroy);
   cpSync(join(root, 'terraform/variables.tf'), join(terraformDir, 'variables.tf'));
+  writeFileSync(join(terraformDir, 'backend.tf'), 'terraform {\n  backend "local" {}\n}\n');
   writeFileSync(join(terraformDir, 'production.auto.tfvars'), 'environment = "prod"\n');
   writeFileSync(join(environments, 'live.tfvars'), 'aws_region = "us-east-1"\n');
-  writeFileSync(join(environments, 'live.s3.tfbackend'), 'bucket = "live-state"\n');
+  writeFileSync(
+    join(environments, 'live.s3.tfbackend'),
+    `path = ${JSON.stringify(join(dir, 'live.tfstate'))}\n`,
+  );
 
   try {
     const destroyed = run('bash', [fixtureDestroy, 'live', '--yes'], {
@@ -1049,7 +1058,9 @@ test('standalone destroy loads production from auto tfvars with real Terraform',
 
     assert.equal(destroyed.status, 1, destroyed.stderr);
     assert.match(destroyed.stderr, /Refusing automated destruction of a production environment/);
-    assert.doesNotMatch(destroyed.stdout, /Initializing Terraform/);
+    assert.match(destroyed.stdout, /Initializing Terraform for environment: live/);
+    assert.doesNotMatch(destroyed.stderr, /Backend initialization required/);
+    assert.equal(existsSync(join(dir, '.terraform-data/terraform.tfstate')), true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

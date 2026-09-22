@@ -45,6 +45,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+echo "Initializing Terraform for environment: $ENVIRONMENT"
+terraform -chdir="$TF_DIR" init -reconfigure -backend-config="$BACKEND_FILE"
+
 if ! EFFECTIVE_ENVIRONMENT_IS_PROD="$(
     printf '%s\n' 'var.environment == "prod"' |
         terraform -chdir="$TF_DIR" console \
@@ -79,9 +82,6 @@ if [[ "$ASSUME_YES" != 1 ]]; then
         exit 0
     fi
 fi
-
-echo "Initializing Terraform for environment: $ENVIRONMENT"
-terraform -chdir="$TF_DIR" init -reconfigure -backend-config="$BACKEND_FILE"
 
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="$BACKUP_DIR/terraform-${ENVIRONMENT}-pre-destroy-$(date -u +%Y%m%dT%H%M%SZ).tfstate"
