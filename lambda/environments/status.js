@@ -90,6 +90,11 @@ const INSTANCES_TRANSIENT_ERRORS = new Set([
   'RuntimeClientError',
 ]);
 
+// DeleteCapacityProviderSession outcomes that mean the session (and its EBS
+// volume) is already gone — cleanup is complete, not failed. Mirrors the
+// tolerance in lambda/shared/intent-deletion.js.
+const SESSION_ABSENT_ERRORS = new Set(['ResourceNotFoundException', 'ValidationException']);
+
 const isConditionalFailure = (error) => error?.name === 'ConditionalCheckFailedException';
 
 const securityFindingsAcceptedAt = (revision) =>
@@ -600,8 +605,12 @@ const verifyRuntime = async ({
         }
         // Instances sessions keep their EBS volume across stop/idle/lifetime;
         // only an explicit session delete releases it. Validation sessions are
-        // disposable, so delete on every terminal outcome. Best-effort: a miss
-        // leaves one volume that the capacity provider delete reclaims.
+        // disposable, so delete on every terminal outcome. A failed delete is
+        // NOT swallowed: the provider/session identity is persisted as durable
+        // cleanup work (the terminal transition below clears
+        // validationSessionId, so the revision row cannot carry it), and the
+        // poller retries the delete until it succeeds or the session is
+        // confirmed absent — see retrySessionCleanups.
         const capacityProviderId = capacityProviderIdFromArn(revision.capacityProviderArn);
         if (instances && capacityProviderId) {
           try {
@@ -612,10 +621,26 @@ const verifyRuntime = async ({
               }),
             );
           } catch (error) {
-            logger.warn('Managed runtime validation session delete failed', {
-              session,
-              error: error?.message ?? String(error),
-            });
+            if (!SESSION_ABSENT_ERRORS.has(error?.name)) {
+              logger.warn('Managed runtime validation session delete failed — retained for retry', {
+                session,
+                error: error?.message ?? String(error),
+              });
+              try {
+                await store.putSessionCleanup({
+                  sessionId: session,
+                  capacityProviderArn: revision.capacityProviderArn,
+                  environmentId: environment.environmentId,
+                  revisionId: revision.revisionId,
+                  reason: error?.message ?? String(error),
+                });
+              } catch (persistError) {
+                // Double failure — the volume may leak until an operator
+                // intervenes; surface it loudly but do not block the
+                // revision's terminal transition.
+                logger.error('Failed to persist session cleanup work', persistError, { session });
+              }
+            }
           }
         }
       }
@@ -739,15 +764,86 @@ const handleScanEvent = async ({ store, event, ecrClient, controlClient }) => {
   });
 };
 
+// Retry every pending validation-session cleanup until the delete succeeds or
+// the session is confirmed absent. The records are written by verifyRuntime
+// when DeleteCapacityProviderSession fails on a terminal validation outcome —
+// without this pass a transient delete failure would leak the session's EBS
+// workspace volume (and its storage charges) forever, because the revision's
+// terminal transition clears validationSessionId. The record is only removed
+// AFTER a successful delete (or a confirmed-absent miss); any other failure
+// keeps it and bumps the attempt counter for observability.
+const retrySessionCleanups = async ({ store, runtimeClient }) => {
+  const pending = await store.listSessionCleanups();
+  const results = [];
+  for (const record of pending) {
+    const capacityProviderId = capacityProviderIdFromArn(record.capacityProviderArn);
+    if (!capacityProviderId) {
+      // Unactionable record (no provider identity) — drop it.
+      await store.deleteSessionCleanup(record.sessionId);
+      results.push({ sessionId: record.sessionId, dropped: true });
+      continue;
+    }
+    try {
+      await runtimeClient.send(
+        new DeleteCapacityProviderSessionCommand({
+          capacityProviderId,
+          sessionId: record.sessionId,
+        }),
+      );
+      await store.deleteSessionCleanup(record.sessionId);
+      results.push({ sessionId: record.sessionId, cleaned: true });
+    } catch (error) {
+      if (SESSION_ABSENT_ERRORS.has(error?.name)) {
+        await store.deleteSessionCleanup(record.sessionId);
+        results.push({ sessionId: record.sessionId, cleaned: true, absent: true });
+        continue;
+      }
+      logger.warn('Session cleanup retry failed — kept for the next poll', {
+        session: record.sessionId,
+        attempts: (record.attempts ?? 0) + 1,
+        error: error?.message ?? String(error),
+      });
+      await store
+        .recordSessionCleanupAttempt(record.sessionId, error?.message ?? String(error))
+        .catch(() => {});
+      results.push({ sessionId: record.sessionId, cleaned: false });
+    }
+  }
+  return results;
+};
+
 const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, runtimeClient }) => {
   const results = [];
+  // Each item is isolated: the poll is the ONLY driver of every transition
+  // (BUILDING/SCANNING inspection, acknowledged security findings → runtime
+  // creation, VERIFYING validation, session cleanup), so one revision whose
+  // handling throws unexpectedly must not abort the passes behind it — that
+  // starves every other revision on every subsequent poll and presents as
+  // "accepted the findings and nothing happens".
+  const guarded = async (pass, revision, fn) => {
+    try {
+      results.push(await fn());
+    } catch (error) {
+      logger.error('Managed environment poll item failed', error, {
+        pass,
+        environmentId: revision.environmentId,
+        revisionId: revision.revisionId,
+      });
+      results.push({
+        environmentId: revision.environmentId,
+        revisionId: revision.revisionId,
+        pass,
+        error: error?.message ?? String(error),
+      });
+    }
+  };
   for (const status of ['BUILDING', 'SCANNING']) {
     const revisions = await store.listRevisionsByStatus(status);
     for (const revision of revisions) {
       const environment = await store.getEnvironment(revision.environmentId);
       if (!environment) continue;
-      results.push(
-        await inspectImage({
+      await guarded('inspect', revision, () =>
+        inspectImage({
           store,
           environment,
           revision,
@@ -765,8 +861,8 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
   )) {
     const environment = await store.getEnvironment(revision.environmentId);
     if (!environment) continue;
-    results.push(
-      await inspectImage({
+    await guarded('legacy-security', revision, () =>
+      inspectImage({
         store,
         environment,
         revision,
@@ -781,8 +877,8 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
   )) {
     const environment = await store.getEnvironment(revision.environmentId);
     if (!environment) continue;
-    results.push(
-      await createRuntimeForRevision({
+    await guarded('acknowledged', revision, () =>
+      createRuntimeForRevision({
         store,
         environment,
         revision,
@@ -794,8 +890,8 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
   for (const revision of verifying) {
     const environment = await store.getEnvironment(revision.environmentId);
     if (!environment) continue;
-    results.push(
-      await verifyRuntime({
+    await guarded('verify', revision, () =>
+      verifyRuntime({
         store,
         environment,
         revision,
@@ -804,7 +900,8 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
       }),
     );
   }
-  return { checked: results.length, results };
+  const sessionCleanups = await retrySessionCleanups({ store, runtimeClient });
+  return { checked: results.length, results, sessionCleanups };
 };
 
 export const createStatusHandler = ({
@@ -845,6 +942,7 @@ export {
   verifyRuntime,
   createRuntimeForRevision,
   pollManagedEnvironmentStatus,
+  retrySessionCleanups,
   runtimeNameFor,
   endpointNameFor,
 };
