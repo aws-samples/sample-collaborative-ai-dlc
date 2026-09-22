@@ -4,6 +4,7 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient, SendDurableExecutionCallbackSuccessCommand } from '@aws-sdk/client-lambda';
@@ -58,10 +59,20 @@ describe('answer/bind interleaving', () => {
   });
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([true, false])(
-    'wakes the callback from the committed answer (bind raced: %s)',
-    async (bindRaced) => {
-      let gate = { humanTaskId: 'h1', status: 'pending', callbackId: null };
+  it.each([
+    [true, false],
+    [false, false],
+    [true, true],
+    [false, true],
+  ])(
+    'wakes the callback from the committed answer (bind raced: %s, owned: %s)',
+    async (bindRaced, owned) => {
+      let gate = {
+        humanTaskId: 'h1',
+        status: 'pending',
+        callbackId: null,
+        ...(owned ? { orchestratorRunId: 'run1' } : {}),
+      };
       const order = [];
       ddb.on(GetCommand).callsFake(async ({ Key }) => {
         if (Key.sk === 'META') return { Item: { projectId: 'p1', status: 'WAITING' } };
@@ -85,7 +96,7 @@ describe('answer/bind interleaving', () => {
         return { Item: snapshot };
       });
       ddb.on(QueryCommand).resolves({ Items: [] });
-      ddb.on(UpdateCommand).callsFake(({ ExpressionAttributeValues: values }) => {
+      const applyUpdate = ({ ExpressionAttributeValues: values }) => {
         if (values[':cb']) {
           gate = { ...gate, callbackId: values[':cb'], callbackOwner: values[':owner'] };
           order.push('bind');
@@ -94,6 +105,11 @@ describe('answer/bind interleaving', () => {
           order.push('answer-committed');
         }
         return { Attributes: { ...gate } };
+      };
+      ddb.on(UpdateCommand).callsFake(applyUpdate);
+      ddb.on(TransactWriteCommand).callsFake(({ TransactItems }) => {
+        for (const item of TransactItems) if (item.Update) applyUpdate(item.Update);
+        return {};
       });
       lambda.on(SendDurableExecutionCallbackSuccessCommand).resolves({});
       const response = await handler({
@@ -117,4 +133,35 @@ describe('answer/bind interleaving', () => {
       }
     },
   );
+  it('does not answer or wake a gate after its run loses ownership', async () => {
+    const gate = {
+      humanTaskId: 'h1',
+      status: 'pending',
+      callbackId: 'old-cb',
+      orchestratorRunId: 'old-run',
+    };
+    ddb.on(GetCommand).callsFake(({ Key }) => ({
+      Item:
+        Key.sk === 'META'
+          ? { projectId: 'p1', orchestratorRunId: 'new-run', status: 'WAITING' }
+          : gate,
+    }));
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    ddb.on(TransactWriteCommand).rejects(
+      Object.assign(new Error('rewound'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+      }),
+    );
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/projects/p1/intents/i1/gates/h1/answer',
+      pathParameters: { projectId: 'p1', intentId: 'i1', humanTaskId: 'h1' },
+      requestContext: { authorizer: { claims: { sub: 'u1' } } },
+      body: JSON.stringify({ answer: 'approve' }),
+    });
+    expect(response.statusCode).toBe(409);
+    expect(gate.status).toBe('pending');
+    expect(lambda.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+  });
 });

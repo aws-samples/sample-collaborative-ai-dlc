@@ -130,6 +130,52 @@ describe('stage attempt ownership transactions', () => {
     );
     await expect(write()).rejects.toMatchObject({ name: 'TransactionCanceledException' });
   });
+  it('creates an engine gate and its owned META wait in one transaction', async () => {
+    const { ddb, store } = setup();
+    await store.createHumanTask({
+      executionId: 'e1',
+      humanTaskId: 'eg-1',
+      orchestratorRunId: 'run1',
+    });
+    const tx = ddb.send.mock.calls.find(([cmd]) => cmd instanceof TransactWriteCommand)[0].input;
+    expect(tx.TransactItems).toHaveLength(2);
+    expect(tx.TransactItems[0].Put.Item).toMatchObject({
+      humanTaskId: 'eg-1',
+      orchestratorRunId: 'run1',
+    });
+    expect(tx.TransactItems[1].Update).toMatchObject({
+      ConditionExpression: 'orchestratorRunId = :ifOrid',
+      ExpressionAttributeValues: { ':ifOrid': 'run1', ':ph': 'eg-1', ':status': 'WAITING' },
+    });
+    expect(
+      ddb.send.mock.calls.some(
+        ([cmd]) => cmd instanceof PutCommand || cmd instanceof UpdateCommand,
+      ),
+    ).toBe(false);
+  });
+  it('conditions answers on the gate run and stage callback, and returns the committed row', async () => {
+    const { ddb, store } = setup();
+    const answered = { status: 'answered', callbackId: 'cb-bound-during-answer' };
+    ddb.send.mockImplementation(async (cmd) =>
+      cmd instanceof GetCommand ? { Item: answered } : {},
+    );
+    expect(
+      await store.answerHumanTask({
+        executionId: 'e1',
+        humanTaskId: 'h1',
+        status: 'answered',
+        answer: 'yes',
+        ifOrchestratorRunId: 'run1',
+        ifStageCallbackId: 'cb1',
+        stageInstanceId: 's1',
+      }),
+    ).toEqual(answered);
+    const tx = ddb.send.mock.calls[0][0].input.TransactItems;
+    expect(tx[0].ConditionCheck.ExpressionAttributeValues[':run']).toBe('run1');
+    expect(tx[1].ConditionCheck.ExpressionAttributeValues[':callback']).toBe('cb1');
+    expect(tx[2].Update.ConditionExpression).toBe('#status = :pending');
+    expect(ddb.send.mock.calls[1][0].input.ConsistentRead).toBe(true);
+  });
 });
 
 describe('v2-process-keys', () => {

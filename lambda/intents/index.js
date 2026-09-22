@@ -2503,6 +2503,9 @@ export const handler = async (event) => {
         answer: data.answer ?? null,
         answeredBy: responder.sub,
         answeredByName: responder.displayName,
+        ifOrchestratorRunId: gate.orchestratorRunId ?? null,
+        ifStageCallbackId: gate.stageCallbackId ?? null,
+        stageInstanceId: gate.stageInstanceId ?? null,
       });
       if (!answered) {
         return response(409, { error: 'Gate already answered or not pending' });

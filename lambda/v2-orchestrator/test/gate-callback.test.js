@@ -49,6 +49,10 @@ describe('engine gate answer/bind races', () => {
       createHumanTask: vi.fn(async (row) => {
         gate = { ...row, status: 'pending' };
       }),
+      supersedeHumanTask: vi.fn(async () => {
+        if (gate?.status === 'pending') gate.status = 'superseded';
+        return gate;
+      }),
       updateExecution: vi.fn(async (row) => {
         if (row.ifOrchestratorRunId !== meta.orchestratorRunId) throw cas();
         Object.assign(meta, row);
@@ -129,6 +133,20 @@ describe('engine gate answer/bind races', () => {
     });
     expect(await awaitEngineGate(f.ctx, f.toolkit, args)).toEqual({ superseded: true });
     expect(f.meta).toMatchObject({ orchestratorRunId: 'replacement', status: 'CREATED' });
+  });
+
+  it('retires a legacy gate if ownership changes between creating it and parking META', async () => {
+    const f = fixture();
+    const create = f.store.createHumanTask.getMockImplementation();
+    f.store.createHumanTask.mockImplementation(async (row) => {
+      await create(row);
+      f.meta.orchestratorRunId = 'replacement';
+      f.meta.pendingHumanTaskId = 'replacement-gate';
+    });
+    expect(await awaitEngineGate(f.ctx, f.toolkit, args)).toEqual({ superseded: true });
+    expect(await f.store.getHumanTask()).toMatchObject({ status: 'superseded' });
+    expect(f.meta.pendingHumanTaskId).toBe('replacement-gate');
+    expect(f.toolkit.broadcast).not.toHaveBeenCalled();
   });
 
   it('surfaces storage failures without manufacturing a gate conflict', async () => {

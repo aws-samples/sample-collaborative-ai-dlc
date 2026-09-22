@@ -179,6 +179,7 @@ export const awaitEngineGate = async (
       await store.createHumanTask({
         executionId,
         humanTaskId,
+        orchestratorRunId: runId,
         stageInstanceId,
         unitSlug,
         sectionIndex,
@@ -202,7 +203,16 @@ export const awaitEngineGate = async (
         ifOrchestratorRunId: runId,
       });
     } catch (error) {
-      if (error?.name === 'ConditionalCheckFailedException') return false;
+      if (error?.name === 'ConditionalCheckFailedException') {
+        // Current stores create/park atomically. Also clean up gates created
+        // by a deployed older version before its META ownership write failed.
+        await store.supersedeHumanTask({
+          executionId,
+          humanTaskId,
+          supersededBy: 'run_replaced',
+        });
+        return false;
+      }
       throw error;
     }
     try {
