@@ -493,6 +493,71 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       ExpressionAttributeValues: { ':pk': `REVISION_STATUS#${status}` },
     });
 
+  // Durable cleanup work for an Instances session whose
+  // DeleteCapacityProviderSession failed. The record outlives the owning
+  // revision's terminal transition (which clears validationSessionId), so the
+  // poller can keep retrying the delete until it succeeds or the session is
+  // confirmed absent — an EBS-backed workspace volume must never be leaked by
+  // a transient delete failure. pk-per-session keeps the write idempotent; the
+  // GSI1 'SESSION_CLEANUP' partition follows the existing overloaded-GSI1
+  // pattern (ENVIRONMENTS, REVISION_STATUS#*) so the poller can list pending
+  // work without a scan.
+  const sessionCleanupKey = (sessionId) => ({ pk: `SESSION_CLEANUP#${sessionId}`, sk: 'LOOKUP' });
+
+  const putSessionCleanup = async ({
+    sessionId,
+    capacityProviderArn,
+    environmentId = null,
+    revisionId = null,
+    reason = null,
+  }) => {
+    if (!sessionId || !capacityProviderArn) return null;
+    const createdAt = now();
+    const item = {
+      ...sessionCleanupKey(sessionId),
+      GSI1PK: 'SESSION_CLEANUP',
+      GSI1SK: `${createdAt}#${sessionId}`,
+      type: 'SessionCleanup',
+      sessionId,
+      capacityProviderArn,
+      environmentId,
+      revisionId,
+      reason,
+      attempts: 0,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    return item;
+  };
+
+  const listSessionCleanups = async () =>
+    queryAll(ddb, {
+      TableName: table(),
+      IndexName: 'GSI1',
+      KeyConditionExpression: 'GSI1PK = :pk',
+      ExpressionAttributeValues: { ':pk': 'SESSION_CLEANUP' },
+    });
+
+  const recordSessionCleanupAttempt = async (sessionId, reason = null) => {
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: sessionCleanupKey(sessionId),
+        UpdateExpression:
+          'SET attempts = if_not_exists(attempts, :zero) + :one, reason = :reason, updatedAt = :ts',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':zero': 0, ':one': 1, ':reason': reason, ':ts': now() },
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return Attributes;
+  };
+
+  const deleteSessionCleanup = async (sessionId) => {
+    await ddb.send(new DeleteCommand({ TableName: table(), Key: sessionCleanupKey(sessionId) }));
+  };
+
   const markDependentsUpdateAvailable = async (baseEnvironmentId, baseRevisionId) => {
     const environments = await listEnvironments();
     const changed = [];
@@ -813,6 +878,10 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     updateRevision,
     publishRevision,
     listRevisionsByStatus,
+    putSessionCleanup,
+    listSessionCleanups,
+    recordSessionCleanupAttempt,
+    deleteSessionCleanup,
     markDependentsUpdateAvailable,
     reconcileBaseUpdates,
     markToolUpdatesAvailable,
