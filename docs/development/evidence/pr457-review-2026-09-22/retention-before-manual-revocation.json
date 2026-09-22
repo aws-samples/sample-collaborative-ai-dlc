@@ -1,0 +1,33 @@
+{
+  "at": "2026-09-22T14:08:17.069014+00:00",
+  "intentMarker": {},
+  "projectMarker": {},
+  "snapshots": {
+    "versions": 396,
+    "bytes": 34395159,
+    "deleteMarkers": 0
+  },
+  "remainingMetadataRowsForIntent": 308,
+  "alarms": [
+    {
+      "name": "collaborative-ai-dlc-yjs-server-review-capacity",
+      "state": "OK",
+      "updated": "2026-09-22T15:37:01.914000+02:00"
+    },
+    {
+      "name": "collaborative-ai-dlc-yjs-server-review-event_loop",
+      "state": "OK",
+      "updated": "2026-09-22T14:44:53.574000+02:00"
+    },
+    {
+      "name": "collaborative-ai-dlc-yjs-server-review-persistence",
+      "state": "OK",
+      "updated": "2026-09-22T15:42:22.956000+02:00"
+    },
+    {
+      "name": "collaborative-ai-dlc-yjs-server-review-rejected",
+      "state": "OK",
+      "updated": "2026-09-22T15:39:23.439000+02:00"
+    }
+  ]
+}

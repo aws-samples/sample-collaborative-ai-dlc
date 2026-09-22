@@ -1,0 +1,96 @@
+{
+  "ScalingPolicies": [
+    {
+      "PolicyARN": "arn:aws:autoscaling:eu-central-1:ACCOUNT:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-capacity",
+      "PolicyName": "collaborative-ai-dlc-yjs-server-review-capacity",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "PolicyType": "TargetTrackingScaling",
+      "TargetTrackingScalingPolicyConfiguration": {
+        "TargetValue": 60.0,
+        "CustomizedMetricSpecification": {
+          "MetricName": "CapacityUtilization",
+          "Namespace": "CollaborativeAI/Yjs",
+          "Dimensions": [
+            {
+              "Name": "ServiceName",
+              "Value": "collaborative-ai-dlc-yjs-server-review"
+            }
+          ],
+          "Statistic": "Average"
+        },
+        "ScaleOutCooldown": 60,
+        "ScaleInCooldown": 600,
+        "DisableScaleIn": false
+      },
+      "Alarms": [
+        {
+          "AlarmName": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-ef0430d5-1050-4edf-b7ea-d4636a4deb36",
+          "AlarmARN": "arn:aws:cloudwatch:eu-central-1:ACCOUNT:alarm:TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-ef0430d5-1050-4edf-b7ea-d4636a4deb36"
+        },
+        {
+          "AlarmName": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-ab17b15b-7557-4a26-b156-08cd82448b24",
+          "AlarmARN": "arn:aws:cloudwatch:eu-central-1:ACCOUNT:alarm:TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-ab17b15b-7557-4a26-b156-08cd82448b24"
+        }
+      ],
+      "CreationTime": "2026-09-22T15:26:14.560000+02:00"
+    },
+    {
+      "PolicyARN": "arn:aws:autoscaling:eu-central-1:ACCOUNT:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-memory",
+      "PolicyName": "collaborative-ai-dlc-yjs-server-review-memory",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "PolicyType": "TargetTrackingScaling",
+      "TargetTrackingScalingPolicyConfiguration": {
+        "TargetValue": 70.0,
+        "PredefinedMetricSpecification": {
+          "PredefinedMetricType": "ECSServiceAverageMemoryUtilization"
+        },
+        "ScaleOutCooldown": 60,
+        "ScaleInCooldown": 600,
+        "DisableScaleIn": false
+      },
+      "Alarms": [
+        {
+          "AlarmName": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4137f2df-bca5-4e4b-8a9f-46f3378b7329",
+          "AlarmARN": "arn:aws:cloudwatch:eu-central-1:ACCOUNT:alarm:TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4137f2df-bca5-4e4b-8a9f-46f3378b7329"
+        },
+        {
+          "AlarmName": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-fe8b1c60-0214-44e3-b670-94874b18839f",
+          "AlarmARN": "arn:aws:cloudwatch:eu-central-1:ACCOUNT:alarm:TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-fe8b1c60-0214-44e3-b670-94874b18839f"
+        }
+      ],
+      "CreationTime": "2026-09-22T15:26:14.553000+02:00"
+    },
+    {
+      "PolicyARN": "arn:aws:autoscaling:eu-central-1:ACCOUNT:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-cpu",
+      "PolicyName": "collaborative-ai-dlc-yjs-server-review-cpu",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "PolicyType": "TargetTrackingScaling",
+      "TargetTrackingScalingPolicyConfiguration": {
+        "TargetValue": 60.0,
+        "PredefinedMetricSpecification": {
+          "PredefinedMetricType": "ECSServiceAverageCPUUtilization"
+        },
+        "ScaleOutCooldown": 60,
+        "ScaleInCooldown": 600,
+        "DisableScaleIn": false
+      },
+      "Alarms": [
+        {
+          "AlarmName": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-03f26d5a-b4f1-49bf-a0dd-a91fc2fd9b97",
+          "AlarmARN": "arn:aws:cloudwatch:eu-central-1:ACCOUNT:alarm:TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-03f26d5a-b4f1-49bf-a0dd-a91fc2fd9b97"
+        },
+        {
+          "AlarmName": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-a26ceb04-a4eb-4a2d-8a6c-70369a76407f",
+          "AlarmARN": "arn:aws:cloudwatch:eu-central-1:ACCOUNT:alarm:TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-a26ceb04-a4eb-4a2d-8a6c-70369a76407f"
+        }
+      ],
+      "CreationTime": "2026-09-22T15:26:14.502000+02:00"
+    }
+  ]
+}

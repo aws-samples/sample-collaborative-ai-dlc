@@ -7,7 +7,7 @@ import { readConfig } from '../config.js';
 import { ClusterCoordinator, ownerFor, scopeKey, routeHeader, verifyRoute } from '../cluster.js';
 import { send } from '../protocol.js';
 import { connectClient, MemoryStore, DOCUMENT, SECRET, logger } from './helpers.js';
-import { runLoad } from '../load.js';
+import { runLoad, verifyLoadDocument } from '../load.js';
 import { signRealtimeToken, requiredScopeForYjsDoc } from '../realtime-token.js';
 
 const servers = [];
@@ -42,6 +42,100 @@ afterEach(async () => {
 });
 
 describe('collaboration transport', () => {
+  it('keeps an independent edit journal through disconnection and verifies fresh recovery', async () => {
+    const store = new MemoryStore();
+    const server = await start({ store, id: 'a', config: { saveMs: 50 } });
+    const token = signRealtimeToken(
+      { sub: 'load', scopes: [requiredScopeForYjsDoc(DOCUMENT)] },
+      SECRET,
+    ).token;
+    const options = {
+      jwt: 'load',
+      token: async () => token,
+      intentId: DOCUMENT.slice('intent-draft-'.length),
+      documents: 2,
+      requireDurability: true,
+      settleMs: 5000,
+      rampMs: 0,
+    };
+    let disrupted = false;
+    const result = await runLoad({
+      ...options,
+      url: `http://127.0.0.1:${server.server.address().port}`,
+      clients: 6,
+      durationSeconds: 2,
+      updateMs: 50,
+      initialBytes: 1024,
+      onProgress: ({ writes }) => {
+        if (writes && !disrupted) {
+          disrupted = true;
+          for (const ws of server.wss.clients) ws.terminate();
+        }
+      },
+    });
+    expect(result.converged).toBe(true);
+    expect(result.durable).toBe(true);
+    expect(result.offlineWrites).toBeGreaterThan(0);
+    expect(result.reconnects).toBeGreaterThanOrEqual(6);
+    expect(result.maxUnavailableMs).toBeGreaterThan(100);
+    expect(result.syncAvailability).toBeLessThan(1);
+    expect(result.expectedRooms.reduce((sum, room) => sum + room.writes, 0)).toBe(result.writes);
+    for (const expected of result.expectedRooms) {
+      const doc = new Y.Doc();
+      Y.applyUpdate(doc, store.snapshots.get(expected.documentId));
+      expect(verifyLoadDocument(doc, expected)).toBe(true);
+      const [key, value] = doc.getMap('journal').entries().next().value;
+      doc.getMap('journal').set(key, value + 1);
+      expect(verifyLoadDocument(doc, expected)).toBe(false);
+      doc.getMap('journal').set(key, value);
+      doc.getText('payload').delete(0, 1);
+      doc.getText('payload').insert(0, 'y');
+      expect(verifyLoadDocument(doc, expected)).toBe(false);
+      doc.getText('payload').delete(0, 1);
+      doc.getText('payload').insert(0, 'x');
+      expect(verifyLoadDocument(doc, expected)).toBe(true);
+      // Latest writer values still match after deleting an intermediate edit.
+      doc.getMap('journal').delete('0:1');
+      if (expected.writers.some(({ index }) => index === 0))
+        expect(verifyLoadDocument(doc, expected)).toBe(false);
+      doc.destroy();
+    }
+    await server.close();
+    const successor = await start({ store, id: 'b', config: { saveMs: 50 } });
+    const recovered = await runLoad({
+      ...options,
+      url: `http://127.0.0.1:${successor.server.address().port}`,
+      clients: 2,
+      run: result.run,
+      expectedRooms: result.expectedRooms,
+    });
+    expect(recovered.converged).toBe(true);
+    expect(recovered.durable).toBe(true);
+    expect(recovered.writes).toBe(0);
+    expect(recovered.propagationSamples).toBe(0);
+  }, 15_000);
+
+  it('never reports durability when the server has no checkpoint capability', async () => {
+    const server = await start();
+    const token = signRealtimeToken(
+      { sub: 'load', scopes: [requiredScopeForYjsDoc(DOCUMENT)] },
+      SECRET,
+    ).token;
+    const result = await runLoad({
+      url: `http://127.0.0.1:${server.server.address().port}`,
+      jwt: 'load',
+      token: async () => token,
+      intentId: DOCUMENT.slice('intent-draft-'.length),
+      clients: 2,
+      documents: 1,
+      durationSeconds: 1,
+      updateMs: 100,
+      requireDurability: true,
+    });
+    expect(result.converged).toBe(true);
+    expect(result.durable).toBe(false);
+  });
+
   it('runs an authenticated load workload and verifies all writer sequences converge', async () => {
     const server = await start();
     const token = signRealtimeToken(
@@ -190,6 +284,46 @@ describe('collaboration transport', () => {
 });
 
 describe('document ownership and recovery', () => {
+  it('withholds receipts on storage failure and recovers edits after storage returns', async () => {
+    const store = new MemoryStore();
+    const server = await start({ store, id: 'a', config: { saveMs: 50 } });
+    const alice = await join(server);
+    alice.doc.getText('content').insert(0, 'committed');
+    await alice.flush();
+    const committed = store.snapshots.get(DOCUMENT).slice();
+    store.failSave = true;
+    alice.doc.getText('content').insert(0, 'uncommitted ');
+    await expect(alice.flush()).rejects.toThrow('Disconnected');
+    expect(store.snapshots.get(DOCUMENT)).toEqual(committed);
+    expect(alice.frames.filter(({ type, subtype }) => type === 4 && subtype === 2)).toHaveLength(1);
+    const room = server.rooms.rooms.get(DOCUMENT);
+    expect(room.revision).toBeGreaterThan(room.savedRevision);
+    store.failSave = false;
+    const bob = await join(server, DOCUMENT, { user: 'bob' });
+    expect(bob.doc.getText('content').toString()).toBe('uncommitted committed');
+    await bob.flush();
+    await server.close();
+    const successor = await start({ store, id: 'b' });
+    const recovered = await join(successor);
+    expect(recovered.doc.getText('content').toString()).toBe('uncommitted committed');
+  });
+
+  it('fails cold joins closed when snapshot reads fail, then recovers the committed state', async () => {
+    const store = new MemoryStore();
+    const first = await start({ store, id: 'a' });
+    const alice = await join(first);
+    alice.doc.getText('content').insert(0, 'must not seed an empty document');
+    await alice.flush();
+    await first.close();
+    const second = await start({ store, id: 'b' });
+    const load = vi.spyOn(store, 'load').mockRejectedValueOnce(new Error('S3 unavailable'));
+    await expect(connectClient(second)).rejects.toThrow('503');
+    expect(second.rooms.rooms.size).toBe(0);
+    load.mockRestore();
+    const recovered = await join(second);
+    expect(recovered.doc.getText('content').toString()).toBe('must not seed an empty document');
+  });
+
   it('relinquishes local authority when a committed release loses its response', async () => {
     const store = new MemoryStore();
     const server = await start({ store, id: 'a' });

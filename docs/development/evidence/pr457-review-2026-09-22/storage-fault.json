@@ -1,0 +1,99 @@
+{
+  "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-fault-s3-6200e56b-2e07-42fd-b3eb-12a204405171",
+  "startedAt": "2026-09-22T12:56:05.145Z",
+  "events": [
+    {
+      "at": "2026-09-22T12:56:05.911Z",
+      "event": "baseline-committed",
+      "manifest": {
+        "leaseTokenSha256": "06f6f2f7de195a2a814de01b5c9f625e2c66c6722829351f6d80c064d5c2dfc8",
+        "snapshotBytes": 52,
+        "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/407cfad88a97d0e981b41ec143590f63a873e50f0fa44f6467f1c1942ee6e4af/1fdb14f8-fd1b-4002-a5e9-c79f885033f3.bin",
+        "snapshotSequence": 1,
+        "ownerId": "arn:aws:ecs:eu-central-1:ACCOUNT:task/collaborative-ai-dlc-review/e81884d07f7e4ebca603c3694072b89e",
+        "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-fault-s3-6200e56b-2e07-42fd-b3eb-12a204405171",
+        "snapshotVersion": "amVvjzJZoAUuwUQ4Ap0rP_K2HSElm54S",
+        "leaseUntil": 1790081795362
+      }
+    },
+    {
+      "at": "2026-09-22T12:56:07.034Z",
+      "event": "deny-installed",
+      "actions": ["s3:PutObject"]
+    },
+    {
+      "at": "2026-09-22T12:56:25.166Z",
+      "event": "write-denial-observed",
+      "error": "Closed before receipt 1013",
+      "closeCode": 1013,
+      "receiptsBefore": 1,
+      "receiptsAfter": 1,
+      "snapshotBefore": 1,
+      "snapshotAfter": 1,
+      "marker": "unacknowledged-0"
+    },
+    {
+      "at": "2026-09-22T12:56:26.327Z",
+      "event": "deny-removed"
+    },
+    {
+      "at": "2026-09-22T12:56:41.592Z",
+      "event": "write-recovery-committed",
+      "expected": {
+        "baseline": "committed before denial",
+        "duringOutage": "unacknowledged-0"
+      },
+      "manifest": {
+        "leaseTokenSha256": "06f6f2f7de195a2a814de01b5c9f625e2c66c6722829351f6d80c064d5c2dfc8",
+        "snapshotBytes": 92,
+        "leaseUntil": 1790081826026,
+        "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/407cfad88a97d0e981b41ec143590f63a873e50f0fa44f6467f1c1942ee6e4af/01d4a0f8-e0c1-45fd-9f0f-6bb95d1c027a.bin",
+        "snapshotVersion": "2V9f3GTQoikp5ASOdkWb66f3wXcPzAHf",
+        "ownerId": "arn:aws:ecs:eu-central-1:ACCOUNT:task/collaborative-ai-dlc-review/e81884d07f7e4ebca603c3694072b89e",
+        "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-fault-s3-6200e56b-2e07-42fd-b3eb-12a204405171",
+        "snapshotSequence": 2
+      }
+    },
+    {
+      "at": "2026-09-22T12:56:42.687Z",
+      "event": "deny-installed",
+      "actions": ["s3:GetObject", "s3:GetObjectVersion"]
+    },
+    {
+      "at": "2026-09-22T12:57:53.154Z",
+      "event": "cold-read-denial-observed",
+      "error": "Upgrade 503",
+      "manifest": {
+        "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-fault-s3-6200e56b-2e07-42fd-b3eb-12a204405171",
+        "snapshotBytes": 92,
+        "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/407cfad88a97d0e981b41ec143590f63a873e50f0fa44f6467f1c1942ee6e4af/01d4a0f8-e0c1-45fd-9f0f-6bb95d1c027a.bin",
+        "snapshotSequence": 2,
+        "snapshotVersion": "2V9f3GTQoikp5ASOdkWb66f3wXcPzAHf"
+      }
+    },
+    {
+      "at": "2026-09-22T12:57:56.349Z",
+      "event": "deny-removed"
+    },
+    {
+      "at": "2026-09-22T12:58:11.704Z",
+      "event": "cold-read-recovery-passed",
+      "expected": {
+        "baseline": "committed before denial",
+        "duringOutage": "unacknowledged-0"
+      },
+      "manifest": {
+        "leaseTokenSha256": "579130f474cda7111d8ba9387bcf2ef5be0879cc058c7c15e41a037aebe24eb2",
+        "snapshotBytes": 92,
+        "snapshotKey": "yjs-documents/intent/7daf5d73-7154-455a-9d8f-76f634a288b0/407cfad88a97d0e981b41ec143590f63a873e50f0fa44f6467f1c1942ee6e4af/01d4a0f8-e0c1-45fd-9f0f-6bb95d1c027a.bin",
+        "snapshotVersion": "2V9f3GTQoikp5ASOdkWb66f3wXcPzAHf",
+        "ownerId": "arn:aws:ecs:eu-central-1:ACCOUNT:task/collaborative-ai-dlc-review/e81884d07f7e4ebca603c3694072b89e",
+        "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-fault-s3-6200e56b-2e07-42fd-b3eb-12a204405171",
+        "leaseUntil": 1790081921590,
+        "snapshotSequence": 2
+      }
+    }
+  ],
+  "passed": true,
+  "finishedAt": "2026-09-22T12:58:12.861Z"
+}

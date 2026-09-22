@@ -1,0 +1,656 @@
+{
+  "run": "575445a1-f9a6-4057-83df-d26d8782ad7b",
+  "clients": 40,
+  "documents": 20,
+  "durationSeconds": 900,
+  "writes": 35920,
+  "offlineWrites": 63,
+  "writeWhileDisconnected": true,
+  "startedAt": "2026-09-22T13:41:44.011Z",
+  "finishedAt": "2026-09-22T13:56:46.745Z",
+  "receivedBytes": 5900263,
+  "reconnects": 71,
+  "closeCodes": {
+    "1006": 19,
+    "1012": 12,
+    "4401": 40
+  },
+  "upgradeErrors": {
+    "503": 10
+  },
+  "tokenFailures": 0,
+  "connected": 40,
+  "converged": true,
+  "durable": true,
+  "expectedRooms": [
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-0",
+      "writes": 1796,
+      "journalSha256": "833b8c1912184ecfb5164db54170c510662ffe9d43123ab0c4af7f9f35618008",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 0,
+          "sequence": 898
+        },
+        {
+          "index": 20,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-1",
+      "writes": 1796,
+      "journalSha256": "16eda1a791a5d98c96671cad3af2ac2de1fba20be8098df2c907c1bcccfea2b2",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 1,
+          "sequence": 898
+        },
+        {
+          "index": 21,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-2",
+      "writes": 1796,
+      "journalSha256": "96f160661a94330af8d5a512ba5d82eabbd0e34cd2f0e8aafe63d20dc67307b5",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 2,
+          "sequence": 898
+        },
+        {
+          "index": 22,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-3",
+      "writes": 1796,
+      "journalSha256": "67ba5b2a90615880201f061864c733f3b9e3d90c0ad128b601cc636e21d0d874",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 3,
+          "sequence": 898
+        },
+        {
+          "index": 23,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-4",
+      "writes": 1796,
+      "journalSha256": "45b766964d747cd6ac3eafcf28f16733af990a89a36e0c478a57c78663affd0d",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 4,
+          "sequence": 898
+        },
+        {
+          "index": 24,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-5",
+      "writes": 1796,
+      "journalSha256": "203e58589591bee1a7027e991644d4fd9afce88ebcf18535a6ca1fa6e0ae4164",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 5,
+          "sequence": 898
+        },
+        {
+          "index": 25,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-6",
+      "writes": 1796,
+      "journalSha256": "ab6e2407ac0a431080c2a62607669ef2a5f287c5444215912e94b568b6e420a9",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 6,
+          "sequence": 898
+        },
+        {
+          "index": 26,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-7",
+      "writes": 1796,
+      "journalSha256": "a6d33f9e82f05d2e11dc36f838b28b56e9634b482571262c4944fe7575b00b50",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 7,
+          "sequence": 898
+        },
+        {
+          "index": 27,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-8",
+      "writes": 1796,
+      "journalSha256": "c4ba1fe5f194f37b94549687844c1c26f4c15d9f44a2a226c65a2c8cfdd87e63",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 8,
+          "sequence": 898
+        },
+        {
+          "index": 28,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-9",
+      "writes": 1796,
+      "journalSha256": "56c70fb84bce6f78d297e26c4b1b22009fbee1f5c0fa738a00f10ea58063597c",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 9,
+          "sequence": 898
+        },
+        {
+          "index": 29,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-10",
+      "writes": 1796,
+      "journalSha256": "c57d37c8eaa661f2fc4681f8b35332ec59cb63684a4e8434d3c8330cc57e0a32",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 10,
+          "sequence": 898
+        },
+        {
+          "index": 30,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-11",
+      "writes": 1796,
+      "journalSha256": "e41ac7af8e3cb60693ba21efbb585f74aa5fe6f74463bab6cb51b20adf7f26bf",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 11,
+          "sequence": 898
+        },
+        {
+          "index": 31,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-12",
+      "writes": 1796,
+      "journalSha256": "3469838adac3c48de263a768a143befece37d81988a3c861e283581da5d9b575",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 12,
+          "sequence": 898
+        },
+        {
+          "index": 32,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-13",
+      "writes": 1796,
+      "journalSha256": "f5e62711cdb20fe25bca19149ec7f5d9bd3d3b7e9ad1af570c999141f028b569",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 13,
+          "sequence": 898
+        },
+        {
+          "index": 33,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-14",
+      "writes": 1796,
+      "journalSha256": "973f8f15599ab11a3e0dad9dd7c97e69b2229568917a3ba7ebc1159b511d1b75",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 14,
+          "sequence": 898
+        },
+        {
+          "index": 34,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-15",
+      "writes": 1796,
+      "journalSha256": "3ebdb88040f8ae94b198cdbc8647ecd38b8eae558a57430adcfcb5d4e895eedb",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 15,
+          "sequence": 898
+        },
+        {
+          "index": 35,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-16",
+      "writes": 1796,
+      "journalSha256": "0488d3d86ab1294b4db3ae0ffbf166ac260f3ebfbd36502a961d01e28f7814c4",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 16,
+          "sequence": 898
+        },
+        {
+          "index": 36,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-17",
+      "writes": 1796,
+      "journalSha256": "b785a6bad223ded4d50014fe59bb100040885921cba9fd4b078c436b1e23a50e",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 17,
+          "sequence": 898
+        },
+        {
+          "index": 37,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-18",
+      "writes": 1796,
+      "journalSha256": "0a8b06a645bca09982907c0f13cf2f90bc85edd81117d664e41fdd769c08f6ec",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 18,
+          "sequence": 898
+        },
+        {
+          "index": 38,
+          "sequence": 898
+        }
+      ]
+    },
+    {
+      "documentId": "intent-review-7daf5d73-7154-455a-9d8f-76f634a288b0-load-575445a1-f9a6-4057-83df-d26d8782ad7b-19",
+      "writes": 1796,
+      "journalSha256": "90325f736af7141b79e4e952cf59b1f0591dd6f2a0abeb2f276b42cca2f3cd62",
+      "initialBytes": 4096,
+      "payloadSha256": "a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e",
+      "writers": [
+        {
+          "index": 19,
+          "sequence": 898
+        },
+        {
+          "index": 39,
+          "sequence": 898
+        }
+      ]
+    }
+  ],
+  "unavailableClientMs": 46486,
+  "maxUnavailableMs": 3530,
+  "syncAvailability": 0.9987118038379245,
+  "unavailability": [
+    {
+      "index": 0,
+      "initialSyncMs": 276,
+      "unavailableMs": 2187,
+      "maxUnavailableMs": 1405,
+      "observedMs": 902733
+    },
+    {
+      "index": 1,
+      "initialSyncMs": 115,
+      "unavailableMs": 646,
+      "maxUnavailableMs": 531,
+      "observedMs": 902546
+    },
+    {
+      "index": 2,
+      "initialSyncMs": 111,
+      "unavailableMs": 630,
+      "maxUnavailableMs": 519,
+      "observedMs": 902525
+    },
+    {
+      "index": 3,
+      "initialSyncMs": 107,
+      "unavailableMs": 598,
+      "maxUnavailableMs": 491,
+      "observedMs": 902503
+    },
+    {
+      "index": 4,
+      "initialSyncMs": 103,
+      "unavailableMs": 631,
+      "maxUnavailableMs": 528,
+      "observedMs": 902482
+    },
+    {
+      "index": 5,
+      "initialSyncMs": 171,
+      "unavailableMs": 667,
+      "maxUnavailableMs": 496,
+      "observedMs": 902462
+    },
+    {
+      "index": 6,
+      "initialSyncMs": 150,
+      "unavailableMs": 1799,
+      "maxUnavailableMs": 1135,
+      "observedMs": 902439
+    },
+    {
+      "index": 7,
+      "initialSyncMs": 130,
+      "unavailableMs": 988,
+      "maxUnavailableMs": 518,
+      "observedMs": 902419
+    },
+    {
+      "index": 8,
+      "initialSyncMs": 152,
+      "unavailableMs": 654,
+      "maxUnavailableMs": 502,
+      "observedMs": 902396
+    },
+    {
+      "index": 9,
+      "initialSyncMs": 151,
+      "unavailableMs": 650,
+      "maxUnavailableMs": 499,
+      "observedMs": 902375
+    },
+    {
+      "index": 10,
+      "initialSyncMs": 150,
+      "unavailableMs": 1056,
+      "maxUnavailableMs": 507,
+      "observedMs": 902353
+    },
+    {
+      "index": 11,
+      "initialSyncMs": 131,
+      "unavailableMs": 4159,
+      "maxUnavailableMs": 3530,
+      "observedMs": 902330
+    },
+    {
+      "index": 12,
+      "initialSyncMs": 91,
+      "unavailableMs": 1142,
+      "maxUnavailableMs": 566,
+      "observedMs": 902307
+    },
+    {
+      "index": 13,
+      "initialSyncMs": 97,
+      "unavailableMs": 1247,
+      "maxUnavailableMs": 646,
+      "observedMs": 902286
+    },
+    {
+      "index": 14,
+      "initialSyncMs": 106,
+      "unavailableMs": 615,
+      "maxUnavailableMs": 509,
+      "observedMs": 902265
+    },
+    {
+      "index": 15,
+      "initialSyncMs": 113,
+      "unavailableMs": 1580,
+      "maxUnavailableMs": 516,
+      "observedMs": 902244
+    },
+    {
+      "index": 16,
+      "initialSyncMs": 110,
+      "unavailableMs": 626,
+      "maxUnavailableMs": 516,
+      "observedMs": 902223
+    },
+    {
+      "index": 17,
+      "initialSyncMs": 100,
+      "unavailableMs": 596,
+      "maxUnavailableMs": 496,
+      "observedMs": 902202
+    },
+    {
+      "index": 18,
+      "initialSyncMs": 101,
+      "unavailableMs": 1189,
+      "maxUnavailableMs": 597,
+      "observedMs": 902180
+    },
+    {
+      "index": 19,
+      "initialSyncMs": 95,
+      "unavailableMs": 1194,
+      "maxUnavailableMs": 588,
+      "observedMs": 902158
+    },
+    {
+      "index": 20,
+      "initialSyncMs": 74,
+      "unavailableMs": 3472,
+      "maxUnavailableMs": 2828,
+      "observedMs": 902135
+    },
+    {
+      "index": 21,
+      "initialSyncMs": 79,
+      "unavailableMs": 598,
+      "maxUnavailableMs": 519,
+      "observedMs": 902114
+    },
+    {
+      "index": 22,
+      "initialSyncMs": 85,
+      "unavailableMs": 1139,
+      "maxUnavailableMs": 549,
+      "observedMs": 902093
+    },
+    {
+      "index": 23,
+      "initialSyncMs": 73,
+      "unavailableMs": 579,
+      "maxUnavailableMs": 506,
+      "observedMs": 902071
+    },
+    {
+      "index": 24,
+      "initialSyncMs": 85,
+      "unavailableMs": 575,
+      "maxUnavailableMs": 490,
+      "observedMs": 902049
+    },
+    {
+      "index": 25,
+      "initialSyncMs": 81,
+      "unavailableMs": 1023,
+      "maxUnavailableMs": 495,
+      "observedMs": 902028
+    },
+    {
+      "index": 26,
+      "initialSyncMs": 72,
+      "unavailableMs": 1819,
+      "maxUnavailableMs": 1240,
+      "observedMs": 902008
+    },
+    {
+      "index": 27,
+      "initialSyncMs": 76,
+      "unavailableMs": 596,
+      "maxUnavailableMs": 520,
+      "observedMs": 901988
+    },
+    {
+      "index": 28,
+      "initialSyncMs": 69,
+      "unavailableMs": 1255,
+      "maxUnavailableMs": 683,
+      "observedMs": 901966
+    },
+    {
+      "index": 29,
+      "initialSyncMs": 73,
+      "unavailableMs": 571,
+      "maxUnavailableMs": 498,
+      "observedMs": 901946
+    },
+    {
+      "index": 30,
+      "initialSyncMs": 74,
+      "unavailableMs": 589,
+      "maxUnavailableMs": 515,
+      "observedMs": 901926
+    },
+    {
+      "index": 31,
+      "initialSyncMs": 139,
+      "unavailableMs": 3730,
+      "maxUnavailableMs": 3064,
+      "observedMs": 901905
+    },
+    {
+      "index": 32,
+      "initialSyncMs": 144,
+      "unavailableMs": 1119,
+      "maxUnavailableMs": 505,
+      "observedMs": 901885
+    },
+    {
+      "index": 33,
+      "initialSyncMs": 138,
+      "unavailableMs": 640,
+      "maxUnavailableMs": 502,
+      "observedMs": 901863
+    },
+    {
+      "index": 34,
+      "initialSyncMs": 138,
+      "unavailableMs": 648,
+      "maxUnavailableMs": 510,
+      "observedMs": 901841
+    },
+    {
+      "index": 35,
+      "initialSyncMs": 118,
+      "unavailableMs": 1512,
+      "maxUnavailableMs": 512,
+      "observedMs": 901818
+    },
+    {
+      "index": 36,
+      "initialSyncMs": 95,
+      "unavailableMs": 613,
+      "maxUnavailableMs": 518,
+      "observedMs": 901795
+    },
+    {
+      "index": 37,
+      "initialSyncMs": 78,
+      "unavailableMs": 571,
+      "maxUnavailableMs": 493,
+      "observedMs": 901774
+    },
+    {
+      "index": 38,
+      "initialSyncMs": 70,
+      "unavailableMs": 586,
+      "maxUnavailableMs": 516,
+      "observedMs": 901753
+    },
+    {
+      "index": 39,
+      "initialSyncMs": 68,
+      "unavailableMs": 1997,
+      "maxUnavailableMs": 1415,
+      "observedMs": 901733
+    }
+  ],
+  "joinP95Ms": 162,
+  "propagationP95Ms": 83,
+  "propagationP99Ms": 103,
+  "propagationSamples": 35906
+}
