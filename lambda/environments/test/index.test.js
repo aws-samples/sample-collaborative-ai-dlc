@@ -99,6 +99,39 @@ describe('managed environment handler', () => {
     });
   });
 
+  it('reports deployment capabilities so the UI can hide unconfigured compute types', async () => {
+    const handler = createHandler({ store: storeBase() });
+
+    // Default deployment: enable_instances_compute is off.
+    const disabled = await handler({
+      httpMethod: 'GET',
+      path: '/environments/capabilities',
+      ...claims(),
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect(JSON.parse(disabled.body)).toEqual({
+      instancesCompute: false,
+      amd64CoreImage: false,
+    });
+
+    // Instances-enabled deployment.
+    vi.stubEnv('MANAGED_INSTANCES_OPERATOR_ROLE_ARN', 'arn:aws:iam::1:role/operator');
+    vi.stubEnv('MANAGED_INSTANCES_SUBNETS', '["subnet-1"]');
+    vi.stubEnv('MANAGED_INSTANCES_SECURITY_GROUPS', '["sg-1"]');
+    vi.stubEnv('CORE_IMAGE_URI_AMD64', '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core');
+    vi.stubEnv('CORE_IMAGE_DIGEST_AMD64', `sha256:${'d'.repeat(64)}`);
+    const enabled = await handler({
+      httpMethod: 'GET',
+      path: '/environments/capabilities',
+      ...claims(),
+    });
+    expect(JSON.parse(enabled.body)).toEqual({
+      instancesCompute: true,
+      amd64CoreImage: true,
+    });
+    vi.unstubAllEnvs();
+  });
+
   it('requires fixed-tool environments to be recreated with catalog tools', async () => {
     const environment = {
       environmentId: 'go',
