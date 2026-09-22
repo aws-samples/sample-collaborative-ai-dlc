@@ -2517,8 +2517,8 @@ export const runStage = async (
     }
   }
   if (parked) {
-    const parkSaved = await store
-      .updateStageState({
+    const savePark = () =>
+      store.updateStageState({
         executionId,
         stageInstanceId,
         state: 'WAITING_FOR_HUMAN',
@@ -2530,9 +2530,33 @@ export const runStage = async (
         parkedAt: parked.createdAt ?? true,
         cli,
         cliSessionId,
-      })
-      .then(() => true)
-      .catch(() => false);
+      });
+    let parkSaved = false;
+    for (let attempt = 0; attempt < 2 && !parkSaved; attempt++) {
+      parkSaved = await savePark()
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!parkSaved) {
+      let saved;
+      try {
+        saved = await store.getStage(executionId, stageInstanceId, { consistentRead: true });
+      } catch {
+        return fail(
+          stageInstanceId,
+          'stage_park_persist_failed',
+          'The saved conversation could not be verified. Retry when storage is available; the question and conversation have been retained.',
+        );
+      }
+      // The bridge may already have parked Claude with its startup session,
+      // or our write may have committed before its acknowledgment was lost.
+      parkSaved =
+        saved?.state === 'WAITING_FOR_HUMAN' &&
+        saved.pendingHumanTaskId === parked.humanTaskId &&
+        saved.cli === cli &&
+        saved.cliSessionId === cliSessionId &&
+        Boolean(saved.cliSessionId);
+    }
     if (!parkSaved) {
       return failUnresumableGate(
         'stage_park_persist_failed',

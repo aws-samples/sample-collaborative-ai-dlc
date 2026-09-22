@@ -1514,6 +1514,40 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     ).toBe(true);
   });
 
+  it.each(['retry', 'already-saved'])(
+    'preserves a resumable Claude gate after a failed park write: %s',
+    async (mode) => {
+      const seed = pendingGateSeed('q-1');
+      Object.assign(seed.stage, {
+        state: 'WAITING_FOR_HUMAN',
+        cli: 'claude',
+        cliSessionId: 'forced-uuid',
+      });
+      const store = spyStore(seed);
+      let attempts = 0;
+      store.updateStageState = vi.fn(async (row) => {
+        if (row.state === 'WAITING_FOR_HUMAN') {
+          attempts++;
+          if (mode === 'already-saved' || attempts === 1) throw new Error('lost acknowledgment');
+        }
+        return row;
+      });
+      expect(
+        await runStage(
+          baseArgs,
+          baseDeps({
+            store,
+            spawnFn: okSpawn,
+            ids: () => 'forced-uuid',
+          }),
+        ),
+      ).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'q-1' });
+      expect(attempts).toBe(2);
+      expect(store.calls.some(([op]) => op === 'supersedeHumanTask')).toBe(false);
+      expect(store.updateStageState.mock.calls.some(([row]) => row.state === 'FAILED')).toBe(false);
+    },
+  );
+
   it('re-stamps parkedAt with the gate ASK time so the exit-time write never shortens the wait', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,
