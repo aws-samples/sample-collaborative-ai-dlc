@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, Loader2, ShieldCheck, Sparkles, TriangleAlert, X } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  Eye,
+  Loader2,
+  ShieldCheck,
+  Sparkles,
+  TriangleAlert,
+  X,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -48,7 +57,7 @@ export function QuorumEditPanel() {
   if (sessions.length === 0) return null;
 
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-sm">
           <Sparkles className="h-4 w-4" />
@@ -172,7 +181,7 @@ function QuorumEditProgress({ editId }: { editId: string }) {
 }
 
 function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
-  const { projectId, intentId, reload } = useIntent();
+  const { projectId, intentId, openArtifactPreview, reload } = useIntent();
   const items = useMemo(() => edit.plan?.items ?? [], [edit.plan]);
   // Everything starts included: updates apply, verify-unaffected clears the
   // drift marker with Quorum's rationale. Excluded items stay marked stale.
@@ -216,22 +225,28 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
           No downstream artifacts are affected — approving updates only the target document.
         </p>
       ) : (
-        <div className="space-y-1.5">
+        <div
+          role="region"
+          aria-label="Quorum artifact plan"
+          tabIndex={0}
+          className="max-h-80 space-y-1.5 overflow-x-hidden overflow-y-auto overscroll-contain rounded-md border p-1.5 sm:max-h-96"
+        >
           {items.map((item) => (
             <PlanItemRow
               key={item.artifactId}
               item={item}
               included={!excluded.has(item.artifactId)}
               onToggle={() => toggle(item.artifactId)}
+              onPreview={() => openArtifactPreview(item.artifactId)}
             />
           ))}
         </div>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         <Button
           size="sm"
-          className="h-7 gap-1.5"
+          className="h-7 shrink-0 gap-1.5"
           disabled={submitting != null}
           onClick={() => decide('approve')}
         >
@@ -245,7 +260,7 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
         <Button
           size="sm"
           variant="outline"
-          className="h-7 gap-1.5"
+          className="h-7 shrink-0 gap-1.5"
           disabled={submitting != null}
           onClick={() => decide('reject')}
         >
@@ -256,7 +271,7 @@ function QuorumEditApproval({ edit }: { edit: QuorumEdit }) {
           )}
           Reject
         </Button>
-        <span className="text-[10px] text-muted-foreground/60">
+        <span className="min-w-0 basis-full break-words text-[10px] text-muted-foreground/60 sm:basis-auto sm:flex-1">
           Excluded artifacts keep their “possibly stale” marker.
         </span>
       </div>
@@ -268,64 +283,92 @@ function PlanItemRow({
   item,
   included,
   onToggle,
+  onPreview,
 }: {
   item: QuorumEditPlanItem;
   included: boolean;
   onToggle: () => void;
+  onPreview: () => void;
 }) {
   const isUpdate = item.action === 'update';
+  const displayName = item.title || item.artifactId;
+  const accessibleName =
+    item.title && item.title !== item.artifactId
+      ? `${item.title} (${item.artifactId})`
+      : item.artifactId;
+
   return (
-    <label
+    <div
       className={cn(
-        'flex cursor-pointer items-start gap-2 rounded-md border px-2 py-1.5 transition-colors',
+        'flex min-w-0 items-start gap-1 rounded-md border px-2 py-1.5 transition-colors',
         included ? 'bg-background' : 'bg-muted/40 opacity-70',
       )}
     >
-      <input
-        type="checkbox"
-        checked={included}
-        onChange={onToggle}
-        className="mt-0.5 h-3.5 w-3.5 accent-primary"
-      />
-      <span className="min-w-0 flex-1">
-        <span className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs font-medium">{item.title || item.artifactId}</span>
-          <Badge
-            variant="outline"
-            className={cn(
-              'gap-1 px-1.5 py-0 text-[10px]',
-              isUpdate
-                ? 'border-agent-running/40 text-agent-running'
-                : 'border-agent-success/40 text-agent-success',
-            )}
-          >
-            {isUpdate ? (
-              <Sparkles className="h-2.5 w-2.5" />
-            ) : (
-              <ShieldCheck className="h-2.5 w-2.5" />
-            )}
-            {isUpdate ? 'update' : 'verify unaffected'}
-          </Badge>
-          {item.unassessed && (
+      <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
+        <input
+          type="checkbox"
+          checked={included}
+          onChange={onToggle}
+          aria-label={`Include artifact ${accessibleName}`}
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-primary"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="min-w-0 break-all text-xs font-medium">{displayName}</span>
             <Badge
               variant="outline"
-              className="gap-1 border-agent-waiting/40 px-1.5 py-0 text-[10px] text-agent-waiting"
-              title="Quorum did not explicitly assess this closure member"
+              className={cn(
+                'shrink-0 gap-1 px-1.5 py-0 text-[10px]',
+                isUpdate
+                  ? 'border-agent-running/40 text-agent-running'
+                  : 'border-agent-success/40 text-agent-success',
+              )}
             >
-              <TriangleAlert className="h-2.5 w-2.5" />
-              unassessed
+              {isUpdate ? (
+                <Sparkles className="h-2.5 w-2.5" />
+              ) : (
+                <ShieldCheck className="h-2.5 w-2.5" />
+              )}
+              {isUpdate ? 'update' : 'verify unaffected'}
             </Badge>
+            {item.unassessed && (
+              <Badge
+                variant="outline"
+                className="gap-1 border-agent-waiting/40 px-1.5 py-0 text-[10px] text-agent-waiting"
+                title="Quorum did not explicitly assess this closure member"
+              >
+                <TriangleAlert className="h-2.5 w-2.5" />
+                unassessed
+              </Badge>
+            )}
+          </span>
+          {item.title && item.title !== item.artifactId && (
+            <span
+              className="mt-0.5 block break-all font-mono text-[10px] text-muted-foreground/70"
+              title={item.artifactId}
+            >
+              {item.artifactId}
+            </span>
+          )}
+          {item.rationale && (
+            <span className="mt-0.5 block text-[11px] text-muted-foreground">{item.rationale}</span>
+          )}
+          {isUpdate && item.proposedChange && (
+            <span className="mt-0.5 block text-[11px] text-muted-foreground/80">
+              → {item.proposedChange}
+            </span>
           )}
         </span>
-        {item.rationale && (
-          <span className="mt-0.5 block text-[11px] text-muted-foreground">{item.rationale}</span>
-        )}
-        {isUpdate && item.proposedChange && (
-          <span className="mt-0.5 block text-[11px] text-muted-foreground/80">
-            → {item.proposedChange}
-          </span>
-        )}
-      </span>
-    </label>
+      </label>
+      <button
+        type="button"
+        className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label={`Preview artifact ${accessibleName}`}
+        title={`Preview ${accessibleName}`}
+        onClick={onPreview}
+      >
+        <Eye className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 }
