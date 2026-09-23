@@ -1,0 +1,127 @@
+{
+  "ScalingActivities": [
+    {
+      "ActivityId": "8351c65f-e6d4-4ddd-80f4-5a6e0afa5351",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Attempting to scale due to alarm triggered",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-19dbbf07-bda7-4a52-aee6-3959195855bd in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-23T10:01:58.618000+02:00",
+      "StatusCode": "Successful",
+      "NotScaledReasons": [
+        {
+          "Code": "AlreadyAtDesiredCapacity",
+          "CurrentCapacity": 4
+        }
+      ]
+    },
+    {
+      "ActivityId": "dad50a9f-f3c7-4eb9-ade4-ab9bfc9f8621",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Attempting to scale due to alarm triggered",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4712cfef-645f-4a31-a6f3-1d4ebc367b77 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-23T09:46:48.305000+02:00",
+      "StatusCode": "Failed",
+      "NotScaledReasons": [
+        {
+          "Code": "AlreadyAtMaxCapacity",
+          "MaxCapacity": 4
+        }
+      ]
+    },
+    {
+      "ActivityId": "2839209c-4872-4586-bba5-ebc392e1f190",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Attempting to scale due to alarm triggered",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4712cfef-645f-4a31-a6f3-1d4ebc367b77 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-23T09:45:48.314000+02:00",
+      "StatusCode": "Successful",
+      "NotScaledReasons": [
+        {
+          "Code": "AlreadyAtDesiredCapacity",
+          "CurrentCapacity": 4
+        }
+      ]
+    },
+    {
+      "ActivityId": "f3ba8362-42f2-45e0-9529-cc7250c34abd",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 4.",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4712cfef-645f-4a31-a6f3-1d4ebc367b77 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-23T09:44:48.370000+02:00",
+      "EndTime": "2026-09-23T09:45:24.468000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 4. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "21040390-0123-49d4-946b-6d9c752e5514",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Attempting to scale due to alarm triggered",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-29947828-2895-49c4-a4a8-87770aa8bc71 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-memory",
+      "StartTime": "2026-09-23T09:39:51.038000+02:00",
+      "StatusCode": "Failed",
+      "NotScaledReasons": [
+        {
+          "Code": "AlreadyAtMinCapacity",
+          "MinCapacity": 2
+        }
+      ]
+    },
+    {
+      "ActivityId": "b46c6189-08ba-4008-a1f7-1f6230d2833b",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Attempting to scale due to alarm triggered",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-afe9991d-11ac-42ed-9fac-653d85b86de2 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-cpu",
+      "StartTime": "2026-09-23T09:37:04.412000+02:00",
+      "StatusCode": "Successful",
+      "NotScaledReasons": [
+        {
+          "Code": "AlreadyAtDesiredCapacity"
+        }
+      ]
+    },
+    {
+      "ActivityId": "5e83fb28-94a4-4956-8c6f-488faf28f33b",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Attempting to scale due to alarm triggered",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-29947828-2895-49c4-a4a8-87770aa8bc71 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-memory",
+      "StartTime": "2026-09-23T09:35:51.031000+02:00",
+      "StatusCode": "Failed",
+      "NotScaledReasons": [
+        {
+          "Code": "AlreadyAtMinCapacity",
+          "MinCapacity": 2
+        }
+      ]
+    },
+    {
+      "ActivityId": "13a460dd-5259-45d1-af50-d0305ca551e5",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Attempting to scale due to alarm triggered",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4712cfef-645f-4a31-a6f3-1d4ebc367b77 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-23T09:27:48.284000+02:00",
+      "StatusCode": "Successful",
+      "NotScaledReasons": [
+        {
+          "Code": "AlreadyAtDesiredCapacity",
+          "CurrentCapacity": 4
+        }
+      ]
+    }
+  ]
+}

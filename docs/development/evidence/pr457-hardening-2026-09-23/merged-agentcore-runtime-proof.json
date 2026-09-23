@@ -1,0 +1,11 @@
+{
+  "runtimeVersion": "3",
+  "status": "READY",
+  "image": "746558295630.dkr.ecr.eu-central-1.amazonaws.com/collaborative-ai-dlc-agentcore-review@sha256:72892f84960225dca06ad9bb7718a8b2ef0c35c8632f452ca5056ede47bced53",
+  "imageTag": "746558295630.dkr.ecr.eu-central-1.amazonaws.com/collaborative-ai-dlc-agentcore-review:5e53c8afd0a06f38",
+  "runtimeFiles": {
+    "/opt/agentcore/mcp/graph-writer.js": "1e172f53bea880824e49ac2de224aa98eab9eb2cee79ff69523ed58597ccad6f",
+    "/opt/shared/artifact-edit.js": "2fefee7fb4ff9cf51fa4a4b21e8e5eddce846fe9f93d61f3b3e0bda63c434925"
+  },
+  "verified": true
+}

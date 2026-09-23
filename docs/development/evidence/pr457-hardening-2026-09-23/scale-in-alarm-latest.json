@@ -1,0 +1,56 @@
+[
+  {
+    "Name": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4712cfef-645f-4a31-a6f3-1d4ebc367b77",
+    "State": "OK",
+    "Enabled": true,
+    "Actions": [
+      "arn:aws:autoscaling:eu-central-1:746558295630:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-capacity:createdBy/abc2810c-f24b-41db-9f13-bcc2e7fb1f68"
+    ],
+    "Reason": "Threshold Crossed: 1 datapoint [49.0 (23/09/26 07:46:00)] was not greater than the threshold (60.0)."
+  },
+  {
+    "Name": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4de0a19b-d837-474d-b3f8-6a881c26b6bd",
+    "State": "OK",
+    "Enabled": true,
+    "Actions": [
+      "arn:aws:autoscaling:eu-central-1:746558295630:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-cpu:createdBy/f839b4ba-2b59-42bd-90f7-9e1f4a9fd7ee"
+    ],
+    "Reason": "Threshold Crossed: 3 datapoints [0.6764640808105469 (23/09/26 06:53:00), 0.681615948677063 (23/09/26 06:52:00), 0.7213000059127808 (23/09/26 06:51:00)] were not greater than the threshold (60.0)."
+  },
+  {
+    "Name": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-cc2539a9-48da-4995-934d-d02f8bc90587",
+    "State": "OK",
+    "Enabled": true,
+    "Actions": [
+      "arn:aws:autoscaling:eu-central-1:746558295630:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-memory:createdBy/4a43e1f4-5f7b-477c-a291-0ce62e881624"
+    ],
+    "Reason": "Threshold Crossed: 3 datapoints [8.3984375 (23/09/26 06:53:00), 8.3984375 (23/09/26 06:52:00), 8.3984375 (23/09/26 06:51:00)] were not greater than the threshold (70.0)."
+  },
+  {
+    "Name": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-19dbbf07-bda7-4a52-aee6-3959195855bd",
+    "State": "ALARM",
+    "Enabled": true,
+    "Actions": [
+      "arn:aws:autoscaling:eu-central-1:746558295630:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-capacity:createdBy/abc2810c-f24b-41db-9f13-bcc2e7fb1f68"
+    ],
+    "Reason": "Threshold Crossed: 15 datapoints were less than the threshold (54.0). The most recent datapoints which crossed the threshold: [5.0 (23/09/26 08:00:00), 52.5 (23/09/26 07:59:00), 50.0 (23/09/26 07:58:00), 50.0 (23/09/26 07:57:00), 50.0 (23/09/26 07:56:00)]."
+  },
+  {
+    "Name": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-29947828-2895-49c4-a4a8-87770aa8bc71",
+    "State": "ALARM",
+    "Enabled": true,
+    "Actions": [
+      "arn:aws:autoscaling:eu-central-1:746558295630:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-memory:createdBy/4a43e1f4-5f7b-477c-a291-0ce62e881624"
+    ],
+    "Reason": "Threshold Crossed: 15 datapoints were less than the threshold (63.0). The most recent datapoints which crossed the threshold: [8.3984375 (23/09/26 06:53:00), 8.3984375 (23/09/26 06:52:00), 8.3984375 (23/09/26 06:51:00), 8.3984375 (23/09/26 06:50:00), 8.3984375 (23/09/26 06:49:00)]."
+  },
+  {
+    "Name": "TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-afe9991d-11ac-42ed-9fac-653d85b86de2",
+    "State": "ALARM",
+    "Enabled": true,
+    "Actions": [
+      "arn:aws:autoscaling:eu-central-1:746558295630:scalingPolicy:b4d41876-b384-4953-ae70-c9c541ac4854:resource/ecs/service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server:policyName/collaborative-ai-dlc-yjs-server-review-cpu:createdBy/f839b4ba-2b59-42bd-90f7-9e1f4a9fd7ee"
+    ],
+    "Reason": "Threshold Crossed: 15 datapoints were less than the threshold (54.0). The most recent datapoints which crossed the threshold: [0.6710563898086548 (23/09/26 06:54:00), 0.6764640808105469 (23/09/26 06:53:00), 0.681615948677063 (23/09/26 06:52:00), 0.7213000059127808 (23/09/26 06:51:00), 0.7017257213592529 (23/09/26 06:50:00)]."
+  }
+]

@@ -1,0 +1,68 @@
+{
+  "startedAt": "2026-09-23T08:26:32.983Z",
+  "events": [
+    {
+      "at": "2026-09-23T08:27:18.818Z",
+      "event": "all-cold-document-clients-destroyed",
+      "documentId": "intent-review-d25cfc87-3f9b-48ab-9cd4-74bf79810326-cold-kill-5e4ded17-4994-43c2-bd77-181c1f62db25",
+      "marker": "checkpoint-only-25b4d6b3-f996-41b2-ab1e-db3b3f95da34",
+      "manifest": {
+        "leaseToken": "2cb3a4a3-4774-4df3-8b50-89a2c9eb1d09",
+        "snapshotKey": "yjs-documents/intent/d25cfc87-3f9b-48ab-9cd4-74bf79810326/8ab5e6aca64ed7c429ae492fbd710ceca61f58e91df4fa9c0f062f63bb6872c5/848ab85d-c177-429a-a3b6-9c50b12dd460.bin",
+        "ownerAddress": "ws://10.0.10.244:1234",
+        "snapshotVersion": "PV2QF.a.U8LDgxi8dAzBDyYaHIRMaDSf",
+        "documentId": "intent-review-d25cfc87-3f9b-48ab-9cd4-74bf79810326-cold-kill-5e4ded17-4994-43c2-bd77-181c1f62db25",
+        "ownerId": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fbee1cbce7c1431e9a4705c1d808452b",
+        "snapshotSequence": 1,
+        "snapshotBytes": 70,
+        "leaseUntil": 1790152068212
+      }
+    },
+    {
+      "at": "2026-09-23T08:27:19.712Z",
+      "event": "owner-stop-requested",
+      "task": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fbee1cbce7c1431e9a4705c1d808452b",
+      "lastStatus": "DEACTIVATING"
+    },
+    {
+      "at": "2026-09-23T08:29:30.257Z",
+      "event": "owner-stopped",
+      "task": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fbee1cbce7c1431e9a4705c1d808452b",
+      "status": "STOPPED",
+      "stoppedAt": "2026-09-23T10:29:30.063000+02:00",
+      "containers": [
+        {
+          "name": "yjs-server",
+          "exitCode": 137,
+          "lastStatus": "STOPPED"
+        }
+      ]
+    },
+    {
+      "at": "2026-09-23T08:29:30.656Z",
+      "event": "cold-recovery-passed",
+      "manifest": {
+        "snapshotKey": "yjs-documents/intent/d25cfc87-3f9b-48ab-9cd4-74bf79810326/8ab5e6aca64ed7c429ae492fbd710ceca61f58e91df4fa9c0f062f63bb6872c5/848ab85d-c177-429a-a3b6-9c50b12dd460.bin",
+        "ownerId": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/6a11f3a3b9d148c1b4d102554c0708c9",
+        "snapshotVersion": "PV2QF.a.U8LDgxi8dAzBDyYaHIRMaDSf",
+        "leaseToken": "3e4a8add-a1ce-417f-8a40-9b3925c237d5",
+        "ownerAddress": "ws://10.0.11.23:1234",
+        "documentId": "intent-review-d25cfc87-3f9b-48ab-9cd4-74bf79810326-cold-kill-5e4ded17-4994-43c2-bd77-181c1f62db25",
+        "snapshotSequence": 1,
+        "leaseUntil": 1790152200462,
+        "snapshotBytes": 70
+      },
+      "marker": "checkpoint-only-25b4d6b3-f996-41b2-ab1e-db3b3f95da34"
+    },
+    {
+      "at": "2026-09-23T08:30:51.506Z",
+      "event": "live-workload-recovered",
+      "writes": 191600,
+      "offlineWrites": 8937,
+      "reconnects": 1004,
+      "maxUnavailableMs": 61200
+    }
+  ],
+  "passed": true,
+  "finishedAt": "2026-09-23T08:30:51.507Z"
+}

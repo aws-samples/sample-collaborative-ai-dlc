@@ -1,0 +1,19 @@
+{
+  "at": "2026-09-23T07:50:19.573653+00:00",
+  "currentAssets": ["assets/IntentComposePage-CgNuUEVq.js", "assets/index-CHKxN758.js"],
+  "retainedPreviousAssets": [
+    {
+      "key": "assets/IntentComposePage-DCEJfxsL.js",
+      "bytes": 26822,
+      "cacheControl": null,
+      "etag": "\"f332adb1cd111d2287e227903a88c35d\""
+    },
+    {
+      "key": "assets/index-DG1RJq5z.js",
+      "bytes": 717923,
+      "cacheControl": null,
+      "etag": "\"4f343423a506a57283911e51e13b2a0f\""
+    }
+  ],
+  "passed": true
+}

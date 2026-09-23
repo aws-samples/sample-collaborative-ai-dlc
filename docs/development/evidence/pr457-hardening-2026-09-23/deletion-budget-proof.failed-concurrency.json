@@ -1,0 +1,102 @@
+{
+  "startedAt": "2026-09-23T09:18:12.624Z",
+  "fixture": {
+    "startedAt": "2026-09-23T09:16:55.118Z",
+    "documentRows": 4096,
+    "versions": 1005,
+    "deleteMarkers": 5,
+    "projectId": "f96d4ee5-a181-42b4-b835-99aec1ea731a",
+    "intentId": "aaae07c0-33f6-4026-a588-f7d3454948df",
+    "snapshotKey": "yjs-documents/intent/aaae07c0-33f6-4026-a588-f7d3454948df/pagination.bin",
+    "firstPage": {
+      "versions": 995,
+      "deleteMarkers": 5,
+      "isTruncated": true
+    },
+    "seeded": true,
+    "finishedAt": "2026-09-23T09:17:09.917Z"
+  },
+  "responses": [
+    {
+      "status": 409,
+      "durationMs": 13155,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:18:25.782Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 3971
+    },
+    {
+      "status": 409,
+      "durationMs": 10335,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:18:38.445Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 3716
+    },
+    {
+      "status": 409,
+      "durationMs": 13531,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:18:54.218Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 3333
+    },
+    {
+      "status": 409,
+      "durationMs": 10809,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:19:07.196Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 2951
+    },
+    {
+      "status": 409,
+      "durationMs": 11511,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:19:20.935Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 2568
+    },
+    {
+      "status": 409,
+      "durationMs": 10785,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:19:34.119Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 2186
+    },
+    {
+      "status": 409,
+      "durationMs": 10902,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:19:47.199Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 1802
+    },
+    {
+      "status": 409,
+      "durationMs": 13658,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:20:02.998Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 1299
+    },
+    {
+      "status": 409,
+      "durationMs": 10102,
+      "body": "{\"error\":\"Collaboration cleanup is in progress. Retry deletion shortly.\",\"code\":\"deletion_pending\"}",
+      "at": "2026-09-23T09:20:15.236Z",
+      "projectStillVisible": true,
+      "remainingDocuments": 917
+    },
+    {
+      "status": 500,
+      "durationMs": 4628,
+      "body": "{\"error\":\"Failed to delete 1 of 1 intent(s); project not removed. Retry the delete.\",\"intents\":[\"aaae07c0-33f6-4026-a588-f7d3454948df\"]}",
+      "at": "2026-09-23T09:20:22.013Z"
+    }
+  ],
+  "passed": false,
+  "failure": "Unexpected deletion response",
+  "finishedAt": "2026-09-23T09:20:22.014Z"
+}

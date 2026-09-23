@@ -1,0 +1,5449 @@
+{
+  "rows": [
+    {
+      "at": "2026-09-23T07:15:46.863Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 1016,
+      "connected": 37,
+      "clients": 40,
+      "writes": 0,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:47.865Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 2018,
+      "connected": 40,
+      "clients": 40,
+      "writes": 0,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:48.865Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 3018,
+      "connected": 40,
+      "clients": 40,
+      "writes": 40,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:49.866Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 4019,
+      "connected": 40,
+      "clients": 40,
+      "writes": 80,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:50.866Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 5019,
+      "connected": 40,
+      "clients": 40,
+      "writes": 120,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:51.867Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 6020,
+      "connected": 40,
+      "clients": 40,
+      "writes": 160,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:52.868Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 7021,
+      "connected": 40,
+      "clients": 40,
+      "writes": 200,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:53.870Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 8023,
+      "connected": 40,
+      "clients": 40,
+      "writes": 240,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:54.871Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 9025,
+      "connected": 40,
+      "clients": 40,
+      "writes": 280,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:55.873Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 10026,
+      "connected": 40,
+      "clients": 40,
+      "writes": 320,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:56.872Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 11025,
+      "connected": 40,
+      "clients": 40,
+      "writes": 360,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:57.874Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 12027,
+      "connected": 40,
+      "clients": 40,
+      "writes": 400,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:58.874Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 13027,
+      "connected": 40,
+      "clients": 40,
+      "writes": 440,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:15:59.876Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 14029,
+      "connected": 40,
+      "clients": 40,
+      "writes": 480,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:00.877Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 15030,
+      "connected": 40,
+      "clients": 40,
+      "writes": 520,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:01.878Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 16031,
+      "connected": 40,
+      "clients": 40,
+      "writes": 560,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:02.878Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 17031,
+      "connected": 40,
+      "clients": 40,
+      "writes": 600,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:03.878Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 18031,
+      "connected": 40,
+      "clients": 40,
+      "writes": 640,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:04.878Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 19031,
+      "connected": 40,
+      "clients": 40,
+      "writes": 680,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:05.879Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 20032,
+      "connected": 40,
+      "clients": 40,
+      "writes": 720,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:06.880Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 21033,
+      "connected": 40,
+      "clients": 40,
+      "writes": 760,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:07.880Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 22033,
+      "connected": 40,
+      "clients": 40,
+      "writes": 800,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:08.881Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 23034,
+      "connected": 40,
+      "clients": 40,
+      "writes": 840,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:09.882Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 24035,
+      "connected": 40,
+      "clients": 40,
+      "writes": 880,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:10.882Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 25035,
+      "connected": 40,
+      "clients": 40,
+      "writes": 920,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:11.883Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 26036,
+      "connected": 40,
+      "clients": 40,
+      "writes": 960,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:12.884Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 27037,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1000,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:13.883Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 28036,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1040,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:14.884Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 29037,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1080,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:15.886Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 30039,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1120,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:16.886Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 31039,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1160,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:17.888Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 32041,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1200,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:18.888Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 33041,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1240,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:19.890Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 34043,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1280,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:20.891Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 35044,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1320,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:21.891Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 36045,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1360,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:22.893Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 37046,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1400,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:23.893Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 38046,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1440,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:24.893Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 39046,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1480,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:25.895Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 40048,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1520,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:26.895Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 41048,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1560,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:27.896Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 42049,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1600,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:28.898Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 43051,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1640,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:29.898Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 44051,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1680,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:30.900Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 45053,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1720,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:31.900Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 46053,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1760,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:32.902Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 47055,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1800,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:33.902Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 48055,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1840,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:34.903Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 49056,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1880,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:35.904Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 50057,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1920,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:36.904Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 51057,
+      "connected": 40,
+      "clients": 40,
+      "writes": 1960,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:37.906Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 52059,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2000,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:38.907Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 53060,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2040,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:39.907Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 54060,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2080,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:40.907Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 55060,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2120,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:41.908Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 56061,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2160,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:42.910Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 57063,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2200,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:43.910Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 58063,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2240,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:44.911Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 59064,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2280,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:45.911Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 60064,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2320,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:46.913Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 61066,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2360,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:47.914Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 62067,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2400,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:48.915Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 63068,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2440,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:49.916Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 64069,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2480,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:50.917Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 65070,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2520,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:51.918Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 66071,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2560,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:52.919Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 67072,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2600,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:53.920Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 68073,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2640,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:54.920Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 69073,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2680,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:55.921Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 70074,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2720,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:56.921Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 71074,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2760,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:57.921Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 72074,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2800,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:58.923Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 73076,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2840,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:16:59.924Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 74077,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2880,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:00.925Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 75078,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2920,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:01.926Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 76079,
+      "connected": 40,
+      "clients": 40,
+      "writes": 2960,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:02.927Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 77080,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3000,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:03.928Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 78081,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3040,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:04.928Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 79082,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3080,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:05.930Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 80083,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3120,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:06.931Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 81084,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3160,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:07.932Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 82085,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3200,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:08.933Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 83086,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3240,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:09.934Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 84087,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3280,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:10.935Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 85088,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3320,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:11.936Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 86089,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3360,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:12.936Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 87089,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3400,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:13.937Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 88090,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3440,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:14.938Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 89091,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3480,
+      "offlineWrites": 0,
+      "reconnects": 0,
+      "closeCodes": {},
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:15.939Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 90092,
+      "connected": 38,
+      "clients": 40,
+      "writes": 3520,
+      "offlineWrites": 0,
+      "reconnects": 4,
+      "closeCodes": {
+        "1012": 4
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:16.940Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 91093,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3560,
+      "offlineWrites": 2,
+      "reconnects": 4,
+      "closeCodes": {
+        "1012": 4
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:17.940Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 92093,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3600,
+      "offlineWrites": 2,
+      "reconnects": 4,
+      "closeCodes": {
+        "1012": 4
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:18.941Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 93094,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3640,
+      "offlineWrites": 2,
+      "reconnects": 4,
+      "closeCodes": {
+        "1012": 4
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:19.942Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 94095,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3680,
+      "offlineWrites": 2,
+      "reconnects": 4,
+      "closeCodes": {
+        "1012": 4
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:20.943Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 95096,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3720,
+      "offlineWrites": 2,
+      "reconnects": 4,
+      "closeCodes": {
+        "1012": 4
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:21.944Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 96097,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3760,
+      "offlineWrites": 2,
+      "reconnects": 4,
+      "closeCodes": {
+        "1012": 4
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:22.945Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 97098,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3800,
+      "offlineWrites": 2,
+      "reconnects": 4,
+      "closeCodes": {
+        "1012": 4
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:23.946Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 98099,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3840,
+      "offlineWrites": 2,
+      "reconnects": 6,
+      "closeCodes": {
+        "1012": 6
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:24.948Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 99101,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3880,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:25.949Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 100102,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3920,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:26.950Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 101103,
+      "connected": 40,
+      "clients": 40,
+      "writes": 3960,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:27.951Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 102104,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4000,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:28.953Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 103106,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4040,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:29.954Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 104107,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4080,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:30.955Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 105108,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4120,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:31.956Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 106109,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4160,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:32.957Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 107110,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4200,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:33.958Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 108111,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4240,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:34.959Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 109112,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4280,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:35.960Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 110113,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4320,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:36.961Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 111114,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4360,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:37.961Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 112114,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4400,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:38.962Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 113115,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4440,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:39.963Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 114116,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4480,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:40.965Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 115118,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4520,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:41.966Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 116119,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4560,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:42.966Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 117119,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4600,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:43.968Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 118121,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4640,
+      "offlineWrites": 2,
+      "reconnects": 8,
+      "closeCodes": {
+        "1012": 8
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:44.968Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 119121,
+      "connected": 30,
+      "clients": 40,
+      "writes": 4680,
+      "offlineWrites": 2,
+      "reconnects": 22,
+      "closeCodes": {
+        "1012": 22
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:45.969Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 120122,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4720,
+      "offlineWrites": 12,
+      "reconnects": 26,
+      "closeCodes": {
+        "1012": 26
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:46.970Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 121123,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4760,
+      "offlineWrites": 12,
+      "reconnects": 26,
+      "closeCodes": {
+        "1012": 26
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:47.971Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 122124,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4800,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:48.972Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 123125,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4840,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:49.973Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 124126,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4880,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:50.974Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 125127,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4920,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:51.975Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 126128,
+      "connected": 40,
+      "clients": 40,
+      "writes": 4960,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:52.976Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 127129,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5000,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:53.977Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 128130,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5040,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:54.978Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 129131,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5080,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:55.979Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 130132,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5120,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:56.980Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 131133,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5160,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:57.981Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 132134,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5200,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:58.982Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 133135,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5240,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:17:59.982Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 134135,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5280,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:00.983Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 135136,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5320,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:01.984Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 136137,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5360,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:02.984Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 137137,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5400,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:03.985Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 138138,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5440,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:04.987Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 139140,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5480,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:05.987Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 140140,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5520,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:06.988Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 141141,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5560,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:07.988Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 142142,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5600,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:08.989Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 143142,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5640,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:09.989Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 144142,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5680,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:10.991Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 145144,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5720,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:11.991Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 146144,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5760,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:12.993Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 147146,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5800,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:13.994Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 148147,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5840,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:14.995Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 149148,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5880,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:15.996Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 150149,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5920,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:16.995Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 151148,
+      "connected": 40,
+      "clients": 40,
+      "writes": 5960,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:17.996Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 152149,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6000,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:18.998Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 153151,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6040,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:19.998Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 154151,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6080,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:20.999Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 155152,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6120,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:22.001Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 156154,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6160,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:23.003Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 157156,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6200,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:24.004Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 158157,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6240,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:25.006Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 159159,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6280,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:26.006Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 160159,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6320,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:27.008Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 161161,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6360,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:28.008Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 162161,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6400,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:29.008Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 163161,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6440,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:30.009Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 164162,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6480,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:31.009Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 165162,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6520,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:32.009Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 166162,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6560,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:33.009Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 167162,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6600,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:34.011Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 168164,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6640,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:35.012Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 169165,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6680,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:36.013Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 170166,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6720,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:37.014Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 171167,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6760,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:38.014Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 172167,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6800,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:39.016Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 173169,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6840,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:40.016Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 174169,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6880,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:41.016Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 175169,
+      "connected": 40,
+      "clients": 40,
+      "writes": 6920,
+      "offlineWrites": 12,
+      "reconnects": 28,
+      "closeCodes": {
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:42.017Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 176170,
+      "connected": 39,
+      "clients": 40,
+      "writes": 6960,
+      "offlineWrites": 12,
+      "reconnects": 37,
+      "closeCodes": {
+        "1006": 9,
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:43.018Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 177171,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7000,
+      "offlineWrites": 13,
+      "reconnects": 37,
+      "closeCodes": {
+        "1006": 9,
+        "1012": 28
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:44.018Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 178171,
+      "connected": 38,
+      "clients": 40,
+      "writes": 7040,
+      "offlineWrites": 13,
+      "reconnects": 39,
+      "closeCodes": {
+        "1006": 9,
+        "1012": 30
+      },
+      "upgradeErrors": {}
+    },
+    {
+      "at": "2026-09-23T07:18:45.020Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 179173,
+      "connected": 32,
+      "clients": 40,
+      "writes": 7080,
+      "offlineWrites": 15,
+      "reconnects": 53,
+      "closeCodes": {
+        "1006": 17,
+        "1012": 36
+      },
+      "upgradeErrors": {
+        "503": 8
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:46.021Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 180174,
+      "connected": 36,
+      "clients": 40,
+      "writes": 7120,
+      "offlineWrites": 23,
+      "reconnects": 57,
+      "closeCodes": {
+        "1006": 21,
+        "1012": 36
+      },
+      "upgradeErrors": {
+        "503": 12
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:47.022Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 181175,
+      "connected": 38,
+      "clients": 40,
+      "writes": 7160,
+      "offlineWrites": 27,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:48.023Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 182176,
+      "connected": 39,
+      "clients": 40,
+      "writes": 7200,
+      "offlineWrites": 29,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:49.024Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 183177,
+      "connected": 39,
+      "clients": 40,
+      "writes": 7240,
+      "offlineWrites": 30,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:50.024Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 184177,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7280,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:51.024Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 185177,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7320,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:52.026Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 186179,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7360,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:53.026Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 187179,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7400,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:54.028Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 188181,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7440,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:55.028Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 189181,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7480,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:56.030Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 190183,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7520,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:57.031Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 191184,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7560,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:58.032Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 192185,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7600,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:59.032Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 193185,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7640,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:00.034Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 194187,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7680,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:01.034Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 195187,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7720,
+      "offlineWrites": 31,
+      "reconnects": 60,
+      "closeCodes": {
+        "1006": 22,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:02.035Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 196188,
+      "connected": 38,
+      "clients": 40,
+      "writes": 7760,
+      "offlineWrites": 31,
+      "reconnects": 69,
+      "closeCodes": {
+        "1006": 31,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:03.037Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 197190,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7800,
+      "offlineWrites": 33,
+      "reconnects": 69,
+      "closeCodes": {
+        "1006": 31,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:04.038Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 198191,
+      "connected": 40,
+      "clients": 40,
+      "writes": 7840,
+      "offlineWrites": 33,
+      "reconnects": 69,
+      "closeCodes": {
+        "1006": 31,
+        "1012": 38
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:05.038Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 199191,
+      "connected": 31,
+      "clients": 40,
+      "writes": 7880,
+      "offlineWrites": 33,
+      "reconnects": 78,
+      "closeCodes": {
+        "1006": 32,
+        "1012": 46
+      },
+      "upgradeErrors": {
+        "503": 13
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:06.039Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 200192,
+      "connected": 30,
+      "clients": 40,
+      "writes": 7920,
+      "offlineWrites": 42,
+      "reconnects": 94,
+      "closeCodes": {
+        "1006": 46,
+        "1012": 48
+      },
+      "upgradeErrors": {
+        "503": 23
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:07.040Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 201193,
+      "connected": 33,
+      "clients": 40,
+      "writes": 7960,
+      "offlineWrites": 52,
+      "reconnects": 101,
+      "closeCodes": {
+        "1006": 52,
+        "1012": 49
+      },
+      "upgradeErrors": {
+        "503": 29
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:08.041Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 202194,
+      "connected": 37,
+      "clients": 40,
+      "writes": 8000,
+      "offlineWrites": 59,
+      "reconnects": 102,
+      "closeCodes": {
+        "1006": 53,
+        "1012": 49
+      },
+      "upgradeErrors": {
+        "503": 30
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:09.042Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 203195,
+      "connected": 39,
+      "clients": 40,
+      "writes": 8040,
+      "offlineWrites": 62,
+      "reconnects": 102,
+      "closeCodes": {
+        "1006": 53,
+        "1012": 49
+      },
+      "upgradeErrors": {
+        "503": 30
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:10.043Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 204196,
+      "connected": 39,
+      "clients": 40,
+      "writes": 8080,
+      "offlineWrites": 63,
+      "reconnects": 102,
+      "closeCodes": {
+        "1006": 53,
+        "1012": 49
+      },
+      "upgradeErrors": {
+        "503": 30
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:11.043Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 205196,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8120,
+      "offlineWrites": 64,
+      "reconnects": 102,
+      "closeCodes": {
+        "1006": 53,
+        "1012": 49
+      },
+      "upgradeErrors": {
+        "503": 30
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:12.044Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 206197,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8160,
+      "offlineWrites": 64,
+      "reconnects": 102,
+      "closeCodes": {
+        "1006": 53,
+        "1012": 49
+      },
+      "upgradeErrors": {
+        "503": 30
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:13.045Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 207198,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8200,
+      "offlineWrites": 64,
+      "reconnects": 102,
+      "closeCodes": {
+        "1006": 53,
+        "1012": 49
+      },
+      "upgradeErrors": {
+        "503": 30
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:14.046Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 208199,
+      "connected": 34,
+      "clients": 40,
+      "writes": 8240,
+      "offlineWrites": 64,
+      "reconnects": 112,
+      "closeCodes": {
+        "1006": 57,
+        "1012": 55
+      },
+      "upgradeErrors": {
+        "503": 34
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:15.047Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 209200,
+      "connected": 34,
+      "clients": 40,
+      "writes": 8280,
+      "offlineWrites": 70,
+      "reconnects": 126,
+      "closeCodes": {
+        "1006": 63,
+        "1012": 63
+      },
+      "upgradeErrors": {
+        "503": 40
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:16.048Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 210201,
+      "connected": 36,
+      "clients": 40,
+      "writes": 8320,
+      "offlineWrites": 76,
+      "reconnects": 130,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 63
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:17.048Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 211201,
+      "connected": 34,
+      "clients": 40,
+      "writes": 8360,
+      "offlineWrites": 80,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:18.049Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 212202,
+      "connected": 38,
+      "clients": 40,
+      "writes": 8400,
+      "offlineWrites": 86,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:19.050Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 213203,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8440,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:20.051Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 214204,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8480,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:21.052Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 215205,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8520,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:22.053Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 216206,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8560,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:23.054Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 217207,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8600,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:24.055Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 218208,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8640,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:25.056Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 219209,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8680,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:26.057Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 220210,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8720,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:27.058Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 221211,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8760,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:28.059Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 222212,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8800,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:29.060Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 223213,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8840,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:30.061Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 224214,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8880,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:31.062Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 225215,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8920,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:32.063Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 226216,
+      "connected": 40,
+      "clients": 40,
+      "writes": 8960,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:33.064Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 227217,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9000,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:34.065Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 228218,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9040,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:35.066Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 229219,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9080,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:36.067Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 230220,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9120,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:37.068Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 231221,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9160,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:38.069Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 232222,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9200,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:39.070Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 233223,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9240,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:40.071Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 234224,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9280,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:41.073Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 235226,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9320,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:42.074Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 236227,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9360,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:43.074Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 237227,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9400,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:44.075Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 238228,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9440,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:45.076Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 239229,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9480,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:46.077Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 240230,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9520,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:47.078Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 241231,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9560,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:48.079Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 242232,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9600,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:49.080Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 243233,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9640,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:50.081Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 244234,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9680,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:51.082Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 245235,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9720,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:52.083Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 246236,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9760,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:53.084Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 247237,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9800,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:54.085Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 248238,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9840,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:55.086Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 249239,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9880,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:56.087Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 250240,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9920,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:57.089Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 251242,
+      "connected": 40,
+      "clients": 40,
+      "writes": 9960,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:58.089Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 252242,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10000,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:59.091Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 253244,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10040,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:00.090Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 254243,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10080,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:01.091Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 255244,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10120,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:02.092Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 256245,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10160,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:03.093Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 257246,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10200,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:04.094Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 258247,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10240,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:05.095Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 259248,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10280,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:06.097Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 260250,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10320,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:07.098Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 261251,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10360,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:08.098Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 262251,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10400,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:09.100Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 263253,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10440,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:10.100Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 264253,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10480,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:11.100Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 265253,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10520,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:12.101Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 266254,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10560,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:13.101Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 267254,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10600,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:14.103Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 268256,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10640,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:15.104Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 269257,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10680,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:16.104Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 270257,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10720,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:17.104Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 271257,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10760,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:18.105Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 272258,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10800,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:19.105Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 273258,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10840,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:20.106Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 274259,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10880,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:21.107Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 275260,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10920,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:22.108Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 276261,
+      "connected": 40,
+      "clients": 40,
+      "writes": 10960,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:23.110Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 277263,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11000,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:24.111Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 278264,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11040,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:25.111Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 279264,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11080,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:26.112Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 280265,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11120,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:27.113Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 281266,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11160,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:28.114Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 282267,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11200,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:29.115Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 283268,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11240,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:30.115Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 284268,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11280,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:31.115Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 285268,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11320,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:32.116Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 286269,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11360,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:33.117Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 287270,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11400,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:34.118Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 288271,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11440,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:35.119Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 289272,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11480,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:36.119Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 290272,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11520,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:37.120Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 291273,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11560,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:38.121Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 292274,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11600,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:39.122Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 293275,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11640,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:40.123Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 294276,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11680,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:41.124Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 295277,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11720,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:42.125Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 296278,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11760,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:43.127Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 297280,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11800,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:44.127Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 298280,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11840,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:45.128Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 299281,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11880,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:46.128Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 300282,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11920,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:47.130Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 301283,
+      "connected": 40,
+      "clients": 40,
+      "writes": 11960,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:48.130Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 302283,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12000,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:49.131Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 303284,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12040,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:50.132Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 304285,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12080,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:51.134Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 305287,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12120,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:52.134Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 306287,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12160,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:53.135Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 307288,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12200,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:54.136Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 308289,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12240,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:55.136Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 309289,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12280,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:56.137Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 310290,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12320,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:57.139Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 311292,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12360,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:58.138Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 312291,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12400,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:59.140Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 313293,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12440,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:00.141Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 314294,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12480,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:01.141Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 315294,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12520,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:02.142Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 316295,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12560,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:03.143Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 317296,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12600,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:04.144Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 318297,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12640,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:05.145Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 319298,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12680,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:06.146Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 320299,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12720,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:07.146Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 321299,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12760,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:08.148Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 322301,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12800,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:09.149Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 323302,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12840,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:10.149Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 324302,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12880,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:11.150Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 325303,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12920,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:12.151Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 326304,
+      "connected": 40,
+      "clients": 40,
+      "writes": 12960,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:13.153Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 327306,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13000,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:14.154Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 328307,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13040,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:15.154Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 329307,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13080,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:16.155Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 330308,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13120,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:17.156Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 331309,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13160,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:18.157Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 332310,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13200,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:19.157Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 333310,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13240,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:20.158Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 334311,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13280,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:21.158Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 335311,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13320,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:22.158Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 336311,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13360,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:23.159Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 337312,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13400,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:24.160Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 338313,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13440,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:25.160Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 339313,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13480,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:26.161Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 340314,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13520,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:27.162Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 341315,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13560,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:28.163Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 342316,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13600,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:29.164Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 343317,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13640,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:30.164Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 344317,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13680,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:31.164Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 345317,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13720,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:32.165Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 346318,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13760,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:33.166Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 347319,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13800,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:34.167Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 348320,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13840,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:35.168Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 349321,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13880,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:36.169Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 350322,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13920,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:37.169Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 351322,
+      "connected": 40,
+      "clients": 40,
+      "writes": 13960,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:38.169Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 352322,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14000,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:39.170Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 353323,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14040,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:40.170Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 354323,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14080,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:41.171Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 355324,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14120,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:42.172Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 356325,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14160,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:43.173Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 357326,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14200,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:44.174Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 358327,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14240,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:45.175Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 359328,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14280,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:46.176Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 360329,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14320,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:47.177Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 361330,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14360,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    },
+    {
+      "at": "2026-09-23T07:21:47.345Z",
+      "run": "f115baea-6043-474d-b088-bf0de9b224d9",
+      "elapsedMs": 361498,
+      "connected": 40,
+      "clients": 40,
+      "writes": 14360,
+      "offlineWrites": 88,
+      "reconnects": 136,
+      "closeCodes": {
+        "1006": 67,
+        "1012": 69
+      },
+      "upgradeErrors": {
+        "503": 44
+      }
+    }
+  ]
+}

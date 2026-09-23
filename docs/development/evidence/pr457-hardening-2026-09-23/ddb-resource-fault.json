@@ -1,0 +1,67 @@
+{
+  "startedAt": "2026-09-23T08:17:56.627Z",
+  "tables": [
+    "collaborative-ai-dlc-yjs-documents-review",
+    "collaborative-ai-dlc-yjs-members-review"
+  ],
+  "events": [
+    {
+      "at": "2026-09-23T08:17:58.439Z",
+      "action": "deny-installed",
+      "table": "collaborative-ai-dlc-yjs-documents-review",
+      "revision": "1790151478338",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "PR457TemporaryYjsRoleDenial",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "dynamodb:*",
+            "Resource": "arn:aws:dynamodb:eu-central-1:746558295630:table/collaborative-ai-dlc-yjs-documents-review",
+            "Condition": {
+              "ArnEquals": {
+                "aws:PrincipalArn": "arn:aws:iam::746558295630:role/collaborative-ai-dlc-yjs-task-review"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-23T08:18:00.477Z",
+      "action": "deny-installed",
+      "table": "collaborative-ai-dlc-yjs-members-review",
+      "revision": "1790151480389",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "PR457TemporaryYjsRoleDenial",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "dynamodb:*",
+            "Resource": "arn:aws:dynamodb:eu-central-1:746558295630:table/collaborative-ai-dlc-yjs-members-review",
+            "Condition": {
+              "ArnEquals": {
+                "aws:PrincipalArn": "arn:aws:iam::746558295630:role/collaborative-ai-dlc-yjs-task-review"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-23T08:19:01.405Z",
+      "action": "deny-removed",
+      "arn": "arn:aws:dynamodb:eu-central-1:746558295630:table/collaborative-ai-dlc-yjs-documents-review"
+    },
+    {
+      "at": "2026-09-23T08:19:02.340Z",
+      "action": "deny-removed",
+      "arn": "arn:aws:dynamodb:eu-central-1:746558295630:table/collaborative-ai-dlc-yjs-members-review"
+    }
+  ],
+  "installedAt": "2026-09-23T08:18:00.478Z",
+  "removedAt": "2026-09-23T08:19:02.341Z"
+}

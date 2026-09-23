@@ -1,0 +1,46 @@
+{
+  "startedAt": "2026-09-23T09:12:21.868Z",
+  "artifactId": "pr457-proof-989eb907db",
+  "checks": [
+    {
+      "action": "writer-replace",
+      "before": {
+        "editRevision": "268616bf-add4-473c-8a9d-c46da18df2be",
+        "collaborationEpoch": "proof-replaced"
+      },
+      "after": {
+        "editRevision": "268616bf-add4-473c-8a9d-c46da18df2be",
+        "collaborationEpoch": "4f85c2e7-0114-4650-a4dc-7b17e260ba43"
+      },
+      "stale": {
+        "status": 409,
+        "body": {
+          "error": "Artifact content was replaced — reload before editing",
+          "code": "artifact_replaced"
+        }
+      },
+      "content": "agent replacement"
+    },
+    {
+      "action": "quorum-replace",
+      "before": {
+        "editRevision": "268616bf-add4-473c-8a9d-c46da18df2be",
+        "collaborationEpoch": "4f85c2e7-0114-4650-a4dc-7b17e260ba43"
+      },
+      "after": {
+        "editRevision": "e3c7b524-3037-4b56-a4d2-92ad43cfd3ed",
+        "collaborationEpoch": "2d664162-a552-441d-9366-140f980a32fd"
+      },
+      "stale": {
+        "status": 409,
+        "body": {
+          "error": "Artifact content was replaced — reload before editing",
+          "code": "artifact_replaced"
+        }
+      },
+      "content": "quorum replacement"
+    }
+  ],
+  "passed": true,
+  "finishedAt": "2026-09-23T09:12:25.147Z"
+}

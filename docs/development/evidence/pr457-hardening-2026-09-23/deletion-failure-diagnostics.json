@@ -1,0 +1,44 @@
+{
+  "timeout": {
+    "cloudWatchReport": "2026-09-23T09:13:46 REPORT RequestId: 26cc9704-7e48-4801-b60f-d18f1c80214b\tDuration: 29389.44 ms\tBilled Duration: 29390 ms\tMemory Size: 128 MB\tMax Memory Used: 120 MB",
+    "completion": {
+      "level": "INFO",
+      "message": "Project deleted",
+      "timestamp": "2026-09-23T09:13:46.511Z",
+      "service": "collaborative-aidlc",
+      "cold_start": false,
+      "function_arn": "arn:aws:lambda:eu-central-1:746558295630:function:collaborative-ai-dlc-projects-review",
+      "function_memory_size": "128",
+      "function_name": "collaborative-ai-dlc-projects-review",
+      "function_request_id": "26cc9704-7e48-4801-b60f-d18f1c80214b",
+      "sampling_rate": 0,
+      "xray_trace_id": "1-6ab3982d-1c7022be7db133396e1b625d",
+      "component": "projects",
+      "projectId": "26d39aa6-f0be-4b87-84cb-227948122466",
+      "userId": "736488b2-40f1-701a-a50b-8d0f1ed0363b",
+      "actor": "pr457-hardening-86d6422ca0@example.com",
+      "intentsPurged": 1
+    }
+  },
+  "cursorRace": {
+    "timestamp": "2026-09-23T09:20:21.749Z",
+    "message": "Project delete: intent cascade failed",
+    "function_request_id": "946e69ad-62f4-430c-bb4b-e2731804bf43",
+    "projectId": "f96d4ee5-a181-42b4-b835-99aec1ea731a",
+    "intentId": "aaae07c0-33f6-4026-a588-f7d3454948df",
+    "error": {
+      "name": "ConditionalCheckFailedException",
+      "location": "file:///var/task/index.mjs:36416",
+      "message": "The conditional request failed",
+      "stack": "ConditionalCheckFailedException: The conditional request failed\n    at AwsJson1_0Protocol.handleError (file:///var/task/index.mjs:36416:27)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async AwsJson1_0Protocol.deserializeResponse (file:///var/task/index.mjs:28225:11)\n    at async file:///var/task/index.mjs:20562:24\n    at async file:///var/task/index.mjs:53212:32\n    at async file:///var/task/index.mjs:28878:22\n    at async file:///var/task/index.mjs:29450:40\n    at async file:///var/task/index.mjs:30347:26\n    at async revokeYjsScope (file:///var/task/index.mjs:104953:7)\n    at async deleteIntentCascade (file:///var/task/index.mjs:105075:3)",
+      "$fault": "client",
+      "$metadata": {
+        "httpStatusCode": 400,
+        "requestId": "2I8JFH38M9KJTIVN23IOFLAV3NVV4KQNSO5AEMVJF66Q9ASUAAJG",
+        "attempts": 1,
+        "totalRetryDelay": 0
+      },
+      "__type": "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException"
+    }
+  }
+}
