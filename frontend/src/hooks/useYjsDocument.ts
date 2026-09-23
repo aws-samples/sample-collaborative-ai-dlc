@@ -15,6 +15,12 @@ import {
   type RealtimeScopeTarget,
 } from '../lib/realtimeToken';
 
+// Connection state belongs to a document, including while an old document is
+// finishing its final save after navigation to a new one.
+const useDocumentRef = <T>(document: Y.Doc, initial: T) =>
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useMemo(() => ({ current: initial }), [document]);
+
 export interface AwarenessUser {
   name: string;
   color: string;
@@ -48,20 +54,20 @@ export function useYjsDocument(
   const setSynced = useCallback((value: boolean) => setSyncState({ doc, synced: value }), [doc]);
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
   const [localChange, setLocalChange] = useState({ doc, revision: 0 });
-  const wsRef = useRef<WebSocket | null>(null);
-  const readySocketRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<number | null>(null);
-  const handshakeTimerRef = useRef<number | null>(null);
-  const tokenRefreshRef = useRef<number | null>(null);
-  const persistenceRef = useRef(false);
-  const flushSequenceRef = useRef(0);
-  const pendingFlushRef = useRef<{
+  const wsRef = useDocumentRef<WebSocket | null>(doc, null);
+  const readySocketRef = useDocumentRef<WebSocket | null>(doc, null);
+  const reconnectTimeoutRef = useDocumentRef<number | null>(doc, null);
+  const handshakeTimerRef = useDocumentRef<number | null>(doc, null);
+  const tokenRefreshRef = useDocumentRef<number | null>(doc, null);
+  const persistenceRef = useDocumentRef(doc, false);
+  const flushSequenceRef = useDocumentRef(doc, 0);
+  const pendingFlushRef = useDocumentRef<{
     id: number;
     resolve: () => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
-  } | null>(null);
-  const flushQueueRef = useRef<Promise<void>>(Promise.resolve());
+  } | null>(doc, null);
+  const flushQueueRef = useDocumentRef<Promise<void>>(doc, Promise.resolve());
   const pendingDestroyRef = useRef<{
     doc: Y.Doc;
     awareness: awarenessProtocol.Awareness;
@@ -70,7 +76,37 @@ export function useYjsDocument(
   // Epoch seconds of the scope token backing the current socket. Used by the
   // visibility/focus backstop to tell whether the proactive refresh timer
   // (below) was throttled while the tab was hidden.
-  const tokenExpRef = useRef<number | null>(null);
+  const tokenExpRef = useDocumentRef<number | null>(doc, null);
+
+  const lifetime = useMemo(
+    () => ({
+      document: doc,
+      closing: false,
+      settled: Promise.resolve() as Promise<unknown>,
+      saves: new Set<() => Promise<void>>(),
+    }),
+    [doc],
+  );
+  const beforeDisconnect = useCallback(
+    (save: () => Promise<void>) => {
+      lifetime.saves.add(save);
+      return () => {
+        lifetime.saves.delete(save);
+      };
+    },
+    [lifetime],
+  );
+
+  useEffect(() => {
+    if (userName) {
+      const color = userColor || '#888888';
+      awareness.setLocalStateField('user', {
+        name: userName,
+        color,
+        colorLight: /^#[\da-f]{6}$/i.test(color) ? `${color}33` : color,
+      });
+    }
+  }, [awareness, userName, userColor]);
 
   useEffect(() => {
     if (!documentId) {
@@ -80,6 +116,8 @@ export function useYjsDocument(
     }
 
     let cancelled = false;
+    let retiring = false;
+    lifetime.closing = false;
     let reconnectAttempts = 0;
     let awarenessTimer: ReturnType<typeof setTimeout> | null = null;
     const awarenessProt = awareness;
@@ -98,7 +136,7 @@ export function useYjsDocument(
 
     let connect: () => Promise<void>;
     const scheduleReconnect = () => {
-      if (cancelled || reconnectTimeoutRef.current !== null) return;
+      if (cancelled || retiring || reconnectTimeoutRef.current !== null) return;
       const maximum = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
       const delay = Math.floor(maximum * (0.5 + Math.random() * 0.5));
       reconnectAttempts = Math.min(reconnectAttempts + 1, 5);
@@ -114,7 +152,7 @@ export function useYjsDocument(
     };
 
     connect = async () => {
-      if (cancelled) return;
+      if (cancelled || retiring) return;
 
       // Fetch a fresh Cognito ID token on every (re)connect. Cognito ID
       // tokens expire after 1 hour, so reusing a captured token across
@@ -131,7 +169,7 @@ export function useYjsDocument(
         scheduleReconnect();
         return;
       }
-      if (cancelled) return;
+      if (cancelled || retiring) return;
       if (!session?.idToken) {
         console.error('Yjs: no Cognito session, cannot connect');
         scheduleReconnect();
@@ -146,7 +184,7 @@ export function useYjsDocument(
         scheduleReconnect();
         return;
       }
-      if (cancelled) return;
+      if (cancelled || retiring) return;
 
       const yjsUrl = realtimeService.getYjsUrl(documentId, session.idToken, docToken.token);
       let ws;
@@ -166,15 +204,6 @@ export function useYjsDocument(
           ws.close();
         }
       }, 15_000);
-
-      if (userName) {
-        const color = userColor || '#888888';
-        awarenessProt.setLocalStateField('user', {
-          name: userName,
-          color,
-          colorLight: /^#[\da-f]{6}$/i.test(color) ? `${color}33` : color,
-        });
-      }
 
       let initialSyncDone = false;
 
@@ -238,7 +267,7 @@ export function useYjsDocument(
       };
 
       ws.onmessage = (event) => {
-        if (cancelled || wsRef.current !== ws) return;
+        if (cancelled || (wsRef.current !== ws && !retiring)) return;
         const data = new Uint8Array(event.data);
         try {
           const decoder = decoding.createDecoder(data);
@@ -396,7 +425,18 @@ export function useYjsDocument(
     connect().catch((e) => console.error('Yjs initial connect failed:', e));
 
     return () => {
-      cancelled = true;
+      retiring = true;
+      lifetime.closing = true;
+      const retiringSocket = wsRef.current;
+      // Start registered saves while this connection can still acknowledge them.
+      // Keeping their entire REST promise alive also keeps the source Y.Doc alive.
+      const saves = [...lifetime.saves].map((save) => {
+        try {
+          return save();
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      });
       doc.off('update', updateHandler);
       awarenessProt.off('change', awarenessHandler);
       awarenessProt.off('update', awarenessUpdateHandler);
@@ -417,20 +457,30 @@ export function useYjsDocument(
         tokenRefreshRef.current = null;
       }
       tokenExpRef.current = null;
-      if (pendingFlushRef.current) {
-        clearTimeout(pendingFlushRef.current.timer);
-        pendingFlushRef.current.reject(new Error('Collaboration closed before saving'));
-        pendingFlushRef.current = null;
-      }
-      wsRef.current?.close();
-      wsRef.current = null;
-      readySocketRef.current = null;
+      let timeout: ReturnType<typeof setTimeout>;
+      const deadline = new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, 30_000);
+      });
+      lifetime.settled = Promise.race([Promise.allSettled(saves), deadline]).finally(() => {
+        clearTimeout(timeout);
+        cancelled = true;
+        if (pendingFlushRef.current) {
+          clearTimeout(pendingFlushRef.current.timer);
+          pendingFlushRef.current.reject(new Error('Collaboration closed before saving'));
+          pendingFlushRef.current = null;
+        }
+        retiringSocket?.close();
+        if (wsRef.current === retiringSocket) {
+          wsRef.current = null;
+          readySocketRef.current = null;
+        }
+      });
     };
     // scopeTarget is intentionally not a dep: it is derived from documentId
     // (same identity across renders for a given doc) and re-running on a new
     // object reference would needlessly recycle the socket.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, doc, awareness, userName, userColor, setSynced]);
+  }, [documentId, doc, awareness, setSynced]);
 
   // Registered after the connection effect so its cleanup runs only after the
   // socket listeners have released the old document and awareness instance.
@@ -445,8 +495,10 @@ export function useYjsDocument(
 
     return () => {
       const timer = setTimeout(() => {
-        awareness.destroy();
-        doc.destroy();
+        void lifetime.settled.finally(() => {
+          awareness.destroy();
+          doc.destroy();
+        });
         const current = pendingDestroyRef.current;
         if (current?.doc === doc && current.awareness === awareness && current.timer === timer) {
           pendingDestroyRef.current = null;
@@ -458,7 +510,7 @@ export function useYjsDocument(
         timer,
       };
     };
-  }, [awareness, doc]);
+  }, [awareness, doc, lifetime]);
 
   const setCursor = useCallback(
     (index: number, length: number = 0) => {
@@ -472,7 +524,7 @@ export function useYjsDocument(
     const operation = flushQueueRef.current
       .catch(() => {})
       .then(() => {
-        if (currentDocRef.current !== expectedDoc)
+        if (currentDocRef.current !== expectedDoc && !lifetime.closing)
           throw new Error('Collaboration document changed');
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN || readySocketRef.current !== ws) {
@@ -497,8 +549,26 @@ export function useYjsDocument(
       });
     flushQueueRef.current = operation;
     return operation;
-  }, [doc]);
+  }, [
+    doc,
+    lifetime,
+    wsRef,
+    readySocketRef,
+    persistenceRef,
+    flushSequenceRef,
+    flushQueueRef,
+    pendingFlushRef,
+  ]);
 
   const localRevision = localChange.doc === doc ? localChange.revision : 0;
-  return { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument };
+  return {
+    doc,
+    synced,
+    awareness,
+    remoteUsers,
+    setCursor,
+    localRevision,
+    flushDocument,
+    beforeDisconnect,
+  };
 }

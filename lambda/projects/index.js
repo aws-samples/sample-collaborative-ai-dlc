@@ -1907,6 +1907,7 @@ export const handler = async (event, context) => {
               table: process.env.YJS_DOCUMENTS_TABLE,
               type,
               id: scopeId,
+              bucket: process.env.ARTIFACTS_BUCKET,
             });
           }
           const execs = await store.listProjectExecutions({ projectId, limit: 1000 });
@@ -1995,6 +1996,11 @@ export const handler = async (event, context) => {
         return response(405, { error: 'Method not allowed' });
     }
   } catch (err) {
+    if (err?.code === 'YJS_CLEANUP_PENDING')
+      return response(409, {
+        error: 'Collaboration cleanup is in progress. Retry deletion shortly.',
+        code: 'deletion_pending',
+      });
     logger.error('Unhandled error', err);
     return response(500, {
       error: 'Internal server error',

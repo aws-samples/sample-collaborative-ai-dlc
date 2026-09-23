@@ -25,8 +25,16 @@ export function useCollaborativeArtifact<T extends Record<string, string>>(
   onAutoSave?: (values: T) => Promise<void>,
 ) {
   const docId = isEditing ? `${artifactType}-${sprintId}-${artifactId}` : null;
-  const { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument } =
-    useYjsDocument(docId, userName);
+  const {
+    doc,
+    synced,
+    awareness,
+    remoteUsers,
+    setCursor,
+    localRevision,
+    flushDocument,
+    beforeDisconnect,
+  } = useYjsDocument(docId, userName);
   const [values, setValues] = useState<T>({} as T);
 
   // Stabilize fields reference so it doesn't cause effect re-runs. fields is a
@@ -122,6 +130,7 @@ export function useCollaborativeArtifact<T extends Record<string, string>>(
     enabled: isEditing && synced && !!onAutoSave,
     skipInitial: true,
     resetKey: doc,
+    beforeDisconnect,
   });
 
   return {

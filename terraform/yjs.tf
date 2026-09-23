@@ -1,6 +1,7 @@
 variable "yjs_scaling" {
   description = "Yjs worker sizing, safeguards, and opt-in document sharding. Autoscaling requires cluster_enabled."
   type = object({
+    mode_transition          = optional(bool, false)
     cluster_enabled          = optional(bool, false)
     cpu                      = optional(number)
     memory                   = optional(number)

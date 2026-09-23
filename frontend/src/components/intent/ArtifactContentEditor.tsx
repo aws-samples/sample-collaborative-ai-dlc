@@ -36,20 +36,25 @@ export function ArtifactContentEditor({
       userName,
       userColor: generateColor(userName || artifact.id),
       enabled: true,
-      onAutoSave: async (value) => {
-        try {
-          await intentsService.updateArtifactContent(
-            projectId,
-            intentId,
-            artifact.id,
-            value,
-            artifact.collaborationEpoch ?? null,
-          );
-          setSaveError(null);
-        } catch (err) {
-          setSaveError(err instanceof Error ? err.message : 'Save failed');
-          throw err;
-        }
+      readSaveVersion: async () => {
+        const current = await intentsService.artifactEditState(projectId, intentId, artifact.id);
+        if (current.collaborationEpoch !== (artifact.collaborationEpoch ?? null))
+          throw new Error('Artifact was replaced — reload before editing');
+        return current.editRevision;
+      },
+      onSaveError: (error) => {
+        setSaveError(error instanceof Error ? error.message : 'Save failed');
+      },
+      onAutoSave: async (value, version) => {
+        await intentsService.updateArtifactContent(
+          projectId,
+          intentId,
+          artifact.id,
+          value,
+          artifact.collaborationEpoch ?? null,
+          version ?? null,
+        );
+        setSaveError(null);
       },
     });
 

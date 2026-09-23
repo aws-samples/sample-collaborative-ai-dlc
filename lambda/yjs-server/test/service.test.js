@@ -554,3 +554,90 @@ describe('document ownership and recovery', () => {
       .toBe(true);
   });
 });
+
+describe('independent coordinator progress', () => {
+  it('refreshes membership while renewals stall and distinguishes liveness from readiness', async () => {
+    const store = new MemoryStore();
+    let now = Date.now();
+    const server = await start({ store, id: 'a', clock: () => now });
+    await join(server);
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(store, 'renew').mockImplementationOnce(() => gate);
+    const renewals = server.cluster.singleFlight('renewals', () => server.cluster.renewLeases());
+    try {
+      now += 26_000;
+      expect(server.cluster.ready).toBe(false);
+      await server.cluster.singleFlight('membership', () => server.cluster.refreshMembership());
+      expect(server.cluster.ready).toBe(true);
+      // A membership outage closes admission, but does not make a running
+      // event loop unhealthy to ECS/ALB and trigger fleet replacement.
+      vi.spyOn(store, 'register').mockRejectedValueOnce(new Error('DynamoDB unavailable'));
+      await expect(server.cluster.refreshMembership()).rejects.toThrow();
+      const url = `http://127.0.0.1:${server.server.address().port}`;
+      expect((await fetch(url + '/readyz')).status).toBe(503);
+      expect((await fetch(url + '/livez')).status).toBe(200);
+      expect(server.cluster.owns(server.rooms.rooms.get(DOCUMENT).lease)).toBe(false);
+    } finally {
+      release();
+      await renewals;
+    }
+  });
+});
+
+describe('capacity-aware ownership', () => {
+  it('uses a spare worker and retains that owner while the preferred worker is full', async () => {
+    const store = new MemoryStore();
+    const a = await start({ store, id: 'a', config: { maxDocuments: 1 } });
+    const b = await start({ store, id: 'b', config: { maxDocuments: 1 } });
+    await a.cluster.tick();
+    await b.cluster.tick();
+    const names = Array.from({ length: 100 }, (_, i) => `${DOCUMENT}-capacity-${i}`)
+      .filter((name) => ownerFor(name, a.cluster.members).id === 'a')
+      .slice(0, 2);
+    const first = await join(a, names[0]);
+    await a.cluster.refreshMembership();
+    await b.cluster.refreshMembership();
+    const second = await join(b, names[1]);
+    expect(a.rooms.rooms.size).toBe(1);
+    expect(b.rooms.rooms.size).toBe(1);
+    expect((await store.get(names[1])).ownerId).toBe('b');
+    await a.cluster.tick();
+    await b.cluster.tick();
+    await a.cluster.tick();
+    await b.cluster.tick();
+    expect((await store.get(names[1])).ownerId).toBe('b');
+    expect(second.ws.readyState).toBe(1);
+    first.doc.getText('content').insert(0, 'first owner');
+    second.doc.getText('content').insert(0, 'spare capacity');
+    await Promise.all([first.flush(), second.flush()]);
+  });
+
+  it('reserves the last document slot before a slow claim completes', async () => {
+    const store = new MemoryStore();
+    const server = await start({ store, id: 'a', config: { maxDocuments: 1 } });
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const original = store.claim.bind(store);
+    const claim = vi.spyOn(store, 'claim').mockImplementationOnce(async (...args) => {
+      await gate;
+      return original(...args);
+    });
+    const first = join(server, `${DOCUMENT}-first`);
+    try {
+      await expect.poll(() => claim.mock.calls.length).toBe(1);
+      await expect(join(server, `${DOCUMENT}-second`)).rejects.toThrow('503');
+      expect(claim).toHaveBeenCalledTimes(1);
+      expect(server.cluster.claimsInFlight).toBe(1);
+    } finally {
+      release();
+    }
+    await first;
+    expect(server.cluster.claimsInFlight).toBe(0);
+    expect(server.cluster.leases.size).toBe(1);
+  });
+});

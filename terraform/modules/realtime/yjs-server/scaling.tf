@@ -101,6 +101,7 @@ resource "aws_cloudwatch_metric_alarm" "workers" {
     event_loop  = { metric = "EventLoopDelayP99Ms", statistic = "Maximum", threshold = 200 }
     persistence = { metric = "PersistenceErrors", statistic = "Sum", threshold = 0 }
     rejected    = { metric = "RejectedConnections", statistic = "Sum", threshold = 0 }
+    readiness   = { metric = "NotReady", statistic = "Maximum", threshold = 0 }
   }
   alarm_name          = "${local.metric_service}-${each.key}"
   alarm_description   = "Yjs worker pressure or failed checkpoints. Inspect per-task logs and document distribution before raising limits."

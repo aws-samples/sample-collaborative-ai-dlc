@@ -17,12 +17,20 @@ const fixture = (failure) => {
   const ddb = {
     send: vi.fn(async (command) => {
       if (command.constructor.name === 'GetCommand') return { Item: { ...committed } };
-      if (command.constructor.name === 'TransactWriteCommand') {
-        const values = command.input.TransactItems[1].Update.ExpressionAttributeValues;
-        if (failure === 'response-lost') committed = { ...previous, snapshotKey: values[':key'] };
+      if (
+        command.constructor.name === 'TransactWriteCommand' ||
+        command.constructor.name === 'UpdateCommand'
+      ) {
+        const values =
+          command.input.ExpressionAttributeValues ??
+          command.input.TransactItems[1].Update.ExpressionAttributeValues;
+        if (['response-lost', 'committed-then-conditional'].includes(failure))
+          committed = { ...previous, snapshotKey: values[':key'] };
         if (failure)
           throw Object.assign(new Error('Storage failure'), {
-            name: failure === 'cancelled' ? 'TransactionCanceledException' : 'TimeoutError',
+            name: ['cancelled', 'committed-then-conditional'].includes(failure)
+              ? 'ConditionalCheckFailedException'
+              : 'TimeoutError',
           });
         return {};
       }
@@ -54,52 +62,44 @@ const fixture = (failure) => {
 };
 
 describe('AWS checkpoint failures', () => {
-  it.each(['claim', 'renew', 'save'])(
-    'retries a transient %s transaction cancellation',
-    async (operation) => {
-      const { store, previous, ddb, s3 } = fixture();
-      const original = ddb.send.getMockImplementation();
-      let rejected = false;
-      ddb.send.mockImplementation(async (command) => {
-        if (command.constructor.name === 'TransactWriteCommand' && !rejected) {
-          rejected = true;
-          throw Object.assign(new Error('Transaction conflict'), {
-            name: 'TransactionCanceledException',
-            CancellationReasons: [{ Code: 'TransactionConflict' }, { Code: 'None' }],
-          });
-        }
-        return original(command);
-      });
-      if (operation === 'claim') await store.claim(previous, 1000);
-      if (operation === 'renew') await store.renew(previous, 31_000, 1000);
-      if (operation === 'save') await store.save(previous, new Uint8Array([1]), 1000);
-      const transactions = ddb.send.mock.calls
-        .map(([command]) => command)
-        .filter((command) => command.constructor.name === 'TransactWriteCommand');
-      expect(transactions).toHaveLength(2);
-      expect(transactions[0].input.ClientRequestToken).toBeTruthy();
-      expect(transactions[1].input).toEqual(transactions[0].input);
-      if (operation === 'save') {
-        expect(
-          s3.send.mock.calls.filter(([c]) => c.constructor.name === 'PutObjectCommand'),
-        ).toHaveLength(1);
-      }
-    },
-  );
-
-  it('avoids conflicting parallel transactions on the shared intent guard', async () => {
-    const { store, previous, ddb } = fixture();
-    let active = 0;
-    let conflicts = 0;
-    ddb.send.mockImplementation(async () => {
-      if (active) {
-        conflicts++;
-        throw Object.assign(new Error('Shared scope contention'), {
+  it.each(['claim'])('retries a transient %s transaction cancellation', async (operation) => {
+    const { store, previous, ddb, s3 } = fixture();
+    const original = ddb.send.getMockImplementation();
+    let rejected = false;
+    ddb.send.mockImplementation(async (command) => {
+      if (command.constructor.name === 'TransactWriteCommand' && !rejected) {
+        rejected = true;
+        throw Object.assign(new Error('Transaction conflict'), {
           name: 'TransactionCanceledException',
           CancellationReasons: [{ Code: 'TransactionConflict' }, { Code: 'None' }],
         });
       }
+      return original(command);
+    });
+    if (operation === 'claim') await store.claim(previous, 1000);
+    if (operation === 'renew') await store.renew(previous, 31_000, 1000);
+    if (operation === 'save') await store.save(previous, new Uint8Array([1]), 1000);
+    const transactions = ddb.send.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command.constructor.name === 'TransactWriteCommand');
+    expect(transactions).toHaveLength(2);
+    expect(transactions[0].input.ClientRequestToken).toBeTruthy();
+    expect(transactions[1].input).toEqual(transactions[0].input);
+    if (operation === 'save') {
+      expect(
+        s3.send.mock.calls.filter(([c]) => c.constructor.name === 'PutObjectCommand'),
+      ).toHaveLength(1);
+    }
+  });
+
+  it('renews unrelated documents independently without touching a shared scope guard', async () => {
+    const { store, previous, ddb } = fixture();
+    let active = 0;
+    let peak = 0;
+    ddb.send.mockImplementation(async (command) => {
+      expect(command.constructor.name).toBe('UpdateCommand');
       active++;
+      peak = Math.max(active, peak);
       await sleep(5);
       active--;
       return {};
@@ -109,39 +109,34 @@ describe('AWS checkpoint failures', () => {
         store.renew({ ...previous, documentId: `${DOCUMENT}-room-${index}` }, 31_000, 1000),
       ),
     );
-    expect(conflicts).toBe(0);
+    expect(peak).toBe(5);
   });
 
-  it('bounds conflict retries and lets subsequent transactions on the scope proceed', async () => {
+  it('bounds admission queues while a scope transaction is stalled', async () => {
     const { store, previous, ddb } = fixture();
-    let attempts = 0;
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
     ddb.send.mockImplementation(async () => {
-      if (++attempts <= 4)
-        throw Object.assign(new Error('Shared scope contention'), {
-          name: 'TransactionCanceledException',
-          CancellationReasons: [{ Code: 'TransactionConflict' }, { Code: 'None' }],
-        });
+      await gate;
       return {};
     });
-    const results = await Promise.allSettled([
-      store.renew(previous, 31_000, 1000),
-      store.renew(previous, 32_000, 2000),
-    ]);
-    expect(results.map((result) => result.status)).toEqual(['rejected', 'fulfilled']);
-    expect(attempts).toBe(5);
+    const waiting = Array.from({ length: 32 }, () => store.claim(previous, 1000));
+    await expect(store.claim(previous, 1000)).rejects.toThrow('queue is full');
+    release();
+    await Promise.all(waiting);
+    expect(store.waitingClaims.size).toBe(0);
   });
 
   it('commits a fenced manifest before deleting the previous object version', async () => {
     const { store, previous, ddb, s3, deleted } = fixture();
     const result = await store.save(previous, new Uint8Array([1, 2]), 1000);
     expect(result.snapshotSequence).toBe(2);
-    const transaction = ddb.send.mock.calls.find(
-      ([c]) => c.constructor.name === 'TransactWriteCommand',
-    )[0].input;
-    expect(transaction.TransactItems[0].ConditionCheck.ConditionExpression).toBe(
-      'attribute_not_exists(deletedAt)',
-    );
-    expect(transaction.TransactItems[1].Update.ExpressionAttributeValues).toMatchObject({
+    const transaction = ddb.send.mock.calls.find(([c]) => c.constructor.name === 'UpdateCommand')[0]
+      .input;
+    expect(transaction.ConditionExpression).toContain('attribute_not_exists(deletedAt)');
+    expect(transaction.ExpressionAttributeValues).toMatchObject({
       ':token': 'owner-token',
       ':previous': 1,
       ':sequence': 2,
@@ -155,13 +150,16 @@ describe('AWS checkpoint failures', () => {
     );
   });
 
-  it('recognizes a committed transaction whose response was lost', async () => {
-    const { store, previous, deleted } = fixture('response-lost');
-    await expect(store.save(previous, new Uint8Array([1]), 1000)).resolves.toMatchObject({
-      snapshotSequence: 2,
-    });
-    expect(deleted().map((entry) => entry.Key)).toEqual([previous.snapshotKey]);
-  });
+  it.each(['response-lost', 'committed-then-conditional'])(
+    'recognizes a committed checkpoint after %s',
+    async (failure) => {
+      const { store, previous, deleted } = fixture(failure);
+      await expect(store.save(previous, new Uint8Array([1]), 1000)).resolves.toMatchObject({
+        snapshotSequence: 2,
+      });
+      expect(deleted().map((entry) => entry.Key)).toEqual([previous.snapshotKey]);
+    },
+  );
 
   it('retains an uncertain upload because its manifest may commit later', async () => {
     const { store, previous, deleted } = fixture('timeout');
@@ -191,14 +189,16 @@ describe('AWS checkpoint failures', () => {
   });
 
   it('revokes a deleted scope without removing stored snapshots', async () => {
-    const ddb = { send: vi.fn().mockResolvedValue({}) };
+    const ddb = { send: vi.fn().mockResolvedValue({ Items: [] }) };
     await revokeYjsScope({
       ddb,
       table: 'docs',
       type: 'intent',
       id: 'B6326738-6B97-4819-829A-565EE8903E38',
     });
-    expect(ddb.send.mock.calls[0][0].input.Item).toEqual({
+    expect(
+      ddb.send.mock.calls.find(([c]) => c.constructor.name === 'PutCommand')[0].input.Item,
+    ).toMatchObject({
       documentId: 'scope#intent:b6326738-6b97-4819-829a-565ee8903e38',
       deletedAt: expect.any(Number),
     });

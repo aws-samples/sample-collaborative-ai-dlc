@@ -43,8 +43,16 @@ export function useCollaborativeStructuredAnswer(
   onAutoSave?: (draft: StructuredAnswer) => Promise<void>,
 ) {
   const docId = docPrefixFor(scope, questionId);
-  const { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument } =
-    useYjsDocument(docId, userName, generateColor(userName), scopeTargetFor(scope));
+  const {
+    doc,
+    synced,
+    awareness,
+    remoteUsers,
+    setCursor,
+    localRevision,
+    flushDocument,
+    beforeDisconnect,
+  } = useYjsDocument(docId, userName, generateColor(userName), scopeTargetFor(scope));
 
   const [selections, setSelections] = useState<Map<number, number[]>>(new Map());
   const [freeTexts, setFreeTexts] = useState<Map<number, string>>(new Map());
@@ -215,6 +223,7 @@ export function useCollaborativeStructuredAnswer(
     enabled: synced && !!onAutoSave,
     skipInitial: true,
     resetKey: doc,
+    beforeDisconnect,
   });
 
   return {

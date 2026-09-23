@@ -22,6 +22,7 @@ variable "snapshots_bucket_arn" {
 variable "scaling" {
   description = "Worker sizing and optional sharding/autoscaling; CPU units and memory in MiB."
   type = object({
+    mode_transition          = optional(bool, false)
     cluster_enabled          = optional(bool, false)
     cpu                      = optional(number)
     memory                   = optional(number)
@@ -57,6 +58,11 @@ variable "scaling" {
       floor(var.scaling.autoscaling.max_capacity) == var.scaling.autoscaling.max_capacity
     )
     error_message = "Autoscaling requires integer bounds with 2 <= min_capacity <= max_capacity <= 64."
+  }
+
+  validation {
+    condition     = !var.scaling.mode_transition || (var.scaling.desired_count == 1 && var.scaling.autoscaling == null)
+    error_message = "A mode transition requires one fixed worker; finish the transition before increasing capacity."
   }
 
   validation {

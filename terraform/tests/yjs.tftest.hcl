@@ -94,8 +94,20 @@ run "manual_cluster" {
     error_message = "Cluster mode needs membership storage and snapshot permissions."
   }
   assert {
-    condition     = aws_ecs_service.yjs_server.availability_zone_rebalancing == "DISABLED"
-    error_message = "Manual clusters must retain an AZ rebalancing setting compatible with the deployment limits."
+    condition     = aws_ecs_service.yjs_server.availability_zone_rebalancing == "ENABLED" && aws_ecs_service.yjs_server.deployment_minimum_healthy_percent == 100 && aws_ecs_service.yjs_server.deployment_maximum_percent == 200
+    error_message = "Cluster updates must start healthy replacement capacity before stopping old workers."
+  }
+  assert {
+    condition     = aws_ecs_task_definition.yjs_server.skip_destroy
+    error_message = "Previous task definitions must remain available for rollback."
+  }
+  assert {
+    condition     = strcontains(jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].healthCheck.command[1], "/livez")
+    error_message = "ECS must explicitly monitor container liveness; image-only health checks are ignored."
+  }
+  assert {
+    condition     = jsondecode(aws_ecr_lifecycle_policy.yjs_server.policy).rules[0].selection.countNumber == 30
+    error_message = "Release images must survive routine deployments within the rollback retention window."
   }
 }
 
@@ -128,8 +140,8 @@ run "automatic_cluster" {
     error_message = "ECS must give the application its checkpoint/drain budget."
   }
   assert {
-    condition     = aws_ecs_service.yjs_server.availability_zone_rebalancing == "DISABLED"
-    error_message = "Autoscaling must not enable AZ rebalancing while maximumPercent remains 100."
+    condition     = aws_ecs_service.yjs_server.availability_zone_rebalancing == "ENABLED" && aws_ecs_service.yjs_server.deployment_maximum_percent == 200
+    error_message = "Steady cluster deployments must allow replacement capacity and AZ balancing."
   }
 }
 
@@ -175,5 +187,41 @@ run "reject_single_worker_autoscaling" {
   variables {
     scaling = { cluster_enabled = true, autoscaling = { min_capacity = 1, max_capacity = 4 } }
   }
+  expect_failures = [var.scaling]
+}
+
+run "explicit_mode_transition" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  variables { scaling = { cluster_enabled = true, mode_transition = true } }
+  assert {
+    condition     = aws_ecs_service.yjs_server.deployment_minimum_healthy_percent == 0 && aws_ecs_service.yjs_server.deployment_maximum_percent == 100 && aws_ecs_service.yjs_server.availability_zone_rebalancing == "DISABLED"
+    error_message = "The first standalone-to-cluster transition must prevent mixed workers."
+  }
+}
+
+run "reject_scaled_mode_transition" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  variables { scaling = { cluster_enabled = true, mode_transition = true, desired_count = 4 } }
+  expect_failures = [var.scaling]
+}
+
+run "reject_automatic_mode_transition" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  variables { scaling = { cluster_enabled = true, mode_transition = true, autoscaling = { min_capacity = 2, max_capacity = 4 } } }
   expect_failures = [var.scaling]
 }
