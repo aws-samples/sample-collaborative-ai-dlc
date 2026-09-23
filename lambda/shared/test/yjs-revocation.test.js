@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { revokeYjsScope, reconcileYjsDeletion } from '../yjs-revocation.js';
+import { purgeYjsSnapshots, revokeYjsScope, reconcileYjsDeletion } from '../yjs-revocation.js';
 const id = 'b6326738-6b97-4819-829a-565ee8903e38';
 
 describe('Yjs deletion fencing and retention', () => {
@@ -53,6 +53,11 @@ describe('Yjs deletion fencing and retention', () => {
         .filter((c) => c.constructor.name === 'ScanCommand')
         .every((c) => c.input.ConsistentRead),
     ).toBe(true);
+    expect(
+      operations
+        .filter((c) => c.constructor.name === 'ScanCommand')
+        .every((c) => c.input.Limit === 128),
+    ).toBe(true);
     const deleted = operations.find((c) => c.constructor.name === 'DeleteObjectsCommand');
     expect(deleted.input.Delete.Objects.map((v) => v.VersionId)).toEqual([
       'committed',
@@ -60,6 +65,40 @@ describe('Yjs deletion fencing and retention', () => {
       'marker',
     ]);
     expect(operations.indexOf(deleted)).toBeGreaterThan(operations.indexOf(fenced.at(-1)));
+  });
+
+  it('bounds version purges and resumes from the remaining versions after a retry', async () => {
+    let now = 0;
+    const versions = ['first', 'second', 'third'];
+    const deleted = [];
+    const s3 = {
+      send: vi.fn(async (command) => {
+        if (command.constructor.name === 'ListObjectVersionsCommand')
+          return {
+            Versions: [{ Key: 'key', VersionId: versions[0] }],
+            IsTruncated: versions.length > 1,
+            ...(versions.length > 1
+              ? { NextKeyMarker: 'key', NextVersionIdMarker: versions[0] }
+              : {}),
+          };
+        deleted.push(...command.input.Delete.Objects.map((v) => v.VersionId));
+        versions.shift();
+        now += 6000;
+        return {};
+      }),
+    };
+    const options = { bucket: 'snapshots', type: 'intent', id, s3, clock: () => now };
+    await expect(purgeYjsSnapshots(options)).rejects.toMatchObject({
+      code: 'YJS_CLEANUP_PENDING',
+    });
+    expect(deleted).toEqual(['first', 'second']);
+    await purgeYjsSnapshots(options);
+    expect(deleted).toEqual(['first', 'second', 'third']);
+    expect(versions).toEqual([]);
+    const lists = s3.send.mock.calls.filter(
+      ([c]) => c.constructor.name === 'ListObjectVersionsCommand',
+    );
+    expect(lists.at(-1)[0].input.KeyMarker).toBeUndefined();
   });
 
   it('revisits a fenced scope for late uploads and leaves a failed purge due for retry', async () => {

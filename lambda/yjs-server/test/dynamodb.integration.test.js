@@ -149,6 +149,39 @@ describe.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)('DynamoDB ownership transa
     expect(scans).toBe(completedScans);
   });
 
+  it('treats concurrent deletion cursor advancement as retryable progress', async () => {
+    const id = randomUUID();
+    const name = `intent-draft-${id}`;
+    await store.claim(lease(name), Date.now());
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let scans = 0;
+    const concurrent = {
+      send: async (command) => {
+        if (command.constructor.name === 'ScanCommand') {
+          scans++;
+          if (scans === 2) release();
+          await gate;
+        }
+        return ddb.send(command);
+      },
+    };
+    const results = await Promise.allSettled(
+      [0, 1].map(() =>
+        revokeYjsScope({ ddb: concurrent, table: documentsTable, type: 'intent', id }),
+      ),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((r) => r.status === 'rejected');
+    expect(rejected.reason.code).toBe('YJS_CLEANUP_PENDING');
+    await revokeYjsScope({ ddb, table: documentsTable, type: 'intent', id });
+    expect(await store.get(name)).toBeUndefined();
+    expect((await store.get(`scope#intent:${id}`)).cleanupState).toBe('fenced');
+    await expect(store.claim(lease(name), Date.now())).rejects.toThrow();
+  });
+
   it('prevents a delayed checkpoint from replacing a newer sequence', async () => {
     const name = `${DOCUMENT}-sequence`;
     const owner = await store.claim(lease(name), Date.now());

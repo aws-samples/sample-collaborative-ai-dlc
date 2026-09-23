@@ -31,6 +31,8 @@ variables {
   project_name                  = "test"
   environment                   = "prod"
   aws_region                    = "us-east-1"
+  powertools_service_name       = "test-yjs"
+  powertools_log_level          = "INFO"
   vpc_id                        = "vpc-0123456789abcdef0"
   private_subnet_ids            = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
   cognito_user_pool_id          = "us-east-1_test"

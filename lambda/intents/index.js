@@ -1521,6 +1521,7 @@ const authorize = async (g, projectId, sub, response) => {
 };
 
 export const handler = async (event, context) => {
+  const cleanupDeadline = Date.now() + 10_000;
   if (context) logger.addContext(context);
   logger.resetKeys();
   logSafeEventIfEnabled(logger, event);
@@ -3549,6 +3550,7 @@ export const handler = async (event, context) => {
       const responder = getResponder(event);
       try {
         await deleteIntentCascade({
+          cleanupDeadline,
           g,
           store,
           ddb,

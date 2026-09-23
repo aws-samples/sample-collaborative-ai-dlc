@@ -22,12 +22,31 @@ const validateScope = (type, id) => {
   return `${type}:${id.toLowerCase()}`;
 };
 
-export const purgeYjsSnapshots = async ({ bucket, type, id, s3 = s3Client }) => {
+const cleanupPending = () => {
+  const error = new Error('Yjs deletion is in progress; retry the delete');
+  error.code = 'YJS_CLEANUP_PENDING';
+  return error;
+};
+
+export const requireYjsCleanupTime = (deadline, clock = Date.now) => {
+  if (clock() < deadline) return;
+  throw cleanupPending();
+};
+
+export const purgeYjsSnapshots = async ({
+  bucket,
+  type,
+  id,
+  s3 = s3Client,
+  clock = Date.now,
+  deadline = clock() + 10_000,
+}) => {
   validateScope(type, id);
   if (!bucket) return;
   const Prefix = `yjs-documents/${type}/${id.toLowerCase()}/`;
   let KeyMarker, VersionIdMarker;
   do {
+    requireYjsCleanupTime(deadline, clock);
     const page = await s3.send(
       new ListObjectVersionsCommand({ Bucket: bucket, Prefix, KeyMarker, VersionIdMarker }),
     );
@@ -62,7 +81,8 @@ export const revokeYjsScope = async ({
   bucket,
   s3 = s3Client,
   clock = Date.now,
-  scanBudgetMs = 20_000,
+  scanBudgetMs = 10_000,
+  deadline = clock() + scanBudgetMs,
 }) => {
   if (!table || !ddb) return;
   const scope = validateScope(type, id);
@@ -119,6 +139,9 @@ export const revokeYjsScope = async ({
         new ScanCommand({
           TableName: table,
           ConsistentRead: true,
+          // Bound work inside a page as well as between pages. A 1 MiB
+          // default page can take longer to fence than the API timeout.
+          Limit: 128,
           ExclusiveStartKey,
           FilterExpression: 'attribute_not_exists(cleanupPartition)',
           ProjectionExpression: 'documentId',
@@ -163,32 +186,37 @@ export const revokeYjsScope = async ({
       ExclusiveStartKey = page.LastEvaluatedKey;
       // Persist progress after every page. A concurrent retry cannot move this
       // cursor backwards or reopen a completed fence; incomplete scans stay due.
-      await ddb.send(
-        new UpdateCommand({
-          TableName: table,
-          Key: markerKey,
-          UpdateExpression: ExclusiveStartKey
-            ? 'SET cleanupCursor = :cursor'
-            : 'SET cleanupState = :fenced REMOVE cleanupCursor',
-          ConditionExpression:
-            'cleanupState = :pending AND ' +
-            (previousCursor === null
-              ? 'attribute_not_exists(cleanupCursor)'
-              : 'cleanupCursor = :previous'),
-          ExpressionAttributeValues: {
-            ':pending': 'pending',
-            ...(previousCursor === null ? {} : { ':previous': previousCursor }),
-            ...(ExclusiveStartKey ? { ':cursor': ExclusiveStartKey } : { ':fenced': 'fenced' }),
-          },
-        }),
-      );
-      if (ExclusiveStartKey && clock() - startedAt >= scanBudgetMs) {
-        const error = new Error('Yjs deletion is in progress; retry the delete');
-        error.code = 'YJS_CLEANUP_PENDING';
-        throw error;
-      }
+      await ddb
+        .send(
+          new UpdateCommand({
+            TableName: table,
+            Key: markerKey,
+            UpdateExpression: ExclusiveStartKey
+              ? 'SET cleanupCursor = :cursor'
+              : 'SET cleanupState = :fenced REMOVE cleanupCursor',
+            ConditionExpression:
+              'cleanupState = :pending AND ' +
+              (previousCursor === null
+                ? 'attribute_not_exists(cleanupCursor)'
+                : 'cleanupCursor = :previous'),
+            ExpressionAttributeValues: {
+              ':pending': 'pending',
+              ...(previousCursor === null ? {} : { ':previous': previousCursor }),
+              ...(ExclusiveStartKey ? { ':cursor': ExclusiveStartKey } : { ':fenced': 'fenced' }),
+            },
+          }),
+        )
+        .catch((error) => {
+          // Another delete or the scheduled reconciler may have advanced this
+          // cursor. Its progress is authoritative; let the caller resume it.
+          if (error.name === 'ConditionalCheckFailedException') throw cleanupPending();
+          throw error;
+        });
+      if (ExclusiveStartKey) requireYjsCleanupTime(deadline, clock);
     } while (ExclusiveStartKey);
-  await purgeYjsSnapshots({ bucket, type, id, s3 });
+  // Deleted versions are durable progress. A retry can list the remaining
+  // prefix from the beginning without retaining an S3 cursor.
+  await purgeYjsSnapshots({ bucket, type, id, s3, clock, deadline });
 };
 
 // Revisit permanent tombstones to clean uploads whose S3 response was lost or
@@ -201,6 +229,8 @@ export const reconcileYjsDeletion = async ({
   s3 = s3Client,
   now = Date.now(),
   limit = 20,
+  clock = Date.now,
+  deadline = clock() + 20_000,
 }) => {
   if (!table || !bucket) return { cleaned: 0, failed: 0 };
   const due = await ddb.send(
@@ -216,11 +246,12 @@ export const reconcileYjsDeletion = async ({
     failed = 0,
     pending = 0;
   for (const marker of due.Items ?? []) {
+    if (clock() >= deadline) break;
     const [type, id] = marker.documentId.slice('scope#'.length).split(':');
     try {
       if (marker.cleanupState !== 'fenced')
-        await revokeYjsScope({ ddb, table, bucket, type, id, s3 });
-      else await purgeYjsSnapshots({ bucket, type, id, s3 });
+        await revokeYjsScope({ ddb, table, bucket, type, id, s3, clock, deadline });
+      else await purgeYjsSnapshots({ bucket, type, id, s3, clock, deadline });
       await ddb.send(
         new UpdateCommand({
           TableName: table,

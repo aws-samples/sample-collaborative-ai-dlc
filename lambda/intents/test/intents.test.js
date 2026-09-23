@@ -196,7 +196,7 @@ const installDdbFakes = () => {
     }
     return { Items: items.map((i) => ({ ...i })) };
   });
-  ddbMock.on(UpdateCommand).callsFake((input) => {
+  ddbMock.on(UpdateCommand).callsFake(async (input) => {
     if (input.Key.documentId) {
       const row = { documentId: input.Key.documentId, ...yjsStore.get(input.Key.documentId) };
       if (input.ExpressionAttributeValues[':deleted']) {
