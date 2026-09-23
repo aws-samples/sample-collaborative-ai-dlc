@@ -1,5 +1,0 @@
-{
-  "arn": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:7",
-  "image": "746558295630.dkr.ecr.eu-central-1.amazonaws.com/collaborative-ai-dlc-yjs-server-review:c1511f4238e9e33a",
-  "status": "ACTIVE"
-}

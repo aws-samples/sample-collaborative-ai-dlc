@@ -1,7 +1,0 @@
-{
-  "original": "arn:aws:ecs:eu-central-1:ACCOUNT:task-definition/collaborative-ai-dlc-yjs-server-review:3",
-  "fault": "arn:aws:ecs:eu-central-1:ACCOUNT:task-definition/collaborative-ai-dlc-yjs-server-review:4",
-  "command": [
-    "node server.js & child=$!; trap 'echo PR457_SIGKILL_CHILD; kill -9 $child; wait $child; exit 137' TERM; wait $child"
-  ]
-}
