@@ -1,11 +1,15 @@
+import { Logger } from '@aws-lambda-powertools/logger';
 import { evaluateSsoRoles, parseRoleConfig } from '../shared/sso-roles.js';
 
-export const handler = async (event) => {
+const logger = new Logger({ persistentKeys: { component: 'sso-token' } });
+
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const attributes = event.request?.userAttributes || {};
   const result = evaluateSsoRoles(attributes, parseRoleConfig());
   if (!result.federated) return event;
   if (!result.admitted) {
-    console.warn('[sso-token] federated sign-in denied', {
+    logger.warn('federated sign-in denied', {
       provider: result.identity?.providerName,
       reason: result.reason,
     });

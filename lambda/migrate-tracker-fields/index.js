@@ -28,6 +28,9 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'migrate-tracker-fields' } });
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -48,7 +51,8 @@ const getConnection = async () => {
   return new DriverRemoteConnection(url, { headers });
 };
 
-export const handler = async (event = {}) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const dryRun = event?.dryRun === true;
   const conn = await getConnection();
   try {
@@ -63,7 +67,7 @@ export const handler = async (event = {}) => {
       );
     }
     const result = await runTrackerMigration(g, { dryRun });
-    console.log('migration result:', JSON.stringify(result));
+    logger.info('migration result', { result });
     return result;
   } finally {
     try {

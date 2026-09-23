@@ -3,8 +3,13 @@ import { mkdtemp, mkdir, rm, writeFile, lstat, readlink, readFile, stat } from '
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { checkoutRepo, redirectHeavyDirs } from '../workspace.js';
-import { runGit } from '../git-engine.js';
+import {
+  checkoutRepo,
+  checkoutRepos,
+  ensureWorkspaceSource,
+  redirectHeavyDirs,
+} from '../workspace.js';
+import { repoTargetDir, runGit } from '../git-engine.js';
 import { HOOKS_DISABLED_ARGS } from '../git-runner.js';
 
 // redirectHeavyDirs (2026-07 ENOSPC incident #2): node_modules must live on
@@ -32,6 +37,63 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
+});
+
+describe('repository directory safety', () => {
+  it.each(['owner/.', 'owner/..', 'owner/../other', '../outside', '/owner/repo', 'owner//repo'])(
+    'rejects %s before filesystem changes, including failed-clone cleanup',
+    async (url) => {
+      const sibling = path.join(ws, 'owner', 'keep');
+      await mkdir(sibling, { recursive: true });
+      const marker = path.join(sibling, 'keep.txt');
+      await writeFile(marker, 'existing checkout');
+      const ensureDir = vi.fn(async () => {});
+      const runner = vi.fn(async () => ({ code: 0 }));
+      const withGitCredential = vi.fn(async () => {
+        throw new Error('credential_unavailable');
+      });
+      const options = {
+        repos: ['owner/keep', url],
+        workspaceDir: ws,
+        runner,
+        withGitCredential,
+        ensureDir,
+        trustDirectory: async () => true,
+      };
+
+      await expect(checkoutRepos(options)).rejects.toThrow('Invalid repository path');
+      await expect(ensureWorkspaceSource(options)).rejects.toThrow('Invalid repository path');
+      await expect(checkoutRepo({ ...options, repo: url, targetDir: ws })).rejects.toThrow(
+        'Invalid repository path',
+      );
+      expect(await readFile(marker, 'utf8')).toBe('existing checkout');
+      expect(ensureDir).not.toHaveBeenCalled();
+      expect(runner).not.toHaveBeenCalled();
+      expect(withGitCredential).not.toHaveBeenCalled();
+      expect(() => repoTargetDir({ url, workspaceDir: ws, multi: true })).toThrow(
+        'Invalid repository path',
+      );
+    },
+  );
+
+  it.each(['owner/-repo', 'owner/.github', 'owner/test...plop', 'team/subgroup/repo'])(
+    'keeps %s inside the workspace for checkout and lane operations',
+    async (url) => {
+      const expected = path.join(ws, url);
+      expect(repoTargetDir({ url, workspaceDir: ws, multi: true })).toBe(expected);
+      const runner = vi.fn(async () => ({ code: 0 }));
+      const results = await checkoutRepos({
+        repos: [url, 'owner/other'],
+        workspaceDir: ws,
+        runner,
+        trustDirectory: async () => true,
+        withGitCredential: async (_context, operation) => operation({ env: {} }),
+      });
+      expect(results[0]).toMatchObject({ targetDir: expected, cloned: true });
+      expect((await stat(expected)).isDirectory()).toBe(true);
+      expect(runner.mock.calls.some(([, args]) => args.includes(expected))).toBe(true);
+    },
+  );
 });
 
 describe('checkoutRepo Git isolation', () => {

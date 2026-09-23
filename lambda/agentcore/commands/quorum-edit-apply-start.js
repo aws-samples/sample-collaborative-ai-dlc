@@ -19,6 +19,7 @@
 //   4. re-derive the graph projection for every rewritten document;
 //   5. complete the durable callback with the outcome.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { closeGraphSource } from '../mcp/graph-writer.js';
 import {
   applyArtifactEdit,
@@ -38,6 +39,10 @@ import {
   fetchArtifactForEdit,
   makeProgressEmitter,
 } from './quorum-edit-shared.js';
+
+const logger = new Logger({
+  persistentKeys: { component: 'agentcore', module: 'quorum-edit-apply-start' },
+});
 
 const REWRITE_ONE_SHOT_TIMEOUT_MS = 300_000;
 
@@ -119,7 +124,7 @@ export const createQuorumEditApplyStart = ({
   heartbeatIntervalMs = 60_000,
   busy = null,
   activeJobs = new Map(),
-  log = (...args) => console.error('[quorum-edit-apply-start]', ...args),
+  log = (...args) => logger.error(...args), // TODO: remove this (only used in tests)
 }) => {
   const start = async (payload = {}) => {
     const {

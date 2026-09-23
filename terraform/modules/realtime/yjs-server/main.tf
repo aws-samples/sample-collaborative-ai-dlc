@@ -235,6 +235,14 @@ resource "aws_ecs_task_definition" "yjs_server" {
         name  = "DOC_TOKEN_ENFORCE"
         value = var.doc_token_enforce ? "true" : "false"
       },
+      {
+        name  = "POWERTOOLS_SERVICE_NAME"
+        value = var.powertools_service_name
+      },
+      {
+        name  = "POWERTOOLS_LOG_LEVEL"
+        value = var.powertools_log_level
+      },
       ], [for name, value in {
         YJS_CLUSTER_ENABLED          = tostring(var.scaling.cluster_enabled)
         YJS_DOCUMENTS_TABLE          = var.documents_table_name
@@ -249,6 +257,7 @@ resource "aws_ecs_task_definition" "yjs_server" {
         YJS_MAX_TOTAL_DOCUMENT_BYTES = tostring(var.scaling.max_total_document_bytes)
         YJS_MAX_BUFFERED_BYTES       = tostring(var.scaling.max_buffered_bytes)
     } : { name = name, value = value }])
+
     secrets = [
       {
         # Realtime doc-token secret — verifies HMAC scope tokens

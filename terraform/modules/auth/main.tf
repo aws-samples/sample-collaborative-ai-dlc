@@ -62,7 +62,9 @@ module "sso_token_lambda" {
   hash_extra = local.sso_sources_hash
 
   environment_variables = {
-    SSO_ROLE_CONFIG = jsonencode(local.role_config)
+    POWERTOOLS_SERVICE_NAME = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
+    SSO_ROLE_CONFIG         = jsonencode(local.role_config)
   }
 }
 

@@ -1,8 +1,16 @@
+import { Logger } from '@aws-lambda-powertools/logger';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { readConfig } from './config.js';
 import { createCollaborationServer } from './service.js';
 import { ClusterCoordinator } from './cluster.js';
 
+const structuredLogger = new Logger({ persistentKeys: { component: 'yjs-server' } });
+// Embedded metrics must remain a top-level JSON object for CloudWatch EMF.
+const logger = {
+  log: (line) => console.log(line),
+  warn: (message, ...details) => structuredLogger.warn(message, { details }),
+  error: (message, ...details) => structuredLogger.error(message, { details }),
+};
 const config = readConfig();
 const userPoolId = process.env.COGNITO_USER_POOL_ID;
 const clientId = process.env.COGNITO_CLIENT_ID;
@@ -26,6 +34,7 @@ if (config.clusterEnabled) {
   )[0];
   if (!metadata.TaskARN || !address) throw new Error('ECS task address is missing');
   cluster = new ClusterCoordinator({
+    logger,
     id: metadata.TaskARN,
     address: `ws://${address}:${config.port}`,
     store: new AwsStore({
@@ -37,6 +46,7 @@ if (config.clusterEnabled) {
 }
 
 const service = createCollaborationServer({
+  logger,
   config,
   cluster,
   verifyJwt: (token) => verifier.verify(token),
@@ -44,7 +54,7 @@ const service = createCollaborationServer({
   enforceScope: process.env.DOC_TOKEN_ENFORCE !== 'false',
 });
 await service.listen();
-console.log(`Yjs listening on ${config.port}; clustered=${config.clusterEnabled}`);
+structuredLogger.info('Yjs listening', { port: config.port, clustered: config.clusterEnabled });
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.once(signal, () => {
     // Keep the termination budget below ECS stopTimeout. A stuck AWS request
@@ -54,7 +64,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     service.close().then(
       () => process.exit(0),
       (error) => {
-        console.error('Yjs shutdown failed:', error.message);
+        logger.error('Yjs shutdown failed:', error.message);
         process.exit(1);
       },
     );

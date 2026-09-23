@@ -11,7 +11,9 @@ import {
   PostToConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { isTokenLive } from './realtime-token.js';
+import { Logger } from '@aws-lambda-powertools/logger';
 
+const logger = new Logger({ persistentKeys: { component: 'ws-fanout' } });
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 /**
@@ -58,7 +60,7 @@ const broadcastToIntentChannel = async (intentId, payload) => {
         ),
     );
   } catch (err) {
-    console.error('Intent-channel fanout failed:', err.message);
+    logger.error('Intent-channel fanout failed', err);
   }
 };
 

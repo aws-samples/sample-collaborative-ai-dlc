@@ -22,6 +22,11 @@ on:
         required: false
         default: demo-release
         type: string
+      require_custom_domain:
+        description: Fail before deployment unless custom-domain configuration is present
+        required: false
+        default: false
+        type: boolean
       terraform_project_name:
         description: Project namespace used to isolate account-global AWS resource names
         required: false
@@ -92,8 +97,10 @@ jobs:
       cancel-in-progress: false
     environment:
       name: ${{ inputs.github_environment || 'demo-release' }}
-      url: ${{ steps.deployment.outputs.url }}
     env:
+      ACM_CERTIFICATE_ARN: ${{ secrets.ACM_CERTIFICATE_ARN }}
+      APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
+      APP_DOMAIN_ALIASES: ${{ secrets.APP_DOMAIN_ALIASES }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
@@ -101,6 +108,8 @@ jobs:
       DEPLOY_REF: ${{ inputs.ref }}
       DEPLOY_REF_TYPE: ${{ inputs.ref_type || 'release-tag' }}
       DEPLOY_TARGET: ${{ inputs.deployment_target || 'release' }}
+      GITHUB_ENVIRONMENT: ${{ inputs.github_environment || 'demo-release' }}
+      REQUIRE_CUSTOM_DOMAIN: ${{ inputs.require_custom_domain || false }}
       TF_ENVIRONMENT: prod
       TF_PROJECT_NAME: ${{ inputs.terraform_project_name || 'collaborative-ai-dlc' }}
       TF_INPUT: 'false'
@@ -112,6 +121,28 @@ jobs:
       TF_STATE_KEY: ${{ fromJSON(needs.resolve-backend.outputs.backend).key }}
       TF_STATE_REGION: ${{ fromJSON(needs.resolve-backend.outputs.backend).region }}
     steps:
+      - name: Mask optional deployment configuration
+        run: |
+          if [[ -n "$APP_DOMAIN" ]]; then
+            echo "::add-mask::$APP_DOMAIN"
+            echo "::add-mask::https://$APP_DOMAIN"
+          fi
+          if [[ -n "$ACM_CERTIFICATE_ARN" ]]; then
+            echo "::add-mask::$ACM_CERTIFICATE_ARN"
+          fi
+          if [[ -n "$APP_DOMAIN_ALIASES" ]]; then
+            node --input-type=module -e '
+              const aliases = JSON.parse(process.env.APP_DOMAIN_ALIASES);
+              if (!Array.isArray(aliases) || aliases.some(alias => typeof alias !== "string")) {
+                throw new Error("APP_DOMAIN_ALIASES must be a JSON array of hostnames.");
+              }
+              for (const alias of aliases) {
+                console.log(`::add-mask::${alias}`);
+                console.log(`::add-mask::https://${alias}`);
+              }
+            '
+          fi
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
@@ -218,6 +249,33 @@ jobs:
             echo "AWS_ROLE_ARN must be an IAM role in AWS_ACCOUNT_ID." >&2
             exit 1
           fi
+          if [[ -n "$APP_DOMAIN" || -n "$ACM_CERTIFICATE_ARN" ]]; then
+            if [[ -z "$APP_DOMAIN" || -z "$ACM_CERTIFICATE_ARN" ]]; then
+              echo "APP_DOMAIN and ACM_CERTIFICATE_ARN must be configured together." >&2
+              exit 1
+            fi
+          fi
+          if [[ ( "$REQUIRE_CUSTOM_DOMAIN" == "true" || "$GITHUB_ENVIRONMENT" == "demo-release" ) && -z "$APP_DOMAIN" ]]; then
+            echo "Custom-domain configuration is required for this deployment target." >&2
+            exit 1
+          fi
+          if [[ -n "$APP_DOMAIN" && -z "$APP_DOMAIN_ALIASES" ]]; then
+            echo "APP_DOMAIN_ALIASES is required; use [] when no aliases are configured." >&2
+            exit 1
+          fi
+          if [[ -n "$APP_DOMAIN" ]]; then
+            node --input-type=module -e '
+              import { lookup } from "node:dns/promises";
+
+              const domains = [
+                process.env.APP_DOMAIN,
+                ...JSON.parse(process.env.APP_DOMAIN_ALIASES),
+              ];
+              for (const domain of domains) {
+                await lookup(domain);
+              }
+            '
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -248,6 +306,15 @@ jobs:
             printf 'aws_region    = %s\n' "$(hcl_string "$AWS_REGION")"
             printf 'bedrock_model = %s\n' "$(hcl_string "$BEDROCK_MODEL")"
           } > "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+
+          if [[ -n "$APP_DOMAIN" ]]; then
+            {
+              printf 'app_domain          = %s\n' "$(hcl_string "$APP_DOMAIN")"
+              printf 'app_domain_aliases  = %s\n' "${APP_DOMAIN_ALIASES:-[]}"
+              printf 'acm_certificate_arn = %s\n' "$(hcl_string "$ACM_CERTIFICATE_ARN")"
+              printf 'route53_zone_id     = ""\n'
+            } >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+          fi
 
           {
             printf 'bucket       = %s\n' "$(hcl_string "$TF_STATE_BUCKET")"
@@ -334,13 +401,11 @@ jobs:
         run: ./scripts/deploy-frontend.sh "$TF_ENVIRONMENT"
 
       - name: Verify deployment
-        id: deployment
         run: |
           app_url="$(terraform -chdir=terraform output -raw application_url)"
           curl --fail --silent --show-error --location \
             --retry 12 --retry-delay 10 --retry-all-errors \
             "$app_url" >/dev/null
-          echo "url=$app_url" >> "$GITHUB_OUTPUT"
           {
             echo "### ${DEPLOY_TARGET^} demo deployment"
             echo
@@ -349,5 +414,4 @@ jobs:
             echo "- Terraform project: \`$TF_PROJECT_NAME\`"
             echo "- Terraform environment: \`$TF_ENVIRONMENT\`"
             echo "- Region: \`$AWS_REGION\`"
-            echo "- URL: $app_url"
           } >> "$GITHUB_STEP_SUMMARY"

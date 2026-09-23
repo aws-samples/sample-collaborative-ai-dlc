@@ -14,6 +14,7 @@
 // unparseable output, a grid the resolver rejects) FAILS the row with the
 // structured reason; an unrunnable grid is never presented as a proposal.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { mkdir } from 'node:fs/promises';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { loadLibrary, loadBlockBody, listMergedBlocks } from '../block-loader.js';
@@ -25,6 +26,10 @@ import {
 } from '../../shared/compose-match.js';
 import { resolveCliSelection } from './discussion-assist-start.js';
 import { closeGraphSource } from '../mcp/graph-writer.js';
+
+const logger = new Logger({
+  persistentKeys: { component: 'agentcore', module: 'compose-plan-start' },
+});
 
 const CONTEXT_LIMIT = 48 * 1024;
 const MAX_REPORT_EXCERPT = 24 * 1024;
@@ -158,7 +163,7 @@ export const createComposePlanStart = ({
   env = process.env,
   busy = null,
   activeJobs = new Map(),
-  log = (...args) => console.error('[compose-plan-start]', ...args),
+  log = (...args) => logger.error(...args), // TODO: remove this (only used in tests)
 }) => {
   const start = async (payload = {}) => {
     const {

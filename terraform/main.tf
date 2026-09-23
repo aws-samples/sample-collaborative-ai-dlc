@@ -62,8 +62,9 @@ provider "awscc" {
 data "aws_partition" "current" {}
 
 locals {
-  partition  = data.aws_partition.current.partition
-  dns_suffix = data.aws_partition.current.dns_suffix
+  partition               = data.aws_partition.current.partition
+  dns_suffix              = data.aws_partition.current.dns_suffix
+  powertools_service_name = "collaborative-aidlc"
 
   custom_domain_enabled = var.app_domain != ""
 
@@ -249,11 +250,13 @@ module "networking" {
 module "auth" {
   source = "./modules/auth"
 
-  project_name  = var.project_name
-  environment   = var.environment
-  app_url       = local.app_url
-  auth_mode     = var.auth_mode
-  sso_providers = var.sso_providers
+  project_name            = var.project_name
+  environment             = var.environment
+  powertools_service_name = local.powertools_service_name
+  powertools_log_level    = var.powertools_log_level
+  app_url                 = local.app_url
+  auth_mode               = var.auth_mode
+  sso_providers           = var.sso_providers
 }
 
 # Frontend (S3 + CloudFront)
@@ -357,6 +360,9 @@ module "lambda" {
 
   project_name                = var.project_name
   environment                 = var.environment
+  powertools_service_name     = local.powertools_service_name
+  powertools_log_level        = var.powertools_log_level
+  powertools_log_event        = var.powertools_log_event
   lambda_vpc_scope            = var.lambda_vpc_scope
   aidlc_repo_ref              = var.aidlc_repo_ref
   application_url             = local.app_url
@@ -435,6 +441,9 @@ module "api" {
 
   project_name                             = var.project_name
   environment                              = var.environment
+  powertools_service_name                  = local.powertools_service_name
+  powertools_log_level                     = var.powertools_log_level
+  powertools_log_event                     = var.powertools_log_event
   cognito_user_pool_arn                    = module.auth.user_pool_arn
   projects_lambda_invoke_arn               = module.lambda.projects_lambda_invoke_arn
   projects_lambda_name                     = module.lambda.projects_lambda_name
@@ -508,12 +517,14 @@ module "api" {
 module "realtime" {
   source = "./modules/realtime"
 
-  project_name           = var.project_name
-  environment            = var.environment
-  cognito_user_pool_id   = module.auth.user_pool_id
-  cognito_client_id      = module.auth.user_pool_client_id
-  connections_table_name = module.dynamodb.connections_table_name
-  connections_table_arn  = module.dynamodb.connections_table_arn
+  project_name            = var.project_name
+  environment             = var.environment
+  powertools_service_name = local.powertools_service_name
+  powertools_log_level    = var.powertools_log_level
+  cognito_user_pool_id    = module.auth.user_pool_id
+  cognito_client_id       = module.auth.user_pool_client_id
+  connections_table_name  = module.dynamodb.connections_table_name
+  connections_table_arn   = module.dynamodb.connections_table_arn
 
   # The WebSocket stage enables access logging, which requires the account-level
   # CloudWatch role to be configured first.
@@ -526,6 +537,8 @@ module "yjs_server" {
 
   project_name                  = var.project_name
   environment                   = var.environment
+  powertools_service_name       = local.powertools_service_name
+  powertools_log_level          = var.powertools_log_level
   aws_region                    = var.aws_region
   docker_build_args             = var.docker_build_args
   vpc_id                        = module.networking.vpc_id
@@ -553,6 +566,8 @@ module "agentcore" {
 
   project_name                = var.project_name
   environment                 = var.environment
+  powertools_service_name     = local.powertools_service_name
+  powertools_log_level        = var.powertools_log_level
   aws_region                  = var.aws_region
   docker_build_args           = var.docker_build_args
   neptune_endpoint            = module.neptune.cluster_endpoint
@@ -591,6 +606,9 @@ module "managed_environments" {
 
   project_name                  = var.project_name
   environment                   = var.environment
+  powertools_service_name       = local.powertools_service_name
+  powertools_log_level          = var.powertools_log_level
+  powertools_log_event          = var.powertools_log_event
   registry_table_name           = module.dynamodb.environment_registry_table_name
   registry_table_arn            = module.dynamodb.environment_registry_table_arn
   core_image_uri                = module.agentcore.ecr_repository_url
