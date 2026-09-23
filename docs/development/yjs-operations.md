@@ -5,11 +5,9 @@ across ECS tasks. A document has one owner. Adding workers increases capacity fo
 many documents; it does not divide the CPU or fan-out cost of one busy document.
 Use the load workload below to distinguish those cases before setting capacity.
 
-Deployed measurements, fault results, and availability limitations are recorded
-in the [2026-09-23 hardening validation](evidence/pr457-hardening-2026-09-23/README.md),
-including the requested 400-client, 40-document workload. The
-[2026-09-22 review validation](evidence/pr457-review-2026-09-22/README.md) remains
-available as the earlier baseline.
+Deployed measurements, fault results, and qualification limits are recorded in
+[PR #457](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/457),
+including the 400-client, 40-document workload and the earlier baseline.
 
 ## Configuration
 
