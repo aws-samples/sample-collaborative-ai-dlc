@@ -32,14 +32,17 @@ import { QuorumEditPanel } from './QuorumEditPanel';
 const nestedPath = (index: number) =>
   `docs/architecture/workstreams/customer-experience/decisions/${String(index).padStart(2, '0')}/deeply-nested-artifact-with-a-realistically-long-file-name-${index}.md`;
 
+const approvalTextPath =
+  'docs/architecture/CustomerExperienceAuthorizationAndSessionManagementImplementation.md';
+
 const planItem = (index: number): QuorumEditPlanItem => ({
   artifactId: nestedPath(index),
   title: `Architecture decision ${index + 1}`,
   artifactType: 'decision',
   depth: index % 4,
   action: index % 2 === 0 ? 'update' : 'verify-unaffected',
-  rationale: `This artifact depends on the requested change through relationship ${index + 1}.`,
-  proposedChange: `Update the affected section for artifact ${index + 1}.`,
+  rationale: `This artifact depends on ${approvalTextPath} through relationship ${index + 1}.`,
+  proposedChange: `Update ${approvalTextPath} to reflect the revised authentication requirements.`,
 });
 
 const awaitingApprovalEdit = (items: QuorumEditPlanItem[]): QuorumEdit => ({
@@ -101,6 +104,27 @@ describe('QuorumEditPanel large artifact plans', () => {
     expect(approve).toHaveFocus();
     await user.tab();
     expect(reject).toHaveFocus();
+  });
+
+  it('wraps long rationale and proposed-change text inside the artifact row', () => {
+    detail = {
+      quorumEdits: [awaitingApprovalEdit([planItem(0)])],
+    } as IntentDetail;
+    render(<QuorumEditPanel />);
+
+    const rationale = screen.getByText(
+      `This artifact depends on ${approvalTextPath} through relationship 1.`,
+    );
+    const proposedChange = screen.getByText(
+      (_, element) =>
+        element?.textContent ===
+        `→ Update ${approvalTextPath} to reflect the revised authentication requirements.`,
+    );
+
+    expect(rationale).toBeVisible();
+    expect(proposedChange).toBeVisible();
+    expect(rationale.parentElement).toBe(proposedChange.parentElement);
+    expect(rationale.parentElement).toHaveClass('[overflow-wrap:anywhere]');
   });
 
   it('preserves list position and keyboard focus while selecting and previewing artifacts', async () => {
