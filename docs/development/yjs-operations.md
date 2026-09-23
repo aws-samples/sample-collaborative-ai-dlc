@@ -6,7 +6,10 @@ many documents; it does not divide the CPU or fan-out cost of one busy document.
 Use the load workload below to distinguish those cases before setting capacity.
 
 Deployed measurements, fault results, and availability limitations are recorded
-in the [2026-09-22 review validation](evidence/pr457-review-2026-09-22/README.md).
+in the [2026-09-23 hardening validation](evidence/pr457-hardening-2026-09-23/README.md),
+including the requested 400-client, 40-document workload. The
+[2026-09-22 review validation](evidence/pr457-review-2026-09-22/README.md) remains
+available as the earlier baseline.
 
 ## Configuration
 
@@ -106,20 +109,26 @@ WebSocket to the owner, which independently verifies the Cognito and scope
 tokens. Forwarding is restricted to private IPv4 addresses and a single hop.
 Neither browser redirects nor ALB stickiness establish document ownership.
 
-Document leases carry a unique fencing token. Claims, renewals, and checkpoint
-manifest updates check that token and the parent scope's revocation marker.
+Document leases carry a unique fencing token. Claims transactionally check the
+parent scope revocation marker. Renewals and checkpoint commits conditionally
+update only their document, checking its fencing token, deadline, and deletion
+marker. Deletion blocks new claims first, then fences every existing document.
 Workers stop accepting document messages five seconds before their local lease
 deadline. This assumes normally synchronized ECS task clocks.
 
-Transactions for documents in one intent share its revocation guard. Each worker
-serializes transactions on that scope and retries temporary DynamoDB transaction
-conflicts with bounded jitter. A temporary renewal failure retains only the last
-confirmed lease deadline; a failed ownership/revocation condition immediately
-stops serving the document.
+Claims in one intent share a revocation guard. Each worker bounds the scope claim
+queue to 32 entries and five seconds, with bounded retries for transient conflicts.
+Renewals run with 16 independent consumers, earliest deadline first; membership
+heartbeats and transfers have separate single-flight lanes. Slow persistence does
+not prevent membership refresh. A temporary renewal failure retains only the last
+confirmed lease deadline; a failed fencing condition immediately stops serving
+the document. Unowned documents are placed only on members advertising capacity,
+with local slots reserved before asynchronous claims. Existing leases remain
+authoritative; rebalancing skips full destinations.
 
 Dirty documents checkpoint at most once per two-second interval. Concurrent
 explicit flushes share the checkpoint. S3 holds the binary Yjs update, while a
-conditional DynamoDB transaction commits its exact object/version and sequence.
+conditional DynamoDB update commits its exact object/version and sequence.
 An uncertain write response never causes deletion of an object that might have
 committed. The sequence condition prevents a delayed checkpoint from replacing
 a newer one. Recovery loads the committed version before the initial handshake.
@@ -133,9 +142,25 @@ the owner and all those browsers disappear, uncommitted edits can be lost.
 Browser business-data autosaves run only for local changes, with a two-second
 debounce, ten-second maximum wait, serialized saves, and retries. In cluster mode
 they wait for a checkpoint receipt before writing the REST representation.
-Backend business records remain necessary for workflows and API reads. Those
-REST writes still use their existing concurrency semantics; a checkpoint receipt
-does not serialize separate editors' business requests.
+Backend business records remain necessary for workflows and API reads. The client
+reads the business revision before flushing, then snapshots the current CRDT and
+writes with that revision. Draft PATCH requires `ifDraftRevision`; artifact PUT
+requires `ifEditRevision` and `collaborationEpoch`. Missing preconditions return
+428; a competing write returns 409 `edit_conflict`. The client retries at most
+three times, repeating revision read, checkpoint, and current-document capture.
+Artifact replacement returns `artifact_replaced` and requires reloading the editor.
+Other draft writers also advance the revision. API integrations must supply the
+new preconditions; deploy the API and frontend together and reload older clients.
+Explicit Start actions also save remote or recovered content when the local
+browser has no dirty revision. Passive autosaves and navigation still avoid
+writing solely because a peer changed the document. Artifact editing reports
+failures from the revision read, checkpoint barrier, and business write.
+
+SPA navigation flushes registered autosaves before closing that document's socket
+and destroying its CRDT, with a 30-second lifetime bound. This does not guarantee
+saving during process death, browser termination, or a full page unload. Browser
+IndexedDB persistence is not implemented: losing every replica before a durable
+receipt can still lose recent edits.
 
 Agent/Quorum replacement of an artifact rotates its collaboration epoch. A new
 editor then seeds a new document from the replacement content. Human autosaves
@@ -166,17 +191,26 @@ environment is implied by running the unit tests.
    service update. Existing installations may have it enabled; ECS otherwise
    retains that setting and rejects the required `maximumPercent = 100`.
 2. During a maintenance window, let editors save and close them. Set
-   `cluster_enabled = true`, **keep `desired_count = 1`**, and leave automatic
-   scaling unset. Deploy and wait for the service to stabilize. The old
+   `cluster_enabled = true` and `mode_transition = true`, **keep
+   `desired_count = 1`**, and leave automatic scaling unset. Deploy and wait for the service to stabilize. The old
    standalone worker has no binary checkpoints; REST data and surviving browser
    CRDTs provide the initial state for the cluster.
 3. Verify health, editing, persisted recovery after all browsers disconnect, and
-   the absence of checkpoint errors. Then increase the manual count to two/four.
+   the absence of checkpoint errors. Set `mode_transition = false`, then increase the manual count to two/four.
    Do not combine the initial mode transition with an increase in worker count:
    overlapping standalone and clustered workers would own independent state.
 4. Exercise growth and shrinkage, abrupt owner termination, continuous editing,
    reconnects, and storage errors in the isolated environment. Confirm recovery
    and resource headroom. Enable automatic policies only after those checks.
+
+Normal clustered deployments use ECS minimum healthy 100%, maximum 200%, and AZ
+rebalancing. Reserve enough quota/subnet capacity to start replacement tasks before
+old tasks drain. Only standalone operation and explicit `mode_transition = true`
+use stop-before-start 0/100. Remove the transition flag after the migration.
+Previous task definitions remain registered, and ECR retains the last 30 images;
+roll back within that retention window. Frontend deploys retain existing hashed
+assets so already open tabs can still load lazy chunks; remove old assets only
+through a separately defined retention policy that covers active client lifetimes.
 
 For rollback, remove automatic policies and set a fixed manual count while
 keeping cluster mode enabled. Scale back to one owner if necessary. Keep the
@@ -202,15 +236,52 @@ metrics every thirty seconds through its existing log group.
 | `ResidentMemoryBytes`, ECS memory, `DocumentBytes`, `Documents` | Heap growth, document size/history, idle eviction, skew between owners |
 | `QueuedBytes`, `Connections`, `ProxiedConnections`              | Slow consumers, connection distribution, forwarding cost               |
 | `Updates`, `UpdateBytes`                                        | Actual editing rate and payload size; compare with user/room counts    |
+| `NotReady`                                                      | Cluster membership readiness; `/readyz` returns 503 while unavailable  |
 | `PersistenceErrors`                                             | IAM/network errors, S3 latency, DynamoDB throttling or lease conflicts |
 | `RejectedConnections`, `CapacityUtilization`                    | Worker admission limits and fleet headroom                             |
 
-Alarms cover maximum worker capacity, maximum event-loop delay, persistence
+`/livez` and the compatibility `/healthz` endpoint report process liveness; ALB
+and the explicitly configured ECS container health check use liveness.
+ECS ignores a health check declared only in the Docker image. `/readyz` reports cluster readiness.
+Storage failures reject affected joins/flushes and increment persistence errors.
+Membership failures also set `NotReady`. ECS does not repeatedly replace otherwise
+live workers during a dependency outage. Recovery is bounded by the last
+confirmed lease and dependency recovery, not by a promised fixed outage duration.
+
+Alarms cover readiness, maximum worker capacity, maximum event-loop delay, persistence
 failures, and rejected connections. Notifications require `alarm_actions`.
 Inspect DynamoDB throttle reasons, request latency, and the configured billing
 mode separately. The repository uses on-demand tables; this does not prove that
 a particular customer deployment applied that configuration or has no hot key,
 quota, or throttling problem.
+
+## Deletion and snapshot retention
+
+Deleting an intent, project, or legacy sprint first writes a permanent scope
+tombstone. A strongly consistent scan fences all matching documents, including
+arbitrary artifact ids, epochs, and legacy names, before deleting their metadata.
+The marker stores a compare-and-swap scan cursor so a timed-out deletion resumes
+instead of rescanning from the beginning. An incomplete API deletion returns 409 `deletion_pending`; retry it shortly.
+The business cascade proceeds after document fencing succeeds.
+
+The deletion path removes every S3 object version and delete marker under that
+scope. A scheduled Lambda revisits due tombstones through the sparse `cleanup`
+index every minute (at most 20 per invocation), then hourly, to remove uploads
+that completed late or had uncertain responses. Keep scope tombstones permanently;
+the document namespace must never be reused. Large deletion backlogs take multiple
+invocations and need operational monitoring; this is not instantaneous erasure.
+
+Existing tombstones need a one-time index backfill. Inspect the dry run, then apply:
+
+```bash
+YJS_DOCUMENTS_TABLE=your-table node scripts/backfill-yjs-deletion-cleanup.mjs
+YJS_DOCUMENTS_TABLE=your-table node scripts/backfill-yjs-deletion-cleanup.mjs --apply
+```
+
+Provision N+1 capacity for worker loss and deployments. Autoscaling reacts after
+metrics and task startup; it is not a substitute for spare capacity. A 400-client
+single-intent test does not qualify thousands of tenants, regional failure,
+long-term CRDT history growth, or a single enormous hot document.
 
 ## Reproducible validation
 

@@ -74,11 +74,11 @@ resource "aws_ecr_lifecycle_policy" "yjs_server" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the last 3 images"
+      description  = "Keep the last 30 release images for rollout rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 3
+        countNumber = 30
       }
       action = {
         type = "expire"
@@ -92,6 +92,7 @@ module "yjs_docker_build" {
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
 
+  keep_remotely   = true
   create_ecr_repo = false
   ecr_repo        = aws_ecr_repository.yjs_server.name
   ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
@@ -194,6 +195,7 @@ resource "aws_iam_role_policy" "ecs_task" {
 
 # Task Definition
 resource "aws_ecs_task_definition" "yjs_server" {
+  skip_destroy             = true
   family                   = "${var.project_name}-yjs-server-${var.environment}"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
@@ -207,6 +209,15 @@ resource "aws_ecs_task_definition" "yjs_server" {
     image       = module.yjs_docker_build.image_uri
     essential   = true
     stopTimeout = 120
+    # ECS ignores image-only Docker HEALTHCHECK instructions. Register the
+    # liveness probe here so container health also avoids dependency restarts.
+    healthCheck = {
+      command     = ["CMD-SHELL", "wget --spider -q http://localhost:1234/livez || exit 1"]
+      interval    = 30
+      timeout     = 5
+      startPeriod = 30
+      retries     = 3
+    }
     portMappings = [{
       containerPort = 1234
       protocol      = "tcp"
@@ -257,6 +268,7 @@ resource "aws_ecs_task_definition" "yjs_server" {
   }])
 
   lifecycle {
+    create_before_destroy = true
     precondition {
       condition     = try(contains(local.valid_memory[tostring(local.worker_cpu)], local.worker_memory), false)
       error_message = "Choose a supported Fargate CPU/memory pair (256–4096 CPU units)."
@@ -392,13 +404,14 @@ resource "aws_ecs_service" "yjs_server" {
   task_definition = aws_ecs_task_definition.yjs_server.arn
   desired_count   = local.min_capacity
   launch_type     = "FARGATE"
-  # Standalone tasks cannot overlap: their documents are process-local.
-  deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 100
+  # Only the one-time mode transition needs a stop-before-start deployment.
+  # Once every worker uses leases, replacement capacity must become healthy first.
+  deployment_minimum_healthy_percent = var.scaling.cluster_enabled && !var.scaling.mode_transition ? 100 : 0
+  deployment_maximum_percent         = var.scaling.cluster_enabled && !var.scaling.mode_transition ? 200 : 100
   # Existing services retain AZ rebalancing when an update omits it. Explicitly
   # disable it in the same update: ECS rejects rebalancing with maximumPercent
   # <= 100, which we require for standalone upgrades and the mode transition.
-  availability_zone_rebalancing     = "DISABLED"
+  availability_zone_rebalancing     = var.scaling.cluster_enabled && !var.scaling.mode_transition ? "ENABLED" : "DISABLED"
   health_check_grace_period_seconds = 60
 
   deployment_circuit_breaker {

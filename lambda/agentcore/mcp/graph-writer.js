@@ -169,6 +169,7 @@ const RESERVED_PROPS = new Set([
   'artifact_aliases',
   'generation',
   'collaboration_epoch',
+  'edit_revision',
   'version_count',
   'created_at',
   'updated_at',

@@ -8,11 +8,13 @@ interface UseAutoSaveOptions {
   skipInitial?: boolean;
   /** Give a different document its own save queue and deduplication state. */
   resetKey?: unknown;
+  /** Run the last save before its collaboration transport is released. */
+  beforeDisconnect?: (save: () => Promise<void>) => () => void;
 }
 
 class SaveQueue<T> {
   getData: () => T | null;
-  onSave: (data: T) => Promise<void>;
+  onSave: (data: T) => Promise<T | void>;
   interval = 2000;
   maxWait = 10_000;
   enabled = true;
@@ -26,7 +28,7 @@ class SaveQueue<T> {
   failures = 0;
   previousDeps: readonly unknown[] | null = null;
 
-  constructor(getData: () => T | null, onSave: (data: T) => Promise<void>) {
+  constructor(getData: () => T | null, onSave: (data: T) => Promise<T | void>) {
     this.getData = getData;
     this.onSave = onSave;
   }
@@ -55,6 +57,13 @@ class SaveQueue<T> {
     this.schedule();
   }
 
+  // Explicit actions must include remote/recovered content even when this
+  // browser made no local edit. Passive navigation still flushes only dirty work.
+  flushLatest = (): Promise<void> => {
+    this.changed();
+    return this.flush();
+  };
+
   flush = async (): Promise<void> => {
     this.cancelTimer();
     const requiredRevision = this.revision;
@@ -70,8 +79,10 @@ class SaveQueue<T> {
         const snapshot = JSON.stringify(data);
         const save = this.onSave;
         this.running = (async () => {
-          if (snapshot !== this.lastSaved) await save(data);
-          this.lastSaved = snapshot;
+          const saved = snapshot !== this.lastSaved ? await save(data) : undefined;
+          // A collaboration barrier can incorporate remote edits. Deduplicate
+          // against the payload actually written, not the earlier captured one.
+          this.lastSaved = saved === undefined ? snapshot : JSON.stringify(saved);
           this.savedRevision = revision;
           this.failures = 0;
           if (this.savedRevision === this.revision) this.firstDirtyAt = null;
@@ -96,7 +107,7 @@ class SaveQueue<T> {
  */
 export function useAutoSave<T = Record<string, string>>(
   getData: () => T | null,
-  onSave: (data: T) => Promise<void>,
+  onSave: (data: T) => Promise<T | void>,
   deps: readonly unknown[],
   options?: UseAutoSaveOptions,
 ) {
@@ -129,6 +140,9 @@ export function useAutoSave<T = Record<string, string>>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue, ...deps, enabled, skipInitial]);
 
+  const beforeDisconnect = options?.beforeDisconnect;
+  useEffect(() => beforeDisconnect?.(queue.flush), [queue, beforeDisconnect]);
+
   useEffect(() => {
     queue.disposed = false;
     const unload = () => {
@@ -143,5 +157,5 @@ export function useAutoSave<T = Record<string, string>>(
     };
   }, [queue]);
 
-  return { flush: queue.flush };
+  return { flush: queue.flush, flushLatest: queue.flushLatest };
 }

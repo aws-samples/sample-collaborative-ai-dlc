@@ -32,7 +32,7 @@ export function useCollaborativeInception(
   userName: string,
   autoSave?: AutoSaveCallbacks,
 ) {
-  const { doc, synced, remoteUsers, setCursor, flushDocument } = useYjsDocument(
+  const { doc, synced, remoteUsers, setCursor, flushDocument, beforeDisconnect } = useYjsDocument(
     `inception-${projectId}`,
     userName,
     generateColor(userName),
@@ -298,6 +298,7 @@ export function useCollaborativeInception(
     enabled: synced && !!autoSave?.onSaveDescription,
     skipInitial: true,
     resetKey: doc,
+    beforeDisconnect,
   });
 
   // ── Auto-save answer drafts to backend ──
@@ -328,6 +329,7 @@ export function useCollaborativeInception(
     enabled: synced && !!autoSave?.onSaveDraft,
     skipInitial: true,
     resetKey: doc,
+    beforeDisconnect,
   });
 
   return {

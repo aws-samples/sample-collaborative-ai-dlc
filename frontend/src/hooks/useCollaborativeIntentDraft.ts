@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useYjsDocument } from './useYjsDocument';
 import { useAutoSave } from './useAutoSave';
+import { saveCollaborativeProjection } from '../lib/collaborativeSave';
 import { generateColor } from '../utils/colors';
 import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 import { intentsService, type Intent } from '../services/intents';
@@ -47,13 +48,21 @@ export function useCollaborativeIntentDraft(
   intentId: string | null,
   userName: string,
 ) {
-  const { doc, synced, awareness, remoteUsers, setCursor, localRevision, flushDocument } =
-    useYjsDocument(
-      intentId ? `intent-draft-${intentId}` : null,
-      userName,
-      generateColor(userName),
-      intentId ? { intentId, projectId } : undefined,
-    );
+  const {
+    doc,
+    synced,
+    awareness,
+    remoteUsers,
+    setCursor,
+    localRevision,
+    flushDocument,
+    beforeDisconnect,
+  } = useYjsDocument(
+    intentId ? `intent-draft-${intentId}` : null,
+    userName,
+    generateColor(userName),
+    intentId ? { intentId, projectId } : undefined,
+  );
   const [state, setState] = useState<IntentDraftState>({
     title: '',
     prompt: '',
@@ -192,19 +201,30 @@ export function useCollaborativeIntentDraft(
     };
   }, [doc, synced, intentId]);
 
-  const save = useCallback(
-    async (data: NonNullable<ReturnType<typeof getSaveData>>) => {
-      if (!intentId) return;
-      await flushDocument();
-      await intentsService.update(projectId, intentId, data);
-    },
-    [projectId, intentId, flushDocument],
-  );
+  const save = useCallback(async () => {
+    if (!intentId) return;
+    return saveCollaborativeProjection({
+      readVersion: () => intentsService.draftEditState(projectId, intentId),
+      flush: flushDocument,
+      readData: () => {
+        const data = getSaveData();
+        if (!data) throw new Error('Draft is not ready to save');
+        return data;
+      },
+      write: async (data, version) => {
+        await intentsService.update(projectId, intentId, {
+          ...data,
+          ifDraftRevision: version.draftRevision,
+        });
+      },
+    });
+  }, [projectId, intentId, flushDocument, getSaveData]);
 
-  const { flush } = useAutoSave(getSaveData, save, [localRevision], {
+  const { flushLatest } = useAutoSave(getSaveData, save, [localRevision], {
     enabled: synced && !!intentId,
     skipInitial: true,
     resetKey: doc,
+    beforeDisconnect,
   });
 
   return {
@@ -224,6 +244,6 @@ export function useCollaborativeIntentDraft(
     setSkipStageIds,
     // Awaitable flush so Start can guarantee the last edits are persisted
     // before launching (the launch reads the META row, not the Yjs doc).
-    flushDraft: flush,
+    flushDraft: flushLatest,
   };
 }

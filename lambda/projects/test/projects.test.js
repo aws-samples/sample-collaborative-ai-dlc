@@ -6,6 +6,7 @@ import { mockClient } from 'aws-sdk-client-mock';
 import {
   DynamoDBDocumentClient,
   QueryCommand,
+  ScanCommand,
   BatchWriteCommand,
   GetCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -38,6 +39,8 @@ let environmentRegistryItems = new Map();
 
 const installProcessTableFakes = () => {
   ddbMock.reset();
+  ddbMock.onAnyCommand().resolves({});
+  ddbMock.on(ScanCommand).resolves({ Items: [] });
   batchWrites = [];
   ddbMock.on(QueryCommand).callsFake((input) => {
     // listProjectExecutions: GSI1 query keyed by PROJECT#<id>.
@@ -841,6 +844,22 @@ describe('GET/PUT /projects/:id/environment', () => {
 });
 
 describe('DELETE /projects/:id', () => {
+  it('keeps the project and reports a retryable conflict while collaboration cleanup is pending', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    ddbMock
+      .on(ScanCommand)
+      .rejects(Object.assign(new Error('scan budget exhausted'), { code: 'YJS_CLEANUP_PENDING' }));
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('deletion_pending');
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
+  });
+
   it('returns 204 for the owner and removes the project', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub);

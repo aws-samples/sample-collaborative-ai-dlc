@@ -37,6 +37,42 @@ describe('useAutoSave', () => {
     unmount();
   });
 
+  it('deduplicates against the value actually persisted after a collaboration barrier', async () => {
+    const save = vi.fn().mockResolvedValueOnce('AB').mockResolvedValueOnce('A');
+    const h = renderHook(
+      ({ revision }) => useAutoSave(() => 'A', save, [revision], { skipInitial: true }),
+      { initialProps: { revision: 0 } },
+    );
+    h.rerender({ revision: 1 });
+    await act(() => h.result.current.flush());
+    // The first save incorporated a remote B. A later local reversion to A
+    // must still write, despite matching the original pre-barrier capture.
+    h.rerender({ revision: 2 });
+    await act(() => h.result.current.flush());
+    expect(save).toHaveBeenCalledTimes(2);
+    h.unmount();
+  });
+
+  it('explicitly saves recovered and remote-only content without passive autosaves', async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const h = renderHook(
+      ({ value }) => useAutoSave(() => value, save, [0], { skipInitial: true }),
+      { initialProps: { value: 'recovered checkpoint' } },
+    );
+    await advance(3000);
+    await act(() => h.result.current.flush());
+    expect(save).not.toHaveBeenCalled();
+    await act(() => h.result.current.flushLatest());
+    expect(save).toHaveBeenLastCalledWith('recovered checkpoint');
+    h.rerender({ value: 'remote edit before Start' });
+    await advance(3000);
+    expect(save).toHaveBeenCalledTimes(1);
+    await act(() => h.result.current.flushLatest());
+    expect(save).toHaveBeenLastCalledWith('remote edit before Start');
+    h.unmount();
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
   it('saves continuous edits by the maximum wait deadline', async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     const { rerender, unmount } = renderHook(

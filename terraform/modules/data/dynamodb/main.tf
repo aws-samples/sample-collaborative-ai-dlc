@@ -91,6 +91,23 @@ resource "aws_dynamodb_table" "yjs_documents" {
     type = "S"
   }
 
+  attribute {
+    name = "cleanupPartition"
+    type = "S"
+  }
+  attribute {
+    name = "cleanupAfter"
+    type = "N"
+  }
+  global_secondary_index {
+    name            = "cleanup"
+    hash_key        = "cleanupPartition"
+    range_key       = "cleanupAfter"
+    projection_type = "ALL"
+    read_capacity   = local.read_capacity
+    write_capacity  = local.write_capacity
+  }
+
   tags = var.tags
 }
 

@@ -200,13 +200,30 @@ export const applyArtifactEdit = async ({
   editedByName = '',
   origin,
   editRef = '',
+  ifEditRevision,
+  ifCollaborationEpoch,
   now,
 }) => {
   if (!EDIT_ORIGINS.includes(origin)) throw new Error(`invalid edit origin: ${origin}`);
   const exists = await artifactAt(g, intentId, artifactId).hasNext();
   if (!exists) throw new Error(`Artifact "${artifactId}" not found`);
   const ts = now ?? new Date().toISOString();
-  let write = artifactAt(g, intentId, artifactId)
+  const editRevision = randomUUID();
+  let target = artifactAt(g, intentId, artifactId);
+  // Test the revision and epoch in the SAME graph mutation as the content write.
+  // A preflight read alone permits a delayed autosave to overwrite another editor.
+  if (ifEditRevision !== undefined)
+    target =
+      ifEditRevision === null
+        ? target.hasNot('edit_revision')
+        : target.has('edit_revision', ifEditRevision);
+  if (ifCollaborationEpoch !== undefined)
+    target =
+      ifCollaborationEpoch === null
+        ? target.hasNot('collaboration_epoch')
+        : target.has('collaboration_epoch', ifCollaborationEpoch);
+  let write = target
+    .property(cardinality.single, 'edit_revision', editRevision)
     .property(cardinality.single, 'content', String(content ?? ''))
     .property(cardinality.single, 'updated_at', ts)
     .property(cardinality.single, 'edited_by', String(editedBy ?? ''))
@@ -218,9 +235,14 @@ export const applyArtifactEdit = async ({
   // fresh editor document so a recovered old snapshot cannot overwrite it.
   if (origin === 'quorum')
     write = write.property(cardinality.single, 'collaboration_epoch', randomUUID());
-  await write.next();
+  const result = await write.id().next();
+  if (result.done) {
+    const error = new Error('Artifact changed while saving — retry from the current document');
+    error.code = 'edit_conflict';
+    throw error;
+  }
   await clearArtifactStale({ g, intentId, artifactId });
-  return { artifactId, editedAt: ts };
+  return { artifactId, editedAt: ts, editRevision };
 };
 
 /**

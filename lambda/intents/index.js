@@ -1,3 +1,4 @@
+import { reconcileYjsDeletion } from '../shared/yjs-revocation.js';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
@@ -900,6 +901,7 @@ const mapArtifactHead = (row, legacyVersionCount = 0) => ({
   stageAttempt: Number(row.stage_attempt) || 0,
   generation: Math.max(1, Number(row.generation) || 1),
   collaborationEpoch: row.collaboration_epoch ?? null,
+  editRevision: row.edit_revision ?? null,
   versionCount: Math.max(0, Number(row.version_count) || 0) + legacyVersionCount,
   aliases: artifactAliases(row),
   createdAt: row.created_at ?? null,
@@ -968,6 +970,7 @@ const fetchArtifactRow = async (g, intentId, artifactId) => {
     title: row.title ?? null,
     supersededAt: row.superseded_at ?? null,
     collaborationEpoch: row.collaboration_epoch ?? null,
+    editRevision: row.edit_revision ?? null,
   };
 };
 
@@ -1244,6 +1247,7 @@ const mapIntent = (meta) => ({
   projectId: meta.projectId,
   title: meta.title ?? null,
   prompt: meta.prompt ?? null,
+  draftRevision: meta.draftRevision ?? 0,
   status: meta.status,
   branch: meta.branch ?? null,
   baseBranch: meta.baseBranch ?? null,
@@ -1519,6 +1523,12 @@ const authorize = async (g, projectId, sub, response) => {
 
 export const handler = async (event) => {
   const response = buildResponse(event);
+  if (event?.action === 'cleanup-yjs-deletions')
+    return reconcileYjsDeletion({
+      ddb,
+      table: process.env.YJS_DOCUMENTS_TABLE,
+      bucket: ARTIFACTS_BUCKET(),
+    });
   if (event?.source === 'aws.s3') {
     await ingestAttachmentUpload(event);
     return { ok: true };
@@ -2144,6 +2154,16 @@ export const handler = async (event) => {
           code: 'artifact_replaced',
         });
       }
+      if (
+        !Object.hasOwn(data, 'ifEditRevision') ||
+        (data.ifEditRevision !== null && typeof data.ifEditRevision !== 'string') ||
+        !Object.hasOwn(data, 'collaborationEpoch')
+      ) {
+        return response(428, {
+          error: 'Read the edit state before saving',
+          code: 'edit_precondition_required',
+        });
+      }
       const canonicalArtifactId = artifact.id;
       const responder = getResponder(event);
       // Closure BEFORE the write (root is excluded by construction either way).
@@ -2155,16 +2175,25 @@ export const handler = async (event) => {
         console.error('Downstream closure failed:', err.message);
         return [];
       });
-      const edit = await applyArtifactEdit({
-        g,
-        intentId,
-        artifactId: canonicalArtifactId,
-        content: data.content,
-        editedBy: responder.sub,
-        editedByName: responder.displayName,
-        origin: 'human',
-        editRef: `human:${responder.sub}`,
-      });
+      let edit;
+      try {
+        edit = await applyArtifactEdit({
+          g,
+          intentId,
+          artifactId: canonicalArtifactId,
+          content: data.content,
+          editedBy: responder.sub,
+          editedByName: responder.displayName,
+          origin: 'human',
+          editRef: `human:${responder.sub}`,
+          ifEditRevision: data.ifEditRevision,
+          ifCollaborationEpoch: data.collaborationEpoch,
+        });
+      } catch (error) {
+        if (error.code === 'edit_conflict')
+          return response(409, { error: error.message, code: 'edit_conflict' });
+        throw error;
+      }
       const staleMarked = await markArtifactsStale({
         g,
         intentId,
@@ -3472,6 +3501,12 @@ export const handler = async (event) => {
         }
         patch.planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
       }
+      if (!Number.isSafeInteger(data.ifDraftRevision) || data.ifDraftRevision < 0) {
+        return response(428, {
+          error: 'Read the edit state before saving',
+          code: 'edit_precondition_required',
+        });
+      }
       let updated;
       try {
         updated = await store.updateExecution({
@@ -3479,11 +3514,15 @@ export const handler = async (event) => {
           // CAS on DRAFT so a concurrent Start can never race a header edit
           // into a launched run.
           fromStatus: 'DRAFT',
+          ifDraftRevision: data.ifDraftRevision,
           ...patch,
         });
       } catch (err) {
         if (err?.name === 'ConditionalCheckFailedException') {
-          return response(409, { error: 'Intent left DRAFT while editing — reload it' });
+          return response(409, {
+            error: 'Draft changed while saving — retry from the current document',
+            code: 'edit_conflict',
+          });
         }
         throw err;
       }
@@ -4627,6 +4666,22 @@ export const handler = async (event) => {
     }
 
     if (intentId && httpMethod === 'GET') {
+      // Lightweight preflight for autosaves: no graph projection or workflow reads.
+      // Membership was checked above; an artifact is always looked up within this intent.
+      if (event.queryStringParameters?.editState) {
+        const meta = await store.getExecution(intentId, { consistentRead: true });
+        if (!meta || meta.projectId !== projectId)
+          return response(404, { error: 'Intent not found' });
+        const requested = event.queryStringParameters.editState;
+        if (requested === 'draft')
+          return response(200, { draftRevision: meta.draftRevision ?? 0, status: meta.status });
+        const artifact = await fetchArtifactRow(g, intentId, requested);
+        if (!artifact) return response(404, { error: 'Artifact not found' });
+        return response(200, {
+          editRevision: artifact.editRevision,
+          collaborationEpoch: artifact.collaborationEpoch,
+        });
+      }
       // GET /projects/{projectId}/intents/{intentId}/graph — the intent's
       // Neptune knowledge subgraph (artifacts + typed relations + questions +
       // discussions + the project knowledge corpus) for the KnowledgeGraph
@@ -5020,6 +5075,11 @@ export const handler = async (event) => {
 
     return response(405, { error: 'Method not allowed' });
   } catch (error) {
+    if (error?.code === 'YJS_CLEANUP_PENDING')
+      return response(409, {
+        error: 'Collaboration cleanup is in progress. Retry deletion shortly.',
+        code: 'deletion_pending',
+      });
     // Bind the caught exception and log it with request context. Prior form
     // was `catch {}` + a static `console.error('intents handler error')`, so
     // every 500 in CloudWatch was an identical opaque string with no stack

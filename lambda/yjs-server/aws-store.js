@@ -40,6 +40,7 @@ export class AwsStore {
       throw new Error('Incomplete Yjs cluster storage');
     Object.assign(this, { documentsTable, membersTable, bucket, ddb, s3, logger });
     this.transactions = new Map();
+    this.waitingClaims = new Map();
   }
 
   transact(documentId, input) {
@@ -47,12 +48,17 @@ export class AwsStore {
     // Serialize this worker's transactions on each parent scope; other workers
     // can still contend, so retry explicitly transient cancellations with jitter.
     const scope = scopeKey(documentId);
+    const waiting = this.waitingClaims.get(scope) ?? 0;
+    if (waiting >= 32) return Promise.reject(new Error('Scope admission queue is full'));
+    this.waitingClaims.set(scope, waiting + 1);
+    const queuedAt = Date.now();
     const previous = this.transactions.get(scope) ?? Promise.resolve();
     const command = new TransactWriteCommand({ ClientRequestToken: randomUUID(), ...input });
     const operation = previous
       .catch(() => {})
       .then(async () => {
         for (let attempt = 0; ; attempt++) {
+          if (Date.now() - queuedAt > 5000) throw new Error('Scope admission deadline exceeded');
           try {
             return await this.ddb.send(command);
           } catch (error) {
@@ -63,6 +69,9 @@ export class AwsStore {
       });
     this.transactions.set(scope, operation);
     return operation.finally(() => {
+      const left = this.waitingClaims.get(scope) - 1;
+      if (left) this.waitingClaims.set(scope, left);
+      else this.waitingClaims.delete(scope);
       if (this.transactions.get(scope) === operation) this.transactions.delete(scope);
     });
   }
@@ -121,7 +130,8 @@ export class AwsStore {
             Key: { documentId: lease.documentId },
             UpdateExpression:
               'SET ownerId = :owner, ownerAddress = :address, leaseToken = :token, leaseUntil = :until',
-            ConditionExpression: 'attribute_not_exists(leaseUntil) OR leaseUntil <= :now',
+            ConditionExpression:
+              'attribute_not_exists(deletedAt) AND (attribute_not_exists(leaseUntil) OR leaseUntil <= :now)',
             ExpressionAttributeValues: {
               ':owner': lease.ownerId,
               ':address': lease.ownerAddress,
@@ -137,24 +147,18 @@ export class AwsStore {
   }
 
   renew(lease, until, now) {
-    return this.transact(lease.documentId, {
-      TransactItems: [
-        this.scopeCondition(lease.documentId),
-        {
-          Update: {
-            TableName: this.documentsTable,
-            Key: { documentId: lease.documentId },
-            UpdateExpression: 'SET leaseUntil = :until',
-            ConditionExpression: 'leaseToken = :token AND leaseUntil > :now',
-            ExpressionAttributeValues: {
-              ':until': until,
-              ':token': lease.leaseToken,
-              ':now': now,
-            },
-          },
-        },
-      ],
-    });
+    // Renewals touch only this document. Scope deletion first blocks claims,
+    // then atomically fences every existing document before returning success.
+    return this.ddb.send(
+      new UpdateCommand({
+        TableName: this.documentsTable,
+        Key: { documentId: lease.documentId },
+        UpdateExpression: 'SET leaseUntil = :until',
+        ConditionExpression:
+          'attribute_not_exists(deletedAt) AND leaseToken = :token AND leaseUntil > :now',
+        ExpressionAttributeValues: { ':until': until, ':token': lease.leaseToken, ':now': now },
+      }),
+    );
   }
 
   async load(lease) {
@@ -189,40 +193,42 @@ export class AwsStore {
       }),
     );
     try {
-      await this.transact(lease.documentId, {
-        ClientRequestToken: randomUUID(),
-        TransactItems: [
-          this.scopeCondition(lease.documentId),
-          {
-            Update: {
-              TableName: this.documentsTable,
-              Key: { documentId: lease.documentId },
-              UpdateExpression:
-                'SET snapshotKey = :key, snapshotVersion = :version, snapshotBytes = :bytes, snapshotSequence = :sequence',
-              ConditionExpression:
-                'leaseToken = :token AND leaseUntil > :now AND (attribute_not_exists(snapshotSequence) OR snapshotSequence = :previous)',
-              ExpressionAttributeValues: {
-                ':key': key,
-                ':version': object.VersionId ?? null,
-                ':bytes': snapshot.byteLength,
-                ':token': lease.leaseToken,
-                ':now': now,
-                ':previous': previousSequence,
-                ':sequence': previousSequence + 1,
-              },
-            },
+      await this.ddb.send(
+        new UpdateCommand({
+          TableName: this.documentsTable,
+          Key: { documentId: lease.documentId },
+          UpdateExpression:
+            'SET snapshotKey = :key, snapshotVersion = :version, snapshotBytes = :bytes, snapshotSequence = :sequence',
+          ConditionExpression:
+            'attribute_not_exists(deletedAt) AND leaseToken = :token AND leaseUntil > :now AND (attribute_not_exists(snapshotSequence) OR snapshotSequence = :previous)',
+          ExpressionAttributeValues: {
+            ':key': key,
+            ':version': object.VersionId ?? null,
+            ':bytes': snapshot.byteLength,
+            ':token': lease.leaseToken,
+            ':now': now,
+            ':previous': previousSequence,
+            ':sequence': previousSequence + 1,
           },
-        ],
-      });
+        }),
+      );
     } catch (error) {
-      // A timeout may mean the transaction committed but its response was
-      // lost. Never delete the object unless cancellation is definitive.
-      if (error.name === 'TransactionCanceledException') {
-        await this.removeSnapshot(key, object.VersionId);
+      // SDK retries can report a conditional failure AFTER the first attempt
+      // committed and lost its response. Read back even on conditional failure
+      // before deciding whether the candidate object can be removed.
+      let committed;
+      let confirmed = false;
+      try {
+        committed = await this.get(lease.documentId);
+        confirmed = true;
+      } catch {
+        /* An uncertain candidate is retained for deletion reconciliation. */
+      }
+      if (committed?.snapshotKey !== key) {
+        if (confirmed && error.name === 'ConditionalCheckFailedException')
+          await this.removeSnapshot(key, object.VersionId);
         throw error;
       }
-      const committed = await this.get(lease.documentId).catch(() => null);
-      if (committed?.snapshotKey !== key) throw error;
     }
     if (previous.snapshotKey)
       await this.removeSnapshot(previous.snapshotKey, previous.snapshotVersion);

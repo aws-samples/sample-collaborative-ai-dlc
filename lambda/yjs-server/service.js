@@ -58,7 +58,12 @@ export const createCollaborationServer = ({
   let rejectedConnections = 0;
   const loop = monitorEventLoopDelay({ resolution: 20 });
   const server = http.createServer((req, res) => {
-    if (['GET', 'HEAD'].includes(req.method) && (req.url === '/' || req.url === '/healthz')) {
+    if (['GET', 'HEAD'].includes(req.method) && ['/healthz', '/livez'].includes(req.url)) {
+      // Dependency outages close admission through readiness/lease checks.
+      // Replacing every healthy process during a shared outage cannot repair it.
+      res.writeHead(draining ? 503 : 200, { 'Content-Type': 'text/plain' });
+      res.end(draining ? 'draining' : 'alive');
+    } else if (['GET', 'HEAD'].includes(req.method) && (req.url === '/' || req.url === '/readyz')) {
       const ready = !draining && (!cluster || cluster.ready);
       res.writeHead(ready ? 200 : 503, { 'Content-Type': 'text/plain' });
       res.end(ready ? 'ok' : 'not ready');
@@ -204,7 +209,7 @@ export const createCollaborationServer = ({
       });
     } catch (error) {
       rejectedConnections++;
-      logger.warn('Yjs upgrade unavailable:', error.name);
+      logger.warn('Yjs upgrade unavailable:', error.code ?? error.name);
       reject(socket, 503);
     } finally {
       clearTimeout(deadline);
@@ -229,6 +234,7 @@ export const createCollaborationServer = ({
       Updates: rooms.updates,
       UpdateBytes: rooms.updateBytes,
       PersistenceErrors: rooms.persistenceErrors,
+      NotReady: cluster && !cluster.ready ? 1 : 0,
       RejectedConnections: rejectedConnections,
       CapacityUtilization:
         100 *

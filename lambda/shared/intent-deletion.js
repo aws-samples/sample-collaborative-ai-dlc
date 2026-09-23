@@ -16,7 +16,6 @@
 // agent-chosen id) is never dropped for this intent.
 
 import gremlin from 'gremlin';
-import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { SendDurableExecutionCallbackSuccessCommand } from '@aws-sdk/client-lambda';
 import { StopRuntimeSessionCommand } from '@aws-sdk/client-bedrock-agentcore';
 import { DeleteObjectsCommand, ListObjectVersionsCommand, S3Client } from '@aws-sdk/client-s3';
@@ -173,32 +172,18 @@ const deleteIntentCascade = async ({
     throw new IntentRunningError(intentId);
   }
 
-  // Collect the derived Yjs document ids BEFORE their sources are deleted:
-  // gate editors (intent-sq-<id>-<humanTaskId>, from HUMAN# rows), stage review
-  // feedback docs (intent-review-<id>-<humanTaskId>), discussion threads
-  // (intent-discussion-<id>-<discussionId>, from the Neptune Discussion vertices)
-  // and the presence doc.
-  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-  await revokeYjsScope({ ddb, table: yjsTable, type: 'intent', id: intentId });
+  await revokeYjsScope({
+    ddb,
+    table: yjsTable,
+    type: 'intent',
+    id: intentId,
+    bucket: artifactsBucket,
+  });
   await Promise.all([
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/committed/${intentId}/`),
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/staging/${intentId}/`),
     purgeAttachmentPrefix(artifactsBucket, `workflow-exports/${intentId}/`),
   ]);
-  const discussionIds = await g
-    .V()
-    .has('Intent', 'id', intentId)
-    .out('HAS_DISCUSSION')
-    .values('id')
-    .toList()
-    .catch(() => []);
-  const yjsDocIds = [
-    `intent-presence-${intentId}`,
-    `intent-draft-${intentId}`,
-    ...(records.humanTasks ?? []).map((h) => `intent-sq-${intentId}-${h.humanTaskId}`),
-    ...(records.humanTasks ?? []).map((h) => `intent-review-${intentId}-${h.humanTaskId}`),
-    ...discussionIds.map((d) => `intent-discussion-${intentId}-${d}`),
-  ];
 
   // Retire anything that could still wake up (same mechanics as cancel), then
   // stop any live session so nothing writes into the deleted partition. A
@@ -208,21 +193,6 @@ const deleteIntentCascade = async ({
     await retireParkedRun({ store, lambdaClient, executionId: intentId, reason });
   }
   await stopRuntimeSessions(agentcore, agentcoreRuntimeTarget ?? agentcoreRuntimeArn, intentId);
-
-  // Yjs docs — best-effort: they are unreachable once the intent is gone (doc
-  // ids are derived from the intent id), so a failed delete here only leaves
-  // harmless orphans and must not block the real deletion.
-  if (yjsTable && ddb) {
-    await Promise.all(
-      yjsDocIds.map(async (documentId) => {
-        try {
-          await ddb.send(new DeleteCommand({ TableName: yjsTable, Key: { documentId } }));
-        } catch (err) {
-          console.error(`Yjs doc delete failed (${documentId}):`, err.message);
-        }
-      }),
-    );
-  }
 
   // Neptune cascade, in TWO passes because drop() consumes eagerly — a
   // grandchild reached THROUGH a vertex that the same traversal also drops can

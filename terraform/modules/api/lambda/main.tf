@@ -615,14 +615,14 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
           "s3:DeleteObject",
           "s3:DeleteObjectVersion",
         ]
-        Resource = ["${var.artifacts_bucket_arn}/workflow-exports/*"]
+        Resource = ["${var.artifacts_bucket_arn}/workflow-exports/*", "${var.artifacts_bucket_arn}/yjs-documents/*"]
       },
       {
         Effect   = "Allow"
         Action   = ["s3:ListBucketVersions"]
         Resource = [var.artifacts_bucket_arn]
         Condition = {
-          StringLike = { "s3:prefix" = ["workflow-exports/*"] }
+          StringLike = { "s3:prefix" = ["workflow-exports/*", "yjs-documents/*"] }
         }
       },
       # Project-tier MCP secrets: the projects lambda lists (set-state only),
@@ -688,8 +688,8 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
         # Yjs documents: remove the intent-scoped realtime docs (gate editors,
         # discussion threads, presence) for each deleted intent.
         Effect   = "Allow"
-        Action   = ["dynamodb:DeleteItem", "dynamodb:PutItem"]
-        Resource = [var.yjs_documents_table_arn]
+        Action   = ["dynamodb:GetItem", "dynamodb:DeleteItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Scan", "dynamodb:Query"]
+        Resource = [var.yjs_documents_table_arn, "${var.yjs_documents_table_arn}/index/cleanup"]
       },
       {
         # Wake a parked run's suspended durable callback with a cancel sentinel
@@ -2283,8 +2283,8 @@ resource "aws_iam_role_policy" "intents" {
         # Yjs documents: remove the intent-scoped realtime docs (gate editors,
         # discussion threads, presence) when an intent is deleted.
         Effect   = "Allow"
-        Action   = ["dynamodb:DeleteItem", "dynamodb:PutItem"]
-        Resource = [var.yjs_documents_table_arn]
+        Action   = ["dynamodb:GetItem", "dynamodb:DeleteItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Scan", "dynamodb:Query"]
+        Resource = [var.yjs_documents_table_arn, "${var.yjs_documents_table_arn}/index/cleanup"]
       },
       {
         # Blocks table: resolve a workflow's latest version to pin at create
@@ -2406,7 +2406,7 @@ resource "aws_iam_role_policy" "intents" {
           "s3:DeleteObject",
           "s3:DeleteObjectVersion",
         ]
-        Resource = "${var.artifacts_bucket_arn}/workflow-exports/*"
+        Resource = ["${var.artifacts_bucket_arn}/workflow-exports/*", "${var.artifacts_bucket_arn}/yjs-documents/*"]
       },
       {
         # Project-uploaded Markdown rules are copied into the selected native
@@ -2768,4 +2768,23 @@ module "v2_orchestrator_alias" {
   # The function's own resource policy already grants the intents role invoke;
   # no extra alias-scoped triggers needed.
   create_async_event_config = false
+}
+
+# Sparse tombstone index: catch late/uncertain uploads after parent deletion.
+resource "aws_cloudwatch_event_rule" "yjs_cleanup" {
+  name                = "${var.project_name}-yjs-cleanup-${var.environment}"
+  schedule_expression = "rate(1 minute)"
+}
+resource "aws_cloudwatch_event_target" "yjs_cleanup" {
+  rule      = aws_cloudwatch_event_rule.yjs_cleanup.name
+  target_id = "yjs-cleanup"
+  arn       = module.intents_lambda.lambda_function_arn
+  input     = jsonencode({ action = "cleanup-yjs-deletions" })
+}
+resource "aws_lambda_permission" "yjs_cleanup" {
+  statement_id  = "AllowYjsCleanup"
+  action        = "lambda:InvokeFunction"
+  function_name = module.intents_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.yjs_cleanup.arn
 }

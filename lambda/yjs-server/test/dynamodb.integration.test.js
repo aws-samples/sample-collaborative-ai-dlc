@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DynamoDBClient, CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { AwsStore } from '../aws-store.js';
-import { scopeKey } from '../cluster.js';
+import { revokeYjsScope } from '../../shared/yjs-revocation.js';
 import { DOCUMENT, logger } from './helpers.js';
 
 // The root test runner starts DynamoDB Local. The transport-only npm test in
@@ -95,16 +95,58 @@ describe.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)('DynamoDB ownership transa
   it('blocks checkpoints and reacquisition for a revoked parent scope', async () => {
     const name = DOCUMENT.replace('b6326738', 'a6326738');
     const owner = await store.claim(lease(name), Date.now());
-    await ddb.send(
-      new PutCommand({
-        TableName: documentsTable,
-        Item: { documentId: scopeKey(name), deletedAt: Date.now() },
-      }),
-    );
+    await revokeYjsScope({
+      ddb,
+      table: documentsTable,
+      type: 'intent',
+      id: name.slice('intent-draft-'.length),
+    });
     await expect(store.renew(owner, Date.now() + 30_000, Date.now())).rejects.toThrow();
     await expect(store.save(owner, new Uint8Array([5]), Date.now())).rejects.toThrow();
-    await store.release(owner);
+    await expect(store.release(owner)).rejects.toThrow();
     await expect(store.claim(lease(name), Date.now())).rejects.toThrow();
+  });
+
+  it('resumes bounded deletion scans without reopening a scope or restarting completed scans', async () => {
+    const id = randomUUID();
+    const a = `intent-artifact-${id}-a-epoch-first`;
+    const b = `intent-artifact-${id}-b-epoch-second`;
+    await store.claim(lease(a), Date.now());
+    await store.claim(lease(b), Date.now());
+    let scans = 0;
+    const paginated = {
+      send: (command) => {
+        if (command.constructor.name === 'ScanCommand') {
+          scans++;
+          command.input.Limit = 1;
+        }
+        return ddb.send(command);
+      },
+    };
+    let pending = 0;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        await revokeYjsScope({
+          ddb: paginated,
+          table: documentsTable,
+          type: 'intent',
+          id,
+          scanBudgetMs: 0,
+        });
+        break;
+      } catch (error) {
+        expect(error.code).toBe('YJS_CLEANUP_PENDING');
+        pending++;
+      }
+    }
+    expect(pending).toBeGreaterThan(0);
+    expect((await store.get(`scope#intent:${id}`)).cleanupState).toBe('fenced');
+    expect(await store.get(a)).toBeUndefined();
+    expect(await store.get(b)).toBeUndefined();
+    await expect(store.claim(lease(a), Date.now())).rejects.toThrow();
+    const completedScans = scans;
+    await revokeYjsScope({ ddb: paginated, table: documentsTable, type: 'intent', id });
+    expect(scans).toBe(completedScans);
   });
 
   it('prevents a delayed checkpoint from replacing a newer sequence', async () => {
