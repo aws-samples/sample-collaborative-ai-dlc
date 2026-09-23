@@ -546,6 +546,45 @@ describe('createProcessStore', () => {
     expect(input.ConditionExpression).toBe('#status = :pending');
   });
 
+  it('answers with attached steering in one transaction', async () => {
+    ddb.on(TransactWriteCommand).resolves({});
+
+    const result = await store.answerHumanTaskWithSteering({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      status: 'answered',
+      answer: { choice: 'A' },
+      answeredBy: 'u1',
+      steering: {
+        kind: 'gate-steer',
+        message: 'Use the event bus.',
+        targetGateId: 'h1',
+        createdBy: 'u1',
+      },
+    });
+
+    expect(result).toMatchObject({
+      answered: { humanTaskId: 'h1', status: 'answered' },
+      steering: {
+        steerId: 'st-id-1',
+        status: 'pending',
+        message: 'Use the event bus.',
+        targetGateId: 'h1',
+      },
+    });
+    const transaction = ddb.commandCalls(TransactWriteCommand)[0].args[0].input.TransactItems;
+    expect(transaction).toHaveLength(2);
+    expect(transaction[0].Update).toMatchObject({
+      Key: humanTaskKey('e1', 'h1'),
+      ConditionExpression: '#status = :pending',
+    });
+    expect(transaction[1].Put).toMatchObject({
+      Item: expect.objectContaining({ sk: 'STEER#T#st-id-1' }),
+      ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+    });
+    expect(ddb.commandCalls(GetCommand)).toHaveLength(0);
+  });
+
   it('listEvents queries the EVENT# prefix time-ordered and drains pagination', async () => {
     // The PR fan-in reads this to detect recorded git activity — a dropped
     // page could hide a push failure (the 2026-07 lost-work signal).
@@ -1065,13 +1104,19 @@ describe('steering store methods', () => {
     expect(input.ConditionExpression).toContain('attribute_not_exists(pk)');
   });
 
-  it('listPendingSteering queries GSI2 by TYPE#STEER#STATE#pending', async () => {
-    ddb.on(QueryCommand).resolves({ Items: [{ sk: 'STEER#T#st-1', steerId: 'st-1' }] });
+  it('listPendingSteering strongly reads the execution partition and filters pending rows', async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [
+        { sk: 'STEER#T#st-1', steerId: 'st-1', status: 'pending' },
+        { sk: 'STEER#T#st-2', steerId: 'st-2', status: 'consumed' },
+      ],
+    });
     const rows = await store.listPendingSteering('e1');
     expect(rows).toHaveLength(1);
     const input = ddb.commandCalls(QueryCommand)[0].args[0].input;
-    expect(input.IndexName).toBe('GSI2');
-    expect(input.ExpressionAttributeValues[':p']).toBe('TYPE#STEER#STATE#pending#');
+    expect(input.IndexName).toBeUndefined();
+    expect(input.ConsistentRead).toBe(true);
+    expect(input.ExpressionAttributeValues[':p']).toBe('STEER#');
   });
 
   it('markSteeringConsumed is a CAS on pending; a lost race returns null', async () => {

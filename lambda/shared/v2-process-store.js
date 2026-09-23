@@ -830,46 +830,97 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
-  // Resolve a pending human gate (CAS on status=pending so it can't be answered
-  // twice). `answer` is the structured answer payload.
-  const answerHumanTask = async ({
+  const humanTaskAnswerUpdate = ({
     executionId,
     humanTaskId,
     status,
     answer,
     answeredBy,
     answeredByName,
-  }) => {
-    const ts = now();
+    answeredAt,
+  }) => ({
+    TableName: table(),
+    Key: humanTaskKey(executionId, humanTaskId),
+    ConditionExpression: '#status = :pending',
+    UpdateExpression:
+      'SET #status = :status, answer = :answer, answeredBy = :by, answeredByName = :byName, answeredAt = :ts, GSI2SK = :g2sk',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: {
+      ':pending': 'pending',
+      ':status': status,
+      ':answer': answer ?? null,
+      ':by': answeredBy ?? null,
+      ':byName': answeredByName ?? null,
+      ':ts': answeredAt,
+      ':g2sk': executionTypeStateIndex({
+        executionId,
+        type: 'HUMAN',
+        state: status,
+        id: humanTaskId,
+      }).GSI2SK,
+    },
+  });
+
+  // Resolve a pending human gate (CAS on status=pending so it can't be answered
+  // twice). `answer` is the structured answer payload.
+  const answerHumanTask = async (input) => {
     try {
       const { Attributes } = await ddb.send(
         new UpdateCommand({
-          TableName: table(),
-          Key: humanTaskKey(executionId, humanTaskId),
-          ConditionExpression: '#status = :pending',
-          UpdateExpression:
-            'SET #status = :status, answer = :answer, answeredBy = :by, answeredByName = :byName, answeredAt = :ts, GSI2SK = :g2sk',
-          ExpressionAttributeNames: { '#status': 'status' },
-          ExpressionAttributeValues: {
-            ':pending': 'pending',
-            ':status': status,
-            ':answer': answer ?? null,
-            ':by': answeredBy ?? null,
-            ':byName': answeredByName ?? null,
-            ':ts': ts,
-            ':g2sk': executionTypeStateIndex({
-              executionId,
-              type: 'HUMAN',
-              state: status,
-              id: humanTaskId,
-            }).GSI2SK,
-          },
+          ...humanTaskAnswerUpdate({ ...input, answeredAt: now() }),
           ReturnValues: 'ALL_NEW',
         }),
       );
       return Attributes;
     } catch (e) {
       if (e?.name === 'ConditionalCheckFailedException') return null;
+      throw e;
+    }
+  };
+
+  // An answer with attached steering becomes visible as one atomic decision.
+  // This prevents the orchestrator from observing the answered gate and
+  // resuming before run-stage can see the course correction.
+  const answerHumanTaskWithSteering = async ({ steering, ...answerInput }) => {
+    const ts = now();
+    const steer = buildSteeringRow({
+      ...steering,
+      executionId: answerInput.executionId,
+      steerId: steering.steerId ?? `st-${nextId()}`,
+      now: ts,
+    });
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            { Update: humanTaskAnswerUpdate({ ...answerInput, answeredAt: ts }) },
+            {
+              Put: {
+                TableName: table(),
+                Item: steer,
+                ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+              },
+            },
+          ],
+        }),
+      );
+      return {
+        answered: {
+          ...answerInput,
+          answer: answerInput.answer ?? null,
+          answeredBy: answerInput.answeredBy ?? null,
+          answeredByName: answerInput.answeredByName ?? null,
+          answeredAt: ts,
+        },
+        steering: steer,
+      };
+    } catch (e) {
+      if (
+        e?.name === 'TransactionCanceledException' ||
+        e?.name === 'ConditionalCheckFailedException'
+      ) {
+        return null;
+      }
       throw e;
     }
   };
@@ -979,19 +1030,20 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     });
 
   // Only the not-yet-delivered steering rows, oldest first — what run-stage
-  // injects at its next entry. Uses GSI2 (TYPE#STEER#STATE#pending#). Paginated:
-  // a dropped page here would silently swallow a user's correction.
+  // injects at its next entry. Read the execution partition consistently so a
+  // just-committed answer + steering transaction is visible before early resume.
+  // Paginated: a dropped page here would silently swallow a user's correction.
   const listPendingSteering = async (executionId) => {
     const items = await queryAll(ddb, {
       TableName: table(),
-      IndexName: 'GSI2',
-      KeyConditionExpression: 'GSI2PK = :pk AND begins_with(GSI2SK, :p)',
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
       ExpressionAttributeValues: {
         ':pk': executionPk(executionId),
-        ':p': 'TYPE#STEER#STATE#pending#',
+        ':p': 'STEER#',
       },
+      ConsistentRead: true,
     });
-    return items.toSorted(bySk);
+    return items.filter((item) => item.status === 'pending').toSorted(bySk);
   };
 
   // Flip a steering row pending → consumed (CAS) as it enters an agent
@@ -2495,6 +2547,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     getHumanTask,
     setGateCallbackId,
     answerHumanTask,
+    answerHumanTaskWithSteering,
     supersedeHumanTask,
     markGateRevised,
     createSteering,

@@ -2507,32 +2507,38 @@ export const handler = async (event, context) => {
       // than one pending gate; answer the one addressed by the URL, never blindly
       // META.pendingHumanTaskId.
       const responder = getResponder(event);
-      const answered = await store.answerHumanTask({
+      const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
+      const answerInput = {
         executionId: intentId,
         humanTaskId,
         status: answerStatus,
         answer: data.answer ?? null,
         answeredBy: responder.sub,
         answeredByName: responder.displayName,
-      });
+      };
+      const answerResult = steeringMessage
+        ? await store.answerHumanTaskWithSteering({
+            ...answerInput,
+            steering: {
+              kind: 'gate-steer',
+              message: steeringMessage,
+              targetGateId: humanTaskId,
+              createdBy: responder.sub,
+              createdByName: responder.displayName,
+            },
+          })
+        : await store.answerHumanTask(answerInput);
+      const answered = steeringMessage
+        ? answerResult && { ...gate, ...answerResult.answered }
+        : answerResult;
       if (!answered) {
         return response(409, { error: 'Gate already answered or not pending' });
       }
       // Optional course correction riding on the answer (docs/v2-steering.md):
-      // record it BEFORE resuming the callback so the resume run-stage — which
-      // reads pending steering at entry — is guaranteed to inject it into the
-      // parked conversation alongside the answer.
-      let steer = null;
-      const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
+      // its STEER row and HUMAN decision were committed atomically above, so an
+      // early orchestrator recovery cannot observe one without the other.
+      const steer = steeringMessage ? answerResult.steering : null;
       if (steeringMessage) {
-        steer = await store.createSteering({
-          executionId: intentId,
-          kind: 'gate-steer',
-          message: steeringMessage,
-          targetGateId: humanTaskId,
-          createdBy: responder.sub,
-          createdByName: responder.displayName,
-        });
         await store
           .appendEvent({
             executionId: intentId,

@@ -81,6 +81,7 @@ let sourceControlReviewComments = [];
 let sourceControlValidationResponse = { ready: true, repositories: [] };
 const s3Mock = mockClient(S3Client);
 let attachmentUpdateConflict = null;
+let transactWriteBarrier = null;
 let sourceControlOperationHandler = null;
 let credentialMetadataHandler = null;
 
@@ -106,6 +107,7 @@ const installDdbFakes = () => {
   ddbMock.reset();
   procStore.clear();
   yjsStore.clear();
+  transactWriteBarrier = null;
   ddbMock.on(GetCommand).callsFake((input) => {
     const key =
       input.Key.pk !== undefined
@@ -127,18 +129,40 @@ const installDdbFakes = () => {
     procStore.set(k, { ...item });
     return {};
   });
-  ddbMock.on(TransactWriteCommand).callsFake((input) => {
+  ddbMock.on(TransactWriteCommand).callsFake(async (input) => {
+    await transactWriteBarrier;
     const puts = (input.TransactItems ?? []).map((item) => item.Put).filter(Boolean);
+    const updates = (input.TransactItems ?? []).map((item) => item.Update).filter(Boolean);
     if (
       puts.some(
         (put) =>
           put.ConditionExpression?.includes('attribute_not_exists') &&
           procStore.has(keyOf(put.Item.pk, put.Item.sk)),
-      )
+      ) ||
+      updates.some((update) => {
+        const existing = procStore.get(keyOf(update.Key.pk, update.Key.sk));
+        return (
+          update.ConditionExpression?.includes('#status = :pending') &&
+          existing?.status !== update.ExpressionAttributeValues?.[':pending']
+        );
+      })
     ) {
       const error = new Error('transaction cancelled');
       error.name = 'TransactionCanceledException';
       throw error;
+    }
+    for (const update of updates) {
+      const k = keyOf(update.Key.pk, update.Key.sk);
+      const values = update.ExpressionAttributeValues || {};
+      const names = update.ExpressionAttributeNames || {};
+      const next = { ...procStore.get(k) };
+      const setMatch = /SET (.*?)(?: REMOVE |$)/.exec(update.UpdateExpression || '');
+      for (const clause of setMatch?.[1].split(',') ?? []) {
+        const [lhs, rhs] = clause.split('=').map((part) => part.trim());
+        const field = names[lhs] ?? lhs;
+        if (field && rhs in values) next[field] = values[rhs];
+      }
+      procStore.set(k, next);
     }
     for (const put of puts) procStore.set(keyOf(put.Item.pk, put.Item.sk), { ...put.Item });
     return {};
@@ -4502,6 +4526,38 @@ const seedIntentAnchor = (intentId) =>
   g.addV('Intent').property('id', intentId).property('title', 'Intent').next();
 
 describe('POST /gates/{id}/answer with steering', () => {
+  it('does not expose the answer or resume its callback before attached steering commits', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+
+    let releaseTransaction;
+    transactWriteBarrier = new Promise((resolve) => {
+      releaseTransaction = resolve;
+    });
+    const answerPromise = answerGate(sub, projectId, intent.id, 'h1', {
+      answer: { ok: 1 },
+      steering: 'Use the event bus.',
+    });
+
+    await vi.waitFor(() => {
+      expect(ddbMock.commandCalls(TransactWriteCommand)).toHaveLength(1);
+    });
+    const humanKey = keyOf(`EXEC#${intent.id}`, 'HUMAN#h1');
+    expect(procStore.get(humanKey).status).toBe('pending');
+    expect([...procStore.keys()].some((key) => key.includes('|STEER#'))).toBe(false);
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+
+    releaseTransaction();
+    const res = await answerPromise;
+
+    expect(res.statusCode).toBe(200);
+    expect(procStore.get(humanKey).status).toBe('answered');
+    expect([...procStore.keys()].some((key) => key.includes('|STEER#'))).toBe(true);
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+  });
+
   it('records a gate-steer STEER row + Steering vertex and still resumes the callback', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
