@@ -1,0 +1,61 @@
+{
+  "startedAt": "2026-09-23T09:12:01.514Z",
+  "responses": [
+    {
+      "page": "B",
+      "status": 200,
+      "at": "2026-09-23T09:12:14.537Z",
+      "body": {
+        "title": "PR457 isolated collaboration verification",
+        "prompt": "PR457 remote-only Start ea608114-aa27-46dc-8f86-89a0a72f6da0",
+        "scope": "feature",
+        "composedGrid": null,
+        "skipStageIds": null,
+        "ifDraftRevision": 7
+      }
+    },
+    {
+      "page": "A",
+      "status": 409,
+      "at": "2026-09-23T09:12:16.294Z",
+      "body": {
+        "title": "PR457 isolated collaboration verification",
+        "prompt": "PR457 remote-only Start ea608114-aa27-46dc-8f86-89a0a72f6da0",
+        "scope": "feature",
+        "composedGrid": null,
+        "skipStageIds": null,
+        "ifDraftRevision": 7
+      }
+    },
+    {
+      "page": "A",
+      "status": 200,
+      "at": "2026-09-23T09:12:17.661Z",
+      "body": {
+        "title": "PR457 isolated collaboration verification",
+        "prompt": "PR457 remote-only Start ea608114-aa27-46dc-8f86-89a0a72f6da0",
+        "scope": "feature",
+        "composedGrid": null,
+        "skipStageIds": null,
+        "ifDraftRevision": 8
+      }
+    }
+  ],
+  "launchSuppressed": true,
+  "marker": "PR457 remote-only Start ea608114-aa27-46dc-8f86-89a0a72f6da0",
+  "heldWrite": {
+    "title": "PR457 isolated collaboration verification",
+    "prompt": "PR457 remote-only Start ea608114-aa27-46dc-8f86-89a0a72f6da0",
+    "scope": "feature",
+    "composedGrid": null,
+    "skipStageIds": null,
+    "ifDraftRevision": 7
+  },
+  "heldAt": "2026-09-23T09:12:11.935Z",
+  "peerReceivedAt": "2026-09-23T09:12:11.945Z",
+  "startAttemptAt": "2026-09-23T09:12:14.538Z",
+  "promptBeforeStart": "PR457 remote-only Start ea608114-aa27-46dc-8f86-89a0a72f6da0",
+  "statusBeforeStart": "DRAFT",
+  "passed": true,
+  "finishedAt": "2026-09-23T09:12:17.760Z"
+}

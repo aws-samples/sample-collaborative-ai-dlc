@@ -1,0 +1,80 @@
+{
+  "observedAt": "2026-09-23T09:08:20.498404+00:00",
+  "service": {
+    "serviceName": "collaborative-ai-dlc-yjs-server",
+    "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:12",
+    "desiredCount": 1,
+    "runningCount": 1,
+    "pendingCount": 0,
+    "deploymentConfiguration": {
+      "deploymentCircuitBreaker": {
+        "enable": true,
+        "rollback": true,
+        "resetOnHealthyTask": true,
+        "thresholdConfiguration": {
+          "type": "BOUNDED_PERCENT",
+          "value": 50
+        }
+      },
+      "maximumPercent": 200,
+      "minimumHealthyPercent": 100,
+      "strategy": "ROLLING",
+      "bakeTimeInMinutes": 0
+    },
+    "availabilityZoneRebalancing": "ENABLED"
+  },
+  "cpu": "256",
+  "memory": "512",
+  "image": "746558295630.dkr.ecr.eu-central-1.amazonaws.com/collaborative-ai-dlc-yjs-server-review:441af55303298907",
+  "healthCheck": {
+    "command": ["CMD-SHELL", "wget --spider -q http://localhost:1234/livez || exit 1"],
+    "interval": 30,
+    "timeout": 5,
+    "retries": 3,
+    "startPeriod": 30
+  },
+  "tasks": [
+    {
+      "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/df4dc3c3f51447a88fb05c0546ca3dfe",
+      "healthStatus": "HEALTHY",
+      "containers": [
+        {
+          "name": "yjs-server",
+          "imageDigest": "sha256:3ccd25c26f2ce74e822890d50f7ec899d3bc1a05b817af107db70506b74814c5"
+        }
+      ]
+    }
+  ],
+  "scalingPolicies": [],
+  "apis": [
+    {
+      "functionName": "collaborative-ai-dlc-source-control-review",
+      "codeSha256": "Bs/4QEkbONcLjOSVAQ1MOyHd6fDO2IItoPuZ8YZkryg=",
+      "lastModified": "2026-09-23T08:59:09.000+0000",
+      "localPackageVerified": true,
+      "coreRuntimeVersion": null
+    },
+    {
+      "functionName": "collaborative-ai-dlc-v2-orchestrator-review",
+      "codeSha256": "k32YtJhaL9INu9g8v9N2pZC4W5RxuZqPw1mSsLIsJtc=",
+      "lastModified": "2026-09-23T08:59:14.000+0000",
+      "localPackageVerified": true,
+      "coreRuntimeVersion": null
+    },
+    {
+      "functionName": "collaborative-ai-dlc-intents-review",
+      "codeSha256": "v9TlsEPDyIS/6WfvSIP8U3np6mXlVnKUanz3HTpZN7E=",
+      "lastModified": "2026-09-23T09:22:32.000+0000",
+      "localPackageVerified": true,
+      "coreRuntimeVersion": "3"
+    },
+    {
+      "functionName": "collaborative-ai-dlc-projects-review",
+      "codeSha256": "aLf8Y6HwfVpaPWaae/W2EXRIIMmcAXMzPFaduZTWNEk=",
+      "lastModified": "2026-09-23T09:22:26.000+0000",
+      "localPackageVerified": true,
+      "coreRuntimeVersion": null
+    }
+  ],
+  "apiVerificationUpdatedAt": "2026-09-23T09:22:54.446070+00:00"
+}

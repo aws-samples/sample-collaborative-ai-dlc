@@ -1,0 +1,395 @@
+{
+  "startedAt": "2026-09-23T09:12:41.909Z",
+  "fixtureProjects": [
+    "0a6edf9a-1008-4863-a3e3-9876226c8015",
+    "26d39aa6-f0be-4b87-84cb-227948122466",
+    "2c815436-8952-4072-accf-9b599e28fd6b",
+    "74f6ca24-77ce-42ab-b28a-8d5be08db7e7",
+    "7c08d09f-b2c4-4658-97a5-58b1db15a69e",
+    "7da9ac59-512e-4875-8a55-e1bbd41deff6",
+    "87966668-18e6-40a1-b44d-087506637625",
+    "9e58f53c-9054-4093-91bd-c18c8ab09cb3",
+    "de0ddc82-1684-4215-ad71-ebc38c92b7bc",
+    "e3ead0df-ef53-4511-8f65-49a25b60d228",
+    "e649e060-baff-4f8a-9e2e-0cdd649fe627"
+  ],
+  "projects": [
+    {
+      "projectId": "de0ddc82-1684-4215-ad71-ebc38c92b7bc",
+      "intentId": "bb2d2c44-7eed-4945-89a5-0c99dae21c34",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:12:48.425Z"
+    },
+    {
+      "projectId": "2c815436-8952-4072-accf-9b599e28fd6b",
+      "intentId": "ef932a12-9d07-4524-a5d4-70d50225f2d0",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:12:51.746Z"
+    },
+    {
+      "projectId": "7da9ac59-512e-4875-8a55-e1bbd41deff6",
+      "intentId": "cfe1c168-8172-4d1b-a30a-c5f55fd2d90e",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:12:54.828Z"
+    },
+    {
+      "projectId": "7c08d09f-b2c4-4658-97a5-58b1db15a69e",
+      "intentId": "f7ade105-3a44-4ca1-ab0b-7d6da03f87f3",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:12:57.725Z"
+    },
+    {
+      "projectId": "9e58f53c-9054-4093-91bd-c18c8ab09cb3",
+      "intentId": "4d1acdfe-07ee-49ba-b4bd-3f025823f3e8",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:13:01.255Z"
+    },
+    {
+      "projectId": "74f6ca24-77ce-42ab-b28a-8d5be08db7e7",
+      "intentId": "53e0e0fb-5af2-467f-9ea0-6dce82ec4efa",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:13:04.265Z"
+    },
+    {
+      "projectId": "0a6edf9a-1008-4863-a3e3-9876226c8015",
+      "intentId": "b7b97a94-8c79-4b82-a691-7c2d85be78bf",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:13:06.946Z"
+    },
+    {
+      "projectId": "87966668-18e6-40a1-b44d-087506637625",
+      "intentId": "68e5367e-b87b-4991-b8b4-4994152a5014",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:13:10.248Z"
+    },
+    {
+      "projectId": "e649e060-baff-4f8a-9e2e-0cdd649fe627",
+      "intentId": "097d8465-e204-4ba7-ae03-0b146f588364",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:13:13.586Z"
+    },
+    {
+      "projectId": "e3ead0df-ef53-4511-8f65-49a25b60d228",
+      "intentId": "70f02843-a7e4-4d73-bad8-2faec08c4202",
+      "status": 204,
+      "body": "",
+      "at": "2026-09-23T09:13:16.545Z"
+    },
+    {
+      "projectId": "26d39aa6-f0be-4b87-84cb-227948122466",
+      "intentId": "d25cfc87-3f9b-48ab-9cd4-74bf79810326",
+      "status": 504,
+      "completedAfterTimeout": true,
+      "subsequentReadStatus": 403,
+      "verification": "Neptune absence and process/snapshot cleanup independently required below"
+    }
+  ],
+  "users": [
+    {
+      "sub": "83c41892-80b1-7073-9099-e548cf52e766",
+      "deleted": true
+    },
+    {
+      "sub": "d3a498c2-40b1-704d-e271-c783d24324a1",
+      "deleted": true
+    },
+    {
+      "sub": "c3d42862-40c1-7045-73ee-43b6abf6ad59",
+      "deleted": true
+    },
+    {
+      "sub": "33f4f8f2-30d1-70a6-3fb3-6ff5a9bf2236",
+      "deleted": true
+    },
+    {
+      "sub": "5364c8e2-b051-709a-15e9-39ed328baa8f",
+      "deleted": true
+    },
+    {
+      "sub": "43a44842-2081-7098-2cbe-c2165f134310",
+      "deleted": true
+    },
+    {
+      "sub": "d324e872-b0a1-70f1-d097-572507ee23fd",
+      "deleted": true
+    },
+    {
+      "sub": "532478f2-5011-70f7-9ff8-7c5ab46fd39e",
+      "deleted": true
+    },
+    {
+      "sub": "9344e812-2001-7064-9ae5-468fc3e3e81f",
+      "deleted": true
+    },
+    {
+      "sub": "93a418c2-9081-70ae-c064-5d19992cf7bf",
+      "deleted": true
+    },
+    {
+      "sub": "736488b2-40f1-701a-a50b-8d0f1ed0363b",
+      "deleted": true
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-09-23T09:26:08.347Z",
+      "event": "temporary-lambda-and-log-group-deleted"
+    }
+  ],
+  "passed": true,
+  "additionalFixtureCleanup": [
+    {
+      "projectId": "f96d4ee5-a181-42b4-b835-99aec1ea731a",
+      "intentId": "aaae07c0-33f6-4026-a588-f7d3454948df",
+      "passed": true,
+      "evidence": "deletion-budget-proof.json"
+    },
+    {
+      "projectId": "839c92c2-afe1-45d2-ab7c-0d95c7a7c6f3",
+      "intentId": "96b76a71-0799-4e26-8aed-2aa72d2fbd73",
+      "passed": true,
+      "evidence": "deletion-concurrency-proof.json"
+    }
+  ],
+  "previousFailure": "Project deletion failed {\"projectId\":\"26d39aa6-f0be-4b87-84cb-227948122466\",\"intentId\":\"d25cfc87-3f9b-48ab-9cd4-74bf79810326\",\"status\":504,\"body\":\"{\\\"message\\\": \\\"Endpoint request timed out\\\"}\",\"at\":\"2026-09-23T09:13:46.174Z\"}",
+  "processPartitions": [
+    {
+      "intentId": "bb2d2c44-7eed-4945-89a5-0c99dae21c34",
+      "remaining": 0
+    },
+    {
+      "intentId": "ef932a12-9d07-4524-a5d4-70d50225f2d0",
+      "remaining": 0
+    },
+    {
+      "intentId": "cfe1c168-8172-4d1b-a30a-c5f55fd2d90e",
+      "remaining": 0
+    },
+    {
+      "intentId": "f7ade105-3a44-4ca1-ab0b-7d6da03f87f3",
+      "remaining": 0
+    },
+    {
+      "intentId": "4d1acdfe-07ee-49ba-b4bd-3f025823f3e8",
+      "remaining": 0
+    },
+    {
+      "intentId": "53e0e0fb-5af2-467f-9ea0-6dce82ec4efa",
+      "remaining": 0
+    },
+    {
+      "intentId": "b7b97a94-8c79-4b82-a691-7c2d85be78bf",
+      "remaining": 0
+    },
+    {
+      "intentId": "68e5367e-b87b-4991-b8b4-4994152a5014",
+      "remaining": 0
+    },
+    {
+      "intentId": "097d8465-e204-4ba7-ae03-0b146f588364",
+      "remaining": 0
+    },
+    {
+      "intentId": "70f02843-a7e4-4d73-bad8-2faec08c4202",
+      "remaining": 0
+    },
+    {
+      "intentId": "d25cfc87-3f9b-48ab-9cd4-74bf79810326",
+      "remaining": 0
+    },
+    {
+      "intentId": "ef5475ac-3979-4c6d-85b8-12a88eae9e1a",
+      "remaining": 0
+    }
+  ],
+  "documentRows": 0,
+  "scopes": [
+    {
+      "scope": "project:de0ddc82-1684-4215-ad71-ebc38c92b7bc",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:2c815436-8952-4072-accf-9b599e28fd6b",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:7da9ac59-512e-4875-8a55-e1bbd41deff6",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:7c08d09f-b2c4-4658-97a5-58b1db15a69e",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:9e58f53c-9054-4093-91bd-c18c8ab09cb3",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:74f6ca24-77ce-42ab-b28a-8d5be08db7e7",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:0a6edf9a-1008-4863-a3e3-9876226c8015",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:87966668-18e6-40a1-b44d-087506637625",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:e649e060-baff-4f8a-9e2e-0cdd649fe627",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:e3ead0df-ef53-4511-8f65-49a25b60d228",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "project:26d39aa6-f0be-4b87-84cb-227948122466",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:bb2d2c44-7eed-4945-89a5-0c99dae21c34",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:ef932a12-9d07-4524-a5d4-70d50225f2d0",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:cfe1c168-8172-4d1b-a30a-c5f55fd2d90e",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:f7ade105-3a44-4ca1-ab0b-7d6da03f87f3",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:4d1acdfe-07ee-49ba-b4bd-3f025823f3e8",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:53e0e0fb-5af2-467f-9ea0-6dce82ec4efa",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:b7b97a94-8c79-4b82-a691-7c2d85be78bf",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:68e5367e-b87b-4991-b8b4-4994152a5014",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:097d8465-e204-4ba7-ae03-0b146f588364",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:70f02843-a7e4-4d73-bad8-2faec08c4202",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:d25cfc87-3f9b-48ab-9cd4-74bf79810326",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    },
+    {
+      "scope": "intent:ef5475ac-3979-4c6d-85b8-12a88eae9e1a",
+      "versions": 0,
+      "deleteMarkers": 0,
+      "tombstone": true,
+      "cleanupState": "fenced"
+    }
+  ],
+  "graphUsers": {
+    "usersDeleted": 11,
+    "usersRemaining": 0,
+    "fixtures": 11
+  },
+  "remainingFaultRolePolicies": [],
+  "resourcePolicies": [
+    {
+      "table": "collaborative-ai-dlc-yjs-documents-review",
+      "absent": true
+    },
+    {
+      "table": "collaborative-ai-dlc-yjs-members-review",
+      "absent": true
+    }
+  ],
+  "finishedAt": "2026-09-23T09:26:11.280Z"
+}

@@ -1,0 +1,1514 @@
+{
+  "CapacityUtilization": {
+    "Label": "CapacityUtilization",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:13:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 52.5,
+        "Sum": 420.0,
+        "Maximum": 67.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.000000000000001,
+        "Unit": "None"
+      }
+    ]
+  },
+  "EventLoopDelayP99Ms": {
+    "Label": "EventLoopDelayP99Ms",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:13:00+02:00",
+        "Average": 24.076286999999997,
+        "Sum": 192.61029599999998,
+        "Maximum": 31.768575,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 22.464511,
+        "Sum": 179.716088,
+        "Maximum": 27.017215,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 24.113151000000002,
+        "Sum": 192.90520800000002,
+        "Maximum": 36.601855,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 23.672831000000002,
+        "Sum": 189.38264800000002,
+        "Maximum": 26.902527,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 23.281663,
+        "Sum": 186.253304,
+        "Maximum": 26.984447,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 22.677503,
+        "Sum": 181.420024,
+        "Maximum": 25.706495,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 23.078910999999998,
+        "Sum": 184.63128799999998,
+        "Maximum": 28.049407,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 23.070718999999997,
+        "Sum": 184.56575199999997,
+        "Maximum": 26.935295,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 23.009279,
+        "Sum": 184.074232,
+        "Maximum": 26.869759,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 26.300415,
+        "Sum": 210.40332,
+        "Maximum": 44.597247,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 22.763519000000002,
+        "Sum": 182.10815200000002,
+        "Maximum": 26.329087,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 24.635391000000002,
+        "Sum": 197.08312800000002,
+        "Maximum": 35.356671,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 23.068671,
+        "Sum": 184.549368,
+        "Maximum": 26.460159,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 23.339007,
+        "Sum": 186.712056,
+        "Maximum": 28.590079,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 24.043518999999996,
+        "Sum": 192.34815199999997,
+        "Maximum": 29.032447,
+        "Unit": "None"
+      }
+    ]
+  },
+  "ResidentMemoryBytes": {
+    "Label": "ResidentMemoryBytes",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:13:00+02:00",
+        "Average": 204907520.0,
+        "Sum": 1639260160.0,
+        "Maximum": 239906816.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 167923712.0,
+        "Sum": 1343389696.0,
+        "Maximum": 353832960.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 194295296.0,
+        "Sum": 1554362368.0,
+        "Maximum": 353603584.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 195294208.0,
+        "Sum": 1562353664.0,
+        "Maximum": 237342720.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 161104384.0,
+        "Sum": 1288835072.0,
+        "Maximum": 183291904.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 153624064.0,
+        "Sum": 1228992512.0,
+        "Maximum": 181473280.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 306619904.0,
+        "Sum": 2452959232.0,
+        "Maximum": 366534656.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 194033152.0,
+        "Sum": 1552265216.0,
+        "Maximum": 238424064.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 178792448.0,
+        "Sum": 1430339584.0,
+        "Maximum": 233185280.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 345110528.0,
+        "Sum": 2760884224.0,
+        "Maximum": 379072512.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 165774848.0,
+        "Sum": 1326198784.0,
+        "Maximum": 185020416.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 219380224.0,
+        "Sum": 1755041792.0,
+        "Maximum": 360357888.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 194844672.0,
+        "Sum": 1558757376.0,
+        "Maximum": 240480256.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 304453120.0,
+        "Sum": 2435624960.0,
+        "Maximum": 362725376.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 193838080.0,
+        "Sum": 1550704640.0,
+        "Maximum": 238923776.0,
+        "Unit": "None"
+      }
+    ]
+  },
+  "Documents": {
+    "Label": "Documents",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:13:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 52.5,
+        "Sum": 420.0,
+        "Maximum": 67.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 5.0,
+        "Sum": 40.0,
+        "Maximum": 7.0,
+        "Unit": "None"
+      }
+    ]
+  },
+  "PersistenceErrors": {
+    "Label": "PersistenceErrors",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:13:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      }
+    ]
+  },
+  "RejectedConnections": {
+    "Label": "RejectedConnections",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:13:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      }
+    ]
+  },
+  "NotReady": {
+    "Label": "NotReady",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:13:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 0.0,
+        "Sum": 0.0,
+        "Maximum": 0.0,
+        "Unit": "None"
+      }
+    ]
+  },
+  "ECS_CPUUtilization": {
+    "Label": "CPUUtilization",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 3.179436286290487,
+        "Sum": 12.717745145161947,
+        "Maximum": 4.984714984893799,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 2.6608478029568987,
+        "Sum": 10.643391211827595,
+        "Maximum": 3.9551327228546143,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 3.4177921315034228,
+        "Sum": 13.671168526013691,
+        "Maximum": 6.009989261627197,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 3.2342604597409563,
+        "Sum": 12.937041838963825,
+        "Maximum": 5.019625186920166,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 2.4979606370131178,
+        "Sum": 9.991842548052471,
+        "Maximum": 3.5884292125701904,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 3.0570818980534873,
+        "Sum": 12.22832759221395,
+        "Maximum": 3.8107652664184566,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 2.921375354131063,
+        "Sum": 11.685501416524252,
+        "Maximum": 3.7549421787261963,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 5.158811728159587,
+        "Sum": 20.635246912638348,
+        "Maximum": 23.609962463378906,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 2.8888285458087917,
+        "Sum": 11.555314183235167,
+        "Maximum": 4.142935752868652,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 3.3382289210955305,
+        "Sum": 13.352915684382122,
+        "Maximum": 4.624995231628418,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 2.929752230644226,
+        "Sum": 11.719008922576904,
+        "Maximum": 4.227232456207275,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 3.0880146523316703,
+        "Sum": 12.352058609326681,
+        "Maximum": 4.901257514953613,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 2.874338795741399,
+        "Sum": 11.497355182965595,
+        "Maximum": 3.913194179534912,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 3.2628639936447144,
+        "Sum": 13.051455974578857,
+        "Maximum": 5.014749050140381,
+        "Unit": "Percent"
+      }
+    ]
+  },
+  "ECS_MemoryUtilization": {
+    "Label": "MemoryUtilization",
+    "Datapoints": [
+      {
+        "Timestamp": "2026-09-23T10:08:00+02:00",
+        "Average": 5.594889322916667,
+        "Sum": 22.379557291666668,
+        "Maximum": 8.30078125,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:00:00+02:00",
+        "Average": 12.36572265625,
+        "Sum": 49.462890625,
+        "Maximum": 14.74609375,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:09:00+02:00",
+        "Average": 6.162516276041667,
+        "Sum": 24.650065104166668,
+        "Maximum": 8.4716796875,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:10:00+02:00",
+        "Average": 6.435139973958334,
+        "Sum": 25.740559895833336,
+        "Maximum": 8.59375,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:01:00+02:00",
+        "Average": 11.789957682291666,
+        "Sum": 47.159830729166664,
+        "Maximum": 14.55078125,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:06:00+02:00",
+        "Average": 4.736328125,
+        "Sum": 18.9453125,
+        "Maximum": 5.908203125,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:07:00+02:00",
+        "Average": 5.061848958333334,
+        "Sum": 20.247395833333336,
+        "Maximum": 5.95703125,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T09:59:00+02:00",
+        "Average": 13.8427734375,
+        "Sum": 55.37109375,
+        "Maximum": 15.478515625,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:04:00+02:00",
+        "Average": 6.549072265625,
+        "Sum": 26.1962890625,
+        "Maximum": 14.111328125,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:05:00+02:00",
+        "Average": 4.278564453125,
+        "Sum": 17.1142578125,
+        "Maximum": 5.6396484375,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:02:00+02:00",
+        "Average": 8.966064453125,
+        "Sum": 35.8642578125,
+        "Maximum": 14.4287109375,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:11:00+02:00",
+        "Average": 6.477864583333333,
+        "Sum": 25.911458333333332,
+        "Maximum": 8.642578125,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:03:00+02:00",
+        "Average": 6.392415364583334,
+        "Sum": 25.569661458333336,
+        "Maximum": 14.0869140625,
+        "Unit": "Percent"
+      },
+      {
+        "Timestamp": "2026-09-23T10:12:00+02:00",
+        "Average": 6.510416666666667,
+        "Sum": 26.041666666666668,
+        "Maximum": 8.642578125,
+        "Unit": "Percent"
+      }
+    ]
+  },
+  "logMessages": {},
+  "logsTruncated": false,
+  "serviceTimeline": [
+    {
+      "at": "2026-09-23T07:59:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 67,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 46,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 48,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 59
+      }
+    },
+    {
+      "at": "2026-09-23T07:59:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:00:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:00:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:01:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:01:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:02:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:02:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:03:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:03:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:04:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:04:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:05:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:05:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:06:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:06:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:07:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:07:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:08:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:08:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:09:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:09:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:10:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:10:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:11:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:11:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:12:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:12:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:13:28Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    },
+    {
+      "at": "2026-09-23T08:13:58Z",
+      "desired": 4,
+      "running": 4,
+      "pending": 0,
+      "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+      "ownedDocuments": {
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01": 6,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/06f7a331ee8149a6ac67599fcc0afe13": 7,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399": 5,
+        "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be": 2
+      }
+    }
+  ],
+  "events": [
+    {
+      "id": "2caeec0b-4c21-431f-ab5d-91d5be434551",
+      "createdAt": "2026-09-23T09:46:04.821000+02:00",
+      "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+    },
+    {
+      "id": "10846245-9ff3-4ac3-865c-659eaf19bb83",
+      "createdAt": "2026-09-23T09:45:17.427000+02:00",
+      "message": "(service collaborative-ai-dlc-yjs-server) registered 2 targets in (target-group arn:aws:elasticloadbalancing:eu-central-1:746558295630:targetgroup/collaborative-ai-dlc-yjs-review/bfc2dd7b29277906)"
+    },
+    {
+      "id": "99fd57fb-ab20-4d7b-8aa3-9a403a075b81",
+      "createdAt": "2026-09-23T09:44:58.019000+02:00",
+      "message": "(service collaborative-ai-dlc-yjs-server) has started 2 tasks: (task 06f7a331ee8149a6ac67599fcc0afe13) (task a642ad29af4042d597da0cf2b2fc72be)."
+    }
+  ],
+  "scalingActivities": [
+    {
+      "ActivityId": "f3ba8362-42f2-45e0-9529-cc7250c34abd",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 4.",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4712cfef-645f-4a31-a6f3-1d4ebc367b77 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-23T09:44:48.370000+02:00",
+      "EndTime": "2026-09-23T09:45:24.468000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 4. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "d8c266ec-77b1-4e70-8dbc-c0060518d957",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 4.",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4712cfef-645f-4a31-a6f3-1d4ebc367b77 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-23T09:26:48.367000+02:00",
+      "EndTime": "2026-09-23T09:27:56.674000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 4. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "d6a5c2eb-f349-4b51-83ce-d5334ff55a9c",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 4.",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-4712cfef-645f-4a31-a6f3-1d4ebc367b77 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-23T09:05:48.361000+02:00",
+      "EndTime": "2026-09-23T09:06:55.678000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 4. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "458ae8d9-1e72-4818-8633-3c34f544d281",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 2.",
+      "Cause": "minimum capacity was set to 2",
+      "StartTime": "2026-09-23T08:55:56.768000+02:00",
+      "EndTime": "2026-09-23T08:57:02.087000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 2. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "f7eec6a6-24eb-4e34-b13d-9ce49b06ecf4",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 1.",
+      "Cause": "maximum capacity was set to 1",
+      "StartTime": "2026-09-22T16:02:13.257000+02:00",
+      "EndTime": "2026-09-22T16:02:48.319000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 1. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "b4a087a1-b179-4fd1-9286-805f572f0b1a",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 3.",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmLow-ab17b15b-7557-4a26-b156-08cd82448b24 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-22T15:55:14.124000+02:00",
+      "EndTime": "2026-09-22T15:55:45.278000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 3. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "e4d24abd-80fc-4e29-9364-21f0519c0f9e",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 4.",
+      "Cause": "monitor alarm TargetTracking-service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server-AlarmHigh-ef0430d5-1050-4edf-b7ea-d4636a4deb36 in state ALARM triggered policy collaborative-ai-dlc-yjs-server-review-capacity",
+      "StartTime": "2026-09-22T15:32:55.579000+02:00",
+      "EndTime": "2026-09-22T15:34:01.883000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 4. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "56e78c01-5695-4c95-a0ac-2f79b84e5ac7",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 2.",
+      "Cause": "minimum capacity was set to 2",
+      "StartTime": "2026-09-22T15:26:14.552000+02:00",
+      "EndTime": "2026-09-22T15:26:46.584000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 2. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "365d52a9-7d68-4d0b-a360-aa075bff9da4",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 1.",
+      "Cause": "maximum capacity was set to 1",
+      "StartTime": "2026-09-22T15:21:18.346000+02:00",
+      "EndTime": "2026-09-22T15:21:49.435000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 1. Change successfully fulfilled by ecs."
+    },
+    {
+      "ActivityId": "29c47d27-2cd9-403a-927f-96bc4d01f1ee",
+      "ServiceNamespace": "ecs",
+      "ResourceId": "service/collaborative-ai-dlc-review/collaborative-ai-dlc-yjs-server",
+      "ScalableDimension": "ecs:service:DesiredCount",
+      "Description": "Setting desired count to 2.",
+      "Cause": "minimum capacity was set to 2",
+      "StartTime": "2026-09-22T14:55:06.983000+02:00",
+      "EndTime": "2026-09-22T14:56:09.428000+02:00",
+      "StatusCode": "Successful",
+      "StatusMessage": "Successfully set desired count to 2. Change successfully fulfilled by ecs."
+    }
+  ],
+  "retrievedAt": "2026-09-23T08:14:29.347969+00:00",
+  "startedAt": "2026-09-23T07:59:19.585Z",
+  "finishedAt": "2026-09-23T08:14:22.667Z"
+}

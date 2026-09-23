@@ -1,0 +1,292 @@
+{
+  "events": [
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150038157,
+      "message": "{\"_aws\":{\"Timestamp\":1790150038156,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":150,\"ProxiedConnections\":70,\"Documents\":40,\"DocumentBytes\":2624571,\"QueuedBytes\":0,\"ResidentMemoryBytes\":373878784,\"EventLoopDelayP99Ms\":21.643263,\"Updates\":72,\"UpdateBytes\":2624571,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150042233,
+      "eventId": "39921679868079129559317311884399743046205026904038965248"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150054067,
+      "message": "{\"_aws\":{\"Timestamp\":1790150054067,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":2743977,\"QueuedBytes\":0,\"ResidentMemoryBytes\":220168192,\"EventLoopDelayP99Ms\":35.422207,\"Updates\":1329,\"UpdateBytes\":2787957,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150058230,
+      "eventId": "39921680222883985667939526085572610470235521365701885952"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150055235,
+      "message": "{\"_aws\":{\"Timestamp\":1790150055235,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":4355124,\"QueuedBytes\":0,\"ResidentMemoryBytes\":356909056,\"EventLoopDelayP99Ms\":43.843583,\"Updates\":2325,\"UpdateBytes\":4436386,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150059004,
+      "eventId": "39921680248931256059823293915821468190629331248157032448"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150060364,
+      "message": "{\"_aws\":{\"Timestamp\":1790150060364,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":3638222,\"QueuedBytes\":0,\"ResidentMemoryBytes\":374280192,\"EventLoopDelayP99Ms\":48.594943,\"Updates\":2476,\"UpdateBytes\":3728515,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150063600,
+      "eventId": "39921680363311778183086860014314440052003048262584238080"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150068157,
+      "message": "{\"_aws\":{\"Timestamp\":1790150068157,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":2720589,\"QueuedBytes\":0,\"ResidentMemoryBytes\":368529408,\"EventLoopDelayP99Ms\":36.175871,\"Updates\":2397,\"UpdateBytes\":187358,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150072240,
+      "eventId": "39921680537101485515236006166747834028247674476999475200"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150084068,
+      "message": "{\"_aws\":{\"Timestamp\":1790150084068,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":2834720,\"QueuedBytes\":0,\"ResidentMemoryBytes\":223342592,\"EventLoopDelayP99Ms\":44.466175,\"Updates\":2454,\"UpdateBytes\":193207,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150088225,
+      "eventId": "39921680891928642369056750991047412729429825989908168704"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150085252,
+      "message": "{\"_aws\":{\"Timestamp\":1790150085252,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":4504596,\"QueuedBytes\":0,\"ResidentMemoryBytes\":357613568,\"EventLoopDelayP99Ms\":69.992447,\"Updates\":3900,\"UpdateBytes\":305820,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150089004,
+      "eventId": "39921680918332724684117008791567307952125344183414226944"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150090364,
+      "message": "{\"_aws\":{\"Timestamp\":1790150090364,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":3759638,\"QueuedBytes\":0,\"ResidentMemoryBytes\":374632448,\"EventLoopDelayP99Ms\":38.699007,\"Updates\":3240,\"UpdateBytes\":254340,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150093597,
+      "eventId": "39921681032334134139005554296650279743313510234521927680"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150098158,
+      "message": "{\"_aws\":{\"Timestamp\":1790150098157,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":2810554,\"QueuedBytes\":0,\"ResidentMemoryBytes\":367546368,\"EventLoopDelayP99Ms\":32.555007,\"Updates\":2403,\"UpdateBytes\":188885,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150102244,
+      "eventId": "39921681206146142216353231072233626360368273805680508928"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150114067,
+      "message": "{\"_aws\":{\"Timestamp\":1790150114067,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":2928683,\"QueuedBytes\":0,\"ResidentMemoryBytes\":247140352,\"EventLoopDelayP99Ms\":65.404927,\"Updates\":2452,\"UpdateBytes\":195414,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150118227,
+      "eventId": "39921681560928697579776914650247251096082140767707463680"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150115302,
+      "message": "{\"_aws\":{\"Timestamp\":1790150115301,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":4658134,\"QueuedBytes\":0,\"ResidentMemoryBytes\":375717888,\"EventLoopDelayP99Ms\":67.764223,\"Updates\":3900,\"UpdateBytes\":310170,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150119004,
+      "eventId": "39921681588470117899962234230983140062620762260472791040"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150120364,
+      "message": "{\"_aws\":{\"Timestamp\":1790150120364,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":3886110,\"QueuedBytes\":0,\"ResidentMemoryBytes\":372432896,\"EventLoopDelayP99Ms\":69.926911,\"Updates\":3240,\"UpdateBytes\":259315,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150123603,
+      "eventId": "39921681701356490094924248578996684791971011817996681216"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150128157,
+      "message": "{\"_aws\":{\"Timestamp\":1790150128157,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":2900710,\"QueuedBytes\":0,\"ResidentMemoryBytes\":366678016,\"EventLoopDelayP99Ms\":62.423039,\"Updates\":2348,\"UpdateBytes\":189700,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150132235,
+      "eventId": "39921681875146197427073394731420244223954825030848020480"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150144068,
+      "message": "{\"_aws\":{\"Timestamp\":1790150144067,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":3025595,\"QueuedBytes\":0,\"ResidentMemoryBytes\":254435328,\"EventLoopDelayP99Ms\":39.878655,\"Updates\":2460,\"UpdateBytes\":200366,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150148226,
+      "eventId": "39921682229973354280894139555726931551440083731398393856"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150145301,
+      "message": "{\"_aws\":{\"Timestamp\":1790150145301,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":4804506,\"QueuedBytes\":0,\"ResidentMemoryBytes\":373362688,\"EventLoopDelayP99Ms\":62.455807,\"Updates\":3900,\"UpdateBytes\":316660,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150149003,
+      "eventId": "39921682257470173110682397890179728988869788593606688768"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150150364,
+      "message": "{\"_aws\":{\"Timestamp\":1790150150364,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":4013111,\"QueuedBytes\":0,\"ResidentMemoryBytes\":374927360,\"EventLoopDelayP99Ms\":61.734911,\"Updates\":3240,\"UpdateBytes\":263890,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150153597,
+      "eventId": "39921682370378846050842942861329169680275516417412235264"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150158163,
+      "message": "{\"_aws\":{\"Timestamp\":1790150158162,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":2997085,\"QueuedBytes\":0,\"ResidentMemoryBytes\":367271936,\"EventLoopDelayP99Ms\":56.033279,\"Updates\":2424,\"UpdateBytes\":198273,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150162233,
+      "eventId": "39921682544302357854183272752606554976415820014005321728"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150174070,
+      "message": "{\"_aws\":{\"Timestamp\":1790150174069,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":3122809,\"QueuedBytes\":0,\"ResidentMemoryBytes\":266973184,\"EventLoopDelayP99Ms\":77.922303,\"Updates\":2449,\"UpdateBytes\":201390,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150178221,
+      "eventId": "39921682899040311727209895084343405751774688087365976064"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150175302,
+      "message": "{\"_aws\":{\"Timestamp\":1790150175301,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":4958958,\"QueuedBytes\":0,\"ResidentMemoryBytes\":368521216,\"EventLoopDelayP99Ms\":61.964287,\"Updates\":3900,\"UpdateBytes\":319470,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150179007,
+      "eventId": "39921682926514829811799622795665806992038194700322275328"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150180364,
+      "message": "{\"_aws\":{\"Timestamp\":1790150180364,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":4140018,\"QueuedBytes\":0,\"ResidentMemoryBytes\":385638400,\"EventLoopDelayP99Ms\":53.739519,\"Updates\":3240,\"UpdateBytes\":265680,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150183601,
+      "eventId": "39921683039401202006761637143672909845381473266406195200"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150188162,
+      "message": "{\"_aws\":{\"Timestamp\":1790150188162,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":3089564,\"QueuedBytes\":0,\"ResidentMemoryBytes\":367800320,\"EventLoopDelayP99Ms\":70.385663,\"Updates\":2374,\"UpdateBytes\":194902,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150192234,
+      "eventId": "39921683213302413064903436411805448143695874549991931904"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150204070,
+      "message": "{\"_aws\":{\"Timestamp\":1790150204069,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":3220243,\"QueuedBytes\":0,\"ResidentMemoryBytes\":272064512,\"EventLoopDelayP99Ms\":69.795839,\"Updates\":2459,\"UpdateBytes\":202206,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150208224,
+      "eventId": "39921683568062667683128589366685999703860230775995105280"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150205303,
+      "message": "{\"_aws\":{\"Timestamp\":1790150205302,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":5113412,\"QueuedBytes\":0,\"ResidentMemoryBytes\":372432896,\"EventLoopDelayP99Ms\":63.275007,\"Updates\":3900,\"UpdateBytes\":319470,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150209005,
+      "eventId": "39921683595559486512916847701143780625121985986498134016"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150210364,
+      "message": "{\"_aws\":{\"Timestamp\":1790150210364,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":4267749,\"QueuedBytes\":0,\"ResidentMemoryBytes\":379346944,\"EventLoopDelayP99Ms\":60.391423,\"Updates\":3240,\"UpdateBytes\":265680,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150213597,
+      "eventId": "39921683708423557962680331426007906372771453720850857984"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150218232,
+      "message": "{\"_aws\":{\"Timestamp\":1790150218232,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":3187183,\"QueuedBytes\":0,\"ResidentMemoryBytes\":366592000,\"EventLoopDelayP99Ms\":57.147391,\"Updates\":2396,\"UpdateBytes\":196715,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150222240,
+      "eventId": "39921683883885821184719274314059365549933289336986140672"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150234069,
+      "message": "{\"_aws\":{\"Timestamp\":1790150234069,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":3315684,\"QueuedBytes\":0,\"ResidentMemoryBytes\":275578880,\"EventLoopDelayP99Ms\":76.283903,\"Updates\":2460,\"UpdateBytes\":202290,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150238292,
+      "eventId": "39921684237062722893848753025966587196688622458796900352"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150235332,
+      "message": "{\"_aws\":{\"Timestamp\":1790150235331,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":5268673,\"QueuedBytes\":0,\"ResidentMemoryBytes\":376360960,\"EventLoopDelayP99Ms\":70.909951,\"Updates\":3900,\"UpdateBytes\":319470,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150239007,
+      "eventId": "39921684265228564079592930054590494418482196993466368000"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150240409,
+      "message": "{\"_aws\":{\"Timestamp\":1790150240409,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":4399766,\"QueuedBytes\":0,\"ResidentMemoryBytes\":380919808,\"EventLoopDelayP99Ms\":73.859071,\"Updates\":3240,\"UpdateBytes\":265680,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150243598,
+      "eventId": "39921684378449447452532903749717320618020818044749938688"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150248233,
+      "message": "{\"_aws\":{\"Timestamp\":1790150248233,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":3280523,\"QueuedBytes\":0,\"ResidentMemoryBytes\":370810880,\"EventLoopDelayP99Ms\":54.394879,\"Updates\":2400,\"UpdateBytes\":197040,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150252235,
+      "eventId": "39921684552930477885836499219534289751222235100747923456"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150264070,
+      "message": "{\"_aws\":{\"Timestamp\":1790150264069,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":3416175,\"QueuedBytes\":0,\"ResidentMemoryBytes\":280686592,\"EventLoopDelayP99Ms\":74.448895,\"Updates\":2460,\"UpdateBytes\":202290,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150268221,
+      "eventId": "39921684906107379594965977931361382834816634890401546240"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150265331,
+      "message": "{\"_aws\":{\"Timestamp\":1790150265331,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":5420221,\"QueuedBytes\":0,\"ResidentMemoryBytes\":372551680,\"EventLoopDelayP99Ms\":75.628543,\"Updates\":3895,\"UpdateBytes\":319060,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150269001,
+      "eventId": "39921684934228619290313093713781016991949440151245619200"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150270410,
+      "message": "{\"_aws\":{\"Timestamp\":1790150270409,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":4526993,\"QueuedBytes\":0,\"ResidentMemoryBytes\":379338752,\"EventLoopDelayP99Ms\":43.974655,\"Updates\":3240,\"UpdateBytes\":265680,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150273597,
+      "eventId": "39921685047494104153650128655196707708784563547296038912"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150278233,
+      "message": "{\"_aws\":{\"Timestamp\":1790150278233,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":3375658,\"QueuedBytes\":0,\"ResidentMemoryBytes\":369201152,\"EventLoopDelayP99Ms\":33.226751,\"Updates\":2403,\"UpdateBytes\":197285,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150282246,
+      "eventId": "39921685221952833841755193501886782400724763084729155584"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150294070,
+      "message": "{\"_aws\":{\"Timestamp\":1790150294069,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":3514760,\"QueuedBytes\":0,\"ResidentMemoryBytes\":280072192,\"EventLoopDelayP99Ms\":48.267263,\"Updates\":2460,\"UpdateBytes\":202290,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150298229,
+      "eventId": "39921685575129735550884672213710171508608736672025018368"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150295331,
+      "message": "{\"_aws\":{\"Timestamp\":1790150295331,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":5579295,\"QueuedBytes\":0,\"ResidentMemoryBytes\":368087040,\"EventLoopDelayP99Ms\":76.087295,\"Updates\":3905,\"UpdateBytes\":319880,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150299009,
+      "eventId": "39921685603250975246231787996129772393082733065541976064"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150300410,
+      "message": "{\"_aws\":{\"Timestamp\":1790150300409,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":4657261,\"QueuedBytes\":0,\"ResidentMemoryBytes\":379379712,\"EventLoopDelayP99Ms\":74.186751,\"Updates\":3240,\"UpdateBytes\":265680,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150303597,
+      "eventId": "39921685716516460109568822937536153379533743621970722816"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150308234,
+      "message": "{\"_aws\":{\"Timestamp\":1790150308233,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":154,\"ProxiedConnections\":74,\"Documents\":40,\"DocumentBytes\":3471310,\"QueuedBytes\":0,\"ResidentMemoryBytes\":368185344,\"EventLoopDelayP99Ms\":40.697855,\"Updates\":2397,\"UpdateBytes\":196795,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150312233,
+      "eventId": "39921685890997490542872418407351999761477529134678278144"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/06f7a331ee8149a6ac67599fcc0afe13",
+      "timestamp": 1790150324069,
+      "message": "{\"_aws\":{\"Timestamp\":1790150324069,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":82,\"Documents\":41,\"DocumentBytes\":3611431,\"QueuedBytes\":0,\"ResidentMemoryBytes\":284753920,\"EventLoopDelayP99Ms\":39.026687,\"Updates\":2460,\"UpdateBytes\":202290,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":41}",
+      "ingestionTime": 1790150328224,
+      "eventId": "39921686244129790761604835872902218723943139699191709696"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/a642ad29af4042d597da0cf2b2fc72be",
+      "timestamp": 1790150325360,
+      "message": "{\"_aws\":{\"Timestamp\":1790150325360,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":195,\"ProxiedConnections\":65,\"Documents\":65,\"DocumentBytes\":5731385,\"QueuedBytes\":0,\"ResidentMemoryBytes\":368627712,\"EventLoopDelayP99Ms\":92.143615,\"Updates\":3892,\"UpdateBytes\":318810,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":65}",
+      "ingestionTime": 1790150328999,
+      "eventId": "39921686272920052812907870349561814238727842047048876032"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/2f0206bf2e2b412ba44db1bc81fc3399",
+      "timestamp": 1790150330611,
+      "message": "{\"_aws\":{\"Timestamp\":1790150330611,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":174,\"ProxiedConnections\":66,\"Documents\":54,\"DocumentBytes\":4788962,\"QueuedBytes\":0,\"ResidentMemoryBytes\":385277952,\"EventLoopDelayP99Ms\":50.757631,\"Updates\":3240,\"UpdateBytes\":265680,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":54}",
+      "ingestionTime": 1790150333600,
+      "eventId": "39921686390021265850392172471327652821251636272245178368"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fb7d4ba63d3743ceab6b6731d6451d01",
+      "timestamp": 1790150338233,
+      "message": "{\"_aws\":{\"Timestamp\":1790150338233,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":122,\"ProxiedConnections\":64,\"Documents\":40,\"DocumentBytes\":3562778,\"QueuedBytes\":0,\"ResidentMemoryBytes\":373092352,\"EventLoopDelayP99Ms\":30.982143,\"Updates\":2346,\"UpdateBytes\":192608,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":40}",
+      "ingestionTime": 1790150342238,
+      "eventId": "39921686559997545753592582066555740914752451468696551424"
+    }
+  ],
+  "searchedLogStreams": []
+}

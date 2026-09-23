@@ -1,0 +1,60 @@
+{
+  "startedAt": "2026-09-23T06:32:59.749Z",
+  "responses": [
+    {
+      "page": "B",
+      "status": 200,
+      "body": {
+        "title": "PR457 isolated collaboration verification",
+        "prompt": "PR457 delayed A e12adee9-f785-4903-b639-7ae455562911 merged B 22f06b78-8832-46e3-9e0a-ab509b04aab2",
+        "scope": "feature",
+        "composedGrid": null,
+        "skipStageIds": null,
+        "ifDraftRevision": 0
+      },
+      "at": "2026-09-23T06:33:13.563Z"
+    },
+    {
+      "page": "A",
+      "status": 409,
+      "body": {
+        "title": "PR457 isolated collaboration verification",
+        "prompt": "PR457 delayed A e12adee9-f785-4903-b639-7ae455562911",
+        "scope": "feature",
+        "composedGrid": null,
+        "skipStageIds": null,
+        "ifDraftRevision": 0
+      },
+      "at": "2026-09-23T06:33:14.881Z"
+    },
+    {
+      "page": "A",
+      "status": 200,
+      "body": {
+        "title": "PR457 isolated collaboration verification",
+        "prompt": "PR457 delayed A e12adee9-f785-4903-b639-7ae455562911 merged B 22f06b78-8832-46e3-9e0a-ab509b04aab2",
+        "scope": "feature",
+        "composedGrid": null,
+        "skipStageIds": null,
+        "ifDraftRevision": 1
+      },
+      "at": "2026-09-23T06:33:16.550Z"
+    }
+  ],
+  "held": {
+    "title": "PR457 isolated collaboration verification",
+    "prompt": "PR457 delayed A e12adee9-f785-4903-b639-7ae455562911",
+    "scope": "feature",
+    "composedGrid": null,
+    "skipStageIds": null,
+    "ifDraftRevision": 0
+  },
+  "markers": [
+    "PR457 delayed A e12adee9-f785-4903-b639-7ae455562911",
+    "PR457 delayed A e12adee9-f785-4903-b639-7ae455562911 merged B 22f06b78-8832-46e3-9e0a-ab509b04aab2"
+  ],
+  "finalPrompt": "PR457 delayed A e12adee9-f785-4903-b639-7ae455562911 merged B 22f06b78-8832-46e3-9e0a-ab509b04aab2",
+  "finalRevision": 2,
+  "passed": true,
+  "finishedAt": "2026-09-23T06:33:16.874Z"
+}

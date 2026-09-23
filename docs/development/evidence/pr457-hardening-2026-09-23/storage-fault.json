@@ -1,0 +1,106 @@
+{
+  "documentId": "intent-review-d25cfc87-3f9b-48ab-9cd4-74bf79810326-fault-s3-5ef30ef0-6436-4962-bc1e-caceb5b88de8",
+  "startedAt": "2026-09-23T07:18:53.938Z",
+  "events": [
+    {
+      "at": "2026-09-23T07:18:54.767Z",
+      "event": "baseline-committed",
+      "manifest": {
+        "leaseToken": "8c742b0c-2510-4d39-b744-f7d3f0cc213f",
+        "snapshotBytes": 52,
+        "snapshotSequence": 1,
+        "snapshotVersion": "YvqgBlnSYJn.KjKh4_C8eiKmANMWW.bH",
+        "ownerAddress": "ws://10.0.11.236:1234",
+        "ownerId": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/bfe479541ded42fa8e53602ee9b3ac75",
+        "leaseUntil": 1790147964197,
+        "snapshotKey": "yjs-documents/intent/d25cfc87-3f9b-48ab-9cd4-74bf79810326/fd63e7f0d9c99b16596ae85e691a9dcbd289fa8a311de894a831098be1b7f3af/9dc819cd-9d5f-4bee-ba3f-184bb6a14187.bin",
+        "documentId": "intent-review-d25cfc87-3f9b-48ab-9cd4-74bf79810326-fault-s3-5ef30ef0-6436-4962-bc1e-caceb5b88de8"
+      }
+    },
+    {
+      "at": "2026-09-23T07:18:56.099Z",
+      "event": "deny-installed",
+      "actions": ["s3:PutObject"]
+    },
+    {
+      "at": "2026-09-23T07:19:11.184Z",
+      "event": "iam-still-propagating"
+    },
+    {
+      "at": "2026-09-23T07:19:19.276Z",
+      "event": "write-denial-observed",
+      "error": "Closed before receipt 1013",
+      "closeCode": 1013,
+      "receiptsBefore": 2,
+      "receiptsAfter": 2,
+      "snapshotBefore": 2,
+      "snapshotAfter": 2,
+      "marker": "unacknowledged-1"
+    },
+    {
+      "at": "2026-09-23T07:19:20.413Z",
+      "event": "deny-removed"
+    },
+    {
+      "at": "2026-09-23T07:19:35.762Z",
+      "event": "write-recovery-committed",
+      "expected": {
+        "baseline": "committed before denial",
+        "duringOutage": "unacknowledged-1"
+      },
+      "manifest": {
+        "leaseToken": "8c742b0c-2510-4d39-b744-f7d3f0cc213f",
+        "snapshotBytes": 108,
+        "snapshotSequence": 3,
+        "leaseUntil": 1790148003923,
+        "snapshotVersion": "NvQ2.xRmblzTp3J7NzkvuE5VI1H5edeN",
+        "ownerAddress": "ws://10.0.11.236:1234",
+        "ownerId": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/bfe479541ded42fa8e53602ee9b3ac75",
+        "snapshotKey": "yjs-documents/intent/d25cfc87-3f9b-48ab-9cd4-74bf79810326/fd63e7f0d9c99b16596ae85e691a9dcbd289fa8a311de894a831098be1b7f3af/f837ff9f-4658-4b79-bc55-bd1a8ed8cf65.bin",
+        "documentId": "intent-review-d25cfc87-3f9b-48ab-9cd4-74bf79810326-fault-s3-5ef30ef0-6436-4962-bc1e-caceb5b88de8"
+      }
+    },
+    {
+      "at": "2026-09-23T07:19:37.021Z",
+      "event": "deny-installed",
+      "actions": ["s3:GetObject", "s3:GetObjectVersion"]
+    },
+    {
+      "at": "2026-09-23T07:20:47.669Z",
+      "event": "cold-read-denial-observed",
+      "error": "Upgrade 503",
+      "manifest": {
+        "snapshotBytes": 108,
+        "snapshotSequence": 3,
+        "snapshotVersion": "NvQ2.xRmblzTp3J7NzkvuE5VI1H5edeN",
+        "documentId": "intent-review-d25cfc87-3f9b-48ab-9cd4-74bf79810326-fault-s3-5ef30ef0-6436-4962-bc1e-caceb5b88de8",
+        "snapshotKey": "yjs-documents/intent/d25cfc87-3f9b-48ab-9cd4-74bf79810326/fd63e7f0d9c99b16596ae85e691a9dcbd289fa8a311de894a831098be1b7f3af/f837ff9f-4658-4b79-bc55-bd1a8ed8cf65.bin"
+      }
+    },
+    {
+      "at": "2026-09-23T07:20:48.839Z",
+      "event": "deny-removed"
+    },
+    {
+      "at": "2026-09-23T07:21:04.166Z",
+      "event": "cold-read-recovery-passed",
+      "expected": {
+        "baseline": "committed before denial",
+        "duringOutage": "unacknowledged-1"
+      },
+      "manifest": {
+        "snapshotBytes": 108,
+        "snapshotSequence": 3,
+        "snapshotVersion": "NvQ2.xRmblzTp3J7NzkvuE5VI1H5edeN",
+        "ownerAddress": "ws://10.0.11.236:1234",
+        "ownerId": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/bfe479541ded42fa8e53602ee9b3ac75",
+        "leaseUntil": 1790148094051,
+        "snapshotKey": "yjs-documents/intent/d25cfc87-3f9b-48ab-9cd4-74bf79810326/fd63e7f0d9c99b16596ae85e691a9dcbd289fa8a311de894a831098be1b7f3af/f837ff9f-4658-4b79-bc55-bd1a8ed8cf65.bin",
+        "leaseToken": "9d068e12-8b27-49a6-8c4f-da03f7581476",
+        "documentId": "intent-review-d25cfc87-3f9b-48ab-9cd4-74bf79810326-fault-s3-5ef30ef0-6436-4962-bc1e-caceb5b88de8"
+      }
+    }
+  ],
+  "passed": true,
+  "finishedAt": "2026-09-23T07:21:05.321Z"
+}

@@ -1,0 +1,46 @@
+[
+  {
+    "Name": "collaborative-ai-dlc-yjs-server-review-cpu",
+    "Config": {
+      "TargetValue": 60.0,
+      "PredefinedMetricSpecification": {
+        "PredefinedMetricType": "ECSServiceAverageCPUUtilization"
+      },
+      "ScaleOutCooldown": 60,
+      "ScaleInCooldown": 600,
+      "DisableScaleIn": false
+    }
+  },
+  {
+    "Name": "collaborative-ai-dlc-yjs-server-review-memory",
+    "Config": {
+      "TargetValue": 70.0,
+      "PredefinedMetricSpecification": {
+        "PredefinedMetricType": "ECSServiceAverageMemoryUtilization"
+      },
+      "ScaleOutCooldown": 60,
+      "ScaleInCooldown": 600,
+      "DisableScaleIn": false
+    }
+  },
+  {
+    "Name": "collaborative-ai-dlc-yjs-server-review-capacity",
+    "Config": {
+      "TargetValue": 60.0,
+      "CustomizedMetricSpecification": {
+        "MetricName": "CapacityUtilization",
+        "Namespace": "CollaborativeAI/Yjs",
+        "Dimensions": [
+          {
+            "Name": "ServiceName",
+            "Value": "collaborative-ai-dlc-yjs-server-review"
+          }
+        ],
+        "Statistic": "Average"
+      },
+      "ScaleOutCooldown": 60,
+      "ScaleInCooldown": 600,
+      "DisableScaleIn": false
+    }
+  }
+]

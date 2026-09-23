@@ -1,0 +1,4163 @@
+{
+  "events": [
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152011973,
+      "message": "{\"_aws\":{\"Timestamp\":1790152011973,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":197,\"ProxiedConnections\":87,\"Documents\":11,\"DocumentBytes\":86488,\"QueuedBytes\":0,\"ResidentMemoryBytes\":137416704,\"EventLoopDelayP99Ms\":54.362111,\"Updates\":2090,\"UpdateBytes\":158585,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":11}",
+      "ingestionTime": 1790152016221,
+      "eventId": "39921723885646814342237761004270152936992942639041478656"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152012819,
+      "message": "{\"_aws\":{\"Timestamp\":1790152012819,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":225,\"ProxiedConnections\":95,\"Documents\":13,\"DocumentBytes\":108644,\"QueuedBytes\":0,\"ResidentMemoryBytes\":140505088,\"EventLoopDelayP99Ms\":74.121215,\"Updates\":2730,\"UpdateBytes\":207550,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":13}",
+      "ingestionTime": 1790152017013,
+      "eventId": "39921723904513244780194668182967114502896315477016707072"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fbee1cbce7c1431e9a4705c1d808452b",
+      "timestamp": 1790152020203,
+      "message": "{\"_aws\":{\"Timestamp\":1790152020203,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":240,\"ProxiedConnections\":80,\"Documents\":16,\"DocumentBytes\":228408,\"QueuedBytes\":0,\"ResidentMemoryBytes\":179376128,\"EventLoopDelayP99Ms\":59.604991,\"Updates\":5716,\"UpdateBytes\":435544,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":16}",
+      "ingestionTime": 1790152024511,
+      "eventId": "39921724069181947326144789469131056389768915093048983552"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152041976,
+      "message": "{\"_aws\":{\"Timestamp\":1790152041976,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":197,\"ProxiedConnections\":87,\"Documents\":11,\"DocumentBytes\":335990,\"QueuedBytes\":0,\"ResidentMemoryBytes\":177668096,\"EventLoopDelayP99Ms\":56.852479,\"Updates\":6600,\"UpdateBytes\":511870,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":11}",
+      "ingestionTime": 1790152046221,
+      "eventId": "39921724554736072533752047156034171515832498170957398016"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152042819,
+      "message": "{\"_aws\":{\"Timestamp\":1790152042818,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":225,\"ProxiedConnections\":95,\"Documents\":13,\"DocumentBytes\":398962,\"QueuedBytes\":0,\"ResidentMemoryBytes\":187699200,\"EventLoopDelayP99Ms\":94.109695,\"Updates\":7800,\"UpdateBytes\":606610,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":13}",
+      "ingestionTime": 1790152047014,
+      "eventId": "39921724573535600736113362465307283965022208648802664448"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fbee1cbce7c1431e9a4705c1d808452b",
+      "timestamp": 1790152050216,
+      "message": "{\"_aws\":{\"Timestamp\":1790152050216,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":240,\"ProxiedConnections\":80,\"Documents\":17,\"DocumentBytes\":601019,\"QueuedBytes\":0,\"ResidentMemoryBytes\":247947264,\"EventLoopDelayP99Ms\":48.267263,\"Updates\":9645,\"UpdateBytes\":758833,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":17}",
+      "ingestionTime": 1790152054514,
+      "eventId": "39921724738494212969644381852314147455819329529318014976"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152071976,
+      "message": "{\"_aws\":{\"Timestamp\":1790152071976,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":197,\"ProxiedConnections\":87,\"Documents\":11,\"DocumentBytes\":593294,\"QueuedBytes\":0,\"ResidentMemoryBytes\":234373120,\"EventLoopDelayP99Ms\":48.758783,\"Updates\":6600,\"UpdateBytes\":536180,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":11}",
+      "ingestionTime": 1790152076257,
+      "eventId": "39921725223758428489670741438416803112631950929828904960"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152072818,
+      "message": "{\"_aws\":{\"Timestamp\":1790152072818,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":225,\"ProxiedConnections\":95,\"Documents\":13,\"DocumentBytes\":706235,\"QueuedBytes\":0,\"ResidentMemoryBytes\":250277888,\"EventLoopDelayP99Ms\":72.024063,\"Updates\":7800,\"UpdateBytes\":634560,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":13}",
+      "ingestionTime": 1790152077012,
+      "eventId": "39921725242535655946833526124503006201285385126137430016"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fbee1cbce7c1431e9a4705c1d808452b",
+      "timestamp": 1790152080226,
+      "message": "{\"_aws\":{\"Timestamp\":1790152080226,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":240,\"ProxiedConnections\":80,\"Documents\":17,\"DocumentBytes\":980185,\"QueuedBytes\":0,\"ResidentMemoryBytes\":255119360,\"EventLoopDelayP99Ms\":56.754175,\"Updates\":9553,\"UpdateBytes\":778730,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":17}",
+      "ingestionTime": 1790152084515,
+      "eventId": "39921725407739576377548382366069819866692980466496503808"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152101975,
+      "message": "{\"_aws\":{\"Timestamp\":1790152101975,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":197,\"ProxiedConnections\":87,\"Documents\":11,\"DocumentBytes\":856162,\"QueuedBytes\":0,\"ResidentMemoryBytes\":259280896,\"EventLoopDelayP99Ms\":57.114623,\"Updates\":6600,\"UpdateBytes\":538380,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":11}",
+      "ingestionTime": 1790152106219,
+      "eventId": "39921725892758483700390905097568611470248071267010543616"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152102822,
+      "message": "{\"_aws\":{\"Timestamp\":1790152102821,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":225,\"ProxiedConnections\":95,\"Documents\":13,\"DocumentBytes\":1017734,\"QueuedBytes\":0,\"ResidentMemoryBytes\":266821632,\"EventLoopDelayP99Ms\":82.706431,\"Updates\":7800,\"UpdateBytes\":636900,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":13}",
+      "ingestionTime": 1790152107012,
+      "eventId": "39921725911647214883546342899408505481611425447641546752"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152104714,
+      "message": "Yjs listening on 1234; clustered=true",
+      "ingestionTime": 1790152108968,
+      "eventId": "39921725953840224799166281885558426897754028519706263552"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/fbee1cbce7c1431e9a4705c1d808452b",
+      "timestamp": 1790152110233,
+      "message": "{\"_aws\":{\"Timestamp\":1790152110233,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":240,\"ProxiedConnections\":80,\"Documents\":16,\"DocumentBytes\":1356139,\"QueuedBytes\":0,\"ResidentMemoryBytes\":283066368,\"EventLoopDelayP99Ms\":47.448063,\"Updates\":9615,\"UpdateBytes\":784286,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":16}",
+      "ingestionTime": 1790152114515,
+      "eventId": "39921726076918037549856791010400297390980500980493451264"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152121375,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152126221,
+      "eventId": "39921726325392940551884994067542703625997815926971105280"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152131975,
+      "message": "{\"_aws\":{\"Timestamp\":1790152131975,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":215,\"ProxiedConnections\":125,\"Documents\":9,\"DocumentBytes\":916546,\"QueuedBytes\":0,\"ResidentMemoryBytes\":279220224,\"EventLoopDelayP99Ms\":52.887551,\"Updates\":6149,\"UpdateBytes\":503674,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":1,\"CapacityUtilization\":10.75}",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726561780839656309599379908064523305329679732572160"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152132843,
+      "message": "{\"_aws\":{\"Timestamp\":1790152132842,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":223,\"ProxiedConnections\":133,\"Documents\":9,\"DocumentBytes\":917848,\"QueuedBytes\":0,\"ResidentMemoryBytes\":286236672,\"EventLoopDelayP99Ms\":75.366399,\"Updates\":6918,\"UpdateBytes\":569348,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":11.15}",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726581137886488634180267717228298538303975816560640"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152134715,
+      "message": "{\"_aws\":{\"Timestamp\":1790152134714,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":110,\"ProxiedConnections\":0,\"Documents\":11,\"DocumentBytes\":1143668,\"QueuedBytes\":0,\"ResidentMemoryBytes\":210132992,\"EventLoopDelayP99Ms\":46.071807,\"Updates\":2191,\"UpdateBytes\":188213,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":11}",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726622884881500283506791011384455927848554892492800"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135822,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726647571806435056906605395972718183576393239232513"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135826,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726647661009415851029097962115591274169839263154178"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135826,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726647661009415851029097962115591274169839263154179"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135829,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726647727911651446620967386722746092114923781095428"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135831,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726647772513141843682214625954497211608155686043649"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135831,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726647772513141843682214625954497211608155686043650"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135840,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726647973219848630457822899775961665443409239867395"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135848,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648151625810218702810371353258838442141168304129"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135848,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648151625810218702810371353258838442141168304130"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135851,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726648218528045814294677456668862664575385805651972"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135852,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648240828791012825302937496131929035587192225795"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135856,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726648330031771806947792208187139453620684442566661"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135856,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726648330031771806947792208187139453620684442566662"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135856,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726648330031771806947793164347454027817193335554053"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135856,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648330031771806947795503639005019629033216147460"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135859,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648396934007402539664928246159837574117734088709"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135866,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648553039223792254026918996187746112648275951622"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135868,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726648597640714189315270862776073299597531407319046"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135869,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726648619941459387845893048151476998049384020312071"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135869,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726648619941459387845894004311791572245892913299463"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135869,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648619941459387845896343603342564057732793892871"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135873,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726648709144440181968386570454664662839338937221128"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135875,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726648753745930579029631897365786633939553056194568"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135877,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726648798347420976090878180437223179236276068155401"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135878,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726648820648166174621501321972941451884637574135818"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135882,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648909851146968743997183567680108486432371638280"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135884,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648954452637365805243466639116653783155383599113"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135884,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726648954452637365805243466639116653783155383599114"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135888,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726649043655618159927736032781989744376601407520779"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135891,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649110557853755519602161937278996313337151881227"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135892,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649132858598954050225303472997268961698657861644"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135892,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726649132858598954050228598924862834970047431442444"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135894,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726649177460089351111474881996299380266770443403277"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135895,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649199760834549642094728080152086906783175802893"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135896,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649222061579748172717869615870359555144681783310"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135899,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649288963815343764587294223025177500229199724559"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135902,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649355866050939356456718830179995445313717665808"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135903,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649378166796137887079860365898268093675223646225"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135908,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649489670522130540195568044489631335482753548306"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135912,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649578873502924662688134187362721928928777469971"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135914,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649623474993321723934417258799267225651789430804"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135915,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649645775738520254557558794517539874013295411221"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135915,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649645775738520254557558794517539874013295411222"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135917,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726649690377228917315807137317819651179085080952846"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135919,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649734978719314377050124937390630467459319332887"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135921,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726649779580209711438297364169141749960691224281097"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152135923,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726649824181700108499542691080263721060905343254552"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135925,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726649868783190505560792269603565832365977128796175"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135930,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726649980286916498213905637990606203795944778104842"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135930,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726649980286916498213905637990606203795944778104843"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135932,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650024888406895275154260353593740904507670659088"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135937,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650136392132887928267628740634112334475319967756"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135937,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650136392132887928267628740634112334475319967757"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135937,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650136392132887928269968032185104146315200561169"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135941,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650225595113682050762534175058194739761224482834"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135941,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650225595113682050762534175058194739761224482835"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135943,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650270196604079112006477954943748224644355850254"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135943,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650270196604079112006477954943748224644355850255"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135950,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650426301820468826368468704971656763174897713168"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135950,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650426301820468826368468704971656763174897713169"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135950,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650426301820468826370807996522648575014778306580"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135950,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650426301820468826370807996522648575014778306581"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135955,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650537805546461479486515675114011816822308208662"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135956,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650560106291660010107317919281292653343933595666"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135956,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650560106291660010109657210832284465183814189079"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135957,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650582407036858540730459454999565301705439576083"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135957,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650582407036858540732798746550557113545320169496"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152135958,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726650604707782057071355940282268829761906826149913"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135963,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650716211508049724469308669309201191874475458580"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135963,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650716211508049724469308669309201191874475458581"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135967,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650805414488843846961874812182291785320499380246"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135967,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650805414488843846961874812182291785320499380247"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135969,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650850015979240908208157883618837082043511341080"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135970,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726650872316724439438831299419337109730405017321497"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152135996,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726651452136099601235032979348012198587804172812314"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136002,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726651585940570792418770872402007260281464315707417"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136003,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726651608241315990949397309389591098938174595268634"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136004,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726651630542061189480017155473443805578187327668250"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136007,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726651697444296785071889875532464189531620619190299"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136017,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726651920451748770378117995437781350006886905413659"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136018,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726651942752493968908742093133814196851757304381467"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136018,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726651942752493968908742093133814196851757304381468"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136022,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726652031955474763031236998568238279257043208896540"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136026,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726652121158455557153729564711111369850489232818205"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136058,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726652834782301910133667754562545102786217543598109"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136061,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726652901684537505725536223009385346534793168551964"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136062,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726652923985282704256160320705418193379663567519774"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136063,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726652946286027902786782506080821891831516180512797"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136063,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726652946286027902786782506080821891831516180512798"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136063,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726652946286027902786782506080821891831516180512799"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136063,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726652946286027902786782506080821891831516180512800"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136064,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726652968586773101317406603776854738676386579480607"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136066,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726653013188263498378651930687976709776600698454049"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136067,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726653035489008696909276028384009556621471097421856"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136068,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726653057789753895439901509211278821081672483995678"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136068,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726653057789753895439901509211278821081672483995679"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136069,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726653080090499093970521355295131527721685216395298"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136070,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726653102391244292501144496830849800370046722375715"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136072,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152136219,
+      "eventId": "39921726653146992734689562390779902286345666769734336548"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136072,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726653146992734689562391736062600919863278627323937"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136073,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726653169293479888093014877598319192511640133304354"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136073,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726653169293479888093014877598319192511640133304355"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136073,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726653169293479888093017216889870184323480013897760"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136075,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726653213894970285154261160669755737808363145265188"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136076,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726653236195715483684884302205474010456724651245605"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136076,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726653236195715483684886641497025002268564531839009"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136077,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726653258496460682215509783032743274916926037819426"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136079,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726653303097951079276756066104179820213649049780259"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136079,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726653303097951079276756066104179820213649049780260"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136083,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726653392300931873399248632247052910807095073701925"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136521,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726663160027328829812182285600105338977594812530726"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136523,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726663204628819226873430907963092876086157705084966"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136532,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726663405335526013649041921472740079006225831755776"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136541,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726663606042232800424647455606021783756664812732455"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136542,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726663628342977998955273336829922805489840891559937"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136547,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726663739846703991608383965528780427834993968021543"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136548,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726663762147449190139009446356049692295195354595368"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136549,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726663784448194388669635327579950714028371433422850"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136550,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726663806748939587200253390135935245780078485962792"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136551,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726663829049684785730876531671653518428439991943209"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136551,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726663829049684785730881610651387259325094445383683"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136551,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726663829049684785730881610651387259325094445383684"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136556,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726663940553410778383994578641795873482087402438697"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136577,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726664408869059947527083290580062348182493600874501"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136590,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726664698778747528425179051564666151714538725179434"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136591,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726664721079492726955807272080118165259554684600326"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136596,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726664832583218719608920240070526779416547641655338"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136599,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726664899485454315200789664677681597361632159596587"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136602,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726664966387689910792656749993285423494876796944427"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136608,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726665100192161101976400678187328800281700286267399"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136609,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726665122492906300507018740743313332033407338807340"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136623,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726665434703339079935745061534920140922308303126572"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136625,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726665479304829476996989005314805694407191434493997"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136625,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726665479304829476996991344606356686219031315087405"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136627,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726665523906319874058235288386242239703914446454830"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136635,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726665702312281462303225499651722161787460947738632"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136643,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726665880718243050548207892249285593889538422734894"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136649,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726666014522714241731946741463595229779707458617391"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136661,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726666282131656624099422100600663509748205649788975"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136675,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726666594342089403528146082100719326825266733514800"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136675,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726666594342089403528151161080453067721921186955273"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136675,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726666594342089403528151161080453067721921186955274"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136679,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726666683545070197650643727223326158315367210876939"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136685,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726666817349541388834379836749453045120721673912368"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136688,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726666884251776984426246922065056871253966311260209"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136689,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726666906552522182956875142580508884798982270681100"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136689,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726666906552522182956875142580508884798982270681101"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136695,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726667040356993374140611252106635771604336733716529"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136699,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726667129559974168263103818249508862197782757638194"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136706,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726667285665190557977463469707985778924473418907698"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136707,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726667307965935756508088950535255043384674805481523"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136710,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726667374868171352099956035850858869517919442829363"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136715,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726667486371897344753076822509183973656381426171918"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136718,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726667553274132940344943507428156042516651371266100"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136720,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726667597875623337406189790499592587813374383226933"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136722,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726667642477113734467433734279478141298257514594356"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136725,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726667709379349330059303158886632959243342032535605"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136735,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726667932386801315365539653223549426623611545780239"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136822,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726669872551633587529750227142856397946247993229366"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136825,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726669939453869183121617312458460224079492630577206"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136827,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726669984055359580182863595529896769376215642538039"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136827,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726669984055359580182863595529896769376215642538040"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136835,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726670162461321168427851067107193942374947570974775"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136838,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726670229363556764019720491714348760320032088916024"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136838,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726670229363556764019720491714348760320032088916025"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136840,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726670273965047161080969514473968054701569673723920"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136842,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726670318566537558142215797545404599998292685684753"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136843,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726670340867282756672836199392940123561839618818106"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136843,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726670340867282756672838939081122872646654191665170"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136845,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726670385468773153734085222152559417943377203626003"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136846,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726670407769518352264703284708543949695084256165945"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136846,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726670407769518352264708363688277690591738709606420"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136850,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726670496972499146387198190142968032100370160681019"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136851,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726670519273244344917824071366869053833546239508501"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136855,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726670608476225139040311558530008403530337809989690"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136857,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726670653077715536101557841601444948827060821950523"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136857,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726670653077715536101562920581178689723715275390998"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136861,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726670742280696330224055486724051780317161299312663"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136862,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726670764581441528754675888571587303880708232446012"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136863,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726670786882186727285296690815754584717229857833020"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136866,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726670853784422322877168454714460394474154256367677"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136878,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726671121393364705244643813851528674442652447539261"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136881,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726671188295600300836515577750234484199576846073918"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136881,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726671188295600300836518317438417233284391418920984"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136882,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726671210596345499367136379994401765036098471460926"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136883,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726671232897090697897761860821671029496299858034751"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136887,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726671322100071492020252087672993128277906001363007"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136893,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726671455904542683203990936887302764168075037245504"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136894,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726671478205287881734614078423021036816436543225921"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136894,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726671478205287881734616417714572028628276423819328"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136897,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726671545107523477326488582009909595658175514607641"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136897,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726671545107523477326488582009909595658175514607642"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136904,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726671701212739867040845493780203763300051603030082"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136905,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726671723513485065571468635315922035948413109010499"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136907,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726671768114975462632719997367092322141790574411803"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136907,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726671768114975462632719997367092322141790574411804"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136908,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726671790415720661163343138902810594790152080392221"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136910,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726671835017211058224589421974247140086875092353054"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136917,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726671991122427447938948673036092299540591061368897"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136917,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726671991122427447938948673036092299540591061368898"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136922,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726672102626153440592064380714683662782398591270979"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136923,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726672124926898639122687522250401935430760097251396"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152136924,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726672147227643837653310663786120208079121603231813"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136945,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726672615543293006796394296744652941882873348227140"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136962,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726672994655961381816987702851863576905018949894213"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152136963,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152137010,
+      "eventId": "39921726673016956706580347610844387581849553380455874630"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152136964,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726673039257451778878239064903033863098396415295519"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137049,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726674934820793653981203355750904289124309850783814"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137050,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726674957121538852511829236974805310857485929611296"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152137052,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726675001723029249573076480963781923241934002913280"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137055,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726675068625264845164944944653396674099293459513377"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137066,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726675313933462029001799501546297673231270025297954"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137067,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726675336234207227532422643082015945879631531278371"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137069,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726675380835697624593666186465269742091539970392135"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152137069,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726675380835697624593669887070992558264079604580353"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152137070,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726675403136442823124293028606710830912441110560770"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137071,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726675425437188021654912469536706287388262982352968"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137071,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726675425437188021654912469536706287388262982352969"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152137071,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726675425437188021654916170142429103560802616541187"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137074,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726675492339423617246781894143861105333347500294218"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137631,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726687913854499198803874469227121719555520904232996"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152137713,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726689742515605478314973036073560143808889455968260"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137715,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726689787117095875376215618539273872933072833740875"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137741,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726690366936471037172420038156131710875286562078757"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137875,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726693355236327640275918264254197496670913790607436"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137896,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726693823551976809419004236504281222286505416196173"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137920,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726694358769861574153962373049702514931996132573222"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137920,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726694358769861574153962373049702514931996132573223"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137923,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726694425672097169745831797656857332877080650514472"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152137926,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726694492574332765337702183181552217909890229796869"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152137926,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726694492574332765337702183181552217909890229796870"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152137956,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726695161596688721256396429253100397360735409209351"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137962,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726695295401159912440134317549869966163179383750697"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137965,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726695362303395508032001002468842035023449328844878"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152137977,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726695629912337890399481440585644055888601973456938"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152137981,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726695719115318684521971267040334397397233424531535"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138024,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726696678047362221338770053681942937449317815877640"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138024,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726696678047362221338770053681942937449317815877641"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138026,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726696722648852618400012636147656666573501193650256"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138113,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726698662813684890564229650360869203153491848134666"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138125,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726698930422627272931706387871948407846104858558507"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138126,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726698952723372471462330490325206747582191425880075"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138127,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726698975024117669992952670943384953142827870519340"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138127,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726698975024117669992953631860925020230552931860492"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138128,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726698997324862868523575812479103225791189376499757"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138128,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726698997324862868523575812479103225791189376499758"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138129,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726699019625608067054198954014821498439550882480175"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138129,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726699019625608067054199914932361565527275943821325"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138136,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726699175730824456768558205076666657893266851496017"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138136,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726699175730824456768558205076666657893266851496018"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138139,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726699242633060052360430369372004224923165942284336"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138139,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726699242633060052360431330289544292010891003625486"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138144,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726699354136786045013543337362412839080158899339347"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138147,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726699421039021640605412761969567657025243417280596"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138152,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726699532542747633258528469648159020267050947182677"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138154,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726699577144238030319774752719595565563773959143510"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138170,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726699933956161206809748717896810744110097689018383"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138171,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726699956256906405340370898514988949670734133657649"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138174,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726700023159142000932237583433961018531004078751831"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138186,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726700290768084383299715281862580290311342150516824"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138223,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726701115895656728932774258372339127385532444639282"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138241,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726701517309070302483991766932808102143764613627920"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138305,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726702944556763008443871864301237484551175935033395"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138307,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726702989158253405505115407684491280763084374147161"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138319,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726703256767195787872596806718833368715962080100369"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138339,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726703702782099758485055936827476005510652565520474"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138354,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726704037293277736444403059863250095236075155226715"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138380,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726704617112652898240608440397648000266013944905746"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138381,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726704639413398096771231581933366272914375450886163"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138397,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726704996225321273261198145899135819115619912384604"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138402,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726705107729047265914313853577727182357427442286685"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138403,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726705130029792464444940695719168271178328582455316"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138404,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726705152330537662975560136649163727654150454247518"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138405,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726705174631282861506186978790604816475051594416149"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138405,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726705174631282861506186978790604816475051594416150"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138434,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726705821352893618894254382720711907104995633659999"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138442,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726705999758855207139243215612180904464427315691543"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138452,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726706222766307192445473670051823563860317314154548"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138452,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726706222766307192445473670051823563860317314154549"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138454,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726706267367797589506719953123260109157040326115382"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138455,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726706289668542788037343094658978381805401832095799"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138457,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726706334270033185098589377730414927102124844056632"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138457,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726706334270033185098590338647954994189849905397784"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138458,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726706356570778383629209779577950450665671777189984"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138458,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726706356570778383629212519266133199750486350037049"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138459,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726706378871523582159836621719391539486572917358617"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138467,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726706557277485170404820793087597653585739903860794"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138475,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726706735683446758649803185685161085687817378857057"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138475,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726706735683446758649806886290883901860357013045274"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138495,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726707181698350729262269717005249354827587132653595"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138498,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726707248600586324854138180694864105684946589253691"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138499,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726707270901331523384758582542399629248493522387042"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138502,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726707337803567118976631707755277263366117674516508"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138503,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726707360104312317507253888373455468926754119155772"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138504,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726707382405057516037877029909173741575115625136189"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138515,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726707627713254699874732547719614807794817252261917"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138516,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726707650013999898405351988649610264270639124054115"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138531,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726707984525177876364699111685384353996061713760356"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138542,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726708229833375060201556408266468102212852852391998"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138542,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726708229833375060201556408266468102212852852391999"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138628,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726710147697462133835147541255779617059667428048926"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138630,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726710192298952530896392863409676095268665378668608"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138639,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726710393005659317672001137231140549103918932492353"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138641,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726710437607149714733247420302577094400641944453186"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138643,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726710482208640111794494664291553706785090017755167"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138644,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726710504509385310325114105221549163260911889547365"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138646,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726710549110875707386360388292985708557634901508198"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138646,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726710549110875707386360388292985708557634901508199"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138649,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726710616013111302978233513505863342675259053637664"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138656,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726710772118327692692591803650168435041249961312360"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138686,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726711441140683648611289750327439430664634774913057"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138693,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726711597245900038325648040471744523030625682587753"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138693,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726711597245900038325650780159927272115440255434819"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138693,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726711597245900038325651741077467339203165316775970"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138731,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726712444674217582489330158517221632753177482690628"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138735,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726712533877198376611823685577634790434348567953443"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138737,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726712578478688773673066268043348519558531945726058"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138838,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726714830853953825266003563150894057043044049748075"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138838,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726714830853953825266007263756616873215583683936292"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138848,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726715053861405810572237718196259532611473682399301"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138857,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726715254568112597347843252329541237361912663375980"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138878,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726715722883761766490931964267807712062318861811782"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138879,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726715745184506965021555105803525984710680367792199"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138885,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726715878988978156205294915935375687688574465015845"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138902,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726716258101646531225884621436863506538180432494701"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138912,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726716481109098516532118776482228982106610065145928"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152138918,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152138945,
+      "eventId": "39921726716614913569707715854886008355868911964528181358"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152138954,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726717417740396854818291681899936500425518377664550"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152138996,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726718354371695193104462665482563884568976567500873"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152139000,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726718443574675987226956192542977042250147652763687"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152139832,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726736997794681164705412278596188015155838925406208"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140087,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726742684484706790014310080951199343931379592134730"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140159,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726744290138361084219177232440455041701133084065832"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140231,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726745895792015378424043423012170672383161514655785"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140241,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726746118799467363730273877451813331779051513118795"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140242,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726746141100212562260900308240679800984056377376769"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140313,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726747724453121657935140068023528962461079943708748"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140454,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726750868858194650753003024559805405880052286947405"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140469,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726751203369372628712353436848727692162118234931202"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140476,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726751359474589018426713099263147471231730479857706"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140477,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726751381775334216957338569134473873349010282774531"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140479,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726751426376824614018584852205910418645733294735364"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140502,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726751939293964180222913818274282493001404574007374"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140502,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726751939293964180222914779191822560089129635348523"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140548,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726752965128243312631579289834863101913758910447660"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140600,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726754124766993636223984978027821409097475518365701"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140660,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726755462811705548061371141835309638530247580254253"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140735,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726757135367595437858105796096640020069635467444303"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140738,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726757202269831033449975220703794838014719985385552"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140738,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726757202269831033449976181621334905102445046726702"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140743,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726757313773557026103094217635534397813170873565190"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140744,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726757336074302224633717359171252670461532379545607"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140745,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726757358375047423164340500706970943109893885526024"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140844,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726759566148822077696028223489931738741039619309649"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140888,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726760547381610813043447411979075802356670943789103"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140891,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726760614283846408635316836586230620301755461730352"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140893,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726760658885336805696562158740127098510753412350034"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140899,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726760792689807996880301968871976801488647509573681"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140900,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726760814990553195410924149490155007049283954212947"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140900,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726760814990553195410927438743303203605927312490505"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152140903,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726760881892788791002796863350458021551011830431754"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152140915,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726761149501731173370272233443469163862431605260338"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152140929,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726761461712163952798995254025984913851767627645012"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141018,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726763446478486622024454850704911179555941659902037"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141018,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726763446478486622024458139958059376112585018179595"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141020,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726763491079977019085702094693887791940389733204019"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141051,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726764182403078173535018521383614176951871357255766"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141063,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726764450012020555902499509065381645288852787298316"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141065,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726764494613510952963745792136818190585575799259149"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141096,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726765185936612107413060851408476513215864187715636"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141121,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726765743455242070678639389801433329424901837226037"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141126,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726765854958968063331757425815632822135627664064526"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141137,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726766100267165247168608693455385624710960871571543"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141140,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152141211,
+      "eventId": "39921726766167169400842760478118062540442656045389512792"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141154,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726766479379833622189205388815744456289749831516175"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141178,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726767014597718386924158457337374870381507678109750"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141308,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726769913694594195905171936007565577403293006954496"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141409,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726772166069859247498109231115111114887805110976513"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141411,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726772210671349644559355514186547660184528122937346"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141411,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726772210671349644559355514186547660184528122937347"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141549,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726775288174187041785349046115669285658415948234756"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141550,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726775310474932240315972187651387558306777454215173"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141577,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726775912595052600642794258424573786546666861232144"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141580,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726775979497288196234663683031728604491751379173393"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141582,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726776024098778593295909966103165149788474391134226"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141584,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726776068700268990357156249174601695085197403095059"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141585,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726776091001014188887779390710319967733558909075476"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141587,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726776135602504585949025673781756513030281921036309"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152141602,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726776470113682563908372796817530602755704510742550"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141623,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726776938429331733051456440732006198902377839394871"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152141635,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726777206038274115418939218187440733417505462550534"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141643,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726777384444235703663919271446371651869607959003192"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141644,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726777406744980902194542412982089924517969464983609"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141644,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726777406744980902194542412982089924517969464983610"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141668,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726777941962865666929497809839328468078645608513595"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141668,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726777941962865666929497809839328468078645608513596"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141668,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726777941962865666929497809839328468078645608513597"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152141668,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152142006,
+      "eventId": "39921726777941962865666929497809839328468078645608513598"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142085,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726787241373613454199353861784506086809585369939968"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142104,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726787665087772226281192598439310605499051767365639"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142107,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726787731990007821873062975570308085073538501509121"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142151,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726788713222796557220481203141912081601444764647426"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142152,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726788735523541755751104344677630354249806270627843"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142152,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726788735523541755751104344677630354249806270627844"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142168,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726789092335464932241070906034072921728316895658007"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142175,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726789248440681321955436599999150625162120908177413"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142185,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726789471448133307261668015356333351645735967981574"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142208,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726789984365272873465999318154010960928648389328904"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142223,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726790318876450851425346441189785050654070979035145"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142231,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726790497282412439670328822784324098575091772424216"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142233,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726790541883902836731577856546967777137686038839306"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142234,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726790564184648035262200998082686049786047544819723"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142234,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726790564184648035262200998082686049786047544819724"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142250,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726790920996571211752168511962971278893960386052121"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142261,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726791166304768395589025819547079411291808206290957"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142261,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726791166304768395589025819547079411291808206290958"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142262,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726791188605513594119646210391590550674298457817114"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142267,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726791300109239586772761918070181913916105987719195"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142379,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726793797792701822202556520761835583798465911980047"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142381,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726793842394192219263802803833272129095188923940880"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142382,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726793864694937417794425945368990401743550429921297"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142541,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726797410513423984163502698856988619567158626353180"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142552,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726797655821621168000360006441096751965006446592018"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142552,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726797655821621168000360006441096751965006446592019"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142590,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726798503249938712164040337322233774232145890050055"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142590,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726798503249938712164040337322233774232145890050056"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142590,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726798503249938712164040337322233774232145890050057"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142617,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726799105370059072490861455571577340842633080864797"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142619,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726799149971549469552111441858063681034629563482122"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142624,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726799261475275462205227149536655044276437093384203"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152142624,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726799261475275462205227149536655044276437093384204"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142683,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726800577219242175511988796928983335634492475572254"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152142695,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726800844828184557879469246048809740680701801791508"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142734,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726801714557247300573769015250615240700929280573471"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142766,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726802428181093653553709544393599965448497471946784"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142768,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726802472782584050614955827465036510745220483907617"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152142771,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726802539684819646206825252072191328690305001848866"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152143063,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726809051502417617148782580501926942011864748130339"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152143065,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152143932,
+      "eventId": "39921726809096103908014210028863573363487308587760091172"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152143076,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726809341412105198046887123681314281335837796532237"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152144942,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726850954602645656189668276807768381549005739786261"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152145123,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726854991037526590232457847296618392531840538443790"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152145147,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152148932,
+      "eventId": "39921726855526255411354967415585830812531288306181079040"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152145175,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726856150676276913824861207153968570246638849425423"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152145227,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152148932,
+      "eventId": "39921726857310315027237417266908688274343157226659512321"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152145480,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726862952403562465664918423024199066367495957250070"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152145662,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726867011139188598238330182524924688369290045685783"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152145754,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152148932,
+      "eventId": "39921726869062807746863055662498011804028843740311191554"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152145975,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152148932,
+      "eventId": "39921726873991272435738323376777405542284131633132863491"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152145989,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726874303482868517752098417228642506012904717484048"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152145997,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726874481888830105997083549514388687199796765327377"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152146053,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726875730730561223711979475514611955508041100230674"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152146106,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726876912670056745835005024383837744241798700990488"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152146181,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146207,
+      "eventId": "39921726878585225946635631740639562708192868911649521689"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152146188,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152148932,
+      "eventId": "39921726878741331163025346105924513534358232633906692100"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152146210,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726879231947557393019812696622380761300797539155987"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152146221,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152148932,
+      "eventId": "39921726879477255754576856669595192237355628563604045829"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152146356,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152151207,
+      "eventId": "39921726882487856356378490796452794374590963386052444160"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152146500,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152151207,
+      "eventId": "39921726885699163664966900528833937805852327442913624065"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152146505,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152151207,
+      "eventId": "39921726885810667390959553644541616397215569250443526146"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152146506,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152146995,
+      "eventId": "39921726885832968136158084262591194989465215803309359124"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152146521,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152151207,
+      "eventId": "39921726886167479314136043614806187889577943034539212803"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152146524,
+      "message": "Yjs upgrade unavailable: ECONNREFUSED",
+      "ingestionTime": 1790152148932,
+      "eventId": "39921726886234381549731635481480514873968082099916111878"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152156561,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727110066961107383499965181895211341665974513106944"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152156643,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152157013,
+      "eventId": "39921727111895622213663011060449561822586034126728331264"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152156725,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727113724283319942522163140139956147914499551461376"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152156836,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727116199666036979421329104217736319965388657721345"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152156844,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727116378071998567666314236503482501152280705564674"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152156853,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727116578778705354441925256711895046904772316954625"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152156864,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727116824086902538278779813604796046036748882739202"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152156901,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152157013,
+      "eventId": "39921727117649214474883911830965777136929311395271278593"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152156901,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152157013,
+      "eventId": "39921727117649214474883911830965777136929311395271278594"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152156910,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727117849921181670687441577860888495944140100272131"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157025,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727120414506879501709106542783544792456883618709504"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157105,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727122198566495384158954177325951662374633766453252"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157130,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727122756085125347424535462105856570500909473529859"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157148,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727123157498538920975752951676892328205348854300673"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157198,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727124272535798847506909086534699110589491880198148"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157250,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727125432174549171099313388320156138338222464303106"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157340,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727127439241617038855392438219745734739587671851013"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157364,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727127974459501803590351523392039220251434146070531"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157365,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727127996760247002120973722999650642865863378927621"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157368,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727128063662482597712840401219857368893709839302662"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157412,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727129044895271333060258628791461365421616102440967"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157413,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727129067196016531590884516714127729987215665987590"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157451,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727129914624334075754561148684473998707714835677192"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157531,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727131698683949958204416159856990752527805644800004"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157544,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727131988593637539102513311506273355005334891855881"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157545,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727132010894382737633139199428939719570934455402503"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157547,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727132055495873134694382736113428172950419409797130"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157590,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727133014427916671511181510464368838781134497644549"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157604,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727133326638349450939905491964424655858195581370374"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157631,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727133928758469811266729371500711167330023969718280"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157634,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727133995660705406858599738035972835309040760782855"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157660,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727134575480080568654800476036541074132507643150345"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157752,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727136627148638833472126750935674065864528135782411"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157829,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727138344306019120330108649185981059788364096274444"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157888,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727139660049985833636877688108414087992863279808520"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157913,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727140217568615796902455284573264054167968656195594"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157913,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727140217568615796902455284573264054167968656195595"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157919,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727140351373086988086195075715680540092069965201417"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152157921,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727140395974577385147440416859010235354860704038924"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152157940,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727140819688736157229281047965764265707661590790154"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152157975,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727141600214818105801087313400848866449143969415181"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158048,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727143228169217598536576645508282769779533905985550"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152158051,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727143295071453194128448816502385679641856481493005"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158070,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727143718785611966210289447609139709994657368244235"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152158074,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727143807988592760332781071823905950554171119042574"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158075,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727143830289337958863401466972676131285294567456783"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158096,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727144298604987128006487439222759856900886193045520"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158156,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727145636649699039843879619680911157753746882560012"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158170,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727145948860131819272603601180966974830807966285837"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152158176,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727146082664603010456341508467169760687044729045007"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158194,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727146484078016584007558998038205518391484109815822"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152158202,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727146662483978172252543188395844849544443884535824"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158219,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727147041596646547273133848116107392649351428636689"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158250,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727147732919747701722454924038428786699728444719119"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158263,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727148022829435282620552075687711389177257691774994"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152158353,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727150029896503150376637560289304019447031287578641"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158415,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727151412542705459275273277431943773679376931487760"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158417,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727151457144195856336515872188325377024929612759059"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158418,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727151479444941054867139013724043649673291118739476"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158431,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727151769354628635765243542003436136053161027174417"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152158594,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727155404376095996256814670397407727702154228858898"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158693,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727157612149870650788502936046568627972705263353877"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152158867,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727161492479535195116932309648496160704845361512467"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152158871,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727161581682515989239424875791369251298291385434132"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158879,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152158947,
+      "eventId": "39921727161760088477577484407261690167340567945375711254"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152158930,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152163932,
+      "eventId": "39921727162897426482702546193506358784026086262032695296"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158955,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727163454945112665811769706719811003794590160912402"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152158993,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727164302373430209975449085077105364432327388168211"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152159106,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727166822357637643935863136685163323663245290831893"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152159151,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152163932,
+      "eventId": "39921727167825891171577813907785752522281374154854367233"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152159170,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727168249605330349895744194971132773158381673578518"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152159234,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727169676853023055855626195185209072687450329448468"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152159389,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727173133468528828102212191293434483149551483289623"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152159406,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727173512581197203122806539328751968205629358080021"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152159410,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727173601784177997245299105471625058799075382001686"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152159439,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727174248505788754633369268079348115567626782310424"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152159468,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727174895227399512021440372615178022370110455742489"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152159490,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152163932,
+      "eventId": "39921727175385843793879695152766361016709168705381728258"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152159549,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152163932,
+      "eventId": "39921727176701587760593001918116968394795422034234572803"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152159628,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152163932,
+      "eventId": "39921727178463346631276921146298290138334642593207025668"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152159847,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152163932,
+      "eventId": "39921727183347209829755127614294612440044633763016736773"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152159862,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727183681721007733086959079616284295858476085149719"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152159863,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727183704021752931617582221152002568506837591130136"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152160030,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727187428246201086231646857616954100783209089859609"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152160168,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727190505749038483457639447617968876223164642033690"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152160462,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161998,
+      "eventId": "39921727197062168126851460844001047247884875379673399322"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152160876,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152161219,
+      "eventId": "39921727206294676639043138823654906505911263110876168219"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152161976,
+      "message": "{\"_aws\":{\"Timestamp\":1790152161976,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":171,\"ProxiedConnections\":80,\"Documents\":10,\"DocumentBytes\":1242438,\"QueuedBytes\":0,\"ResidentMemoryBytes\":289882112,\"EventLoopDelayP99Ms\":57.311231,\"Updates\":5403,\"UpdateBytes\":444204,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":183,\"CapacityUtilization\":10}",
+      "ingestionTime": 1790152166206,
+      "eventId": "39921727230825496357426824285373566415564575978317938688"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152162896,
+      "message": "{\"_aws\":{\"Timestamp\":1790152162895,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":164,\"ProxiedConnections\":73,\"Documents\":10,\"DocumentBytes\":1248648,\"QueuedBytes\":0,\"ResidentMemoryBytes\":288002048,\"EventLoopDelayP99Ms\":74.055679,\"Updates\":5387,\"UpdateBytes\":442654,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":184,\"CapacityUtilization\":10}",
+      "ingestionTime": 1790152166995,
+      "eventId": "39921727251342181940074997576540251536793035353929089024"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152163726,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152166206,
+      "eventId": "39921727269851800454855414783061073392699208613783666689"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152163923,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152163932,
+      "eventId": "39921727274245047258965947539194200119359355261392912390"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152164542,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152166995,
+      "eventId": "39921727288049208536856403267508043813572238392772853761"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152164715,
+      "message": "{\"_aws\":{\"Timestamp\":1790152164714,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":113,\"ProxiedConnections\":2,\"Documents\":12,\"DocumentBytes\":1506672,\"QueuedBytes\":0,\"ResidentMemoryBytes\":268476416,\"EventLoopDelayP99Ms\":56.623103,\"Updates\":6606,\"UpdateBytes\":540992,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":184,\"CapacityUtilization\":12}",
+      "ingestionTime": 1790152168932,
+      "eventId": "39921727291907237456202201073335406191830912187584610304"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152165536,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152166206,
+      "eventId": "39921727310216149264195842669240723466192742939608219650"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152165938,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152168932,
+      "eventId": "39921727319181048834005153175433589639279858309398659073"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152166158,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152168932,
+      "eventId": "39921727324087212777681890266571447659262497840714350594"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152166173,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152166206,
+      "eventId": "39921727324421723955659849610398976005869749218917744643"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152166700,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152168932,
+      "eventId": "39921727336174216675285488009283806963037909776955736067"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152167153,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152171996,
+      "eventId": "39921727346276454250219860296103338989519954022768312320"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152167198,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152168932,
+      "eventId": "39921727347279987784153738333768594662816793806933983236"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152167505,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152171996,
+      "eventId": "39921727354126316560102639641923911821492177272873418753"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152168359,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152171209,
+      "eventId": "39921727373171152959647791803844275113584735441545396224"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152168563,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152171996,
+      "eventId": "39921727377720504980148038925668701753954143746200698882"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152168876,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152171209,
+      "eventId": "39921727384700638227288123968018241460543938340137271297"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152169439,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152173932,
+      "eventId": "39921727397255957774060864799994703273234676914489327616"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152169768,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152171996,
+      "eventId": "39921727404592902944377439811219242272495419360907100163"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152170667,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152171996,
+      "eventId": "39921727424641272877856470015459852999606296354783494148"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152170897,
+      "message": "Yjs upgrade unavailable: Error",
+      "ingestionTime": 1790152171209,
+      "eventId": "39921727429770444273518513337061928089566276943723692034"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152191976,
+      "message": "{\"_aws\":{\"Timestamp\":1790152191976,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":233,\"ProxiedConnections\":95,\"Documents\":14,\"DocumentBytes\":2074368,\"QueuedBytes\":0,\"ResidentMemoryBytes\":290648064,\"EventLoopDelayP99Ms\":67.764223,\"Updates\":7335,\"UpdateBytes\":732702,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":6,\"CapacityUtilization\":14.000000000000002}",
+      "ingestionTime": 1790152196222,
+      "eventId": "39921727899847852313345518567732020883705253615249784832"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152192918,
+      "message": "{\"_aws\":{\"Timestamp\":1790152192918,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":211,\"ProxiedConnections\":101,\"Documents\":12,\"DocumentBytes\":1654297,\"QueuedBytes\":0,\"ResidentMemoryBytes\":296292352,\"EventLoopDelayP99Ms\":68.485119,\"Updates\":6279,\"UpdateBytes\":566437,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":6,\"CapacityUtilization\":12}",
+      "ingestionTime": 1790152197014,
+      "eventId": "39921727920855154290361365568016372770903396237341294592"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152194715,
+      "message": "{\"_aws\":{\"Timestamp\":1790152194714,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":170,\"ProxiedConnections\":22,\"Documents\":15,\"DocumentBytes\":2254818,\"QueuedBytes\":0,\"ResidentMemoryBytes\":307015680,\"EventLoopDelayP99Ms\":57.475071,\"Updates\":8220,\"UpdateBytes\":784146,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":5,\"CapacityUtilization\":15}",
+      "ingestionTime": 1790152198943,
+      "eventId": "39921727960929593412120895355687607775576544344903254016"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/80c67fc6be7b41e3be34a8b91ca42391",
+      "timestamp": 1790152222007,
+      "message": "{\"_aws\":{\"Timestamp\":1790152222006,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":235,\"ProxiedConnections\":95,\"Documents\":14,\"DocumentBytes\":2427965,\"QueuedBytes\":0,\"ResidentMemoryBytes\":309202944,\"EventLoopDelayP99Ms\":127.467519,\"Updates\":8328,\"UpdateBytes\":693444,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":14.000000000000002}",
+      "ingestionTime": 1790152226220,
+      "eventId": "39921728569561531370418662167456268406204966111425658880"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/6a11f3a3b9d148c1b4d102554c0708c9",
+      "timestamp": 1790152222918,
+      "message": "{\"_aws\":{\"Timestamp\":1790152222918,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":212,\"ProxiedConnections\":102,\"Documents\":12,\"DocumentBytes\":1907893,\"QueuedBytes\":0,\"ResidentMemoryBytes\":294121472,\"EventLoopDelayP99Ms\":95.027199,\"Updates\":6542,\"UpdateBytes\":534258,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":12}",
+      "ingestionTime": 1790152227006,
+      "eventId": "39921728589877510246280059850345698493397859469906345984"
+    },
+    {
+      "logStreamName": "yjs/yjs-server/f511d671589b4d6bba0d007932bad6fb",
+      "timestamp": 1790152224714,
+      "message": "{\"_aws\":{\"Timestamp\":1790152224714,\"CloudWatchMetrics\":[{\"Namespace\":\"CollaborativeAI/Yjs\",\"Dimensions\":[[\"ServiceName\"]],\"Metrics\":[{\"Name\":\"Connections\"},{\"Name\":\"ProxiedConnections\"},{\"Name\":\"Documents\"},{\"Name\":\"DocumentBytes\"},{\"Name\":\"QueuedBytes\"},{\"Name\":\"ResidentMemoryBytes\"},{\"Name\":\"EventLoopDelayP99Ms\"},{\"Name\":\"Updates\"},{\"Name\":\"UpdateBytes\"},{\"Name\":\"PersistenceErrors\"},{\"Name\":\"NotReady\"},{\"Name\":\"RejectedConnections\"},{\"Name\":\"CapacityUtilization\"}]}]},\"ServiceName\":\"collaborative-ai-dlc-yjs-server-review\",\"Connections\":172,\"ProxiedConnections\":22,\"Documents\":15,\"DocumentBytes\":2626262,\"QueuedBytes\":0,\"ResidentMemoryBytes\":340795392,\"EventLoopDelayP99Ms\":125.894655,\"Updates\":8996,\"UpdateBytes\":742956,\"PersistenceErrors\":0,\"NotReady\":0,\"RejectedConnections\":0,\"CapacityUtilization\":15}",
+      "ingestionTime": 1790152228940,
+      "eventId": "39921728629929648622841059014881918606854545500820996096"
+    }
+  ],
+  "searchedLogStreams": []
+}

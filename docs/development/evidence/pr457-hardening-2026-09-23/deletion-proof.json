@@ -1,0 +1,107 @@
+{
+  "startedAt": "2026-09-23T07:14:28.790Z",
+  "events": [
+    {
+      "at": "2026-09-23T07:14:32.882Z",
+      "event": "durable-documents-created",
+      "versions": 3,
+      "manifests": [
+        {
+          "snapshotBytes": 54,
+          "ownerAddress": "ws://10.0.11.23:1234",
+          "snapshotKey": "yjs-documents/intent/ef5475ac-3979-4c6d-85b8-12a88eae9e1a/025495d8aa87e7c62684298ed30beb84ad3a82488da86d5779bd47d63dc78c69/08f48933-5887-44dd-85ea-b6053d205fa9.bin",
+          "leaseUntil": 1790147701186,
+          "snapshotVersion": "mVVCRLAZMmHW8i6M5fdGyL._z.VOYass",
+          "documentId": "intent-artifact-ef5475ac-3979-4c6d-85b8-12a88eae9e1a-arbitrary-epoch-dc70a3a6-7627-44d3-a918-ca7462232a56",
+          "leaseToken": "c8e2e8ae-0dcd-453d-9f33-f491f9dc6840",
+          "snapshotSequence": 1,
+          "ownerId": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/5b52b672e50d454d89663c113a91c0e3"
+        },
+        {
+          "snapshotSequence": 1,
+          "documentId": "intent-review-EF5475AC-3979-4C6D-85B8-12A88EAE9E1A-legacy-suffix",
+          "ownerId": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/7369630caec446d1be82953469dfde72",
+          "leaseToken": "731f177d-fca5-455c-a0de-ac66dd3f05ac",
+          "leaseUntil": 1790147701399,
+          "snapshotBytes": 54,
+          "ownerAddress": "ws://10.0.11.46:1234",
+          "snapshotVersion": "0JtZ_ZcQ8cb0FgfyviQ38PNO9W1lMde.",
+          "snapshotKey": "yjs-documents/intent/ef5475ac-3979-4c6d-85b8-12a88eae9e1a/d03c67e32d643da89cf58303b6c5e41d7996e52dc79d151b55ccadb3b57e1657/6037fa4a-7dfb-4a51-bb1f-92ef5f846e6d.bin"
+        },
+        {
+          "snapshotBytes": 54,
+          "ownerAddress": "ws://10.0.11.23:1234",
+          "snapshotKey": "yjs-documents/intent/ef5475ac-3979-4c6d-85b8-12a88eae9e1a/4e57dfdc51bd638c1e1d130107d60bc68988321c38b2d3c9c059323f85dcc869/e2a421d9-9d88-4d66-8e91-9c52fb2b012b.bin",
+          "documentId": "intent-draft-ef5475ac-3979-4c6d-85b8-12a88eae9e1a",
+          "leaseToken": "c5a0fbb8-d15f-4f56-8a56-92022ad4fcff",
+          "snapshotVersion": "kIVI9VhpFjDc1OWt4TnQ77bAqL.69WKa",
+          "snapshotSequence": 1,
+          "leaseUntil": 1790147701598,
+          "ownerId": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/5b52b672e50d454d89663c113a91c0e3"
+        }
+      ]
+    },
+    {
+      "at": "2026-09-23T07:14:33.541Z",
+      "event": "api-delete",
+      "status": 204,
+      "body": ""
+    },
+    {
+      "at": "2026-09-23T07:14:34.403Z",
+      "event": "complete-purge",
+      "marker": {
+        "cleanupAfter": 1790147732970,
+        "cleanupPartition": "DELETED",
+        "cleanupState": "fenced",
+        "deletedAt": 1790147672970,
+        "documentId": "scope#intent:ef5475ac-3979-4c6d-85b8-12a88eae9e1a"
+      },
+      "documentRows": 0,
+      "versions": 0
+    },
+    {
+      "at": "2026-09-23T07:14:34.457Z",
+      "event": "old-token-replay",
+      "denied": true,
+      "error": "Upgrade 503"
+    },
+    {
+      "at": "2026-09-23T07:14:34.543Z",
+      "event": "new-token-denied",
+      "status": 404
+    },
+    {
+      "at": "2026-09-23T07:15:09.544Z",
+      "event": "active-sockets-fenced",
+      "closeCodes": [1012, 1012, 1012]
+    },
+    {
+      "at": "2026-09-23T07:15:13.039Z",
+      "event": "late-upload-injected",
+      "key": "yjs-documents/intent/ef5475ac-3979-4c6d-85b8-12a88eae9e1a/late-upload-proof.bin",
+      "versionId": "LSRaSNBk_dsBrI8q0mDdwtnl.2_gjoNF"
+    },
+    {
+      "at": "2026-09-23T07:15:20.517Z",
+      "event": "scheduled-cleanup-passed",
+      "marker": {
+        "cleanupAfter": 1790151316894,
+        "cleanupPartition": "DELETED",
+        "cleanupState": "fenced",
+        "deletedAt": 1790147672970,
+        "documentId": "scope#intent:ef5475ac-3979-4c6d-85b8-12a88eae9e1a",
+        "lastCleanupAt": 1790147716894
+      },
+      "versions": 0
+    }
+  ],
+  "intentId": "ef5475ac-3979-4c6d-85b8-12a88eae9e1a",
+  "documentIds": [
+    "intent-artifact-ef5475ac-3979-4c6d-85b8-12a88eae9e1a-arbitrary-epoch-dc70a3a6-7627-44d3-a918-ca7462232a56",
+    "intent-review-EF5475AC-3979-4C6D-85B8-12A88EAE9E1A-legacy-suffix",
+    "intent-draft-ef5475ac-3979-4c6d-85b8-12a88eae9e1a"
+  ],
+  "passed": true,
+  "finishedAt": "2026-09-23T07:15:20.517Z"
+}

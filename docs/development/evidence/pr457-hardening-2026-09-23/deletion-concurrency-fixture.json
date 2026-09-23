@@ -1,0 +1,16 @@
+{
+  "startedAt": "2026-09-23T09:21:44.060Z",
+  "documentRows": 4096,
+  "versions": 1005,
+  "deleteMarkers": 5,
+  "projectId": "839c92c2-afe1-45d2-ab7c-0d95c7a7c6f3",
+  "intentId": "96b76a71-0799-4e26-8aed-2aa72d2fbd73",
+  "snapshotKey": "yjs-documents/intent/96b76a71-0799-4e26-8aed-2aa72d2fbd73/pagination.bin",
+  "firstPage": {
+    "versions": 995,
+    "deleteMarkers": 5,
+    "isTruncated": true
+  },
+  "seeded": true,
+  "finishedAt": "2026-09-23T09:21:58.575Z"
+}

@@ -1,0 +1,19 @@
+{
+  "startedAt": "2026-09-23T09:09:19.319Z",
+  "saves": [
+    {
+      "status": 200,
+      "at": "2026-09-23T09:09:30.170Z"
+    }
+  ],
+  "errors": [],
+  "deployedIndexSha256": "591d0bd6c73383e8421029118ec059f95acbef1988afb4aaebc8c17bea57d122",
+  "marker": "PR457 immediate navigation c6027cb1-41a9-485b-87ca-ec76fb08429e",
+  "editedAt": "2026-09-23T09:09:27.494Z",
+  "navigatedAt": "2026-09-23T09:09:27.498Z",
+  "businessPrompt": "PR457 immediate navigation c6027cb1-41a9-485b-87ca-ec76fb08429e",
+  "status": "DRAFT",
+  "reopened": true,
+  "passed": true,
+  "finishedAt": "2026-09-23T09:09:31.005Z"
+}

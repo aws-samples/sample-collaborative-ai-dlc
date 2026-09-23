@@ -1,0 +1,237 @@
+{
+  "startedAt": "2026-09-23T08:17:08.668Z",
+  "events": [],
+  "before": {
+    "desired": 3,
+    "running": 3,
+    "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+    "tasks": [
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      },
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      },
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      }
+    ],
+    "events": [
+      {
+        "id": "2525dc95-4354-41f0-a4a6-dc94499dcf52",
+        "createdAt": "2026-09-23T10:16:14.274000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "9798e46d-e616-49e2-9ccf-652ba4c3cf5e",
+        "createdAt": "2026-09-23T10:16:14.201000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server, taskSet ecs-svc/2384494521080470268) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "65dc7389-ea1e-4631-91a1-d8db73256902",
+        "createdAt": "2026-09-23T10:16:14.197000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:eu-central-1:746558295630:targetgroup/collaborative-ai-dlc-yjs-review/bfc2dd7b29277906)"
+      },
+      {
+        "id": "26c0c3d7-4739-48fc-8cd4-cbac58ace1b2",
+        "createdAt": "2026-09-23T10:16:04.901000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has stopped 1 running tasks: (task 06f7a331ee8149a6ac67599fcc0afe13)."
+      },
+      {
+        "id": "2caeec0b-4c21-431f-ab5d-91d5be434551",
+        "createdAt": "2026-09-23T09:46:04.821000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "10846245-9ff3-4ac3-865c-659eaf19bb83",
+        "createdAt": "2026-09-23T09:45:17.427000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) registered 2 targets in (target-group arn:aws:elasticloadbalancing:eu-central-1:746558295630:targetgroup/collaborative-ai-dlc-yjs-review/bfc2dd7b29277906)"
+      },
+      {
+        "id": "99fd57fb-ab20-4d7b-8aa3-9a403a075b81",
+        "createdAt": "2026-09-23T09:44:58.019000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has started 2 tasks: (task 06f7a331ee8149a6ac67599fcc0afe13) (task a642ad29af4042d597da0cf2b2fc72be)."
+      },
+      {
+        "id": "7bf0e6eb-b9f0-4d78-afa5-304da8b522e3",
+        "createdAt": "2026-09-23T09:39:55.474000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "a663ef6b-be5b-4e2b-9c68-457b359959f6",
+        "createdAt": "2026-09-23T09:39:55.473000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) (deployment ecs-svc/2384494521080470268) deployment completed."
+      },
+      {
+        "id": "eae7bfd2-cbab-4788-ba3b-54815829f080",
+        "createdAt": "2026-09-23T09:38:53.298000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server, taskSet ecs-svc/9736856301555951528) has begun draining connections on 1 tasks."
+      }
+    ]
+  },
+  "during": {
+    "desired": 3,
+    "running": 3,
+    "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+    "tasks": [
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      },
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      },
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      }
+    ],
+    "events": [
+      {
+        "id": "2525dc95-4354-41f0-a4a6-dc94499dcf52",
+        "createdAt": "2026-09-23T10:16:14.274000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "9798e46d-e616-49e2-9ccf-652ba4c3cf5e",
+        "createdAt": "2026-09-23T10:16:14.201000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server, taskSet ecs-svc/2384494521080470268) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "65dc7389-ea1e-4631-91a1-d8db73256902",
+        "createdAt": "2026-09-23T10:16:14.197000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:eu-central-1:746558295630:targetgroup/collaborative-ai-dlc-yjs-review/bfc2dd7b29277906)"
+      },
+      {
+        "id": "26c0c3d7-4739-48fc-8cd4-cbac58ace1b2",
+        "createdAt": "2026-09-23T10:16:04.901000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has stopped 1 running tasks: (task 06f7a331ee8149a6ac67599fcc0afe13)."
+      },
+      {
+        "id": "2caeec0b-4c21-431f-ab5d-91d5be434551",
+        "createdAt": "2026-09-23T09:46:04.821000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "10846245-9ff3-4ac3-865c-659eaf19bb83",
+        "createdAt": "2026-09-23T09:45:17.427000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) registered 2 targets in (target-group arn:aws:elasticloadbalancing:eu-central-1:746558295630:targetgroup/collaborative-ai-dlc-yjs-review/bfc2dd7b29277906)"
+      },
+      {
+        "id": "99fd57fb-ab20-4d7b-8aa3-9a403a075b81",
+        "createdAt": "2026-09-23T09:44:58.019000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has started 2 tasks: (task 06f7a331ee8149a6ac67599fcc0afe13) (task a642ad29af4042d597da0cf2b2fc72be)."
+      },
+      {
+        "id": "7bf0e6eb-b9f0-4d78-afa5-304da8b522e3",
+        "createdAt": "2026-09-23T09:39:55.474000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "a663ef6b-be5b-4e2b-9c68-457b359959f6",
+        "createdAt": "2026-09-23T09:39:55.473000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) (deployment ecs-svc/2384494521080470268) deployment completed."
+      },
+      {
+        "id": "eae7bfd2-cbab-4788-ba3b-54815829f080",
+        "createdAt": "2026-09-23T09:38:53.298000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server, taskSet ecs-svc/9736856301555951528) has begun draining connections on 1 tasks."
+      }
+    ]
+  },
+  "after": {
+    "desired": 3,
+    "running": 3,
+    "taskDefinition": "arn:aws:ecs:eu-central-1:746558295630:task-definition/collaborative-ai-dlc-yjs-server-review:9",
+    "tasks": [
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/2f0206bf2e2b412ba44db1bc81fc3399",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      },
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/a642ad29af4042d597da0cf2b2fc72be",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      },
+      {
+        "taskArn": "arn:aws:ecs:eu-central-1:746558295630:task/collaborative-ai-dlc-review/fb7d4ba63d3743ceab6b6731d6451d01",
+        "lastStatus": "RUNNING",
+        "healthStatus": "HEALTHY"
+      }
+    ],
+    "events": [
+      {
+        "id": "2525dc95-4354-41f0-a4a6-dc94499dcf52",
+        "createdAt": "2026-09-23T10:16:14.274000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "9798e46d-e616-49e2-9ccf-652ba4c3cf5e",
+        "createdAt": "2026-09-23T10:16:14.201000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server, taskSet ecs-svc/2384494521080470268) has begun draining connections on 1 tasks."
+      },
+      {
+        "id": "65dc7389-ea1e-4631-91a1-d8db73256902",
+        "createdAt": "2026-09-23T10:16:14.197000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) deregistered 1 targets in (target-group arn:aws:elasticloadbalancing:eu-central-1:746558295630:targetgroup/collaborative-ai-dlc-yjs-review/bfc2dd7b29277906)"
+      },
+      {
+        "id": "26c0c3d7-4739-48fc-8cd4-cbac58ace1b2",
+        "createdAt": "2026-09-23T10:16:04.901000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has stopped 1 running tasks: (task 06f7a331ee8149a6ac67599fcc0afe13)."
+      },
+      {
+        "id": "2caeec0b-4c21-431f-ab5d-91d5be434551",
+        "createdAt": "2026-09-23T09:46:04.821000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "10846245-9ff3-4ac3-865c-659eaf19bb83",
+        "createdAt": "2026-09-23T09:45:17.427000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) registered 2 targets in (target-group arn:aws:elasticloadbalancing:eu-central-1:746558295630:targetgroup/collaborative-ai-dlc-yjs-review/bfc2dd7b29277906)"
+      },
+      {
+        "id": "99fd57fb-ab20-4d7b-8aa3-9a403a075b81",
+        "createdAt": "2026-09-23T09:44:58.019000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has started 2 tasks: (task 06f7a331ee8149a6ac67599fcc0afe13) (task a642ad29af4042d597da0cf2b2fc72be)."
+      },
+      {
+        "id": "7bf0e6eb-b9f0-4d78-afa5-304da8b522e3",
+        "createdAt": "2026-09-23T09:39:55.474000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) has reached a steady state."
+      },
+      {
+        "id": "a663ef6b-be5b-4e2b-9c68-457b359959f6",
+        "createdAt": "2026-09-23T09:39:55.473000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server) (deployment ecs-svc/2384494521080470268) deployment completed."
+      },
+      {
+        "id": "eae7bfd2-cbab-4788-ba3b-54815829f080",
+        "createdAt": "2026-09-23T09:38:53.298000+02:00",
+        "message": "(service collaborative-ai-dlc-yjs-server, taskSet ecs-svc/9736856301555951528) has begun draining connections on 1 tasks."
+      }
+    ]
+  },
+  "writes": 239200,
+  "offlineWrites": 1195,
+  "maxUnavailableMs": 28689,
+  "reconnects": 221,
+  "converged": true,
+  "durable": true,
+  "noReplacement": true,
+  "noHealthFailure": true,
+  "notReadySamples": 2,
+  "passed": true,
+  "finishedAt": "2026-09-23T08:22:36.377Z"
+}

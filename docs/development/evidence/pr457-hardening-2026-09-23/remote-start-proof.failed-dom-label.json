@@ -1,0 +1,32 @@
+{
+  "startedAt": "2026-09-23T09:09:31.813Z",
+  "responses": [
+    {
+      "page": "A",
+      "status": 200,
+      "at": "2026-09-23T09:10:42.900Z",
+      "body": {
+        "title": "PR457 isolated collaboration verification",
+        "prompt": "PR457 remote-only Start abf1e375-fe04-4222-82ab-b8722cc8dbc7",
+        "scope": "feature",
+        "composedGrid": null,
+        "skipStageIds": null,
+        "ifDraftRevision": 6
+      }
+    }
+  ],
+  "launchSuppressed": false,
+  "marker": "PR457 remote-only Start abf1e375-fe04-4222-82ab-b8722cc8dbc7",
+  "heldWrite": {
+    "title": "PR457 isolated collaboration verification",
+    "prompt": "PR457 remote-only Start abf1e375-fe04-4222-82ab-b8722cc8dbc7",
+    "scope": "feature",
+    "composedGrid": null,
+    "skipStageIds": null,
+    "ifDraftRevision": 6
+  },
+  "heldAt": "2026-09-23T09:09:40.544Z",
+  "passed": false,
+  "failure": "page.waitForFunction: Timeout 60000ms exceeded.",
+  "finishedAt": "2026-09-23T09:10:43.597Z"
+}

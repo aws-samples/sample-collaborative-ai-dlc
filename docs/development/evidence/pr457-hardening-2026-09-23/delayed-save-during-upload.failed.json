@@ -1,0 +1,8 @@
+{
+  "startedAt": "2026-09-23T06:30:58.763Z",
+  "responses": [],
+  "held": null,
+  "passed": false,
+  "failure": "locator.waitFor: Timeout 90000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('#draft-prompt[contenteditable=\"true\"]') to be visible\u001b[22m\n",
+  "finishedAt": "2026-09-23T06:32:28.980Z"
+}
