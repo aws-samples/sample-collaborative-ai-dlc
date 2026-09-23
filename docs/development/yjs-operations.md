@@ -260,13 +260,19 @@ quota, or throttling problem.
 Deleting an intent, project, or legacy sprint first writes a permanent scope
 tombstone. A strongly consistent scan fences all matching documents, including
 arbitrary artifact ids, epochs, and legacy names, before deleting their metadata.
-The marker stores a compare-and-swap scan cursor so a timed-out deletion resumes
-instead of rescanning from the beginning. An incomplete API deletion returns 409 `deletion_pending`; retry it shortly.
-The business cascade proceeds after document fencing succeeds.
+The marker stores a compare-and-swap scan cursor so an interrupted deletion resumes
+instead of rescanning from the beginning. Scans process at most 128 records per
+page. Project scopes and child intents share a ten-second cleanup budget; snapshot
+purges also check that budget between pages. An incomplete API deletion returns
+409 `deletion_pending`, including when a child intent needs more time. Retry it
+shortly. The business cascade proceeds after document fencing and snapshot purge
+succeed. Already deleted versions remain deleted, so a retry lists only the
+remaining versions.
 
 The deletion path removes every S3 object version and delete marker under that
 scope. A scheduled Lambda revisits due tombstones through the sparse `cleanup`
-index every minute (at most 20 per invocation), then hourly, to remove uploads
+index every minute (at most 20 scopes and a twenty-second work budget per invocation),
+then hourly, to remove uploads
 that completed late or had uncertain responses. Keep scope tombstones permanently;
 the document namespace must never be reused. Large deletion backlogs take multiple
 invocations and need operational monitoring; this is not instantaneous erasure.
@@ -370,19 +376,12 @@ changing the worker count. Run a longer idle phase to observe automatic scale-in
 Record deployment size, users per document, bytes per document, edit frequency,
 latency/error targets, and results before choosing production limits.
 
-## Retention
-
-Deleting an intent/project writes a revocation marker that fences future leases
-and checkpoints (active ownership notices on renewal). Existing deletion code
-still removes its known metadata rows. **The new binary snapshots are retained;
-this change does not add permanent snapshot purge to parent deletion.** Do not
-remove the revocation markers while old scope tokens or clients might exist.
-Snapshot retention and permanent deletion require an explicit operational policy
-before enabling cluster mode for data that must be erased with its parent.
+## Snapshot retention for live scopes
 
 Successful checkpoints remove their previous committed object version.
 Ambiguous writes, process death between upload and commit, failed cleanup, and
-old artifact epochs can leave additional objects. Do not attach a blanket S3
+old artifact epochs can leave additional objects while a scope remains live.
+Parent deletion purges these through the process described above. Do not attach a blanket S3
 age-based expiration rule: it could delete a still-authoritative idle document.
 Inventory and garbage collection must check the manifest/ownership state and
 revoked scopes, including uploads that were in flight when deletion began.

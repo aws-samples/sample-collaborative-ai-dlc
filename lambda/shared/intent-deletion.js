@@ -167,6 +167,7 @@ const deleteIntentCascade = async ({
   intentId,
   meta,
   yjsTable = null,
+  cleanupDeadline,
   agentcoreRuntimeTarget = null,
   agentcoreRuntimeArn = null,
   actor = 'a project member',
@@ -183,6 +184,7 @@ const deleteIntentCascade = async ({
     type: 'intent',
     id: intentId,
     bucket: artifactsBucket,
+    deadline: cleanupDeadline,
   });
   await Promise.all([
     purgeAttachmentPrefix(artifactsBucket, `intent-attachments/committed/${intentId}/`),

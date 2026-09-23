@@ -852,6 +852,30 @@ describe('GET/PUT /projects/:id/environment', () => {
 });
 
 describe('DELETE /projects/:id', () => {
+  it('preserves the pending response from a child intent without deleting the project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const intentId = randomUUID();
+    projectExecs.set(id, [{ intentId, executionId: intentId, projectId: id, status: 'DRAFT' }]);
+    ddbMock
+      .on(ScanCommand)
+      .resolvesOnce({ Items: [] })
+      .rejects(
+        Object.assign(new Error('child cleanup budget exhausted'), {
+          code: 'YJS_CLEANUP_PENDING',
+        }),
+      );
+    const res = await handler({
+      httpMethod: 'DELETE',
+      pathParameters: { projectId: id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('deletion_pending');
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
+    expect(batchWrites).toEqual([]);
+  });
+
   it('keeps the project and reports a retryable conflict while collaboration cleanup is pending', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub);
