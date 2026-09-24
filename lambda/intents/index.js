@@ -37,6 +37,7 @@ import {
 } from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
+import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -2485,6 +2486,13 @@ export const handler = async (event, context) => {
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
+      const answerStatus = data.status ?? 'answered';
+      if (!isHumanTaskAnswerStatus(answerStatus)) {
+        return response(400, {
+          error: 'status must be answered, approved, or rejected',
+          code: 'invalid_gate_status',
+        });
+      }
       // A live Quorum edit is mutating this intent's artifacts; answering the
       // gate would resume the parked stage RIGHT INTO those writes. The run is
       // already parked — waiting for the edit to finish costs nothing (mirror
@@ -2503,35 +2511,39 @@ export const handler = async (event, context) => {
       // than one pending gate; answer the one addressed by the URL, never blindly
       // META.pendingHumanTaskId.
       const responder = getResponder(event);
-      const answered = await store.answerHumanTask({
+      const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
+      const answerInput = {
         executionId: intentId,
         humanTaskId,
-        status: data.status || 'answered',
+        status: answerStatus,
         answer: data.answer ?? null,
         answeredBy: responder.sub,
         answeredByName: responder.displayName,
         ifOrchestratorRunId: gate.orchestratorRunId ?? null,
         ifStageCallbackId: gate.stageCallbackId ?? null,
         stageInstanceId: gate.stageInstanceId ?? null,
-      });
+      };
+      const answerResult = steeringMessage
+        ? await store.answerHumanTaskWithSteering({
+            ...answerInput,
+            steering: {
+              kind: 'gate-steer',
+              message: steeringMessage,
+              targetGateId: humanTaskId,
+              createdBy: responder.sub,
+              createdByName: responder.displayName,
+            },
+          })
+        : await store.answerHumanTask(answerInput);
+      const answered = steeringMessage ? answerResult?.answered : answerResult;
       if (!answered) {
         return response(409, { error: 'Gate already answered or not pending' });
       }
       // Optional course correction riding on the answer (docs/v2-steering.md):
-      // record it BEFORE resuming the callback so the resume run-stage — which
-      // reads pending steering at entry — is guaranteed to inject it into the
-      // parked conversation alongside the answer.
-      let steer = null;
-      const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
+      // its STEER row and HUMAN decision were committed atomically above, so an
+      // early orchestrator recovery cannot observe one without the other.
+      const steer = steeringMessage ? answerResult.steering : null;
       if (steeringMessage) {
-        steer = await store.createSteering({
-          executionId: intentId,
-          kind: 'gate-steer',
-          message: steeringMessage,
-          targetGateId: humanTaskId,
-          createdBy: responder.sub,
-          createdByName: responder.displayName,
-        });
         await store
           .appendEvent({
             executionId: intentId,

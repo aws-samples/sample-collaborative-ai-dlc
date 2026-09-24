@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
-import { GitHubIcon, GitLabIcon, BitbucketIcon } from '@/components/icons/git-providers';
-import type { GitProvider } from '@/services/gitProvider';
+import { GitProviderIcon } from '@/components/icons/git-providers';
+import { GIT_PROVIDER_WEB_URL, type GitProvider } from '@/services/gitProvider';
 
 interface RepoLinkProps {
   gitRepo: string;
@@ -10,18 +10,6 @@ interface RepoLinkProps {
   noLink?: boolean;
 }
 
-const PROVIDER_URL: Record<GitProvider, string> = {
-  github: 'https://github.com',
-  gitlab: 'https://gitlab.com',
-  bitbucket: 'https://bitbucket.org',
-};
-
-const PROVIDER_ICON: Record<GitProvider, typeof GitHubIcon> = {
-  github: GitHubIcon,
-  gitlab: GitLabIcon,
-  bitbucket: BitbucketIcon,
-};
-
 export function GitRepoLink({
   gitRepo,
   gitProvider,
@@ -29,12 +17,11 @@ export function GitRepoLink({
   iconClassName,
   noLink,
 }: RepoLinkProps) {
-  const Icon = PROVIDER_ICON[gitProvider];
-  const href = `${PROVIDER_URL[gitProvider]}/${gitRepo}`;
+  const href = `${GIT_PROVIDER_WEB_URL[gitProvider]}/${gitRepo}`;
 
   const content = (
     <>
-      <Icon className={cn('h-3 w-3 shrink-0', iconClassName)} />
+      <GitProviderIcon provider={gitProvider} className={cn('h-3 w-3 shrink-0', iconClassName)} />
       <span className="truncate">{gitRepo}</span>
     </>
   );

@@ -114,10 +114,14 @@ const unitWorkflow = () => ({
 
 // A spy process store recording the calls run-stage makes. `seed` pre-loads the
 // gate / stage / execution rows the resume + park paths read back.
-const spyStore = (seed = {}) => {
+const spyStore = (seed = {}, { persistStageWrites = false } = {}) => {
   const calls = [];
   const rec = (name) => async (args) => {
     calls.push([name, args]);
+    if (persistStageWrites && name === 'putStage') seed.stage = { ...args };
+    if (persistStageWrites && name === 'resumeStageRow') {
+      seed.stage = { ...seed.stage, ...args, state: 'RUNNING', pendingHumanTaskId: null };
+    }
     return {};
   };
   return {
@@ -140,16 +144,16 @@ const spyStore = (seed = {}) => {
       calls.push(['recordMetric', args]);
       return { metricId: 'm-test' };
     },
-    async getHumanTask(_e, id) {
-      calls.push(['getHumanTask', id]);
+    async getHumanTask(_e, id, options) {
+      calls.push(['getHumanTask', id, options]);
       return seed.humanTask ?? null;
     },
-    async getStage(_e, id) {
-      calls.push(['getStage', id]);
+    async getStage(_e, id, options) {
+      calls.push(['getStage', id, options]);
       return seed.stage ?? null;
     },
-    async getExecution(_e) {
-      calls.push(['getExecution']);
+    async getExecution(_e, options) {
+      calls.push(['getExecution', options]);
       return seed.execution ?? null;
     },
     async getUnitPlan(_e) {
@@ -1623,6 +1627,47 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     },
   );
 
+  it('parks and resumes when the gate is answered after grace but before CLI exit', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      ids: () => 'forced-uuid',
+      store: spyStore(
+        pendingGateSeed('q-late-answer', {
+          status: 'answered',
+          answer: { answers: [{ selectedOptions: [0] }] },
+        }),
+      ),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'q-late-answer',
+    });
+    const states = deps.store.calls
+      .filter((call) => call[0] === 'updateStageState')
+      .map((call) => call[1].state);
+    expect(states).toContain('WAITING_FOR_HUMAN');
+    expect(states).not.toContain('SUCCEEDED');
+    expect(
+      deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.stage.succeeded',
+      ),
+    ).toBe(false);
+    expect(deps.store.calls).toContainEqual([
+      'getStage',
+      BASE_STAGE_INSTANCE_ID,
+      { consistentRead: true },
+    ]);
+    expect(deps.store.calls).toContainEqual([
+      'getHumanTask',
+      'q-late-answer',
+      { consistentRead: true },
+    ]);
+  });
+
   it('re-stamps parkedAt with the gate ASK time so the exit-time write never shortens the wait', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,
@@ -1949,21 +1994,24 @@ describe('runStage — resume mode', () => {
   ])(
     'resumes %s with callback %s and stale gate bookkeeping',
     async (state, rowCallback, expected) => {
-      const store = spyStore({
-        humanTask: {
-          humanTaskId: 'feedback',
-          status: 'answered',
-          stageInstanceId: BASE_STAGE_INSTANCE_ID,
-          answer: { decision: 'request-changes', feedback: 'Add validation' },
+      const store = spyStore(
+        {
+          humanTask: {
+            humanTaskId: 'feedback',
+            status: 'answered',
+            stageInstanceId: BASE_STAGE_INSTANCE_ID,
+            answer: { decision: 'request-changes', feedback: 'Add validation' },
+          },
+          stage: {
+            state,
+            stageCallbackId: rowCallback,
+            pendingHumanTaskId: 'old-question',
+            cli: 'claude',
+            cliSessionId: 'session-1',
+          },
         },
-        stage: {
-          state,
-          stageCallbackId: rowCallback,
-          pendingHumanTaskId: 'old-question',
-          cli: 'claude',
-          cliSessionId: 'session-1',
-        },
-      });
+        { persistStageWrites: true },
+      );
       const spawnFn = vi.fn(okSpawn);
       const result = await runStage(
         {
@@ -2816,7 +2864,7 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
 
   it('recovers an owned legacy Kiro wait with no session ID and injects its saved answer', async () => {
     const prompts = [];
-    const store = spyStore(ownedMissingSession());
+    const store = spyStore(ownedMissingSession(), { persistStageWrites: true });
     const res = await runStage(
       { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
       baseDeps({
@@ -2825,7 +2873,7 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
         spawnFn: sessionSpawn(true, prompts),
       }),
     );
-    expect(res).toMatchObject({ ok: true, cli: 'kiro' });
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
     expect(prompts.join('\n')).toContain('Keep the existing compliance requirements');
     expect(prompts.join('\n')).not.toContain('--resume');
     expect(
@@ -2849,7 +2897,7 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
       baseDeps({
         availableClis: ['kiro'],
         env: kiroStoreEnv,
-        store: spyStore(ownedMissingSession()),
+        store: spyStore(ownedMissingSession(), { persistStageWrites: true }),
         restoreKiroStore,
         spawnFn: (command, args) => {
           if (!args.includes('--list-sessions') && !args.includes('/usage')) {

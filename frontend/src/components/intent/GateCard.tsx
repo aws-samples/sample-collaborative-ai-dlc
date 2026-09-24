@@ -10,6 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Compass } from 'lucide-react';
+import { buildUnitBranchItems, type UnitBranchItem } from '@/components/intent/CodeSection';
+import { UnitBranchEntry } from '@/components/intent/UnitBranchEntry';
 
 // Map a v2 HUMAN# gate to the right editor, keyed by the intent collaboration
 // scope. `question` gates render the structured QuestionEditor; approval and
@@ -61,6 +63,23 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
       createdAt: gate.createdAt ?? '',
     };
   }, [gate]);
+  const walkingSkeletonBranch = useMemo<UnitBranchItem | null>(() => {
+    if (!gate.prompt?.startsWith('Walking skeleton') || !gate.unitSlug) return null;
+    return (
+      (detail
+        ? buildUnitBranchItems(detail).find(
+            (item) =>
+              item.unitSlug === gate.unitSlug &&
+              (gate.sectionIndex == null || item.sectionIndex === gate.sectionIndex),
+          )
+        : null) ?? {
+        sectionIndex: gate.sectionIndex ?? null,
+        unitSlug: gate.unitSlug,
+        branch: null,
+        targets: [],
+      }
+    );
+  }, [detail, gate.prompt, gate.sectionIndex, gate.unitSlug]);
 
   if (gate.kind === 'validation') {
     const stageArtifacts =
@@ -161,6 +180,10 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
       ? gate.options.filter((o): o is string => typeof o === 'string')
       : [];
     const offersRevision = options.some((o) => /^request-changes/i.test(o));
+    const prompt =
+      walkingSkeletonBranch?.branch && gate.prompt
+        ? gate.prompt.replace(` (branch ${walkingSkeletonBranch.branch})`, '')
+        : gate.prompt;
     return (
       <Card>
         <CardContent className="space-y-2 py-3">
@@ -169,7 +192,13 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               unit {gate.unitSlug}
             </Badge>
           )}
-          <p className="whitespace-pre-line text-sm">{gate.prompt || 'Approval required'}</p>
+          <p className="whitespace-pre-line text-sm">{prompt || 'Approval required'}</p>
+          {walkingSkeletonBranch && (
+            <UnitBranchEntry
+              item={walkingSkeletonBranch}
+              className="border border-border/60 bg-muted/20"
+            />
+          )}
           {offersRevision && (
             <div className="space-y-1 rounded-md border border-dashed px-3 py-2">
               <Label

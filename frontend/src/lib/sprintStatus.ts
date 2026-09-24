@@ -29,7 +29,9 @@ export function isActiveStatus(status: EffectiveSprintStatus): boolean {
   return status === 'running' || status === 'waiting';
 }
 
-export function effectiveIntentStatus(intent: Intent | null): EffectiveSprintStatus {
+export function effectiveIntentStatus(
+  intent: Pick<Intent, 'status'> | null,
+): EffectiveSprintStatus {
   if (!intent) return 'idle';
   switch (intent.status) {
     case 'RUNNING':

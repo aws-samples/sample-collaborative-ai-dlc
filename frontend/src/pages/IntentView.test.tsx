@@ -1578,12 +1578,13 @@ describe('IntentView', () => {
     expect(await screen.findByText('Work products')).toBeInTheDocument();
     await userEvent.click(screen.getByText('Code'));
     expect(screen.getByText('owner/repo')).toBeInTheDocument();
-    expect(screen.getByText('PR #9')).toBeInTheDocument();
+    expect(screen.queryByText('PR #9')).not.toBeInTheDocument();
     const branchLink = screen.getByRole('link', { name: 'aidlc/i1' });
     expect(branchLink).toHaveAttribute('href', 'https://github.com/owner/repo/tree/aidlc/i1');
     expect(screen.getByText('main')).toBeInTheDocument();
     const link = screen.getByRole('link', { name: /open pr/i });
     expect(link).toHaveAttribute('href', 'https://github.com/owner/repo/pull/9');
+    expect(link).toHaveTextContent('Open PR #9');
   });
 
   it('shows the branch (name + link, no base) once code is pushed, before any PR', async () => {
@@ -1684,15 +1685,22 @@ describe('IntentView — WP7 construction UI', () => {
 
   it('maps approve/request-changes options to approved/rejected statuses and carries feedback', async () => {
     get.mockResolvedValue({
-      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'eg-skeleton-s1-run1' }),
+      ...baseDetail({
+        status: 'WAITING',
+        pendingHumanTaskId: 'eg-skeleton-s1-run1',
+        gitProvider: 'bitbucket',
+        repos: ['acme/repo'],
+      }),
       gates: [
         {
           humanTaskId: 'eg-skeleton-s1-run1',
           stageInstanceId: null,
-          unitSlug: null,
+          unitSlug: 'auth',
+          sectionIndex: 1,
           kind: 'approval',
           status: 'pending',
-          prompt: 'Walking skeleton "auth" completed.',
+          prompt:
+            'Walking skeleton "auth" completed.\nReview generated code (branch aidlc/i1--s1-unit-auth).',
           options: ['approve', 'request-changes'],
           questions: null,
           answer: null,
@@ -1701,12 +1709,33 @@ describe('IntentView — WP7 construction UI', () => {
           createdAt: null,
         },
       ],
+      units: [
+        {
+          sectionIndex: 1,
+          slug: 'auth',
+          dependsOn: [],
+          state: 'MERGED',
+          batchIndex: 0,
+          branch: 'aidlc/i1--s1-unit-auth',
+          startedAt: null,
+          mergedAt: null,
+          failureReason: null,
+          blockedOn: null,
+          updatedAt: null,
+        },
+      ],
     });
     answerGate.mockResolvedValue({});
     renderAt();
     // Gates offering request-changes render the free-text feedback field; the
     // feedback rides the answer so the engine can revise the increment and
     // re-ask instead of failing the run.
+    const branchLink = await screen.findByRole('link', { name: 'aidlc/i1--s1-unit-auth' });
+    expect(branchLink).toHaveAttribute(
+      'href',
+      'https://bitbucket.org/acme/repo/src/aidlc/i1--s1-unit-auth',
+    );
+    expect(branchLink).toHaveAttribute('target', '_blank');
     const feedback = await screen.findByPlaceholderText(/What should change/);
     await userEvent.type(feedback, 'wire real auth');
     await userEvent.click(screen.getByRole('button', { name: 'request-changes' }));
@@ -1719,6 +1748,53 @@ describe('IntentView — WP7 construction UI', () => {
         status: 'rejected',
       }),
     );
+  });
+
+  it('shows plain branch text when a walking-skeleton branch URL cannot be built', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'WAITING',
+        pendingHumanTaskId: 'eg-skeleton-s1-run1',
+        gitProvider: null,
+      }),
+      gates: [
+        {
+          humanTaskId: 'eg-skeleton-s1-run1',
+          stageInstanceId: null,
+          unitSlug: 'auth',
+          sectionIndex: 1,
+          kind: 'approval',
+          status: 'pending',
+          prompt: 'Walking skeleton "auth" completed.',
+          options: ['approve'],
+          questions: null,
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: null,
+        },
+      ],
+      units: [
+        {
+          sectionIndex: 1,
+          slug: 'auth',
+          dependsOn: [],
+          state: 'MERGED',
+          batchIndex: 0,
+          branch: 'aidlc/i1--s1-unit-auth',
+          startedAt: null,
+          mergedAt: null,
+          failureReason: null,
+          blockedOn: null,
+          updatedAt: null,
+        },
+      ],
+    });
+
+    renderAt();
+
+    expect(await screen.findByText('aidlc/i1--s1-unit-auth')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'aidlc/i1--s1-unit-auth' })).not.toBeInTheDocument();
   });
 });
 

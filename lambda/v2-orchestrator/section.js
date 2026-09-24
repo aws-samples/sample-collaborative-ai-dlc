@@ -247,6 +247,8 @@ export const awaitEngineGate = async (
       callbackId,
       stageInstanceId: stageInstanceId ?? null,
       callbackOwner: `engine:${humanTaskId}`,
+      unitSlug,
+      sectionIndex,
     });
     if (!bound) return null;
     // An answer can win immediately after binding. Save that observation in

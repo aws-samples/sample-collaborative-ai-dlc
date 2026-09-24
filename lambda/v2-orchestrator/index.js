@@ -43,6 +43,7 @@ import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
+import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { resolveSkipTo, skipTargetsFrom, resolveRecomposeSkips } from '../shared/stage-skip.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
@@ -873,13 +874,17 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Create a durable callback and stamp it on the gate so the answer path
         // can resume THIS execution. Then suspend (zero compute) until answered.
         const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
+        const expectedStageInstanceId = result.stageInstanceId ?? stage.stageInstanceId ?? null;
+        const expectedCallbackOwner = `stage:${expectedStageInstanceId ?? label}`;
         const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
           bindGateCallback(store, {
             executionId,
             humanTaskId,
             callbackId,
-            stageInstanceId: result.stageInstanceId ?? stage.stageInstanceId ?? null,
-            callbackOwner: `stage:${result.stageInstanceId ?? stage.stageInstanceId ?? label}`,
+            stageInstanceId: expectedStageInstanceId,
+            callbackOwner: expectedCallbackOwner,
+            unitSlug,
+            sectionIndex,
           }),
         );
         if (!callbackBound) {
@@ -901,7 +906,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // the wait entirely and resumes now.
         const answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
           const gate = await store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
-          return Boolean(gate?.status) && gate.status !== 'pending';
+          return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
         });
         if (!answeredEarly) {
           // D1 release-on-park: if no human answers within parkReleaseSeconds, free
@@ -920,7 +925,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               ctxArg.wait(`release-timer-${humanTaskId}`, { seconds: parkReleaseSeconds }),
             ]);
             const stillPending = await ctxArg.step(`gate-status-${humanTaskId}`, async () => {
-              const gate = await store.getHumanTask(executionId, humanTaskId);
+              const gate = await store.getHumanTask(executionId, humanTaskId, {
+                consistentRead: true,
+              });
               return gate?.status === 'pending';
             });
             if (stillPending) {

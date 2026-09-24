@@ -27,6 +27,7 @@ describe('bindGateCallback', () => {
     { status: 'answered', stageInstanceId: 'sibling' },
     { status: 'answered', stageInstanceId: 's1', callbackId: 'other' },
     { status: 'answered', stageInstanceId: 's1', callbackOwner: 'stage:other' },
+    { status: 'answered', stageInstanceId: 's1', unitSlug: 'sibling-unit' },
     null,
   ])('never steals a callback or consumes a different stage answer: %j', async (gate) => {
     const store = {
@@ -35,6 +36,21 @@ describe('bindGateCallback', () => {
     };
     expect(await bindGateCallback(store, input)).toBeNull();
     expect(store.setGateCallbackId).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an answer from another section in the same unit', async () => {
+    const store = {
+      setGateCallbackId: vi.fn(async () => null),
+      getHumanTask: vi.fn(async () => ({
+        status: 'answered',
+        stageInstanceId: 's1',
+        unitSlug: 'unit-a',
+        sectionIndex: 2,
+      })),
+    };
+    expect(
+      await bindGateCallback(store, { ...input, unitSlug: 'unit-a', sectionIndex: 1 }),
+    ).toBeNull();
   });
 });
 
