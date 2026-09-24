@@ -33,8 +33,11 @@ import {
   StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
-import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
+  prepareAgentInvocation,
+  executionCredentialBinding,
+} from '../shared/agent-credential-service.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
@@ -346,21 +349,22 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   const stopIntentSession = (sessionId) => stopSession(sessionId, runtimeTarget);
 
   const { projectId, workflowId, workflowVersion, scope } = meta;
-  const credentialProvider = credentialProviderForCli(meta.agentCli);
-  const credentialBinding =
-    meta.credentialBinding ??
-    (credentialProvider ? { provider: credentialProvider, source: 'platform' } : null);
+  const credentialBinding = executionCredentialBinding(meta);
   const invokeIntentRuntime = async (payload, runtimeSessionId) => {
     const authMode = commandDefinition(payload.command)?.agentAuth;
     if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
       return rawInvokeRuntime(payload, runtimeSessionId, runtimeTarget);
     }
-    const agentCredentialGrant = await deps.issueAgentCredentialGrant({
-      purpose: authMode,
-      projectId,
-      executionId,
-      bindings: [credentialBinding],
-    });
+    const { agentCredentialGrant } = await prepareAgentInvocation(
+      {
+        purpose: authMode,
+        projectId,
+        executionId,
+        credentialBinding,
+        runtimeCapabilities: meta.environment,
+      },
+      { issueGrant: deps.issueAgentCredentialGrant },
+    );
     return rawInvokeRuntime(
       {
         ...payload,

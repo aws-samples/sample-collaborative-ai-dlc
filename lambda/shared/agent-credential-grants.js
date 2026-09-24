@@ -1,6 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
-import { AGENT_CREDENTIAL_PROVIDERS, normalizeCredentialBinding } from './agent-credentials.js';
+import { normalizeCredentialBinding } from './agent-auth-catalog.js';
 import { AGENT_AUTH_MODES } from './agent-command-registry.js';
 
 export const AGENT_CREDENTIAL_GRANT_AUDIENCE = 'aidlc-agent-credential-broker';
@@ -9,7 +9,8 @@ export const AGENT_CREDENTIAL_GRANT_TTL_SECONDS = 300;
 
 const MAX_TOKEN_BYTES = 8192;
 const CLOCK_SKEW_SECONDS = 30;
-const secretCache = new Map();
+const secretCache = new WeakMap();
+const GRANT_PROVIDERS = ['bedrock', 'kiro', 'litellm'];
 
 const grantError = (code, message) => Object.assign(new Error(message), { code });
 
@@ -27,7 +28,7 @@ const normalizeGrantBindings = (bindings) => {
     : bindings && typeof bindings === 'object'
       ? Object.values(bindings)
       : [];
-  if (values.length < 1 || values.length > AGENT_CREDENTIAL_PROVIDERS.length) {
+  if (values.length < 1 || values.length > GRANT_PROVIDERS.length) {
     throw grantError(
       'AGENT_CREDENTIAL_GRANT_INVALID',
       'Agent credential grant bindings are invalid',
@@ -35,7 +36,9 @@ const normalizeGrantBindings = (bindings) => {
   }
   const normalized = values.map((binding) => {
     try {
-      return normalizeCredentialBinding(binding);
+      const validBinding = normalizeCredentialBinding(binding);
+      if (!validBinding) throw new Error('Empty binding');
+      return validBinding;
     } catch {
       throw grantError(
         'AGENT_CREDENTIAL_GRANT_INVALID',
@@ -52,8 +55,7 @@ const normalizeGrantBindings = (bindings) => {
   }
   return normalized.toSorted(
     (left, right) =>
-      AGENT_CREDENTIAL_PROVIDERS.indexOf(left.provider) -
-      AGENT_CREDENTIAL_PROVIDERS.indexOf(right.provider),
+      GRANT_PROVIDERS.indexOf(left.provider) - GRANT_PROVIDERS.indexOf(right.provider),
   );
 };
 
@@ -94,8 +96,26 @@ const normalizedClaims = (claims) => {
       'Space credential grants require a projectId',
     );
   }
+  if (
+    bindings.some(
+      (binding) =>
+        binding.version === 2 && binding.source === 'space' && binding.projectId !== projectId,
+    )
+  ) {
+    throw grantError(
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'Credential binding belongs to a different space',
+    );
+  }
+  const version = bindings.some((binding) => binding.version === 2) ? 2 : 1;
+  if (claims.version !== undefined && claims.version !== version) {
+    throw grantError(
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'Credential grant protocol does not match its bindings',
+    );
+  }
   return {
-    version: 1,
+    version,
     audience: AGENT_CREDENTIAL_GRANT_AUDIENCE,
     grantId: requiredString(claims.grantId, 'grantId'),
     purpose,
@@ -167,7 +187,7 @@ export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now
   } catch {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
-  if (parsed?.version !== 1 || parsed?.audience !== AGENT_CREDENTIAL_GRANT_AUDIENCE) {
+  if (![1, 2].includes(parsed?.version) || parsed?.audience !== AGENT_CREDENTIAL_GRANT_AUDIENCE) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
   const claims = normalizedClaims(parsed);
@@ -187,7 +207,10 @@ export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now
   return claims;
 };
 
-export const loadAgentCredentialGrantSecret = async (ssm, { env = process.env } = {}) => {
+export const loadAgentCredentialGrantSecret = async (
+  ssm,
+  { env = process.env, now = Date.now } = {},
+) => {
   if (env.AGENT_CREDENTIAL_GRANT_SECRET) {
     return signingKey(env.AGENT_CREDENTIAL_GRANT_SECRET).toString('utf8');
   }
@@ -198,17 +221,28 @@ export const loadAgentCredentialGrantSecret = async (ssm, { env = process.env } 
       'Agent credential grant secret is not configured',
     );
   }
-  if (secretCache.has(parameterName)) return secretCache.get(parameterName);
-  const result = await ssm.send(
-    new GetParameterCommand({
-      Name: parameterName,
-      WithDecryption: true,
-    }),
-  );
-  const secret = result.Parameter?.Value || '';
-  signingKey(secret);
-  secretCache.set(parameterName, secret);
-  return secret;
+  let clientCache = secretCache.get(ssm);
+  if (!clientCache) {
+    clientCache = new Map();
+    secretCache.set(ssm, clientCache);
+  }
+  const cached = clientCache.get(parameterName);
+  if (cached && cached.expiresAt > now()) return cached.promise;
+  const promise = (async () => {
+    const result = await ssm.send(
+      new GetParameterCommand({ Name: parameterName, WithDecryption: true }),
+    );
+    const secret = result.Parameter?.Value || '';
+    signingKey(secret);
+    return secret;
+  })();
+  clientCache.set(parameterName, { promise, expiresAt: now() + 300_000 });
+  try {
+    return await promise;
+  } catch (error) {
+    if (clientCache.get(parameterName)?.promise === promise) clientCache.delete(parameterName);
+    throw error;
+  }
 };
 
 export const issueAgentCredentialGrant = async (

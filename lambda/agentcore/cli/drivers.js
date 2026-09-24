@@ -17,6 +17,8 @@
 // secret loading is the caller's job (loadSecrets), kept out of argv.
 
 // The MCP server name we register under in mcp-config (see stage-materializer).
+import { BEDROCK_BACKEND } from './backend-adapters.js';
+
 export const MCP_SERVER_NAME = 'aidlc';
 
 // ── Claude Code (headless) ──
@@ -31,6 +33,15 @@ export const MCP_SERVER_NAME = 'aidlc';
 // stdin (verified: `echo … | claude -p`), so we pass `promptViaStdin: true` and
 // the spawn shell pipes it in (see cli/spawn.js). --input-format defaults to
 // "text", unaffected by the stream-json OUTPUT format.
+const cliPersistenceEnvironment = (cli, env) => {
+  if (cli === 'claude' && env.CLAUDE_CONFIG_DIR)
+    return { CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR };
+  if (cli === 'kiro' && env.XDG_DATA_HOME) return { XDG_DATA_HOME: env.XDG_DATA_HOME };
+  if (cli === 'opencode')
+    return { XDG_DATA_HOME: env.OPENCODE_XDG_DATA_HOME || '/home/node/.opencode-data' };
+  return {};
+};
+
 const claudeDriver = {
   name: 'claude',
   contextKey: 'mcpConfigPath',
@@ -69,6 +80,7 @@ const claudeDriver = {
   envForAuth(env) {
     const region = env.BEDROCK_REGION || env.AWS_REGION || 'us-east-1';
     const out = {
+      ...cliPersistenceEnvironment('claude', env),
       CLAUDE_CODE_USE_BEDROCK: '1',
       AWS_REGION: region,
       IS_SANDBOX: '1',
@@ -112,7 +124,10 @@ const kiroDriver = {
     return { command: 'kiro-cli', args, env: {}, prompt: answerMessage, promptViaStdin: true };
   },
   envForAuth(env) {
-    return env.KIRO_API_KEY ? { KIRO_API_KEY: env.KIRO_API_KEY } : {};
+    return {
+      ...cliPersistenceEnvironment('kiro', env),
+      ...(env.KIRO_API_KEY ? { KIRO_API_KEY: env.KIRO_API_KEY } : {}),
+    };
   },
 };
 
@@ -120,18 +135,12 @@ const kiroDriver = {
 // `opencode run --format json --auto --model amazon-bedrock/<id>` emits JSONL
 // and reads the prompt from stdin. OpenCode chooses the session id; the runtime
 // captures the first `sessionID` event and resumes it with `--session`.
-const openCodeModel = (model) => {
-  if (!model) return null;
-  const value = String(model);
-  return value.includes('/') ? value : `amazon-bedrock/${value}`;
-};
-
 const opencodeDriver = {
   name: 'opencode',
   contextKey: 'opencodeConfigContent',
-  buildInvocation({ prompt, model, opencodeConfigContent = null }) {
+  buildInvocation({ prompt, model, opencodeConfigContent = null, backend = BEDROCK_BACKEND }) {
     const args = ['run', '--format', 'json', '--auto'];
-    const resolvedModel = openCodeModel(model);
+    const resolvedModel = backend.model('opencode', model);
     if (resolvedModel) args.push('--model', resolvedModel);
     return {
       command: 'opencode',
@@ -141,9 +150,15 @@ const opencodeDriver = {
       promptViaStdin: true,
     };
   },
-  buildResumeInvocation({ sessionId, answerMessage, model, opencodeConfigContent = null }) {
+  buildResumeInvocation({
+    sessionId,
+    answerMessage,
+    model,
+    opencodeConfigContent = null,
+    backend = BEDROCK_BACKEND,
+  }) {
     const args = ['run', '--format', 'json', '--auto', '--session', sessionId];
-    const resolvedModel = openCodeModel(model);
+    const resolvedModel = backend.model('opencode', model);
     if (resolvedModel) args.push('--model', resolvedModel);
     return {
       command: 'opencode',
@@ -183,18 +198,11 @@ const opencodeDriver = {
 // default provider is the OpenAI-hosted API, which this deployment has no
 // credentials for — and headless exec must never wait on an approval prompt.
 // With a materialized home these duplicate config.toml with the same values.
-const CODEX_BASE_OVERRIDES = [
-  '-c',
-  'model_provider="amazon-bedrock"',
-  '-c',
-  'approval_policy="never"',
-];
-
 const codexDriver = {
   name: 'codex',
   contextKey: 'codexHome',
-  buildInvocation({ prompt, model, codexHome = null }) {
-    const args = ['exec', '--json', '--skip-git-repo-check', ...CODEX_BASE_OVERRIDES];
+  buildInvocation({ prompt, model, codexHome = null, backend = BEDROCK_BACKEND }) {
+    const args = ['exec', '--json', '--skip-git-repo-check', ...backend.codexOverrides];
     if (model) args.push('-m', model);
     args.push('-');
     return {
@@ -205,14 +213,20 @@ const codexDriver = {
       promptViaStdin: true,
     };
   },
-  buildResumeInvocation({ sessionId, answerMessage, model, codexHome = null }) {
+  buildResumeInvocation({
+    sessionId,
+    answerMessage,
+    model,
+    codexHome = null,
+    backend = BEDROCK_BACKEND,
+  }) {
     const args = [
       'exec',
       'resume',
       sessionId,
       '--json',
       '--skip-git-repo-check',
-      ...CODEX_BASE_OVERRIDES,
+      ...backend.codexOverrides,
     ];
     if (model) args.push('-m', model);
     args.push('-');
@@ -331,10 +345,33 @@ export const DRIVERS = {
 // CLIs the runtime can drive, in stable preference order.
 export const SUPPORTED_CLIS = ['claude', 'kiro', 'opencode', 'codex'];
 
-export const getDriver = (cli) => {
+export const getDriver = (cli, { backend = BEDROCK_BACKEND } = {}) => {
   const d = DRIVERS[cli];
   if (!d) throw new Error(`unsupported CLI "${cli}" (have: ${SUPPORTED_CLIS.join(', ')})`);
-  return d;
+  if (backend === BEDROCK_BACKEND || cli === 'kiro') return d;
+  const prepare = (input) => {
+    if (cli !== 'opencode') return { ...input, backend };
+    const configuration = input.opencodeConfigContent
+      ? JSON.parse(input.opencodeConfigContent)
+      : {};
+    return {
+      ...input,
+      backend,
+      opencodeConfigContent: JSON.stringify({
+        ...configuration,
+        provider: { ...configuration.provider, ...backend.opencodeConfiguration?.provider },
+      }),
+    };
+  };
+  return {
+    ...d,
+    buildInvocation: (input) => d.buildInvocation(prepare(input)),
+    buildResumeInvocation: (input) => d.buildResumeInvocation(prepare(input)),
+    envForAuth: (env) => ({
+      ...cliPersistenceEnvironment(cli, env),
+      ...backend.envForAuth(cli, env),
+    }),
+  };
 };
 
 // Pick the CLI to drive a stage. An EXPLICIT request is honoured strictly: if the

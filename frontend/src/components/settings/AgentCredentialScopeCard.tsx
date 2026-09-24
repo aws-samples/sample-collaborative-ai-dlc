@@ -6,7 +6,11 @@ import {
   agentsService,
   type AgentCredentialStatus,
   type SpaceAgentCredentialStatus,
+  type AgentCredentialUpdate,
+  type AgentAuthImpactReview,
 } from '@/services/agents';
+import { AuthenticationImpactReview } from './AuthenticationImpactReview';
+import { AgentAuthenticationModeSettings } from './AgentAuthenticationModeSettings';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
@@ -51,6 +55,10 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   const [settings, setSettings] = useState<AgentCredentialStatus | null>(null);
   const [platformFallback, setPlatformFallback] = useState<AgentCredentialStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pendingReview, setPendingReview] = useState<{
+    review: AgentAuthImpactReview;
+    update: AgentCredentialUpdate;
+  } | null>(null);
   const [bearerToken, setBearerToken] = useState('');
   const [kiroApiKey, setKiroApiKey] = useState('');
   const [saving, setSaving] = useState(false);
@@ -85,6 +93,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   useEffect(() => {
     setLoading(true);
     setSettings(null);
+    setPendingReview(null);
     setPlatformFallback(null);
     setBearerToken('');
     setKiroApiKey('');
@@ -105,7 +114,12 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       });
   }, [identity, isCurrentIdentity, load, scope]);
 
-  const update = async (value: { bedrockBearerToken?: string; kiroApiKey?: string }) => {
+  const update = async (value: AgentCredentialUpdate) => {
+    if (settings?.authentication?.reviewRequired && !value.reviewId) {
+      const review = await agentsService.previewCredentialUpdate(scope, projectId, value);
+      if (isCurrentIdentity()) setPendingReview({ review, update: value });
+      return { saved: false };
+    }
     if (scope === 'platform') return agentsService.updateSettings(value);
     if (scope === 'personal') return agentsService.updatePersonalCredentials(value);
     if (!projectId) throw new Error('projectId is required for space credentials');
@@ -122,7 +136,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       const value: { bedrockBearerToken?: string; kiroApiKey?: string } = {};
       if (bearerToken !== '') value.bedrockBearerToken = bearerToken;
       if (kiroApiKey !== '') value.kiroApiKey = kiroApiKey;
-      await update(value);
+      if (!(await update(value)).saved) return;
       if (!isCurrentIdentity() || !(await load())) return;
       setBearerToken('');
       setKiroApiKey('');
@@ -149,7 +163,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     setSaveResult(null);
     setErrorMessage(null);
     try {
-      await update({ [field]: '' });
+      if (!(await update({ [field]: '' })).saved) return;
       if (!isCurrentIdentity() || !(await load())) return;
       if (field === 'bedrockBearerToken') setBearerToken('');
       else setKiroApiKey('');
@@ -168,6 +182,32 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
           }
         }, 4000);
       }
+    }
+  };
+
+  const applyReview = async () => {
+    if (!pendingReview) return;
+    setSaving(true);
+    setErrorMessage(null);
+    try {
+      await update({ ...pendingReview.update, reviewId: pendingReview.review.id });
+      if (!isCurrentIdentity()) return;
+      setPendingReview(null);
+      setBearerToken('');
+      setKiroApiKey('');
+      await load();
+      setSaveResult('saved');
+    } catch (error) {
+      if (!isCurrentIdentity()) return;
+      if ((error as { code?: string })?.code === 'AGENT_AUTH_REVIEW_STALE') setPendingReview(null);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Failed to finish the reviewed change. Apply it again to retry.',
+      );
+      setSaveResult('error');
+    } finally {
+      if (isCurrentIdentity()) setSaving(false);
     }
   };
 
@@ -238,17 +278,41 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         </div>
       ) : (
         <div className="space-y-5">
+          {settings?.authentication && (
+            <AgentAuthenticationModeSettings
+              authentication={settings.authentication}
+              scope={scope}
+              hasOverride={Boolean(settings.bedrockBearerTokenSet)}
+              onApplied={load}
+            />
+          )}
+          {pendingReview && (
+            <AuthenticationImpactReview
+              review={pendingReview.review}
+              applying={saving}
+              onApply={() => void applyReview()}
+              onCancel={() => setPendingReview(null)}
+            />
+          )}
           <SecretField
             id={`${scope}-bedrock-bearer-token`}
             label="Bedrock Bearer Token"
             isSet={Boolean(settings?.bedrockBearerTokenSet)}
             value={bearerToken}
-            onChange={setBearerToken}
+            onChange={(value) => {
+              setBearerToken(value);
+              setPendingReview(null);
+            }}
             emptyPlaceholder="Enter AWS_BEARER_TOKEN_BEDROCK value"
             rotatePlaceholder="Enter a new token to rotate, or leave blank"
             onClear={() => clearSecret('bedrockBearerToken')}
             clearing={clearingSecret === 'bedrockBearerToken'}
-            disabled={saving || clearingSecret !== null}
+            disabled={
+              saving ||
+              clearingSecret !== null ||
+              (settings?.authentication?.policy.mode !== undefined &&
+                settings.authentication.policy.mode !== 'keys')
+            }
             helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
           />
           <SecretField
@@ -256,7 +320,10 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
             label="Kiro API Key"
             isSet={Boolean(settings?.kiroApiKeySet)}
             value={kiroApiKey}
-            onChange={setKiroApiKey}
+            onChange={(value) => {
+              setKiroApiKey(value);
+              setPendingReview(null);
+            }}
             emptyPlaceholder="Enter KIRO_API_KEY value"
             rotatePlaceholder="Enter a new key to rotate, or leave blank"
             onClear={() => clearSecret('kiroApiKey')}

@@ -83,6 +83,17 @@ export interface Intent {
   rewindFromStageId?: string | null;
   agentCli?: AgentCli | null;
   credentialSource?: AgentCredentialSource | null;
+  credentialConnection?: {
+    mode: string;
+    backend: string;
+    mechanism: string;
+    source: AgentCredentialSource;
+    connectionId: string | null;
+    connectionRevision: number | null;
+    policyRevision: number | null;
+    configuration: { endpoint?: string; issuer?: string };
+    legacy: boolean;
+  } | null;
   cliModels: Record<string, string> | null;
   environment: IntentEnvironmentSnapshot | null;
   parkReleaseSeconds: number | null;

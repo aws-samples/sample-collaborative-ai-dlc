@@ -68,6 +68,8 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
+import { createCredentialSession } from './credential-session.js';
+import { accountCredentialInvocation } from './invocation-accounting.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -110,6 +112,7 @@ export const dispatchInvocation = async ({
   }
 
   busy?.enter();
+  let credentialSession = null;
   try {
     const context =
       prepareInvocation && definition.agentAuth
@@ -117,7 +120,10 @@ export const dispatchInvocation = async ({
         : {};
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
-    const result = await handler(handlerPayload, context);
+    credentialSession = context.credentialSession ?? null;
+    const result = credentialSession
+      ? await credentialSession.run(() => handler(handlerPayload, context))
+      : await handler(handlerPayload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception. Log them
@@ -136,6 +142,7 @@ export const dispatchInvocation = async ({
     logger.error('command threw', e, { command });
     return { statusCode: 500, body: { error: e.message, command } };
   } finally {
+    await credentialSession?.release();
     busy?.leave();
   }
 };
@@ -245,8 +252,22 @@ const main = async () => {
       store,
       env: process.env,
     });
+    const credentialSession = createCredentialSession({ env: auth.env });
+    try {
+      await accountCredentialInvocation({
+        ddb,
+        tableName: process.env.V2_PROCESS_TABLE,
+        session: credentialSession,
+        payload: { ...payload, projectId: auth.projectId },
+        bindings: auth.bindings,
+      });
+    } catch (error) {
+      await credentialSession.release();
+      throw error;
+    }
     return {
       ...auth,
+      credentialSession,
       availableClis: authenticatedClisForEnv({ installed: installedClis, env: auth.env }),
     };
   };

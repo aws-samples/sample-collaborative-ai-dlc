@@ -12,13 +12,15 @@
 
 import { writeFile, mkdir, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { attachmentPromptManifest } from './attachments.js';
 import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
-import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-credentials.js';
 import { MCP_SERVER_NAME } from './cli/drivers.js';
+import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/environment.js';
+import { currentCredentialSession } from './credential-session.js';
+import { createRuntimeMcpBridge } from './mcp/runtime-bridge.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 
 // The MCP execution annex — the harness binding that redirects the upstream
@@ -230,9 +232,15 @@ export const buildStagePrompt = ({
 // every custom local server and spread it LAST so even a malicious/buggy config
 // cannot restore the selected user's token. Custom MCP `${VAR}` refs use their
 // own non-reserved names and remain intact.
-export const CUSTOM_MCP_AUTH_ENV_SCRUB = Object.freeze(
-  Object.fromEntries(AGENT_CREDENTIAL_ENV_NAMES.map((name) => [name, ''])),
-);
+export const CUSTOM_MCP_AUTH_ENV_SCRUB = Object.freeze({
+  ...Object.fromEntries(
+    [...APPLICATION_CREDENTIAL_ENV, ...INFERENCE_CREDENTIAL_ENV].map((name) => [name, '']),
+  ),
+  AWS_EC2_METADATA_DISABLED: 'true',
+  AWS_CONFIG_FILE: '/dev/null',
+  AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+  BOTO_CONFIG: '/dev/null',
+});
 
 const scrubCustomMcpAuth = (customServers = {}) =>
   Object.fromEntries(
@@ -260,49 +268,69 @@ const scrubCustomMcpAuth = (customServers = {}) =>
 export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }) => ({
   mcpServers: {
     ...scrubCustomMcpAuth(customServers),
-    aidlc: {
-      command: 'node',
-      args: [mcpEntry],
-      env: {
-        V2_EXECUTION_ID: scope.executionId,
-        V2_INTENT_ID: scope.intentId,
-        V2_PROJECT_ID: scope.projectId ?? '',
-        V2_STAGE_ID: scope.stageId ?? '',
-        V2_STAGE_INSTANCE_ID: scope.stageInstanceId ?? '',
-        V2_SECTION_INDEX:
-          scope.sectionIndex === undefined || scope.sectionIndex === null
-            ? ''
-            : String(scope.sectionIndex),
-        V2_STAGE_ATTEMPT:
-          scope.stageAttempt === undefined || scope.stageAttempt === null
-            ? '0'
-            : String(scope.stageAttempt),
-        // Unit lane attribution (docs/v2-parallel.md WP4): the bridge stamps
-        // this on every gate/output/metric/event row it writes. Empty → null.
-        V2_UNIT_SLUG: scope.unitSlug ?? '',
-        V2_RESOLVED_MODEL: scope.model ?? '',
-        V2_MCP_ROLE: scope.role ?? 'author',
-        // Trusted reviewer identity (reviewer role only): the bridge stamps this
-        // on the verdict row instead of trusting the agent's self-reported name
-        // (upstream §12a identity marker, enforced server-side). Empty → null.
-        V2_REVIEWER_AGENT: scope.reviewerAgent ?? '',
-        V2_PROCESS_TABLE: env.V2_PROCESS_TABLE ?? '',
-        // Local E2E only. Production leaves this empty and uses the normal AWS
-        // endpoint; the MCP child does not reliably inherit arbitrary CLI env.
-        DYNAMODB_LOCAL_ENDPOINT: env.DYNAMODB_LOCAL_ENDPOINT ?? '',
-        NEPTUNE_ENDPOINT: env.NEPTUNE_ENDPOINT ?? '',
-        GREMLIN_PROTOCOL: env.GREMLIN_PROTOCOL ?? 'wss',
-        GREMLIN_PORT: env.GREMLIN_PORT ?? '8182',
-        CONNECTIONS_TABLE: env.CONNECTIONS_TABLE ?? '',
-        WEBSOCKET_ENDPOINT: env.WEBSOCKET_ENDPOINT ?? '',
-        AWS_REGION: env.AWS_REGION ?? '',
-        ARTIFACTS_BUCKET: env.ARTIFACTS_BUCKET ?? '',
-        V2_QUESTION_POLL_MS: env.V2_QUESTION_POLL_MS ?? '',
-        V2_QUESTION_PARK_GRACE_MS: env.V2_QUESTION_PARK_GRACE_MS ?? '',
-      },
-    },
+    aidlc: env.AIDLC_MCP_SOCKET
+      ? {
+          command: process.execPath,
+          args: [new URL('./mcp/stdio-relay.js', import.meta.url).pathname, env.AIDLC_MCP_SOCKET],
+          env: CUSTOM_MCP_AUTH_ENV_SCRUB,
+        }
+      : {
+          command: 'node',
+          args: [mcpEntry],
+          env: {
+            V2_EXECUTION_ID: scope.executionId,
+            V2_INTENT_ID: scope.intentId,
+            V2_PROJECT_ID: scope.projectId ?? '',
+            V2_STAGE_ID: scope.stageId ?? '',
+            V2_STAGE_INSTANCE_ID: scope.stageInstanceId ?? '',
+            V2_SECTION_INDEX:
+              scope.sectionIndex === undefined || scope.sectionIndex === null
+                ? ''
+                : String(scope.sectionIndex),
+            V2_STAGE_ATTEMPT:
+              scope.stageAttempt === undefined || scope.stageAttempt === null
+                ? '0'
+                : String(scope.stageAttempt),
+            // Unit lane attribution (docs/v2-parallel.md WP4): the bridge stamps
+            // this on every gate/output/metric/event row it writes. Empty → null.
+            V2_UNIT_SLUG: scope.unitSlug ?? '',
+            V2_RESOLVED_MODEL: scope.model ?? '',
+            V2_MCP_ROLE: scope.role ?? 'author',
+            // Trusted reviewer identity (reviewer role only): the bridge stamps this
+            // on the verdict row instead of trusting the agent's self-reported name
+            // (upstream §12a identity marker, enforced server-side). Empty → null.
+            V2_REVIEWER_AGENT: scope.reviewerAgent ?? '',
+            V2_PROCESS_TABLE: env.V2_PROCESS_TABLE ?? '',
+            // Local E2E only. Production leaves this empty and uses the normal AWS
+            // endpoint; the MCP child does not reliably inherit arbitrary CLI env.
+            DYNAMODB_LOCAL_ENDPOINT: env.DYNAMODB_LOCAL_ENDPOINT ?? '',
+            NEPTUNE_ENDPOINT: env.NEPTUNE_ENDPOINT ?? '',
+            GREMLIN_PROTOCOL: env.GREMLIN_PROTOCOL ?? 'wss',
+            GREMLIN_PORT: env.GREMLIN_PORT ?? '8182',
+            CONNECTIONS_TABLE: env.CONNECTIONS_TABLE ?? '',
+            WEBSOCKET_ENDPOINT: env.WEBSOCKET_ENDPOINT ?? '',
+            AWS_REGION: env.AWS_REGION ?? '',
+            ARTIFACTS_BUCKET: env.ARTIFACTS_BUCKET ?? '',
+            V2_QUESTION_POLL_MS: env.V2_QUESTION_POLL_MS ?? '',
+            V2_QUESTION_PARK_GRACE_MS: env.V2_QUESTION_PARK_GRACE_MS ?? '',
+          },
+        },
   },
 });
+
+const prepareMcpEnvironment = async ({ mcpEntry, scope, env }) => {
+  const session = currentCredentialSession();
+  if (!session) return env; // Pure/local harness callers own their process lifetime.
+  const trustedEnv = buildMcpConfig({ mcpEntry, scope, env }).mcpServers.aidlc.env;
+  const bridge = await createRuntimeMcpBridge({ entry: mcpEntry, trustedEnv });
+  try {
+    session.own(() => bridge.dispose());
+  } catch (error) {
+    await bridge.dispose();
+    throw error;
+  }
+  return { ...env, AIDLC_MCP_SOCKET: bridge.socketPath, AIDLC_MCP_CONTEXT_ID: randomUUID() };
+};
 
 // Concatenate the bodies of the rule blocks resolved for this stage (universal +
 // phase). `rulesById` is the library bag; `ruleBodies` maps ruleId → body text.
@@ -325,9 +353,17 @@ export const materializeMcpConfig = async ({
 }) => {
   const aidlcDir = path.join(workspaceDir, '.aidlc');
   await mkdir(aidlcDir, { recursive: true });
+  env = await prepareMcpEnvironment({ mcpEntry, scope, env });
   const mcpConfig = buildMcpConfig({ mcpEntry, scope, env, customServers });
-  const mcpConfigPath = path.join(aidlcDir, 'mcp-config.json');
-  await writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), 'utf8');
+  const mcpConfigPath = path.join(
+    aidlcDir,
+    env.AIDLC_MCP_CONTEXT_ID ? `mcp-${env.AIDLC_MCP_CONTEXT_ID}.json` : 'mcp-config.json',
+  );
+  await writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  currentCredentialSession()?.own(() => rm(mcpConfigPath, { force: true }));
   return mcpConfigPath;
 };
 
@@ -367,13 +403,16 @@ export const materializeKiroAgent = async ({
 }) => {
   const agentsDir = path.join(workspaceDir, '.kiro', 'agents');
   await mkdir(agentsDir, { recursive: true });
+  env = await prepareMcpEnvironment({ mcpEntry, scope, env });
   const config = buildKiroAgentConfig({ mcpEntry, scope, env, customServers });
-  await writeFile(
-    path.join(agentsDir, `${KIRO_AGENT_NAME}.json`),
-    JSON.stringify(config, null, 2),
-    'utf8',
-  );
-  return KIRO_AGENT_NAME;
+  const agentName = env.AIDLC_MCP_CONTEXT_ID
+    ? `${KIRO_AGENT_NAME}-${env.AIDLC_MCP_CONTEXT_ID}`
+    : KIRO_AGENT_NAME;
+  config.name = agentName;
+  const configPath = path.join(agentsDir, `${agentName}.json`);
+  await writeFile(configPath, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
+  currentCredentialSession()?.own(() => rm(configPath, { force: true }));
+  return agentName;
 };
 
 const openCodeEnvRef = (value) =>
@@ -437,7 +476,10 @@ export const materializeOpenCodeConfig = async ({
   scope,
   env = process.env,
   customServers = {},
-}) => JSON.stringify(buildOpenCodeConfig({ mcpEntry, scope, env, customServers }));
+}) => {
+  env = await prepareMcpEnvironment({ mcpEntry, scope, env });
+  return JSON.stringify(buildOpenCodeConfig({ mcpEntry, scope, env, customServers }));
+};
 
 // ── Codex config (per-stage CODEX_HOME) ──
 //
@@ -522,7 +564,11 @@ export const toCodexMcpToml = (mcpServers = {}, refEnv = {}) => {
         if (full && full[1] === key) forwarded.push(key);
         else literal.push([key, codexEnvValue(value, refEnv)]);
       }
-      if (name === MCP_SERVER_NAME) forwarded.push(...CODEX_AIDLC_FORWARD_ENV);
+      if (
+        name === MCP_SERVER_NAME &&
+        !server.args?.some((arg) => String(arg).endsWith('stdio-relay.js'))
+      )
+        forwarded.push(...CODEX_AIDLC_FORWARD_ENV);
       // TOML: plain keys (env_vars) must precede any nested table ([….env]).
       if (forwarded.length) lines.push(`env_vars = ${tomlArray(forwarded)}`);
       if (literal.length) {
@@ -630,6 +676,7 @@ const CODEX_GLOBAL_AGENTS_MD = [
 // allowing run-stage to resolve the destination before it restores a rollout.
 export const resolveCodexHome = ({ scope = {}, env = process.env } = {}) => {
   const identity = {
+    ...(currentCredentialSession() ? { invocationId: currentCredentialSession().id } : {}),
     executionId: scope.executionId ?? null,
     intentId: scope.intentId ?? null,
     projectId: scope.projectId ?? null,
@@ -659,8 +706,11 @@ export const materializeCodexHome = async ({
   const homeDir = resolveCodexHome({ scope, env });
   if (reset) await rm(homeDir, { recursive: true, force: true });
   await mkdir(homeDir, { recursive: true });
+  env = await prepareMcpEnvironment({ mcpEntry, scope, env });
   const toml = buildCodexConfigToml({ mcpEntry, scope, env, customServers, secretEnv });
-  await writeFile(path.join(homeDir, 'config.toml'), toml, 'utf8');
+  const configPath = path.join(homeDir, 'config.toml');
+  await writeFile(configPath, toml, { encoding: 'utf8', mode: 0o600 });
+  currentCredentialSession()?.own(() => rm(configPath, { force: true }));
   await writeFile(path.join(homeDir, 'AGENTS.md'), CODEX_GLOBAL_AGENTS_MD, 'utf8');
   return homeDir;
 };

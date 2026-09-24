@@ -40,6 +40,7 @@ describe('resolveInvocationAgentAuth', () => {
 
     expect(getExecution).toHaveBeenCalledWith('e1', { consistentRead: true });
     expect(result.env.KIRO_API_KEY).toBe('starter-key');
+    expect(result.projectId).toBe('p-1');
   });
 
   it('keeps concurrent users in separate invocation environments', async () => {

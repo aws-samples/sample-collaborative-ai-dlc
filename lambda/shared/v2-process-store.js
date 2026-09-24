@@ -1318,7 +1318,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return items;
   };
 
-  const listActiveExecutions = async ({ limit = 100 } = {}) => {
+  const listActiveExecutions = async ({ limit = Infinity } = {}) => {
     const items = [];
     let ExclusiveStartKey;
     do {
@@ -1328,7 +1328,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           IndexName: 'GSI3',
           KeyConditionExpression: 'GSI3PK = :pk',
           ExpressionAttributeValues: { ':pk': ACTIVE_EXECUTIONS_INDEX_PK },
-          Limit: limit - items.length,
+          ...(Number.isFinite(limit) ? { Limit: limit - items.length } : {}),
           ExclusiveStartKey,
         }),
       );
