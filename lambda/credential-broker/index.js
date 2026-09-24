@@ -13,7 +13,13 @@ import {
 } from '../shared/source-control-bindings.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
-import { readCredentialBindingValue } from '../shared/agent-credentials.js';
+import { redeemAgentBinding } from '../shared/agent-auth-redemption.js';
+import { createAgentConnectionRepository } from '../shared/agent-connection-repository.js';
+import {
+  credentialChangeAffects,
+  bindingIdentity,
+  authError,
+} from '../shared/agent-auth-catalog.js';
 import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
@@ -135,7 +141,7 @@ const authorizeCredentialRequest = async (
 
 const authorizeAgentCredentialRequest = async (
   { grant },
-  { ssmClient = ssm, secret = null, env = process.env, now = undefined } = {},
+  { ssmClient = ssm, ddbClient = ddb, secret = null, env = process.env, now = undefined } = {},
 ) => {
   if (!grant) {
     throw Object.assign(new Error('Agent credential grant is required'), {
@@ -147,16 +153,53 @@ const authorizeAgentCredentialRequest = async (
     secret,
     ...(now ? { now } : {}),
   });
+  const repository = createAgentConnectionRepository({
+    ddb: ddbClient,
+    tableName: env.V2_PROCESS_TABLE,
+    base: env.AGENT_SETTINGS_SSM_PREFIX || '',
+  });
+  const policy = await repository.getPolicy();
+  if (policy.pendingReview) {
+    const pending = await repository.getReview(policy.pendingReview);
+    if (
+      claims.bindings.some((binding) =>
+        credentialChangeAffects(pending?.candidate, binding, claims.projectId),
+      )
+    ) {
+      throw authError('AGENT_AUTH_CHANGE_IN_PROGRESS', 'The selected credential is being updated');
+    }
+  }
+  if (claims.version === 2 && claims.executionId) {
+    const { Item: execution } = await ddbClient.send(
+      new GetCommand({
+        TableName: env.V2_PROCESS_TABLE,
+        Key: executionMetaKey(claims.executionId),
+        ConsistentRead: true,
+      }),
+    );
+    if (
+      !execution ||
+      execution.projectId !== claims.projectId ||
+      (claims.purpose === 'execution' &&
+        (claims.bindings.length !== 1 ||
+          bindingIdentity(execution.credentialBinding) !== bindingIdentity(claims.bindings[0])))
+    ) {
+      throw authError(
+        'AGENT_CREDENTIAL_GRANT_INVALID',
+        'Grant does not match the execution binding',
+      );
+    }
+  }
   const credentials = await Promise.all(
-    claims.bindings.map(async (binding) => ({
-      binding,
-      value:
-        (await readCredentialBindingValue(ssmClient, {
-          base: env.AGENT_SETTINGS_SSM_PREFIX || '',
-          binding,
-          projectId: claims.projectId,
-        })) || null,
-    })),
+    claims.bindings.map((binding) =>
+      redeemAgentBinding({
+        binding,
+        projectId: claims.projectId,
+        repository,
+        ssm: ssmClient,
+        base: env.AGENT_SETTINGS_SSM_PREFIX || '',
+      }),
+    ),
   );
   return {
     purpose: claims.purpose,

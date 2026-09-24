@@ -111,9 +111,11 @@ import {
 } from '../shared/release-registry.js';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
-import { credentialProviderForCli } from '../shared/agent-credentials.js';
-import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
-import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
+  resolveSelectedAgentCredential,
+  prepareAgentInvocation,
+} from '../shared/agent-credential-service.js';
+import { credentialBindingDisplay } from '../shared/agent-auth-catalog.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
@@ -184,59 +186,9 @@ const attachmentCleanup = createAttachmentCleanupService({
 const attachmentEventKey = /^intent-attachments\/staging\/([^/]+)\/([^.]+)(\.[a-z0-9]+)$/i;
 const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
 
-const resolveSelectedAgentCredential = async ({ projectId, userId, agentCli }) => {
-  const provider = credentialProviderForCli(agentCli);
-  if (!provider) {
-    return {
-      error: {
-        statusCode: 400,
-        body: {
-          error: `Unsupported agent CLI "${agentCli || ''}"`,
-          code: 'unsupported_agent_cli',
-        },
-      },
-    };
-  }
-  const bindings = await resolveEffectiveCredentialBindingsViaBroker({
-    projectId,
-    userId,
-  });
-  const credentialBinding = bindings[provider];
-  if (!credentialBinding) {
-    return {
-      error: {
-        statusCode: 409,
-        body: {
-          error: `No ${provider === 'kiro' ? 'Kiro' : 'Bedrock'} credential is available for this CLI`,
-          code: 'agent_credential_required',
-          provider,
-        },
-      },
-    };
-  }
-  return { provider, credentialBinding };
-};
-
-const issueInvocationAgentCredentialGrant = async ({
-  purpose,
-  projectId,
-  executionId,
-  credentialBinding = null,
-  agentCli = null,
-}) => {
-  const binding =
-    credentialBinding ??
-    (credentialProviderForCli(agentCli)
-      ? { provider: credentialProviderForCli(agentCli), source: 'platform' }
-      : null);
-  if (!binding) return null;
-  return issueAgentCredentialGrant(ssm, {
-    purpose,
-    projectId,
-    executionId,
-    bindings: [binding],
-  });
-};
+const issueInvocationAgentCredentialGrant = async (request) =>
+  (await prepareAgentInvocation({ ...request, legacyExecution: true }, { ssm }))
+    .agentCredentialGrant;
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
 // its DynamoDB reservation, copy the exact object version from staging to the
@@ -1387,6 +1339,10 @@ const mapIntent = (meta) => ({
   resumeRequired: meta.resumeRequired ?? null,
   agentCli: meta.agentCli ?? null,
   credentialSource: meta.credentialBinding?.source ?? null,
+  credentialConnection:
+    meta.status === 'DRAFT' && !meta.credentialBinding
+      ? null
+      : credentialBindingDisplay(meta.credentialBinding, meta.agentCli),
   cliModels: meta.cliModels ?? null,
   tierModels: meta.tierModels ?? null,
   environment: meta.environment ?? null,
@@ -2496,6 +2452,7 @@ export const handler = async (event, context) => {
             executionId: intentId,
             credentialBinding: records.meta.credentialBinding,
             agentCli: records.meta.agentCli,
+            runtimeCapabilities: records.meta.environment,
           });
           const res = await agentcore.send(
             new InvokeAgentRuntimeCommand({
@@ -3171,6 +3128,7 @@ export const handler = async (event, context) => {
           projectId,
           userId: sub,
           agentCli: selectedAgentCli,
+          runtimeCapabilities: meta.environment,
         });
         if (resolved.error) {
           return response(resolved.error.statusCode, resolved.error.body);
@@ -3592,6 +3550,7 @@ export const handler = async (event, context) => {
           projectId,
           userId: sub,
           agentCli: requestedCli,
+          runtimeCapabilities: meta.environment,
         });
         if (resolved.error) {
           return response(resolved.error.statusCode, resolved.error.body);
@@ -3762,6 +3721,7 @@ export const handler = async (event, context) => {
           executionId: intentId,
           credentialBinding,
           agentCli: requestedCli,
+          runtimeCapabilities: meta.environment,
         });
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
@@ -4053,6 +4013,7 @@ export const handler = async (event, context) => {
           executionId: intentId,
           credentialBinding: meta.credentialBinding,
           agentCli: meta.agentCli,
+          runtimeCapabilities: meta.environment,
         });
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
