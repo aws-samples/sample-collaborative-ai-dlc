@@ -1066,6 +1066,78 @@ test('standalone destroy initializes its backend before loading production from 
   }
 });
 
+test('standalone destroy rejects command-specific Terraform variable inputs before mutation', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-command-vars-'));
+  const scripts = join(dir, 'scripts');
+  const terraformDir = join(dir, 'terraform');
+  const environments = join(terraformDir, 'environments');
+  const fixtureDestroy = join(scripts, 'destroy.sh');
+  const backendFile = join(environments, 'live.s3.tfbackend');
+  const terraformEnv = {
+    ...process.env,
+    TF_CLI_ARGS: '',
+    TF_CLI_ARGS_console: '',
+    TF_CLI_ARGS_plan: '',
+    TF_CLI_ARGS_destroy: '',
+    TF_DATA_DIR: join(dir, '.terraform-data'),
+    TF_IN_AUTOMATION: '1',
+  };
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(environments, { recursive: true });
+  cpSync(destroyTerraform, fixtureDestroy);
+  writeFileSync(
+    join(terraformDir, 'main.tf'),
+    [
+      'terraform {',
+      '  backend "local" {}',
+      '}',
+      'variable "environment" {',
+      '  type    = string',
+      '  default = "dev"',
+      '}',
+      'variable "deletion_protection" {',
+      '  type    = bool',
+      '  default = true',
+      '}',
+      'resource "terraform_data" "marker" { input = var.environment }',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(join(environments, 'live.tfvars'), 'environment = "dev"\n');
+  writeFileSync(backendFile, `path = ${JSON.stringify(join(dir, 'live.tfstate'))}\n`);
+
+  try {
+    execFileSync(
+      'terraform',
+      [`-chdir=${terraformDir}`, 'init', '-reconfigure', `-backend-config=${backendFile}`],
+      { env: terraformEnv, stdio: 'pipe' },
+    );
+    execFileSync(
+      'terraform',
+      [`-chdir=${terraformDir}`, 'apply', '-auto-approve', '-var-file=environments/live.tfvars'],
+      { env: terraformEnv, stdio: 'pipe' },
+    );
+
+    const destroyed = run('bash', [fixtureDestroy, 'live', '--yes'], {
+      env: {
+        ...terraformEnv,
+        TF_CLI_ARGS_plan: '-lock-timeout=5s -var=environment=prod',
+        TF_CLI_ARGS_destroy: '-lock-timeout=5s -var=environment=prod',
+      },
+    });
+
+    assert.equal(destroyed.status, 1, destroyed.stderr);
+    assert.match(destroyed.stderr, /TF_CLI_ARGS_plan cannot provide -var or -var-file/);
+    const state = execFileSync('terraform', [`-chdir=${terraformDir}`, 'state', 'list'], {
+      encoding: 'utf8',
+      env: terraformEnv,
+    });
+    assert.match(state, /^terraform_data\.marker$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('standalone destroy skips protection targets already removed from state', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-retry-'));
   const bin = join(dir, 'bin');

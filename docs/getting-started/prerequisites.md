@@ -135,4 +135,6 @@ Without an effective agent credential, users can still browse the application an
 
 The example tfvars leaves `kms_key_arn` empty. DynamoDB remains encrypted at rest with the AWS-owned key, and the deployment principal does not need KMS administration permissions.
 
-To use a customer-managed key for DynamoDB, supply its full key ARN in `kms_key_arn`. The key must be managed outside this Terraform stack, and its policy must already delegate the required DynamoDB service access.
+To use a customer-managed key for DynamoDB, supply its full key ARN in `kms_key_arn`. The key must be managed outside this Terraform stack. Its key policy must enable IAM authorization for the deployment account (or directly authorize the principals below); an explicit service-principal grant to DynamoDB alone is not sufficient.
+
+The deployment principal needs `kms:DescribeKey`, `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, and `kms:CreateGrant` on the key so Terraform can enable encryption and DynamoDB can establish its resource grants. Application roles receive the same key-scoped permissions from this stack only through DynamoDB (`kms:ViaService`), with `kms:CreateGrant` additionally restricted by `kms:GrantIsForAWSResource`. For a cross-account key policy that does not delegate to account IAM, directly authorize both the deployment principal and the generated application role ARNs.

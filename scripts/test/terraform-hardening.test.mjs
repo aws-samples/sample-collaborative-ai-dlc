@@ -33,6 +33,25 @@ const resourceBlocks = (text, resourceType) => {
     return { body: text.slice(match.index, index), name: match[1] };
   });
 };
+const moduleBlock = (text, moduleName) => {
+  const block = text.match(new RegExp(`module "${moduleName}" \\{[\\s\\S]*?^\\}`, 'm'))?.[0];
+  assert.ok(block, `missing module "${moduleName}"`);
+  return block;
+};
+const dynamodbCallerRoles = (text) =>
+  [
+    ...new Set(
+      resourceBlocks(text, 'aws_iam_role_policy')
+        .filter(({ body }) => body.includes('"dynamodb:'))
+        .flatMap(({ body }) =>
+          [...body.matchAll(/aws_iam_role\.([^.]+)\./g)].map((match) => match[1]),
+        ),
+    ),
+  ].toSorted();
+const kmsAuthorizedRoles = (text) =>
+  [...moduleBlock(text, 'dynamodb_kms_runtime_access').matchAll(/=\s*aws_iam_role\.([^.]+)\.name/g)]
+    .map((match) => match[1])
+    .toSorted();
 
 test('all DynamoDB tables support CMK encryption and durable tables are recoverable', () => {
   const applicationTables = read('terraform/modules/data/dynamodb/main.tf');
@@ -97,6 +116,47 @@ test('root KMS configuration accepts existing keys without owning their lifecycl
   assert.match(example, /^skip_final_snapshot\s+= false$/m);
 });
 
+test('DynamoDB CMK access covers deployment and every runtime caller', () => {
+  const runtimePolicy = read('terraform/modules/security/dynamodb-kms-runtime-access/main.tf');
+  for (const action of [
+    'kms:DescribeKey',
+    'kms:Decrypt',
+    'kms:Encrypt',
+    'kms:ReEncrypt*',
+    'kms:GenerateDataKey*',
+    'kms:CreateGrant',
+  ]) {
+    assert.match(runtimePolicy, new RegExp(`"${action.replace('*', '\\*')}"`));
+  }
+  assert.match(runtimePolicy, /Resource\s+= var\.kms_key_arn/);
+  assert.match(runtimePolicy, /"kms:ViaService"\s+= "dynamodb\.\*\.\$\{var\.dns_suffix\}"/);
+  assert.match(runtimePolicy, /"kms:GrantIsForAWSResource"\s+= "true"/);
+
+  for (const path of [
+    'terraform/modules/api/lambda/main.tf',
+    'terraform/modules/realtime/lambda.tf',
+    'terraform/modules/compute/managed-environments/main.tf',
+    'terraform/modules/compute/agentcore/main.tf',
+  ]) {
+    const source = read(path);
+    assert.deepEqual(
+      kmsAuthorizedRoles(source),
+      dynamodbCallerRoles(source),
+      `${path} must authorize every role whose policy calls DynamoDB`,
+    );
+  }
+
+  const rootMain = read('terraform/main.tf');
+  for (const moduleName of ['lambda', 'realtime', 'agentcore', 'managed_environments']) {
+    assert.match(moduleBlock(rootMain, moduleName), /kms_key_arn\s+= var\.kms_key_arn/);
+  }
+
+  const prerequisites = read('docs/getting-started/prerequisites.md');
+  assert.match(prerequisites, /deployment principal needs `kms:DescribeKey`/);
+  assert.match(prerequisites, /`kms:CreateGrant` additionally restricted/);
+  assert.match(prerequisites, /service-principal grant to DynamoDB alone is not sufficient/);
+});
+
 test('teardown covers every protected data store and cannot automate production', () => {
   const protectedResources = [
     ['terraform/modules/data/dynamodb/main.tf', 'module.dynamodb'],
@@ -120,6 +180,10 @@ test('teardown covers every protected data store and cannot automate production'
   assert.match(
     destroy,
     /terraform -chdir="\$TF_DIR" console[\s\S]*?-var-file="\$TFVARS_FILE"[\s\S]*?-var="deletion_protection=false"/,
+  );
+  assert.match(
+    destroy,
+    /for cli_args_name in TF_CLI_ARGS_plan TF_CLI_ARGS_destroy; do[\s\S]*?"\$cli_args_value" == \*"-var"\*/,
   );
   assert.match(destroy, /STATE_RESOURCES="\$\(terraform -chdir="\$TF_DIR" state list\)"/);
   assert.match(

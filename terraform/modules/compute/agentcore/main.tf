@@ -129,6 +129,16 @@ locals {
   agentcore_subnet_azs = slice(local.agentcore_az_names, 0, min(2, length(local.agentcore_az_names)))
 }
 
+module "dynamodb_kms_runtime_access" {
+  source = "../../security/dynamodb-kms-runtime-access"
+
+  kms_key_arn = var.kms_key_arn
+  dns_suffix  = local.dns_suffix
+  role_names = {
+    agentcore = aws_iam_role.agentcore.name
+  }
+}
+
 # ---------------------------------------------------------------------------
 # ECR + ARM64 image build (AgentCore Runtime requires arm64)
 # ---------------------------------------------------------------------------

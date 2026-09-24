@@ -392,6 +392,7 @@ module "lambda" {
     module.dynamodb.yjs_documents_table_arn,
     module.dynamodb.agent_outputs_table_arn
   ]
+  kms_key_arn                              = var.kms_key_arn
   artifacts_bucket_name                    = module.s3.artifacts_bucket_name
   artifacts_bucket_arn                     = module.s3.artifacts_bucket_arn
   blocks_table_name                        = module.dynamodb.blocks_table_name
@@ -540,6 +541,7 @@ module "realtime" {
   cognito_client_id       = module.auth.user_pool_client_id
   connections_table_name  = module.dynamodb.connections_table_name
   connections_table_arn   = module.dynamodb.connections_table_arn
+  kms_key_arn             = var.kms_key_arn
 
   # The WebSocket stage enables access logging, which requires the account-level
   # CloudWatch role to be configured first.
@@ -623,6 +625,7 @@ module "managed_environments" {
   powertools_log_event          = var.powertools_log_event
   registry_table_name           = module.dynamodb.environment_registry_table_name
   registry_table_arn            = module.dynamodb.environment_registry_table_arn
+  kms_key_arn                   = var.kms_key_arn
   core_image_uri                = module.agentcore.ecr_repository_url
   core_image_digest             = module.agentcore.image_digest
   core_image_size_bytes         = module.agentcore.image_size_bytes
