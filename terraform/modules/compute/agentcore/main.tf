@@ -246,6 +246,13 @@ resource "aws_dynamodb_table" "v2_executions" {
   write_capacity              = local.write_capacity
   deletion_protection_enabled = var.deletion_protection
 
+  # Only ephemeral authentication selection/invocation records set this field.
+  # Historical execution records are retained unchanged.
+  ttl {
+    attribute_name = "agentAuthTtl"
+    enabled        = true
+  }
+
   attribute {
     name = "pk"
     type = "S"

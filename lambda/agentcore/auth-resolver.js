@@ -14,12 +14,12 @@ import {
   credentialEnvName,
   credentialProviderForCli,
   normalizeCredentialBinding,
-} from '../shared/agent-credentials.js';
+  bindingIdentity,
+} from '../shared/agent-auth-catalog.js';
 import { AGENT_AUTH_MODES } from './command-registry.js';
 import { invokeCredentialBroker } from './clients.js';
 
-const bindingKey = (binding) =>
-  `${binding.provider}:${binding.source}:${binding.source === 'user' ? binding.userId : ''}`;
+const bindingKey = bindingIdentity;
 const grantMismatch = () =>
   Object.assign(new Error('Agent credential grant does not match this invocation'), {
     code: 'credential_grant_mismatch',
@@ -134,6 +134,8 @@ export const resolveInvocationAgentAuth = async ({
   if (bindings.length === 0) {
     return {
       env: invocationEnv,
+      projectId,
+      bindings,
       credentialBindings,
       resolvedProviders,
       missingProviders,
@@ -199,6 +201,8 @@ export const resolveInvocationAgentAuth = async ({
 
   return {
     env: invocationEnv,
+    projectId,
+    bindings,
     credentialBindings,
     resolvedProviders,
     missingProviders,

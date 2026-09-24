@@ -138,9 +138,10 @@ export const resolveStageModel = ({
   agentBlock = null,
   cli,
   env = process.env,
+  backend = null,
 }) => {
   const tier = agentBlock?.tier ?? null;
-  if (!BEDROCK_CLIS.has(cli)) {
+  if ((backend && backend.id !== 'bedrock') || !BEDROCK_CLIS.has(cli)) {
     const selected =
       tierModelFor({ tierModels, tier, cli }) ||
       cliModels?.[cli] ||

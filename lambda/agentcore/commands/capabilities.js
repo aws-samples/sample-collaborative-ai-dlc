@@ -16,6 +16,7 @@
 import { SUPPORTED_CLIS, buildKiroListModels, parseKiroModels } from '../cli/drivers.js';
 import { discoverInstalledClis as defaultDiscover } from '../cli/discover.js';
 import { captureChild as defaultCapture } from '../cli/spawn.js';
+import { AGENT_AUTH_PROTOCOL_VERSION } from '../../shared/agent-auth-catalog.js';
 
 // The env var that proves each CLI is authed (mirrors auth-resolver's targets).
 const AUTH_ENV = {
@@ -54,12 +55,23 @@ export const capabilities = async (_payload, deps = {}) => {
   if (installed.includes('kiro')) {
     try {
       const list = buildKiroListModels();
-      const { stdout } = await captureChild({ command: list.command, args: list.args, env });
+      const { stdout } = await captureChild({
+        command: list.command,
+        args: list.args,
+        env: env.KIRO_API_KEY ? { KIRO_API_KEY: env.KIRO_API_KEY } : {},
+      });
       kiroModels = parseKiroModels(stdout ?? '');
     } catch {
       kiroModels = { models: [], default: null };
     }
   }
 
-  return { ok: true, clis, kiroModels };
+  return {
+    ok: true,
+    clis,
+    kiroModels,
+    agentAuthProtocol: AGENT_AUTH_PROTOCOL_VERSION,
+    agentAuthModes: ['keys'],
+    invocationAccounting: true,
+  };
 };

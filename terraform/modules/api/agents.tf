@@ -56,6 +56,7 @@ module "agents_lambda" {
     QUESTIONS_TABLE                     = var.agent_questions_table_name
     NEPTUNE_ENDPOINT                    = var.neptune_endpoint
     AGENT_OUTPUTS_TABLE                 = var.agent_outputs_table_name
+    V2_PROCESS_TABLE                    = var.v2_executions_table_name
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_METADATA_FUNCTION  = "${var.project_name}-credential-metadata-${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
