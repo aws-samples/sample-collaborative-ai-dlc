@@ -84,6 +84,7 @@ export interface BedrockIamSetup {
   inferencePolicy: object;
   inferenceCommands: string;
   applicationCommands: string;
+  reuseCommands: string;
 }
 
 export interface AgentAuthenticationView {
@@ -328,6 +329,7 @@ export const agentsService = {
     verified: boolean;
     models?: AgentModel[];
     error?: string;
+    code?: string;
   }> {
     return api.post('/agents/bedrock-iam', { action: 'verify', config, projectId });
   },

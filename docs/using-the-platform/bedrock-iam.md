@@ -25,7 +25,7 @@ Managed environments must run an image with IAM authentication support. Publish 
 5. Choose **Review connection change**, inspect the proposed role, region and impact, then **Apply reviewed change**.
 6. Select models available in the inference account and region. The policy supports Bedrock Runtime inference for Claude Code/OpenCode and Bedrock Mantle for Codex.
 
-An existing role that passes the connection test can proceed directly to review. If the test fails, the wizard shows permission help: required role trust and inference permissions, plus application-side permission to assume the role. Your AWS administrator can compare these with the existing policies and add missing access while retaining existing permissions. The application access command is optional when that permission is already configured. Copy and download controls are available in the help.
+An existing role that passes the connection test can proceed directly to review. If the test fails, the wizard shows setup for connecting this deployment to the role. You can also open it with **Connect this deployment to the role** before testing. Required trust and permissions are available under a separate details panel for administrators.
 
 CloudShell commands run in a separate Bash process with the AWS output pager disabled. On failure, the AWS error and failed step remain visible and your CloudShell session stays open. A downloaded script returns a nonzero status on failure. If creating a role reports `EntityAlreadyExists`, choose **I already have an inference role** or use a different role name. If role creation succeeded but adding permissions failed, use the existing-role permission help to finish setup; rerunning role creation will report that the role exists.
 
@@ -34,6 +34,19 @@ The application generates IAM setup documents; it does not modify AWS IAM itself
 In **Space Settings → Agent**, platform administrators can **Set space IAM role** or **Change space IAM role**. **Use platform IAM role** reviews removal of the override. Space owners who are not platform administrators cannot configure, verify, or clear IAM roles. Personal Bedrock keys are disabled in IAM mode; Kiro remains independently configurable.
 
 Switching back to **Keys** also requires review. Saved Bedrock keys become applicable again. An IAM role or mode change affects future selections; a started invocation retains its versioned connection.
+
+## Reuse a role across deployments
+
+Two deployments can share one inference role. Each deployment has its own credential broker: the inference role must trust both brokers, and each broker needs permission to assume that role.
+
+1. In the new deployment, select **I already have an inference role** and enter the existing role's account, name or path, inference region, and required ExternalId.
+2. Continue to the connection test. If it already passes, proceed to review. Otherwise choose **Connect this deployment to the role**.
+3. Copy or download the generated commands and run them in AWS CloudShell. When the inference role and application are in the same account, one script configures both sides. For different accounts, run the two scripts in their indicated accounts.
+4. Choose **Test connection** again, then review and apply the connection change.
+
+The reuse script reads the live trust policy and adds this deployment's broker statement, including its ExternalId if configured. It retains all existing statements, conditions and denies. It adds inference permissions under a policy name specific to this deployment and region, including the selected Mantle region, and leaves other policies intact. Repeating the same setup does not duplicate the trust statement. It does not create another role.
+
+An assumption denial is reported as an IAM access error, including when credential preparation fails before the runtime's verification command starts. A model discovery denial is reported separately after credentials have been obtained. The connection check still does not test model invocation or Mantle access.
 
 ## Renewal and expiry
 

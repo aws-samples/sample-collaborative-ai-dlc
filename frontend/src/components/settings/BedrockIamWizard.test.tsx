@@ -26,6 +26,7 @@ const setup = {
   inferencePolicy: { Statement: ['inference'] },
   inferenceCommands: '# inference account commands',
   applicationCommands: '# application account commands',
+  reuseCommands: '# reuse role commands',
 };
 
 beforeEach(() => {
@@ -83,7 +84,7 @@ describe('Bedrock IAM wizard', () => {
     expect(screen.queryByText('# inference account commands')).not.toBeInTheDocument();
     expect(screen.queryByText('# application account commands')).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Show AWS permission help (if needed)' }),
+      screen.getByRole('button', { name: 'Connect this deployment to the role' }),
     ).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('button', { name: 'Review connection change' })).toBeDisabled();
     expect(verify).not.toHaveBeenCalled();
@@ -116,7 +117,8 @@ describe('Bedrock IAM wizard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('trust policy');
     const help = screen.getByRole('region', { name: 'Existing role permission help' });
     expect(within(help).getByText('# application account commands')).toBeVisible();
-    expect(within(help).getByText(/only if that permission is missing/)).toBeVisible();
+    expect(within(help).getByText('# reuse role commands')).toBeVisible();
+    expect(within(help).getByText(/keeps the role's existing trust and policies/)).toBeVisible();
     expect(screen.queryByText('# inference account commands')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Review connection change' })).toBeDisabled();
     expect(verify).toHaveBeenCalledWith(config, 'space-one');
@@ -131,5 +133,33 @@ describe('Bedrock IAM wizard', () => {
     await screen.findByRole('status');
     expect(verify).toHaveBeenLastCalledWith(config, 'space-one');
     expect(screen.getByRole('button', { name: 'Review connection change' })).toBeEnabled();
+  });
+
+  it('offers a single reusable setup command when both deployments share the inference account', async () => {
+    const user = userEvent.setup();
+    generate.mockResolvedValue({
+      ...setup,
+      applicationAccountId: setup.inferenceAccountId,
+      brokerRoleArn: 'arn:aws:iam::222222222222:role/review-broker',
+    });
+    render(<BedrockIamWizard initial={config} onSave={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue to connection test' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Continue to connection test' }));
+    await user.click(
+      await screen.findByRole('button', { name: 'Connect this deployment to the role' }),
+    );
+    expect(screen.getByText('# reuse role commands')).toBeVisible();
+    expect(screen.queryByText('# application account commands')).not.toBeInTheDocument();
+    expect(screen.queryByText('# inference account commands')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/includes both the role trust and application access setup/),
+    ).toBeVisible();
+    expect(screen.getByText(/arn:aws:iam::222222222222:role\/review-broker/)).toBeVisible();
+    expect(verify).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Review connection change' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: /Copy Connect this deployment/ }));
+    expect(await navigator.clipboard.readText()).toBe(setup.reuseCommands);
   });
 });

@@ -120,6 +120,28 @@ export const generateBedrockIamSetup = ({ brokerRoleArn, config }) => {
       Resource: '*',
     },
   ]);
+  const applicationSteps = [
+    {
+      label: `Allowing ${sourceRoleName} to assume ${iam.roleArn}`,
+      command: `aws iam put-role-policy --role-name ${shellQuote(sourceRoleName)} --policy-name ${shellQuote(policyName)} --policy-document ${shellQuote(json(assumeRolePolicy))}`,
+    },
+  ];
+  // IAM trust updates replace the whole document. Read it at execution time
+  // and append only this deployment's statement, preserving other principals,
+  // conditions and denies. Repeating the same setup does not duplicate it.
+  const mergeTrust = [
+    'import json, sys',
+    'policy = json.load(sys.stdin)',
+    'addition = json.loads(sys.argv[1])',
+    'statements = policy["Statement"]',
+    'if isinstance(statements, dict):',
+    '    statements = [statements]',
+    'if addition not in statements:',
+    '    statements.append(addition)',
+    'policy["Statement"] = statements',
+    'print(json.dumps(policy))',
+  ].join('\n');
+  const reuseInferencePolicyName = `CollaborativeBedrockInference-${createHash('sha256').update(`${brokerRoleArn}:${iam.region}`).digest('hex').slice(0, 12)}`;
   return {
     config: iam,
     brokerRoleArn,
@@ -128,6 +150,28 @@ export const generateBedrockIamSetup = ({ brokerRoleArn, config }) => {
     trustPolicy,
     assumeRolePolicy,
     inferencePolicy,
+    reuseCommands: cloudShellCommands(
+      'Run in AWS CloudShell in the inference account. Connects this deployment to an EXISTING role.',
+      accountId,
+      [
+        {
+          label: `Reading the existing trust policy for ${roleName}`,
+          command: `current_trust="$(aws iam get-role --role-name ${shellQuote(roleName)} --query Role.AssumeRolePolicyDocument --output json)"`,
+        },
+        {
+          label: 'Adding this deployment to the trust policy while keeping existing statements',
+          command: [
+            `updated_trust="$(printf '%s\\n' "$current_trust" | python3 -c ${shellQuote(mergeTrust)} ${shellQuote(json(trustPolicy.Statement[0]))})"`,
+            `aws iam update-assume-role-policy --role-name ${shellQuote(roleName)} --policy-document "$updated_trust"`,
+          ].join('\n'),
+        },
+        {
+          label: `Adding this deployment's inference permissions for ${iam.region}; other policies are retained`,
+          command: `aws iam put-role-policy --role-name ${shellQuote(roleName)} --policy-name ${shellQuote(reuseInferencePolicyName)} --policy-document ${shellQuote(json(inferencePolicy))}`,
+        },
+        ...(accountId === source[2] ? applicationSteps : []),
+      ],
+    ),
     inferenceCommands: cloudShellCommands(
       'Run in AWS CloudShell in the inference account. Creates a NEW dedicated role.',
       accountId,
@@ -145,12 +189,7 @@ export const generateBedrockIamSetup = ({ brokerRoleArn, config }) => {
     applicationCommands: cloudShellCommands(
       'Run in AWS CloudShell in the application account.',
       source[2],
-      [
-        {
-          label: `Allowing ${sourceRoleName} to assume ${iam.roleArn}`,
-          command: `aws iam put-role-policy --role-name ${shellQuote(sourceRoleName)} --policy-name ${shellQuote(policyName)} --policy-document ${shellQuote(json(assumeRolePolicy))}`,
-        },
-      ],
+      applicationSteps,
     ),
   };
 };

@@ -8,10 +8,15 @@ import {
   PutParameterCommand,
 } from '@aws-sdk/client-ssm';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import { mockClient } from 'aws-sdk-client-mock';
 
 const ssm = mockClient(SSMClient);
 const lambda = mockClient(LambdaClient);
+const agentcore = mockClient(BedrockAgentCoreClient);
 const tables = [];
 const ddb = new DynamoDBClient({
   endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
@@ -68,6 +73,12 @@ beforeEach(async () => {
   vi.stubEnv('V2_PROCESS_TABLE', TableName);
   ssm.reset();
   lambda.reset();
+  agentcore.reset();
+  vi.stubEnv(
+    'AGENTCORE_RUNTIME_ARN',
+    'arn:aws:bedrock-agentcore:us-east-1:111111111111:runtime/test-runtime',
+  );
+  vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'iam-verification-fixture'.repeat(3));
   ssm.on(GetParametersCommand).resolves({ Parameters: [] });
   ssm.on(GetParametersByPathCommand).resolves({ Parameters: [] });
   ssm.on(PutParameterCommand).resolves({});
@@ -218,5 +229,61 @@ describe('IAM settings on the foundation', () => {
       inferenceAccountId: '222222222222',
       config: configuration,
     });
+  });
+
+  const verificationRequest = () => ({
+    ...request({ action: 'verify', config: configuration }),
+    httpMethod: 'POST',
+    path: '/agents/bedrock-iam',
+  });
+
+  it('passes a structured runtime IAM denial to the wizard instead of a connectivity error', async () => {
+    const denial = {
+      verified: false,
+      code: 'BEDROCK_IAM_ACCESS_DENIED',
+      error: 'AWS denied the credential broker access to the inference role.',
+    };
+    agentcore.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify(denial) },
+    });
+    const result = await handler(verificationRequest());
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toEqual(denial);
+    const payload = JSON.parse(
+      agentcore.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input.payload,
+    );
+    expect(payload.command).toBe('verify-bedrock-iam');
+    expect(payload.credentialBindings.bedrock.configuration).toEqual(configuration);
+    expect(payload.agentCredentialGrant).toBeTruthy();
+  });
+
+  it('distinguishes a runtime rejection from an unreachable runtime', async () => {
+    agentcore
+      .on(InvokeAgentRuntimeCommand)
+      .rejects(
+        Object.assign(new Error('private runtime diagnostics'), { name: 'RuntimeClientError' }),
+      );
+    const result = await handler(verificationRequest());
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body).error).toContain('runtime rejected');
+    expect(result.body).not.toContain('private');
+  });
+
+  it('reports authorization failures before invoking the runtime', async () => {
+    vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', '');
+    vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET_PARAM', '');
+    const result = await handler(verificationRequest());
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body).error).toContain('Could not authorize');
+    expect(agentcore.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+  });
+
+  it('reports an unreadable response separately from runtime invocation failure', async () => {
+    agentcore.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => 'not JSON' },
+    });
+    const result = await handler(verificationRequest());
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body).error).toContain('unreadable');
   });
 });

@@ -113,12 +113,22 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-medium">{title}</p>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => copy(filename, content)}>
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={`${copied === filename ? 'Copied' : 'Copy'} ${title}`}
+            onClick={() => copy(filename, content)}
+          >
             <Copy className="mr-1 h-3 w-3" />
             {copied === filename ? 'Copied' : 'Copy'}
             <span className="sr-only"> {title}</span>
           </Button>
-          <Button size="sm" variant="outline" onClick={() => download(filename, content)}>
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={`Download ${title}`}
+            onClick={() => download(filename, content)}
+          >
             <Download className="mr-1 h-3 w-3" />
             Download
             <span className="sr-only"> {title}</span>
@@ -206,7 +216,9 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
             {existingRole && (
               <p className="text-sm text-muted-foreground">
                 Next, test the role&apos;s existing access. If it connects successfully, you can
-                review the connection without running setup commands.
+                review the connection without running setup commands. A role used by another
+                deployment can be shared; the next screen can generate commands to connect this
+                deployment.
               </p>
             )}
             <details className="text-sm">
@@ -269,8 +281,8 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
           <div className="space-y-4">
             {existingRole && (
               <p className="text-sm text-muted-foreground">
-                Test your existing role first. AWS permission changes are only needed if the
-                required access is missing.
+                Test your existing role first. If it is already used by another deployment, you can
+                connect this deployment below while keeping the existing access.
               </p>
             )}
             <div className="rounded-md border p-4 text-sm">
@@ -323,8 +335,8 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
                   onClick={() => setShowPermissionHelp((current) => !current)}
                 >
                   {showPermissionHelp
-                    ? 'Hide AWS permission help'
-                    : 'Show AWS permission help (if needed)'}
+                    ? 'Hide role reuse setup'
+                    : 'Connect this deployment to the role'}
                 </Button>
                 {showPermissionHelp && (
                   <section
@@ -332,40 +344,68 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
                     aria-label="Existing role permission help"
                     className="space-y-3 rounded-md border p-4"
                   >
-                    <p className="text-sm text-muted-foreground">
-                      If access is missing, ask your AWS administrator to compare the policies below
-                      with the existing permissions and add what is needed. Keep any existing trust
-                      relationships and permissions.
-                    </p>
-                    <p className="text-sm">
-                      Inference account {setup.inferenceAccountId}: the role needs to trust this
-                      application&apos;s credential broker and allow Bedrock inference.
-                    </p>
-                    {codePanel(
-                      'Required inference role trust',
-                      'bedrock-trust-policy.json',
-                      JSON.stringify(setup.trustPolicy, null, 2),
+                    {setup.reuseCommands ? (
+                      <>
+                        <p className="text-sm text-muted-foreground">
+                          Run this in AWS CloudShell to add this deployment. It keeps the
+                          role&apos;s existing trust and policies, adds this deployment&apos;s
+                          inference permissions for {setup.config.region}, and can be run again.
+                        </p>
+                        <p className="break-all text-sm">
+                          This deployment&apos;s credential broker: {setup.brokerRoleArn}
+                        </p>
+                        {codePanel(
+                          setup.applicationAccountId === setup.inferenceAccountId
+                            ? `Connect this deployment — AWS account ${setup.inferenceAccountId}`
+                            : `1. Add deployment access — inference account ${setup.inferenceAccountId}`,
+                          'bedrock-reuse-role.sh',
+                          setup.reuseCommands,
+                        )}
+                        {setup.applicationAccountId !== setup.inferenceAccountId &&
+                          codePanel(
+                            `2. Allow role access — application account ${setup.applicationAccountId}`,
+                            'bedrock-application-setup.sh',
+                            setup.applicationCommands,
+                          )}
+                        <p className="text-sm">
+                          {setup.applicationAccountId === setup.inferenceAccountId
+                            ? 'This command includes both the role trust and application access setup.'
+                            : 'Run each command in its indicated AWS account.'}{' '}
+                          Then choose Test connection again.
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        Deploy the backend update to generate role reuse commands. Your AWS
+                        administrator can also use the policies below to add the missing access.
+                      </p>
                     )}
-                    {codePanel(
-                      'Required inference permissions',
-                      'bedrock-inference-policy.json',
-                      JSON.stringify(setup.inferencePolicy, null, 2),
-                    )}
-                    <p className="text-sm">
-                      Application account {setup.applicationAccountId}: the credential broker also
-                      needs permission to assume this role. Run the following command only if that
-                      permission is missing.
-                    </p>
-                    {codePanel(
-                      'Optional application access setup',
-                      'bedrock-application-setup.sh',
-                      setup.applicationCommands,
-                    )}
-                    {codePanel(
-                      'Required credential broker permission',
-                      'bedrock-assume-role-policy.json',
-                      JSON.stringify(setup.assumeRolePolicy, null, 2),
-                    )}
+                    <details>
+                      <summary className="cursor-pointer text-sm font-medium">
+                        Required permissions for this deployment
+                      </summary>
+                      <p className="my-3 text-sm text-muted-foreground">
+                        These describe this deployment&apos;s access. Add them to the role&apos;s
+                        existing permissions, keeping its other trust relationships and policies.
+                      </p>
+                      <div className="space-y-3">
+                        {codePanel(
+                          'Required inference role trust',
+                          'bedrock-trust-policy.json',
+                          JSON.stringify(setup.trustPolicy, null, 2),
+                        )}
+                        {codePanel(
+                          'Required inference permissions',
+                          'bedrock-inference-policy.json',
+                          JSON.stringify(setup.inferencePolicy, null, 2),
+                        )}
+                        {codePanel(
+                          'Required credential broker permission',
+                          'bedrock-assume-role-policy.json',
+                          JSON.stringify(setup.assumeRolePolicy, null, 2),
+                        )}
+                      </div>
+                    </details>
                   </section>
                 )}
               </div>

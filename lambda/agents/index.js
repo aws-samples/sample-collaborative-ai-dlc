@@ -555,6 +555,7 @@ export const handler = async (event, context) => {
           region: process.env.AWS_REGION || 'us-east-1',
         });
       }
+      let verificationStage = 'configuration';
       try {
         if (input.action === 'setup') {
           return response(
@@ -570,6 +571,7 @@ export const handler = async (event, context) => {
         const config = normalizeBedrockIam(input.config);
         if (!runtimeTarget.agentRuntimeArn)
           return response(503, { error: 'Agent runtime is not configured' });
+        verificationStage = 'authorization';
         const binding = connectionBinding(
           normalizeConnection({
             id: `iam-verification-${randomUUID()}`,
@@ -588,6 +590,7 @@ export const handler = async (event, context) => {
           projectId: input.projectId || null,
           bindings: [binding],
         });
+        verificationStage = 'runtime';
         const result = await agentcore.send(
           new InvokeAgentRuntimeCommand({
             ...runtimeTarget,
@@ -604,6 +607,7 @@ export const handler = async (event, context) => {
             ),
           }),
         );
+        verificationStage = 'response';
         const text = result.response ? await result.response.transformToString() : '';
         return response(
           200,
@@ -611,7 +615,22 @@ export const handler = async (event, context) => {
         );
       } catch (error) {
         if (error?.code === 'AGENT_AUTH_INVALID') return response(400, { error: error.message });
-        return response(502, { error: 'Could not reach the runtime to check IAM. Try again.' });
+        const runtimeRejected = error?.name === 'RuntimeClientError';
+        logger.error('IAM verification request failed', {
+          stage: verificationStage,
+          runtimeRejected,
+          requestId: error?.$metadata?.requestId,
+        });
+        const errors = {
+          configuration: 'Could not prepare IAM setup. Check the application configuration.',
+          authorization:
+            'Could not authorize the IAM check. Check the application’s credential grant configuration and retry.',
+          runtime: runtimeRejected
+            ? 'The runtime rejected the IAM check. Check its logs for credential or configuration errors.'
+            : 'Could not invoke the runtime to check IAM. Check the runtime deployment and application invoke permission, then retry.',
+          response: 'The runtime returned an unreadable IAM check result. Check the runtime logs.',
+        };
+        return response(502, { error: errors[verificationStage] });
       }
     }
 

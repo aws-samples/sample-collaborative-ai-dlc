@@ -13,19 +13,51 @@ const setup = generateBedrockIamSetup({
     externalId: 'collaborative-space-one',
   },
 });
+const existingTrust = {
+  Version: '2012-10-17',
+  Statement: [
+    {
+      Effect: 'Allow',
+      Principal: { AWS: ['arn:aws:iam::222222222222:role/dev-broker'] },
+      Action: 'sts:AssumeRole',
+      Condition: { StringEquals: { 'sts:ExternalId': 'existing-deployment' } },
+    },
+    {
+      Effect: 'Deny',
+      Principal: '*',
+      Action: 'sts:AssumeRole',
+      Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+    },
+  ],
+};
 
 // Execute the generated text in real Bash, with a fake AWS CLI recording every
 // call. No AWS credentials or network access are used by these commands.
-const runSetup = ({ commands, account = '222222222222', failure = '', interactive = true }) => {
+const runSetup = ({
+  commands,
+  account = '222222222222',
+  failure = '',
+  interactive = true,
+  trustPolicy = existingTrust,
+}) => {
   const directory = mkdtempSync(join(tmpdir(), 'bedrock-iam-shell-'));
   const callsPath = join(directory, 'calls.jsonl');
+  const statePath = join(directory, 'state.json');
   try {
     writeFileSync(callsPath, '');
     writeFileSync(
+      statePath,
+      JSON.stringify({
+        trustPolicy,
+        policies: { 'BedrockInference/ExistingInferencePolicy': { existing: 'unchanged' } },
+      }),
+    );
+    writeFileSync(
       join(directory, 'aws'),
       `#!/usr/bin/env node
-const { appendFileSync } = require('node:fs');
+const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
 const args = process.argv.slice(2);
+const argument = name => args[args.indexOf(name) + 1];
 appendFileSync(process.env.IAM_TEST_CALLS, JSON.stringify({
   args, pager: process.env.AWS_PAGER, autoPrompt: process.env.AWS_CLI_AUTO_PROMPT
 }) + '\\n');
@@ -37,6 +69,16 @@ if (args[1] === process.env.IAM_TEST_FAILURE) {
 }
 if (args[1] === 'get-caller-identity') console.log(process.env.IAM_TEST_ACCOUNT);
 if (args[1] === 'create-role') console.log('arn:aws:iam::222222222222:role/teams/BedrockInference');
+const state = JSON.parse(readFileSync(process.env.IAM_TEST_STATE, 'utf8'));
+if (args[1] === 'get-role') console.log(JSON.stringify(state.trustPolicy));
+if (args[1] === 'update-assume-role-policy') {
+  state.trustPolicy = JSON.parse(argument('--policy-document'));
+}
+if (args[1] === 'put-role-policy') {
+  state.policies[argument('--role-name') + '/' + argument('--policy-name')] =
+    JSON.parse(argument('--policy-document'));
+}
+writeFileSync(process.env.IAM_TEST_STATE, JSON.stringify(state));
 `,
       { mode: 0o700 },
     );
@@ -62,6 +104,7 @@ printf '\\nPARENT_ALIVE\\nPARENT_FLAGS=%s\\nPARENT_PAGER=%s\\nPARENT_PROMPT=%s\\
           AWS_PAGER: 'parent-pager',
           AWS_CLI_AUTO_PROMPT: 'on',
           IAM_TEST_CALLS: callsPath,
+          IAM_TEST_STATE: statePath,
           IAM_TEST_ACCOUNT: account,
           IAM_TEST_FAILURE: failure,
         },
@@ -73,7 +116,7 @@ printf '\\nPARENT_ALIVE\\nPARENT_FLAGS=%s\\nPARENT_PAGER=%s\\nPARENT_PROMPT=%s\\
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line));
-    return { ...result, calls };
+    return { ...result, calls, state: JSON.parse(readFileSync(statePath, 'utf8')) };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -179,4 +222,85 @@ describe('generated Bedrock IAM CloudShell commands', () => {
     expect(args[args.indexOf('--role-name') + 1]).toBe('collaborative-broker');
     expect(JSON.parse(args[args.indexOf('--policy-document') + 1])).toEqual(setup.assumeRolePolicy);
   });
+
+  it('reuses a role across accounts while preserving existing trust, conditions, denies and policies', () => {
+    const result = runSetup({ commands: setup.reuseCommands });
+    expectInteractiveShellSurvives(result);
+    expect(result.calls.map(({ args }) => args[1])).toEqual([
+      'get-caller-identity',
+      'get-role',
+      'update-assume-role-policy',
+      'put-role-policy',
+    ]);
+    expect(result.state.trustPolicy).toEqual({
+      ...existingTrust,
+      Statement: [...existingTrust.Statement, ...setup.trustPolicy.Statement],
+    });
+    expect(result.state.policies['BedrockInference/ExistingInferencePolicy']).toEqual({
+      existing: 'unchanged',
+    });
+    const newPolicy = Object.entries(result.state.policies).find(([name]) =>
+      name.startsWith('BedrockInference/CollaborativeBedrockInference-'),
+    );
+    expect(newPolicy?.[1]).toEqual(setup.inferencePolicy);
+  });
+
+  it('combines trust and broker access for one account, without duplicating trust on a rerun', () => {
+    const sameAccountSetup = generateBedrockIamSetup({
+      brokerRoleArn: 'arn:aws:iam::222222222222:role/review-broker',
+      config: setup.config,
+    });
+    const result = runSetup({
+      commands: [sameAccountSetup.reuseCommands, sameAccountSetup.reuseCommands].join('\n'),
+    });
+    expectInteractiveShellSurvives(result);
+    expect(result.state.trustPolicy.Statement).toEqual([
+      ...existingTrust.Statement,
+      ...sameAccountSetup.trustPolicy.Statement,
+    ]);
+    expect(Object.keys(result.state.policies)).toHaveLength(3);
+    const brokerPolicy = Object.entries(result.state.policies).find(([name]) =>
+      name.startsWith('review-broker/CollaborativeBedrock-'),
+    );
+    expect(brokerPolicy?.[1]).toEqual(sameAccountSetup.assumeRolePolicy);
+    expect(result.calls.some(({ args }) => args[1] === 'create-role')).toBe(false);
+  });
+
+  it('retains a single-statement trust document when adding another deployment', () => {
+    const result = runSetup({
+      commands: setup.reuseCommands,
+      trustPolicy: { ...existingTrust, Statement: existingTrust.Statement[0] },
+    });
+    expectInteractiveShellSurvives(result);
+    expect(result.state.trustPolicy.Statement).toEqual([
+      existingTrust.Statement[0],
+      ...setup.trustPolicy.Statement,
+    ]);
+  });
+
+  it('retains inference permissions when the same deployment also uses the role in another region', () => {
+    const secondRegion = generateBedrockIamSetup({
+      brokerRoleArn: setup.brokerRoleArn,
+      config: { ...setup.config, region: 'us-west-2' },
+    });
+    const result = runSetup({
+      commands: [setup.reuseCommands, secondRegion.reuseCommands].join('\n'),
+    });
+    expectInteractiveShellSurvives(result);
+    expect(result.state.trustPolicy.Statement).toHaveLength(existingTrust.Statement.length + 1);
+    expect(Object.values(result.state.policies)).toEqual(
+      expect.arrayContaining([setup.inferencePolicy, secondRegion.inferencePolicy]),
+    );
+  });
+
+  it.each(['get-role', 'update-assume-role-policy'])(
+    'does not write permissions after %s fails in the reuse flow',
+    (failure) => {
+      const result = runSetup({ commands: setup.reuseCommands, failure });
+      expectInteractiveShellSurvives(result);
+      expect(result.stderr).toContain(`denied ${failure}`);
+      expect(result.calls.some(({ args }) => args[1] === 'put-role-policy')).toBe(false);
+      expect(result.state.trustPolicy).toEqual(existingTrust);
+    },
+  );
 });
