@@ -126,7 +126,7 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
     'kms:GenerateDataKey*',
     'kms:CreateGrant',
   ]) {
-    assert.match(runtimePolicy, new RegExp(`"${action.replace('*', '\\*')}"`));
+    assert.ok(runtimePolicy.includes(`"${action}"`), `missing KMS action ${action}`);
   }
   assert.match(runtimePolicy, /Resource\s+= var\.kms_key_arn/);
   assert.match(runtimePolicy, /"kms:ViaService"\s+= "dynamodb\.\*\.\$\{var\.dns_suffix\}"/);
