@@ -95,6 +95,12 @@ export const credentialEnvName = (provider) => KEY_PROVIDERS[assertProvider(prov
 export const isConfiguredCredentialValue = (value) =>
   typeof value === 'string' && value.trim() !== '' && value.trim() !== 'placeholder';
 
+export const withoutTrailingSlashes = (value) => {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+};
+
 export const normalizeEndpoint = (value, label = 'endpoint') => {
   let url;
   try {
@@ -108,7 +114,7 @@ export const normalizeEndpoint = (value, label = 'endpoint') => {
       `${label} must be an HTTPS URL without credentials, query or fragment`,
     );
   }
-  return url.href.replace(/\/+$/, '');
+  return withoutTrailingSlashes(url.href);
 };
 export const normalizeConnectionConfiguration = (backend, mechanism, configuration = {}) => {
   const out = {};
