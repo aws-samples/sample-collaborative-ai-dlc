@@ -15,9 +15,10 @@ import {
   assertSource,
   normalizeCredentialBinding,
   isConfiguredCredentialValue,
+  withoutTrailingSlashes,
 } from './agent-auth-catalog.js';
 
-const normalizeBase = (base) => String(base || '').replace(/\/+$/, '');
+const normalizeBase = (base) => withoutTrailingSlashes(String(base || ''));
 
 export const listCredentialScopes = async (ssm, { base }) => {
   const prefix = `${normalizeBase(base)}/`;

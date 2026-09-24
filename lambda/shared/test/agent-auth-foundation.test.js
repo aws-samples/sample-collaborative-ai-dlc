@@ -6,6 +6,7 @@ import {
   assertMatchingConnection,
   assertRuntimeSupportsBinding,
   AGENT_AUTH_MODES_CATALOG,
+  withoutTrailingSlashes,
 } from '../agent-auth-catalog.js';
 import {
   selectConnection,
@@ -48,6 +49,12 @@ const oauth = (mechanism = 'oauth-user') =>
   });
 
 describe('authentication contracts and scope selection', () => {
+  it('normalizes trailing path separators without backtracking over internal separators', () => {
+    const path = `/base/${'/'.repeat(100_000)}suffix///`;
+    expect(withoutTrailingSlashes(path)).toBe(path.slice(0, -3));
+    expect(withoutTrailingSlashes('/'.repeat(100_000))).toBe('');
+    expect(withoutTrailingSlashes('')).toBe('');
+  });
   it('keeps future modes unavailable and interprets every legacy Bedrock binding as a key', () => {
     expect(
       AGENT_AUTH_MODES_CATALOG.filter((mode) => mode.available).map((mode) => mode.id),
