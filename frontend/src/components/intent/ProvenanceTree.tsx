@@ -60,6 +60,17 @@ interface StageNode {
 
 const HIDDEN_ITEM_TYPES = new Set(['StoryMapEntry']);
 
+function stageBranchKey(
+  phasePath: string,
+  stageId: string | null | undefined,
+  unitSlug: string | null | undefined,
+  sectionIndex: number | null | undefined,
+): string {
+  const laneKey =
+    unitSlug && sectionIndex != null ? `s${sectionIndex}:${unitSlug}` : (unitSlug ?? '__common__');
+  return `${phasePath || '__other__'}/${stageId ?? '__none__'}/${laneKey}`;
+}
+
 export function ProvenanceTree({
   detail,
   stageRows,
@@ -157,7 +168,7 @@ export function ProvenanceTree({
         next.delete(phasePath);
         return next;
       });
-      const stageKey = `${prov.phasePath}/${prov.stageId ?? '__none__'}/${prov.unitSlug ?? '__common__'}`;
+      const stageKey = stageBranchKey(phasePath, prov.stageId, prov.unitSlug, prov.sectionIndex);
       setCollapsedStages((p) => {
         if (!p.has(stageKey)) return p;
         const next = new Set(p);
@@ -247,11 +258,12 @@ export function ProvenanceTree({
         >
           <div className="space-y-0.5 pl-5">
             {phase.stages.map((stage) => {
-              const laneKey =
-                stage.unitSlug && stage.sectionIndex != null
-                  ? `s${stage.sectionIndex}:${stage.unitSlug}`
-                  : (stage.unitSlug ?? '__common__');
-              const stageKey = `${phase.phasePath}/${stage.stageId}/${laneKey}`;
+              const stageKey = stageBranchKey(
+                phase.phasePath,
+                stage.stageId,
+                stage.unitSlug,
+                stage.sectionIndex,
+              );
               const unitBranchItem = stage.unitSlug
                 ? unitBranchItems.find(
                     (item) =>
@@ -583,11 +595,7 @@ function buildPhaseTree(
       phases.set(phasePath, { phasePath, phaseLabel, stages: [] });
     }
 
-    const laneKey =
-      prov.unitSlug && prov.sectionIndex != null
-        ? `s${prov.sectionIndex}:${prov.unitSlug}`
-        : (prov.unitSlug ?? '__common__');
-    const stageKey = `${phasePath}/${prov.stageId ?? '__none__'}/${laneKey}`;
+    const stageKey = stageBranchKey(phasePath, prov.stageId, prov.unitSlug, prov.sectionIndex);
     let stageNode = stageNodeMap.get(stageKey);
     if (!stageNode) {
       stageNode = {

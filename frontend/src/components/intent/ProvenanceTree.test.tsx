@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { ProvenanceTree } from './ProvenanceTree';
+import { focusWorkProduct } from './workProductsFocus';
 import type { IntentArtifact, IntentDetail, IntentGraphNode } from '@/services/intents';
 import type { IntentStageRow } from '@/contexts/IntentContext';
 
@@ -289,6 +290,63 @@ describe('ProvenanceTree — item type legend', () => {
       derivedItems: items(['Requirement']),
     });
     expect(screen.queryByText('Requirement')).not.toBeInTheDocument();
+  });
+});
+
+describe('ProvenanceTree — focus navigation', () => {
+  const artifactId = 'sectioned-artifact';
+  const item: IntentGraphNode = {
+    id: 'sectioned-item',
+    type: 'Requirement',
+    label: 'Sectioned requirement',
+    graphLayer: 'derived',
+    artifactId,
+  };
+
+  const renderSectionedTree = () => {
+    renderTree({
+      detail: {
+        artifacts: [
+          doc({
+            id: artifactId,
+            title: 'Sectioned design',
+            createdByStageInstanceId: 'si-sectioned',
+          }),
+        ],
+      } as IntentDetail,
+      stageRows: [
+        row({
+          stageInstanceId: 'si-sectioned',
+          unitSlug: 'auth',
+          sectionIndex: 1,
+        }),
+      ],
+      itemsByArtifact: new Map([[artifactId, [item]]]),
+      derivedItems: [item],
+    });
+
+    const stage = document.getElementById('provenance-stage-01/design/s1:auth')!;
+    fireEvent.click(stage.querySelector('button')!);
+    expect(stage).toHaveAttribute('aria-expanded', 'false');
+    return stage;
+  };
+
+  it('re-expands a collapsed sectioned unit stage when focusing its artifact', () => {
+    const stage = renderSectionedTree();
+
+    act(() => focusWorkProduct({ kind: 'artifact', id: artifactId }));
+
+    expect(stage).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Sectioned design')).toBeInTheDocument();
+  });
+
+  it('re-expands a collapsed sectioned unit stage when focusing its derived item', () => {
+    const stage = renderSectionedTree();
+
+    act(() => focusWorkProduct({ kind: 'item', id: item.id }));
+
+    expect(stage).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(item.label)).toBeInTheDocument();
   });
 });
 
