@@ -21,6 +21,32 @@ it('probes the actual default target without credentials before qualifying IAM',
   expect(input).toMatchObject({ agentRuntimeArn: 'runtime', qualifier: 'published' });
   expect(JSON.parse(input.payload.toString())).toEqual({ command: 'capabilities' });
 });
+it('qualifies the deployed image after older qualification sessions have been pinned', async () => {
+  let deployedModes = ['keys'];
+  const sessions = new Map();
+  const runtime = {
+    send: vi.fn(async ({ input }) => {
+      if (!sessions.has(input.runtimeSessionId))
+        sessions.set(input.runtimeSessionId, deployedModes);
+      return {
+        response: {
+          transformToString: async () =>
+            JSON.stringify({
+              ok: true,
+              agentAuthProtocol: 2,
+              agentAuthModes: sessions.get(input.runtimeSessionId),
+            }),
+        },
+      };
+    }),
+  };
+  const snapshot = { runtimeArn: 'runtime', runtimeEndpoint: 'published' };
+  expect((await qualifyAgentAuthRuntime(snapshot, { runtime })).agentAuthModes).toEqual(['keys']);
+  deployedModes = ['keys', 'iam'];
+  expect(
+    (await qualifyAgentAuthRuntime(snapshot, { runtime, requiredModes: ['iam'] })).agentAuthModes,
+  ).toEqual(['keys', 'iam']);
+});
 describe('qualification before IAM grants', () => {
   const binding = connectionBinding(
     normalizeConnection({

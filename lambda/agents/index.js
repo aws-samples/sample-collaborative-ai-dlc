@@ -95,9 +95,6 @@ const RUNTIME_MODEL_OVERRIDE = {
 // The protected core runtime remains the target for global Admin discovery.
 // Project-scoped probes resolve the project's published environment below.
 const coreRuntimeTarget = () => runtimeTargetInput(null, process.env.AGENTCORE_RUNTIME_ARN || '');
-// A session id >= 33 chars is required by InvokeAgentRuntime; the capabilities
-// command is stateless so any stable id works.
-const CAPABILITIES_SESSION_ID = 'aidlc-capabilities-probe-00000001';
 const PLATFORM_CREDENTIAL_BINDINGS = Object.fromEntries(
   AGENT_CREDENTIAL_PROVIDERS.map((provider) => [provider, { provider, source: 'platform' }]),
 );
@@ -113,12 +110,15 @@ export const fetchRuntimeCapabilities = async (
 ) => {
   if (!runtimeTarget.agentRuntimeArn) return null;
   try {
+    // Existing AgentCore sessions keep their original runtime version after a
+    // deployment. Start a fresh probe, then redeem its grant in that same session.
+    const runtimeSessionId = randomUUID();
     let runtimeCapabilities;
     if (Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)) {
       const probe = await agentcore.send(
         new InvokeAgentRuntimeCommand({
           ...runtimeTarget,
-          runtimeSessionId: CAPABILITIES_SESSION_ID,
+          runtimeSessionId,
           contentType: 'application/json',
           accept: 'application/json',
           payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
@@ -138,7 +138,7 @@ export const fetchRuntimeCapabilities = async (
     const res = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         ...runtimeTarget,
-        runtimeSessionId: CAPABILITIES_SESSION_ID,
+        runtimeSessionId,
         contentType: 'application/json',
         accept: 'application/json',
         payload: Buffer.from(

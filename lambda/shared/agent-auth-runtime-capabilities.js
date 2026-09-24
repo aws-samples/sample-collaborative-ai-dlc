@@ -2,6 +2,7 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import { randomUUID } from 'node:crypto';
 import { runtimeTargetInput } from './runtime-target.js';
 import { authError } from './agent-auth-catalog.js';
 
@@ -23,7 +24,8 @@ export const qualifyAgentAuthRuntime = async (
     const result = await runtime.send(
       new InvokeAgentRuntimeCommand({
         ...target,
-        runtimeSessionId: 'aidlc-auth-qualification-0000000001',
+        // Reusing a session would qualify its old image after a deployment.
+        runtimeSessionId: randomUUID(),
         contentType: 'application/json',
         accept: 'application/json',
         payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),

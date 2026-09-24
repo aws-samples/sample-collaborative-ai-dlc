@@ -186,4 +186,58 @@ describe('AgentCredentialScopeCard', () => {
     expect(await screen.findByText('1 provider configured')).toBeInTheDocument();
     expect(getPersonalCredentials).toHaveBeenCalledTimes(2);
   });
+
+  it('shows inherited IAM as configured without requiring a space or platform key', async () => {
+    getProjectCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      authentication: {
+        policy: { mode: 'iam', revision: 1 },
+        modes: [{ id: 'iam', label: 'IAM', available: true }],
+        canManageIam: false,
+        hasOverride: false,
+        connection: {
+          id: 'platform-role',
+          mode: 'iam',
+          mechanism: 'assume-role',
+          state: 'ready',
+          configuration: {
+            roleArn: 'arn:aws:iam::111111111111:role/Inference',
+            region: 'eu-west-1',
+          },
+        },
+      },
+    });
+    render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+    expect(await screen.findByText('Using platform IAM')).toBeInTheDocument();
+    expect(screen.queryByText('No credentials')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Bedrock Bearer Token/)).toBeDisabled();
+    expect(screen.getByText(/Saved Bedrock keys are not used/)).toBeInTheDocument();
+  });
+
+  it('does not let a saved key hide an unavailable IAM connection', async () => {
+    getProjectCredentials.mockResolvedValue({
+      ...SPACE_A_STATUS,
+      authentication: {
+        policy: { mode: 'iam', revision: 2 },
+        modes: [{ id: 'iam', label: 'IAM', available: true }],
+        canManageIam: false,
+        hasOverride: true,
+        connection: {
+          id: 'space-role',
+          mode: 'iam',
+          mechanism: 'assume-role',
+          state: 'revoked',
+          configuration: {
+            roleArn: 'arn:aws:iam::111111111111:role/Inference',
+            region: 'eu-west-1',
+          },
+        },
+      },
+    });
+    render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+    expect(await screen.findByText('IAM needs attention')).toBeInTheDocument();
+    expect(screen.queryByText('1 provider configured')).not.toBeInTheDocument();
+  });
 });
