@@ -141,7 +141,7 @@ describe('reviewed credential settings API', () => {
       await invoke({
         authenticationChange: {
           action: 'preview',
-          candidate: { mode: 'iam', defaultConnectionId: 'future' },
+          candidate: { mode: 'litellm', defaultConnectionId: 'future' },
         },
       }),
     ).toMatchObject({
@@ -154,6 +154,69 @@ describe('reviewed credential settings API', () => {
       policy: { mode: 'keys', revision: 0 },
       reviewRequired: true,
       connection: { id: 'legacy-platform-bedrock', state: 'missing' },
+    });
+  });
+});
+
+describe('IAM settings on the foundation', () => {
+  const configuration = {
+    roleArn: 'arn:aws:iam::222222222222:role/Inference',
+    region: 'eu-west-1',
+    externalId: 'external-fixture',
+  };
+  it('requires platform admin for IAM activation and refuses personal role inputs', async () => {
+    const input = {
+      authenticationChange: {
+        action: 'preview',
+        candidate: { kind: 'iam-connection', configuration },
+      },
+    };
+    expect((await invoke(input, { admin: false })).status).toBe(403);
+    expect(
+      (await invoke({ bedrockIam: configuration }, { admin: false, personal: true })).status,
+    ).toBe(400);
+  });
+  it('previews without activation, applies the same role, disables Bedrock keys and keeps Kiro independent', async () => {
+    const preview = await invoke({
+      authenticationChange: {
+        action: 'preview',
+        candidate: { kind: 'iam-connection', configuration },
+      },
+    });
+    expect(preview.status).toBe(200);
+    expect(preview.data.candidate.connection.configuration).toEqual(configuration);
+    const settings = async () =>
+      JSON.parse((await handler({ ...request({}), httpMethod: 'GET' })).body);
+    expect((await settings()).authentication.policy.mode).toBe('keys');
+    expect(
+      (await invoke({ authenticationChange: { action: 'apply', reviewId: preview.data.id } }))
+        .status,
+    ).toBe(200);
+    expect((await settings()).authentication).toMatchObject({
+      policy: { mode: 'iam' },
+      canManageIam: true,
+      connection: { configuration, mechanism: 'assume-role' },
+    });
+    expect((await invoke({ bedrockBearerToken: 'disabled', reviewAction: 'preview' })).status).toBe(
+      409,
+    );
+    expect((await invoke({ kiroApiKey: 'independent', reviewAction: 'preview' })).status).toBe(200);
+    expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+  it('authorizes setup documents for platform admins only and returns both account policies', async () => {
+    vi.stubEnv('CREDENTIAL_BROKER_ROLE_ARN', 'arn:aws:iam::111111111111:role/Broker');
+    const post = (admin) => ({
+      ...request({ action: 'setup', config: configuration }, { admin }),
+      httpMethod: 'POST',
+      path: '/agents/bedrock-iam',
+    });
+    expect((await handler(post(false))).statusCode).toBe(403);
+    const result = await handler(post(true));
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({
+      applicationAccountId: '111111111111',
+      inferenceAccountId: '222222222222',
+      config: configuration,
     });
   });
 });

@@ -27,6 +27,20 @@ export function AuthenticationImpactReview({
         Prepared {new Date(review.createdAt).toLocaleString()} · Configuration revision{' '}
         {review.policyRevision}
       </p>
+      {review.candidate?.connection && (
+        <p className="break-all text-xs">
+          Proposed {review.candidate.connection.source === 'space' ? 'space' : 'platform'} IAM role:{' '}
+          {review.candidate.connection.configuration.roleArn}
+          <br />
+          Region: {review.candidate.connection.configuration.region}
+        </p>
+      )}
+      {review.candidate?.kind === 'space-inherit' && (
+        <p className="text-xs">Use the platform IAM role for new work in this space.</p>
+      )}
+      {review.candidate?.kind === 'policy' && (
+        <p className="text-xs">Proposed mode: {review.candidate.mode}</p>
+      )}
       {review.limitations.map((limitation) => (
         <p key={limitation} className="text-xs text-muted-foreground">
           {limitation}

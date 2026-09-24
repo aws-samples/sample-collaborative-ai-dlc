@@ -53,6 +53,9 @@ import {
   invokeMetadataBroker,
   resolveEffectiveCredentialBindingsViaBroker,
 } from '../shared/agent-credential-metadata.js';
+import { generateBedrockIamSetup, normalizeBedrockIam } from '../shared/bedrock-iam.js';
+import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { connectionBinding } from '../shared/agent-binding-selection.js';
 import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
 import { AGENT_AUTH_MODES_CATALOG, normalizeConnection } from '../shared/agent-auth-catalog.js';
 import {
@@ -423,18 +426,28 @@ const authenticationChanges = () =>
     repository: authRepository(),
     loadInventory: loadAuthenticationInventory,
   });
-const authenticationView = async ({ source = 'platform', projectId, userId, scopeStatus } = {}) => {
+const authenticationView = async ({
+  source = 'platform',
+  projectId,
+  userId,
+  scopeStatus,
+  canManageIam = false,
+} = {}) => {
   const repository = authRepository();
   const policy = await repository.getPolicy();
   const platformStatus =
     source === 'platform' && scopeStatus
       ? scopeStatus
       : await readCredentialScopeStatusViaBroker({ source: 'platform' });
-  const hasOverride = source !== 'platform' && scopeStatus?.bedrockBearerTokenSet;
+  const space = source === 'space' ? await repository.getSpaceSelection(projectId) : null;
+  const iamOverride = policy.mode === 'iam' && space?.mode === 'iam' ? space.connectionId : null;
+  const hasOverride =
+    policy.mode === 'keys' && source !== 'platform' && scopeStatus?.bedrockBearerTokenSet;
   const connection = await repository.getConnection(
-    hasOverride
-      ? legacyConnectionId({ provider: 'bedrock', source, projectId, userId })
-      : policy.defaultConnectionId,
+    iamOverride ??
+      (hasOverride
+        ? legacyConnectionId({ provider: 'bedrock', source, projectId, userId })
+        : policy.defaultConnectionId),
   );
   const ready = hasOverride
     ? scopeStatus.bedrockBearerTokenSet
@@ -449,10 +462,23 @@ const authenticationView = async ({ source = 'platform', projectId, userId, scop
           ...(connection.id.startsWith('legacy-') && !ready ? { state: 'missing' } : {}),
         }
       : null,
-    personalMechanisms: ['api-key'],
+    canManageIam,
+    personalMechanisms: policy.mode === 'iam' ? [] : ['api-key'],
+    hasOverride: Boolean(iamOverride || hasOverride),
   };
 };
 const reviewedCredentialUpdate = async ({ input, source, projectId, userId, actorId }) => {
+  if (
+    input.bedrockIam !== undefined ||
+    input.bedrockAuth !== undefined ||
+    input.authenticationChange !== undefined
+  )
+    throw Object.assign(
+      new Error(
+        'IAM connections require a platform administrator and a reviewed authentication change',
+      ),
+      { code: 'AGENT_AUTH_INVALID' },
+    );
   const update = () =>
     writeCredentialScope(ssm, {
       base: process.env.AGENT_SETTINGS_SSM_PREFIX || '',
@@ -507,6 +533,88 @@ export const handler = async (event, context) => {
   });
 
   try {
+    if (httpMethod === 'POST' && path.endsWith('/bedrock-iam')) {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      if (!input || typeof input !== 'object' || Array.isArray(input))
+        return response(400, { error: 'Invalid IAM setup request' });
+      let runtimeTarget = coreRuntimeTarget();
+      if (input.projectId) {
+        runtimeTarget = await withNeptune((g) => resolveProjectRuntimeTarget(g, input.projectId));
+        if (!runtimeTarget) return response(404, { error: 'Space not found' });
+      }
+      if (input.action === 'defaults') {
+        return response(200, {
+          brokerRoleArn: process.env.CREDENTIAL_BROKER_ROLE_ARN || '',
+          region: process.env.AWS_REGION || 'us-east-1',
+        });
+      }
+      try {
+        if (input.action === 'setup') {
+          return response(
+            200,
+            generateBedrockIamSetup({
+              brokerRoleArn: process.env.CREDENTIAL_BROKER_ROLE_ARN,
+              config: input.config,
+            }),
+          );
+        }
+        if (input.action !== 'verify')
+          return response(400, { error: 'Unsupported IAM setup action' });
+        const config = normalizeBedrockIam(input.config);
+        if (!runtimeTarget.agentRuntimeArn)
+          return response(503, { error: 'Agent runtime is not configured' });
+        const binding = connectionBinding(
+          normalizeConnection({
+            id: `iam-verification-${randomUUID()}`,
+            revision: 1,
+            mode: 'iam',
+            backend: 'bedrock',
+            mechanism: 'assume-role',
+            source: input.projectId ? 'space' : 'platform',
+            projectId: input.projectId,
+            configuration: config,
+          }),
+          (await authRepository().getPolicy()).revision,
+        );
+        const agentCredentialGrant = await issueAgentCredentialGrant(ssm, {
+          purpose: 'verify-bedrock-iam',
+          projectId: input.projectId || null,
+          bindings: [binding],
+        });
+        const result = await agentcore.send(
+          new InvokeAgentRuntimeCommand({
+            ...runtimeTarget,
+            runtimeSessionId: randomUUID(),
+            contentType: 'application/json',
+            accept: 'application/json',
+            payload: Buffer.from(
+              JSON.stringify({
+                command: 'verify-bedrock-iam',
+                projectId: input.projectId || null,
+                credentialBindings: { bedrock: binding },
+                agentCredentialGrant,
+              }),
+            ),
+          }),
+        );
+        const text = result.response ? await result.response.transformToString() : '';
+        return response(
+          200,
+          text ? JSON.parse(text) : { verified: false, error: 'Empty response from runtime' },
+        );
+      } catch (error) {
+        if (error?.code === 'AGENT_AUTH_INVALID') return response(400, { error: error.message });
+        return response(502, { error: 'Could not reach the runtime to check IAM. Try again.' });
+      }
+    }
+
     // ===== HIERARCHICAL AGENT CREDENTIALS =====
 
     // GET/PUT /users/me/agent-credentials — the authenticated user's personal
@@ -527,6 +635,7 @@ export const handler = async (event, context) => {
                     source: 'user',
                     userId: credentialUserId,
                     scopeStatus: status,
+                    canManageIam: isPlatformAdmin(event),
                   }),
                 }
               : {}),
@@ -593,6 +702,7 @@ export const handler = async (event, context) => {
                     source: 'space',
                     projectId,
                     scopeStatus: space,
+                    canManageIam: isPlatformAdmin(event),
                   }),
                 }
               : {}),
@@ -646,8 +756,8 @@ export const handler = async (event, context) => {
       }
       const withModels = event.queryStringParameters?.models === '1';
       if (withModels) refreshModelPricing().catch(() => {});
-      const [claudeModels, runtimeCaps] = await Promise.all([
-        withModels
+      const [keyClaudeModels, runtimeCaps] = await Promise.all([
+        withModels && credentialBindings.bedrock?.mechanism !== 'assume-role'
           ? listClaudeModels({
               listInferenceProfiles: async () => {
                 const out = await bedrock.send(
@@ -659,6 +769,10 @@ export const handler = async (event, context) => {
           : [],
         fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
       ]);
+      const claudeModels =
+        credentialBindings.bedrock?.mechanism === 'assume-role'
+          ? (runtimeCaps?.bedrockModels ?? [])
+          : keyClaudeModels;
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
       const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
         ...cli,
@@ -791,7 +905,10 @@ export const handler = async (event, context) => {
           ...platformCredentialStatus,
           ...(process.env.V2_PROCESS_TABLE
             ? {
-                authentication: await authenticationView({ scopeStatus: platformCredentialStatus }),
+                authentication: await authenticationView({
+                  scopeStatus: platformCredentialStatus,
+                  canManageIam: isPlatformAdmin(event),
+                }),
               }
             : {}),
           cliModels,
@@ -823,11 +940,44 @@ export const handler = async (event, context) => {
         const service = authenticationChanges();
         try {
           const request = input.authenticationChange;
-          if (request.action === 'preview')
-            return response(
-              200,
-              await service.preview({ ...request.candidate, kind: 'policy' }, credentialUserId),
-            );
+          if (request.action === 'preview') {
+            const inputCandidate = request.candidate ?? {};
+            let candidate;
+            if (
+              inputCandidate.kind === 'iam-connection' ||
+              inputCandidate.kind === 'space-inherit'
+            ) {
+              if (inputCandidate.projectId) {
+                const target = await withNeptune((g) =>
+                  resolveProjectRuntimeTarget(g, inputCandidate.projectId),
+                );
+                if (!target) return response(404, { error: 'Space not found' });
+              }
+              candidate =
+                inputCandidate.kind === 'space-inherit'
+                  ? { kind: 'space-inherit', projectId: inputCandidate.projectId }
+                  : {
+                      kind: 'iam-connection',
+                      connection: normalizeConnection({
+                        id: `iam-${randomUUID()}`,
+                        revision: 1,
+                        mode: 'iam',
+                        backend: 'bedrock',
+                        mechanism: 'assume-role',
+                        source: inputCandidate.projectId ? 'space' : 'platform',
+                        projectId: inputCandidate.projectId,
+                        configuration: inputCandidate.configuration,
+                      }),
+                    };
+            } else if (!inputCandidate.kind || inputCandidate.kind === 'policy') {
+              candidate = {
+                kind: 'policy',
+                mode: inputCandidate.mode,
+                defaultConnectionId: inputCandidate.defaultConnectionId,
+              };
+            } else return response(400, { error: 'Unsupported authentication change' });
+            return response(200, await service.preview(candidate, credentialUserId));
+          }
           if (request.action === 'apply')
             return response(200, await service.apply(request.reviewId, credentialUserId));
           return response(400, { error: 'Unsupported authentication change action' });
@@ -1139,6 +1289,8 @@ export const handler = async (event, context) => {
       const capabilitiesProjectId = event.queryStringParameters?.projectId;
       let runtimeTarget = coreRuntimeTarget();
       let credentialBindings = PLATFORM_CREDENTIAL_BINDINGS;
+      if (!capabilitiesProjectId && process.env.V2_PROCESS_TABLE)
+        credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({});
       if (capabilitiesProjectId) {
         const access = await projectRuntimeAccess(event, capabilitiesProjectId);
         if (access.denied) return response(access.statusCode, { error: access.error });
@@ -1174,15 +1326,23 @@ export const handler = async (event, context) => {
 
       // Bedrock (claude/opencode) + runtime (kiro + auth state) discovery, in
       // parallel. Both are best-effort — a failure yields empty models, never a 500.
-      const [claudeModels, runtimeCaps] = await Promise.all([
-        listClaudeModels({
-          listInferenceProfiles: async () => {
-            const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
-            return out.inferenceProfileSummaries ?? [];
-          },
-        }),
+      const [keyClaudeModels, runtimeCaps] = await Promise.all([
+        credentialBindings.bedrock?.mechanism === 'assume-role'
+          ? []
+          : listClaudeModels({
+              listInferenceProfiles: async () => {
+                const out = await bedrock.send(
+                  new ListInferenceProfilesCommand({ maxResults: 100 }),
+                );
+                return out.inferenceProfileSummaries ?? [];
+              },
+            }),
         fetchRuntimeCapabilities(runtimeTarget, credentialBindings, capabilitiesProjectId || null),
       ]);
+      const claudeModels =
+        credentialBindings.bedrock?.mechanism === 'assume-role'
+          ? (runtimeCaps?.bedrockModels ?? [])
+          : keyClaudeModels;
       const kiroModels = runtimeCaps?.kiroModels?.models ?? [];
       // OpenCode drives the SAME Bedrock profiles as claude but requires the
       // `amazon-bedrock/` provider prefix (see cli-models validation).

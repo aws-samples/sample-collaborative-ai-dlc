@@ -26,6 +26,7 @@ export const redeemAgentBinding = async ({
   ssm,
   base,
   adapters = KEY_REDEMPTION_ADAPTERS,
+  context = {},
 }) => {
   if (binding.version !== 2)
     return {
@@ -47,6 +48,7 @@ export const redeemAgentBinding = async ({
     throw authError('AGENT_CREDENTIAL_GRANT_INVALID', 'Pinned connection belongs to another space');
   const current = await repository.getConnection(binding.connectionId);
   if (
+    !current ||
     ['revoked', 'reconnect-required'].includes(connection.state) ||
     ['revoked', 'reconnect-required'].includes(current?.state)
   )
@@ -58,5 +60,5 @@ export const redeemAgentBinding = async ({
       'Credential mechanism is not supported by this broker',
     );
   // Retired definitions remain redeemable by pinned work.
-  return { binding, ...(await adapter({ ssm, connection })) };
+  return { binding, ...(await adapter({ ...context, ssm, connection })) };
 };

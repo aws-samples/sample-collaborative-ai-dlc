@@ -58,7 +58,7 @@ describe('authentication contracts and scope selection', () => {
   it('keeps future modes unavailable and interprets every legacy Bedrock binding as a key', () => {
     expect(
       AGENT_AUTH_MODES_CATALOG.filter((mode) => mode.available).map((mode) => mode.id),
-    ).toEqual(['keys']);
+    ).toEqual(['keys', 'iam']);
     expect(normalizeCredentialBinding({ provider: 'bedrock', source: 'space' })).toEqual({
       provider: 'bedrock',
       source: 'space',

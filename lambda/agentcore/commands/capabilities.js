@@ -16,6 +16,7 @@
 import { SUPPORTED_CLIS, buildKiroListModels, parseKiroModels } from '../cli/drivers.js';
 import { discoverInstalledClis as defaultDiscover } from '../cli/discover.js';
 import { captureChild as defaultCapture } from '../cli/spawn.js';
+import { listIamBedrockModels } from '../bedrock-iam.js';
 import { AGENT_AUTH_PROTOCOL_VERSION } from '../../shared/agent-auth-catalog.js';
 
 // The env var that proves each CLI is authed (mirrors auth-resolver's targets).
@@ -31,6 +32,7 @@ export const capabilities = async (_payload, deps = {}) => {
     discoverInstalledClis = defaultDiscover,
     captureChild = defaultCapture,
     env = process.env,
+    listBedrockModels = listIamBedrockModels,
   } = deps;
 
   let installed = [];
@@ -46,7 +48,9 @@ export const capabilities = async (_payload, deps = {}) => {
   const clis = SUPPORTED_CLIS.map((cli) => {
     const isInstalled = installed.includes(cli);
     const authEnv = AUTH_ENV[cli];
-    const isAuthed = authEnv ? Boolean(env[authEnv]) : true;
+    const isAuthed = authEnv
+      ? Boolean(env[authEnv] || (cli !== 'kiro' && env.BEDROCK_AUTH_MODE === 'iam'))
+      : true;
     return { cli, installed: isInstalled, authed: isAuthed, available: isInstalled && isAuthed };
   });
 
@@ -66,12 +70,21 @@ export const capabilities = async (_payload, deps = {}) => {
     }
   }
 
+  let bedrockModels = [];
+  if (env.BEDROCK_AUTH_MODE === 'iam') {
+    try {
+      bedrockModels = await listBedrockModels(env);
+    } catch {
+      /* Kiro remains independent */
+    }
+  }
   return {
     ok: true,
+    ...(env.BEDROCK_AUTH_MODE === 'iam' ? { bedrockModels } : {}),
     clis,
     kiroModels,
     agentAuthProtocol: AGENT_AUTH_PROTOCOL_VERSION,
-    agentAuthModes: ['keys'],
+    agentAuthModes: ['keys', 'iam'],
     invocationAccounting: true,
   };
 };

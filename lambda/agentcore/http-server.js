@@ -233,6 +233,7 @@ const main = async () => {
   const { capabilities } = await import('./commands/capabilities.js');
   const { managedRuntimeCheck } = await import('./commands/managed-runtime-check.js');
   const { verifyMcp } = await import('./commands/verify-mcp.js');
+  const { verifyBedrockIam } = await import('./commands/verify-bedrock-iam.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
@@ -252,7 +253,7 @@ const main = async () => {
       store,
       env: process.env,
     });
-    const credentialSession = createCredentialSession({ env: auth.env });
+    const credentialSession = auth.credentialSession ?? createCredentialSession({ env: auth.env });
     try {
       await accountCredentialInvocation({
         ddb,
@@ -307,6 +308,7 @@ const main = async () => {
       }),
     managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),
     verifyMcp: (p) => verifyMcp(p),
+    verifyBedrockIam: (p, context) => verifyBedrockIam(p, { env: context.env }),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).

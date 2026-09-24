@@ -6,6 +6,7 @@ import {
   assertIdentifier,
   assertSource,
   normalizeCredentialBinding,
+  normalizeConnection,
   legacyPlatformBinding,
   credentialChangeAffects,
 } from './agent-auth-catalog.js';
@@ -195,6 +196,23 @@ export const createAgentAuthChangeService = ({
 }) => {
   const validateCandidate = async (candidate) => {
     if (candidate?.kind === 'credential-update') return candidate;
+    if (candidate?.kind === 'iam-connection') {
+      const connection = normalizeConnection(candidate.connection);
+      if (connection.mode !== 'iam' || connection.revision !== 1 || connection.state !== 'ready')
+        throw authError('AGENT_AUTH_INVALID', 'A fresh ready IAM connection is required');
+      if (connection.source === 'space' && (await repository.getPolicy()).mode !== 'iam')
+        throw authError(
+          'AGENT_AUTH_MODE_MISMATCH',
+          'Enable platform IAM before setting a space role',
+        );
+      return { kind: 'iam-connection', connection };
+    }
+    if (candidate?.kind === 'space-inherit') {
+      return {
+        kind: 'space-inherit',
+        projectId: assertIdentifier(candidate.projectId, 'projectId'),
+      };
+    }
     if (candidate?.kind !== 'policy')
       throw authError('AGENT_AUTH_INVALID', 'Unsupported configuration change');
     const descriptor = AGENT_AUTH_MODES_CATALOG.find((mode) => mode.id === candidate.mode);

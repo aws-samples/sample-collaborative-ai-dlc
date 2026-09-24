@@ -310,3 +310,8 @@ output "v2_orchestrator_qualified_arn" {
   description = "Qualified ARN of the v2 orchestrator durable Lambda"
   value       = module.v2_orchestrator_alias.lambda_alias_arn
 }
+
+output "credential_broker_role_arn" {
+  description = "Credential broker role trusted by Bedrock inference roles"
+  value       = aws_iam_role.credential_broker.arn
+}

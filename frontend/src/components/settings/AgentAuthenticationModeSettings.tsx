@@ -3,48 +3,53 @@ import {
   agentsService,
   type AgentAuthenticationView,
   type AgentAuthImpactReview,
+  type BedrockIamConfig,
 } from '@/services/agents';
 import { Button } from '@/components/ui/button';
 import { AuthenticationImpactReview } from './AuthenticationImpactReview';
+import { BedrockIamWizard } from './BedrockIamWizard';
 
 export function AgentAuthenticationModeSettings({
   authentication,
   scope,
+  projectId,
   hasOverride,
   onApplied,
 }: {
   authentication: AgentAuthenticationView;
   scope: 'platform' | 'space' | 'personal';
+  projectId?: string;
   hasOverride: boolean;
   onApplied: () => Promise<unknown>;
 }) {
   const [mode, setMode] = useState(authentication.policy.mode);
   const [review, setReview] = useState<AgentAuthImpactReview | null>(null);
+  const [wizard, setWizard] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const connection = authentication.connection;
-  const perform = async (apply: boolean) => {
+  const canManage = scope === 'platform' || authentication.canManageIam === true;
+  const iamActive = authentication.policy.mode === 'iam';
+  const perform = async (operation: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
-      if (apply && review) {
-        await agentsService.applyAuthenticationChange(review.id);
-        setReview(null);
-        await onApplied();
-      } else {
-        setReview(
-          await agentsService.previewAuthenticationChange({
-            mode,
-            defaultConnectionId: authentication.policy.defaultConnectionId,
-          }),
-        );
-      }
+      await operation();
     } catch (failure) {
       setReview(null);
       setError(failure instanceof Error ? failure.message : 'Configuration changed; review again.');
     } finally {
       setBusy(false);
     }
+  };
+  const previewIam = async (configuration: BedrockIamConfig) => {
+    setReview(
+      await agentsService.previewAuthenticationChange({
+        kind: 'iam-connection',
+        configuration,
+        ...(scope === 'space' ? { projectId } : {}),
+      }),
+    );
   };
   return (
     <div className="space-y-2 rounded-md bg-muted/40 p-3 text-xs">
@@ -70,9 +75,28 @@ export function AgentAuthenticationModeSettings({
               </option>
             ))}
           </select>
-          <p>Mode changes apply to new work. Existing runs keep their pinned connection.</p>
-          {mode !== authentication.policy.mode && !review && (
-            <Button type="button" size="sm" disabled={busy} onClick={() => void perform(false)}>
+          <p>Mode changes apply to new work. Started runs keep their selected connection.</p>
+          {mode === 'iam' && !review && (
+            <Button type="button" size="sm" disabled={busy} onClick={() => setWizard(true)}>
+              {iamActive ? 'Change IAM connection' : 'Set up Bedrock IAM'}
+            </Button>
+          )}
+          {mode !== authentication.policy.mode && mode === 'keys' && !review && (
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void perform(async () => {
+                  setReview(
+                    await agentsService.previewAuthenticationChange({
+                      mode: 'keys',
+                      defaultConnectionId: 'legacy-platform-bedrock',
+                    }),
+                  );
+                })
+              }
+            >
               Review mode change
             </Button>
           )}
@@ -85,18 +109,56 @@ export function AgentAuthenticationModeSettings({
               ?.label ?? authentication.policy.mode}
           </strong>
           {scope === 'space' &&
-            ` · ${hasOverride ? 'Space key override' : 'Inherits platform connection'}`}
+            ` · ${hasOverride ? (iamActive ? 'Space IAM override' : 'Space key override') : 'Inherits platform connection'}`}
         </p>
       )}
       {scope === 'personal' && (
         <p>
-          Personal overrides use API keys. IAM roles and shared OAuth connections are managed by
-          administrators.
+          {iamActive
+            ? 'Personal Bedrock API keys are disabled while the platform uses IAM.'
+            : 'Personal overrides use API keys.'}{' '}
+          IAM roles are managed by platform administrators.
         </p>
       )}
+      {scope === 'space' &&
+        iamActive &&
+        (canManage ? (
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" disabled={busy} onClick={() => setWizard(true)}>
+              {hasOverride ? 'Change space IAM role' : 'Set space IAM role'}
+            </Button>
+            {hasOverride && projectId && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async () => {
+                    setReview(
+                      await agentsService.previewAuthenticationChange({
+                        kind: 'space-inherit',
+                        projectId,
+                      }),
+                    );
+                  })
+                }
+              >
+                Use platform IAM role
+              </Button>
+            )}
+          </div>
+        ) : (
+          <p>Only platform administrators can configure space IAM roles.</p>
+        ))}
       {connection && (
         <p>
           Connection: {connection.backend} · {connection.state}
+        </p>
+      )}
+      {connection?.configuration.roleArn && (
+        <p className="break-all">
+          Role: {connection.configuration.roleArn} · Region: {connection.configuration.region}
         </p>
       )}
       {connection?.configuration.endpoint && <p>Gateway: {connection.configuration.endpoint}</p>}
@@ -118,8 +180,26 @@ export function AgentAuthenticationModeSettings({
         <AuthenticationImpactReview
           review={review}
           applying={busy}
-          onApply={() => void perform(true)}
+          onApply={() =>
+            void perform(async () => {
+              await agentsService.applyAuthenticationChange(review.id);
+              setReview(null);
+              await onApplied();
+            })
+          }
           onCancel={() => setReview(null)}
+        />
+      )}
+      {wizard && (
+        <BedrockIamWizard
+          projectId={scope === 'space' ? projectId : undefined}
+          initial={
+            connection?.mechanism === 'assume-role' && (scope === 'platform' || hasOverride)
+              ? (connection.configuration as BedrockIamConfig)
+              : undefined
+          }
+          onClose={() => setWizard(false)}
+          onSave={previewIam}
         />
       )}
     </div>

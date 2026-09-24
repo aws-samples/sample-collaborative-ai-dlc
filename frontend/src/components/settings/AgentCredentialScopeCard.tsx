@@ -280,9 +280,13 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         <div className="space-y-5">
           {settings?.authentication && (
             <AgentAuthenticationModeSettings
+              key={`${identity}:${settings.authentication.policy.revision}`}
               authentication={settings.authentication}
+              projectId={projectId}
               scope={scope}
-              hasOverride={Boolean(settings.bedrockBearerTokenSet)}
+              hasOverride={
+                settings.authentication.hasOverride ?? Boolean(settings.bedrockBearerTokenSet)
+              }
               onApplied={load}
             />
           )}

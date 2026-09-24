@@ -59,7 +59,7 @@ export const resolveModelId = (raw, { env = process.env } = {}) => {
   // Prefix the alias target with the geo unless it already carries one.
   return isFullId(target) && /^(us|eu|apac)\./.test(target)
     ? target
-    : `${regionPrefix(env.AWS_REGION || env.BEDROCK_REGION)}.${target}`;
+    : `${regionPrefix(env.BEDROCK_REGION || env.AWS_REGION)}.${target}`;
 };
 
 // CLIs whose `--model` value is a Bedrock id (inference profile / provider-

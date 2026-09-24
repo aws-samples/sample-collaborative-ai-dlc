@@ -201,13 +201,14 @@ export const deleteCredentialScope = async (
 
 export const resolveEffectiveCredentialBindings = async (ssm, { base, projectId, userId }) => {
   const sources = {
-    user: scopePaths({ base, source: 'user', userId }),
-    space: scopePaths({ base, source: 'space', projectId }),
+    ...(userId ? { user: scopePaths({ base, source: 'user', userId }) } : {}),
+    ...(projectId ? { space: scopePaths({ base, source: 'space', projectId }) } : {}),
     platform: scopePaths({ base, source: 'platform' }),
   };
   const bindings = {};
   const unresolved = new Set(AGENT_CREDENTIAL_PROVIDERS);
   for (const source of AGENT_CREDENTIAL_SOURCES) {
+    if (!sources[source]) continue;
     const paths = Object.fromEntries(
       [...unresolved].map((provider) => [provider, sources[source][provider]]),
     );

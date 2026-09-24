@@ -23,6 +23,17 @@ const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 's
 // prints its terminating error, and it bounds memory on a chatty child.
 const clampTail = (s, max) => (s.length > max ? s.slice(s.length - max) : s);
 
+// Session-owned process groups include tool/MCP descendants. Killing just the
+// CLI parent would let those children continue with cached STS credentials.
+const terminateChild = (child, detached, killProcessGroup) => {
+  try {
+    if (detached && child.pid) killProcessGroup(-child.pid, 'SIGKILL');
+    else child.kill?.('SIGKILL');
+  } catch {
+    /* group has already exited */
+  }
+};
+
 export const runChild = ({
   command,
   args,
@@ -33,11 +44,25 @@ export const runChild = ({
   captureStderrTail = 0,
   onStdout = null,
   spawnFn = spawn,
+  killProcessGroup = (pid, signal) => process.kill(pid, signal),
 }) =>
   new Promise((resolve, reject) => {
     const capture = captureStderrTail > 0;
     const session = currentCredentialSession();
-    session?.assertAvailable();
+    try {
+      session?.assertAvailable();
+    } catch {
+      resolve({
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        stderrTail: '',
+        timedOut: false,
+        credentialError: session.signal.reason?.code ?? 'credential_unavailable',
+      });
+      return;
+    }
+    const detached = Boolean(session) && process.platform !== 'win32';
     const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
     let child;
     try {
@@ -45,6 +70,7 @@ export const runChild = ({
         cwd,
         env: mergedEnv,
         shell: false,
+        ...(detached ? { detached: true } : {}),
         stdio: [
           promptViaStdin ? 'pipe' : 'ignore',
           onStdout ? 'pipe' : 'inherit',
@@ -74,7 +100,7 @@ export const runChild = ({
       });
     }
     const cancel = () => {
-      child.kill?.('SIGKILL');
+      terminateChild(child, detached, killProcessGroup);
       finish(null);
     };
     session?.signal.addEventListener('abort', cancel, { once: true });
@@ -125,10 +151,24 @@ export const captureChild = ({
   captureStderr = false,
   timeoutMs = 0,
   spawnFn = spawn,
+  killProcessGroup = (pid, signal) => process.kill(pid, signal),
 }) =>
   new Promise((resolve) => {
     const session = currentCredentialSession();
-    session?.assertAvailable();
+    try {
+      session?.assertAvailable();
+    } catch {
+      resolve({
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        stderrTail: '',
+        timedOut: false,
+        credentialError: session.signal.reason?.code ?? 'credential_unavailable',
+      });
+      return;
+    }
+    const detached = Boolean(session) && process.platform !== 'win32';
     const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
     let child;
     try {
@@ -136,6 +176,7 @@ export const captureChild = ({
         cwd,
         env: mergedEnv,
         shell: false,
+        ...(detached ? { detached: true } : {}),
         stdio: [promptViaStdin ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
       });
     } catch (e) {
@@ -150,7 +191,7 @@ export const captureChild = ({
     let stderr = '';
     if (captureStderr) child.stderr?.on('data', (c) => (stderr += c.toString()));
     const cancel = () => {
-      child.kill?.('SIGKILL');
+      terminateChild(child, detached, killProcessGroup);
       finish(null);
     };
     session?.signal.addEventListener('abort', cancel, { once: true });
@@ -178,7 +219,7 @@ export const captureChild = ({
       timer = setTimeout(() => {
         timedOut = true;
         try {
-          child.kill?.('SIGKILL');
+          terminateChild(child, detached, killProcessGroup);
         } catch {
           /* already gone */
         }

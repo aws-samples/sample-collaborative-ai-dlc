@@ -351,3 +351,30 @@ describe('runOneShotPrompt', () => {
     expect(out).toMatchObject({ ok: true, text: 'quick' });
   });
 });
+
+it('creates a fresh one-shot working directory before launching a real child', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawn } = await import('node:child_process');
+  const root = await mkdtemp(join(tmpdir(), 'iam-one-shot-'));
+  const cwd = join(root, 'fresh', 'invocation');
+  try {
+    const result = await runOneShotPrompt({
+      prompt: 'fixture',
+      availableClis: ['claude'],
+      cwd,
+      env: {},
+      spawnFn: (_command, _args, options) =>
+        spawn(
+          process.execPath,
+          ['-e', 'console.log(JSON.stringify({type:"result",result:process.cwd()}))'],
+          options,
+        ),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('/fresh/invocation');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -7,6 +7,9 @@ export const AGENT_CREDENTIAL_GRANT_AUDIENCE = 'aidlc-agent-credential-broker';
 export const AGENT_CREDENTIAL_GRANT_PURPOSES = Object.freeze(Object.values(AGENT_AUTH_MODES));
 export const AGENT_CREDENTIAL_GRANT_TTL_SECONDS = 300;
 
+export const BEDROCK_RENEWAL_TTL_SECONDS = 8 * 60 * 60;
+const BEDROCK_RENEWAL_AUDIENCE = 'aidlc-bedrock-credential-renewal-v2';
+
 const MAX_TOKEN_BYTES = 8192;
 const CLOCK_SKEW_SECONDS = 30;
 const secretCache = new WeakMap();
@@ -158,7 +161,15 @@ export const signAgentCredentialGrant = (
   return `${encodedClaims}.${signature}`;
 };
 
-export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now() } = {}) => {
+const verifyToken = (
+  token,
+  secret,
+  {
+    now = Date.now,
+    audience = AGENT_CREDENTIAL_GRANT_AUDIENCE,
+    ttl = AGENT_CREDENTIAL_GRANT_TTL_SECONDS,
+  } = {},
+) => {
   if (typeof token !== 'string' || !token || Buffer.byteLength(token) > MAX_TOKEN_BYTES) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
@@ -187,16 +198,16 @@ export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now
   } catch {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
-  if (![1, 2].includes(parsed?.version) || parsed?.audience !== AGENT_CREDENTIAL_GRANT_AUDIENCE) {
+  if (![1, 2].includes(parsed?.version) || parsed?.audience !== audience) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
-  const claims = normalizedClaims(parsed);
+  const claims = { ...normalizedClaims(parsed), audience };
   const current = Math.floor(now() / 1000);
   if (
     !Number.isInteger(claims.issuedAt) ||
     !Number.isInteger(claims.expiresAt) ||
     claims.expiresAt <= claims.issuedAt ||
-    claims.expiresAt - claims.issuedAt > AGENT_CREDENTIAL_GRANT_TTL_SECONDS ||
+    claims.expiresAt - claims.issuedAt > ttl ||
     claims.issuedAt > current + CLOCK_SKEW_SECONDS
   ) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
@@ -206,6 +217,44 @@ export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now
   }
   return claims;
 };
+
+export const verifyAgentCredentialGrant = (token, secret, { now = Date.now } = {}) =>
+  verifyToken(token, secret, { now });
+
+const assertRenewal = (claims) => {
+  if (
+    claims.purpose === 'verify-bedrock-iam' ||
+    claims.version !== 2 ||
+    claims.bindings.length !== 1 ||
+    claims.bindings[0].mechanism !== 'assume-role' ||
+    claims.bindings[0].backend !== 'bedrock'
+  )
+    throw grantError(
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'Renewal requires one pinned IAM connection',
+    );
+  return claims;
+};
+export const signBedrockCredentialRenewal = (initialClaims, secret) => {
+  const claims = assertRenewal(
+    normalizedClaims({
+      ...initialClaims,
+      bindings: initialClaims.bindings.filter((binding) => binding.mechanism === 'assume-role'),
+      expiresAt: initialClaims.issuedAt + BEDROCK_RENEWAL_TTL_SECONDS,
+    }),
+  );
+  claims.audience = BEDROCK_RENEWAL_AUDIENCE;
+  const encoded = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  return `${encoded}.${signatureFor(encoded, secret).toString('base64url')}`;
+};
+export const verifyBedrockCredentialRenewal = (token, secret, { now = Date.now } = {}) =>
+  assertRenewal(
+    verifyToken(token, secret, {
+      now,
+      audience: BEDROCK_RENEWAL_AUDIENCE,
+      ttl: BEDROCK_RENEWAL_TTL_SECONDS,
+    }),
+  );
 
 export const loadAgentCredentialGrantSecret = async (
   ssm,
