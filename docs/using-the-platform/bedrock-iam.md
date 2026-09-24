@@ -20,10 +20,12 @@ Managed environments must run an image with IAM authentication support. Publish 
 
 1. Select **IAM**, then **Set up Bedrock IAM**.
 2. Enter the inference account, region, role name or path, and optional ExternalId. The inference account and region can differ from the application, within the same AWS partition.
-3. Run the generated CloudShell commands in their indicated accounts, or give the generated policies to the administrator of an existing role. The trust policy names the credential broker; the broker policy allows assumption of that exact inference role. Copy and download controls are provided.
+3. For a new role, run the generated CloudShell commands in their indicated accounts. For an existing role, select **I already have an inference role**, then **Continue to connection test**. This skips the AWS setup step. The trust policy names the credential broker; the broker policy allows assumption of that exact inference role.
 4. Choose **Test connection**. This checks STS assumption and paginated Bedrock model discovery from the runtime. It does not invoke a model or prove model entitlements/Mantle access.
 5. Choose **Review connection change**, inspect the proposed role, region and impact, then **Apply reviewed change**.
 6. Select models available in the inference account and region. The policy supports Bedrock Runtime inference for Claude Code/OpenCode and Bedrock Mantle for Codex.
+
+An existing role that passes the connection test can proceed directly to review. If the test fails, the wizard shows permission help: required role trust and inference permissions, plus application-side permission to assume the role. Your AWS administrator can compare these with the existing policies and add missing access while retaining existing permissions. The application access command is optional when that permission is already configured. Copy and download controls are available in the help.
 
 The application generates IAM setup documents; it does not modify AWS IAM itself. The broker needs STS access, and the runtime needs access to the broker and inference endpoints.
 

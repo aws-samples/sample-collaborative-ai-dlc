@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const defaults = vi.fn();
@@ -65,6 +65,39 @@ describe('Bedrock IAM wizard', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it('tests an existing role before showing any setup commands', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    render(<BedrockIamWizard onSave={onSave} onClose={onClose} />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Generate AWS setup' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('checkbox', { name: 'I already have an inference role' }));
+    await user.click(screen.getByRole('button', { name: 'Continue to connection test' }));
+
+    await screen.findByRole('button', { name: 'Test connection' });
+    expect(
+      within(screen.getByRole('list', { name: 'Setup progress' })).getAllByRole('listitem'),
+    ).toHaveLength(2);
+    expect(screen.queryByText('# inference account commands')).not.toBeInTheDocument();
+    expect(screen.queryByText('# application account commands')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Show AWS permission help (if needed)' }),
+    ).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: 'Review connection change' })).toBeDisabled();
+    expect(verify).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Test connection' }));
+    await screen.findByRole('status');
+    expect(verify).toHaveBeenCalledWith(config, undefined);
+    expect(screen.queryByText('# application account commands')).not.toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Review connection change' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(config));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it('keeps activation disabled after a failed check and retains the space scope on retries', async () => {
     const user = userEvent.setup();
     verify.mockResolvedValueOnce({
@@ -76,19 +109,27 @@ describe('Bedrock IAM wizard', () => {
       <BedrockIamWizard projectId="space-one" initial={config} onSave={onSave} onClose={vi.fn()} />,
     );
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Generate AWS setup' })).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Continue to connection test' })).toBeEnabled(),
     );
-    await user.click(screen.getByRole('button', { name: 'Generate AWS setup' }));
-    await user.click(await screen.findByRole('button', { name: 'Continue to test' }));
-    await user.click(screen.getByRole('button', { name: 'Test connection' }));
+    await user.click(screen.getByRole('button', { name: 'Continue to connection test' }));
+    await user.click(await screen.findByRole('button', { name: 'Test connection' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('trust policy');
+    const help = screen.getByRole('region', { name: 'Existing role permission help' });
+    expect(within(help).getByText('# application account commands')).toBeVisible();
+    expect(within(help).getByText(/only if that permission is missing/)).toBeVisible();
+    expect(screen.queryByText('# inference account commands')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Review connection change' })).toBeDisabled();
     expect(verify).toHaveBeenCalledWith(config, 'space-one');
     expect(onSave).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Back' }));
-    await user.click(screen.getByRole('button', { name: 'Back' }));
-    await user.click(screen.getByRole('button', { name: 'Generate AWS setup' }));
-    await user.click(await screen.findByRole('button', { name: 'Continue to test' }));
-    expect(screen.getByRole('button', { name: 'Review connection change' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Continue to connection test' }));
+    expect(await screen.findByRole('button', { name: 'Review connection change' })).toBeDisabled();
+    expect(
+      screen.queryByRole('region', { name: 'Existing role permission help' }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Test connection' }));
+    await screen.findByRole('status');
+    expect(verify).toHaveBeenLastCalledWith(config, 'space-one');
+    expect(screen.getByRole('button', { name: 'Review connection change' })).toBeEnabled();
   });
 });

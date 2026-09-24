@@ -45,6 +45,7 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
   const [verified, setVerified] = useState(false);
   const [modelCount, setModelCount] = useState(0);
   const [copied, setCopied] = useState('');
+  const [showPermissionHelp, setShowPermissionHelp] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -84,7 +85,7 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
     }
   };
 
-  const generate = () =>
+  const prepareConnection = () =>
     run(async () => {
       const config = {
         roleArn: `arn:${brokerRoleArn.split(':')[1]}:iam::${accountId.trim()}:role/${roleName.trim()}`,
@@ -94,7 +95,8 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
       const result = await agentsService.generateBedrockIamSetup(config, projectId);
       setSetup(result);
       setVerified(false);
-      setStep(1);
+      setShowPermissionHelp(false);
+      setStep(existingRole ? 2 : 1);
     });
 
   const copy = async (label: string, value: string) => {
@@ -143,11 +145,15 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
           </DialogDescription>
         </DialogHeader>
         <ol className="flex flex-wrap gap-3 text-xs" aria-label="Setup progress">
-          {['Connection', 'AWS setup', 'Test and review'].map((label, index) => (
+          {[
+            { id: 0, label: 'Connection' },
+            ...(!existingRole ? [{ id: 1, label: 'AWS setup' }] : []),
+            { id: 2, label: 'Test and review' },
+          ].map(({ id, label }, index) => (
             <li
-              key={label}
-              aria-current={step === index ? 'step' : undefined}
-              className={step === index ? 'font-semibold text-foreground' : 'text-muted-foreground'}
+              key={id}
+              aria-current={step === id ? 'step' : undefined}
+              className={step === id ? 'font-semibold text-foreground' : 'text-muted-foreground'}
             >
               {index + 1}. {label}
             </li>
@@ -197,6 +203,12 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
               />
               I already have an inference role
             </label>
+            {existingRole && (
+              <p className="text-sm text-muted-foreground">
+                Next, test the role&apos;s existing access. If it connects successfully, you can
+                review the connection without running setup commands.
+              </p>
+            )}
             <details className="text-sm">
               <summary className="cursor-pointer text-muted-foreground">
                 External ID (optional)
@@ -215,24 +227,21 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
         {step === 1 && setup && (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              {existingRole
-                ? 'Ask your AWS administrator to add the trust and inference permissions below to your existing role.'
-                : 'Open AWS CloudShell in the indicated account and run these commands, or share the downloaded files with your AWS administrator.'}{' '}
-              The application generates the configuration; it does not change AWS permissions for
-              you.
+              Open AWS CloudShell in the indicated account and run these commands, or share the
+              downloaded files with your AWS administrator. The application generates the
+              configuration; it does not change AWS permissions for you.
             </p>
-            {!existingRole &&
-              codePanel(
-                `1. Inference account ${setup.inferenceAccountId}`,
-                'bedrock-inference-setup.sh',
-                setup.inferenceCommands,
-              )}
             {codePanel(
-              `${existingRole ? 'Application' : '2. Application'} account ${setup.applicationAccountId}`,
+              `1. Inference account ${setup.inferenceAccountId}`,
+              'bedrock-inference-setup.sh',
+              setup.inferenceCommands,
+            )}
+            {codePanel(
+              `2. Application account ${setup.applicationAccountId}`,
               'bedrock-application-setup.sh',
               setup.applicationCommands,
             )}
-            <details open={existingRole}>
+            <details>
               <summary className="cursor-pointer text-sm font-medium">
                 Role and trust policies
               </summary>
@@ -258,6 +267,12 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
         )}
         {step === 2 && setup && (
           <div className="space-y-4">
+            {existingRole && (
+              <p className="text-sm text-muted-foreground">
+                Test your existing role first. AWS permission changes are only needed if the
+                required access is missing.
+              </p>
+            )}
             <div className="rounded-md border p-4 text-sm">
               <p className="break-all font-medium">{setup.config.roleArn}</p>
               <p className="mt-1 text-muted-foreground">Bedrock region: {setup.config.region}</p>
@@ -273,21 +288,87 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
                 run(async () => {
                   setVerified(false);
                   const result = await agentsService.verifyBedrockIam(setup.config, projectId);
-                  if (!result.verified)
+                  if (!result.verified) {
+                    setShowPermissionHelp(true);
                     throw new Error(result.error || 'The connection could not be verified');
+                  }
                   setModelCount(result.models?.length ?? 0);
+                  setShowPermissionHelp(false);
                   setVerified(true);
                 })
               }
             >
               Test connection
             </Button>
+            {error && (
+              <p role="alert" className="break-words text-sm text-destructive">
+                {error}
+              </p>
+            )}
             {verified && (
               <p role="status" className="flex items-start gap-2 text-sm text-emerald-600">
                 <CheckCircle2 className="h-4 w-4 shrink-0" />
                 Role connected; {modelCount} Claude inference profiles found. Model invocation
                 permissions and Codex model availability are checked when used.
               </p>
+            )}
+            {existingRole && (
+              <div className="space-y-3">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-expanded={showPermissionHelp}
+                  aria-controls="existing-role-permission-help"
+                  onClick={() => setShowPermissionHelp((current) => !current)}
+                >
+                  {showPermissionHelp
+                    ? 'Hide AWS permission help'
+                    : 'Show AWS permission help (if needed)'}
+                </Button>
+                {showPermissionHelp && (
+                  <section
+                    id="existing-role-permission-help"
+                    aria-label="Existing role permission help"
+                    className="space-y-3 rounded-md border p-4"
+                  >
+                    <p className="text-sm text-muted-foreground">
+                      If access is missing, ask your AWS administrator to compare the policies below
+                      with the existing permissions and add what is needed. Keep any existing trust
+                      relationships and permissions.
+                    </p>
+                    <p className="text-sm">
+                      Inference account {setup.inferenceAccountId}: the role needs to trust this
+                      application&apos;s credential broker and allow Bedrock inference.
+                    </p>
+                    {codePanel(
+                      'Required inference role trust',
+                      'bedrock-trust-policy.json',
+                      JSON.stringify(setup.trustPolicy, null, 2),
+                    )}
+                    {codePanel(
+                      'Required inference permissions',
+                      'bedrock-inference-policy.json',
+                      JSON.stringify(setup.inferencePolicy, null, 2),
+                    )}
+                    <p className="text-sm">
+                      Application account {setup.applicationAccountId}: the credential broker also
+                      needs permission to assume this role. Run the following command only if that
+                      permission is missing.
+                    </p>
+                    {codePanel(
+                      'Optional application access setup',
+                      'bedrock-application-setup.sh',
+                      setup.applicationCommands,
+                    )}
+                    {codePanel(
+                      'Required credential broker permission',
+                      'bedrock-assume-role-policy.json',
+                      JSON.stringify(setup.assumeRolePolicy, null, 2),
+                    )}
+                  </section>
+                )}
+              </div>
             )}
             <p className="rounded-md bg-muted p-3 text-sm">
               {projectId
@@ -297,14 +378,18 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
             </p>
           </div>
         )}
-        {error && (
+        {error && step !== 2 && (
           <p role="alert" className="break-words text-sm text-destructive">
             {error}
           </p>
         )}
         <DialogFooter className="gap-2">
           {step > 0 && (
-            <Button variant="outline" disabled={busy} onClick={() => setStep(step - 1)}>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => setStep(existingRole ? 0 : step - 1)}
+            >
               Back
             </Button>
           )}
@@ -314,9 +399,9 @@ export function BedrockIamWizard({ projectId, initial, onClose, onSave }: Props)
           {step === 0 && (
             <Button
               disabled={busy || !brokerRoleArn || !accountId || !region || !roleName}
-              onClick={generate}
+              onClick={prepareConnection}
             >
-              Generate AWS setup
+              {existingRole ? 'Continue to connection test' : 'Generate AWS setup'}
             </Button>
           )}
           {step === 1 && (
