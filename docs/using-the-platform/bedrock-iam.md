@@ -27,6 +27,8 @@ Managed environments must run an image with IAM authentication support. Publish 
 
 An existing role that passes the connection test can proceed directly to review. If the test fails, the wizard shows permission help: required role trust and inference permissions, plus application-side permission to assume the role. Your AWS administrator can compare these with the existing policies and add missing access while retaining existing permissions. The application access command is optional when that permission is already configured. Copy and download controls are available in the help.
 
+CloudShell commands run in a separate Bash process with the AWS output pager disabled. On failure, the AWS error and failed step remain visible and your CloudShell session stays open. A downloaded script returns a nonzero status on failure. If creating a role reports `EntityAlreadyExists`, choose **I already have an inference role** or use a different role name. If role creation succeeded but adding permissions failed, use the existing-role permission help to finish setup; rerunning role creation will report that the role exists.
+
 The application generates IAM setup documents; it does not modify AWS IAM itself. The broker needs STS access, and the runtime needs access to the broker and inference endpoints.
 
 In **Space Settings → Agent**, platform administrators can **Set space IAM role** or **Change space IAM role**. **Use platform IAM role** reviews removal of the override. Space owners who are not platform administrators cannot configure, verify, or clear IAM roles. Personal Bedrock keys are disabled in IAM mode; Kiro remains independently configurable.

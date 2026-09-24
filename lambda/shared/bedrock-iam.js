@@ -12,6 +12,38 @@ const document = (Statement) => ({ Version: '2012-10-17', Statement });
 const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
 const json = (value) => JSON.stringify(value, null, 2);
 
+// A separate Bash owns errexit and AWS CLI settings. The outer conditional
+// keeps an interactive CloudShell alive even if an earlier paste enabled -e;
+// downloaded scripts still return a failure status.
+const cloudShellCommands = (description, accountId, steps) =>
+  [
+    `# ${description}`,
+    "if bash <<'COLLABORATIVE_BEDROCK_SETUP'",
+    'set -eu',
+    "export AWS_PAGER='' AWS_CLI_AUTO_PROMPT=off",
+    "step='Checking AWS account'",
+    `trap 'status=$?; if [ "$status" -ne 0 ]; then printf "\\nBedrock IAM setup failed during: %s (exit %s).\\nSee the error above.\\n" "$step" "$status" >&2; fi' EXIT`,
+    'printf "\\n%s\\n" "$step"',
+    'actual_account="$(aws sts get-caller-identity --query Account --output text)"',
+    `if [ "$actual_account" != ${shellQuote(accountId)} ]; then`,
+    `  printf 'Wrong AWS account: %s. Expected ${accountId}. Switch accounts before continuing.\\n' "$actual_account" >&2`,
+    '  exit 1',
+    'fi',
+    ...steps.flatMap(({ label, command }) => [
+      '',
+      `step=${shellQuote(label)}`,
+      'printf "\\n%s\\n" "$step"',
+      command,
+    ]),
+    'COLLABORATIVE_BEDROCK_SETUP',
+    'then',
+    "  printf '\\nBedrock IAM setup completed. Return to the wizard to continue.\\n'",
+    'else',
+    '  # Keep CloudShell open; report failure when run as a script.',
+    '  case $- in *i*) ;; *) false ;; esac',
+    'fi',
+  ].join('\n');
+
 // Both accounts receive explicit policies. Setup grants the broker permission
 // to assume this exact role; the application never modifies IAM itself.
 export const generateBedrockIamSetup = ({ brokerRoleArn, config }) => {
@@ -88,8 +120,6 @@ export const generateBedrockIamSetup = ({ brokerRoleArn, config }) => {
       Resource: '*',
     },
   ]);
-  const accountCheck = (account) =>
-    `[ "$(aws sts get-caller-identity --query Account --output text)" = ${shellQuote(account)} ] || { echo 'Wrong AWS account. Switch accounts before continuing.' >&2; exit 1; }`;
   return {
     config: iam,
     brokerRoleArn,
@@ -98,18 +128,29 @@ export const generateBedrockIamSetup = ({ brokerRoleArn, config }) => {
     trustPolicy,
     assumeRolePolicy,
     inferencePolicy,
-    inferenceCommands: [
-      '# Run in AWS CloudShell in the inference account. Creates a NEW dedicated role.',
-      'set -eu',
-      accountCheck(accountId),
-      `aws iam create-role --role-name ${shellQuote(roleName)} --path ${shellQuote(iamPath)} --assume-role-policy-document ${shellQuote(json(trustPolicy))} --max-session-duration 3600`,
-      `aws iam put-role-policy --role-name ${shellQuote(roleName)} --policy-name CollaborativeBedrockInference --policy-document ${shellQuote(json(inferencePolicy))}`,
-    ].join('\n\n'),
-    applicationCommands: [
-      '# Run in AWS CloudShell in the application account.',
-      'set -eu',
-      accountCheck(source[2]),
-      `aws iam put-role-policy --role-name ${shellQuote(sourceRoleName)} --policy-name ${shellQuote(policyName)} --policy-document ${shellQuote(json(assumeRolePolicy))}`,
-    ].join('\n\n'),
+    inferenceCommands: cloudShellCommands(
+      'Run in AWS CloudShell in the inference account. Creates a NEW dedicated role.',
+      accountId,
+      [
+        {
+          label: `Creating new role ${roleName}. If it already exists, choose "I already have an inference role" in the wizard or use a different role name.`,
+          command: `aws iam create-role --role-name ${shellQuote(roleName)} --path ${shellQuote(iamPath)} --assume-role-policy-document ${shellQuote(json(trustPolicy))} --max-session-duration 3600 --query Role.Arn --output text`,
+        },
+        {
+          label: `Adding inference permissions to ${roleName}`,
+          command: `aws iam put-role-policy --role-name ${shellQuote(roleName)} --policy-name CollaborativeBedrockInference --policy-document ${shellQuote(json(inferencePolicy))}`,
+        },
+      ],
+    ),
+    applicationCommands: cloudShellCommands(
+      'Run in AWS CloudShell in the application account.',
+      source[2],
+      [
+        {
+          label: `Allowing ${sourceRoleName} to assume ${iam.roleArn}`,
+          command: `aws iam put-role-policy --role-name ${shellQuote(sourceRoleName)} --policy-name ${shellQuote(policyName)} --policy-document ${shellQuote(json(assumeRolePolicy))}`,
+        },
+      ],
+    ),
   };
 };
