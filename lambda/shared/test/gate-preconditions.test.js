@@ -668,6 +668,31 @@ describe('evaluateGatePreconditions: stage wall-clock budget', () => {
     });
   });
 
+  it('stays advisory when pipeline evidence exists but a support persona was cut', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        { kind: 'pipeline-link', attempt: 0, detail: { agentRef: 'lead' } },
+        { kind: 'pipeline-link', attempt: 0, detail: { agentRef: 'quality-agent' } },
+      ],
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        links: ['lead', 'quality-agent'],
+        dissent: [],
+        budgetExhausted: [{ agentRef: 'design-agent', role: 'support' }],
+      },
+    });
+
+    const budget = result.findings.find((item) => item.code === 'stage_budget_exhausted');
+    expect(result.ok).toBe(true);
+    expect(codesOf(result)).toContain('persona_contribution_missing');
+    expect(codesOf(result)).not.toContain('pipeline_link_incomplete');
+    expect(budget).toMatchObject({ severity: 'advisory', overridable: false });
+    expect(budget.receiptKind).toBeNull();
+  });
+
   it('blocks a pipeline whose only completed link is the lead', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,

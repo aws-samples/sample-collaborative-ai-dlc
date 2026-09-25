@@ -363,11 +363,12 @@ describe('release coexistence matrix', () => {
             ).toBe(true);
             const noEvidenceOptions = buildGateOptions({ findings: noEvidence.findings });
             expect(noEvidenceOptions).toContain('request-changes');
-            expect(
-              noEvidenceOptions.includes('approve') ||
-                noEvidenceOptions.includes('override-and-approve'),
-              `${profileId}/${scope}/${stage.stageId} approval escape`,
-            ).toBe(true);
+            if (blocking.length > 0) {
+              expect(noEvidenceOptions).toEqual(['request-changes', 'override-and-approve']);
+              expect(noEvidenceOptions).not.toContain('approve');
+            } else {
+              expect(noEvidenceOptions).toEqual(['approve', 'request-changes']);
+            }
           }
 
           const hasUnitDag = plan.stages.some((stage) => stage.stageId === 'units-generation');
