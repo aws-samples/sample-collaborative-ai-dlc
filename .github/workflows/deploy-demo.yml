@@ -101,6 +101,9 @@ jobs:
       ACM_CERTIFICATE_ARN: ${{ secrets.ACM_CERTIFICATE_ARN }}
       APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
       APP_DOMAIN_ALIASES: ${{ secrets.APP_DOMAIN_ALIASES }}
+      AUTH_CERTIFICATE_ARN: ${{ secrets.AUTH_CERTIFICATE_ARN }}
+      AUTH_DOMAIN: ${{ secrets.AUTH_DOMAIN }}
+      AUTH_MODE: ${{ vars.AUTH_MODE }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
@@ -110,6 +113,7 @@ jobs:
       DEPLOY_TARGET: ${{ inputs.deployment_target || 'release' }}
       GITHUB_ENVIRONMENT: ${{ inputs.github_environment || 'demo-release' }}
       REQUIRE_CUSTOM_DOMAIN: ${{ inputs.require_custom_domain || false }}
+      SSO_CONFIG: ${{ secrets.SSO_CONFIG }}
       TF_ENVIRONMENT: prod
       TF_PROJECT_NAME: ${{ inputs.terraform_project_name || 'collaborative-ai-dlc' }}
       TF_INPUT: 'false'
@@ -129,6 +133,13 @@ jobs:
           fi
           if [[ -n "$ACM_CERTIFICATE_ARN" ]]; then
             echo "::add-mask::$ACM_CERTIFICATE_ARN"
+          fi
+          if [[ -n "$AUTH_DOMAIN" ]]; then
+            echo "::add-mask::$AUTH_DOMAIN"
+            echo "::add-mask::https://$AUTH_DOMAIN"
+          fi
+          if [[ -n "$AUTH_CERTIFICATE_ARN" ]]; then
+            echo "::add-mask::$AUTH_CERTIFICATE_ARN"
           fi
           if [[ -n "$APP_DOMAIN_ALIASES" ]]; then
             node --input-type=module -e '
@@ -259,6 +270,32 @@ jobs:
             echo "Custom-domain configuration is required for this deployment target." >&2
             exit 1
           fi
+          if [[ -n "$AUTH_CERTIFICATE_ARN" && -z "$AUTH_DOMAIN" ]]; then
+            echo "AUTH_CERTIFICATE_ARN requires AUTH_DOMAIN." >&2
+            exit 1
+          fi
+          if [[ -n "$AUTH_DOMAIN" && -z "$AUTH_CERTIFICATE_ARN" && -z "$ACM_CERTIFICATE_ARN" ]]; then
+            echo "AUTH_DOMAIN requires AUTH_CERTIFICATE_ARN or an ACM_CERTIFICATE_ARN covering it." >&2
+            exit 1
+          fi
+          case "${AUTH_MODE:-local}" in
+            local)
+              if [[ -n "$SSO_CONFIG" ]]; then
+                echo "SSO_CONFIG requires AUTH_MODE hybrid or sso-only." >&2
+                exit 1
+              fi
+              ;;
+            hybrid|sso-only)
+              if [[ -z "$SSO_CONFIG" ]]; then
+                echo "AUTH_MODE $AUTH_MODE requires the SSO_CONFIG secret." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "AUTH_MODE must be local, hybrid, or sso-only: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
           if [[ -n "$APP_DOMAIN" && -z "$APP_DOMAIN_ALIASES" ]]; then
             echo "APP_DOMAIN_ALIASES is required; use [] when no aliases are configured." >&2
             exit 1
@@ -314,6 +351,33 @@ jobs:
               printf 'acm_certificate_arn = %s\n' "$(hcl_string "$ACM_CERTIFICATE_ARN")"
               printf 'route53_zone_id     = ""\n'
             } >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+          fi
+
+          # AUTH_DOMAIN is not resolved up front: its DNS record can only point
+          # at the Cognito-assigned target after the first apply creates it.
+          if [[ -n "$AUTH_DOMAIN" ]]; then
+            {
+              printf 'auth_domain          = %s\n' "$(hcl_string "$AUTH_DOMAIN")"
+              printf 'auth_certificate_arn = %s\n' "$(hcl_string "$AUTH_CERTIFICATE_ARN")"
+            } >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+          fi
+
+          # deploy-terraform.sh adds this file to every plan, so the draft and
+          # final plans see the same providers. It contains Secrets Manager
+          # ARNs, never OIDC client secrets.
+          if [[ -n "$SSO_CONFIG" ]]; then
+            sso_input="$config_dir/sso-config.json"
+            printf '%s' "$SSO_CONFIG" > "$sso_input"
+            sso_providers="$(node scripts/sso-config.mjs "$sso_input" "$AUTH_MODE")"
+            rm -f "$sso_input"
+            node -e '
+              const [mode, providers] = process.argv.slice(1);
+              process.stdout.write(JSON.stringify({
+                auth_mode: mode,
+                sso_providers: JSON.parse(providers),
+              }, null, 2) + "\n");
+            ' "$AUTH_MODE" "$sso_providers" \
+              > "$config_dir/environments/$TF_ENVIRONMENT.sso.tfvars.json"
           fi
 
           {

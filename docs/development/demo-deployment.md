@@ -47,11 +47,42 @@ Add these **environment variables**:
 | `TF_STATE_KEY`    | `terraform.tfstate`                              |
 | `TF_STATE_REGION` | `eu-west-1`                                      |
 
-No GitHub secrets are required for the current deployment. OIDC replaces
-long-lived AWS access keys, and the current Terraform variables contain no
-credentials. Do not create `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY`
+No GitHub secrets are required for a local-authentication deployment without
+a custom domain. OIDC replaces long-lived AWS access keys, and the Terraform
+variables contain no credentials. Do not create `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY`
 secrets. Application credentials continue to live in AWS Secrets Manager or
 Systems Manager Parameter Store.
+
+### Optional enterprise SSO
+
+The workflow reads the application domain (`APP_DOMAIN`, `APP_DOMAIN_ALIASES`,
+`ACM_CERTIFICATE_ARN`) from environment secrets. Enterprise SSO uses these
+additional, optional settings:
+
+| Name                   | Kind     | Value                                                                                                   |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| `AUTH_MODE`            | Variable | `local` (default), `hybrid`, or `sso-only`                                                              |
+| `SSO_CONFIG`           | Secret   | Provider file JSON as described in [Enterprise SSO](../getting-started/enterprise-sso.md#provider-file) |
+| `AUTH_DOMAIN`          | Secret   | Custom Cognito login hostname, for example `auth.<APP_DOMAIN>`                                          |
+| `AUTH_CERTIFICATE_ARN` | Secret   | `us-east-1` certificate covering `AUTH_DOMAIN`; empty reuses `ACM_CERTIFICATE_ARN`                      |
+
+`SSO_CONFIG` holds only Secrets Manager ARNs. Store each OIDC client secret in
+Secrets Manager in the deployment account and Region. `hybrid` and `sso-only`
+require `SSO_CONFIG`, and `local` rejects it. The workflow validates the
+provider file with `scripts/sso-config.mjs` and writes it as
+`prod.sso.tfvars.json`, so both the draft and the final plan use it.
+
+`AUTH_DOMAIN` is not resolved before deployment, because its DNS record can
+only be created after the first apply. To enable SSO with a custom login
+domain:
+
+1. Set `AUTH_DOMAIN` (and `AUTH_CERTIFICATE_ARN` if needed) and deploy with
+   `AUTH_MODE` unset.
+2. Create the `AUTH_DOMAIN` DNS record pointing at the `auth_dns_target`
+   Terraform output and wait until it resolves.
+3. Register the `oidc_idp_callback_url` output with the identity provider.
+4. Set `AUTH_MODE=hybrid` and `SSO_CONFIG`, then deploy again. Move to
+   `sso-only` only after an SSO administrator has signed in successfully.
 
 The workflow generates `prod.tfvars` and `prod.s3.tfbackend` in the runner's
 temporary directory. It never runs `bootstrap.sh` and therefore never creates

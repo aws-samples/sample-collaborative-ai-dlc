@@ -20,17 +20,27 @@ output "user_pool_domain" {
 
 output "hosted_ui_domain" {
   description = "Full Cognito managed-login origin"
-  value       = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.region}.amazoncognito.com"
+  value       = local.hosted_ui_origin
 }
 
 output "oidc_idp_callback_url" {
   description = "Callback URL to register with an upstream OIDC provider"
-  value       = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/idpresponse"
+  value       = "${local.hosted_ui_origin}/oauth2/idpresponse"
 }
 
 output "saml_acs_url" {
   description = "SAML assertion consumer service URL"
-  value       = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/saml2/idpresponse"
+  value       = "${local.hosted_ui_origin}/saml2/idpresponse"
+}
+
+output "custom_domain_dns_target" {
+  description = "CloudFront hostname the custom managed-login domain's DNS alias (or CNAME) must point at, or an empty string without a custom domain"
+  value       = var.custom_domain != "" ? aws_cognito_user_pool_domain.custom[0].cloudfront_distribution : ""
+}
+
+output "custom_domain_dns_target_hosted_zone_id" {
+  description = "Hosted zone ID of the custom managed-login domain's CloudFront alias target"
+  value       = var.custom_domain != "" ? aws_cognito_user_pool_domain.custom[0].cloudfront_distribution_zone_id : ""
 }
 
 output "saml_entity_id" {
