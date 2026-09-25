@@ -1442,8 +1442,13 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           });
           if (validation.superseded) return { ok: false, reason: 'retired', intentId };
 
+          const gateAnswer = validation.gate?.answer;
+          const invalidOverrideReason =
+            gateOptions.includes('override-and-approve') &&
+            parseChoice(gateAnswer, ['override-and-approve']) === 'override-and-approve' &&
+            !gateOverrideReason(gateAnswer);
           const answered =
-            parseChoice(validation.gate?.answer, gateOptions) ??
+            (invalidOverrideReason ? 'request-changes' : parseChoice(gateAnswer, gateOptions)) ??
             (validation.gate?.status === 'approved' && gateOptions.includes('approve')
               ? 'approve'
               : validation.gate?.status === 'rejected'
