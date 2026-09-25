@@ -17,6 +17,7 @@ import {
 
 export interface StageForm {
   leadAgent?: string;
+  supportAgents?: string[];
   phase?: string;
   mode?: string;
   execution?: string;
@@ -168,6 +169,14 @@ export function StageEditor({ value, onChange, disabled, referenceOptions = {} }
               placeholder="Search agents"
             />
           </div>
+          <ChipPicker
+            label="Support agents"
+            values={value.supportAgents ?? []}
+            options={referenceOptions.agents}
+            onChange={(items) => set({ supportAgents: items })}
+            disabled={disabled}
+            placeholder="Add support agents"
+          />
           <div className="grid gap-4 md:grid-cols-2">
             <div className="grid gap-2">
               <Label>Inputs summary</Label>
@@ -245,7 +254,7 @@ export function StageEditor({ value, onChange, disabled, referenceOptions = {} }
             <SelectField
               label="Run mode"
               value={runMode}
-              values={['inline', 'subagent', 'agent-team']}
+              values={['inline', 'subagent', 'pipeline', 'mob', 'agent-team']}
               onChange={(mode) => set({ mode })}
               disabled={disabled}
             />

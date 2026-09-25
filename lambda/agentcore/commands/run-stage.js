@@ -2712,7 +2712,7 @@ export const runStage = async (
       .catch(() => {});
   }
 
-    let invocation;
+  let invocation;
   let prompt = null;
   if (!freshRun) {
     const mcpKwargs = await materializeCliMcp();

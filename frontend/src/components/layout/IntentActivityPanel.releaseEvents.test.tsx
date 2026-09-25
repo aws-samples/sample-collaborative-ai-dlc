@@ -21,9 +21,13 @@ const EVENTS = [
     type: 'v2.summary.noncompliant',
     summary: 'Outputs written without confirmation',
   },
+  { eventId: 'e8', type: 'v2.persona.contribution', summary: 'design-agent contributed' },
+  { eventId: 'e9', type: 'v2.persona.gap', summary: 'design-agent produced nothing' },
   { eventId: 'e10', type: 'v2.sensor.gate', summary: 'Gate-plane sensor verdict' },
   { eventId: 'e11', type: 'v2.change.accepted', summary: 'Changed input accepted' },
   { eventId: 'e12', type: 'v2.change.reconfirmed', summary: 'Changed input reconfirmed' },
+  // A family member nobody has classified yet: the suffix rule still colours it.
+  { eventId: 'e15', type: 'v2.persona.link_completed', summary: 'Pipeline link 2 completed' },
   { eventId: 'e16', type: 'v2.change.halt', summary: 'Change control halted the stage' },
   { eventId: 'e17', type: 'v2.plan.approved', summary: 'Code generation plan approved' },
   { eventId: 'e18', type: 'v2.plan.changes_requested', summary: 'Plan changes requested' },
@@ -36,6 +40,12 @@ const EVENTS = [
     type: 'v2.review.advisory',
     actor: 'arch-reviewer',
     summary: '## Review\n\n**Verdict:** READY\n\n| ID | Finding |\n|---|---|\n| Finding 1 | ok |',
+  },
+  {
+    eventId: 'e22',
+    type: 'v2.persona.question_withdrawn',
+    actor: 'design-agent',
+    summary: 'Withdrew an orphaned persona question',
   },
 ].map((event, index) => ({
   ...event,
@@ -81,8 +91,10 @@ describe('IntentActivityPanel release-semantics event colours', () => {
     for (const summary of [
       'Run resumed',
       'Consolidated summary confirmed',
+      'design-agent contributed',
       'Changed input accepted',
       'Changed input reconfirmed',
+      'Pipeline link 2 completed',
       'Code generation plan approved',
       'Learning recorded',
       'Unit fan-out approved',
@@ -96,6 +108,7 @@ describe('IntentActivityPanel release-semantics event colours', () => {
       'Advisory review recorded',
       'Summary changes requested',
       'Outputs written without confirmation',
+      'design-agent produced nothing',
       'Gate-plane sensor verdict',
       'Plan changes requested',
     ]) {
@@ -104,6 +117,11 @@ describe('IntentActivityPanel release-semantics event colours', () => {
 
     expect(dotClassFor('Change control halted the stage')).toBe('bg-agent-error');
     expect(dotClassFor('Learning write failed')).toBe('bg-agent-error');
+  });
+
+  it('names a withdrawn persona question instead of the generic persona label', () => {
+    render(<IntentActivityPanel onClose={() => {}} />);
+    expect(screen.getByText('Question withdrawn — design-agent')).toBeInTheDocument();
   });
 
   it('treats a failed gate resume as a wait to clear, not a failed run', () => {
