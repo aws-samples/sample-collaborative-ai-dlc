@@ -43,7 +43,7 @@ describe('CLI child process shutdown', () => {
       });
       const closed = new Promise((resolve, reject) => {
         runner.once('error', reject);
-        runner.once('close', (code, signal) => resolve({ code, signal }));
+        runner.once('close', (code, exitSignal) => resolve({ code, signal: exitSignal }));
       });
       await waitForFile(readyFile);
       runner.kill(signal);
