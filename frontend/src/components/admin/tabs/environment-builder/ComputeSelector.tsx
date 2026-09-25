@@ -151,7 +151,8 @@ export function ComputeSelector({ value, cells, disabled, onChange }: ComputeSel
           })}
           {value.architecture === 'x86_64' && (
             <li>
-              x86_64 environments derive from the Standard base and use x86_64 tool builds only.
+              Only tools with an x86_64 build are listed, and the base must be Standard or another
+              x86_64 environment.
             </li>
           )}
         </ul>
