@@ -462,6 +462,43 @@ describe('validation gate with findings', () => {
     expect(override.detail.receiptKinds.toSorted()).toEqual(['sensor-override', 'stage-approval']);
   });
 
+  it('bounds oversized approval fingerprints below DynamoDB item limits and marks them incomplete', async () => {
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      producedHeads: Array.from({ length: 5_000 }, (_, index) => ({
+        artifactType: 'requirements',
+        logicalKey: `intent::requirements::artifact-${index.toString().padStart(6, '0')}`,
+        snapshotHash: index.toString(16).padStart(64, '0'),
+      })),
+    });
+    const persistedReceipts = [];
+    deps.store.putReceipt = vi.fn(async (receipt) => {
+      if (Buffer.byteLength(JSON.stringify(receipt), 'utf8') > 400 * 1024) {
+        throw new Error('DynamoDB item exceeds the 400 KB limit');
+      }
+      persistedReceipts.push(receipt);
+      return receipt;
+    });
+
+    const result = await run();
+
+    expect(result.ok).toBe(true);
+    const receipt = persistedReceipts.find((row) => row.kind === 'stage-approval');
+    expect(receipt.detail.approvedInputsTruncated).toBe(true);
+    expect(receipt.detail.approvedInputsOmitted).toBeGreaterThan(0);
+    expect(receipt.detail.approvedInputs.length).toBeLessThan(5_000);
+    expect(receipt.detail.approvedInputs[0]).toEqual({
+      logicalKey: 'intent::requirements::artifact-000000',
+      snapshotHash: '0'.repeat(64),
+    });
+    expect(Object.keys(receipt.detail.approvedInputs[0]).toSorted()).toEqual([
+      'logicalKey',
+      'snapshotHash',
+    ]);
+    expect(Buffer.byteLength(JSON.stringify(receipt), 'utf8')).toBeLessThanOrEqual(400 * 1024);
+  });
+
   it('fails the durable approval step when the stage-approval receipt cannot be stored', async () => {
     deps.loadPlan = vi.fn(async () => ({
       valid: true,

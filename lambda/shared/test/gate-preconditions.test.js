@@ -136,6 +136,20 @@ describe('evaluateGatePreconditions: summary confirmation', () => {
     expect(result).toEqual({ ok: true, findings: [] });
   });
 
+  it('treats a write stamped at the exact confirmation time as stale', () => {
+    const decidedAt = '2026-01-01T00:00:00.000Z';
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: required,
+      receipts: [receipt({ decidedAt })],
+      events: [stamp('requirements', { timestamp: decidedAt })],
+      producedArtifacts: ['requirements'],
+    });
+
+    expect(codesOf(result)).toEqual(['summary_confirmation_stale']);
+    expect(result.findings[0].detail.artifacts).toEqual(['requirements']);
+  });
+
   it('treats an UNSTAMPED write as non-compliance, not as a pass', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,
@@ -652,6 +666,31 @@ describe('evaluateGatePreconditions: stage wall-clock budget', () => {
       severity: 'advisory',
       overridable: false,
     });
+  });
+
+  it('stays advisory when pipeline evidence exists but a support persona was cut', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        { kind: 'pipeline-link', attempt: 0, detail: { agentRef: 'lead' } },
+        { kind: 'pipeline-link', attempt: 0, detail: { agentRef: 'quality-agent' } },
+      ],
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        links: ['lead', 'quality-agent'],
+        dissent: [],
+        budgetExhausted: [{ agentRef: 'design-agent', role: 'support' }],
+      },
+    });
+
+    const budget = result.findings.find((item) => item.code === 'stage_budget_exhausted');
+    expect(result.ok).toBe(true);
+    expect(codesOf(result)).toContain('persona_contribution_missing');
+    expect(codesOf(result)).not.toContain('pipeline_link_incomplete');
+    expect(budget).toMatchObject({ severity: 'advisory', overridable: false });
+    expect(budget.receiptKind).toBeNull();
   });
 
   it('blocks a pipeline whose only completed link is the lead', () => {

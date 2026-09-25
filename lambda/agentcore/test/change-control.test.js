@@ -368,6 +368,28 @@ describe('runStage — change_control: relaxed', () => {
     expect(accepted).toHaveLength(1);
     expect(accepted[0].detail).toMatchObject({ fromHash: 'sha-old', toHash: 'sha-new' });
   });
+
+  it('requires human reconfirmation when an approval receipt has incomplete input history', async () => {
+    const store = harnessStore({
+      receipts: [
+        {
+          ...APPROVAL,
+          detail: { approvedInputs: [], approvedInputsTruncated: true, approvedInputsOmitted: 1 },
+        },
+      ],
+    });
+    const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'relaxed' } }));
+
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+    });
+    expect(store.of('appendEvent').map((event) => event.type)).not.toContain('v2.change.accepted');
+    const [gate] = store.of('createHumanTask');
+    const [question] = JSON.parse(gate.questions);
+    expect(question.text).toContain('approval receipt exceeded its size limit');
+  });
 });
 
 describe('runStage — change_control: strict', () => {

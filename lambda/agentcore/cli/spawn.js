@@ -16,6 +16,41 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'spawn' } });
+const usesPosixProcessGroups = process.platform !== 'win32';
+
+const killProcessTree = (child) => {
+  if (!child?.pid || !usesPosixProcessGroups) {
+    try {
+      child?.kill?.('SIGKILL');
+    } catch {
+      /* the child may have exited while the timeout was firing */
+    }
+    return;
+  }
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    // The process group may already be gone; still try the direct child as a
+    // fallback for a platform/runtime that did not establish the new group.
+    try {
+      child.kill?.('SIGKILL');
+    } catch {
+      /* the child may have exited while cleanup was running */
+    }
+  }
+};
+
+// A CLI may exit successfully after leaving background tools behind. Detached
+// POSIX children are their own process-group leaders, so reap the remaining
+// group as soon as the CLI exits, before inherited descriptors can delay close.
+const killRemainingProcessGroup = (child) => {
+  if (!child?.pid || !usesPosixProcessGroups) return;
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    /* the process group exited with the CLI */
+  }
+};
 
 // Keep only the last `max` bytes of a growing string — the tail is where a CLI
 // prints its terminating error, and it bounds memory on a chatty child.
@@ -42,6 +77,7 @@ export const runChild = ({
         cwd,
         env: mergedEnv,
         shell: false,
+        detached: usesPosixProcessGroups,
         stdio: [
           promptViaStdin ? 'pipe' : 'ignore',
           onStdout ? 'pipe' : 'inherit',
@@ -80,16 +116,13 @@ export const runChild = ({
       resolve({ exitCode, stderrTail, ...(timedOut ? { timedOut: true } : {}) });
     };
     child.on('error', () => finish(null)); // spawn failure → runner maps to FAILED
+    child.on('exit', () => killRemainingProcessGroup(child));
     child.on('close', (code) => finish(code));
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         if (settled) return;
         timedOut = true;
-        try {
-          child.kill?.('SIGKILL');
-        } catch {
-          /* the child may have exited while the timeout was firing */
-        }
+        killProcessTree(child);
       }, timeoutMs);
       timer.unref?.();
     }
@@ -131,6 +164,7 @@ export const captureChild = ({
         cwd,
         env: mergedEnv,
         shell: false,
+        detached: usesPosixProcessGroups,
         stdio: [promptViaStdin ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
       });
     } catch (e) {
@@ -153,14 +187,11 @@ export const captureChild = ({
       if (timer) clearTimeout(timer);
       resolve({ exitCode, stdout, stderr, timedOut });
     };
+    child.on('exit', () => killRemainingProcessGroup(child));
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         timedOut = true;
-        try {
-          child.kill?.('SIGKILL');
-        } catch {
-          /* already gone */
-        }
+        killProcessTree(child);
         // Resolve immediately — a SIGKILLed child's close event may never
         // arrive through a mocked/edge-case stream teardown, and the caller
         // must not hang on the very thing the timeout guards against.

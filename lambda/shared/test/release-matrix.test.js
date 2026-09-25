@@ -401,11 +401,12 @@ describe('release coexistence matrix', () => {
               loopBackOffered: noEvidenceLoopBack.offered,
             });
             expect(noEvidenceOptions).toContain('request-changes');
-            expect(
-              noEvidenceOptions.includes('approve') ||
-                noEvidenceOptions.includes('override-and-approve'),
-              `${profileId}/${scope}/${stage.stageId} approval escape`,
-            ).toBe(true);
+            if (blocking.length > 0) {
+              expect(noEvidenceOptions).toEqual(['request-changes', 'override-and-approve']);
+              expect(noEvidenceOptions).not.toContain('approve');
+            } else {
+              expect(noEvidenceOptions).toEqual(['approve', 'request-changes']);
+            }
             if (noEvidenceLoopBack.offered) loopBacks.push(stage.stageId);
           }
 

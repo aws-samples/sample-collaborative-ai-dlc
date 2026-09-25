@@ -103,6 +103,7 @@ const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
   Number(process.env.DURABLE_GATE_DEADLINE_MARGIN_SECONDS || 300);
+const MAX_STAGE_APPROVAL_DETAIL_BYTES = 300 * 1024;
 
 // AgentCore requires a session id >= 33 chars; reuse ONE per intent so the
 // checkout stays warm across init-ws + every run-stage (matches scripts/phaseb.sh).
@@ -1726,6 +1727,44 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     logicalKey: head.logicalKey,
                     snapshotHash: head.snapshotHash,
                   }));
+                  const detail = {
+                    ...stageApprovalOverride,
+                    approvedInputs,
+                    ...(learningsRitual
+                      ? {
+                          learnings: gateLearnings(validation.gate?.answer) ? 'offered' : 'none',
+                        }
+                      : {}),
+                  };
+                  let boundedDetail = detail;
+                  if (
+                    Buffer.byteLength(JSON.stringify(detail), 'utf8') >
+                    MAX_STAGE_APPROVAL_DETAIL_BYTES
+                  ) {
+                    let low = 0;
+                    let high = approvedInputs.length;
+                    while (low <= high) {
+                      const count = Math.floor((low + high) / 2);
+                      const candidate = {
+                        ...detail,
+                        approvedInputs: approvedInputs.slice(0, count),
+                        approvedInputsTruncated: true,
+                        approvedInputsOmitted: approvedInputs.length - count,
+                      };
+                      if (
+                        Buffer.byteLength(JSON.stringify(candidate), 'utf8') <=
+                        MAX_STAGE_APPROVAL_DETAIL_BYTES
+                      ) {
+                        boundedDetail = candidate;
+                        low = count + 1;
+                      } else {
+                        high = count - 1;
+                      }
+                    }
+                    if (boundedDetail === detail) {
+                      throw new Error('stage-approval receipt detail exceeds its safe size limit');
+                    }
+                  }
                   await store.putReceipt({
                     executionId,
                     kind: 'stage-approval',
@@ -1735,15 +1774,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     decidedBy: validation.gate?.answeredBy ?? null,
                     decidedByName: validation.gate?.answeredByName ?? null,
                     humanTaskId: validation.gate?.humanTaskId ?? null,
-                    detail: {
-                      ...stageApprovalOverride,
-                      approvedInputs,
-                      ...(learningsRitual
-                        ? {
-                            learnings: gateLearnings(validation.gate?.answer) ? 'offered' : 'none',
-                          }
-                        : {}),
-                    },
+                    detail: boundedDetail,
                   });
                 },
               );
