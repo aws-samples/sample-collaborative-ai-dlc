@@ -99,6 +99,39 @@ describe('managed environment handler', () => {
     });
   });
 
+  it('reports deployment capabilities so the UI can hide unconfigured compute types', async () => {
+    const handler = createHandler({ store: storeBase() });
+
+    // Default deployment: enable_instances_compute is off.
+    const disabled = await handler({
+      httpMethod: 'GET',
+      path: '/environments/capabilities',
+      ...claims(),
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect(JSON.parse(disabled.body)).toEqual({
+      instancesCompute: false,
+      amd64CoreImage: false,
+    });
+
+    // Instances-enabled deployment.
+    vi.stubEnv('MANAGED_INSTANCES_OPERATOR_ROLE_ARN', 'arn:aws:iam::1:role/operator');
+    vi.stubEnv('MANAGED_INSTANCES_SUBNETS', '["subnet-1"]');
+    vi.stubEnv('MANAGED_INSTANCES_SECURITY_GROUPS', '["sg-1"]');
+    vi.stubEnv('CORE_IMAGE_URI_AMD64', '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core');
+    vi.stubEnv('CORE_IMAGE_DIGEST_AMD64', `sha256:${'d'.repeat(64)}`);
+    const enabled = await handler({
+      httpMethod: 'GET',
+      path: '/environments/capabilities',
+      ...claims(),
+    });
+    expect(JSON.parse(enabled.body)).toEqual({
+      instancesCompute: true,
+      amd64CoreImage: true,
+    });
+    vi.unstubAllEnvs();
+  });
+
   it('requires fixed-tool environments to be recreated with catalog tools', async () => {
     const environment = {
       environmentId: 'go',
@@ -201,6 +234,148 @@ describe('managed environment handler', () => {
     });
     expect(store.createRevision).not.toHaveBeenCalled();
     expect(codebuildClient.send).not.toHaveBeenCalled();
+  });
+
+  it('rejects a default microVM environment derived from a published x86_64 base', async () => {
+    const x86Parent = {
+      environmentId: 'x86-parent',
+      status: 'PUBLISHED',
+      baseEnvironmentId: 'standard',
+      publishedRevisionId: 'r-x86',
+      currentRevisionId: 'r-x86',
+    };
+    const x86Revision = {
+      environmentId: 'x86-parent',
+      revisionId: 'r-x86',
+      status: 'PUBLISHED',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/environments',
+      imageDigest: `sha256:${'d'.repeat(64)}`,
+      recipe: { ...CATALOG_RECIPE, architecture: 'x86_64' },
+      flattenedRecipe: { ...CATALOG_RECIPE, architecture: 'x86_64' },
+    };
+    const store = {
+      ...storeBase(),
+      getEnvironment: vi
+        .fn()
+        .mockImplementation(async (environmentId) =>
+          environmentId === 'x86-parent' ? x86Parent : null,
+        ),
+      getRevision: vi.fn().mockResolvedValue(x86Revision),
+      createEnvironment: vi.fn(),
+    };
+    const handler = createHandler({ store });
+
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/environments',
+      body: JSON.stringify({
+        name: 'Derived',
+        baseEnvironmentId: 'x86-parent',
+        recipe: CATALOG_RECIPE,
+      }),
+      ...claims('platform-admin'),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({
+      code: 'BASE_ARCHITECTURE_MISMATCH',
+    });
+    expect(store.createEnvironment).not.toHaveBeenCalled();
+  });
+
+  describe('x86_64 environments with catalog tools', () => {
+    const amdDigest = `sha256:${'b'.repeat(64)}`;
+    const standard = {
+      environmentId: 'standard',
+      status: 'PUBLISHED',
+      publishedRevisionId: 'core-1',
+    };
+    const standardRevision = {
+      ...BASE,
+      environmentId: 'standard',
+      status: 'PUBLISHED',
+      recipe: CATALOG_RECIPE,
+      flattenedRecipe: CATALOG_RECIPE,
+      amd64Image: { imageUri: BASE.imageUri, imageDigest: amdDigest },
+    };
+    const toolVersion = (versionId, architecture) => ({
+      toolId: 'go',
+      versionId,
+      status: 'PUBLISHED',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/tools',
+      imageDigest: `sha256:${(architecture === 'x86_64' ? 'e' : 'f').repeat(64)}`,
+      definition: {
+        version: '1.24.6',
+        ...(architecture === 'x86_64' ? { architecture } : {}),
+        executables: [{ name: 'go', path: 'bin/go' }],
+        dependencies: [],
+        aptPackages: [],
+        environmentVariables: {},
+        verification: { preset: 'go' },
+      },
+    });
+    const toolStore = {
+      listTools: vi.fn().mockResolvedValue([{ toolId: 'go', name: 'Go SDK' }]),
+      listAllVersions: vi
+        .fn()
+        .mockResolvedValue([toolVersion('tv-go-arm', 'arm64'), toolVersion('tv-go-x86', 'x86_64')]),
+    };
+    const create = (toolVersionIds) => {
+      const store = {
+        ...storeBase(),
+        getEnvironment: vi
+          .fn()
+          .mockImplementation(async (id) => (id === 'standard' ? standard : null)),
+        getRevision: vi.fn().mockResolvedValue(standardRevision),
+        createEnvironment: vi.fn().mockImplementation(async (item) => item),
+      };
+      const handler = createHandler({ store, toolStore });
+      return {
+        store,
+        response: handler({
+          httpMethod: 'POST',
+          path: '/environments',
+          body: JSON.stringify({
+            environmentId: 'go-x86',
+            name: 'Go x86',
+            compute: { type: 'instances', architecture: 'x86_64' },
+            recipe: { ...CATALOG_RECIPE, toolVersionIds },
+          }),
+          ...claims('platform-admin'),
+        }),
+      };
+    };
+
+    beforeEach(() => {
+      vi.stubEnv('MANAGED_INSTANCES_OPERATOR_ROLE_ARN', 'arn:aws:iam::1:role/operator');
+      vi.stubEnv('MANAGED_INSTANCES_SUBNETS', '["subnet-1"]');
+      vi.stubEnv('MANAGED_INSTANCES_SECURITY_GROUPS', '["sg-1"]');
+      vi.stubEnv('CORE_IMAGE_URI_AMD64', BASE.imageUri);
+      vi.stubEnv('CORE_IMAGE_DIGEST_AMD64', amdDigest);
+    });
+
+    it('builds from the amd64 core with the x86_64 tool image', async () => {
+      const { store, response } = create(['tv-go-x86']);
+      const result = await response;
+      expect(result.statusCode).toBe(201);
+      const { recipe, flattenedRecipe } = store.createEnvironment.mock.calls[0][0];
+      expect(recipe.architecture).toBe('x86_64');
+      expect(recipe.base.imageDigest).toBe(amdDigest);
+      expect(recipe.tools).toEqual([
+        expect.objectContaining({ versionId: 'tv-go-x86', architecture: 'x86_64' }),
+      ]);
+      expect(flattenedRecipe.resolvedTools).toEqual([
+        expect.objectContaining({ versionId: 'tv-go-x86' }),
+      ]);
+    });
+
+    it('rejects an arm64 tool build with an actionable error', async () => {
+      const { store, response } = create(['tv-go-arm']);
+      const result = await response;
+      expect(result.statusCode).toBe(409);
+      expect(JSON.parse(result.body)).toMatchObject({ code: 'TOOL_ARCHITECTURE_MISMATCH' });
+      expect(store.createEnvironment).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects retrying a failed revision pinned to an outdated base', async () => {

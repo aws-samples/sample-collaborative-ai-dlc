@@ -4,6 +4,9 @@ import type {
   EnvironmentRevision,
   EnvironmentToolSnapshot,
   ManagedEnvironment,
+  ManagedTool,
+  ManagedToolVersion,
+  ToolArchitecture,
 } from '@/services/environments';
 
 export const RUNTIME_IMAGE_LIMIT_BYTES = 2048 * 1024 * 1024;
@@ -18,17 +21,47 @@ export interface EnvironmentForm {
   name: string;
   description: string;
   baseEnvironmentId: string;
+  compute: 'microvms' | 'instances-x86_64';
   toolVersionIds: string[];
   aptPackages: KeyValueEntry[];
   environmentVariables: KeyValueEntry[];
   buildCommands: string[];
 }
 
+export const formArchitecture = (form: Pick<EnvironmentForm, 'compute'>): ToolArchitecture =>
+  form.compute === 'instances-x86_64' ? 'x86_64' : 'arm64';
+
+export const toolVersionArchitecture = (version: ManagedToolVersion): ToolArchitecture =>
+  version.definition.architecture === 'x86_64' ? 'x86_64' : 'arm64';
+
+// Projects the catalog onto one architecture: each family keeps only the
+// versions built for it, and recommendedVersionId points at that
+// architecture's recommendation. Families with no build for the architecture
+// are dropped. arm64 input is returned with the same shape as before, so the
+// builder's composition logic stays architecture-agnostic.
+export const toolsForArchitecture = (
+  tools: ManagedTool[],
+  architecture: ToolArchitecture,
+): ManagedTool[] =>
+  tools
+    .map((tool) => ({
+      ...tool,
+      recommendedVersionId:
+        architecture === 'x86_64'
+          ? (tool.recommendedX86_64VersionId ?? null)
+          : tool.recommendedVersionId,
+      versions: tool.versions.filter(
+        (version) => toolVersionArchitecture(version) === architecture,
+      ),
+    }))
+    .filter((tool) => tool.versions.length > 0);
+
 export const emptyEnvironmentForm = (): EnvironmentForm => ({
   environmentId: '',
   name: '',
   description: '',
   baseEnvironmentId: 'standard',
+  compute: 'microvms',
   toolVersionIds: [],
   aptPackages: [],
   environmentVariables: [],
@@ -70,6 +103,10 @@ export const formFromRevision = (
       environment.environmentId === 'standard'
         ? ''
         : (recipe?.base?.environmentId ?? environment.baseEnvironmentId ?? 'standard'),
+    compute:
+      environment.compute?.type === 'instances' && environment.compute.architecture === 'x86_64'
+        ? 'instances-x86_64'
+        : 'microvms',
     toolVersionIds: directToolVersionIds(revision),
     aptPackages: (recipe?.aptPackages ?? []).map((pkg) => ({
       name: pkg.name,

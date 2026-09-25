@@ -30,6 +30,10 @@ const mutableStore = (initialRevision = revision) => {
     listRevisionsByStatus: vi
       .fn()
       .mockImplementation(async (status) => (current.status === status ? [current] : [])),
+    listSessionCleanups: vi.fn().mockResolvedValue([]),
+    putSessionCleanup: vi.fn().mockResolvedValue({}),
+    recordSessionCleanupAttempt: vi.fn().mockResolvedValue({}),
+    deleteSessionCleanup: vi.fn().mockResolvedValue(undefined),
   };
 };
 
@@ -604,5 +608,73 @@ describe('managed environment status handler', () => {
     });
 
     await expect(handler(buildEvent)).rejects.toThrow('registry unavailable');
+  });
+
+  it('isolates poll items — a throwing revision cannot starve the acknowledged pass', async () => {
+    // One poisoned SCANNING revision (its image inspection throws every poll)
+    // and one acknowledged SECURITY_REVIEW revision waiting for its runtime.
+    // Without per-item isolation the throw aborts the whole poll and the
+    // acknowledged revision never advances — "accepted the findings and
+    // nothing happens".
+    const scanning = {
+      environmentId: 'poisoned',
+      revisionId: 'r-bad',
+      status: 'SCANNING',
+      runtimeCompatibilityVersion: '1',
+    };
+    const acknowledged = {
+      environmentId: 'custom',
+      revisionId: 'r-ok',
+      status: 'SECURITY_REVIEW',
+      securityFindingsAcceptedAt: '2026-01-01T00:00:00.000Z',
+      runtimeCompatibilityVersion: '1',
+      imageUri: 'uri',
+      imageDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    const store = {
+      getEnvironment: vi
+        .fn()
+        .mockImplementation(async (environmentId) => ({ environmentId, status: 'SCANNING' })),
+      getRevision: vi.fn().mockResolvedValue(acknowledged),
+      updateRevision: vi.fn().mockImplementation(async (_e, revisionId, patch) => {
+        // The poisoned revision's registry write fails on every poll — the
+        // escaping error used to abort the whole poll run.
+        if (revisionId === 'r-bad') throw new Error('registry write exploded');
+        return { ...acknowledged, ...patch };
+      }),
+      updateEnvironment: vi.fn().mockResolvedValue({}),
+      listRevisionsByStatus: vi.fn().mockImplementation(async (status) => {
+        if (status === 'SCANNING') return [scanning];
+        if (status === 'SECURITY_REVIEW') return [acknowledged];
+        return [];
+      }),
+      listSessionCleanups: vi.fn().mockResolvedValue([]),
+    };
+    const ecrClient = { send: vi.fn().mockRejectedValue(new Error('inspection exploded')) };
+    const controlClient = {
+      send: vi.fn().mockResolvedValue({
+        agentRuntimeArn: 'arn:runtime',
+        agentRuntimeId: 'rt-1',
+        agentRuntimeVersion: '1',
+      }),
+    };
+    const handler = createStatusHandler({
+      store,
+      ecrClient,
+      controlClient,
+      runtimeClient: { send: vi.fn() },
+    });
+
+    const result = await handler({ action: 'poll' });
+    // The poisoned revision is reported, not fatal…
+    expect(result.results).toContainEqual(
+      expect.objectContaining({ revisionId: 'r-bad', error: 'registry write exploded' }),
+    );
+    // …and the acknowledged revision still got its runtime created.
+    expect(
+      store.updateRevision.mock.calls.some(
+        (call) => call[1] === 'r-ok' && call[2].status === 'VERIFYING',
+      ),
+    ).toBe(true);
   });
 });

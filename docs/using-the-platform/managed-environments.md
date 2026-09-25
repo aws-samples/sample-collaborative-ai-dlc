@@ -495,6 +495,79 @@ Environment variables and build commands cannot replace protected runtime
 behavior, inject secrets, change the runtime user, entrypoint, command, port,
 or health contract, or overwrite protected platform variables.
 
+### The Instances (EC2) compute type
+
+Environments run on serverless AgentCore microVMs (arm64) by default. A
+deployment can additionally offer the **Instances** compute type, which runs
+agent sessions on EC2 managed instances in the platform account through
+AgentCore capacity providers. Choose it for workloads that need the x86_64
+architecture or a persistent, larger workspace volume.
+
+#### Enable it on the deployment
+
+The compute type is opt-in per deployment:
+
+```hcl
+enable_instances_compute = true
+
+# Optional overrides
+instances_allowed_instance_types = ["m6i.large"] # burstable (t-family) is not supported
+instances_workspace_gib          = 50
+```
+
+Enabling the flag provisions the x86_64 (amd64) build of the platform core
+image, the capacity-provider operator role, and the VPC wiring the instances
+attach to. When the flag is off (the default), the compute selector is hidden
+in **Admin -> Environments** and the API rejects Instances drafts with
+`INSTANCES_COMPUTE_NOT_CONFIGURED`.
+
+#### Create an Instances environment
+
+With the flag enabled, **New environment** shows a **Compute** selector:
+
+- **Serverless microVMs (arm64)** — the default described above.
+- **EC2 Instances (x86_64)** — runs on EC2 managed instances.
+
+The compute type is fixed at creation and cannot be changed afterwards.
+Instances environments currently have two restrictions:
+
+- They must derive directly from the **Standard** base environment. The build
+  swaps the base for the published core revision's x86_64 image variant.
+- **Catalog tools cannot be selected yet** — tool builds are arm64-only today.
+  Use apt packages and restricted build commands under Advanced settings to
+  add x86_64 capabilities.
+
+The build, security review, and publish flows are identical to microVM
+environments, with one difference: runtime validation first has to provision
+an EC2 instance, so a cold start can take several minutes. The revision stays
+`VERIFYING` while the poller re-attaches to the same validation session until
+the instance is up (bounded by `MANAGED_INSTANCES_VALIDATION_MAX_POLLS`,
+30 polls by default).
+
+#### Persistent workspaces and cost
+
+Each Instances session attaches a dedicated EBS workspace volume (gp3,
+`instances_workspace_gib`, 50 GiB by default) mounted at `/mnt/workspace`. The
+volume survives session stops, idle timeouts, and instance lifetimes — an
+intent can resume exactly where it left off, including across parallel unit
+lanes, which each get their own session and volume.
+
+Because the volume persists, it also keeps billing until its session is
+explicitly deleted. The platform deletes sessions (and releases their
+volumes):
+
+- when an intent is deleted — every persisted session of the intent (the main
+  session and all unit-lane sessions, including lanes from earlier plans) is
+  deleted before the intent records are removed, and the deletion is retried
+  until it succeeds;
+- after runtime validation — the disposable validation session is deleted on
+  every terminal outcome, and a failed deletion is retained as durable cleanup
+  work that the status poller retries until the session is gone.
+
+EC2 instances themselves start on demand and are reclaimed by the capacity
+provider; you pay for instance time while sessions are active plus EBS storage
+for volumes of intents that still exist.
+
 ### What an environment build verifies
 
 The generated Dockerfile:
@@ -509,7 +582,8 @@ The generated Dockerfile:
 
 The build then checks:
 
-- ARM64 architecture and the pinned base digest.
+- The target architecture (arm64, or x86_64 for Instances environments) and
+  the pinned base digest.
 - Protected runtime files against the base.
 - Non-root execution and writable workspace behavior.
 - The generated SPDX SBOM.

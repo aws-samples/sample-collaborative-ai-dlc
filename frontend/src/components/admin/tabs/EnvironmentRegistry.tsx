@@ -26,6 +26,7 @@ import { SettingsCard } from '@/components/settings/SettingsCard';
 import {
   environmentsService,
   toolsService,
+  type EnvironmentCapabilities,
   type EnvironmentDetail,
   type EnvironmentRevision,
   type ManagedEnvironment,
@@ -119,6 +120,7 @@ export function EnvironmentRegistry() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<EnvironmentFilter>('all');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [capabilities, setCapabilities] = useState<EnvironmentCapabilities | null>(null);
   const loadedEnvironmentId = useRef<string | null>(null);
 
   const setFormAndBaseline = useCallback((next: EnvironmentForm) => {
@@ -188,6 +190,12 @@ export function EnvironmentRegistry() {
         setError(reason instanceof Error ? reason.message : 'Failed to load environments'),
       )
       .finally(() => setLoading(false));
+    // Capability probe is best-effort: on failure the EC2 option simply stays
+    // hidden, which is the safe default.
+    environmentsService
+      .capabilities()
+      .then(setCapabilities)
+      .catch(() => setCapabilities(null));
   }, [loadList]);
 
   useEffect(() => {
@@ -259,7 +267,12 @@ export function EnvironmentRegistry() {
     (environment) =>
       environment.publishedRevisionId &&
       environment.status !== 'RETIRED' &&
-      (creating || environment.environmentId !== selectedId),
+      (creating || environment.environmentId !== selectedId) &&
+      // A base must match the architecture: an image cannot be built FROM a
+      // base of another architecture. Standard serves both (its amd64 core
+      // variant is used for x86_64).
+      (environment.environmentId === 'standard' ||
+        (environment.compute?.architecture === 'x86_64') === (form.compute === 'instances-x86_64')),
   );
   const updates = environments.filter((environment) => environment.updateAvailable);
   const activeBaseDetail =
@@ -310,6 +323,9 @@ export function EnvironmentRegistry() {
         name: form.name.trim(),
         description: form.description.trim(),
         baseEnvironmentId: form.baseEnvironmentId,
+        ...(form.compute === 'instances-x86_64'
+          ? { compute: { type: 'instances' as const, architecture: 'x86_64' as const } }
+          : {}),
         recipe: recipeFromForm(form),
       });
       setCreating(false);
@@ -572,6 +588,7 @@ export function EnvironmentRegistry() {
                     tools={tools}
                     disabled={Boolean(busy)}
                     showId
+                    instancesComputeEnabled={capabilities?.instancesCompute ?? false}
                     actionLabel="Create draft"
                     actionBusy={busy === 'create'}
                     actionDisabled={Boolean(busy) || baseLoading || !baseRevision}
@@ -694,6 +711,7 @@ export function EnvironmentRegistry() {
                           tools={tools}
                           disabled={Boolean(busy)}
                           showId={false}
+                          instancesComputeEnabled={capabilities?.instancesCompute ?? false}
                           actionLabel="Save as new revision"
                           actionBusy={busy === 'save'}
                           actionDisabled={Boolean(busy) || baseLoading || !baseRevision || !isDirty}

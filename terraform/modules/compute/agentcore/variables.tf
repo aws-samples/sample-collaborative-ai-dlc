@@ -160,3 +160,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "build_amd64_image" {
+  description = "Also build an amd64 variant of the core image (required for x86_64 managed environments on the Instances compute type)"
+  type        = bool
+  default     = false
+}

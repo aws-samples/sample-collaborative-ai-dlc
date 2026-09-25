@@ -561,6 +561,7 @@ module "agentcore" {
   powertools_log_level        = var.powertools_log_level
   aws_region                  = var.aws_region
   docker_build_args           = var.docker_build_args
+  build_amd64_image           = var.enable_instances_compute
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id
   artifacts_bucket_name       = module.s3.artifacts_bucket_name
@@ -618,6 +619,11 @@ module "managed_environments" {
   environment_repository_url    = module.agentcore.managed_environment_repository_url
   environment_repository_arn    = module.agentcore.managed_environment_repository_arn
   cors_allowed_origins          = local.cors_allowed_origins
+
+  instances_compute_enabled        = var.enable_instances_compute
+  core_image_uri_amd64             = var.enable_instances_compute ? module.agentcore.ecr_repository_url : ""
+  core_image_digest_amd64          = module.agentcore.image_digest_amd64
+  instances_allowed_instance_types = var.instances_allowed_instance_types
 
   tags = {
     Environment = var.environment

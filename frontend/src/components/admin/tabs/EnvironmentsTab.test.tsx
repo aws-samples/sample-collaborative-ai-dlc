@@ -10,10 +10,12 @@ const create = vi.fn();
 const update = vi.fn();
 const acceptFindings = vi.fn();
 const rebuild = vi.fn();
+const capabilities = vi.fn();
 
 vi.mock('@/services/environments', () => ({
   environmentsService: {
     list: (...args: unknown[]) => list(...args),
+    capabilities: (...args: unknown[]) => capabilities(...args),
     get: (...args: unknown[]) => get(...args),
     build: (...args: unknown[]) => build(...args),
     create: (...args: unknown[]) => create(...args),
@@ -254,6 +256,7 @@ describe('EnvironmentsTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockResolvedValue([custom, standard]);
+    capabilities.mockResolvedValue({ instancesCompute: false, amd64CoreImage: false });
     listTools.mockResolvedValue([javaTool]);
     get.mockImplementation(async (environmentId: string) =>
       environmentId === 'standard'

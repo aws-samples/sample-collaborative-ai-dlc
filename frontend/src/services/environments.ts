@@ -119,6 +119,7 @@ export interface ManagedEnvironment {
   system: boolean;
   status: EnvironmentStatus;
   baseEnvironmentId: string | null;
+  compute?: { type: 'microvms' | 'instances'; architecture: 'arm64' | 'x86_64' } | null;
   currentRevisionId: string;
   publishedRevisionId: string | null;
   updateAvailable: boolean;
@@ -209,9 +210,13 @@ export interface ToolVerification {
   files: { path: string; content: string }[];
 }
 
+export type ToolArchitecture = 'arm64' | 'x86_64';
+
 export interface ToolVersionDefinition {
   schemaVersion: 1;
   version: string;
+  // Omitted for arm64 (the default); x86_64 builds are separate versions.
+  architecture?: 'x86_64';
   distribution?: string;
   publisher?: string;
   source: {
@@ -272,6 +277,7 @@ export interface ManagedTool {
   publisher: string;
   system: boolean;
   recommendedVersionId: string | null;
+  recommendedX86_64VersionId?: string | null;
   versions: ManagedToolVersion[];
   createdAt: string;
   updatedAt: string;
@@ -289,6 +295,11 @@ export interface ProjectEnvironmentAssignment {
   updatedAt?: string;
 }
 
+export interface EnvironmentCapabilities {
+  instancesCompute: boolean;
+  amd64CoreImage: boolean;
+}
+
 const environmentPath = (environmentId: string) =>
   `/environments/${encodeURIComponent(environmentId)}`;
 const revisionPath = (environmentId: string, revisionId: string) =>
@@ -297,12 +308,14 @@ const revisionPath = (environmentId: string, revisionId: string) =>
 export const environmentsService = {
   list: (publishedOnly = false) =>
     api.get<ManagedEnvironment[]>(`/environments${publishedOnly ? '?published=true' : ''}`),
+  capabilities: () => api.get<EnvironmentCapabilities>('/environments/capabilities'),
   get: (environmentId: string) => api.get<EnvironmentDetail>(environmentPath(environmentId)),
   create: (input: {
     environmentId?: string;
     name: string;
     description?: string;
     baseEnvironmentId: string;
+    compute?: { type: 'microvms' | 'instances'; architecture?: 'arm64' | 'x86_64' };
     recipe: EnvironmentRecipeInput;
   }) => api.post<EnvironmentMutationResult>('/environments', input),
   update: (

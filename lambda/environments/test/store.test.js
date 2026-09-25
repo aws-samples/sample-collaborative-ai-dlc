@@ -25,6 +25,21 @@ const createDdb = (items) => ({
       }
       return {};
     }
+    if (command.constructor.name === 'UpdateCommand') {
+      // Minimal SET applier: "name = :token" pairs, resolving expression
+      // attribute names, enough for updateRevision.
+      const current = items.get(keyOf(command.input.Key)) ?? {};
+      const names = command.input.ExpressionAttributeNames ?? {};
+      const values = command.input.ExpressionAttributeValues ?? {};
+      const next = { ...current };
+      const sets = command.input.UpdateExpression.replace(/^SET\s+/, '').split(', ');
+      for (const assignment of sets) {
+        const [rawName, token] = assignment.split(' = ');
+        next[names[rawName] ?? rawName] = values[token];
+      }
+      items.set(keyOf(command.input.Key), next);
+      return { Attributes: next };
+    }
     throw new Error(`Unsupported command ${command.constructor.name}`);
   }),
 });
@@ -90,6 +105,10 @@ describe('environment registry store', () => {
       coreImageDigest: newDigest,
       coreRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/core',
       coreRuntimeVersion: '2',
+      coreAmd64Image: {
+        imageUri: 'core-repository-amd64',
+        imageDigest: `sha256:${'d'.repeat(64)}`,
+      },
     });
 
     expect(staged).toMatchObject({
@@ -97,12 +116,36 @@ describe('environment registry store', () => {
       imageDigest: newDigest,
       runtimeCompatibilityVersion: '2',
       verification: { status: 'PASSED', source: 'core-runtime' },
+      // The amd64 variant travels with the revision it belongs to.
+      amd64Image: { imageUri: 'core-repository-amd64', imageDigest: `sha256:${'d'.repeat(64)}` },
     });
     expect(items.get('ENV#standard|META')).toMatchObject({
       publishedRevisionId: 'core-1',
       currentRevisionId: `core-2-${'b'.repeat(12)}`,
       status: 'UPDATE_AVAILABLE',
       updateAvailable: true,
+    });
+    // The published revision keeps ITS digest and gains no foreign variant —
+    // an x86 environment created in the upgrade window resolves nothing new.
+    expect(items.get('ENV#standard|REV#core-1').amd64Image).toBeUndefined();
+
+    // Re-staging the SAME digest as the published revision backfills the
+    // variant that belongs to it (pre-existing deployments gain x86 support).
+    items.get('ENV#standard|REV#core-1').imageDigest = newDigest;
+    const backfilled = await store.stageCoreRevision({
+      coreImageUri: 'core-repository',
+      coreImageDigest: newDigest,
+      coreRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/core',
+      coreRuntimeVersion: '2',
+      coreAmd64Image: {
+        imageUri: 'core-repository-amd64',
+        imageDigest: `sha256:${'d'.repeat(64)}`,
+      },
+    });
+    expect(backfilled).toBeNull();
+    expect(items.get('ENV#standard|REV#core-1').amd64Image).toEqual({
+      imageUri: 'core-repository-amd64',
+      imageDigest: `sha256:${'d'.repeat(64)}`,
     });
   });
 
@@ -395,5 +438,58 @@ describe('environment registry store', () => {
         ':retired': 'RETIRED',
       },
     });
+  });
+});
+
+describe('session cleanup records', () => {
+  it('persists the provider/session identity into the shared GSI1 partition', async () => {
+    const sends = [];
+    const ddb = {
+      send: vi.fn().mockImplementation(async (command) => {
+        sends.push(command);
+        if (command.constructor.name === 'QueryCommand') return { Items: [] };
+        return {};
+      }),
+    };
+    const store = createEnvironmentStore({
+      ddb,
+      tableName: 'registry',
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+
+    const item = await store.putSessionCleanup({
+      sessionId: 'managed-environment-r-1-session',
+      capacityProviderArn: 'arn:aws:bedrock-agentcore:us-east-1:1:capacity-provider/cp-1',
+      environmentId: 'x86-build',
+      revisionId: 'r-1',
+      reason: 'internal error',
+    });
+    expect(item).toMatchObject({
+      pk: 'SESSION_CLEANUP#managed-environment-r-1-session',
+      sk: 'LOOKUP',
+      GSI1PK: 'SESSION_CLEANUP',
+      sessionId: 'managed-environment-r-1-session',
+      capacityProviderArn: 'arn:aws:bedrock-agentcore:us-east-1:1:capacity-provider/cp-1',
+      attempts: 0,
+    });
+
+    await store.listSessionCleanups();
+    const query = sends.find((command) => command.constructor.name === 'QueryCommand');
+    expect(query.input.ExpressionAttributeValues[':pk']).toBe('SESSION_CLEANUP');
+
+    await store.deleteSessionCleanup('managed-environment-r-1-session');
+    const deletion = sends.find((command) => command.constructor.name === 'DeleteCommand');
+    expect(deletion.input.Key).toEqual({
+      pk: 'SESSION_CLEANUP#managed-environment-r-1-session',
+      sk: 'LOOKUP',
+    });
+  });
+
+  it('refuses to persist a record without the session or provider identity', async () => {
+    const ddb = { send: vi.fn() };
+    const store = createEnvironmentStore({ ddb, tableName: 'registry' });
+    expect(await store.putSessionCleanup({ sessionId: 's-1' })).toBeNull();
+    expect(await store.putSessionCleanup({ capacityProviderArn: 'arn:cp' })).toBeNull();
+    expect(ddb.send).not.toHaveBeenCalled();
   });
 });

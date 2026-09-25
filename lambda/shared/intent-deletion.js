@@ -19,7 +19,10 @@ import gremlin from 'gremlin';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { SendDurableExecutionCallbackSuccessCommand } from '@aws-sdk/client-lambda';
-import { StopRuntimeSessionCommand } from '@aws-sdk/client-bedrock-agentcore';
+import {
+  DeleteCapacityProviderSessionCommand,
+  StopRuntimeSessionCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import { DeleteObjectsCommand, ListObjectVersionsCommand, S3Client } from '@aws-sdk/client-s3';
 
 const logger = new Logger({ persistentKeys: { component: 'intent-deletion' } });
@@ -79,17 +82,14 @@ const stopRuntimeSessions = async (
   agentcore,
   agentcoreRuntimeTarget,
   intentId,
-  { sectionIndexes = [], unitSlugs = [] } = {},
+  { sessionIds = [] } = {},
 ) => {
   const target =
     typeof agentcoreRuntimeTarget === 'string'
       ? { agentRuntimeArn: agentcoreRuntimeTarget }
       : agentcoreRuntimeTarget;
   if (!agentcore || !target?.agentRuntimeArn) return;
-  const ids = [runtimeSessionIdFor(intentId)];
-  for (const idx of sectionIndexes) {
-    for (const slug of unitSlugs) ids.push(laneSessionIdFor(intentId, idx, slug));
-  }
+  const ids = [...new Set([runtimeSessionIdFor(intentId), ...sessionIds])];
   for (const id of ids) {
     try {
       await agentcore.send(
@@ -103,6 +103,71 @@ const stopRuntimeSessions = async (
         sessionId: id,
         error: err?.message ?? String(err),
       });
+    }
+  }
+};
+
+// Every session an intent may have opened on the Instances compute type,
+// rebuilt from the PERSISTED records (not the current unit plan). The UNIT#
+// rows are the source of truth: the orchestrator stamps each lane's sessionId
+// on the row when the lane starts, and the rows survive plan rewinds — so
+// historical/orphaned lanes that are no longer in the current plan are still
+// covered. A row without a stamped sessionId (a lane that never started, or a
+// legacy row) falls back to the deterministic lane id derived from its
+// persisted sectionIndex + slug, and lane STAGE# rows (which persist
+// sectionIndex + unitSlug) contribute the same derivation as a second net.
+// The result is a superset — callers tolerate deleting/stopping a session
+// that never existed.
+const collectIntentSessionIds = (intentId, records = {}) => {
+  const ids = new Set([runtimeSessionIdFor(intentId)]);
+  for (const unit of records.units ?? []) {
+    if (typeof unit.sessionId === 'string' && unit.sessionId.length > 0) {
+      ids.add(unit.sessionId);
+    } else if (Number.isInteger(unit.sectionIndex) && unit.slug) {
+      ids.add(laneSessionIdFor(intentId, unit.sectionIndex, unit.slug));
+    }
+  }
+  for (const stage of records.stages ?? []) {
+    if (Number.isInteger(stage.sectionIndex) && stage.unitSlug) {
+      ids.add(laneSessionIdFor(intentId, stage.sectionIndex, stage.unitSlug));
+    }
+  }
+  return [...ids];
+};
+
+// Instances sessions keep their EBS volumes across stop/idle/lifetime — only
+// an explicit DeleteCapacityProviderSession releases them. A permanently
+// deleted intent must not leave its workspace volumes (and their charges)
+// behind, so this THROWS on an unexpected error: the cascade deletes META
+// last, the intent still lists, and the whole delete is simply re-run. A
+// session that never existed is tolerated (ResourceNotFound/Validation) —
+// the lane id set is a superset of what actually ran. Park/resume never
+// reaches here; it stops sessions and retains volumes by design.
+const deleteRuntimeSessions = async (
+  agentcore,
+  capacityProviderArn,
+  intentId,
+  { sessionIds = [] } = {},
+) => {
+  const capacityProviderId = String(capacityProviderArn ?? '')
+    .split('/')
+    .pop();
+  if (!agentcore || !capacityProviderId) return;
+  const ids = [...new Set([runtimeSessionIdFor(intentId), ...sessionIds])];
+  for (const id of ids) {
+    try {
+      await agentcore.send(
+        new DeleteCapacityProviderSessionCommand({
+          capacityProviderId,
+          sessionId: id,
+        }),
+      );
+    } catch (err) {
+      if (['ResourceNotFoundException', 'ValidationException'].includes(err?.name)) {
+        console.log(`delete-capacity-provider-session miss (${id}): ${err?.message ?? err}`);
+        continue;
+      }
+      throw err;
     }
   }
 };
@@ -210,7 +275,21 @@ const deleteIntentCascade = async ({
   if (!['DRAFT', 'SUCCEEDED', 'CANCELLED'].includes(meta?.status)) {
     await retireParkedRun({ store, lambdaClient, executionId: intentId, reason });
   }
-  await stopRuntimeSessions(agentcore, agentcoreRuntimeTarget ?? agentcoreRuntimeArn, intentId);
+  const sessionIds = collectIntentSessionIds(intentId, records);
+  await stopRuntimeSessions(agentcore, agentcoreRuntimeTarget ?? agentcoreRuntimeArn, intentId, {
+    sessionIds,
+  });
+  // Instances runs: delete the sessions so their persistent EBS volumes go
+  // with the intent. The session set is rebuilt from the persisted UNIT#/STAGE#
+  // rows (see collectIntentSessionIds) — deleting a session that never started
+  // is a tolerated miss. deleteRuntimeSessions throws on an unexpected error
+  // BEFORE the intent records are deleted below, so a failed session delete
+  // keeps the records and the whole cascade stays retryable.
+  const capacityProviderArn =
+    meta?.environment?.capacityProviderArn ?? meta?.environmentSnapshot?.capacityProviderArn;
+  if (capacityProviderArn) {
+    await deleteRuntimeSessions(agentcore, capacityProviderArn, intentId, { sessionIds });
+  }
 
   // Yjs docs — best-effort: they are unreachable once the intent is gone (doc
   // ids are derived from the intent id), so a failed delete here only leaves
@@ -290,7 +369,9 @@ const deleteIntentCascade = async ({
 };
 
 export {
+  collectIntentSessionIds,
   deleteIntentCascade,
+  deleteRuntimeSessions,
   retireParkedRun,
   stopRuntimeSessions,
   runtimeSessionIdFor,
@@ -298,7 +379,9 @@ export {
   IntentRunningError,
 };
 export default {
+  collectIntentSessionIds,
   deleteIntentCascade,
+  deleteRuntimeSessions,
   retireParkedRun,
   stopRuntimeSessions,
   runtimeSessionIdFor,
