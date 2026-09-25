@@ -234,14 +234,6 @@ const listReleases = (claims = adminClaims) =>
 
 // Two decisions, because support state and visibility are deliberately separate.
 const promote = async (releaseId, supportState) => {
-  if (releaseId === CANDIDATE_RELEASE_ID) {
-    const key = keyOf(`AIDLC_RELEASE#${releaseId}`, 'META');
-    const registered = rows.get(key);
-    // These cases exercise channel transitions independently of the fidelity
-    // guard. Model an otherwise-identical candidate whose values are handled;
-    // the dedicated guard test keeps the actual unsupported evidence.
-    rows.set(key, { ...registered, fidelityGaps: [] });
-  }
   const registered = parse(await listReleases()).body.releases.find(
     (release) => release.releaseId === releaseId,
   );

@@ -89,9 +89,12 @@ describe('offline exact-source fixtures', () => {
       profile.frontmatterDialect === 'invoke-template-v1' ? 6 : 0,
     );
     expect(report.currentPlatformBaseline).toBe(profileId === 'current-stable');
-    // Certification reflects this build's runtime fidelity, not profile age or
-    // an allowlist. Each report's ready flag must agree with its actual gaps.
-    expect(report.readyForCertification).toBe(report.certificationGaps.length === 0);
+    // Certification reflects runtime fidelity, so a
+    // release clears the bar only when no authored value is `unsupported`. With
+    // the summary-confirmation checkpoint and the gate sensor plane native, every
+    // pinned profile now clears it.
+    expect(report.readyForCertification).toBe(true);
+    expect(report.certificationGaps).toEqual([]);
   });
 
   it('computes mode certification gaps from the handlers registered in this build', () => {
@@ -177,12 +180,18 @@ describe('offline exact-source fixtures', () => {
     ]);
 
     // A release's classification is derived from the handlers available in this
-    // build; handling can improve without changing the authored vocabulary.
+    // build; handling can improve without changing the authored vocabulary. The
+    // pipeline and mob modes run each persona in a separate session with a
+    // role-scoped brief, but remain `approximated`: visibility is brief-enforced,
+    // and contributions are graph artifacts rather than `.aidlc-engine/**` files.
     const row = modeRow('v2.9.0');
-    const modeEntry = AIDLC_CAPABILITIES.find((entry) => entry.key === 'STAGE:mode');
-    expect(Object.fromEntries(row.values.map((item) => [item.value, item.handling]))).toEqual(
-      Object.fromEntries(row.values.map(({ value }) => [value, modeEntry.values[value].handling])),
-    );
+    expect(row.handling).toBe('approximated');
+    expect(Object.fromEntries(row.values.map((item) => [item.value, item.handling]))).toEqual({
+      inline: 'native',
+      subagent: 'native',
+      pipeline: 'approximated',
+      mob: 'approximated',
+    });
   });
 
   it('classifies the {{INVOKE}} dialect by the command families a release invokes', () => {
@@ -257,25 +266,74 @@ describe('offline exact-source fixtures', () => {
     const fields = (profileId) =>
       reports[profileId].unmappedFields.map(({ blockType, field }) => `${blockType}:${field}`);
 
-    // `workspace_requires` stays on the unmapped list because the precondition
-    // holds architecturally (every stage runs on a restored checkout).
+    // `workspace_requires` stays on the unmapped list — no adapter reads it —
+    // but it is the one key on the explicit informational allowlist, because the
+    // precondition it asserts holds architecturally (every stage runs on a
+    // restored checkout). It is separately classified in the fidelity table as
+    // `approximated`, not `native`: holding architecturally is not the same as
+    // the platform asserting the declaration per stage.
     expect(fields('current-stable')).toContain('STAGE:workspace_requires');
     for (const profileId of FIXTURE_IDS) {
       expect(reports[profileId].unmappedFields.some((field) => field.executionRelevant)).toBe(
         false,
       );
-      const report = reports[profileId];
-      for (const field of report.fidelity.fields) {
-        const entry = AIDLC_CAPABILITIES.find(
-          (candidate) => candidate.blockType === field.blockType && candidate.field === field.field,
-        );
-        if (!entry) continue;
-        for (const value of field.values ?? []) {
-          const expected = entry.values?.[value.value]?.handling ?? entry.handling;
-          expect(value.handling).toBe(expected);
-        }
-      }
+      expect(reports[profileId].fidelity.approximated).toContain('STAGE:workspace_requires');
+      expect(reports[profileId].fidelity.native).not.toContain('STAGE:workspace_requires');
     }
+
+    // `fire_on` is value-level: the write plane is still an approximation (no
+    // per-write hook), the GATE plane is native (its own pass after the reviewer
+    // loop, on final bytes), and 2.7.0+ author only `gate` — so the row is native.
+    expect(reports['v2.7.0'].fidelity.native).toContain('SENSOR:fire_on');
+    expect(reports['v2.7.0'].fidelity.unsupported).not.toContain('SENSOR:fire_on');
+    expect(reports['v2.7.0'].fidelity.native).toContain('STAGE:review_artifact');
+    // The scope switches are enforced by the platform now, not just explained in
+    // the prompt: a fingerprint comparison for change control, and a real
+    // skip of the skeleton ceremony.
+    expect(reports['v2.8.2'].fidelity.approximated).toContain('SCOPE:change_control');
+    expect(reports['v2.8.2'].fidelity.native).not.toContain('SCOPE:change_control');
+    expect(reports['v2.9.0'].fidelity.native).toEqual(
+      expect.arrayContaining(['STAGE:review_class']),
+    );
+    // `learnings` stays approximated by DESIGN: the ritual rides the approval gate
+    // instead of taking a second mandatory human turn per stage. `change_control`
+    // reproduces only the input-fingerprint half of upstream's mechanism, and
+    // `skeleton` is only approximated for its `on` value — `off` is native
+    // (`SCOPE.skeleton`).
+    // 2.6.18+ author pipeline/mob alongside inline/subagent, so the STAGE:mode
+    // row's worst-case rollup is `approximated` — it moved out
+    // of the native array above into this one.
+    expect(reports['v2.9.0'].fidelity.approximated).toEqual(
+      expect.arrayContaining([
+        'SCOPE:learnings',
+        'SCOPE:change_control',
+        'SCOPE:skeleton',
+        'STAGE:mode',
+      ]),
+    );
+    // SCOPE.summary_confirmation is `off` in 2.9.0: removing a requirement IS
+    // something the platform can do natively, unlike imposing one.
+    expect(reports['v2.9.0'].fidelity.native).toEqual(
+      expect.arrayContaining(['SCOPE:sensors', 'SCOPE:summary_confirmation']),
+    );
+    expect(reports['v2.9.0'].fidelity.packagingOnly).toEqual(['SCOPE:runner']);
+    expect(reports['v2.9.0'].fidelity.native).toEqual(
+      expect.arrayContaining(['STAGE:summary_confirmation']),
+    );
+    expect(reports['v2.9.0'].fidelity.unsupported).toEqual([]);
+    expect(reports['v2.9.0'].readyForCertification).toBe(true);
+    // The 2.3.3-era baseline carries no release-policy field. It does carry
+    // `mode` (native) and `workspace_requires` (approximated), so the report
+    // names both rather than leaving them unclassified.
+    expect(reports['current-stable'].fidelity).toMatchObject({
+      native: ['STAGE:mode'],
+      approximated: ['STAGE:workspace_requires'],
+      unsupported: [],
+      packagingOnly: [],
+      gaps: [],
+    });
+    // An `approximated` value does not withhold certification — only `unsupported`
+    // does — so the reclassification must NOT demote the baseline.
     expect(reports['current-stable'].readyForCertification).toBe(true);
   });
 
@@ -580,7 +638,7 @@ describe('analyzeAidlcCompatibility', () => {
     });
   });
 
-  it('classifies a known write-plane value from its registered handler', () => {
+  it('adapts a known execution-relevant field instead of blocking on it', () => {
     const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
       content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: write'),
     );
@@ -600,27 +658,33 @@ describe('analyzeAidlcCompatibility', () => {
     expect(
       report.certificationGaps.some((gap) => gap.field === 'fire_on' && gap.value === 'write'),
     ).toBe(!handled);
+    // The WRITE plane is a real approximation (post-agent sweep narrowed to the
+    // attempt's changed files), so it is classified, not left unmapped.
+    expect(report.fidelity.approximated).toContain('SENSOR:fire_on');
+    expect(report.fidelity.unsupported).not.toContain('SENSOR:fire_on');
     expect(report.unmappedFields.some((unmappedField) => unmappedField.executionRelevant)).toBe(
       false,
     );
   });
 
-  it('classifies the gate-plane value from its registered handler', () => {
+  it('marks the fire_on GATE plane native, and withholds no certification for it', () => {
     const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
       content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: gate'),
     );
     const report = analyzeAidlcCompatibility({ profileId: 'current-stable', files });
 
     expect(report.importable).toBe(true);
-    const entry = AIDLC_CAPABILITIES.find((candidate) => candidate.key === 'SENSOR:fire_on');
-    const classification = entry.values.gate;
-    const handled = RUNTIME_HANDLERS.has(classification.handler);
-    expect(
-      report.certificationGaps.some((gap) => gap.field === 'fire_on' && gap.value === 'gate'),
-    ).toBe(!handled);
+    // The gate plane runs as its own pass after the reviewer loop resolves, once
+    // per existing declared deliverable, on the bytes the human approves — so it
+    // is reproduced, not merely approximated, and names a real runtime seam.
+    expect(report.fidelity.native).toContain('SENSOR:fire_on');
+    expect(report.fidelity.unsupported).not.toContain('SENSOR:fire_on');
+    expect(report.certificationGaps).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'fire_on', value: 'gate' })]),
+    );
     const fireOn = report.fidelity.fields.find((field) => field.field === 'fire_on');
     expect(fireOn.values).toEqual([
-      { value: 'gate', handling: classification.handling, paths: expect.any(Array) },
+      { value: 'gate', handling: 'native', paths: expect.any(Array) },
     ]);
   });
 

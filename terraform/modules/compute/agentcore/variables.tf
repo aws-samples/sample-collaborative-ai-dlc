@@ -95,6 +95,21 @@ variable "bedrock_model" {
   type        = string
 }
 
+# Ensemble persona sessions: the escape hatch for
+# STAGE.mode pipeline/mob/subagent-with-supports, read by
+# lambda/agentcore/ensemble-runner.js. "off" reverts to the single-session
+# ensemble prompt without an orchestrator redeploy.
+variable "v2_ensemble_sessions" {
+  description = "Ensemble persona sessions for STAGE.mode pipeline/mob/subagent-with-supports (\"on\" or \"off\")"
+  type        = string
+  default     = "on"
+
+  validation {
+    condition     = contains(["on", "off"], var.v2_ensemble_sessions)
+    error_message = "v2_ensemble_sessions must be \"on\" or \"off\"."
+  }
+}
+
 variable "kiro_model" {
   description = "Default Kiro-native model id seeded into the cli-models SSM parameter (empty = none)"
   type        = string

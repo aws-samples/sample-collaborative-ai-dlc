@@ -48,6 +48,16 @@ import {
   resolveCodexHome,
   neutralizeTokens,
 } from '../stage-materializer.js';
+import { dispatchPersona, composePersonaPrompt, OFF_MOUNT_CACHE_ENV } from '../persona-dispatch.js';
+import {
+  MAX_PERSONA_SESSION_MS,
+  STAGE_BUDGET_MS,
+  contributionArtifactId,
+  ensembleGapFindings,
+  renderLeadTopologyBrief,
+  resolveEnsembleTopology as defaultResolveEnsembleTopology,
+  runEnsembleSessions,
+} from '../ensemble-runner.js';
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
 import { materializeAttachments } from '../attachments.js';
 import { toMcpServerMap } from '../../shared/mcp-validator.js';
@@ -1485,6 +1495,7 @@ export const runStage = async (
   const {
     store,
     loadLibrary,
+    resolveEnsembleTopology = defaultResolveEnsembleTopology,
     loadBlockBody,
     loadBlockScript = async () => '',
     loadConductor = async () => '',
@@ -2633,7 +2644,53 @@ export const runStage = async (
     return { mcpConfigPath };
   };
 
-  let invocation;
+  // Native ensemble sessions: the authored `pipeline` / `mob`
+  // / `subagent`-with-supports topology becomes REAL per-persona sessions instead
+  // of one agent role-playing everybody. Resolved on BOTH the fresh and resume
+  // legs, because a resume after a mid-ensemble park has to know the topology to
+  // skip the personas that already produced their evidence. Null => the stage
+  // keeps today's single-session behaviour, byte for byte (non-release mode,
+  // `V2_ENSEMBLE_SESSIONS=off`, or a mode that resolves no support persona).
+  //
+  // Release mode normally fails closed on a body read, but a support persona is
+  // ADDITIVE steering rather than the stage's own instructions: degrading to the
+  // single-session path preserves the behavior of existing stage execution,
+  // which is the conservative choice this whole block is written for.
+  let ensemble = null;
+  // The lead's persona body, reused verbatim for its integration session. Set on
+  // the fresh leg where the prompt is materialized; re-read on a resume leg,
+  // which never materializes a prompt at all.
+  let leadPersonaBody = null;
+  try {
+    ensemble = await resolveEnsembleTopology({
+      stage,
+      library,
+      loadBlockBody: loadBody,
+      methodologyRelease,
+      env,
+    });
+  } catch (error) {
+    const detail = `Ensemble topology could not be resolved for ${stageId}: ${
+      error?.message ?? String(error)
+    }`;
+    if (methodologyRelease) {
+      return fail(stageInstanceId, 'ensemble_topology_unresolved', detail, { clearPending: true });
+    }
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.persona.gap',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: `${detail}; continuing with the single-session ensemble prompt`,
+        detail: { mode: stage.mode, role: 'ensemble', reason: 'topology_unresolved' },
+      })
+      .catch(() => {});
+  }
+
+    let invocation;
   let prompt = null;
   if (!freshRun) {
     const mcpKwargs = await materializeCliMcp();

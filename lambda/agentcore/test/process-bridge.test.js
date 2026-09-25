@@ -423,4 +423,20 @@ describe('ask_question — attempt provenance', () => {
       attempt: 0,
     });
   });
+
+  // The ensemble integrator is not the checkpoint owner: its question must not
+  // read as the stage's conditional question flow (summaryConfirmation: if-present).
+  it('marks a question raised by a non-owner session', async () => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, stageAttempt: 1, checkpointOwner: false },
+      parkGraceMs: 0,
+    });
+    await bridge.askQuestion({ questions: [{ text: 'q', type: 'single', options: [] }] });
+    expect(store.events.find((row) => row.type === 'v2.question.asked').detail).toEqual({
+      attempt: 1,
+      checkpointOwner: false,
+    });
+  });
 });

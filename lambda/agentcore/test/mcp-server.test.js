@@ -443,7 +443,12 @@ describe('registerTools', () => {
   });
 });
 
-describe('toolsForRole — release policy', () => {
+// A dispatched persona session carries the SAME
+// resolved policy as the lead — so `learnings: off` withdraws the learning writers
+// there too — but it must never be able to raise the human's checkpoint. Tool
+// availability is the enforcement seam: a tool that is not registered cannot be
+// called by accident or on purpose.
+describe('toolsForRole — checkpoint ownership', () => {
   const POLICY = Object.freeze({
     summaryConfirmation: 'required',
     planApproval: 'required',
@@ -454,5 +459,68 @@ describe('toolsForRole — release policy', () => {
     const tools = toolsForRole('author', 'requirements-analysis', POLICY);
     expect(tools).toContain('confirm_summary');
     expect(tools).toContain('request_plan_approval');
+  });
+
+  it('withholds both checkpoint tools from a non-owner, policy notwithstanding', () => {
+    const tools = toolsForRole('author', 'requirements-analysis', POLICY, {
+      checkpointOwner: false,
+    });
+    expect(tools).not.toContain('confirm_summary');
+    expect(tools).not.toContain('request_plan_approval');
+    // Everything else the policy decides still applies to that session.
+    expect(tools).not.toContain('record_team_knowledge');
+    expect(tools).not.toContain('record_learning_rule');
+    expect(tools).toContain('create_artifact');
+  });
+
+  it('registers the reduced surface for a non-owner', () => {
+    const registered = [];
+    // Every zod call chains to another callable: registerTools only needs the
+    // schema-shape values to exist, it never evaluates them.
+    const chain = new Proxy(function () {}, { get: () => chain, apply: () => chain });
+    const zod = chain;
+    registerTools({
+      server: { tool: (name) => registered.push(name) },
+      handlers: {},
+      role: 'author',
+      stageId: 'requirements-analysis',
+      policy: POLICY,
+      checkpointOwner: false,
+      z: zod,
+      env: { V2_MCP_TRACE: 'off' },
+    });
+    expect(registered).not.toContain('confirm_summary');
+    expect(registered).not.toContain('request_plan_approval');
+    expect(registered).toContain('update_artifact');
+  });
+
+  // A support / pipeline-link session has no path for an answer back into it, so
+  // it is never given ask_question — under a policy or not.
+  it('withholds ask_question from a session that cannot be answered', () => {
+    for (const policy of [POLICY, null]) {
+      const tools = toolsForRole('author', 'requirements-analysis', policy, { canAsk: false });
+      expect(tools).not.toContain('ask_question');
+      expect(tools).toContain('create_artifact');
+    }
+    expect(toolsForRole('author', 'requirements-analysis', POLICY)).toContain('ask_question');
+    expect(toolsForRole('author', 'requirements-analysis', null)).toContain('ask_question');
+  });
+
+  it('registers no ask_question for a session that cannot be answered', () => {
+    const registered = [];
+    const chain = new Proxy(function () {}, { get: () => chain, apply: () => chain });
+    registerTools({
+      server: { tool: (name) => registered.push(name) },
+      handlers: {},
+      role: 'author',
+      stageId: 'requirements-analysis',
+      policy: POLICY,
+      checkpointOwner: false,
+      canAsk: false,
+      z: chain,
+      env: { V2_MCP_TRACE: 'off' },
+    });
+    expect(registered).not.toContain('ask_question');
+    expect(registered).toContain('update_artifact');
   });
 });

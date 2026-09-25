@@ -269,31 +269,45 @@ export const WORKSPACE_DETECTION_TOOLS = ['record_project_type'];
 const LEARNING_TOOLS = ['record_team_knowledge', 'record_learning_rule'];
 export const CHECKPOINT_TOOLS = ['confirm_summary', 'request_plan_approval'];
 
-const policyTools = (policy) => {
+const policyTools = (policy, { checkpointOwner = true } = {}) => {
   if (!policy) return { add: [], remove: [] };
   const add = [];
-  if (policy.summaryConfirmation === 'required' || policy.summaryConfirmation === 'if-present') {
+  // A session that does not OWN the checkpoint never gets the tools, whatever the
+  // policy says: exactly one session per stage attempt may raise the human's
+  // confirmation, and a dispatched persona re-raising it would ask the human to
+  // authorize the same stage twice. Its writes are still stamped — the bridge
+  // rehydrates the lead's recorded authorization.
+  if (
+    checkpointOwner &&
+    (policy.summaryConfirmation === 'required' || policy.summaryConfirmation === 'if-present')
+  ) {
     add.push('confirm_summary');
   }
-  if (policy.planApproval === 'required') add.push('request_plan_approval');
+  if (checkpointOwner && policy.planApproval === 'required') add.push('request_plan_approval');
   return { add, remove: policy.learnings === 'off' ? LEARNING_TOOLS : [] };
 };
 
-export const toolsForRole = (role, stageId = null, policy = null) => {
+export const toolsForRole = (role, stageId = null, policy = null, options = {}) => {
   if (role === 'reader') return READ_TOOLS;
   if (role === 'reviewer') return REVIEWER_TOOLS;
   const base =
     stageId === 'workspace-detection'
       ? [...AUTHOR_TOOLS, ...WORKSPACE_DETECTION_TOOLS]
       : AUTHOR_TOOLS;
-  const { add, remove } = policyTools(policy);
-  return [...base.filter((name) => !remove.includes(name)), ...add];
+  const { add, remove } = policyTools(policy, options);
+  // A session with no path for the answer to come back into it (a dispatched
+  // support or pipeline link) never gets ask_question: its park would leave an
+  // orphaned gate and a resume that re-dispatches it blind to the answer, which
+  // re-asks. Independent of the policy — it is a property of the session, not of
+  // the release.
+  const withheld = options.canAsk === false ? [...remove, 'ask_question'] : remove;
+  return [...base.filter((name) => !withheld.includes(name)), ...add];
 };
 
 // The handler subset for a given role. `reader` → read-only; `reviewer` adds
 // review verdict/metrics; `author` → all.
-export const handlersForRole = (allHandlers, role, stageId = null, policy = null) => {
-  const names = toolsForRole(role, stageId, policy);
+export const handlersForRole = (allHandlers, role, stageId = null, policy = null, options = {}) => {
+  const names = toolsForRole(role, stageId, policy, options);
   return Object.fromEntries(names.map((n) => [n, allHandlers[n]]));
 };
 
@@ -521,11 +535,13 @@ export const registerTools = ({
   role,
   stageId = null,
   policy = null,
+  checkpointOwner = true,
+  canAsk = true,
   z,
   env = process.env,
 }) => {
   const schemas = toolSchemas(z);
-  const names = toolsForRole(role, stageId, policy);
+  const names = toolsForRole(role, stageId, policy, { checkpointOwner, canAsk });
   const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {
     const { description, shape } = schemas[name];

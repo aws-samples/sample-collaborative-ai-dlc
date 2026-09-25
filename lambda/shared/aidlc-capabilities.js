@@ -62,6 +62,7 @@ const RUNTIME_HANDLERS = Object.freeze(
     'review.artifact-focus@v1',
     'sensor.plane.gate@v1',
     'sensor.plane.write@v1',
+    'stage.mode.ensemble-sessions@v1',
     'stage.mode.single-session@v1',
     'workspace.always-restored@v1',
   ]),
@@ -94,14 +95,17 @@ const isQuestionChannelOutput = (artifact) =>
 // the two in lockstep and makes a newly added mode a loud registry failure
 // instead of a silently unclassified one.
 //
-// `pipeline`/`mob` require separate persona sessions and remain unsupported in
-// this layer. Their complete authored vocabulary is retained so the analyzer
-// can report those values as fidelity gaps rather than treating them as unknown.
+// `pipeline`/`mob` name the SESSIONS seam (ensemble-runner.js): in release mode
+// each persona gets its own session with its own brief, which is upstream's
+// actual invariant — who sees whose work. Personas run serially (upstream §3.7
+// permits it) and contributions are graph artifacts on the timeline rather than
+// `.aidlc-engine/**` files; both are stated in
+// docs/concepts/aidlc-release-compatibility.md.
 const MODE_HANDLING = Object.freeze({
   inline: { handling: 'native', handler: 'stage.mode.single-session@v1' },
   subagent: { handling: 'native', handler: 'stage.mode.single-session@v1' },
-  pipeline: UNHANDLED,
-  mob: UNHANDLED,
+  pipeline: { handling: 'approximated', handler: 'stage.mode.ensemble-sessions@v1' },
+  mob: { handling: 'approximated', handler: 'stage.mode.ensemble-sessions@v1' },
   'agent-team': UNHANDLED,
 });
 const modeValues = () =>
@@ -150,7 +154,7 @@ const AIDLC_CAPABILITIES = Object.freeze([
     values: modeValues(),
     defaultWhenAbsent: null,
     capabilityPresentIf: null,
-    note: '`inline` and `subagent` run natively in one session. `pipeline` and `mob` require separate persona sessions and remain unsupported until that runtime is present. `agent-team` requires real concurrent sessions and remains unsupported.',
+    note: '`inline`/`subagent`-without-supports run natively in one session. `pipeline`/`mob`/`subagent`-with-supports run as REAL separate sessions per persona in release mode (lambda/agentcore/ensemble-runner.js): each support receives only the lead draft, contributions carry the server-owned collaborator identity plus AGREE/OBJECT positions, pipeline links carry per-link receipts, and mob dissent is triaged over at most two rounds. The markdown **Collaborator:** line is display text, not evidence identity. Residual deviations keep the classification `approximated`: personas run serially (upstream \u00a73.7 permits this \u2014 concurrency is not the invariant), contributions are graph artifacts rather than `.aidlc-engine/**` files, and blindness is enforced by brief content rather than by a read hook. `V2_ENSEMBLE_SESSIONS=off` reverts to the single-session ensemble prompt. `agent-team` needs real concurrent sessions and fails fast as not_implemented.',
   }),
   Object.freeze({
     key: 'STAGE:workspace_requires',

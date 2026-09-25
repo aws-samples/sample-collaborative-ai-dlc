@@ -30,6 +30,7 @@ export const runChild = ({
   promptViaStdin = false,
   captureStderrTail = 0,
   onStdout = null,
+  timeoutMs = 0,
   spawnFn = spawn,
 }) =>
   new Promise((resolve, reject) => {
@@ -70,13 +71,28 @@ export const runChild = ({
       });
     }
     let settled = false;
+    let timedOut = false;
+    let timer = null;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      resolve({ exitCode, stderrTail });
+      if (timer) clearTimeout(timer);
+      resolve({ exitCode, stderrTail, ...(timedOut ? { timedOut: true } : {}) });
     };
     child.on('error', () => finish(null)); // spawn failure → runner maps to FAILED
     child.on('close', (code) => finish(code));
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        timedOut = true;
+        try {
+          child.kill?.('SIGKILL');
+        } catch {
+          /* the child may have exited while the timeout was firing */
+        }
+      }, timeoutMs);
+      timer.unref?.();
+    }
     if (promptViaStdin) {
       try {
         child.stdin?.end(prompt ?? '');

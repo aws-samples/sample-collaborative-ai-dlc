@@ -188,19 +188,12 @@ describe('Per-release adapters: mapper keys', () => {
     expect(Object.keys(withoutPlane.plan.stages[0].sensors[0])).not.toContain('fireOn');
   });
 
-  it('fails fast on multi-persona modes until their runtime is implemented', () => {
-    for (const mode of ['inline', 'subagent']) {
+  it('keeps pipeline and mob runnable while agent-team stays not implemented', () => {
+    for (const mode of ['inline', 'subagent', 'pipeline', 'mob']) {
       const { plan } = planFor({ stageFm: { ...STAGE_FM, mode } });
       expect(plan.stages[0].mode).toBe(mode);
       expect(plan.stages[0].notImplemented).toBeUndefined();
       expect(plan.stages[0].runtimeError).toBeUndefined();
-    }
-    for (const mode of ['pipeline', 'mob']) {
-      const { plan } = planFor({ stageFm: { ...STAGE_FM, mode } });
-      expect(plan.stages[0]).toMatchObject({
-        notImplemented: true,
-        runtimeError: 'not_implemented',
-      });
     }
     const { plan } = planFor({ stageFm: { ...STAGE_FM, mode: 'agent-team' } });
     expect(plan.stages[0]).toMatchObject({

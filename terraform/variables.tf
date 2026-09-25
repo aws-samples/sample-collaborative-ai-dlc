@@ -73,6 +73,22 @@ variable "aidlc_release_pinning" {
   }
 }
 
+# Ensemble persona sessions: the AgentCore runtime's escape
+# hatch for STAGE.mode pipeline/mob/subagent-with-supports. "on" dispatches one
+# real CLI session per persona (lambda/agentcore/ensemble-runner.js); "off"
+# reverts to the single-session ensemble prompt byte for byte, with no
+# orchestrator redeploy — only this variable + a container restart.
+variable "v2_ensemble_sessions" {
+  description = "Ensemble persona sessions for STAGE.mode pipeline/mob/subagent-with-supports. \"on\" or \"off\"; \"off\" reverts to the single-session ensemble prompt."
+  type        = string
+  default     = "on"
+
+  validation {
+    condition     = contains(["on", "off"], var.v2_ensemble_sessions)
+    error_message = "v2_ensemble_sessions must be \"on\" or \"off\"."
+  }
+}
+
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)

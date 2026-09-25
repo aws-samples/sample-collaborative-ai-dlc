@@ -3,9 +3,9 @@
 //
 // The running importer can only produce its OWN revision, so a revision-1
 // closure has to be reconstructed: the current bundle's catalog minus every
-// field the current mapper handles that an older catalog lacks, re-addressed
-// under the i1 prefix, without a mapper fingerprint, and with its catalog digest
-// and closureDigest recomputed using the legacy format.
+// fields the current importer maps that revision-1 catalogs do not carry,
+// re-addressed under the i1 prefix, without a mapper fingerprint, and with its
+// catalog digest and closureDigest recomputed using the legacy format.
 
 import { releaseCatalogKey } from '../../aidlc-release.js';
 import { sha256 } from '../../blocks.js';

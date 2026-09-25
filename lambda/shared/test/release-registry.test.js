@@ -201,19 +201,9 @@ const registerArgs = (profileId) => ({
   actor: 'admin-1',
 });
 
-const markCandidateHandledForTransitionTest = () => {
-  const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
-  const registered = rows.get(key);
-  // Most channel tests exercise registry transitions independently of the
-  // fidelity guard. Model a candidate whose authored values are all handled;
-  // dedicated promotion tests below retain the real 2.9.0 gaps.
-  rows.set(key, { ...registered, fidelityGaps: [] });
-};
-
 // Promote a registered release all the way to a channel-eligible state, which
 // always takes two explicit decisions: a support state and a visibility flip.
 const promote = async (releaseId, supportState) => {
-  if (releaseId === CANDIDATE_RELEASE_ID) markCandidateHandledForTransitionTest();
   const registered = await getRelease({ ...registryArgs(), releaseId });
   const stated = await updateRelease({
     ...registryArgs(),
@@ -611,7 +601,6 @@ describe('setChannel', () => {
   });
 
   it('refuses a selectable release that is still hidden', async () => {
-    markCandidateHandledForTransitionTest();
     await updateRelease({
       ...registryArgs(),
       releaseId: CANDIDATE_RELEASE_ID,
