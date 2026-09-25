@@ -594,7 +594,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     return changed;
   };
 
-  const markToolUpdatesAvailable = async (toolId, recommendedVersionId) => {
+  const markToolUpdatesAvailable = async (toolId, recommendedVersionId, architecture = 'arm64') => {
     const environments = await listEnvironments();
     const changed = [];
     for (const environment of environments) {
@@ -606,6 +606,9 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         (tool) => tool.toolId === toolId,
       );
       if (!selected || selected.versionId === recommendedVersionId) continue;
+      // A recommendation only applies to environments of the same
+      // architecture; the other architecture has its own slot.
+      if ((selected.architecture === 'x86_64' ? 'x86_64' : 'arm64') !== architecture) continue;
       const toolUpdates = [
         ...(environment.toolUpdates ?? []).filter((update) => update.toolId !== toolId),
         {
