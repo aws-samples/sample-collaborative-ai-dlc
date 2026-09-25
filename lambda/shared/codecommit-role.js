@@ -119,6 +119,42 @@ export const codeCommitSessionPolicy = ({ repoArn, access = 'write' }) => {
   return { Version: '2012-10-17', Statement: statements };
 };
 
+// The permissions policy a tenant attaches to their role: exactly what the
+// session policies can ask for, never more. ListRepositories only accepts
+// Resource "*" (it lists names and ids, nothing else); every other action,
+// BatchGetRepositories included, is limited to the repositories the space may
+// use. No codecommit:* : the platform never creates, renames or deletes a
+// repository, and the role should not allow it either.
+// https://docs.aws.amazon.com/codecommit/latest/userguide/auth-and-access-control-permissions-reference.html
+const REPOSITORY_PLACEHOLDER = 'arn:aws:codecommit:<region>:<account-id>:<repository-name>';
+const REPOSITORY_ACTIONS = [
+  'codecommit:BatchGetRepositories',
+  'codecommit:GitPull',
+  'codecommit:GitPush',
+  ...READ_API_ACTIONS,
+  ...WRITE_API_ACTIONS,
+];
+
+export const codeCommitPermissionsPolicy = ({
+  repositoryArns = [REPOSITORY_PLACEHOLDER],
+} = {}) => ({
+  Version: '2012-10-17',
+  Statement: [
+    {
+      Sid: 'ListRepositoriesInAccount',
+      Effect: 'Allow',
+      Action: 'codecommit:ListRepositories',
+      Resource: '*',
+    },
+    {
+      Sid: 'UseSelectedRepositories',
+      Effect: 'Allow',
+      Action: REPOSITORY_ACTIONS,
+      Resource: repositoryArns.length === 1 ? repositoryArns[0] : repositoryArns,
+    },
+  ],
+});
+
 // RoleSessionName: 2–64 chars of [\w+=,.@-]. Keep it attributable in CloudTrail.
 const sessionName = (executionId) => {
   const suffix = String(executionId || 'bind')
@@ -219,4 +255,5 @@ export default {
   codeCommitSessionPolicy,
   assumeCodeCommitRole,
   codeCommitTrustPolicy,
+  codeCommitPermissionsPolicy,
 };

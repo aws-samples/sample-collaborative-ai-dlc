@@ -30,6 +30,7 @@ import { getUserId } from '../shared/git-oauth.js';
 import { getProvider } from '../shared/git-providers.js';
 import {
   assumeCodeCommitRole,
+  codeCommitPermissionsPolicy,
   codeCommitTrustPolicy,
   isCodeCommitRoleArn,
   roleAccountId,
@@ -38,7 +39,11 @@ import {
   ensureCodeCommitConnection,
   resolveCodeCommitExternalId,
 } from '../shared/codecommit-connection.js';
-import { isCodeCommitRegion } from '../shared/git-providers/codecommit-credential.js';
+import {
+  CODECOMMIT_REGIONS,
+  isCodeCommitRegion,
+  isSupportedCodeCommitRegion,
+} from '../shared/git-providers/codecommit-credential.js';
 
 const logger = new Logger({ persistentKeys: { component: 'codecommit' } });
 const sts = new STSClient({});
@@ -112,6 +117,10 @@ export const createCodeCommitHandler = ({
           externalId,
           principals,
           trustPolicy: codeCommitTrustPolicy({ principals, externalId }),
+          // The role's permissions, rendered from the same action lists as the
+          // session policies so the two cannot drift.
+          permissionsPolicy: codeCommitPermissionsPolicy(),
+          regions: CODECOMMIT_REGIONS,
         });
       }
 
@@ -128,6 +137,12 @@ export const createCodeCommitHandler = ({
         }
         if (!isCodeCommitRegion(region)) {
           return response(400, { error: 'A valid AWS region is required', code: 'REGION_INVALID' });
+        }
+        if (!isSupportedCodeCommitRegion(region)) {
+          return response(400, {
+            error: `CodeCommit is not available to this deployment in ${region}`,
+            code: 'REGION_UNSUPPORTED',
+          });
         }
         // The external id is the caller's own. A body that names a different
         // one is refused before STS is called: an external id is never a

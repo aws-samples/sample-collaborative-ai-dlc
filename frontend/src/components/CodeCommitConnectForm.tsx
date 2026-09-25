@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError } from '@/services/api';
 import {
-  CODECOMMIT_REGIONS,
   IAM_ROLE_ARN_PATTERN,
   codecommitService,
   type CodeCommitConnectInfo,
@@ -66,7 +65,7 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
   const [verified, setVerified] = useState<CodeCommitRepoList | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'trust' | 'permissions' | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -84,6 +83,10 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
   }, []);
 
   const policyJson = useMemo(() => (info ? JSON.stringify(info.trustPolicy, null, 2) : ''), [info]);
+  const permissionsJson = useMemo(
+    () => (info?.permissionsPolicy ? JSON.stringify(info.permissionsPolicy, null, 2) : ''),
+    [info],
+  );
 
   const roleArnValid = IAM_ROLE_ARN_PATTERN.test(roleArn.trim());
   const canTest = Boolean(info) && roleArnValid && region.length > 0 && !testing;
@@ -96,11 +99,11 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
     setTestError(null);
   }, [verified, onInvalidated]);
 
-  const copyPolicy = async () => {
+  const copy = async (which: 'trust' | 'permissions') => {
     try {
-      await navigator.clipboard.writeText(policyJson);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      await navigator.clipboard.writeText(which === 'trust' ? policyJson : permissionsJson);
+      setCopied(which);
+      setTimeout(() => setCopied(null), 1500);
     } catch {
       // Clipboard may be unavailable (insecure context); the text stays selectable.
     }
@@ -116,7 +119,8 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
       region,
     };
     try {
-      const repos = await codecommitService.listRepos(connection);
+      // The external id stays server-side: only the role and region are sent.
+      const repos = await codecommitService.listRepos({ roleArn: connection.roleArn, region });
       setVerified(repos);
       onVerified({ connection, repos });
     } catch (e) {
@@ -147,17 +151,14 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
           </label>
           <button
             type="button"
-            onClick={copyPolicy}
+            onClick={() => copy('trust')}
             className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
           >
-            {copied ? 'Copied' : 'Copy JSON'}
+            {copied === 'trust' ? 'Copied' : 'Copy JSON'}
           </button>
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-          In the AWS account that owns the repositories, create an IAM role with this trust policy
-          and attach a permissions policy granting <code>codecommit:*</code> on the repositories
-          this space may use. The platform narrows every call to one repository with a session
-          policy, so the role policy only sets the outer bound.
+          In the AWS account that owns the repositories, create an IAM role with this trust policy.
         </p>
         <pre
           className="text-[11px] leading-snug bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded p-2 overflow-auto max-h-40 select-all"
@@ -167,9 +168,38 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
         </pre>
         <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
           External ID <code className="select-all">{info.externalId}</code> — keep it exactly as
-          shown; it is what stops another space from using your role.
+          shown; it is what stops another user from using your role.
         </p>
       </div>
+
+      {permissionsJson && (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Permissions policy for the same role
+            </label>
+            <button
+              type="button"
+              onClick={() => copy('permissions')}
+              className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+            >
+              {copied === 'permissions' ? 'Copied' : 'Copy JSON'}
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+            Replace the repository ARN with the repositories this space may use (a list is fine).{' '}
+            <code>ListRepositories</code> only accepts <code>&quot;*&quot;</code>; everything else
+            stays on those repositories. The platform further narrows every call to one repository
+            with a session policy.
+          </p>
+          <pre
+            className="text-[11px] leading-snug bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded p-2 overflow-auto max-h-40 select-all"
+            data-testid="codecommit-permissions-policy"
+          >
+            {permissionsJson}
+          </pre>
+        </div>
+      )}
 
       <div>
         <label
@@ -213,7 +243,7 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
             <SelectValue placeholder="Select the region of the repositories" />
           </SelectTrigger>
           <SelectContent>
-            {CODECOMMIT_REGIONS.map((r) => (
+            {info.regions.map((r) => (
               <SelectItem key={r} value={r}>
                 {r}
               </SelectItem>

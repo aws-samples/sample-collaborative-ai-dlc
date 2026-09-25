@@ -4,6 +4,7 @@ import { AssumeRoleCommand } from '@aws-sdk/client-sts';
 import {
   SESSION_DURATION_SECONDS,
   assumeCodeCommitRole,
+  codeCommitPermissionsPolicy,
   codeCommitSessionPolicy,
   codeCommitTrustPolicy,
   isCodeCommitExternalId,
@@ -15,6 +16,8 @@ import {
 const ROLE = 'arn:aws:iam::123456789012:role/aidlc-codecommit-access';
 const REPO = 'arn:aws:codecommit:eu-west-1:123456789012:my-service';
 const EXTERNAL_ID = 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e';
+
+import { readFileSync } from 'node:fs';
 
 const stsStub = (response) => {
   const calls = [];
@@ -188,5 +191,37 @@ describe('codeCommitTrustPolicy', () => {
     expect(policy.Statement[0].Principal.AWS).toBe(principals[0]);
     expect(() => codeCommitTrustPolicy({ principals: [], externalId: EXTERNAL_ID })).toThrow();
     expect(() => codeCommitTrustPolicy({ principals, externalId: 'aidlc:x' })).toThrow();
+  });
+});
+
+describe('codeCommitPermissionsPolicy', () => {
+  it('lists repositories on "*" and keeps every other action on the chosen repositories', () => {
+    const policy = codeCommitPermissionsPolicy({ repositoryArns: [REPO] });
+    const [list, repos] = policy.Statement;
+    expect(list).toMatchObject({ Action: 'codecommit:ListRepositories', Resource: '*' });
+    expect(repos.Resource).toBe(REPO);
+    expect(JSON.stringify(policy)).not.toContain('codecommit:*');
+    expect(repos.Action).toContain('codecommit:BatchGetRepositories');
+  });
+
+  it('covers every action a session policy can ask for', () => {
+    const granted = new Set(
+      codeCommitPermissionsPolicy().Statement.flatMap((s) => [s.Action].flat()),
+    );
+    const asked = [
+      ...codeCommitSessionPolicy({ repoArn: REPO, access: 'write' }).Statement,
+      ...codeCommitSessionPolicy({ access: 'discover' }).Statement,
+    ].flatMap((s) => [s.Action].flat());
+    expect(asked.filter((action) => !granted.has(action))).toEqual([]);
+  });
+
+  it('is the policy published in the setup guide', () => {
+    const doc = readFileSync(
+      new URL('../../../docs/getting-started/setup.md', import.meta.url),
+      'utf8',
+    );
+    const block = /<!-- codecommit-permissions-policy[^>]*-->\s*```json\n([\s\S]*?)\n```/.exec(doc);
+    expect(block).not.toBeNull();
+    expect(JSON.parse(block[1])).toEqual(codeCommitPermissionsPolicy());
   });
 });

@@ -112,6 +112,22 @@ describe('codecommit handler', () => {
     expect(again.body.externalId).toBe(res.body.externalId);
   });
 
+  it('connect-info renders the permissions policy and the supported regions', async () => {
+    const handler = createCodeCommitHandler({
+      stsClient: stsOk(),
+      ddbClient: fakeDdb(),
+      provider: {},
+    });
+    const { body } = parse(await handler(event('GET', '/codecommit/connect-info')));
+    expect(body.permissionsPolicy.Statement[0]).toMatchObject({
+      Action: 'codecommit:ListRepositories',
+      Resource: '*',
+    });
+    expect(body.regions).toContain('ap-south-2');
+    expect(body.regions).not.toContain('eu-central-2');
+    expect(body.regions.some((r) => r.startsWith('cn-') || r.startsWith('us-gov-'))).toBe(false);
+  });
+
   it('connect-info never renders a request-supplied external id', async () => {
     const handler = createCodeCommitHandler({
       stsClient: stsOk(),
@@ -174,6 +190,9 @@ describe('codecommit handler', () => {
     const cases = [
       [{ roleArn: 'nope', region: 'eu-west-1' }, 'ROLE_ARN_INVALID'],
       [{ roleArn: ROLE, region: 'Europe' }, 'REGION_INVALID'],
+      // Well-formed but not offered: no CodeCommit there, or another partition.
+      [{ roleArn: ROLE, region: 'eu-central-2' }, 'REGION_UNSUPPORTED'],
+      [{ roleArn: ROLE, region: 'cn-north-1' }, 'REGION_UNSUPPORTED'],
     ];
     for (const [body, code] of cases) {
       const res = parse(await handler(event('POST', '/codecommit/repos', { body })));

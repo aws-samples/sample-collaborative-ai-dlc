@@ -117,6 +117,35 @@ describe('codecommit provider: registry and identity', () => {
 });
 
 describe('codecommit provider: repositories and branches', () => {
+  it('listRepos keeps the repositories a scoped role can read when a batch is denied', async () => {
+    const allowed = new Set(['svc-a', 'svc-c']);
+    const client = makeClient({
+      ListRepositories: {
+        repositories: ['svc-a', 'svc-b', 'svc-c'].map((repositoryName) => ({ repositoryName })),
+      },
+      // Authorized per repository: one forbidden name fails the whole batch.
+      BatchGetRepositories: ({ repositoryNames }) =>
+        repositoryNames.every((name) => allowed.has(name))
+          ? {
+              repositories: repositoryNames.map((repositoryName) => ({
+                repositoryName,
+                Arn: `arn:aws:codecommit:${REGION}:${ACCOUNT}:${repositoryName}`,
+              })),
+            }
+          : sdkError('AccessDeniedException'),
+    });
+    const repos = await cc.listRepos({ client, region: REGION });
+    expect(repos.map((r) => r.name)).toEqual(['svc-a', 'svc-c']);
+  });
+
+  it('listRepos surfaces the denial when the role can read none of them', async () => {
+    const client = makeClient({
+      ListRepositories: { repositories: [{ repositoryName: 'a' }, { repositoryName: 'b' }] },
+      BatchGetRepositories: sdkError('AccessDeniedException'),
+    });
+    await expect(cc.listRepos({ client, region: REGION })).rejects.toMatchObject({ status: 403 });
+  });
+
   it('listRepos fans out ListRepositories into BatchGetRepositories', async () => {
     const client = makeClient({
       ListRepositories: { repositories: [{ repositoryName: REPO, repositoryId: 'id-1' }] },

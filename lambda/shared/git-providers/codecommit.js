@@ -276,15 +276,43 @@ const listRepos = async (ctx) => {
     nextToken = res.nextToken;
     if (!nextToken) break;
   }
+  // BatchGetRepositories is authorized per repository: a batch naming one the
+  // role may not read is refused as a whole. ListRepositories (Resource "*")
+  // names every repository in the account, so a role scoped to a few of them
+  // hits that on the first batch. Retry such a batch name by name and skip the
+  // repositories the role cannot read; they are not bindable anyway. If the
+  // role can read none of them, the denial is the answer and is surfaced.
+  const isDenied = (error) => error instanceof ProviderError && error.status === 403;
+  const batchGet = (repositoryNames) =>
+    call(client, new BatchGetRepositoriesCommand({ repositoryNames }), 'BatchGetRepositories');
   const repos = [];
+  let denied = 0;
+  let lastDenial = null;
   for (let i = 0; i < names.length; i += BATCH_GET_SIZE) {
-    const res = await call(
-      client,
-      new BatchGetRepositoriesCommand({ repositoryNames: names.slice(i, i + BATCH_GET_SIZE) }),
-      'BatchGetRepositories',
-    );
-    repos.push(...(res.repositories ?? []).map(mapRepo));
+    const batch = names.slice(i, i + BATCH_GET_SIZE);
+    const singles = [];
+    try {
+      const res = await batchGet(batch);
+      repos.push(...(res.repositories ?? []).map(mapRepo));
+    } catch (error) {
+      if (!isDenied(error)) throw error;
+      if (batch.length === 1) {
+        denied += 1;
+        lastDenial = error;
+      } else singles.push(...batch);
+    }
+    for (const name of singles) {
+      try {
+        const res = await batchGet([name]);
+        repos.push(...(res.repositories ?? []).map(mapRepo));
+      } catch (error) {
+        if (!isDenied(error)) throw error;
+        denied += 1;
+        lastDenial = error;
+      }
+    }
   }
+  if (names.length > 0 && denied === names.length) throw lastDenial;
   return repos;
 };
 
