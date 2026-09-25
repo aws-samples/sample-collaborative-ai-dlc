@@ -268,6 +268,7 @@ export function IntentProvider({
       const prevEntry = intentCache.get(cacheKey);
 
       if (dto.intent.workflowId) {
+        const releasePinned = Boolean(dto.intent.methodologyRelease);
         workflowsService
           .compiled(
             dto.intent.workflowId,
@@ -280,12 +281,16 @@ export function IntentProvider({
             if (activeIntentRef.current !== intentId) return;
             setCompiled(c);
             const entry = intentCache.get(cacheKey);
-            if (entry) entry.compiled = c;
+            if (entry) {
+              entry.compiled = c;
+              if (releasePinned) entry.workflowPhases = c.phases ?? [];
+            }
+            if (releasePinned) setWorkflowPhases(c.phases ?? []);
           })
           .catch(() => {});
 
         const workflowKey = `${dto.intent.workflowId}@${dto.intent.workflowVersion ?? ''}`;
-        if (fetchedWorkflowKeyRef.current !== workflowKey) {
+        if (!releasePinned && fetchedWorkflowKeyRef.current !== workflowKey) {
           fetchedWorkflowKeyRef.current = workflowKey;
           workflowsService
             .get(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
