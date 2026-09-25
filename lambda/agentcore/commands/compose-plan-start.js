@@ -179,6 +179,10 @@ export const createComposePlanStart = ({
       mode = 'front',
       workflowId,
       workflowVersion,
+      // Immutable AI-DLC release pinned on the intent (issue #482). Present =>
+      // the workflow, library and SCOPE vocabulary the composer is grounded in
+      // all come from that closure, so a proposal is validated against the
+      // methodology the intent will actually run.
       methodologyRelease = null,
       methodologyPins = null,
       prompt = '',
@@ -187,11 +191,6 @@ export const createComposePlanStart = ({
       reportExcerpt = null,
       progressContext = null,
       frozenGrid = null,
-      // Immutable AI-DLC release pinned on the intent (issue #482). Present =>
-      // the workflow, library and SCOPE vocabulary the composer is grounded in
-      // all come from that closure, so a proposal is validated against the
-      // methodology the intent will actually run.
-      methodologyRelease = null,
       requestedCli: explicitlyRequestedCli = null,
       cliModels: explicitlySelectedModels = null,
     } = payload;

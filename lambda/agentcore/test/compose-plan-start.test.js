@@ -128,7 +128,7 @@ const waitForFinish = async (store) => {
 };
 
 describe('compose-plan-start — release-pinned intents', () => {
-  const methodologyRelease = {
+  const releasePin = {
     releaseId: 'aidlc:abc',
     sourceSha: 'a'.repeat(40),
     importerRevision: 1,
@@ -145,14 +145,14 @@ describe('compose-plan-start — release-pinned intents', () => {
     const deps = makeDeps({ oneShotText: matched });
     const start = createComposePlanStart(deps);
 
-    await start({ ...basePayload, methodologyRelease });
+    await start({ ...basePayload, methodologyRelease: releasePin });
     const update = await waitForFinish(deps.store);
 
     expect(update.state).toBe('COMPLETED');
     expect(deps.loadLibraryFn).toHaveBeenCalledWith(
-      expect.objectContaining({ methodologyRelease }),
+      expect.objectContaining({ methodologyRelease: releasePin }),
     );
-    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith('SCOPE', methodologyRelease);
+    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith('SCOPE', releasePin, null);
     expect(deps.listMergedBlocksFn).not.toHaveBeenCalled();
   });
 
@@ -165,7 +165,7 @@ describe('compose-plan-start — release-pinned intents', () => {
     });
     const start = createComposePlanStart(deps);
 
-    await start({ ...basePayload, methodologyRelease });
+    await start({ ...basePayload, methodologyRelease: releasePin });
     const update = await waitForFinish(deps.store);
 
     expect(update.state).toBe('FAILED');
@@ -245,7 +245,7 @@ describe('compose-plan-start', () => {
     const deps = makeDeps({
       oneShotText: '{"mode":"matched","scope":"feature"}',
     });
-    const methodologyRelease = {
+    const intentRelease = {
       releaseId: 'aidlc:release-sha',
       sourceSha: 'release-sha',
       importerRevision: 2,
@@ -257,30 +257,30 @@ describe('compose-plan-start', () => {
       AGENT: { 'aidlc-composer-agent': { tenantId: 'default', version: 7 } },
     };
 
-    await createComposePlanStart(deps)({ ...basePayload, methodologyRelease, methodologyPins });
+    await createComposePlanStart(deps)({
+      ...basePayload,
+      methodologyRelease: intentRelease,
+      methodologyPins,
+    });
     await waitForFinish(deps.store);
 
     expect(deps.loadLibraryFn).toHaveBeenCalledWith({
       workflowId: basePayload.workflowId,
       workflowVersion: basePayload.workflowVersion,
-      methodologyRelease,
+      methodologyRelease: intentRelease,
       methodologyPins,
     });
-    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith(
-      'SCOPE',
-      methodologyRelease,
-      methodologyPins,
-    );
+    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith('SCOPE', intentRelease, methodologyPins);
     expect(deps.listMergedBlocksFn).not.toHaveBeenCalled();
     expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ id: 'aidlc-composer-agent' }),
-      { methodologyRelease },
+      { methodologyRelease: intentRelease },
     );
     expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ id: 'composer-agent-composing' }),
-      { methodologyRelease },
+      { methodologyRelease: intentRelease },
     );
   });
 
