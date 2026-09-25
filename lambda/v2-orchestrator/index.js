@@ -1027,7 +1027,18 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // before AgentCore restores a released session's workspace, otherwise
         // the re-clone is rejected while the execution still reads WAITING.
         const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, async () => {
+          // Lane gates never park META: another lane may own its single pending
+          // gate pointer, and this lane's META status has remained RUNNING. The
+          // conditional ownership update leaves that status and pointer intact.
           try {
+            if (unitSlug) {
+              await store.updateExecution({
+                executionId,
+                orchestratorRunId: runId,
+                ifOrchestratorRunId: runId,
+              });
+              return true;
+            }
             await store.updateExecution({
               executionId,
               status: 'RUNNING',
