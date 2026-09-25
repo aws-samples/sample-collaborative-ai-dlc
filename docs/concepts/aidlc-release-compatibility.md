@@ -112,15 +112,21 @@ numeric `workflowVersion`. A visible, runnable release in `selectable` or
 `certified` state can be chosen explicitly or through a channel. Only certified
 releases, apart from the current platform baseline, can be assigned to `stable`.
 
+When pinning is enabled but no stable channel is configured, intent creation may
+still discover a published closure from the deployment ref. It pins that closure
+only if the matching registry record is registered, visible, selectable or
+certified, and its authored behavior passes the runtime promotion guard. If any
+check fails, the intent is created on the existing unpinned path.
+
 ### Before runtime
 
 The runtime resolves and verifies the intent's pinned closure and object digests
 before using release content. Missing or mismatched closure data fails the stage
 rather than falling back to mutable SYSTEM rows.
 
-Existing intents retain their pinned profile. They are not silently repinned
-because a newer release is current, a numeric version is reused, or the SYSTEM
-catalog is reseeded.
+Existing intents retain their stored pin. Release-aware compose reads use it, and
+intents are not migrated or repinned when a newer release becomes current, a
+numeric version is reused, or the SYSTEM catalog is reseeded.
 
 ## Registry, promotion, and channels
 

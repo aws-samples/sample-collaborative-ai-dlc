@@ -261,6 +261,17 @@ describe('IntentComposePage', () => {
   it('previews a composed grid through validate-grid instead of the scope preview', async () => {
     draftState.composedGrid = { a: 'EXECUTE', b: 'SKIP' };
     draftState.scope = 'my-custom';
+    get.mockReset().mockResolvedValue(
+      draftIntent({
+        workflowId: 'aidlc-v2',
+        workflowVersion: 7,
+        methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 },
+      }),
+    );
+    useProjectCache.mockReturnValue({
+      project: baseProject({ workflowId: 'project-latest', workflowVersion: 9 }),
+      loading: false,
+    });
     validateGrid.mockResolvedValue(
       summaryPlan({
         executedStages: 2,
@@ -272,11 +283,22 @@ describe('IntentComposePage', () => {
       }),
     );
     renderPage();
-    await waitFor(() => expect(validateGrid).toHaveBeenCalled());
-    expect(validateGrid.mock.calls[0][1]).toMatchObject({
+    await waitFor(() =>
+      expect(
+        validateGrid.mock.calls.some(
+          ([, input]) => input.projectId === 'p1' && input.intentId === 'i1',
+        ),
+      ).toBe(true),
+    );
+    const authorizedGridCall = validateGrid.mock.calls.find(
+      ([, input]) => input.projectId === 'p1' && input.intentId === 'i1',
+    );
+    expect(authorizedGridCall?.[1]).toMatchObject({
       composedGrid: { a: 'EXECUTE', b: 'SKIP' },
       scope: 'my-custom',
+      version: 7,
     });
+    expect(authorizedGridCall?.[1]).toMatchObject({ projectId: 'p1', intentId: 'i1' });
     expect(executionPreview).not.toHaveBeenCalled();
     const summary = await screen.findByTestId('scope-summary');
     expect(summary.textContent).toContain('Customized scope');
@@ -587,23 +609,54 @@ describe('IntentComposePage — a pinned release that no longer resolves', () =>
     expect(getWorkflow).not.toHaveBeenCalled();
   });
 
-  it('passes the pinned release id to the compiled read', async () => {
+  it('uses the intent workflow id and version for compile and preview reads', async () => {
+    useProjectCache.mockReturnValue({
+      project: baseProject({ workflowId: 'project-latest', workflowVersion: 9 }),
+      loading: false,
+    });
+    get.mockReset().mockResolvedValue(
+      draftIntent({
+        workflowId: 'aidlc-v2',
+        workflowVersion: 7,
+        methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 },
+      }),
+    );
     renderPage();
 
     await waitFor(() =>
-      expect(compiled).toHaveBeenCalledWith('aidlc-v2', undefined, 'aidlc:demoted', null),
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', 7, 'aidlc:demoted', 1, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
+    );
+    await waitFor(() =>
+      expect(executionPreview).toHaveBeenCalledWith(
+        'aidlc-v2',
+        'feature',
+        7,
+        undefined,
+        'aidlc:demoted',
+        1,
+        { projectId: 'p1', intentId: 'i1' },
+      ),
     );
   });
 
   it("passes the pin's own importer revision so an upgraded release still compiles this intent's closure", async () => {
     get.mockResolvedValue(
-      draftIntent({ methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 } }),
+      draftIntent({
+        workflowVersion: 7,
+        methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 },
+      }),
     );
 
     renderPage();
 
     await waitFor(() =>
-      expect(compiled).toHaveBeenCalledWith('aidlc-v2', undefined, 'aidlc:demoted', 1),
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', 7, 'aidlc:demoted', 1, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
     );
   });
 

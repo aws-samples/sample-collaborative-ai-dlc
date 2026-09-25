@@ -277,6 +277,7 @@ export function IntentProvider({
             dto.intent.workflowVersion ?? undefined,
             dto.intent.methodologyRelease?.releaseId,
             dto.intent.methodologyRelease?.importerRevision,
+            dto.intent.methodologyRelease ? { projectId, intentId } : undefined,
           )
           .then((c) => {
             if (activeIntentRef.current !== intentId) return;

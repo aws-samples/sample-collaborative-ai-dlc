@@ -190,6 +190,11 @@ export interface UpdateWorkflowInput {
   status?: string;
 }
 
+export interface ExistingIntentContext {
+  projectId: string;
+  intentId: string;
+}
+
 const setReleaseParams = (
   params: URLSearchParams,
   release: string | null | undefined,
@@ -200,6 +205,12 @@ const setReleaseParams = (
   if (releaseImporterRevision != null) {
     params.set('releaseImporterRevision', String(releaseImporterRevision));
   }
+};
+
+const setIntentParams = (params: URLSearchParams, intent?: ExistingIntentContext) => {
+  if (!intent) return;
+  params.set('projectId', intent.projectId);
+  params.set('intentId', intent.intentId);
 };
 
 export const workflowsService = {
@@ -254,10 +265,12 @@ export const workflowsService = {
     version?: number,
     release?: string | null,
     releaseImporterRevision?: number | null,
+    intent?: ExistingIntentContext,
   ) => {
     const params = new URLSearchParams();
     if (version) params.set('version', String(version));
     setReleaseParams(params, release, releaseImporterRevision);
+    setIntentParams(params, intent);
     const qs = params.toString();
     return api.get<CompiledWorkflow & { phases?: PhaseNode[] }>(
       `/workflows/${id}/compiled${qs ? `?${qs}` : ''}`,
@@ -270,6 +283,7 @@ export const workflowsService = {
     skipStageIds?: string[],
     release?: string | null,
     releaseImporterRevision?: number | null,
+    intent?: ExistingIntentContext,
   ) => {
     const params = new URLSearchParams({ scope });
     if (version) params.set('version', String(version));
@@ -278,6 +292,7 @@ export const workflowsService = {
     // degraded sections) before any intent exists.
     if (skipStageIds?.length) params.set('skip', skipStageIds.join(','));
     setReleaseParams(params, release, releaseImporterRevision);
+    setIntentParams(params, intent);
     return api.get<ExecutionPreview>(`/workflows/${id}/execution-preview?${params.toString()}`);
   },
   // Dry-run a composed EXECUTE/SKIP grid (POST — a grid over 30+ stages does
@@ -294,12 +309,15 @@ export const workflowsService = {
       version?: number;
       release?: string | null;
       releaseImporterRevision?: number | null;
+      projectId?: string;
+      intentId?: string;
     },
   ) => {
-    const { version, release, releaseImporterRevision, ...body } = input;
+    const { version, release, releaseImporterRevision, projectId, intentId, ...body } = input;
     const params = new URLSearchParams();
     if (version) params.set('version', String(version));
     setReleaseParams(params, release, releaseImporterRevision);
+    if (projectId && intentId) setIntentParams(params, { projectId, intentId });
     const qs = params.toString();
     return api.post<ExecutionPreview>(`/workflows/${id}/validate-grid${qs ? `?${qs}` : ''}`, body);
   },

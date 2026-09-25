@@ -89,6 +89,7 @@ import {
   methodologyReleasePinFromManifest,
 } from '../shared/release-resolver.js';
 import {
+  assertReleaseCapabilitiesHonoured,
   isReleaseRegistryError,
   releasePinFromRecord,
   resolveSelectableRelease,
@@ -1524,6 +1525,42 @@ const hasNonSystemMethodologyPins = (methodologyPins) =>
   Object.values(methodologyPins ?? {}).some((pins) =>
     Object.values(pins ?? {}).some((pin) => pin?.tenantId !== SYSTEM_TENANT),
   );
+
+const userMethodologyPins = (methodologyPins) => {
+  const pins = Object.fromEntries(
+    Object.entries(methodologyPins ?? {})
+      .map(([type, blocks]) => [
+        type,
+        Object.fromEntries(
+          Object.entries(blocks ?? {}).filter(
+            ([, pin]) => pin?.tenantId && pin.tenantId !== SYSTEM_TENANT,
+          ),
+        ),
+      ])
+      .filter(([, blocks]) => Object.keys(blocks).length > 0),
+  );
+  return Object.keys(pins).length ? pins : null;
+};
+
+const snapshotUserMethodologyPins = async (methodologyPins) => {
+  const pins = userMethodologyPins(methodologyPins) ?? {};
+  const scopePins = Object.fromEntries(
+    (await listMergedBlocks(ddb, BLOCKS_TABLE(), 'SCOPE'))
+      .filter(
+        (block) =>
+          block?.tenantId &&
+          block.tenantId !== SYSTEM_TENANT &&
+          Number.isInteger(Number(block.version)) &&
+          Number(block.version) > 0,
+      )
+      .map((block) => [
+        block.id ?? block.blockId,
+        { tenantId: block.tenantId, version: Number(block.version) },
+      ]),
+  );
+  if (Object.keys(scopePins).length) pins.SCOPE = scopePins;
+  return Object.keys(pins).length ? pins : null;
+};
 
 // Release-mode plumbing for every plan/scope resolution of one intent. Absent a
 // pin this contributes nothing, so unpinned intents keep the exact DynamoDB
@@ -3572,6 +3609,7 @@ export const handler = async (event, context) => {
                 ...(frozenGrid && Object.keys(frozenGrid).length ? { frozenGrid } : {}),
                 ...(progressContext ? { progressContext } : {}),
                 ...(meta.methodologyRelease ? { methodologyRelease: meta.methodologyRelease } : {}),
+                ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
               }),
             ),
           }),
@@ -4957,6 +4995,18 @@ export const handler = async (event, context) => {
       if (!records.meta || records.meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
+      if (event.queryStringParameters?.view === 'workflow-preview') {
+        return response(200, {
+          workflowIntent: {
+            id: records.meta.intentId,
+            projectId: records.meta.projectId,
+            workflowId: records.meta.workflowId,
+            workflowVersion: records.meta.workflowVersion,
+            methodologyRelease: records.meta.methodologyRelease ?? null,
+            methodologyPins: records.meta.methodologyPins ?? null,
+          },
+        });
+      }
       const artifacts = await fetchArtifacts(g, intentId);
       const pullRequests = await fetchPullRequests(g, intentId);
       const gates = records.humanTasks.map(mapHumanTask);
@@ -5168,7 +5218,7 @@ export const handler = async (event, context) => {
       // Every create-time resolution (scope vocabulary AND the plan check) runs
       // against the selected release, so an intent is validated against exactly
       // the methodology it will run rather than the current SYSTEM catalog.
-      const selectedReleaseOptions = selectedReleasePin
+      let selectedReleaseOptions = selectedReleasePin
         ? { methodologyRelease: selectedReleasePin, s3, bucket: ARTIFACTS_BUCKET() }
         : {};
       let scope = data.scope;
@@ -5216,6 +5266,24 @@ export const handler = async (event, context) => {
       // overlay entry the grid already excludes would otherwise fail the
       // resolver's skip_stage_not_in_scope guard on every later recompute.
       const skipStageIds = pruneSkipsForGrid(rawSkipStageIds, composedGrid);
+      if (selectedReleasePin) {
+        // Capture the current user forks before release mode replaces the
+        // mutable SYSTEM library with the immutable closure. SYSTEM coordinates
+        // are intentionally discarded; only user-tenant versions can overlay it.
+        const currentPlan = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId,
+          workflowVersion,
+          scope,
+          ...(skipStageIds ? { skipStageIds } : {}),
+          ...(composedGrid ? { composedGrid } : {}),
+        });
+        const methodologyPins = await snapshotUserMethodologyPins(currentPlan.methodologyPins);
+        if (methodologyPins) {
+          selectedReleaseOptions = { ...selectedReleaseOptions, methodologyPins };
+        }
+      }
       // Resolve the full execution plan NOW, before any row is written. The
       // plan is a pure function of (workflow@pinnedVersion, scope, skip
       // overlay), so a pass here holds for the whole intent lifetime — this
@@ -5292,6 +5360,20 @@ export const handler = async (event, context) => {
             importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
           });
           if (manifest) {
+            // A published closure is evidence, not authorization. Only pin it
+            // when the registry has explicitly made this exact closure visible
+            // and selectable and its recorded authored behavior is still
+            // honoured by this runtime.
+            const eligibleRelease = await resolveSelectableRelease({
+              ddb,
+              tableName: BLOCKS_TABLE(),
+              releaseId: manifest.releaseId,
+            });
+            await assertReleaseCapabilitiesHonoured({
+              release: eligibleRelease,
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+            });
             // AUTO-PIN. Everything above was validated against the SYSTEM
             // DynamoDB library, which is NOT what a pinned intent will run.
             // Re-resolve the scope vocabulary and the plan against the closure
@@ -5301,10 +5383,20 @@ export const handler = async (event, context) => {
             // followed by a permanent 409 at execution time is the one outcome
             // this path must never produce.
             const candidatePin = methodologyReleasePinFromManifest(manifest);
+            const registeredPin = releasePinFromRecord(eligibleRelease);
+            if (Object.keys(candidatePin).some((key) => candidatePin[key] !== registeredPin[key])) {
+              throw new Error(
+                'The deployment-ref closure does not match its eligible registry row',
+              );
+            }
+            const candidateMethodologyPins = await snapshotUserMethodologyPins(
+              planCheck.methodologyPins,
+            );
             const candidateOptions = {
               methodologyRelease: candidatePin,
               s3,
               bucket: ARTIFACTS_BUCKET(),
+              ...(candidateMethodologyPins ? { methodologyPins: candidateMethodologyPins } : {}),
             };
             const releaseScopes = composedGrid
               ? null
