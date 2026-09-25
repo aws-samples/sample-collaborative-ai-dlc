@@ -148,6 +148,23 @@ describe('IntentContext', () => {
     );
   });
 
+  it('compiles the workflow with the intent release pin', async () => {
+    get.mockResolvedValue(
+      detail({
+        methodologyRelease: {
+          releaseId: 'aidlc:release-a',
+          sourceSha: 'a'.repeat(40),
+          closureDigest: 'd'.repeat(64),
+          importerRevision: 3,
+        },
+      }),
+    );
+
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledWith('wf', 1, 'aidlc:release-a', 3));
+  });
+
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {
     get.mockResolvedValue(detail());
     renderProvider();

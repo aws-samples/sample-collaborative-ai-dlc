@@ -1,10 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  AIDLC_CAPABILITIES,
-  FIELD_FIDELITY,
-  FRONTMATTER_ENUMS,
-  resolveCapabilities,
-} from './aidlc-capabilities.js';
+import { AIDLC_CAPABILITIES, FIELD_FIDELITY, FRONTMATTER_ENUMS } from './aidlc-capabilities.js';
 import {
   AIDLC_COMPATIBILITY_PROFILES,
   CUSTOM_BASE_PROFILE_IDS,
@@ -656,7 +651,7 @@ const fidelityReport = (adapterFieldValues, invokeCommands) => {
 // Re-evaluates analyzer fidelity evidence from an immutable mapped catalog and
 // its content-addressed bodies. The manifest predates this projection, so these
 // values stay out of its bytes and closure digest.
-const fidelityGapsFromCatalog = ({ catalog, bodies = [], runtimeFilePaths = [] }) => {
+const fidelityGapsFromCatalog = ({ catalog, bodies = [] }) => {
   const adapterFieldValues = new Map();
   for (const capability of AIDLC_CAPABILITIES) {
     const fidelity = FIDELITY_BY_KEY.get(`${capability.blockType}:${capability.field}`);
@@ -678,12 +673,7 @@ const fidelityGapsFromCatalog = ({ catalog, bodies = [], runtimeFilePaths = [] }
   const fieldGaps = fidelityReport(adapterFieldValues, collectInvokeCommands(bodyFiles)).gaps.map(
     ({ blockType, field, value }) => ({ blockType, field, value }),
   );
-  const presentCapabilities = resolveCapabilities({ runtimeFilePaths });
-  const protocolGaps = AIDLC_CAPABILITIES.filter(
-    (capability) =>
-      capability.blockType === 'PROTOCOL' && presentCapabilities[capability.key] === true,
-  ).map(({ blockType, field }) => ({ blockType, field, value: 'present' }));
-  return [...fieldGaps, ...protocolGaps].toSorted((left, right) =>
+  return fieldGaps.toSorted((left, right) =>
     `${left.blockType}:${left.field}:${left.value}`.localeCompare(
       `${right.blockType}:${right.field}:${right.value}`,
     ),

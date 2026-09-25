@@ -546,3 +546,74 @@ describe('IntentComposePage', () => {
     expect(startBtn).toBeDisabled();
   });
 });
+
+// ── Release access is gated on selectability ──
+//
+// A release-pinned intent compiles its compose views from the pinned closure. If
+// that resolution fails (the release was demoted, or is no longer offered), the
+// page must say so rather than quietly rendering the LIVE methodology — a preview
+// of stages and scopes this intent will never execute.
+describe('IntentComposePage — a pinned release that no longer resolves', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(draftState)) delete draftState[k];
+    draftState.prompt = 'Build X';
+    draftState.scope = 'feature';
+    start.mockReset().mockResolvedValue({});
+    update.mockReset().mockResolvedValue({});
+    compose.mockReset().mockResolvedValue({ composeId: 'c1', state: 'PENDING', mode: 'front' });
+    listComposes.mockReset().mockResolvedValue({ composes: [] });
+    attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
+    getProjectCapabilities.mockReset().mockResolvedValue({ available: ['kiro'], runtimeClis: [] });
+    flushDraft.mockReset().mockResolvedValue(undefined);
+    reloadIntent.mockReset().mockResolvedValue(undefined);
+    getWorkflow.mockReset().mockResolvedValue({ phases: [] });
+    executionPreview.mockReset().mockRejectedValue(new Error('release not found'));
+    validateGrid.mockReset().mockRejectedValue(new Error('release not found'));
+    compiled.mockReset().mockRejectedValue(new Error('release not found'));
+    useProjectCache.mockReset();
+    useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
+    get
+      .mockReset()
+      .mockResolvedValue(draftIntent({ methodologyRelease: { releaseId: 'aidlc:demoted' } }));
+  });
+
+  it('shows the inline notice instead of falling back to the live workflow', async () => {
+    renderPage();
+
+    const notice = await screen.findByTestId('release-view-unavailable');
+    expect(notice.textContent).toContain('no longer offered');
+    expect(notice.textContent).toContain('still runs on its pinned version');
+    // The live-workflow read is the silent fallback that must NOT happen.
+    expect(getWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('passes the pinned release id to the compiled read', async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', undefined, 'aidlc:demoted', null),
+    );
+  });
+
+  it("passes the pin's own importer revision so an upgraded release still compiles this intent's closure", async () => {
+    get.mockResolvedValue(
+      draftIntent({ methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 } }),
+    );
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', undefined, 'aidlc:demoted', 1),
+    );
+  });
+
+  it('does not show the notice for an unpinned intent whose compile fails', async () => {
+    get.mockResolvedValue(draftIntent());
+
+    renderPage();
+
+    // The unpinned failure keeps its existing generic error banner.
+    await screen.findByText('release not found');
+    expect(screen.queryByTestId('release-view-unavailable')).not.toBeInTheDocument();
+  });
+});

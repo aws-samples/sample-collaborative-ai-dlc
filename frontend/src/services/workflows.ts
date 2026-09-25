@@ -190,6 +190,18 @@ export interface UpdateWorkflowInput {
   status?: string;
 }
 
+const setReleaseParams = (
+  params: URLSearchParams,
+  release: string | null | undefined,
+  releaseImporterRevision: number | null | undefined,
+) => {
+  if (!release) return;
+  params.set('release', release);
+  if (releaseImporterRevision != null) {
+    params.set('releaseImporterRevision', String(releaseImporterRevision));
+  }
+};
+
 export const workflowsService = {
   list: () => api.get<{ workflows: WorkflowSummary[] }>('/workflows'),
   get: (id: string, version?: number) =>
@@ -225,15 +237,47 @@ export const workflowsService = {
     api.delete(`/workflows/${id}/rules/${layer}/${ruleId}`),
 
   // The derived scope-grid + autonomy + stage-graph for this workflow.
-  compiled: (id: string, version?: number) =>
-    api.get<CompiledWorkflow>(`/workflows/${id}/compiled${version ? `?version=${version}` : ''}`),
-  executionPreview: (id: string, scope: string, version?: number, skipStageIds?: string[]) => {
+  //
+  // `release` (issue #482) compiles the view from that AI-DLC release's
+  // immutable closure instead of the live SYSTEM rows. A release-pinned intent
+  // MUST pass it: without it the page shows the scopes and stage grid of
+  // whatever methodology is currently seeded, not the ones the intent runs. The
+  // release response also carries the workflow's `phases`, so a pinned caller
+  // needs no second request.
+  //
+  // `releaseImporterRevision` names WHICH of the release's closures to compile:
+  // an intent pinned before an admin upgraded the release's closure still runs
+  // its original one, so it must pass its pin's importer revision. Omitted, the
+  // record's current closure is used.
+  compiled: (
+    id: string,
+    version?: number,
+    release?: string | null,
+    releaseImporterRevision?: number | null,
+  ) => {
+    const params = new URLSearchParams();
+    if (version) params.set('version', String(version));
+    setReleaseParams(params, release, releaseImporterRevision);
+    const qs = params.toString();
+    return api.get<CompiledWorkflow & { phases?: PhaseNode[] }>(
+      `/workflows/${id}/compiled${qs ? `?${qs}` : ''}`,
+    );
+  },
+  executionPreview: (
+    id: string,
+    scope: string,
+    version?: number,
+    skipStageIds?: string[],
+    release?: string | null,
+    releaseImporterRevision?: number | null,
+  ) => {
     const params = new URLSearchParams({ scope });
     if (version) params.set('version', String(version));
     // Dry-run a per-intent stage deselection: the preview applies the skip
     // overlay and returns the resulting warnings (expected-absent inputs,
     // degraded sections) before any intent exists.
     if (skipStageIds?.length) params.set('skip', skipStageIds.join(','));
+    setReleaseParams(params, release, releaseImporterRevision);
     return api.get<ExecutionPreview>(`/workflows/${id}/execution-preview?${params.toString()}`);
   },
   // Dry-run a composed EXECUTE/SKIP grid (POST — a grid over 30+ stages does
@@ -248,10 +292,15 @@ export const workflowsService = {
       skipStageIds?: string[];
       strict?: boolean;
       version?: number;
+      release?: string | null;
+      releaseImporterRevision?: number | null;
     },
   ) => {
-    const { version, ...body } = input;
-    const qs = version ? `?version=${version}` : '';
-    return api.post<ExecutionPreview>(`/workflows/${id}/validate-grid${qs}`, body);
+    const { version, release, releaseImporterRevision, ...body } = input;
+    const params = new URLSearchParams();
+    if (version) params.set('version', String(version));
+    setReleaseParams(params, release, releaseImporterRevision);
+    const qs = params.toString();
+    return api.post<ExecutionPreview>(`/workflows/${id}/validate-grid${qs ? `?${qs}` : ''}`, body);
   },
 };

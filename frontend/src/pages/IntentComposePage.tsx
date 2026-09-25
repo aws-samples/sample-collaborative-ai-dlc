@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router';
+import { useParams, useNavigate, useLocation } from 'react-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIntent } from '@/contexts/IntentContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
@@ -41,6 +41,7 @@ import {
   MousePointerClick,
   Paperclip,
   Trash2,
+  TriangleAlert,
   Users,
   X,
 } from 'lucide-react';
@@ -78,6 +79,7 @@ const ATTACHMENT_INGEST_TIMEOUT_MS = 30_000;
 // to the intent row, which is what Start launches from).
 function IntentComposePageContent() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
   const { user } = useAuth();
   const { reload } = useIntent();
@@ -99,6 +101,8 @@ function IntentComposePageContent() {
   const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
   const [selectedCli, setSelectedCli] = useState<AgentCli | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
+  const releaseSelectionFallback = (location.state as { releaseSelectionFallback?: boolean } | null)
+    ?.releaseSelectionFallback;
 
   useEffect(() => {
     if (!setAssistAgentCli) return;
@@ -284,6 +288,15 @@ function IntentComposePageContent() {
 
   const workflowId = project ? (project.workflowId ?? 'aidlc-v2') : null;
   const workflowVersion = project?.workflowVersion ?? undefined;
+  // A release-pinned intent runs its immutable closure, so every compiled view
+  // on this page must be resolved from that release rather than from the live
+  // SYSTEM rows — otherwise the scope options and the stage grid describe
+  // methodology this intent will never execute. Null for unpinned intents, which
+  // keeps their behaviour unchanged.
+  const releaseId = intent?.methodologyRelease?.releaseId ?? null;
+  // The pin's own importer revision: after an admin upgrades the release's
+  // closure, this intent still runs the closure it was created on.
+  const releaseImporterRevision = intent?.methodologyRelease?.importerRevision ?? null;
 
   // Compiled views: the scope grid (options + per-scope projections for the
   // grid editor's baseline) and the stage-node list (phase grouping); the
@@ -291,29 +304,49 @@ function IntentComposePageContent() {
   // initialization (those stages are locked EXECUTE in the editor).
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [phases, setPhases] = useState<PhaseNode[]>([]);
+  // A pinned intent whose release-backed compile fails must SAY so. Falling back
+  // to the live SYSTEM rows would render a preview of methodology this intent
+  // will never execute, which is worse than rendering nothing.
+  const [releaseViewUnavailable, setReleaseViewUnavailable] = useState(false);
   useEffect(() => {
     if (!workflowId) return;
+    // Wait for the intent before compiling: loading the live workflow first and
+    // correcting it afterwards would let a user pick a scope the release does
+    // not offer.
+    if (!intent) return;
     let cancelled = false;
+    setReleaseViewUnavailable(false);
     workflowsService
-      .compiled(workflowId, workflowVersion)
+      .compiled(workflowId, workflowVersion, releaseId, releaseImporterRevision)
       .then((c) => {
-        if (!cancelled) setCompiled(c);
+        if (cancelled) return;
+        setCompiled(c);
+        // The release response carries the closure's own phase tree; the live
+        // workflow read below cannot be used for a pinned intent.
+        if (releaseId) setPhases(c.phases ?? []);
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load scopes');
+        if (cancelled) return;
+        if (releaseId) {
+          setReleaseViewUnavailable(true);
+          return;
+        }
+        setError(e instanceof Error ? e.message : 'Failed to load scopes');
       });
-    workflowsService
-      .get(workflowId, workflowVersion)
-      .then((wf) => {
-        if (!cancelled) setPhases(wf.phases ?? []);
-      })
-      .catch(() => {
-        /* phase names are display sugar — the editor degrades to raw paths */
-      });
+    if (!releaseId) {
+      workflowsService
+        .get(workflowId, workflowVersion)
+        .then((wf) => {
+          if (!cancelled) setPhases(wf.phases ?? []);
+        })
+        .catch(() => {
+          /* phase names are display sugar — the editor degrades to raw paths */
+        });
+    }
     return () => {
       cancelled = true;
     };
-  }, [workflowId, workflowVersion]);
+  }, [workflowId, workflowVersion, releaseId, releaseImporterRevision, intent]);
   const scopeOptions = useMemo(() => Object.keys(compiled?.scopeGrid ?? {}), [compiled]);
 
   const scope = draft.scope ?? intent?.scope ?? null;
@@ -424,12 +457,16 @@ function IntentComposePageContent() {
           scope,
           skipStageIds: skips.length ? skips : undefined,
           version: workflowVersion,
+          release: releaseId,
+          releaseImporterRevision,
         })
       : workflowsService.executionPreview(
           workflowId,
           scope,
           workflowVersion,
           skips.length ? skips : undefined,
+          releaseId,
+          releaseImporterRevision,
         );
     request
       .then((preview) => {
@@ -457,7 +494,7 @@ function IntentComposePageContent() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the serialized selection
-  }, [workflowId, workflowVersion, scope, gridKey, skipsKey]);
+  }, [workflowId, workflowVersion, scope, gridKey, skipsKey, releaseId, releaseImporterRevision]);
 
   const handleStart = async () => {
     if (!projectId || !intentId || !draftReady || uploadProgress !== null) return;
@@ -549,6 +586,30 @@ function IntentComposePageContent() {
             >
               <X className="h-3.5 w-3.5" />
             </Button>
+          </div>
+        )}
+
+        {releaseSelectionFallback && (
+          <div
+            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm"
+            role="status"
+          >
+            AI-DLC version selection was disabled while this page was open. This intent will use the
+            platform default.
+          </div>
+        )}
+
+        {releaseViewUnavailable && (
+          <div
+            className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400"
+            role="status"
+            data-testid="release-view-unavailable"
+          >
+            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              This intent&apos;s AI-DLC version is no longer offered; the compose preview is
+              unavailable — the intent itself still runs on its pinned version.
+            </span>
           </div>
         )}
 

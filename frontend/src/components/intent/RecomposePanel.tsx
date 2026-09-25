@@ -69,7 +69,12 @@ export function RecomposePanel({
     if (!open || compiled) return;
     let cancelled = false;
     workflowsService
-      .compiled(intent.workflowId, workflowVersion)
+      .compiled(
+        intent.workflowId,
+        workflowVersion,
+        intent.methodologyRelease?.releaseId,
+        intent.methodologyRelease?.importerRevision,
+      )
       .then((c) => {
         if (!cancelled) setCompiled(c);
       })
@@ -83,7 +88,14 @@ export function RecomposePanel({
     return () => {
       cancelled = true;
     };
-  }, [open, compiled, intent.workflowId, workflowVersion]);
+  }, [
+    open,
+    compiled,
+    intent.workflowId,
+    intent.methodologyRelease?.releaseId,
+    intent.methodologyRelease?.importerRevision,
+    workflowVersion,
+  ]);
 
   useEffect(() => {
     if (!pending) return;

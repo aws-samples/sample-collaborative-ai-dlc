@@ -150,6 +150,21 @@ describe('RecomposePanel', () => {
     expect(await screen.findByTestId('stage-grid-editor')).toBeInTheDocument();
   });
 
+  it('compiles the reshaped workflow with the intent release pin', async () => {
+    renderPanel({
+      intent: intent({
+        methodologyRelease: {
+          releaseId: 'aidlc:release-a',
+          sourceSha: 'a'.repeat(40),
+          closureDigest: 'd'.repeat(64),
+          importerRevision: 3,
+        },
+      }),
+    });
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledWith('aidlc-v2', 4, 'aidlc:release-a', 3));
+  });
+
   it('locks frozen (ran) stages and initialization; a manual flip applies via /recompose', async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();

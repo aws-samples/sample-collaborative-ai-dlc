@@ -269,7 +269,12 @@ export function IntentProvider({
 
       if (dto.intent.workflowId) {
         workflowsService
-          .compiled(dto.intent.workflowId, dto.intent.workflowVersion ?? undefined)
+          .compiled(
+            dto.intent.workflowId,
+            dto.intent.workflowVersion ?? undefined,
+            dto.intent.methodologyRelease?.releaseId,
+            dto.intent.methodologyRelease?.importerRevision,
+          )
           .then((c) => {
             if (activeIntentRef.current !== intentId) return;
             setCompiled(c);
