@@ -801,11 +801,18 @@ const isChangeControlGate = (gate) =>
 // nothing to have changed FROM.
 const changedApprovedInputs = ({ requiredInputs = [], heads = [], approvals = [] }) => {
   const approvedByKey = new Map();
+  let latestTruncatedApprovalAt = null;
   for (const receipt of approvals) {
+    const decidedAt = String(receipt.decidedAt ?? receipt.sk ?? '');
+    if (
+      receipt?.detail?.approvedInputsTruncated === true &&
+      (!latestTruncatedApprovalAt || decidedAt >= latestTruncatedApprovalAt)
+    ) {
+      latestTruncatedApprovalAt = decidedAt;
+    }
     for (const input of receipt?.detail?.approvedInputs ?? []) {
       if (!input?.logicalKey || !input?.snapshotHash) continue;
       const seen = approvedByKey.get(input.logicalKey);
-      const decidedAt = String(receipt.decidedAt ?? receipt.sk ?? '');
       if (!seen || decidedAt >= seen.decidedAt) {
         approvedByKey.set(input.logicalKey, { snapshotHash: input.snapshotHash, decidedAt });
       }
@@ -814,15 +821,25 @@ const changedApprovedInputs = ({ requiredInputs = [], heads = [], approvals = []
   const wanted = new Set(requiredInputs);
   return heads
     .filter((head) => wanted.has(head.artifactType))
-    .map((head) => ({ head, approved: approvedByKey.get(head.logicalKey) ?? null }))
-    .filter(({ head, approved }) => approved && approved.snapshotHash !== head.snapshotHash)
-    .map(({ head, approved }) => ({
+    .map((head) => {
+      const approved = approvedByKey.get(head.logicalKey) ?? null;
+      const approvalHistoryUnknown =
+        latestTruncatedApprovalAt != null &&
+        (!approved || latestTruncatedApprovalAt >= approved.decidedAt);
+      return { head, approved, approvalHistoryUnknown };
+    })
+    .filter(
+      ({ head, approved, approvalHistoryUnknown }) =>
+        approvalHistoryUnknown || (approved && approved.snapshotHash !== head.snapshotHash),
+    )
+    .map(({ head, approved, approvalHistoryUnknown }) => ({
       artifactId: head.artifactId,
       artifactType: head.artifactType,
       logicalKey: head.logicalKey,
-      fromHash: approved.snapshotHash,
+      fromHash: approvalHistoryUnknown ? null : approved.snapshotHash,
       toHash: head.snapshotHash,
-      approvedAt: approved.decidedAt || null,
+      approvedAt: approvalHistoryUnknown ? latestTruncatedApprovalAt : approved.decidedAt || null,
+      ...(approvalHistoryUnknown ? { approvalHistoryUnknown: true } : {}),
     }));
 };
 
@@ -848,9 +865,10 @@ const changeControlChoice = (gate) => {
 // agent knows the divergence was accepted deliberately rather than missed.
 const renderChangedInputs = (changed, { reconfirmed = false } = {}) => {
   if (!changed.length) return '';
-  const lines = changed.map(
-    (item) =>
-      `- ${item.artifactType ?? item.artifactId} changed since it was approved (${item.fromHash.slice(0, 12)} → ${item.toHash.slice(0, 12)})`,
+  const lines = changed.map((item) =>
+    item.approvalHistoryUnknown
+      ? `- ${item.artifactType ?? item.artifactId} has incomplete approval history (receipt size limit); current fingerprint ${item.toHash.slice(0, 12)}`
+      : `- ${item.artifactType ?? item.artifactId} changed since it was approved (${item.fromHash.slice(0, 12)} → ${item.toHash.slice(0, 12)})`,
   );
   return [
     '## Inputs that changed since they were approved',
@@ -2338,7 +2356,12 @@ export const runStage = async (
         remediation: 'Confirm the stage still holds against the changed input.',
       }));
     }
-    if (changedInputs.length > 0 && stage.policy.changeControl === 'relaxed') {
+    const approvalHistoryUnknown = changedInputs.some((changed) => changed.approvalHistoryUnknown);
+    if (
+      changedInputs.length > 0 &&
+      stage.policy.changeControl === 'relaxed' &&
+      !approvalHistoryUnknown
+    ) {
       // Deduplicated on (artifactId, fromHash, toHash): the same change seen by
       // two consecutive stages is ONE accepted change, not two, and a re-drive of
       // this step must not add a third.
@@ -2369,7 +2392,10 @@ export const runStage = async (
           .catch(() => {});
       }
       changeControlMessage = renderChangedInputs(changedInputs);
-    } else if (changedInputs.length > 0 && stage.policy.changeControl === 'strict') {
+    } else if (
+      changedInputs.length > 0 &&
+      (stage.policy.changeControl === 'strict' || approvalHistoryUnknown)
+    ) {
       const reconfirmed = await (
         store.listReceipts?.(executionId, {
           kind: 'change-reconfirm',
@@ -2477,11 +2503,17 @@ export const runStage = async (
                 kind: 'question',
                 questions: JSON.stringify([
                   {
-                    text: `${changedInputs
-                      .map((changed) => changed.artifactType ?? changed.artifactId)
-                      .join(
-                        ', ',
-                      )} changed since ${changedInputs.length === 1 ? 'it was' : 'they were'} approved. Reconfirm before ${stage.stageId} runs against ${changedInputs.length === 1 ? 'it' : 'them'}?`,
+                    text: approvalHistoryUnknown
+                      ? `Approval history for ${changedInputs
+                          .map((changed) => changed.artifactType ?? changed.artifactId)
+                          .join(
+                            ', ',
+                          )} is incomplete because the approval receipt exceeded its size limit. Reconfirm before ${stage.stageId} runs against the current artifacts?`
+                      : `${changedInputs
+                          .map((changed) => changed.artifactType ?? changed.artifactId)
+                          .join(
+                            ', ',
+                          )} changed since ${changedInputs.length === 1 ? 'it was' : 'they were'} approved. Reconfirm before ${stage.stageId} runs against ${changedInputs.length === 1 ? 'it' : 'them'}?`,
                     type: 'single',
                     options: CHANGE_CONTROL_OPTIONS.map((label) => ({ label })),
                   },
