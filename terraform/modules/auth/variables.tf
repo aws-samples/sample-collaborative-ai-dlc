@@ -54,6 +54,18 @@ variable "sso_providers" {
   sensitive = true
 }
 
+variable "custom_domain" {
+  description = "Custom hostname for the Cognito managed-login domain. Empty uses only the generated *.amazoncognito.com prefix domain."
+  type        = string
+  default     = ""
+}
+
+variable "custom_domain_certificate_arn" {
+  description = "ARN of an issued us-east-1 ACM certificate covering custom_domain. Required when custom_domain is set."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)

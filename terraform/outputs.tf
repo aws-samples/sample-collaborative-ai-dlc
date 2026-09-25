@@ -101,6 +101,16 @@ output "dns_target_hosted_zone_id" {
   value       = module.frontend.cloudfront_hosted_zone_id
 }
 
+output "auth_dns_target" {
+  description = "Value the auth_domain A/AAAA alias (or CNAME) record must point at, or an empty string without auth_domain. Needed only when DNS is managed outside this Terraform state."
+  value       = module.auth.custom_domain_dns_target
+}
+
+output "auth_dns_target_hosted_zone_id" {
+  description = "Hosted zone ID of the auth_domain CloudFront alias target, for Route53 alias records created outside this Terraform state."
+  value       = module.auth.custom_domain_dns_target_hosted_zone_id
+}
+
 output "s3_bucket_name" {
   description = "Frontend S3 bucket name"
   value       = module.frontend.s3_bucket_name

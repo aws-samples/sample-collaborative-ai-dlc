@@ -87,6 +87,8 @@ locals {
   ))
   cors_allowed_origins = join(",", local.cors_origin_list)
 
+  auth_certificate_arn = var.auth_certificate_arn != "" ? var.auth_certificate_arn : var.acm_certificate_arn
+
   sso_enabled = var.auth_mode != "local"
 
   sso_role_config = {
@@ -186,6 +188,21 @@ resource "terraform_data" "domain_preconditions" {
       condition     = var.app_domain != "" || (var.acm_certificate_arn == "" && var.route53_zone_id == "")
       error_message = "acm_certificate_arn or route53_zone_id is set but app_domain is empty. Set app_domain to enable the custom domain, or clear both to serve on the CloudFront domain."
     }
+
+    precondition {
+      condition     = var.auth_domain == "" || local.auth_certificate_arn != ""
+      error_message = "auth_domain is set but neither auth_certificate_arn nor acm_certificate_arn was provided. Supply an issued us-east-1 certificate covering auth_domain."
+    }
+
+    precondition {
+      condition     = var.auth_domain == "" || !contains(local.app_aliases, var.auth_domain)
+      error_message = "auth_domain must differ from app_domain and app_domain_aliases; the managed-login domain uses its own CloudFront distribution."
+    }
+
+    precondition {
+      condition     = var.auth_domain != "" || var.auth_certificate_arn == ""
+      error_message = "auth_certificate_arn is set but auth_domain is empty. Set auth_domain to enable the custom managed-login domain, or clear auth_certificate_arn."
+    }
   }
 }
 
@@ -253,6 +270,9 @@ module "auth" {
   app_url                 = local.app_url
   auth_mode               = var.auth_mode
   sso_providers           = var.sso_providers
+
+  custom_domain                 = var.auth_domain
+  custom_domain_certificate_arn = local.auth_certificate_arn
 }
 
 # Frontend (S3 + CloudFront)
@@ -289,6 +309,20 @@ resource "aws_route53_record" "app" {
   alias {
     name                   = module.frontend.cloudfront_domain_name
     zone_id                = module.frontend.cloudfront_hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "auth" {
+  for_each = var.route53_zone_id == "" || var.auth_domain == "" ? toset([]) : toset(["A", "AAAA"])
+
+  zone_id = var.route53_zone_id
+  name    = var.auth_domain
+  type    = each.value
+
+  alias {
+    name                   = module.auth.custom_domain_dns_target
+    zone_id                = module.auth.custom_domain_dns_target_hosted_zone_id
     evaluate_target_health = false
   }
 }
