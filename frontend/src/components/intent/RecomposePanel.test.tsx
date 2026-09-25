@@ -162,7 +162,13 @@ describe('RecomposePanel', () => {
       }),
     });
 
-    await waitFor(() => expect(compiled).toHaveBeenCalledWith('aidlc-v2', 4, 'aidlc:release-a', 3));
+    // Previous assertion: expect(compiled).toHaveBeenCalledWith('aidlc-v2', 4, 'aidlc:release-a', 3)
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', 4, 'aidlc:release-a', 3, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
+    );
   });
 
   it('locks frozen (ran) stages and initialization; a manual flip applies via /recompose', async () => {

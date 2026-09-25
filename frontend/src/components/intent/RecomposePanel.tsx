@@ -74,6 +74,7 @@ export function RecomposePanel({
         workflowVersion,
         intent.methodologyRelease?.releaseId,
         intent.methodologyRelease?.importerRevision,
+        { projectId, intentId },
       )
       .then((c) => {
         if (!cancelled) setCompiled(c);
