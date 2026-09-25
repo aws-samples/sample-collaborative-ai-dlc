@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Repository ids may be CodeCommit ARNs: the engine checks them out under `codecommit/<partition>/<region>/<account>/<name>` and refuses a batch whose repositories would share a directory, the UI renders `name (region)` and links to the regional console.
 - Terraform: `codecommit` connector Lambda and routes, `sts:AssumeRole` on the broker / source-control / connector roles conditioned on an `aidlc:*` external ID, `codecommit_platform_principals` output; the connector reads and writes the caller's CodeCommit connection and the credential broker can query bindings by role (a refused role invalidates every binding on it); Admin → Source Control shows those principals.
 
+### Fixed
+
+- Project Settings no longer shows an invalidated source-control binding as "Write verified": the badge now requires an active binding, not just the capabilities of its last successful verification.
+
 ## [2.1.1] - 2026-09-15
 
 Hotfix for repository paths and workspace setup ([#467](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/467)).
