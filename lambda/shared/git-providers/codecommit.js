@@ -178,6 +178,8 @@ const mapError = (error, action) => {
     return new ProviderError(429, message, { ...extra, retryAfter: retryAfterSeconds(error) });
   }
   if (exception === 'ManualMergeRequiredException') return new ProviderError(409, message, extra);
+  // A request the API rejects as malformed is the caller's bug, not an outage.
+  if (exception === 'CommitIdRequiredException') return new ProviderError(400, message, extra);
   if (/FileTooLarge|FolderContentSizeLimitExceeded/.test(exception)) {
     return new ProviderError(413, message, extra);
   }
@@ -917,6 +919,12 @@ const COMMENT_PAGES = 20;
 // GetCommentsForPullRequest caps maxResults at 500.
 const COMMENT_PAGE_SIZE = 500;
 
+// GetCommentsForPullRequest requires BOTH beforeCommitId and afterCommitId as
+// soon as repositoryName is supplied, and a commit pair narrows the result to
+// one revision (dropping comments made on earlier pushes). So the request names
+// only the pull request, which already identifies the repository, and the
+// returned groups are filtered on it defensively.
+// https://docs.aws.amazon.com/codecommit/latest/APIReference/API_GetCommentsForPullRequest.html
 const listPRComments = async (ctx, repoId, prNumber) => {
   const { repositoryName } = parseRepo(repoId);
   const client = clientFor(ctx, repoId);
@@ -927,7 +935,6 @@ const listPRComments = async (ctx, repoId, prNumber) => {
       client,
       new GetCommentsForPullRequestCommand({
         pullRequestId: String(prNumber),
-        repositoryName,
         maxResults: COMMENT_PAGE_SIZE,
         nextToken,
       }),
@@ -937,6 +944,7 @@ const listPRComments = async (ctx, repoId, prNumber) => {
     );
     if (!res) return [];
     for (const group of res.commentsForPullRequestData ?? []) {
+      if (group.repositoryName && group.repositoryName !== repositoryName) continue;
       for (const comment of group.comments ?? []) {
         // A deleted comment keeps its id but loses its content; surfacing it as
         // empty feedback would be noise.

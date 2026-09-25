@@ -191,6 +191,82 @@ describe('codecommit provider: repositories and branches', () => {
   });
 });
 
+describe('codecommit provider: pull request comments', () => {
+  // The real API: repositoryName without the commit pair is rejected.
+  const getComments = (pages) => (input) => {
+    if (input.repositoryName && !(input.beforeCommitId && input.afterCommitId)) {
+      return sdkError('CommitIdRequiredException');
+    }
+    return pages[input.nextToken ?? 'first'];
+  };
+  const comment = (id, extra = {}) => ({
+    commentId: id,
+    content: `body ${id}`,
+    authorArn: 'arn:aws:iam::123456789012:user/reviewer',
+    creationDate: new Date(`2026-09-18T10:0${id}:00Z`),
+    ...extra,
+  });
+
+  it('lists every page and revision without a repositoryName filter', async () => {
+    const client = makeClient({
+      GetCommentsForPullRequest: getComments({
+        first: {
+          commentsForPullRequestData: [
+            {
+              repositoryName: REPO,
+              beforeCommitId: 'base-1',
+              afterCommitId: 'head-1',
+              comments: [comment('1'), comment('2', { deleted: true, content: '' })],
+            },
+          ],
+          nextToken: 'page-2',
+        },
+        'page-2': {
+          commentsForPullRequestData: [
+            {
+              repositoryName: REPO,
+              beforeCommitId: 'base-1',
+              afterCommitId: 'head-2',
+              location: { filePath: 'src/app.js', filePosition: 12 },
+              comments: [comment('3', { inReplyTo: '1' })],
+            },
+            { repositoryName: 'another-repo', comments: [comment('4')] },
+          ],
+        },
+      }),
+    });
+    const comments = await cc.listPRComments({ client }, ARN, '7');
+    expect(client.calls.every((c) => c.input.repositoryName === undefined)).toBe(true);
+    expect(client.calls).toHaveLength(2);
+    // Deleted and foreign-repository comments are dropped; both revisions kept.
+    expect(comments.map((c) => c.id)).toEqual(['1', '3']);
+    expect(comments[1]).toMatchObject({
+      type: 'review',
+      path: 'src/app.js',
+      line: 12,
+      inReplyTo: '1',
+    });
+  });
+
+  it('the double enforces the documented parameter rule', async () => {
+    const client = makeClient({ GetCommentsForPullRequest: getComments({}) });
+    const { GetCommentsForPullRequestCommand } = await import('@aws-sdk/client-codecommit');
+    await expect(
+      client.send(
+        new GetCommentsForPullRequestCommand({ pullRequestId: '7', repositoryName: REPO }),
+      ),
+    ).rejects.toMatchObject({ name: 'CommitIdRequiredException' });
+  });
+
+  it('keeps a denial on the comments API scoped to the operation', async () => {
+    const client = makeClient({ GetCommentsForPullRequest: sdkError('AccessDeniedException') });
+    await expect(cc.listPRComments({ client }, ARN, '7')).rejects.toMatchObject({
+      status: 403,
+      extra: { scope: 'operation' },
+    });
+  });
+});
+
 describe('codecommit provider: issues are declared unsupported', () => {
   it('every issue method throws a ProviderError instead of a TypeError', async () => {
     const client = makeClient({});
