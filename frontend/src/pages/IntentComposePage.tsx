@@ -286,8 +286,10 @@ function IntentComposePageContent() {
     if (intent && draft.synced) initFromIntent(intent);
   }, [intent, draft.synced, initFromIntent]);
 
-  const workflowId = project ? (project.workflowId ?? 'aidlc-v2') : null;
-  const workflowVersion = project?.workflowVersion ?? undefined;
+  const workflowId = intent?.workflowId ?? (project ? (project.workflowId ?? 'aidlc-v2') : null);
+  const workflowVersion = intent
+    ? (intent.workflowVersion ?? undefined)
+    : (project?.workflowVersion ?? undefined);
   // A release-pinned intent runs its immutable closure, so every compiled view
   // on this page must be resolved from that release rather than from the live
   // SYSTEM rows — otherwise the scope options and the stage grid describe

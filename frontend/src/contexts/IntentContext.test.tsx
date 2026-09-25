@@ -151,6 +151,7 @@ describe('IntentContext', () => {
   it('compiles the workflow with the intent release pin', async () => {
     get.mockResolvedValue(
       detail({
+        workflowVersion: 7,
         methodologyRelease: {
           releaseId: 'aidlc:release-a',
           sourceSha: 'a'.repeat(40),
@@ -163,7 +164,7 @@ describe('IntentContext', () => {
     renderProvider();
 
     await waitFor(() =>
-      expect(compiled).toHaveBeenCalledWith('wf', 1, 'aidlc:release-a', 3, {
+      expect(compiled).toHaveBeenCalledWith('wf', 7, 'aidlc:release-a', 3, {
         projectId: 'p1',
         intentId: 'i1',
       }),
