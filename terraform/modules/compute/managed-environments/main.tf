@@ -968,6 +968,10 @@ module "tool_control_lambda" {
     CORE_IMAGE_DIGEST             = var.core_image_digest
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
     CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
+
+    # x86_64 tool builds (empty/no-op when the amd64 core is not published)
+    CORE_IMAGE_URI_AMD64    = var.core_image_uri_amd64
+    CORE_IMAGE_DIGEST_AMD64 = var.core_image_digest_amd64
   }
 
   depends_on = [aws_iam_role_policy_attachment.tool_control_vpc]
