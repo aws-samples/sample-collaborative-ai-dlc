@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import { mockClient } from 'aws-sdk-client-mock';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Logger } from '@aws-lambda-powertools/logger';
+import { buildReleaseBundle, publishReleaseBundle } from '../../shared/aidlc-release.js';
 import {
   filesFromCompatibilityFixture,
   normalizeAidlcFrontmatter,
@@ -11,6 +14,11 @@ import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../../shared/v2-execution-plan.js';
+import {
+  __test as releaseResolverTest,
+  methodologyReleasePinFromManifest,
+} from '../../shared/release-resolver.js';
+import { loadExecutionPlan } from '../../shared/v2-workflow-plan.js';
 import { __durableHandler } from '../index.js';
 
 vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
@@ -133,7 +141,15 @@ const answerFor = (gate, world) => {
   return { answer: 'reconfirm' };
 };
 
-const makeWorld = ({ profileId, scope, plan, fault, loopBackStages }) => {
+const makeWorld = ({
+  profileId,
+  scope,
+  plan,
+  fault,
+  loopBackStages,
+  methodologyRelease = null,
+  loadPlan = null,
+}) => {
   const world = {
     profileId,
     scope,
@@ -169,7 +185,7 @@ const makeWorld = ({ profileId, scope, plan, fault, loopBackStages }) => {
       gitProvider: 'github',
       agentCli: 'kiro',
       parkReleaseSeconds: null,
-      methodologyRelease: {
+      methodologyRelease: methodologyRelease ?? {
         releaseId: `aidlc:${profileId}`,
         sourceSha: 'a'.repeat(40),
         importerRevision: 2,
@@ -358,7 +374,7 @@ const makeWorld = ({ profileId, scope, plan, fault, loopBackStages }) => {
 
   const deps = {
     store,
-    loadPlan: async () => ({ valid: true, plan }),
+    loadPlan: loadPlan ?? (async () => ({ valid: true, plan })),
     invokeRuntime: async (payload) => {
       world.invokes.push(payload);
       if (payload.command === 'run-stage-start') {
@@ -524,9 +540,24 @@ const makeWorld = ({ profileId, scope, plan, fault, loopBackStages }) => {
   return { world, ctx, deps };
 };
 
-const runCell = async ({ profileId, scope, plan, fault = null }) => {
+const runCell = async ({
+  profileId,
+  scope,
+  plan,
+  fault = null,
+  methodologyRelease = null,
+  loadPlan = null,
+}) => {
   const loopBackStages = loopBackStagesFor(plan);
-  const { world, ctx, deps } = makeWorld({ profileId, scope, plan, fault, loopBackStages });
+  const { world, ctx, deps } = makeWorld({
+    profileId,
+    scope,
+    plan,
+    fault,
+    loopBackStages,
+    methodologyRelease,
+    loadPlan,
+  });
   const result = await __durableHandler(
     { action: 'start', intentId: 'intent-1', executionId: 'exec-1' },
     ctx,
@@ -762,4 +793,93 @@ describe('pinned AI-DLC release coexistence through a full v2 run', () => {
       if (process.env.AIDLC_RELEASE_SIMULATION_REPORT === '1') compactCoverage(report);
     },
   );
+
+  it('resolves the selected methodology release in the simulated dispatch path', async () => {
+    const profileId = 'v2.9.0';
+    const scope = 'feature';
+    const bundle = buildReleaseBundle({ profileId, files: fixtureFiles(profileId) });
+    const methodologyRelease = methodologyReleasePinFromManifest(bundle.manifest);
+    const bucket = 'release-simulation-test';
+    const objectStore = new Map();
+    const s3 = new S3Client({});
+    const s3Mock = mockClient(S3Client);
+    s3Mock.reset();
+    s3Mock.on(PutObjectCommand).callsFake(({ Key, Body }) => {
+      objectStore.set(Key, String(Body));
+      return {};
+    });
+    s3Mock.on(GetObjectCommand).callsFake(({ Key }) => {
+      const body = objectStore.get(Key);
+      if (body == null) {
+        const error = new Error(`missing release fixture object ${Key}`);
+        error.name = 'NoSuchKey';
+        error.$metadata = { httpStatusCode: 404 };
+        throw error;
+      }
+      return { Body: { transformToString: async () => body } };
+    });
+    await publishReleaseBundle({ s3, bucket, bundle });
+    releaseResolverTest.releaseClosureCache.clear();
+
+    const ddb = {
+      send: vi.fn(async () => {
+        throw new Error('unexpected release resolver DDB read');
+      }),
+    };
+    const planLoads = [];
+    const loadPlan = async (input) => {
+      const resolved = await loadExecutionPlan({
+        ...input,
+        ddb,
+        tableName: 'release-simulation-test',
+        s3,
+        bucket,
+      });
+      planLoads.push({
+        releaseId: input.methodologyRelease?.releaseId,
+        scope: input.scope,
+        sourceRefs: resolved.methodologySourceRefs,
+        stageIds: resolved.plan?.stages.map((stage) => stage.stageId),
+      });
+      return resolved;
+    };
+    const firstResolution = await loadPlan({
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope,
+      methodologyRelease,
+    });
+    expect(firstResolution.valid).toBe(true);
+
+    const { result, world } = await runCell({
+      profileId,
+      scope,
+      plan: firstResolution.plan,
+      methodologyRelease,
+      loadPlan,
+    });
+
+    expect(result).toMatchObject({ ok: true, intentId: 'intent-1' });
+    expect(world.execution.methodologyRelease).toEqual(methodologyRelease);
+    expect(planLoads).toHaveLength(2);
+    expect(
+      planLoads.map(({ releaseId, scope: resolvedScope, sourceRefs, stageIds }) => ({
+        releaseId,
+        scope: resolvedScope,
+        sourceRefs,
+        stageIds,
+      })),
+    ).toEqual(
+      Array.from({ length: 2 }, () => ({
+        releaseId: bundle.manifest.releaseId,
+        scope,
+        sourceRefs: [bundle.manifest.sourceSha],
+        stageIds: firstResolution.plan.stages.map((stage) => stage.stageId),
+      })),
+    );
+    expect(world.stageRuns[0].stageId).toBe(firstResolution.plan.stages[0].stageId);
+    expect(world.stageRuns.some((run) => run.stageId === 'build-and-test')).toBe(true);
+    expect(ddb.send).not.toHaveBeenCalled();
+    s3Mock.restore();
+  });
 });
