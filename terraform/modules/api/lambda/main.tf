@@ -2355,6 +2355,9 @@ module "workflows_lambda" {
     BLOCKS_TABLE                = var.blocks_table_name
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
+    # Existing-intent release reads ask the intents Lambda to authorize the
+    # project member and return that intent's stored immutable pin.
+    INTENTS_FUNCTION = module.intents_lambda.lambda_function_name
     # Issue #482 Phase 4: read a published release manifest when registering it
     # in the selection registry. Read-only — the role cannot write releases.
     ARTIFACTS_BUCKET = var.artifacts_bucket_name
@@ -2701,6 +2704,24 @@ module "intents_lambda" {
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
   }
+}
+
+# Workflows is intentionally outside the VPC, so it cannot query Neptune to
+# authorize a project-scoped existing-intent preview itself. The read-only
+# preview path invokes the intents Lambda's existing detail handler, which
+# performs the project-membership and intent/project checks before returning the
+# stored release pin. Keep this to the one fixed target function.
+resource "aws_iam_role_policy" "workflows_intent_lookup" {
+  name = "workflows-intent-lookup"
+  role = aws_iam_role.blocks.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = module.intents_lambda.lambda_function_arn
+    }]
+  })
 }
 
 resource "aws_cloudwatch_event_rule" "intents_durable_watchdog" {

@@ -9,6 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   DeleteCommand,
@@ -20,7 +21,10 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { customProfile, filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
 import { buildReleaseBundle, publishReleaseBundle } from '../../shared/aidlc-release.js';
-import { __test as releaseResolverTest } from '../../shared/release-resolver.js';
+import {
+  __test as releaseResolverTest,
+  methodologyReleasePinFromManifest,
+} from '../../shared/release-resolver.js';
 
 const BLOCKS_TABLE = 'blocks-test';
 const ARTIFACTS_BUCKET = 'artifacts-test';
@@ -29,6 +33,7 @@ const CANDIDATE_PROFILE = 'v2.9.0';
 
 const s3Mock = mockClient(S3Client);
 const ddbMock = mockClient(DynamoDBDocumentClient);
+const lambdaMock = mockClient(LambdaClient);
 const s3 = new S3Client({});
 const objects = new Map();
 const rows = new Map();
@@ -111,6 +116,7 @@ const CANDIDATE_RELEASE_ID = candidateBundle.manifest.releaseId;
 const installFakes = () => {
   s3Mock.reset();
   ddbMock.reset();
+  lambdaMock.reset();
   objects.clear();
   rows.clear();
   s3Mock.on(PutObjectCommand).callsFake((input) => {
@@ -187,6 +193,7 @@ const parse = (res) => ({ status: res.statusCode, body: res.body ? JSON.parse(re
 beforeAll(async () => {
   process.env.BLOCKS_TABLE = BLOCKS_TABLE;
   process.env.ARTIFACTS_BUCKET = ARTIFACTS_BUCKET;
+  process.env.INTENTS_FUNCTION = 'intents-test';
   ({ handler } = await import('../index.js'));
 });
 
@@ -1069,6 +1076,64 @@ describe('`?release=` selectability gate for non-admins', () => {
       expect(res.body.code).toBe('release_not_found');
     });
 
+    it(`${label}: a project member may resolve their existing intent's demoted pin`, async () => {
+      await promote(CANDIDATE_RELEASE_ID, 'existing-only');
+      const methodologyRelease = methodologyReleasePinFromManifest(candidateBundle.manifest);
+      const agentPk = 'BLOCK#default#AGENT#aidlc-architect-agent';
+      const methodologyPins = {
+        AGENT: { 'aidlc-architect-agent': { tenantId: 'default', version: 7 } },
+      };
+      rows.set(keyOf(agentPk, 'V#7'), {
+        pk: agentPk,
+        sk: 'V#7',
+        id: 'aidlc-architect-agent',
+        blockId: 'aidlc-architect-agent',
+        tenantId: 'default',
+        version: 7,
+      });
+      lambdaMock.on(InvokeCommand).callsFake((input) => {
+        expect(input.FunctionName).toBe('intents-test');
+        const request = JSON.parse(Buffer.from(input.Payload).toString());
+        expect(request).toMatchObject({
+          httpMethod: 'GET',
+          pathParameters: { projectId: 'project-1', intentId: 'intent-1' },
+          queryStringParameters: { view: 'workflow-preview' },
+          requestContext: { authorizer: { claims: { sub: memberClaims.sub } } },
+        });
+        return {
+          Payload: Buffer.from(
+            JSON.stringify({
+              statusCode: 200,
+              body: JSON.stringify({
+                workflowIntent: {
+                  id: 'intent-1',
+                  projectId: 'project-1',
+                  workflowId: 'aidlc-v2',
+                  workflowVersion: 1,
+                  methodologyRelease,
+                  methodologyPins,
+                },
+              }),
+            }),
+          ),
+        };
+      });
+
+      const res = parse(
+        await call(
+          {
+            release: CANDIDATE_RELEASE_ID,
+            projectId: 'project-1',
+            intentId: 'intent-1',
+          },
+          memberClaims,
+        ),
+      );
+
+      expect(res.status).toBe(200);
+      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+    });
+
     it(`${label}: an admin may still resolve a demoted release`, async () => {
       await promote(CANDIDATE_RELEASE_ID, 'existing-only');
 
@@ -1083,4 +1148,60 @@ describe('`?release=` selectability gate for non-admins', () => {
       expect(res.status).toBe(200);
     });
   }
+
+  it('does not expose a demoted pin when the intent lookup is unauthorized or mismatched', async () => {
+    await promote(CANDIDATE_RELEASE_ID, 'existing-only');
+    const unauthorized = {
+      statusCode: 404,
+      body: JSON.stringify({ error: 'Intent not found' }),
+    };
+    lambdaMock.on(InvokeCommand).resolves({ Payload: Buffer.from(JSON.stringify(unauthorized)) });
+
+    const denied = parse(
+      await compiledFor(
+        'aidlc-v2',
+        {
+          release: CANDIDATE_RELEASE_ID,
+          projectId: 'project-1',
+          intentId: 'intent-1',
+        },
+        memberClaims,
+      ),
+    );
+    expect(denied.status).toBe(404);
+    expect(denied.body.code).toBe('release_not_found');
+
+    lambdaMock.reset();
+    const methodologyRelease = methodologyReleasePinFromManifest(candidateBundle.manifest);
+    lambdaMock.on(InvokeCommand).resolves({
+      Payload: Buffer.from(
+        JSON.stringify({
+          statusCode: 200,
+          body: JSON.stringify({
+            workflowIntent: {
+              id: 'intent-1',
+              projectId: 'another-project',
+              workflowId: 'aidlc-v2',
+              workflowVersion: 1,
+              methodologyRelease,
+            },
+          }),
+        }),
+      ),
+    });
+
+    const mismatched = parse(
+      await compiledFor(
+        'aidlc-v2',
+        {
+          release: CANDIDATE_RELEASE_ID,
+          projectId: 'project-1',
+          intentId: 'intent-1',
+        },
+        memberClaims,
+      ),
+    );
+    expect(mismatched.status).toBe(404);
+    expect(mismatched.body.code).toBe('release_not_found');
+  });
 });
