@@ -566,13 +566,12 @@ With the flag enabled, **New environment** shows a **Compute** selector:
   deployment allows for that architecture.
 
 Both the compute type and the architecture are fixed at creation and cannot
-be changed afterwards. The architecture — not the compute type — carries the
-build restrictions: an **x86_64** environment currently must derive directly
-from the **Standard** base (the build swaps in the published core revision's
-x86_64 image variant) and cannot select catalog tools, which are built for
-arm64 only today; use apt packages and restricted build commands under
-Advanced settings instead. An arm64 Instances environment has none of these
-restrictions.
+be changed afterwards. The architecture — not the compute type — decides
+which catalog tools and bases apply: an **x86_64** environment lists only
+tool versions with an x86_64 build and derives from **Standard** (the build
+swaps in the published core revision's x86_64 image variant) or from another
+x86_64 environment; an arm64 environment — on either compute type — uses the
+arm64 builds.
 
 The build, security review, and publish flows are the same on both compute
 types, with one difference on Instances: runtime validation first has to

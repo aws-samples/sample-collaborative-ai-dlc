@@ -98,6 +98,10 @@ describe('applyComputeBase', () => {
       imageDigest: 'sha256:arm',
     },
   };
+  const amd64Revision = {
+    revisionId: 'core-1',
+    amd64Image: { imageUri: 'amd64-uri', imageDigest: 'sha256:amd' },
+  };
 
   it('leaves arm64 recipes untouched', () => {
     expect(
@@ -150,22 +154,61 @@ describe('applyComputeBase', () => {
     ).toThrow(/no x86_64 variant/);
   });
 
-  it('rejects x86_64 recipes that select catalog tools', () => {
+  it('rejects x86_64 recipes that carry arm64 tool builds', () => {
+    const armTool = { toolId: 'java', version: '21.0.8', versionId: 'tv-java-arm' };
     expect(() =>
       applyComputeBase({
-        recipe: { ...recipe, toolVersionIds: ['tool@1'] },
+        recipe: { ...recipe, tools: [armTool], resolvedTools: [armTool] },
         compute: { type: 'instances', architecture: 'x86_64' },
+        baseRevision: amd64Revision,
       }),
-    ).toThrow(/arm64-only/);
+    ).toThrow(expect.objectContaining({ code: 'TOOL_ARCHITECTURE_MISMATCH' }));
   });
 
-  it('rejects x86_64 environments derived from non-standard bases', () => {
+  it('accepts x86_64 tools on the Standard base and swaps in the amd64 core', () => {
+    const x86Tool = {
+      toolId: 'java',
+      version: '21.0.8',
+      versionId: 'tv-java-x86',
+      architecture: 'x86_64',
+    };
+    const swapped = applyComputeBase({
+      recipe: { ...recipe, toolVersionIds: ['tv-java-x86'], tools: [x86Tool] },
+      compute: { type: 'instances', architecture: 'x86_64' },
+      baseRevision: amd64Revision,
+    });
+    expect(swapped.architecture).toBe('x86_64');
+    expect(swapped.base.imageUri).toBe(amd64Revision.amd64Image.imageUri);
+    expect(swapped.tools).toEqual([x86Tool]);
+  });
+
+  it('rejects x86_64 environments derived from an arm64 base', () => {
     expect(() =>
       applyComputeBase({
         recipe: { ...recipe, base: { ...recipe.base, environmentId: 'custom-base' } },
         compute: { type: 'instances', architecture: 'x86_64' },
+        baseRevision: { revisionId: 'r-arm', recipe: {} },
       }),
-    ).toThrow(/Standard environment/);
+    ).toThrow(expect.objectContaining({ code: 'BASE_ARCHITECTURE_MISMATCH' }));
+  });
+
+  it('keeps an x86_64 derived base as-is (its image already is amd64)', () => {
+    const derived = {
+      ...recipe,
+      base: {
+        environmentId: 'java-x86',
+        revisionId: 'r-x86',
+        imageUri: 'environments-repo',
+        imageDigest: `sha256:${'c'.repeat(64)}`,
+      },
+    };
+    const result = applyComputeBase({
+      recipe: derived,
+      compute: { type: 'instances', architecture: 'x86_64' },
+      baseRevision: { revisionId: 'r-x86', recipe: { architecture: 'x86_64' } },
+    });
+    expect(result.architecture).toBe('x86_64');
+    expect(result.base).toEqual(derived.base);
   });
 });
 
