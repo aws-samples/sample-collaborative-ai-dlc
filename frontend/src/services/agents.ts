@@ -68,6 +68,25 @@ export interface RuntimeCliStatus {
 
 export type AgentCredentialSource = 'user' | 'space' | 'platform';
 
+export interface BedrockIamConfig {
+  roleArn: string;
+  region: string;
+  externalId?: string;
+}
+
+export interface BedrockIamSetup {
+  config: BedrockIamConfig;
+  brokerRoleArn: string;
+  applicationAccountId: string;
+  inferenceAccountId: string;
+  trustPolicy: object;
+  assumeRolePolicy: object;
+  inferencePolicy: object;
+  inferenceCommands: string;
+  applicationCommands: string;
+  reuseCommands: string;
+}
+
 export interface AgentAuthenticationView {
   policy: { mode: string; revision: number; defaultConnectionId: string; pendingReview?: string };
   modes: { id: string; label: string; available: boolean }[];
@@ -78,11 +97,25 @@ export interface AgentAuthenticationView {
     mechanism: string;
     source: string;
     state: string;
-    configuration: { endpoint?: string; issuer?: string };
+    configuration: {
+      endpoint?: string;
+      issuer?: string;
+      roleArn?: string;
+      region?: string;
+      externalId?: string;
+    };
   } | null;
   personalMechanisms: string[];
+  hasOverride?: boolean;
+  canManageIam?: boolean;
 }
 export interface AgentAuthImpactReview {
+  candidate?: {
+    kind: string;
+    mode?: string;
+    projectId?: string;
+    connection?: { source: string; projectId?: string; configuration: BedrockIamConfig };
+  };
   id: string;
   createdAt: string;
   policyRevision: number;
@@ -276,10 +309,42 @@ export const agentsService = {
           : `/projects/${projectId}/agent-credentials`;
     return api.put(path, { ...update, reviewAction: 'preview' });
   },
-  async previewAuthenticationChange(candidate: {
-    mode: string;
-    defaultConnectionId: string;
-  }): Promise<AgentAuthImpactReview> {
+  async getBedrockIamDefaults(
+    projectId?: string,
+  ): Promise<{ brokerRoleArn: string; region: string }> {
+    return api.post('/agents/bedrock-iam', { action: 'defaults', projectId });
+  },
+
+  async generateBedrockIamSetup(
+    config: BedrockIamConfig,
+    projectId?: string,
+  ): Promise<BedrockIamSetup> {
+    return api.post('/agents/bedrock-iam', { action: 'setup', config, projectId });
+  },
+
+  async verifyBedrockIam(
+    config: BedrockIamConfig,
+    projectId?: string,
+  ): Promise<{
+    verified: boolean;
+    models?: AgentModel[];
+    error?: string;
+    code?: string;
+  }> {
+    return api.post('/agents/bedrock-iam', { action: 'verify', config, projectId });
+  },
+
+  // Probe custom MCP servers inside the AgentCore container (same image/egress
+  // the real agent uses). `mcpServers` is the name-keyed author object (raw JSON
+  // string or object). Authorization is derived on the backend from the caller's
+  // identity: with `projectId` → project owner/admin; without → platform admin.
+
+  async previewAuthenticationChange(
+    candidate:
+      | { mode: string; defaultConnectionId: string }
+      | { kind: 'iam-connection'; projectId?: string; configuration: BedrockIamConfig }
+      | { kind: 'space-inherit'; projectId: string },
+  ): Promise<AgentAuthImpactReview> {
     return api.put('/agents/settings', { authenticationChange: { action: 'preview', candidate } });
   },
   async applyAuthenticationChange(reviewId: string): Promise<{ saved: boolean }> {

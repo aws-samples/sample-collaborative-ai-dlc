@@ -70,6 +70,7 @@ import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
 import { createCredentialSession } from './credential-session.js';
 import { accountCredentialInvocation } from './invocation-accounting.js';
+import { iamVerificationFailure } from './commands/verify-bedrock-iam.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -129,9 +130,10 @@ export const dispatchInvocation = async ({
     // instead of turning the response into an SDK transport exception. Log them
     // so a swallowed failure (e.g. a checkpoint that silently didn't apply) is
     // diagnosable from the container logs.
-    if (result?.ok === false) {
+    if (result?.ok === false || result?.verified === false) {
       logger.warn('command returned failure', {
         command,
+        code: result.code,
         reason: result.reason,
         detail: result.detail,
         error: result.error,
@@ -139,6 +141,14 @@ export const dispatchInvocation = async ({
     }
     return { statusCode: 200, body: { ...result, command, at: now() } };
   } catch (e) {
+    if (command === 'verify-bedrock-iam') {
+      // Credential resolution runs before the verification handler. Return its
+      // failure as application JSON too, otherwise AgentCore hides the body
+      // behind RuntimeClientError and the wizard reports a connection problem.
+      const failure = iamVerificationFailure(e);
+      logger.warn('IAM verification failed', { command, code: failure.code });
+      return { statusCode: 200, body: { ...failure, command, at: now() } };
+    }
     logger.error('command threw', e, { command });
     return { statusCode: 500, body: { error: e.message, command } };
   } finally {
@@ -233,6 +243,7 @@ const main = async () => {
   const { capabilities } = await import('./commands/capabilities.js');
   const { managedRuntimeCheck } = await import('./commands/managed-runtime-check.js');
   const { verifyMcp } = await import('./commands/verify-mcp.js');
+  const { verifyBedrockIam } = await import('./commands/verify-bedrock-iam.js');
   const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
     await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
@@ -252,7 +263,7 @@ const main = async () => {
       store,
       env: process.env,
     });
-    const credentialSession = createCredentialSession({ env: auth.env });
+    const credentialSession = auth.credentialSession ?? createCredentialSession({ env: auth.env });
     try {
       await accountCredentialInvocation({
         ddb,
@@ -307,6 +318,7 @@ const main = async () => {
       }),
     managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),
     verifyMcp: (p) => verifyMcp(p),
+    verifyBedrockIam: (p, context) => verifyBedrockIam(p, { env: context.env }),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).

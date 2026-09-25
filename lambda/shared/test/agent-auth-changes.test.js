@@ -219,7 +219,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
     );
     expect((await repository.getPolicy()).mode).toBe('keys');
     await expect(
-      service.preview({ ...policyCandidate, mode: 'iam' }, 'admin'),
+      service.preview({ ...policyCandidate, mode: 'litellm' }, 'admin'),
     ).rejects.toMatchObject({ code: 'AGENT_AUTH_MODE_UNAVAILABLE' });
   });
   it('detects a policy race between inventory recheck and the transaction', async () => {
@@ -513,5 +513,71 @@ describe('OAuth refresh across broker instances with durable leases', () => {
       'machine-renewed',
     ]);
     expect(acquire).toHaveBeenCalledOnce();
+  });
+});
+
+describe('reviewed IAM activation on the foundation', () => {
+  const iam = (id, projectId) =>
+    normalizeConnection({
+      id,
+      revision: 1,
+      mode: 'iam',
+      backend: 'bedrock',
+      mechanism: 'assume-role',
+      source: projectId ? 'space' : 'platform',
+      projectId,
+      configuration: {
+        roleArn: `arn:aws:iam::222222222222:role/${id}`,
+        region: 'eu-west-1',
+        externalId: 'external-fixture',
+      },
+    });
+  it('atomically activates a platform connection, selects a space override, and restores inheritance', async () => {
+    const repository = createAgentConnectionRepository({ ddb, tableName: await table() });
+    const service = createAgentAuthChangeService({ repository });
+    const platform = iam('iam-platform');
+    const space = iam('iam-space', 'p1');
+    const review = await service.preview({ kind: 'iam-connection', connection: platform }, 'admin');
+    expect(await repository.getConnection(platform.id)).toBeNull();
+    expect((await repository.getPolicy()).mode).toBe('keys');
+    await service.apply(review.id, 'admin');
+    expect(await repository.getConnection(platform.id, 1)).toMatchObject(platform);
+    expect((await repository.getPolicy()).defaultConnectionId).toBe(platform.id);
+    const keys = {
+      bedrock: { provider: 'bedrock', source: 'user', userId: 'u1' },
+      kiro: { provider: 'kiro', source: 'user', userId: 'u1' },
+    };
+    const resolve = () =>
+      resolvePolicyBindings({
+        repository,
+        projectId: 'p1',
+        userId: 'u1',
+        resolveLegacy: async () => ({ ...keys }),
+      });
+    expect(await resolve()).toEqual({ bedrock: connectionBinding(platform, 1), kiro: keys.kiro });
+    const spaceReview = await service.preview(
+      { kind: 'iam-connection', connection: space },
+      'admin',
+    );
+    await service.apply(spaceReview.id, 'admin');
+    expect((await resolve()).bedrock).toEqual(connectionBinding(space, 2));
+    const inherit = await service.preview({ kind: 'space-inherit', projectId: 'p1' }, 'admin');
+    await service.apply(inherit.id, 'admin');
+    expect((await resolve()).bedrock).toEqual(connectionBinding(platform, 3));
+    expect(await repository.getConnection(space.id, 1)).toMatchObject(space);
+    await service.apply(inherit.id, 'admin');
+    expect((await repository.getPolicy()).revision).toBe(3);
+  });
+  it('rejects a stale IAM activation without leaving a connection or changing selection', async () => {
+    const repository = createAgentConnectionRepository({ ddb, tableName: await table() });
+    const service = createAgentAuthChangeService({ repository });
+    const connection = iam('iam-stale');
+    const review = await service.preview({ kind: 'iam-connection', connection }, 'admin');
+    await repository.claimSelection(0);
+    await expect(service.apply(review.id, 'admin')).rejects.toMatchObject({
+      code: 'AGENT_AUTH_REVIEW_STALE',
+    });
+    expect(await repository.getConnection(connection.id)).toBeNull();
+    expect((await repository.getPolicy()).mode).toBe('keys');
   });
 });

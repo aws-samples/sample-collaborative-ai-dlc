@@ -213,6 +213,17 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
 
   const configuredCount =
     Number(Boolean(settings?.bedrockBearerTokenSet)) + Number(Boolean(settings?.kiroApiKeySet));
+  const iamActive = settings?.authentication?.policy.mode === 'iam';
+  const iamReady =
+    iamActive &&
+    settings.authentication?.connection?.mechanism === 'assume-role' &&
+    settings.authentication.connection.state === 'ready';
+  const inheritsIam = iamActive && scope !== 'platform' && !settings.authentication?.hasOverride;
+  const description = iamActive
+    ? scope === 'platform'
+      ? 'Bedrock agents use the configured IAM role. Kiro keeps its separate API key.'
+      : 'Bedrock agents inherit the platform IAM role unless a space role is configured. Kiro keeps its separate API key.'
+    : COPY[scope].description;
   const fallbackText = (provider: 'bedrock' | 'kiro') => {
     if (scope !== 'space') return null;
     const available =
@@ -226,13 +237,19 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     <SettingsCard
       icon={<KeyRound />}
       title={COPY[scope].title}
-      description={COPY[scope].description}
+      description={description}
       badge={
         !loading && (
           <ConfigStatusBadge
-            ok={configuredCount > 0}
-            okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
-            notOkLabel="No credentials"
+            ok={iamActive ? Boolean(iamReady) : configuredCount > 0}
+            okLabel={
+              iamActive
+                ? inheritsIam
+                  ? 'Using platform IAM'
+                  : 'IAM configured'
+                : `${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`
+            }
+            notOkLabel={iamActive ? 'IAM needs attention' : 'No credentials'}
             notOkTone="warning"
           />
         )
@@ -280,9 +297,13 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         <div className="space-y-5">
           {settings?.authentication && (
             <AgentAuthenticationModeSettings
+              key={`${identity}:${settings.authentication.policy.revision}`}
               authentication={settings.authentication}
+              projectId={projectId}
               scope={scope}
-              hasOverride={Boolean(settings.bedrockBearerTokenSet)}
+              hasOverride={
+                settings.authentication.hasOverride ?? Boolean(settings.bedrockBearerTokenSet)
+              }
               onApplied={load}
             />
           )}
@@ -313,7 +334,11 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
               (settings?.authentication?.policy.mode !== undefined &&
                 settings.authentication.policy.mode !== 'keys')
             }
-            helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
+            helpText={
+              iamActive
+                ? 'Bedrock uses IAM. Saved Bedrock keys are not used in this mode.'
+                : `Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`
+            }
           />
           <SecretField
             id={`${scope}-kiro-api-key`}

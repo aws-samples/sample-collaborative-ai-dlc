@@ -114,4 +114,47 @@ describe('agent utility runtime routing', () => {
     expect(input.agentRuntimeArn).toBe(CORE_RUNTIME_ARN);
     expect(input).not.toHaveProperty('qualifier');
   });
+
+  it('discovers IAM after a deployment while older sessions still run the key-only image', async () => {
+    let deployedModes = ['keys'];
+    const sessions = new Map();
+    agentcoreMock.on(InvokeAgentRuntimeCommand).callsFake(async (input) => {
+      if (!sessions.has(input.runtimeSessionId))
+        sessions.set(input.runtimeSessionId, deployedModes);
+      const modes = sessions.get(input.runtimeSessionId);
+      const payload = JSON.parse(Buffer.from(input.payload).toString());
+      const authed = modes.includes('iam') && Boolean(payload.agentCredentialGrant);
+      return runtimeResponse({
+        ok: true,
+        agentAuthProtocol: 2,
+        agentAuthModes: modes,
+        clis: [{ cli: 'claude', installed: true, authed, available: authed }],
+      });
+    });
+
+    expect((await fetchRuntimeCapabilities()).agentAuthModes).toEqual(['keys']);
+    deployedModes = ['keys', 'iam'];
+    const caps = await fetchRuntimeCapabilities(undefined, {
+      bedrock: {
+        version: 2,
+        provider: 'bedrock',
+        source: 'platform',
+        connectionId: 'platform-iam',
+        connectionRevision: 1,
+        policyRevision: 1,
+        mode: 'iam',
+        backend: 'bedrock',
+        mechanism: 'assume-role',
+        configuration: {
+          roleArn: 'arn:aws:iam::123456789012:role/Inference',
+          region: 'eu-west-1',
+        },
+      },
+    });
+    expect(caps.clis).toEqual([{ cli: 'claude', installed: true, authed: true, available: true }]);
+    // Qualification and credential redemption must inspect the same fresh image.
+    const calls = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand);
+    expect(calls).toHaveLength(3);
+    expect(calls[1].args[0].input.runtimeSessionId).toBe(calls[2].args[0].input.runtimeSessionId);
+  });
 });

@@ -106,8 +106,9 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
       if (
         legacyConnection(normalized.id) ||
         normalized.revision < 1 ||
-        typeof secretReference !== 'string' ||
-        !secretReference.startsWith(`${base}/connections/${normalized.id}/`)
+        (normalized.mechanism !== 'assume-role' &&
+          (typeof secretReference !== 'string' ||
+            !secretReference.startsWith(`${base}/connections/${normalized.id}/`)))
       ) {
         throw authError('AGENT_AUTH_INVALID', 'Connection requires a dedicated secret reference');
       }
@@ -120,7 +121,7 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
                 Item: {
                   ...connectionKey(normalized.id, normalized.revision),
                   ...normalized,
-                  secretReference,
+                  ...(secretReference ? { secretReference } : {}),
                   type: 'AgentConnection',
                 },
                 ConditionExpression: 'attribute_not_exists(pk)',
@@ -132,7 +133,7 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
                 Item: {
                   ...connectionKey(normalized.id),
                   ...normalized,
-                  secretReference,
+                  ...(secretReference ? { secretReference } : {}),
                   type: 'AgentConnectionHead',
                 },
                 ConditionExpression:
@@ -277,11 +278,19 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
     },
     async applyReview({ review, actorId, policy, now }) {
       requireTable();
+      const { candidate } = review;
+      const connection = candidate.kind === 'iam-connection' ? candidate.connection : null;
+      const platformConnection = connection?.source === 'platform';
       const next = {
-        mode: review.candidate.kind === 'policy' ? review.candidate.mode : policy.mode,
-        defaultConnectionId:
-          review.candidate.kind === 'policy'
-            ? review.candidate.defaultConnectionId
+        mode: platformConnection
+          ? 'iam'
+          : candidate.kind === 'policy'
+            ? candidate.mode
+            : policy.mode,
+        defaultConnectionId: platformConnection
+          ? connection.id
+          : candidate.kind === 'policy'
+            ? candidate.defaultConnectionId
             : policy.defaultConnectionId,
         revision: review.policyRevision + 1,
         activityRevision: policy.activityRevision,
@@ -327,6 +336,47 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
           ClientRequestToken: review.id,
           TransactItems: [
             policyWrite,
+            ...(connection
+              ? ['AgentConnection', 'AgentConnectionHead'].map((type) => ({
+                  Put: {
+                    TableName: tableName,
+                    Item: {
+                      ...connectionKey(connection.id, type === 'AgentConnection' ? 1 : undefined),
+                      ...connection,
+                      type,
+                    },
+                    ConditionExpression: 'attribute_not_exists(pk)',
+                  },
+                }))
+              : []),
+            ...(connection?.source === 'space'
+              ? [
+                  {
+                    Put: {
+                      TableName: tableName,
+                      Item: {
+                        pk: `AGENTAUTH#SPACE#${connection.projectId}`,
+                        sk: 'META',
+                        type: 'AgentSpaceSelection',
+                        projectId: connection.projectId,
+                        mode: 'iam',
+                        connectionId: connection.id,
+                        revision: next.revision,
+                      },
+                    },
+                  },
+                ]
+              : []),
+            ...(candidate.kind === 'space-inherit'
+              ? [
+                  {
+                    Delete: {
+                      TableName: tableName,
+                      Key: { pk: `AGENTAUTH#SPACE#${candidate.projectId}`, sk: 'META' },
+                    },
+                  },
+                ]
+              : []),
             {
               Update: {
                 TableName: tableName,

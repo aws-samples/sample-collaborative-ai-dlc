@@ -8,10 +8,15 @@ import {
   PutParameterCommand,
 } from '@aws-sdk/client-ssm';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import { mockClient } from 'aws-sdk-client-mock';
 
 const ssm = mockClient(SSMClient);
 const lambda = mockClient(LambdaClient);
+const agentcore = mockClient(BedrockAgentCoreClient);
 const tables = [];
 const ddb = new DynamoDBClient({
   endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
@@ -68,6 +73,12 @@ beforeEach(async () => {
   vi.stubEnv('V2_PROCESS_TABLE', TableName);
   ssm.reset();
   lambda.reset();
+  agentcore.reset();
+  vi.stubEnv(
+    'AGENTCORE_RUNTIME_ARN',
+    'arn:aws:bedrock-agentcore:us-east-1:111111111111:runtime/test-runtime',
+  );
+  vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'iam-verification-fixture'.repeat(3));
   ssm.on(GetParametersCommand).resolves({ Parameters: [] });
   ssm.on(GetParametersByPathCommand).resolves({ Parameters: [] });
   ssm.on(PutParameterCommand).resolves({});
@@ -141,7 +152,7 @@ describe('reviewed credential settings API', () => {
       await invoke({
         authenticationChange: {
           action: 'preview',
-          candidate: { mode: 'iam', defaultConnectionId: 'future' },
+          candidate: { mode: 'litellm', defaultConnectionId: 'future' },
         },
       }),
     ).toMatchObject({
@@ -155,5 +166,124 @@ describe('reviewed credential settings API', () => {
       reviewRequired: true,
       connection: { id: 'legacy-platform-bedrock', state: 'missing' },
     });
+  });
+});
+
+describe('IAM settings on the foundation', () => {
+  const configuration = {
+    roleArn: 'arn:aws:iam::222222222222:role/Inference',
+    region: 'eu-west-1',
+    externalId: 'external-fixture',
+  };
+  it('requires platform admin for IAM activation and refuses personal role inputs', async () => {
+    const input = {
+      authenticationChange: {
+        action: 'preview',
+        candidate: { kind: 'iam-connection', configuration },
+      },
+    };
+    expect((await invoke(input, { admin: false })).status).toBe(403);
+    expect(
+      (await invoke({ bedrockIam: configuration }, { admin: false, personal: true })).status,
+    ).toBe(400);
+  });
+  it('previews without activation, applies the same role, disables Bedrock keys and keeps Kiro independent', async () => {
+    const preview = await invoke({
+      authenticationChange: {
+        action: 'preview',
+        candidate: { kind: 'iam-connection', configuration },
+      },
+    });
+    expect(preview.status).toBe(200);
+    expect(preview.data.candidate.connection.configuration).toEqual(configuration);
+    const settings = async () =>
+      JSON.parse((await handler({ ...request({}), httpMethod: 'GET' })).body);
+    expect((await settings()).authentication.policy.mode).toBe('keys');
+    expect(
+      (await invoke({ authenticationChange: { action: 'apply', reviewId: preview.data.id } }))
+        .status,
+    ).toBe(200);
+    expect((await settings()).authentication).toMatchObject({
+      policy: { mode: 'iam' },
+      canManageIam: true,
+      connection: { configuration, mechanism: 'assume-role' },
+    });
+    expect((await invoke({ bedrockBearerToken: 'disabled', reviewAction: 'preview' })).status).toBe(
+      409,
+    );
+    expect((await invoke({ kiroApiKey: 'independent', reviewAction: 'preview' })).status).toBe(200);
+    expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+  it('authorizes setup documents for platform admins only and returns both account policies', async () => {
+    vi.stubEnv('CREDENTIAL_BROKER_ROLE_ARN', 'arn:aws:iam::111111111111:role/Broker');
+    const post = (admin) => ({
+      ...request({ action: 'setup', config: configuration }, { admin }),
+      httpMethod: 'POST',
+      path: '/agents/bedrock-iam',
+    });
+    expect((await handler(post(false))).statusCode).toBe(403);
+    const result = await handler(post(true));
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({
+      applicationAccountId: '111111111111',
+      inferenceAccountId: '222222222222',
+      config: configuration,
+    });
+  });
+
+  const verificationRequest = () => ({
+    ...request({ action: 'verify', config: configuration }),
+    httpMethod: 'POST',
+    path: '/agents/bedrock-iam',
+  });
+
+  it('passes a structured runtime IAM denial to the wizard instead of a connectivity error', async () => {
+    const denial = {
+      verified: false,
+      code: 'BEDROCK_IAM_ACCESS_DENIED',
+      error: 'AWS denied the credential broker access to the inference role.',
+    };
+    agentcore.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify(denial) },
+    });
+    const result = await handler(verificationRequest());
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toEqual(denial);
+    const payload = JSON.parse(
+      agentcore.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input.payload,
+    );
+    expect(payload.command).toBe('verify-bedrock-iam');
+    expect(payload.credentialBindings.bedrock.configuration).toEqual(configuration);
+    expect(payload.agentCredentialGrant).toBeTruthy();
+  });
+
+  it('distinguishes a runtime rejection from an unreachable runtime', async () => {
+    agentcore
+      .on(InvokeAgentRuntimeCommand)
+      .rejects(
+        Object.assign(new Error('private runtime diagnostics'), { name: 'RuntimeClientError' }),
+      );
+    const result = await handler(verificationRequest());
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body).error).toContain('runtime rejected');
+    expect(result.body).not.toContain('private');
+  });
+
+  it('reports authorization failures before invoking the runtime', async () => {
+    vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', '');
+    vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET_PARAM', '');
+    const result = await handler(verificationRequest());
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body).error).toContain('Could not authorize');
+    expect(agentcore.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+  });
+
+  it('reports an unreadable response separately from runtime invocation failure', async () => {
+    agentcore.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => 'not JSON' },
+    });
+    const result = await handler(verificationRequest());
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body).error).toContain('unreadable');
   });
 });

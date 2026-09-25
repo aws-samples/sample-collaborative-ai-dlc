@@ -48,18 +48,22 @@ export const resolvePolicyBindings = async ({
       }
     }
     const space = projectId ? await repository.getSpaceSelection(projectId) : null;
-    if (policy.mode !== 'keys')
+    if (!['keys', 'iam'].includes(policy.mode))
       throw authError('AGENT_AUTH_MODE_UNAVAILABLE', 'Authentication provider has not shipped');
     // Existing key overrides keep their precedence. A deliberate space selection
     // is complete; field fragments cannot replace an inherited destination.
     const selected = bindings.bedrock;
     const connectionId =
-      selected?.source === 'user'
-        ? legacyConnectionId({ ...selected, projectId, userId })
-        : (space?.connectionId ??
-          (selected?.source && selected.source !== 'platform'
-            ? legacyConnectionId({ ...selected, projectId, userId })
-            : policy.defaultConnectionId));
+      policy.mode === 'iam'
+        ? space?.mode === 'iam'
+          ? space.connectionId
+          : policy.defaultConnectionId
+        : selected?.source === 'user'
+          ? legacyConnectionId({ ...selected, projectId, userId })
+          : ((space?.mode && space.mode !== policy.mode ? null : space?.connectionId) ??
+            (selected?.source && selected.source !== 'platform'
+              ? legacyConnectionId({ ...selected, projectId, userId })
+              : policy.defaultConnectionId));
     const connection = await repository.getConnection(connectionId);
     if (
       !connection ||

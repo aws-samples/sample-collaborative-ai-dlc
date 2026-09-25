@@ -331,3 +331,8 @@ variable "v2_executions_table_name" {
   description = "Process table used for authentication policy, reviews, and invocation inventory"
   type        = string
 }
+
+variable "credential_broker_role_arn" {
+  description = "Credential broker role used by the Bedrock IAM setup wizard"
+  type        = string
+}

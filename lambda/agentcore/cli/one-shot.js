@@ -17,6 +17,7 @@
 // tokens from the stream-json result event; kiro: the stderr credit footer)
 // or null when the CLI reports nothing usable.
 
+import { mkdir } from 'node:fs/promises';
 import { getDriver, selectCli, parseKiroCredits } from './drivers.js';
 import { captureChild } from './spawn.js';
 import { resolveStageModel } from '../model-resolver.js';
@@ -152,6 +153,7 @@ export const runOneShotPrompt = async ({
     });
   let capture;
   try {
+    await mkdir(cwd, { recursive: true });
     capture =
       cli === 'opencode' ? await withOpenCodeStore({ env, operation: execute }) : await execute();
   } finally {

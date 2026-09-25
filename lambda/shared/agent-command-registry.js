@@ -8,6 +8,7 @@ export const AGENT_AUTH_MODES = Object.freeze({
   CAPABILITIES: 'capabilities',
   COMPOSE: 'compose',
   DISCUSSION: 'discussion',
+  VERIFY_IAM: 'verify-bedrock-iam',
 });
 
 const command = (handler, agentAuth = false) => Object.freeze({ handler, agentAuth });
@@ -35,6 +36,7 @@ export const COMMANDS = Object.freeze({
   capabilities: command('capabilities', AGENT_AUTH_MODES.CAPABILITIES),
   'managed-runtime-check': command('managedRuntimeCheck'),
   'verify-mcp': command('verifyMcp'),
+  'verify-bedrock-iam': command('verifyBedrockIam', AGENT_AUTH_MODES.VERIFY_IAM),
 });
 
 export const commandDefinition = (name) =>

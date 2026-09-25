@@ -18,6 +18,7 @@ import {
 } from '../shared/agent-auth-catalog.js';
 import { AGENT_AUTH_MODES } from './command-registry.js';
 import { invokeCredentialBroker } from './clients.js';
+import { prepareBedrockIamSession } from './bedrock-iam.js';
 
 const bindingKey = bindingIdentity;
 const grantMismatch = () =>
@@ -27,7 +28,8 @@ const grantMismatch = () =>
 
 const cleanBaseEnv = (env) => {
   const invocationEnv = { ...env };
-  for (const name of AGENT_CREDENTIAL_ENV_NAMES) delete invocationEnv[name];
+  for (const name of [...AGENT_CREDENTIAL_ENV_NAMES, 'BEDROCK_AUTH_MODE'])
+    delete invocationEnv[name];
   return invocationEnv;
 };
 
@@ -52,6 +54,8 @@ const singleBinding = ({ binding, requestedCli, mismatchMessage }) => {
 };
 
 const bindingResolvers = Object.freeze({
+  [AGENT_AUTH_MODES.VERIFY_IAM]: ({ payload }) =>
+    Object.values(payload.credentialBindings ?? {}).filter(Boolean),
   [AGENT_AUTH_MODES.CAPABILITIES]: ({ payload }) =>
     payload.credentialBindings
       ? AGENT_CREDENTIAL_PROVIDERS.map((provider) => payload.credentialBindings[provider]).filter(
@@ -102,7 +106,13 @@ const bindingResolvers = Object.freeze({
 export const authenticatedClisForEnv = ({ installed = [], env = {} } = {}) =>
   installed.filter((cli) => {
     const provider = credentialProviderForCli(cli);
-    return provider && Boolean(env[credentialEnvName(provider)]);
+    return (
+      provider &&
+      Boolean(
+        env[credentialEnvName(provider)] ||
+        (provider === 'bedrock' && env.BEDROCK_AUTH_MODE === 'iam'),
+      )
+    );
   });
 
 export const resolveInvocationAgentAuth = async ({
@@ -164,6 +174,7 @@ export const resolveInvocationAgentAuth = async ({
     for (const credential of brokerResult.credentials) {
       const binding = normalizeCredentialBinding(credential?.binding);
       authorized.set(bindingKey(binding), {
+        ...credential,
         binding,
         value: typeof credential?.value === 'string' ? credential.value : '',
       });
@@ -183,13 +194,20 @@ export const resolveInvocationAgentAuth = async ({
     throw grantMismatch();
   }
 
+  let iamCredential = null;
   for (const binding of bindings) {
     const credentialBinding = {
       provider: binding.provider,
       source: binding.source,
     };
     credentialBindings.push(credentialBinding);
-    const value = authorized.get(bindingKey(binding))?.value || '';
+    const credential = authorized.get(bindingKey(binding));
+    if (binding.mechanism === 'assume-role' && credential?.iamCredentials) {
+      iamCredential = credential;
+      resolvedProviders.push(binding.provider);
+      continue;
+    }
+    const value = binding.mechanism === 'assume-role' ? '' : credential?.value || '';
     if (!value) {
       missingProviders.push(binding.provider);
       missingCredentialBindings.push(credentialBinding);
@@ -199,8 +217,32 @@ export const resolveInvocationAgentAuth = async ({
     resolvedProviders.push(binding.provider);
   }
 
+  const credentialSession = iamCredential
+    ? await prepareBedrockIamSession(iamCredential, {
+        env: invocationEnv,
+        renew: async () => {
+          const result = await broker({
+            action: 'renew-bedrock-credentials',
+            renewalToken: iamCredential.renewalToken,
+          });
+          const value = result.credentials?.[0];
+          if (
+            result.purpose !== authMode ||
+            (result.projectId ?? null) !== projectId ||
+            (result.executionId ?? null) !== executionId ||
+            result.credentials?.length !== 1 ||
+            bindingKey(normalizeCredentialBinding(value?.binding)) !==
+              bindingKey(iamCredential.binding) ||
+            value.renewalExpiresAt !== iamCredential.renewalExpiresAt
+          )
+            throw grantMismatch();
+          return value.iamCredentials;
+        },
+      })
+    : null;
   return {
-    env: invocationEnv,
+    env: credentialSession?.env ?? invocationEnv,
+    ...(credentialSession ? { credentialSession } : {}),
     projectId,
     bindings,
     credentialBindings,

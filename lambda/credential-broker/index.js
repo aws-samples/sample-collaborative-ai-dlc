@@ -20,7 +20,16 @@ import {
   bindingIdentity,
   authError,
 } from '../shared/agent-auth-catalog.js';
-import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
+  loadAgentCredentialGrantSecret,
+  verifyAgentCredentialGrant,
+  verifyBedrockCredentialRenewal,
+  signBedrockCredentialRenewal,
+  BEDROCK_RENEWAL_TTL_SECONDS,
+} from '../shared/agent-credential-grants.js';
+import { STSClient } from '@aws-sdk/client-sts';
+import { assumeInferenceRole } from './bedrock-iam.js';
+import { KEY_REDEMPTION_ADAPTERS } from '../shared/agent-auth-redemption.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
 const logger = new Logger({ persistentKeys: { component: 'credential-broker' } });
@@ -28,12 +37,18 @@ const logger = new Logger({ persistentKeys: { component: 'credential-broker' } }
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const sts = new STSClient({});
 
 const CREDENTIAL_ACTIVE_EXECUTION_STATUSES = new Set(['CREATED', 'RUNNING']);
 const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
+const RENEW_BEDROCK_CREDENTIALS = 'renew-bedrock-credentials';
 
 const loggableAgentCredentialErrorCode = (error) => {
+  if (['AccessDenied', 'AccessDeniedException'].includes(error?.name))
+    return 'BEDROCK_IAM_ACCESS_DENIED';
   switch (error?.code) {
+    case 'AGENT_AUTH_CONNECTION_UNAVAILABLE':
+      return 'AGENT_AUTH_CONNECTION_UNAVAILABLE';
     case 'AGENT_CREDENTIAL_GRANT_EXPIRED':
       return 'AGENT_CREDENTIAL_GRANT_EXPIRED';
     case 'AGENT_CREDENTIAL_GRANT_INVALID':
@@ -140,19 +155,37 @@ const authorizeCredentialRequest = async (
 };
 
 const authorizeAgentCredentialRequest = async (
-  { grant },
-  { ssmClient = ssm, ddbClient = ddb, secret = null, env = process.env, now = undefined } = {},
+  { grant, action = RESOLVE_AGENT_CREDENTIALS, renewalToken },
+  {
+    ssmClient = ssm,
+    ddbClient = ddb,
+    stsClient = sts,
+    secret = null,
+    env = process.env,
+    now = undefined,
+  } = {},
 ) => {
-  if (!grant) {
+  const renewal = action === RENEW_BEDROCK_CREDENTIALS;
+  if (!(renewal ? renewalToken : grant)) {
     throw Object.assign(new Error('Agent credential grant is required'), {
       code: 'AGENT_CREDENTIAL_GRANT_INVALID',
     });
   }
-  const claims = await verifyIssuedAgentCredentialGrant(ssmClient, grant, {
-    env,
-    secret,
-    ...(now ? { now } : {}),
-  });
+  const key = secret ?? (await loadAgentCredentialGrantSecret(ssmClient, { env }));
+  const claims = (renewal ? verifyBedrockCredentialRenewal : verifyAgentCredentialGrant)(
+    renewal ? renewalToken : grant,
+    key,
+    now ? { now } : {},
+  );
+  const verification = claims.purpose === 'verify-bedrock-iam';
+  if (
+    verification &&
+    (renewal ||
+      claims.executionId ||
+      claims.bindings.length !== 1 ||
+      claims.bindings[0].mechanism !== 'assume-role')
+  )
+    throw authError('AGENT_CREDENTIAL_GRANT_INVALID', 'Invalid IAM verification grant');
   const repository = createAgentConnectionRepository({
     ddb: ddbClient,
     tableName: env.V2_PROCESS_TABLE,
@@ -190,16 +223,38 @@ const authorizeAgentCredentialRequest = async (
       );
     }
   }
+  const iamAdapter = async ({ connection }) => ({
+    iamCredentials: await assumeInferenceRole(claims, connection, stsClient),
+    renewalToken: verification
+      ? null
+      : renewal
+        ? renewalToken
+        : signBedrockCredentialRenewal(claims, key),
+    renewalExpiresAt:
+      (verification || renewal ? claims.expiresAt : claims.issuedAt + BEDROCK_RENEWAL_TTL_SECONDS) *
+      1000,
+  });
   const credentials = await Promise.all(
-    claims.bindings.map((binding) =>
-      redeemAgentBinding({
-        binding,
-        projectId: claims.projectId,
-        repository,
-        ssm: ssmClient,
-        base: env.AGENT_SETTINGS_SSM_PREFIX || '',
-      }),
-    ),
+    claims.bindings.map(async (binding) => {
+      try {
+        // Verification is a separately signed, short-lived control-plane purpose.
+        // It cannot select an execution connection or mint renewal authority.
+        if (verification) return { binding, ...(await iamAdapter({ connection: binding })) };
+        return await redeemAgentBinding({
+          binding,
+          projectId: claims.projectId,
+          repository,
+          ssm: ssmClient,
+          base: env.AGENT_SETTINGS_SSM_PREFIX || '',
+          adapters: { ...KEY_REDEMPTION_ADAPTERS, 'bedrock:assume-role': iamAdapter },
+        });
+      } catch (error) {
+        if (renewal || claims.purpose !== 'capabilities' || binding.mechanism !== 'assume-role')
+          throw error;
+        // Broken Bedrock authentication does not suppress independent Kiro availability.
+        return { binding, error: loggableAgentCredentialErrorCode(error) };
+      }
+    }),
   );
   return {
     purpose: claims.purpose,
@@ -213,7 +268,7 @@ export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   const action = event?.action || 'source-control';
   try {
-    if (action === RESOLVE_AGENT_CREDENTIALS) {
+    if ([RESOLVE_AGENT_CREDENTIALS, RENEW_BEDROCK_CREDENTIALS].includes(action)) {
       return {
         ok: true,
         ...(await authorizeAgentCredentialRequest(event || {})),
@@ -232,10 +287,9 @@ export const handler = async (event, context) => {
   } catch (error) {
     // Both code helpers return only allowlisted constants — never provider-
     // derived error text, which can carry credential material.
-    const code =
-      action === RESOLVE_AGENT_CREDENTIALS
-        ? loggableAgentCredentialErrorCode(error)
-        : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
+    const code = [RESOLVE_AGENT_CREDENTIALS, RENEW_BEDROCK_CREDENTIALS].includes(action)
+      ? loggableAgentCredentialErrorCode(error)
+      : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
     logger.error('request denied', {
       code,
       action,
@@ -250,6 +304,7 @@ export const handler = async (event, context) => {
 
 export {
   RESOLVE_AGENT_CREDENTIALS,
+  RENEW_BEDROCK_CREDENTIALS,
   CREDENTIAL_ACTIVE_EXECUTION_STATUSES,
   authorizeAgentCredentialRequest,
   executionIncludesRepository,

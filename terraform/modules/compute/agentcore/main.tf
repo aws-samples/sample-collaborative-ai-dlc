@@ -378,6 +378,11 @@ resource "aws_iam_role_policy" "agentcore" {
           ]
         },
         {
+          Effect   = "Deny"
+          Action   = ["sts:AssumeRole"]
+          Resource = "*"
+        },
+        {
           Effect   = "Allow"
           Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
           Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
@@ -476,11 +481,11 @@ resource "aws_cloudwatch_log_group" "agentcore" {
 #   root-level `moved` blocks preserve the stored values across the migration.
 # ---------------------------------------------------------------------------
 
-# Bedrock bearer token — optional alternative to IAM role auth.
+# Bedrock bearer token — used when the platform selects key authentication.
 # Created with a placeholder value; updated at runtime via the Admin UI.
 resource "aws_ssm_parameter" "bedrock_bearer_token" {
   name        = "/${var.project_name}/${var.environment}/bedrock-bearer-token"
-  description = "AWS_BEARER_TOKEN_BEDROCK for Claude Code / OpenCode (leave blank to use IAM role)"
+  description = "Bedrock API key for Claude Code / OpenCode / Codex; IAM is enabled separately in Admin settings"
   type        = "SecureString"
   value       = "placeholder"
 
