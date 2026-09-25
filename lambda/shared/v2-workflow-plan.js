@@ -350,16 +350,21 @@ const loadExecutionPlan = async ({
   }
   const workflow = assembleWorkflow(items, { workflowId, workflowVersion });
   // AGENT blocks are loaded here too: buildExecutionPlan resolves each stage's
-  // leadAgent / supportAgents / reviewer against agentsById, so omitting them
+  // leadAgent / reviewer against agentsById, so omitting them
   // makes EVERY agent-bearing stage fail `unresolved_agent` and rejects the plan
   // before any stage runs (the bodies still load lazily in the runtime container).
-  const [stages, agents, sensors, rules, artifacts, knowledge] = await Promise.all([
+  const [stages, agents, sensors, rules, artifacts, knowledge, scopes] = await Promise.all([
     loadPlacedStages(ddb, tableName, workflow.placements, methodologyPins?.STAGE),
     loadLibraryType(ddb, tableName, 'AGENT', methodologyPins),
     loadLibraryType(ddb, tableName, 'SENSOR', methodologyPins),
     loadLibraryType(ddb, tableName, 'RULE', methodologyPins),
     loadLibraryType(ddb, tableName, 'ARTIFACT', methodologyPins),
     loadLibraryType(ddb, tableName, 'KNOWLEDGE', methodologyPins),
+    // SCOPE blocks carry the per-scope execution policy release catalogs may
+    // author. They are NOT added to methodologyPins or
+    // methodologySourceRefs: pinning them would change the shape of an already
+    // persisted pin set, so the policy is read from the resolved catalog only.
+    listMergedBlocks(ddb, tableName, 'SCOPE'),
   ]);
   const library = {
     stagesById: keyById(stages),
@@ -367,6 +372,7 @@ const loadExecutionPlan = async ({
     sensorsById: keyById(sensors),
     rulesById: keyById(rules),
     artifactsById: keyById(artifacts),
+    scopesById: keyById(scopes),
   };
   const result = buildExecutionPlan({
     workflow,

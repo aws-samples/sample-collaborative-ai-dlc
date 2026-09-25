@@ -1,16 +1,20 @@
-// The release mapper vocabulary is frozen here. The 2.3.3 block and plan
-// digests prove that adding newer authored fields does not change legacy plans.
+// Per-release adapters define mapper keys and effective per-stage policy. The
+// coexistence contract requires 2.3.3 catalogs to map and plan BYTE-IDENTICALLY
+// to their earlier shape. These golden digests use a baseline fixture without
+// adapter fields; an unconditional key makes them fail.
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { filesFromCompatibilityFixture } from '../aidlc-compatibility.js';
 import { buildFromFiles, mapAgent, mapScope, mapSensor, mapStage } from '../block-mappers.js';
-import { buildExecutionPlan } from '../v2-execution-plan.js';
+import { buildExecutionPlan, resolveStagePolicy } from '../v2-execution-plan.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
+// Computed from the pre-adapter tree at lambda/shared/test/fixtures/
+// aidlc-compatibility/current-stable.json (the 2.3.3-era platform baseline).
 const LEGACY_BLOCKS_DIGEST = '7b8efd306c01d59a033ef10cc2d0f6586ea6bbd56c99c37816f1b0538555b4c4';
 const LEGACY_PLAN_DIGESTS = Object.freeze({
   bugfix: '9db9c5796db93e77f5304b8a768ec8a776748e7bc5f52b1fcb2c9b61bd295288',
@@ -40,6 +44,15 @@ const keyById = (items) =>
     items.filter((item) => item.id).map((item) => [item.id, { ...item, version: 1 }]),
   );
 
+const libraryFrom = (blocks) => ({
+  stagesById: keyById(blocks.filter((b) => b.type === 'STAGE')),
+  agentsById: keyById(blocks.filter((b) => b.type === 'AGENT')),
+  sensorsById: keyById(blocks.filter((b) => b.type === 'SENSOR')),
+  rulesById: keyById(blocks.filter((b) => b.type === 'RULE')),
+  artifactsById: keyById(blocks.filter((b) => b.type === 'ARTIFACT')),
+  scopesById: keyById(blocks.filter((b) => b.type === 'SCOPE')),
+});
+
 const STAGE_FM = Object.freeze({
   slug: 'demo',
   phase: 'inception',
@@ -49,20 +62,55 @@ const STAGE_FM = Object.freeze({
   reviewer_max_iterations: 3,
 });
 
-describe('legacy release byte identity', () => {
-  it('keeps the 2.3.3-era blocks and plans byte-identical', () => {
+// `releaseMode` defaults to true here: the authored policy only applies to a
+// library resolved from a verified release closure, so a
+// policy test must say it is in release mode. The legacy-mode counterpart is
+// asserted explicitly below.
+const planFor = ({
+  stageFm = STAGE_FM,
+  scopeFm = {},
+  sensorFm = null,
+  scope = 'feature',
+  releaseMode = true,
+}) => {
+  const stage = { ...mapStage(stageFm, 'body'), version: 1 };
+  const scopeBlock = {
+    ...mapScope({ name: scope, depth: 'standard', ...scopeFm }, '', scope),
+    version: 1,
+  };
+  const sensors = sensorFm
+    ? { [sensorFm.id]: { ...mapSensor(sensorFm, '', sensorFm.id), version: 1 } }
+    : {};
+  return buildExecutionPlan({
+    workflow: {
+      id: 'wf',
+      version: 1,
+      placements: [{ stageId: 'demo', order: 0, scopeMembership: { [scope]: 'EXECUTE' } }],
+      scopeRefs: [{ scopeId: scope }],
+    },
+    scope,
+    library: {
+      stagesById: { demo: stage },
+      agentsById: { 'reviewer-agent': { id: 'reviewer-agent', version: 1 } },
+      sensorsById: sensors,
+      rulesById: {},
+      artifactsById: {},
+      scopesById: { [scope]: scopeBlock },
+    },
+    releaseMode,
+  });
+};
+
+describe('Per-release adapters: legacy byte-identity', () => {
+  it('maps and plans the 2.3.3-era baseline exactly as before the adapters existed', () => {
     const { blocks, workflow } = buildFromFiles(fixtureFiles('current-stable'));
     expect(sha256(canonicalJson(blocks))).toBe(LEGACY_BLOCKS_DIGEST);
 
-    const library = {
-      stagesById: keyById(blocks.filter((block) => block.type === 'STAGE')),
-      agentsById: keyById(blocks.filter((block) => block.type === 'AGENT')),
-      sensorsById: keyById(blocks.filter((block) => block.type === 'SENSOR')),
-      rulesById: keyById(blocks.filter((block) => block.type === 'RULE')),
-      artifactsById: keyById(blocks.filter((block) => block.type === 'ARTIFACT')),
-      scopesById: keyById(blocks.filter((block) => block.type === 'SCOPE')),
-    };
-    for (const [scope, expectedDigest] of Object.entries(LEGACY_PLAN_DIGESTS)) {
+    const library = libraryFrom(blocks);
+    const scopes = Object.keys(LEGACY_PLAN_DIGESTS);
+    for (const scope of scopes) {
+      // Both modes, same digest: the 2.3.3 catalog authors no policy fields, so
+      // release mode has nothing to resolve and the plan is byte-identical.
       for (const releaseMode of [false, true]) {
         const result = buildExecutionPlan({
           workflow: { ...workflow, version: 1 },
@@ -71,34 +119,103 @@ describe('legacy release byte identity', () => {
           releaseMode,
         });
         expect(result.valid).toBe(true);
-        expect(sha256(canonicalJson(result.plan))).toBe(expectedDigest);
+        expect(sha256(canonicalJson(result.plan))).toBe(LEGACY_PLAN_DIGESTS[scope]);
         for (const stage of result.plan.stages) expect(stage.policy).toBeUndefined();
+        expect(result.plan.policyEffects).toBeUndefined();
       }
+    }
+  });
+
+  it('adds no key to a block whose frontmatter lacks the adapter fields', () => {
+    expect(Object.keys(mapStage(STAGE_FM, ''))).not.toContain('reviewClass');
+    expect(Object.keys(mapStage(STAGE_FM, ''))).not.toContain('reviewArtifact');
+    expect(Object.keys(mapStage(STAGE_FM, ''))).not.toContain('summaryConfirmation');
+    expect(Object.keys(mapAgent({ name: 'a' }, '', 'a'))).not.toContain('maxTurns');
+    expect(Object.keys(mapSensor({ id: 's' }, '', 's'))).not.toContain('fireOn');
+    const scope = mapScope({ name: 'feature', depth: 'standard' }, '', 'feature');
+    for (const key of [
+      'sensorsPolicy',
+      'reviewCap',
+      'summaryConfirmation',
+      'changeControl',
+      'learnings',
+      'skeleton',
+      'runner',
+    ]) {
+      expect(Object.keys(scope)).not.toContain(key);
     }
   });
 });
 
-describe('release mapper vocabulary', () => {
-  it('maps all release-authored stage, sensor, agent, and scope fields', () => {
-    expect(
-      mapStage(
-        {
-          ...STAGE_FM,
-          mode: 'pipeline',
-          review_class: 'advisory',
-          review_artifact: 'design',
-          summary_confirmation: 'required',
-        },
-        '',
-      ),
-    ).toMatchObject({
-      mode: 'pipeline',
+describe('Per-release adapters: mapper keys', () => {
+  it('maps the stage review and confirmation fields', () => {
+    const stage = mapStage(
+      {
+        ...STAGE_FM,
+        review_class: 'advisory',
+        review_artifact: 'design',
+        summary_confirmation: 'required',
+      },
+      '',
+    );
+    expect(stage).toMatchObject({
       reviewClass: 'advisory',
       reviewArtifact: 'design',
       summaryConfirmation: 'required',
     });
+  });
+
+  it('maps the sensor fire_on plane', () => {
     expect(mapSensor({ id: 'linter', fire_on: 'gate' }, '', 'linter').fireOn).toBe('gate');
-    expect(mapAgent({ name: 'reviewer', maxTurns: '60' }, '', 'reviewer').maxTurns).toBe(60);
+  });
+
+  // The mapper carried `fireOn` but the PLAN dropped it, so
+  // the runner never saw a plane and both `write` and `gate` behaved like a
+  // plain workspace sweep. It has to survive plan resolution — and only when
+  // authored, or every legacy plan's sensor list changes shape.
+  it('carries fire_on through plan resolution, and only when authored', () => {
+    const sensorFm = { id: 'linter', kind: 'deterministic', command: 'bun x', matches: '**/*.ts' };
+    const withPlane = planFor({
+      stageFm: { ...STAGE_FM, sensors: ['linter'] },
+      sensorFm: { ...sensorFm, fire_on: 'gate' },
+    });
+    expect(withPlane.plan.stages[0].sensors[0]).toMatchObject({
+      sensorId: 'linter',
+      fireOn: 'gate',
+    });
+
+    const withoutPlane = planFor({ stageFm: { ...STAGE_FM, sensors: ['linter'] }, sensorFm });
+    expect(Object.keys(withoutPlane.plan.stages[0].sensors[0])).not.toContain('fireOn');
+  });
+
+  it('fails fast on multi-persona modes until their runtime is implemented', () => {
+    for (const mode of ['inline', 'subagent']) {
+      const { plan } = planFor({ stageFm: { ...STAGE_FM, mode } });
+      expect(plan.stages[0].mode).toBe(mode);
+      expect(plan.stages[0].notImplemented).toBeUndefined();
+      expect(plan.stages[0].runtimeError).toBeUndefined();
+    }
+    for (const mode of ['pipeline', 'mob']) {
+      const { plan } = planFor({ stageFm: { ...STAGE_FM, mode } });
+      expect(plan.stages[0]).toMatchObject({
+        notImplemented: true,
+        runtimeError: 'not_implemented',
+      });
+    }
+    const { plan } = planFor({ stageFm: { ...STAGE_FM, mode: 'agent-team' } });
+    expect(plan.stages[0]).toMatchObject({
+      notImplemented: true,
+      runtimeError: 'not_implemented',
+    });
+  });
+
+  it('maps maxTurns as an integer and leaves a non-integer verbatim for the analyzer', () => {
+    expect(mapAgent({ name: 'r', maxTurns: 60 }, '', 'r').maxTurns).toBe(60);
+    expect(mapAgent({ name: 'r', maxTurns: '60' }, '', 'r').maxTurns).toBe(60);
+    expect(mapAgent({ name: 'r', maxTurns: 'lots' }, '', 'r').maxTurns).toBe('lots');
+  });
+
+  it('maps the scope policy, renaming SCOPE.sensors to sensorsPolicy', () => {
     expect(
       mapScope(
         {
@@ -125,25 +242,176 @@ describe('release mapper vocabulary', () => {
       runner: false,
     });
   });
+});
 
-  it('omits every mapped addition when source frontmatter omits the field', () => {
-    const stage = mapStage(STAGE_FM, '');
-    for (const key of ['reviewClass', 'reviewArtifact', 'summaryConfirmation']) {
-      expect(Object.hasOwn(stage, key)).toBe(false);
-    }
-    expect(Object.hasOwn(mapAgent({ name: 'agent' }, '', 'agent'), 'maxTurns')).toBe(false);
-    expect(Object.hasOwn(mapSensor({ id: 'sensor' }, '', 'sensor'), 'fireOn')).toBe(false);
-    const scope = mapScope({ name: 'feature', depth: 'standard' }, '', 'feature');
-    for (const key of [
-      'sensorsPolicy',
-      'reviewCap',
-      'summaryConfirmation',
-      'changeControl',
-      'learnings',
-      'skeleton',
-      'runner',
-    ]) {
-      expect(Object.hasOwn(scope, key)).toBe(false);
-    }
+describe('Per-release adapters: effective per-stage policy', () => {
+  it('lowers an adversarial stage to advisory under a scope cap and pins one round', () => {
+    const { plan } = planFor({ scopeFm: { review_cap: 'advisory' } });
+    expect(plan.stages[0].policy).toMatchObject({ reviewClass: 'advisory' });
+    expect(plan.stages[0].reviewer).toMatchObject({
+      reviewerAgent: 'reviewer-agent',
+      maxIterations: 1,
+      advisory: true,
+    });
+  });
+
+  it('never raises a stage above its own declared class', () => {
+    const { plan } = planFor({
+      stageFm: { ...STAGE_FM, review_class: 'advisory' },
+      scopeFm: { review_cap: 'adversarial' },
+    });
+    expect(plan.stages[0].policy.reviewClass).toBe('advisory');
+    expect(plan.stages[0].reviewer.maxIterations).toBe(1);
+  });
+
+  it('removes the reviewer entirely at review_cap none', () => {
+    const { plan } = planFor({ scopeFm: { review_cap: 'none' } });
+    expect(plan.stages[0].policy.reviewClass).toBe('none');
+    expect(plan.stages[0].reviewer).toBeNull();
+  });
+
+  it('keeps an adversarial stage on its authored iteration budget', () => {
+    const { plan } = planFor({ scopeFm: { change_control: 'relaxed' } });
+    expect(plan.stages[0].policy.reviewClass).toBe('adversarial');
+    expect(plan.stages[0].reviewer).toMatchObject({ maxIterations: 3 });
+    expect(plan.stages[0].reviewer.advisory).toBeUndefined();
+  });
+
+  it('carries review_artifact onto the resolved reviewer', () => {
+    const { plan } = planFor({ stageFm: { ...STAGE_FM, review_artifact: 'design' } });
+    expect(plan.stages[0].reviewer.artifact).toBe('design');
+  });
+
+  it('empties the stage sensor list when the scope turns sensors off', () => {
+    const sensorFm = { id: 'linter', kind: 'deterministic', command: 'bun x', matches: '**/*.ts' };
+    const on = planFor({ stageFm: { ...STAGE_FM, sensors: ['linter'] }, sensorFm });
+    expect(on.plan.stages[0].sensors).toHaveLength(1);
+
+    const off = planFor({
+      stageFm: { ...STAGE_FM, sensors: ['linter'] },
+      sensorFm,
+      scopeFm: { sensors: 'off' },
+    });
+    expect(off.plan.stages[0].policy.sensorsEnabled).toBe(false);
+    expect(off.plan.stages[0].sensors).toEqual([]);
+  });
+
+  it('lets a scope bypass a stage summary-confirmation requirement', () => {
+    const required = planFor({ stageFm: { ...STAGE_FM, summary_confirmation: 'required' } });
+    expect(required.plan.stages[0].policy.summaryConfirmation).toBe('required');
+
+    const bypassed = planFor({
+      stageFm: { ...STAGE_FM, summary_confirmation: 'required' },
+      scopeFm: { summary_confirmation: 'off' },
+    });
+    expect(bypassed.plan.stages[0].policy.summaryConfirmation).toBe('none');
+  });
+
+  it('defaults the remaining switches to the behavior of a release without them', () => {
+    const { plan } = planFor({ stageFm: { ...STAGE_FM, review_class: 'adversarial' } });
+    expect(plan.stages[0].policy).toMatchObject({
+      sensorsEnabled: true,
+      // change_control is NOT defaulted to 'strict' just because another
+      // policy key is present — 'strict' carries an active prompt instruction,
+      // so it stays null until a scope declares it.
+      changeControl: null,
+      learnings: 'on',
+      skeleton: null,
+      summaryConfirmation: 'none',
+      reviewArtifact: null,
+    });
+  });
+
+  it('sets changeControl only when the scope actually declares it', () => {
+    expect(
+      planFor({ scopeFm: { change_control: 'strict' } }).plan.stages[0].policy.changeControl,
+    ).toBe('strict');
+    expect(
+      planFor({ scopeFm: { change_control: 'relaxed' } }).plan.stages[0].policy.changeControl,
+    ).toBe('relaxed');
+    expect(
+      planFor({ scopeFm: { learnings: 'off' } }).plan.stages[0].policy.changeControl,
+    ).toBeNull();
+  });
+
+  it('never applies the policy outside release mode, even with release-policy fields present', () => {
+    const legacy = planFor({
+      stageFm: { ...STAGE_FM, review_class: 'advisory', summary_confirmation: 'required' },
+      scopeFm: { review_cap: 'none', sensors: 'off', change_control: 'relaxed' },
+      releaseMode: false,
+    });
+    expect(legacy.valid).toBe(true);
+    expect(legacy.plan.stages[0].policy).toBeUndefined();
+    // The reviewer survives untouched: an unpinned, user-edited SCOPE row must
+    // not be able to strip verification from a legacy intent.
+    expect(legacy.plan.stages[0].reviewer).toMatchObject({
+      reviewerAgent: 'reviewer-agent',
+      maxIterations: 3,
+    });
+  });
+
+  it('honours library.fromRelease as the provenance flag when releaseMode is unset', () => {
+    const stage = { ...mapStage({ ...STAGE_FM, review_class: 'advisory' }, 'body'), version: 1 };
+    const workflow = {
+      id: 'wf',
+      version: 1,
+      placements: [{ stageId: 'demo', order: 0, scopeMembership: { feature: 'EXECUTE' } }],
+      scopeRefs: [{ scopeId: 'feature' }],
+    };
+    const library = {
+      stagesById: { demo: stage },
+      agentsById: { 'reviewer-agent': { id: 'reviewer-agent', version: 1 } },
+      sensorsById: {},
+      rulesById: {},
+      artifactsById: {},
+      scopesById: {},
+    };
+    expect(
+      buildExecutionPlan({ workflow, scope: 'feature', library }).plan.stages[0].policy,
+    ).toBeUndefined();
+    expect(
+      buildExecutionPlan({
+        workflow,
+        scope: 'feature',
+        library: { ...library, fromRelease: true },
+      }).plan.stages[0].policy,
+    ).toMatchObject({ reviewClass: 'advisory' });
+  });
+
+  it('records removed reviewers and sensors on plan.policyEffects for the audit event', () => {
+    const sensorFm = { id: 'linter', kind: 'deterministic', command: 'bun x', matches: '**/*.ts' };
+    const { plan } = planFor({
+      stageFm: { ...STAGE_FM, sensors: ['linter'] },
+      sensorFm,
+      scopeFm: { review_cap: 'none', sensors: 'off' },
+    });
+    expect(plan.policyEffects).toEqual([
+      expect.objectContaining({
+        stageId: 'demo',
+        removedReviewer: 'reviewer-agent',
+        removedSensors: ['linter'],
+        reviewClass: 'none',
+      }),
+    ]);
+  });
+
+  it('fails the plan closed on a policy value outside the adapter vocabulary', () => {
+    const result = planFor({ scopeFm: { review_cap: 'paranoid' } });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ code: 'policy_enum_invalid', ref: 'review_cap' }),
+    );
+    expect(result.plan.stages[0].policy).toBeUndefined();
+  });
+
+  it('resolves no policy at all when neither block carries a release-policy field', () => {
+    expect(
+      resolveStagePolicy({
+        scopeBlock: mapScope({ name: 'feature', depth: 'standard' }, '', 'feature'),
+        stage: mapStage(STAGE_FM, ''),
+        stageId: 'demo',
+        errors: [],
+      }),
+    ).toBeNull();
   });
 });

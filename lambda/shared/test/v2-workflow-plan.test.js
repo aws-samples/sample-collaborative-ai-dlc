@@ -234,6 +234,41 @@ describe('loadExecutionPlan', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('keeps the DynamoDB path byte-identical when no release is pinned', async () => {
+    const baseline = await loadExecutionPlan({
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope: 'feature',
+    });
+
+    // An explicitly null release (and no S3 client at all) must not change a
+    // single field of the legacy resolution.
+    const withNullRelease = await loadExecutionPlan({
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope: 'feature',
+      methodologyRelease: null,
+      s3: null,
+      bucket: null,
+    });
+
+    expect(withNullRelease).toEqual(baseline);
+    expect(baseline.valid).toBe(true);
+    expect(
+      ddbMock
+        .commandCalls(QueryCommand)
+        .some((call) =>
+          String(call.args[0].input.ExpressionAttributeValues?.[':pk'] ?? '').startsWith(
+            'TENANT#SYSTEM#',
+          ),
+        ),
+    ).toBe(true);
+  });
+
   describe('loadWorkflowScopes', () => {
     it('lists the scopes a pinned workflow offers', async () => {
       const scopes = await loadWorkflowScopes({

@@ -152,6 +152,32 @@ const trackerSyncKey = (executionId) => ({
   pk: executionPk(executionId),
   sk: 'TRACKERSYNC',
 });
+// Gate-precondition receipts are durable,
+// attempt-scoped record that a required authorization was actually given — the
+// one primitive the summary-confirmation checkpoint, plan approval, sensor
+// overrides, stage approvals and per-persona evidence all consult before a gate
+// opens or a stage completes.
+//
+// The SK is DETERMINISTIC (no timestamp, no uuid) so a replayed write is a
+// no-op under `attribute_not_exists` instead of a second row, and so a reader
+// can address one receipt without a query.
+//
+// ATTEMPT-SCOPING is the whole invalidation mechanism: `attempt` is read off the
+// STAGE# row, which `resetStageRow` increments on every rewind/retry — so a
+// rejection, jump or restart makes every prior receipt unreachable without
+// deleting anything, which is exactly upstream's "prior confirmations are
+// invalidated" rule at zero cost.
+const receiptKey = (executionId, { kind, stageInstanceId, attempt, unitSlug = null, ordinal }) => ({
+  pk: executionPk(executionId),
+  sk: [
+    'RECEIPT',
+    encodedKeyPart(kind),
+    encodedKeyPart(stageInstanceId),
+    String(attempt),
+    unitSlug == null ? '-' : encodedKeyPart(unitSlug),
+    ...(ordinal == null ? [] : [String(ordinal)]),
+  ].join('#'),
+});
 
 // ── Index projections ──
 // GSI1: a project's executions by status, newest first (status board / resume).
@@ -227,6 +253,28 @@ const humanTaskMatchesOwner = ({ task, stageInstanceId, unitSlug = null, section
 //                in-conversation content.
 const STEERING_KINDS = ['gate-steer', 'revision', 'rewind', 'artifact-edit'];
 const STEERING_STATUSES = ['pending', 'consumed', 'superseded'];
+// Gate-precondition receipt kinds (see receiptKey). Each one is an authorization
+// a boundary check consults:
+//   summary-confirmation — the ONE consolidated pre-write confirmation
+//   plan-approval        — the code-generation plan was approved before commit
+//   pipeline-link        — an ordered persona link completed this attempt
+//   sensor-override      — a human overrode a blocking gate finding
+//   stage-approval       — a validation gate approved, with the input hashes
+//   change-reconfirm     — a changed approved input was reconfirmed
+//   persona-contribution — a support persona produced its contribution
+const RECEIPT_KINDS = [
+  'summary-confirmation',
+  'plan-approval',
+  'pipeline-link',
+  'sensor-override',
+  'stage-approval',
+  'change-reconfirm',
+  'persona-contribution',
+  // The ensemble integrator raised its ONE judgment question for this attempt.
+  // Its presence is what tells the resumed leg the answer belongs to the
+  // integrator, and what stops it from asking a second time.
+  'integrator-question',
+];
 // Per-unit construction lane states (docs/v2-parallel.md rule 4 / WP3).
 //   PENDING  — promoted, dependencies not yet satisfied
 //   READY    — every depends_on lane MERGED; eligible to start
@@ -316,7 +364,13 @@ const buildExecutionMeta = ({
   // Exact supporting block versions resolved when the intent was created.
   // Stage versions remain pinned by workflow placements.
   methodologyPins = null,
-  // Immutable AI-DLC release closure pinned for the intent's lifetime.
+  // Immutable AI-DLC release this intent executes against (issue #482). When
+  // set, the methodology library resolves from the published release closure in
+  // S3 instead of the SYSTEM DynamoDB rows, so a SYSTEM reseed can no longer
+  // change what an existing intent runs. `aidlcRepoRef` remains the
+  // human-facing source ref and `methodologyPins` still pins user-tenant
+  // overlays — neither changes meaning. Shape:
+  // { releaseId, sourceSha, importerRevision, closureDigest, catalogKey, manifestKey }.
   methodologyRelease = null,
   scope = null,
   currentPhase = null,
@@ -433,6 +487,12 @@ const buildExecutionMeta = ({
   // Set when this run was relaunched from a mid-plan stage (rewind). Purely
   // informational — explains why upstream stages show SUCCEEDED from a prior run.
   rewindFromStageId = null,
+  // The gate answer that is durable but whose durable-execution callback could
+  // not be completed: { humanTaskId, callbackId, answeredAt }. Without this the
+  // run stays WAITING with no pending gate and nothing able to wake it — the
+  // answer was recorded, but the NEED TO RESUME was not. Cleared by a successful
+  // resume. See POST /projects/{p}/intents/{i}/resume.
+  resumeRequired = null,
   // Effective stage-skipping mode ('enabled'|'disabled') snapshotted at create
   // (project override over the platform SSM setting — shared/stage-skip.js).
   // Gates BOTH the create-time skip overlay and the gate-time "skip to stage X"
@@ -467,7 +527,7 @@ const buildExecutionMeta = ({
   workflowVersion,
   aidlcRepoRef,
   methodologyPins,
-  ...(methodologyRelease ? { methodologyRelease } : {}),
+  methodologyRelease,
   scope,
   currentPhase,
   currentStage,
@@ -506,6 +566,7 @@ const buildExecutionMeta = ({
   orchestratorStartedAt,
   orchestratorExpiresAt,
   rewindFromStageId,
+  resumeRequired,
   stageSkipping,
   skipStageIds,
   composedGrid,
@@ -593,6 +654,13 @@ const buildStageRow = ({
   updatedAt: now,
 });
 
+// The event NAME of a timeline row. A persisted EVENT# row (buildEventRow) keeps
+// the name in `eventType` because `type` is the entity discriminator ('Event');
+// the appendEvent INPUT — what an in-memory test double stores — carries it in
+// `type`. Every reader that filters rows by event name goes through here, so the
+// two shapes cannot drift apart at a call site again.
+const eventTypeOf = (row) => row?.eventType ?? row?.type ?? null;
+
 const buildEventRow = ({
   executionId,
   type,
@@ -604,6 +672,11 @@ const buildEventRow = ({
   actor,
   summary,
   payloadRef = null,
+  // Structured payload for events a MACHINE reads back (`v2.artifact.stamped`'s
+  // authorization lineage, `v2.gate.override`'s finding codes). Written ONLY
+  // when supplied, so every existing caller's row is byte-identical and the
+  // timeline stays a prose feed for everything else.
+  detail = undefined,
   now,
   eventId,
 }) => ({
@@ -619,6 +692,7 @@ const buildEventRow = ({
   actor,
   summary,
   payloadRef,
+  ...(detail === undefined ? {} : { detail }),
   timestamp: now,
 });
 
@@ -653,6 +727,24 @@ const buildHumanTaskRow = ({
   // omits it), so legacy rows / non-validation gates stay distinguishable
   // from an explicit "final stage". Display-only — never drives routing.
   nextStageId = undefined,
+  // Gate-precondition findings are STRUCTURED rows, so the
+  // review UI can render them with their severity and remediation instead of
+  // re-parsing the prompt prose. Written only when the gate carries any, so a
+  // gate without findings is byte-identical to a pre-Phase-6 one.
+  findings = undefined,
+  // Structured metadata about what this gate IS — `{ checkpoint, boundDigest }`
+  // for a checkpoint. A checkpoint reuses `kind: 'question'` to keep the
+  // frontend union closed, so this attribute is the ONLY discriminator between a
+  // consolidated confirmation and an ordinary agent question; never match prose.
+  // Written only when supplied, so a gate without it is byte-identical to before.
+  detail = undefined,
+  // The learnings ritual rides THIS gate rather
+  // than adding a second human turn per stage. The flag tells the review UI to
+  // offer the optional "anything to add for next time?" field; the prompt already
+  // says so in prose, but a structured flag is what lets the UI render an input
+  // instead of the human having to hand-craft `{ "learnings": … }`. Written only
+  // when the ritual applies, so every other gate row is unchanged.
+  learningsRitual = undefined,
   status = 'pending',
   now,
 }) => ({
@@ -671,6 +763,9 @@ const buildHumanTaskRow = ({
   skipTargets,
   recomposeTargets,
   ...(nextStageId !== undefined ? { nextStageId } : {}),
+  ...(findings === undefined ? {} : { findings }),
+  ...(detail === undefined ? {} : { detail }),
+  ...(learningsRitual === undefined ? {} : { learningsRitual }),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,
   answer: null,
@@ -812,6 +907,49 @@ const buildSensorRow = ({
   detail,
   timestamp: now,
 });
+
+// One gate-precondition receipt (see receiptKey for the attempt-scoping rule).
+// `boundDigest` binds the authorization to the exact content the human saw, so a
+// later write that changed that content cannot claim this authorization; the
+// gate-precondition evaluator compares it. GSI2 state = kind so "every override
+// receipt for this execution" is one query.
+const buildReceiptRow = ({
+  executionId,
+  kind,
+  stageInstanceId,
+  attempt,
+  unitSlug = null,
+  sectionIndex = null,
+  ordinal = null,
+  boundDigest = null,
+  choice = null,
+  decidedBy = null,
+  decidedByName = null,
+  humanTaskId = null,
+  detail = null,
+  now,
+}) => {
+  const key = receiptKey(executionId, { kind, stageInstanceId, attempt, unitSlug, ordinal });
+  return {
+    ...key,
+    ...executionTypeStateIndex({ executionId, type: 'RECEIPT', state: kind, id: key.sk }),
+    type: 'Receipt',
+    executionId,
+    kind,
+    stageInstanceId,
+    attempt,
+    unitSlug,
+    sectionIndex,
+    ordinal,
+    boundDigest,
+    choice,
+    decidedBy,
+    decidedByName,
+    decidedAt: now,
+    humanTaskId,
+    detail,
+  };
+};
 
 // A human steering / course-correction message (docs/v2-steering.md). Human-
 // initiated (the inverse of a HUMAN# gate), immutable, and delivered to the
@@ -1164,6 +1302,7 @@ const buildTrackerSyncRow = ({
 
 export {
   META,
+  eventTypeOf,
   WORKFLOW_CHECKPOINT,
   executionPk,
   projectPk,
@@ -1187,6 +1326,7 @@ export {
   quorumEditKey,
   composeKey,
   trackerSyncKey,
+  receiptKey,
   projectStatusIndex,
   executionTypeStateIndex,
   activeExecutionIndex,
@@ -1204,6 +1344,7 @@ export {
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
   STEERING_KINDS,
+  RECEIPT_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
   UNIT_PR_STATES,
@@ -1232,9 +1373,11 @@ export {
   buildQuorumEditRow,
   buildComposeRow,
   buildTrackerSyncRow,
+  buildReceiptRow,
 };
 export default {
   META,
+  eventTypeOf,
   WORKFLOW_CHECKPOINT,
   executionPk,
   projectPk,
@@ -1258,6 +1401,7 @@ export default {
   quorumEditKey,
   composeKey,
   trackerSyncKey,
+  receiptKey,
   projectStatusIndex,
   executionTypeStateIndex,
   activeExecutionIndex,
@@ -1275,6 +1419,7 @@ export default {
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
   STEERING_KINDS,
+  RECEIPT_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
   UNIT_PR_STATES,
@@ -1303,4 +1448,5 @@ export default {
   buildQuorumEditRow,
   buildComposeRow,
   buildTrackerSyncRow,
+  buildReceiptRow,
 };

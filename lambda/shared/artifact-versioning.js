@@ -334,6 +334,21 @@ export const snapshotCurrentArtifactHeads = async ({
   return refs;
 };
 
+// Read current artifact fingerprints without materializing checkpoint versions.
+// Change control calls this before an agent starts, when no new version should
+// be written as a side effect of comparison.
+export const readCurrentArtifactHeadHashes = async ({ g, intentId }) => {
+  const heads = selectCurrentArtifactHeads(await readIntentArtifactEntries(g, intentId), intentId);
+  return heads
+    .map((canonical) => ({
+      artifactId: canonical.id ?? null,
+      artifactType: canonical.artifact_type ?? null,
+      logicalKey: artifactLogicalKeyFromRow(canonical, intentId),
+      snapshotHash: artifactSnapshotHash(canonical),
+    }))
+    .toSorted((left, right) => left.logicalKey.localeCompare(right.logicalKey));
+};
+
 // Hydrate the exact immutable artifact versions named by a workflow checkpoint
 // and reject missing or mismatched references instead of falling back to heads.
 export const readCheckpointArtifactVersions = async ({ g, intentId, refs = [] }) => {
@@ -526,6 +541,7 @@ export default {
   artifactSnapshot,
   artifactSnapshotHash,
   snapshotCurrentArtifactHeads,
+  readCurrentArtifactHeadHashes,
   readCheckpointArtifactVersions,
   archiveArtifactsForStages,
 };

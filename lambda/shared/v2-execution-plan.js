@@ -21,12 +21,20 @@
 // `mapStage` for the seeded shape it consumes.
 
 import { createHash } from 'node:crypto';
+import {
+  POLICY_ENUMS,
+  SCOPE_POLICY_KEYS,
+  STAGE_POLICY_KEYS,
+  defaultWhenAbsent,
+  planApprovalApplies,
+  resolveCapabilities,
+  unhandledCapabilities,
+} from './aidlc-capabilities.js';
 import { compileStageGraph, compileRules } from './compile.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
-// Stage modes the runtime can actually execute. `agent-team` is known but not
-// runnable yet: a stage that declares it is flagged `notImplemented` so it fails
-// fast at run time instead of crashing the resolver.
+// Stage modes the runtime can execute in this layer. Multi-persona modes are in
+// the authored enum but remain fail-fast until their independent sessions land.
 const RUNNABLE_MODES = ['inline', 'subagent'];
 
 // Reserved lead-agent refs that are NOT domain AGENT blocks and therefore have no
@@ -215,6 +223,11 @@ const resolveSensors = (stage, stageId, sensorsById, errors) =>
         category: sensor.category ?? null,
         matches: sensor.matches ?? null,
         scriptRef: sensor.scriptRef ?? null,
+        // `fire_on` (≥2.7.0) decides which candidate set the runner sweeps, so it
+        // has to reach the runtime on the plan — without it the whole plane was
+        // inert. Emitted ONLY when authored, so a sensor without it produces a
+        // byte-identical plan.
+        ...(sensor.fireOn ? { fireOn: sensor.fireOn } : {}),
       };
     })
     .filter(Boolean);
@@ -279,6 +292,136 @@ const topologicalRunOrder = (stages) => {
   return [...ordered, ...leftover];
 };
 
+// ── Per-release scope/stage policy ─────────────────────────────────────────
+// Releases ≥2.6.18 add execution policy on the SCOPE block and the STAGE block.
+// A resolved `stage.policy` is attached ONLY when at least one of those fields
+// is actually present on the resolved blocks, so a 2.3.3-era catalog produces a
+// byte-identical plan.
+//
+// PROVENANCE GATE: the policy is applied ONLY when the library came from a
+// verified release closure — callers say so explicitly (`releaseMode: true`, or
+// `library.fromRelease` stamped by the loader that resolved the closure), never
+// inferred from the presence of a policy field. Inference would let an
+// UNPINNED, user-edited SCOPE row in DynamoDB retroactively disable reviewers
+// and sensors for a legacy intent (`sensors: off` / `review_cap: none` are
+// silent, plan-shaped downgrades). In legacy mode no policy is resolved and no
+// policy error is raised.
+//
+// Review class is a LATTICE: none < advisory < adversarial. The stage declares
+// its class, the scope declares a CAP, and the effective class is the minimum —
+// a scope may only ever lower a stage's review strength, never raise it.
+const REVIEW_CLASS_RANK = Object.freeze({ none: 0, advisory: 1, adversarial: 2 });
+
+const hasAnyKey = (block, keys) => keys.some((key) => block?.[key] != null);
+
+// Reject an out-of-vocabulary policy value instead of guessing a default: an
+// unrecognized value means the release drifted from what this adapter models,
+// and running it as "probably the default" is exactly the silent-divergence
+// failure the release contract exists to prevent.
+const validatePolicyEnums = ({ scopeBlock, stage, stageId, errors }) => {
+  let ok = true;
+  for (const [owner, key, field, allowed] of POLICY_ENUMS) {
+    const block = owner === 'scope' ? scopeBlock : stage;
+    const value = block?.[key];
+    if (value == null) continue;
+    if (!allowed.includes(value)) {
+      ok = false;
+      errors.push(
+        err(
+          'policy_enum_invalid',
+          `${owner} ${owner === 'scope' ? (scopeBlock?.id ?? 'unknown') : stageId} declares ${field} "${value}"; allowed: ${allowed.join(' | ')}`,
+          { ...(owner === 'stage' ? { stageId } : {}), ref: field },
+        ),
+      );
+    }
+  }
+  if (stage?.reviewArtifact != null && typeof stage.reviewArtifact !== 'string') {
+    ok = false;
+    errors.push(
+      err('policy_enum_invalid', `stage ${stageId} review_artifact must be an artifact slug`, {
+        stageId,
+        ref: 'review_artifact',
+      }),
+    );
+  }
+  return ok;
+};
+
+// The effective per-stage policy. `null` when neither the scope nor the stage
+// carries a policy field (the legacy path). `capabilities` is the plan-level
+// capability map (see resolveCapabilities): it decides whether a field the
+// catalog OMITS gets its release default or stays inert.
+const resolveStagePolicy = ({ scopeBlock, stage, stageId, errors, capabilities = {} }) => {
+  const scopeHas = hasAnyKey(scopeBlock, SCOPE_POLICY_KEYS);
+  const stageHas = hasAnyKey(stage, STAGE_POLICY_KEYS);
+  if (!scopeHas && !stageHas) return null;
+  if (!validatePolicyEnums({ scopeBlock, stage, stageId, errors })) return null;
+
+  const declaredClass = stage?.reviewClass ?? (stage?.reviewer ? 'adversarial' : 'none');
+  const cap = scopeBlock?.reviewCap ?? 'adversarial';
+  const reviewClass =
+    REVIEW_CLASS_RANK[declaredClass] <= REVIEW_CLASS_RANK[cap] ? declaredClass : cap;
+  // A stage-level `summary_confirmation` requirement is bypassed wholesale by a
+  // scope that turns the ritual off (2.9.0 SCOPE.summary_confirmation).
+  const summaryConfirmation =
+    scopeBlock?.summaryConfirmation === 'off' ? 'none' : (stage?.summaryConfirmation ?? 'none');
+  return {
+    sensorsEnabled: scopeBlock?.sensorsPolicy !== 'off',
+    reviewClass,
+    reviewArtifact: stage?.reviewArtifact ?? null,
+    summaryConfirmation,
+    // `change_control` is the one switch whose 'strict' value carries an ACTIVE
+    // prompt instruction, so defaulting it whenever any unrelated policy key is
+    // present would inject a change-control ritual into a release that never
+    // authored one. It stays null unless the scope declares it — OR the catalog
+    // proves it has change control at all (some SCOPE authors the field), which
+    // is upstream's "absent means strict" rule made version-agnostic.
+    changeControl:
+      scopeBlock?.changeControl ?? defaultWhenAbsent('SCOPE:change_control', capabilities),
+    learnings: scopeBlock?.learnings ?? 'on',
+    skeleton: scopeBlock?.skeleton ?? null,
+    // Plan Approval is protocol prose plus a PreToolUse guard upstream, not a
+    // frontmatter field, so it is keyed on the CATALOG's runtime files and the
+    // stage's own declaration instead of on a (field, value) pair.
+    planApproval: planApprovalApplies({ stage, capabilities }) ? 'required' : null,
+  };
+};
+
+// Apply the resolved policy to the stage instance: the plan is the ONE place
+// the effect is decided, so run-stage never re-derives it from frontmatter.
+// Every reviewer/sensor the policy REMOVES is recorded on `effects` so the
+// runtime can emit an audit event instead of the downgrade being invisible.
+const applyStagePolicy = (instance, policy, effects = null) => {
+  if (!policy) return instance;
+  instance.policy = policy;
+  const removedSensors = !policy.sensorsEnabled
+    ? (instance.sensors ?? []).map((sensor) => sensor.sensorId)
+    : [];
+  const removedReviewer =
+    policy.reviewClass === 'none' ? (instance.reviewer?.reviewerAgent ?? null) : null;
+  if (!policy.sensorsEnabled) instance.sensors = [];
+  if (policy.reviewClass === 'none') {
+    instance.reviewer = null;
+  } else if (instance.reviewer) {
+    if (policy.reviewClass === 'advisory') {
+      instance.reviewer = { ...instance.reviewer, maxIterations: 1, advisory: true };
+    }
+    if (policy.reviewArtifact) {
+      instance.reviewer = { ...instance.reviewer, artifact: policy.reviewArtifact };
+    }
+  }
+  if (effects && (removedSensors.length > 0 || removedReviewer)) {
+    effects.push({
+      stageId: instance.stageId,
+      stageInstanceId: instance.stageInstanceId,
+      removedReviewer,
+      removedSensors,
+      reviewClass: policy.reviewClass,
+    });
+  }
+  return instance;
+};
+
 // `library` is the resolved block bag: { stagesById, agentsById, sensorsById,
 // rulesById, artifactsById }. `compiled` (optional) is a prior compileWorkflow
 // output whose per-stage rules we can reuse; the dependency graph is always
@@ -310,6 +453,13 @@ const buildExecutionPlan = ({
   // dry run stays lenient (stock scopes legitimately shortcut); a mid-run
   // reshape must never park a stage waiting for an input nothing will write.
   strict = false,
+  // Provenance flag for the release-authored scope/stage policy (see the PROVENANCE GATE
+  // note above). `null` defers to `library.fromRelease`.
+  releaseMode = null,
+  // The capability handlers THIS build implements. `null` uses the registry's own
+  // set; an explicit set exists so the capability_unhandled guard can be proven
+  // without shipping a deliberately broken registry.
+  capabilityHandlers = null,
 } = {}) => {
   const errors = [];
   const warnings = [];
@@ -319,7 +469,10 @@ const buildExecutionPlan = ({
     sensorsById = {},
     rulesById = {},
     artifactsById = {},
+    scopesById = {},
+    fromRelease = false,
   } = library;
+  const policyEnabled = releaseMode ?? fromRelease === true;
 
   if (!workflow || typeof workflow !== 'object') {
     return {
@@ -509,6 +662,31 @@ const buildExecutionPlan = ({
   // immutable workflow pin.
   const namespace = settings.executionId ?? `${workflowId}@${workflowVersion}`;
 
+  // The SCOPE block backing this run: the source of the per-scope execution
+  // policy. Only consulted in release mode (PROVENANCE GATE); absent (an older
+  // catalog, or a composed grid whose provenance label names no scope block)
+  // leaves every stage on the legacy path.
+  const scopeBlock = policyEnabled && scope ? (scopesById[scope] ?? null) : null;
+  const policyEffects = [];
+  // Resolved ONCE per plan (release mode only): the version-agnostic capability
+  // tests over this catalog. Recorded on the plan below so the runtime consumes
+  // the answer instead of re-deriving it — and so nothing downstream ever reads
+  // a version string. Empty on every legacy plan, which keeps the plan document
+  // shape-stable.
+  const capabilities = policyEnabled ? resolveCapabilities(library) : {};
+  for (const key of unhandledCapabilities({
+    capabilities,
+    ...(capabilityHandlers ? { handlers: capabilityHandlers } : {}),
+  })) {
+    errors.push(
+      err(
+        'capability_unhandled',
+        `release capability "${key}" is resolved by this catalog but no runtime handler in this build implements it`,
+        { ref: key },
+      ),
+    );
+  }
+
   // Stamp deterministic instance ids on the overlay-skipped stages so their
   // SKIPPED audit rows use the exact id a later un-skip run resolves to.
   for (const s of skippedStages) {
@@ -635,12 +813,18 @@ const buildExecutionPlan = ({
         forEachDegraded: false,
       };
 
-      // `agent-team` is a known-but-unrunnable mode. Flag, don't crash.
+      // `agent-team` is the one known-but-unrunnable mode. Flag, don't crash.
       if (!RUNNABLE_MODES.includes(instance.mode)) {
         instance.notImplemented = true;
         instance.runtimeError = 'not_implemented';
       }
-      return instance;
+      return applyStagePolicy(
+        instance,
+        policyEnabled
+          ? resolveStagePolicy({ scopeBlock, stage, stageId, errors, capabilities })
+          : null,
+        policyEffects,
+      );
     })
     .filter(Boolean);
 
@@ -790,6 +974,14 @@ const buildExecutionPlan = ({
     // Per-intent skip overlay applied to this plan (empty when none): the
     // orchestrator writes one SKIPPED row per entry at run start.
     skippedStages,
+    // Reviewer/sensor removals the release scope policy performed, so the
+    // runtime can emit a `v2.policy.applied` audit event. Empty (and therefore
+    // shape-stable) on every legacy plan.
+    ...(policyEffects.length > 0 ? { policyEffects } : {}),
+    // Capabilities this pinned catalog proves it has (registry keys). Absent on
+    // every legacy plan, so the plan document's shape is unchanged for an
+    // unpinned or 2.3.3-era run.
+    ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
     // Exact run-shape counts (upstream validate-grid `summary`, 2.2.12): the
     // scope-confirmation UI reads these VERBATIM instead of re-deriving them —
     // "N of T stages, G approval gates" plus the per-unit fan-out clause. T is
@@ -835,7 +1027,9 @@ export {
   planSegments,
   stageInstanceId,
   workflowScopes,
+  resolveStagePolicy,
   RUNNABLE_MODES,
+  REVIEW_CLASS_RANK,
   UNIT_FOR_EACH,
   UNIT_DAG_ARTIFACT,
 };
@@ -844,7 +1038,9 @@ export default {
   planSegments,
   stageInstanceId,
   workflowScopes,
+  resolveStagePolicy,
   RUNNABLE_MODES,
+  REVIEW_CLASS_RANK,
   UNIT_FOR_EACH,
   UNIT_DAG_ARTIFACT,
 };
