@@ -208,7 +208,11 @@ describe('compose-plan-start', () => {
       methodologyRelease,
       methodologyPins,
     });
-    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith('SCOPE', methodologyRelease);
+    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith(
+      'SCOPE',
+      methodologyRelease,
+      methodologyPins,
+    );
     expect(deps.listMergedBlocksFn).not.toHaveBeenCalled();
     expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
       1,

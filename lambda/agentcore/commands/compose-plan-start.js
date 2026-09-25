@@ -247,7 +247,7 @@ export const createComposePlanStart = ({
           return;
         }
         const scopeBlocks = methodologyRelease
-          ? await listReleaseBlocksFn('SCOPE', methodologyRelease)
+          ? await listReleaseBlocksFn('SCOPE', methodologyRelease, methodologyPins)
           : await listMergedBlocksFn('SCOPE').catch(() => []);
         const { scopes, summaries, grids, stages, offeredScopeIds } = buildScopeGrounding({
           workflow,

@@ -1526,6 +1526,42 @@ const hasNonSystemMethodologyPins = (methodologyPins) =>
     Object.values(pins ?? {}).some((pin) => pin?.tenantId !== SYSTEM_TENANT),
   );
 
+const userMethodologyPins = (methodologyPins) => {
+  const pins = Object.fromEntries(
+    Object.entries(methodologyPins ?? {})
+      .map(([type, blocks]) => [
+        type,
+        Object.fromEntries(
+          Object.entries(blocks ?? {}).filter(
+            ([, pin]) => pin?.tenantId && pin.tenantId !== SYSTEM_TENANT,
+          ),
+        ),
+      ])
+      .filter(([, blocks]) => Object.keys(blocks).length > 0),
+  );
+  return Object.keys(pins).length ? pins : null;
+};
+
+const snapshotUserMethodologyPins = async (methodologyPins) => {
+  const pins = userMethodologyPins(methodologyPins) ?? {};
+  const scopePins = Object.fromEntries(
+    (await listMergedBlocks(ddb, BLOCKS_TABLE(), 'SCOPE'))
+      .filter(
+        (block) =>
+          block?.tenantId &&
+          block.tenantId !== SYSTEM_TENANT &&
+          Number.isInteger(Number(block.version)) &&
+          Number(block.version) > 0,
+      )
+      .map((block) => [
+        block.id ?? block.blockId,
+        { tenantId: block.tenantId, version: Number(block.version) },
+      ]),
+  );
+  if (Object.keys(scopePins).length) pins.SCOPE = scopePins;
+  return Object.keys(pins).length ? pins : null;
+};
+
 // Release-mode plumbing for every plan/scope resolution of one intent. Absent a
 // pin this contributes nothing, so unpinned intents keep the exact DynamoDB
 // behaviour they had before issue #482.
@@ -5147,7 +5183,7 @@ export const handler = async (event, context) => {
       // Every create-time resolution (scope vocabulary AND the plan check) runs
       // against the selected release, so an intent is validated against exactly
       // the methodology it will run rather than the current SYSTEM catalog.
-      const selectedReleaseOptions = selectedReleasePin
+      let selectedReleaseOptions = selectedReleasePin
         ? { methodologyRelease: selectedReleasePin, s3, bucket: ARTIFACTS_BUCKET() }
         : {};
       let scope = data.scope;
@@ -5195,6 +5231,24 @@ export const handler = async (event, context) => {
       // overlay entry the grid already excludes would otherwise fail the
       // resolver's skip_stage_not_in_scope guard on every later recompute.
       const skipStageIds = pruneSkipsForGrid(rawSkipStageIds, composedGrid);
+      if (selectedReleasePin) {
+        // Capture the current user forks before release mode replaces the
+        // mutable SYSTEM library with the immutable closure. SYSTEM coordinates
+        // are intentionally discarded; only user-tenant versions can overlay it.
+        const currentPlan = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId,
+          workflowVersion,
+          scope,
+          ...(skipStageIds ? { skipStageIds } : {}),
+          ...(composedGrid ? { composedGrid } : {}),
+        });
+        const methodologyPins = await snapshotUserMethodologyPins(currentPlan.methodologyPins);
+        if (methodologyPins) {
+          selectedReleaseOptions = { ...selectedReleaseOptions, methodologyPins };
+        }
+      }
       // Resolve the full execution plan NOW, before any row is written. The
       // plan is a pure function of (workflow@pinnedVersion, scope, skip
       // overlay), so a pass here holds for the whole intent lifetime — this
@@ -5300,10 +5354,14 @@ export const handler = async (event, context) => {
                 'The deployment-ref closure does not match its eligible registry row',
               );
             }
+            const candidateMethodologyPins = await snapshotUserMethodologyPins(
+              planCheck.methodologyPins,
+            );
             const candidateOptions = {
               methodologyRelease: candidatePin,
               s3,
               bucket: ARTIFACTS_BUCKET(),
+              ...(candidateMethodologyPins ? { methodologyPins: candidateMethodologyPins } : {}),
             };
             const releaseScopes = composedGrid
               ? null

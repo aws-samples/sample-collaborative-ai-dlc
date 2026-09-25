@@ -183,6 +183,27 @@ describe('listReleaseBlocks', () => {
     expect(fixtures.pksTouchingSystem()).toEqual([]);
   });
 
+  it('overlays the scope version pinned on the intent', async () => {
+    const baseScope = bundleA.catalog.blocks.SCOPE[0];
+    const scopeId = baseScope.id ?? baseScope.blockId;
+    const pk = `BLOCK#default#SCOPE#${scopeId}`;
+    const scopeOverride = {
+      ...baseScope,
+      pk,
+      sk: 'V#7',
+      tenantId: 'default',
+      version: 7,
+    };
+    fixtures.userBlockRows.set(`${pk}|V#7`, scopeOverride);
+
+    const scopes = await listReleaseBlocks('SCOPE', pinA, {
+      SCOPE: { [scopeId]: { tenantId: 'default', version: 7 } },
+    });
+
+    expect(scopes.find((scope) => (scope.id ?? scope.blockId) === scopeId)).toEqual(scopeOverride);
+    expect(fixtures.pksTouchingSystem()).toEqual([]);
+  });
+
   it('fails closed when the release cannot be resolved', async () => {
     fixtures.store.delete(pinA.manifestKey);
 
@@ -282,6 +303,15 @@ describe('loadBlockBody / loadBlockScript — release-mode integrity', () => {
     await expect(loadBlockScript(sensor, { methodologyRelease: pinA })).resolves.toBe(
       fixtures.store.get(sensor.scriptRef.s3Key),
     );
+  });
+
+  it('reads pinned user override bodies outside the release object index', async () => {
+    const key = 'blocks/bodies/sha256/user-agent-v7';
+    fixtures.store.set(key, '# User agent V7');
+
+    await expect(
+      loadBlockBody({ tenantId: 'default', bodyRef: { s3Key: key } }, { methodologyRelease: pinA }),
+    ).resolves.toBe('# User agent V7');
   });
 
   it('throws instead of returning tampered body bytes', async () => {
