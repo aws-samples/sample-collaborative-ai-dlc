@@ -2490,6 +2490,23 @@ describe('POST /compose — composer sessions', () => {
       const intent = JSON.parse(
         (await createIntent(sub, projectId, { title: 'I', prompt: 'Do something ambiguous' })).body,
       );
+      const methodologyRelease = {
+        releaseId: 'aidlc:release-sha',
+        sourceSha: 'release-sha',
+        importerRevision: 2,
+        closureDigest: 'closure-digest',
+        catalogKey: 'catalog.json',
+        manifestKey: 'manifest.json',
+      };
+      const methodologyPins = {
+        AGENT: { 'aidlc-composer-agent': { tenantId: 'default', version: 7 } },
+      };
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      procStore.set(metaKey, {
+        ...procStore.get(metaKey),
+        methodologyRelease,
+        methodologyPins,
+      });
       const res = await composeReq(sub, projectId, intent.id, { instructions: 'be lean' });
       expect(res.statusCode).toBe(202);
       const compose = JSON.parse(res.body);
@@ -2511,6 +2528,8 @@ describe('POST /compose — composer sessions', () => {
         instructions: 'be lean',
         requestedCli: 'kiro',
         credentialBinding: { provider: 'kiro', source: 'platform' },
+        methodologyRelease,
+        methodologyPins,
       });
       expect(typeof payload.agentCredentialGrant).toBe('string');
       expect(payload.prompt).toContain('Do something ambiguous');
