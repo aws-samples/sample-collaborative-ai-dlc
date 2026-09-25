@@ -971,6 +971,18 @@ resource "aws_iam_role_policy" "tool_status" {
         ]
         Resource = aws_ecr_repository.managed_tools.arn
       },
+      {
+        # Same as the environment status role: with ECR enhanced scanning,
+        # DescribeImageScanFindings is served by Amazon Inspector and also
+        # needs inspector2 read access (no resource-level scoping available).
+        # Without it every tool image inspection fails in such accounts.
+        Effect = "Allow"
+        Action = [
+          "inspector2:ListCoverage",
+          "inspector2:ListFindings",
+        ]
+        Resource = "*"
+      },
     ]
   })
 }
