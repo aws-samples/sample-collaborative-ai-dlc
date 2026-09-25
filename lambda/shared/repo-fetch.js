@@ -12,6 +12,8 @@
 
 import zlib from 'node:zlib';
 import tar from 'tar-stream';
+import { assertGithubOwner, assertGithubRepo } from './aidlc-custom-source.js';
+import { isCommitSha } from './aidlc-ref.js';
 
 const REPO_OWNER = 'awslabs';
 const REPO_NAME = 'aidlc-workflows';
@@ -20,10 +22,27 @@ const MAX_REPO_UNCOMPRESSED_BYTES = 250 * 1024 * 1024;
 const MAX_REPO_FILES = 5_000;
 const MAX_REPO_RETAINED_BYTES = 50 * 1024 * 1024;
 
+const isOfficialSource = (owner, repo) => owner === REPO_OWNER && repo === REPO_NAME;
+
 // codeload serves a gzipped tarball for any ref (branch, tag, or full/short
 // SHA). The archive's top-level dir is `<repo>-<ref>/`, which we strip so keys
 // are repo-relative.
-const tarballUrl = (ref) => `https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/${ref}`;
+//
+// `owner`/`repo` default to the official repository, so every existing call
+// site is byte-identical. A non-official (custom fork) source is held to two
+// extra rules: both halves must match the strict GitHub name grammar, and the
+// ref must be a full 40-hex commit SHA — a fork's branch or tag is mutable and
+// under third-party control, so it can never be a release identity.
+const tarballUrl = (ref, { owner = REPO_OWNER, repo = REPO_NAME } = {}) => {
+  assertGithubOwner(owner);
+  assertGithubRepo(repo);
+  if (!isOfficialSource(owner, repo) && !isCommitSha(ref)) {
+    throw new Error(
+      `repo-fetch: a custom source (${owner}/${repo}) requires a full 40-hex commit SHA, got "${String(ref)}"`,
+    );
+  }
+  return `https://codeload.github.com/${owner}/${repo}/tar.gz/${ref}`;
+};
 
 // Drops the archive's top-level `<repo>-<ref>/` segment, returning the
 // repo-relative path (or null for the root entry itself).
@@ -133,6 +152,8 @@ const fetchRepoFiles = async (
   ref,
   {
     prefixes,
+    owner = REPO_OWNER,
+    repo = REPO_NAME,
     maxTarballBytes = MAX_REPO_TARBALL_BYTES,
     maxFiles = MAX_REPO_FILES,
     maxRetainedBytes = MAX_REPO_RETAINED_BYTES,
@@ -145,7 +166,7 @@ const fetchRepoFiles = async (
   if (!Array.isArray(prefixes) || prefixes.length === 0) {
     throw new Error('repo-fetch: at least one path prefix is required');
   }
-  const url = tarballUrl(ref);
+  const url = tarballUrl(ref, { owner, repo });
   const res = await fetch(url, {
     headers: { 'User-Agent': 'collaborative-ai-dlc', Accept: 'application/x-gzip' },
     redirect: 'follow',
@@ -168,12 +189,13 @@ const fetchRepoFiles = async (
 };
 
 // Downloads + extracts the repo's core/ files at `ref`. Throws on any failure.
-const fetchCoreFiles = async (ref) => {
-  const files = await fetchRepoFiles(ref, { prefixes: ['core/'] });
+const fetchCoreFiles = async (ref, { owner = REPO_OWNER, repo = REPO_NAME } = {}) => {
+  const files = await fetchRepoFiles(ref, { prefixes: ['core/'], owner, repo });
   return new Map([...files].map(([path, body]) => [path, body.toString('utf8')]));
 };
 
 export {
+  isOfficialSource,
   MAX_REPO_FILES,
   MAX_REPO_RETAINED_BYTES,
   MAX_REPO_TARBALL_BYTES,
@@ -186,4 +208,12 @@ export {
   REPO_OWNER,
   REPO_NAME,
 };
-export default { fetchCoreFiles, fetchRepoFiles, extractFiles, tarballUrl, REPO_OWNER, REPO_NAME };
+export default {
+  fetchCoreFiles,
+  fetchRepoFiles,
+  extractFiles,
+  isOfficialSource,
+  tarballUrl,
+  REPO_OWNER,
+  REPO_NAME,
+};

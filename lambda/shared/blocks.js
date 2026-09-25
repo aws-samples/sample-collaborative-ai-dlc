@@ -161,10 +161,12 @@ const validateBlockInput = (type, input) => {
 
 const DEPTHS = ['Minimal', 'Standard', 'Comprehensive'];
 
-// V2's stage execution modes. `inline` and `subagent` are active; `agent-team`
-// is reserved (no stage declares it yet, but the value must round-trip as known
-// so a future consumer isn't surprised by an "unknown mode").
-const STAGE_MODES = ['inline', 'subagent', 'agent-team'];
+// V2's stage execution modes. `inline` and `subagent` run natively; `pipeline`
+// and `mob` (≥2.6.18) run as one agent session carrying an ensemble prompt
+// section (see v2-execution-plan.js ENSEMBLE_MODES); `agent-team` is reserved and
+// still unrunnable, but must round-trip as a known value so a consumer isn't
+// surprised by an "unknown mode".
+const STAGE_MODES = ['inline', 'subagent', 'pipeline', 'mob', 'agent-team'];
 
 // Per-type required/shape checks. Kept small and explicit — only the fields
 // whose absence would make a block unusable are enforced.
@@ -172,7 +174,7 @@ const validateTypeFields = (type, input) => {
   const errors = [];
   if (type === 'STAGE') {
     // mode is optional on input (the editor may omit it), but if present it
-    // must be one of V2's three values — guards the reserved `agent-team`.
+    // must be one of V2's known values — guards the reserved `agent-team`.
     if (input.mode != null && !STAGE_MODES.includes(input.mode)) {
       errors.push(`stage mode must be one of ${STAGE_MODES.join(', ')}`);
     }
