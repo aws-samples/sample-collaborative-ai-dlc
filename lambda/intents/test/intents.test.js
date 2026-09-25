@@ -7157,6 +7157,25 @@ describe('AI-DLC release pinning', () => {
   const releaseSha = releaseBundle.manifest.sourceSha;
   const releaseStore = new Map();
 
+  const seedSelectableRelease = () => {
+    procStore.set(keyOf(`AIDLC_RELEASE#${releasePin.releaseId}`, 'META'), {
+      pk: `AIDLC_RELEASE#${releasePin.releaseId}`,
+      sk: 'META',
+      type: 'AidlcRelease',
+      ...releasePin,
+      profileId: RELEASE_PROFILE,
+      upstreamVersion: '2.3.3',
+      trustTier: 'T1',
+      supportState: 'selectable',
+      structurallyValid: true,
+      fidelityGaps: [],
+      visible: true,
+      runnable: true,
+      revision: 1,
+      GSI1PK: 'AIDLC_RELEASES',
+    });
+  };
+
   // The published release, plus only the release, is readable from S3.
   const installReleaseObjects = ({ withManifest = true, withCatalog = true } = {}) => {
     releaseStore.clear();
@@ -7255,6 +7274,7 @@ describe('AI-DLC release pinning', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     seedReleaseAttributedPlan();
+    seedSelectableRelease();
 
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
 
