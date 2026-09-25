@@ -213,6 +213,37 @@ describe('evaluateGatePreconditions: summary confirmation', () => {
     expect(result.findings[0].detail.artifacts).toEqual(['requirements']);
   });
 
+  it('checks the newest authorization stamp for every artifact id of a required type', () => {
+    const decidedAt = '2026-01-01T00:00:00.000Z';
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: required,
+      receipts: [receipt({ decidedAt })],
+      events: [
+        stamp('requirements', {
+          timestamp: '2025-12-31T23:59:59.000Z',
+          detail: {
+            artifactId: 'artifact-unapproved',
+            artifactType: 'requirements',
+            authorizationId: 'RECEIPT#summary-confirmation#si-1#0#-old',
+          },
+        }),
+        stamp('requirements', {
+          timestamp: '2026-01-01T00:00:05.000Z',
+          detail: {
+            artifactId: 'artifact-approved',
+            artifactType: 'requirements',
+            authorizationId: receipt().sk,
+          },
+        }),
+      ],
+      producedArtifacts: ['requirements'],
+    });
+
+    expect(codesOf(result)).toEqual(['summary_confirmation_stale']);
+    expect(result.findings[0].detail.artifacts).toEqual(['requirements']);
+  });
+
   it('ignores a receipt from a PRIOR attempt', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,

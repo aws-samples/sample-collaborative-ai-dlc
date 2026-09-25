@@ -94,6 +94,7 @@ export type AutonomyLevel = 'self-halting' | 'mixed' | 'human-gated';
 
 // The derived views returned by GET /workflows/{id}/compiled.
 export interface CompiledWorkflow {
+  phases?: PhaseNode[];
   scopeGrid: Record<string, Record<string, 'EXECUTE' | 'SKIP'>>;
   autonomy: {
     perStage: Record<string, AutonomyLevel>;
