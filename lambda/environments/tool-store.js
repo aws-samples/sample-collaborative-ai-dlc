@@ -5,6 +5,9 @@ import {
   SYSTEM_TOOL_TEMPLATES,
   TOOL_VERSION_STATUSES,
   normalizeToolVersionDefinition,
+  recommendedVersionAttribute,
+  systemTemplateVersions,
+  toolArchitecture,
 } from './tool-catalog.js';
 import { queryAll, scanAll } from './registry.js';
 
@@ -14,9 +17,15 @@ const toolVersionKey = (toolId, versionId) => ({
   pk: toolPk(toolId),
   sk: `VERSION#${versionId}`,
 });
-const toolVersionAliasKey = (toolId, version) => ({
+// A version name is unique per tool AND architecture. The arm64 alias keeps
+// its original key so pre-existing aliases stay valid; '#' cannot appear in a
+// version string, so the x86_64 suffix is unambiguous.
+const toolVersionAliasKey = (toolId, version, architecture = 'arm64') => ({
   pk: toolPk(toolId),
-  sk: `VERSION_NAME#${version}`,
+  sk:
+    architecture === 'arm64'
+      ? `VERSION_NAME#${version}`
+      : `VERSION_NAME#${version}#${architecture}`,
 });
 const lookupKey = (kind, id) => ({ pk: `TOOL_${kind}#${id}`, sk: 'LOOKUP' });
 const versionStatusIndex = (status, updatedAt, toolId, versionId) => ({
@@ -71,11 +80,11 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
-  const getVersionByName = async (toolId, version) => {
+  const getVersionByName = async (toolId, version, architecture = 'arm64') => {
     const { Item: alias } = await ddb.send(
       new GetCommand({
         TableName: table(),
-        Key: toolVersionAliasKey(toolId, version),
+        Key: toolVersionAliasKey(toolId, version, architecture),
         ConsistentRead: true,
       }),
     );
@@ -215,7 +224,11 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
             Put: {
               TableName: table(),
               Item: {
-                ...toolVersionAliasKey(tool.toolId, normalized.version),
+                ...toolVersionAliasKey(
+                  tool.toolId,
+                  normalized.version,
+                  toolArchitecture(normalized),
+                ),
                 type: 'ToolVersionAlias',
                 toolId: tool.toolId,
                 versionId,
@@ -272,7 +285,17 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
         statusCode: 409,
       });
     }
-    if (patch.definition) patch.definition = normalizeToolVersionDefinition(patch.definition);
+    if (patch.definition) {
+      patch.definition = normalizeToolVersionDefinition(patch.definition);
+      // The architecture is part of the version's identity (alias key, image,
+      // recommendation slot); changing it requires a new version.
+      if (toolArchitecture(patch.definition) !== toolArchitecture(existing.definition)) {
+        throw Object.assign(new Error('Create a new tool version to change the architecture'), {
+          statusCode: 409,
+          code: 'TOOL_ARCHITECTURE_IMMUTABLE',
+        });
+      }
+    }
     if (patch.status) assertTransition(existing.status, patch.status);
     const updatedAt = now();
     const status = patch.status ?? existing.status;
@@ -379,7 +402,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     return getVersion(tool.toolId, version.versionId);
   };
 
-  const setRecommendedVersion = async ({ toolId, versionId, actor }) => {
+  const setRecommendedVersion = async ({ toolId, versionId, actor, architecture = 'arm64' }) => {
     const updatedAt = now();
     await ddb.send(
       new TransactWriteCommand({
@@ -397,8 +420,17 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
             Update: {
               TableName: table(),
               Key: toolKey(toolId),
+              // Each architecture has its own recommendation slot; arm64 keeps
+              // recommendedVersionId/At/By unchanged.
               UpdateExpression:
-                'SET recommendedVersionId = :versionId, recommendedAt = :updated, recommendedBy = :actor, updatedAt = :updated',
+                'SET #recommended = :versionId, #recommendedAt = :updated, #recommendedBy = :actor, updatedAt = :updated',
+              ExpressionAttributeNames: {
+                '#recommended': recommendedVersionAttribute(architecture),
+                '#recommendedAt':
+                  architecture === 'arm64' ? 'recommendedAt' : 'recommendedX86_64At',
+                '#recommendedBy':
+                  architecture === 'arm64' ? 'recommendedBy' : 'recommendedX86_64By',
+              },
               ExpressionAttributeValues: {
                 ':versionId': versionId,
                 ':updated': updatedAt,
@@ -435,7 +467,7 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
     return Item ?? null;
   };
 
-  const seedSystemTools = async ({ actor = 'platform' } = {}) => {
+  const seedSystemTools = async ({ actor = 'platform', architectures = ['arm64'] } = {}) => {
     const created = [];
     for (const template of SYSTEM_TOOL_TEMPLATES) {
       let tool = await getTool(template.toolId);
@@ -455,39 +487,49 @@ export const createToolStore = ({ ddb, tableName, clock, ids } = {}) => {
           tool = await getTool(template.toolId);
         }
       }
-      const existing = await getVersionByName(template.toolId, template.version.version);
-      if (existing) {
-        if (
-          existing.system &&
-          ['DRAFT', 'FAILED'].includes(existing.status) &&
-          Number(existing.systemTemplateRevision ?? 0) < SYSTEM_TOOL_TEMPLATE_REVISION
-        ) {
+      // arm64 is always seeded; x86_64 variants only when the deployment
+      // publishes an amd64 core to build and validate them against.
+      for (const definition of systemTemplateVersions(template, architectures)) {
+        const existing = await getVersionByName(
+          template.toolId,
+          definition.version,
+          toolArchitecture(definition),
+        );
+        if (existing) {
+          if (
+            existing.system &&
+            ['DRAFT', 'FAILED'].includes(existing.status) &&
+            Number(existing.systemTemplateRevision ?? 0) < SYSTEM_TOOL_TEMPLATE_REVISION
+          ) {
+            created.push(
+              await updateVersion(template.toolId, existing.versionId, {
+                definition,
+                autoBuild: true,
+                systemTemplateRevision: SYSTEM_TOOL_TEMPLATE_REVISION,
+              }),
+            );
+          }
+          continue;
+        }
+        try {
           created.push(
-            await updateVersion(template.toolId, existing.versionId, {
-              definition: template.version,
+            await createVersion({
+              tool,
+              definition,
+              createdBy: actor,
+              system: true,
               autoBuild: true,
               systemTemplateRevision: SYSTEM_TOOL_TEMPLATE_REVISION,
             }),
           );
-        }
-        continue;
-      }
-      try {
-        created.push(
-          await createVersion({
-            tool,
-            definition: template.version,
-            createdBy: actor,
-            system: true,
-            autoBuild: true,
-            systemTemplateRevision: SYSTEM_TOOL_TEMPLATE_REVISION,
-          }),
-        );
-      } catch (error) {
-        if (
-          !['TransactionCanceledException', 'ConditionalCheckFailedException'].includes(error?.name)
-        ) {
-          throw error;
+        } catch (error) {
+          if (
+            !['TransactionCanceledException', 'ConditionalCheckFailedException'].includes(
+              error?.name,
+            )
+          ) {
+            throw error;
+          }
         }
       }
     }

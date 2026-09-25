@@ -10,8 +10,11 @@ import {
   generateToolBuildContext,
   normalizeToolId,
   normalizeToolVersionDefinition,
+  recommendedVersionIdFor,
+  toolArchitecture,
   toolVersionSnapshot,
 } from './tool-catalog.js';
+import { amd64CoreImageConfigured } from './compute.js';
 import { uploadBuildContext } from './build-lifecycle.js';
 import {
   actorFrom,
@@ -89,6 +92,7 @@ const assertKnownDependencies = async (store, toolId, definition) => {
 };
 
 const assertRecommendationGraph = async (store, tool, candidate) => {
+  const architecture = toolArchitecture(candidate.definition);
   const tools = await store.listTools();
   const published = await store.listAllVersions({ publishedOnly: true });
   const toolById = new Map(tools.map((item) => [item.toolId, item]));
@@ -106,13 +110,18 @@ const assertRecommendationGraph = async (store, tool, candidate) => {
     }
     if (visited.has(toolId)) return;
     const family = toolById.get(toolId);
-    const versionId = toolId === tool.toolId ? candidate.versionId : family?.recommendedVersionId;
+    const versionId =
+      toolId === tool.toolId ? candidate.versionId : recommendedVersionIdFor(family, architecture);
     const version = versionById.get(versionId);
-    if (!version) {
-      throw Object.assign(new Error(`Tool ${toolId} requires a published recommended version`), {
-        statusCode: 409,
-        code: 'TOOL_RECOMMENDED_DEPENDENCY_MISSING',
-      });
+    if (!version || toolArchitecture(version.definition) !== architecture) {
+      throw Object.assign(
+        new Error(
+          architecture === 'arm64'
+            ? `Tool ${toolId} requires a published recommended version`
+            : `Tool ${toolId} requires a published recommended ${architecture} version`,
+        ),
+        { statusCode: 409, code: 'TOOL_RECOMMENDED_DEPENDENCY_MISSING' },
+      );
     }
     visiting.add(toolId);
     for (const dependencyId of version.definition.dependencies ?? []) {
@@ -132,6 +141,7 @@ const assertRecommendationGraph = async (store, tool, candidate) => {
 };
 
 const resolveBuildDependencies = async (store, version) => {
+  const architecture = toolArchitecture(version.definition);
   const resolved = new Map();
   const visiting = new Set([version.toolId]);
 
@@ -144,18 +154,22 @@ const resolveBuildDependencies = async (store, version) => {
     }
     if (resolved.has(toolId)) return;
     const tool = await store.getTool(toolId);
-    const dependency = tool?.recommendedVersionId
-      ? await store.getVersion(toolId, tool.recommendedVersionId)
-      : null;
+    const recommendedId = recommendedVersionIdFor(tool, architecture);
+    const dependency = recommendedId ? await store.getVersion(toolId, recommendedId) : null;
     if (
       !tool ||
       !dependency ||
       dependency.status !== 'PUBLISHED' ||
+      toolArchitecture(dependency.definition) !== architecture ||
       !dependency.imageUri ||
       !dependency.imageDigest
     ) {
       throw Object.assign(
-        new Error(`Tool ${version.toolId} requires a published recommended ${toolId} version`),
+        new Error(
+          architecture === 'arm64'
+            ? `Tool ${version.toolId} requires a published recommended ${toolId} version`
+            : `Tool ${version.toolId} requires a published recommended ${architecture} ${toolId} version`,
+        ),
         {
           statusCode: 409,
           code: 'TOOL_RECOMMENDED_DEPENDENCY_MISSING',
@@ -172,6 +186,14 @@ const resolveBuildDependencies = async (store, version) => {
   return [...resolved.values()];
 };
 
+// The core image a tool is installed into and validated against. The tool
+// pipeline follows the deployment's core (as the arm64 path always has);
+// x86_64 uses the amd64 build of that same core.
+const coreImageFor = (architecture) =>
+  architecture === 'x86_64'
+    ? { uri: process.env.CORE_IMAGE_URI_AMD64, digest: process.env.CORE_IMAGE_DIGEST_AMD64 }
+    : { uri: process.env.CORE_IMAGE_URI, digest: process.env.CORE_IMAGE_DIGEST };
+
 export const startToolBuild = async ({
   store,
   tool,
@@ -185,6 +207,16 @@ export const startToolBuild = async ({
       statusCode: 409,
     });
   }
+  const architecture = toolArchitecture(version.definition);
+  if (architecture === 'x86_64' && !amd64CoreImageConfigured()) {
+    throw Object.assign(
+      new Error(
+        'No x86_64 core image is published on this deployment; x86_64 tools cannot be built',
+      ),
+      { statusCode: 409, code: 'AMD64_CORE_IMAGE_MISSING' },
+    );
+  }
+  const core = coreImageFor(architecture);
   const dependencies = await resolveBuildDependencies(store, version);
   const buildAttempt = Number(version.buildAttempt ?? 0) + 1;
   const imageTag = `${version.versionId}-a${buildAttempt}`;
@@ -192,8 +224,8 @@ export const startToolBuild = async ({
     tool,
     version,
     dependencies,
-    coreImageUri: process.env.CORE_IMAGE_URI,
-    coreImageDigest: process.env.CORE_IMAGE_DIGEST,
+    coreImageUri: core.uri,
+    coreImageDigest: core.digest,
     runtimeCompatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
   });
   const prefix = `managed-tools/contexts/${tool.toolId}/${version.versionId}/a${buildAttempt}`;
@@ -240,13 +272,18 @@ export const startToolBuild = async ({
             type: 'PLAINTEXT',
           },
           { name: 'TOOL_IMAGE_TAG', value: imageTag, type: 'PLAINTEXT' },
-          { name: 'CORE_IMAGE_URI', value: process.env.CORE_IMAGE_URI, type: 'PLAINTEXT' },
-          {
-            name: 'CORE_IMAGE_DIGEST',
-            value: process.env.CORE_IMAGE_DIGEST,
-            type: 'PLAINTEXT',
-          },
+          { name: 'CORE_IMAGE_URI', value: core.uri, type: 'PLAINTEXT' },
+          { name: 'CORE_IMAGE_DIGEST', value: core.digest, type: 'PLAINTEXT' },
         ],
+        // The project's default fleet is arm64. x86_64 tools build and run
+        // their validation natively on an x86 fleet via per-build overrides,
+        // the same way x86_64 environments do.
+        ...(architecture === 'x86_64'
+          ? {
+              environmentTypeOverride: 'LINUX_CONTAINER',
+              imageOverride: 'aws/codebuild/amazonlinux-x86_64-standard:5.0',
+            }
+          : {}),
       }),
     );
   } catch (error) {
@@ -292,7 +329,9 @@ export const createToolsHandler = ({
   eventLogger = logger,
 } = {}) => {
   const initialize = createRetryableInitializer(async () => {
-    await store.seedSystemTools();
+    await store.seedSystemTools({
+      architectures: amd64CoreImageConfigured() ? ['arm64', 'x86_64'] : ['arm64'],
+    });
     const candidates = [
       ...(await store.listVersionsByStatus('DRAFT')),
       ...(await store.listVersionsByStatus('FAILED')),
@@ -411,6 +450,12 @@ export const createToolsHandler = ({
             error: 'Create a new tool version to change the version number',
           });
         }
+        if (toolArchitecture(definition) !== toolArchitecture(version.definition)) {
+          return response(409, {
+            error: 'Create a new tool version to change the architecture',
+            code: 'TOOL_ARCHITECTURE_IMMUTABLE',
+          });
+        }
         const sourceChanged =
           JSON.stringify(definition.source) !== JSON.stringify(version.definition.source);
         const updated = await store.updateVersion(tool.toolId, version.versionId, {
@@ -429,14 +474,17 @@ export const createToolsHandler = ({
           return response(409, { error: 'Recommended version must be published' });
         }
         await assertRecommendationGraph(store, tool, candidate);
+        const architecture = toolArchitecture(candidate.definition);
         const updated = await store.setRecommendedVersion({
           toolId: tool.toolId,
           versionId: versionIdToRecommend,
           actor,
+          architecture,
         });
         const environments = await environmentStore.markToolUpdatesAvailable?.(
           tool.toolId,
           versionIdToRecommend,
+          architecture,
         );
         return response(200, { tool: updated, environments: environments ?? [] });
       }
