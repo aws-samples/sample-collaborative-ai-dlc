@@ -702,6 +702,10 @@ const clientRequestTokenFor = (arn, head, base, attemptKey = '') =>
     .digest('hex')
     .slice(0, 40)}`;
 
+// Bound on replacements chained within one createPullRequest call (each closed
+// PR a token replays leads to the next token). Far above any real history.
+const MAX_REPLAYED_ATTEMPTS = 20;
+
 const prSummary = (pr, { region, repositoryName }, extraFields = {}) => ({
   prUrl: pullRequestUrl({ region, repositoryName, pullRequestId: pr.pullRequestId }),
   prNumber: pr.pullRequestId,
@@ -788,30 +792,44 @@ const createPullRequest = async (
     return { skipped: true, reason: 'no_changes' };
   }
 
-  const res = await call(
-    client,
-    new CreatePullRequestCommand({
-      title,
-      description: body,
-      clientRequestToken: clientRequestTokenFor(
-        arn ?? repoId,
-        branch,
-        resolvedBase,
-        String(attemptKey ?? ''),
-      ),
-      targets: [
-        {
-          repositoryName,
-          sourceReference: `${HEADS}${shortRef(branch)}`,
-          destinationReference: `${HEADS}${shortRef(resolvedBase)}`,
-        },
-      ],
-    }),
-    'CreatePullRequest',
-  );
-  const pr = res.pullRequest;
-  if (!pr?.pullRequestId) {
-    throw new ProviderError(502, 'CodeCommit CreatePullRequest returned no pull request');
+  const create = (key) =>
+    call(
+      client,
+      new CreatePullRequestCommand({
+        title,
+        description: body,
+        clientRequestToken: clientRequestTokenFor(arn ?? repoId, branch, resolvedBase, key),
+        targets: [
+          {
+            repositoryName,
+            sourceReference: `${HEADS}${shortRef(branch)}`,
+            destinationReference: `${HEADS}${shortRef(resolvedBase)}`,
+          },
+        ],
+      }),
+      'CreatePullRequest',
+    );
+  // No open PR covers the branch pair (checked above), so a CLOSED pull
+  // request coming back is CodeCommit replaying the token of an attempt that
+  // already ended, not a creation. Never report it as opened: create again
+  // with a token bound to that terminal PR. The chain is deterministic, so a
+  // retry of this call converges on the same replacement instead of opening
+  // another one.
+  let key = String(attemptKey ?? '');
+  let pr = null;
+  for (let hop = 0; hop <= MAX_REPLAYED_ATTEMPTS; hop += 1) {
+    pr = (await create(key)).pullRequest;
+    if (!pr?.pullRequestId) {
+      throw new ProviderError(502, 'CodeCommit CreatePullRequest returned no pull request');
+    }
+    if (pr.pullRequestStatus !== 'CLOSED') break;
+    key = `${attemptKey ?? ''}\nreplaces:${pr.pullRequestId}`;
+  }
+  if (pr.pullRequestStatus === 'CLOSED') {
+    throw new ProviderError(409, 'CodeCommit kept returning closed pull requests for this branch', {
+      action: 'CreatePullRequest',
+      code: 'PULL_REQUEST_REPLAYED',
+    });
   }
 
   await cleanupConstructionTaskBranches(ctx, repoId, branch);

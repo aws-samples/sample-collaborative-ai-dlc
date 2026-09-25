@@ -2586,9 +2586,12 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
       branch: 'aidlc/i1',
       baseBranch: 'main',
       title: 'Bookstore API',
-      // One creation attempt per execution.
-      attemptKey: 'i1',
     });
+    // One creation attempt per orchestrator run (the run's ownership token).
+    const claim = deps.store.updateExecution.mock.calls
+      .map((c) => c[0])
+      .find((c) => c.orchestratorRunId);
+    expect(deps.openPr.mock.calls[0][0].attemptKey).toBe(`i1:${claim.orchestratorRunId}`);
     expect(deps.openPr.mock.calls[0][0].body).toContain(
       'created by [AI-DLC](https://aidlc.example.test/space/p1/intent/i1)',
     );
@@ -2597,6 +2600,22 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     const opened = events().filter((e) => e.type === 'v2.pr.opened');
     expect(opened).toHaveLength(2);
     expect(opened[0].summary).toContain('https://github.com/o/r/pull/7');
+  });
+
+  it('a relaunch of the same intent is a new PR creation attempt', async () => {
+    // Rewind/repair relaunch the SAME execution id under a new run id. The PR
+    // a reviewer closed meanwhile must not be replayed by a reused
+    // idempotency key (CodeCommit returns the original, closed PR for it).
+    deps.openPr = vi.fn(async () => ({ prUrl: 'https://example.test/pr/1', prNumber: 1 }));
+    await start();
+    ctx = makeCtx();
+    deps.invokeRuntime = makeRuntime(ctx, okScript);
+    await start();
+    const keys = deps.openPr.mock.calls.map((c) => c[0].attemptKey);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(/^i1:run-/);
+    expect(keys[1]).toMatch(/^i1:run-/);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 
   it('dispatches record-pr to the runtime with the structured PR data for each opened PR', async () => {

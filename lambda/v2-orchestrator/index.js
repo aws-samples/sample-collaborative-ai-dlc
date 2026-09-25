@@ -1518,6 +1518,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         store,
         meta,
         executionId,
+        runId,
         applicationUrl,
         log: (m) => logger.info(m),
       }),
@@ -1838,6 +1839,7 @@ const openIntentPrs = async ({
   store,
   meta,
   executionId,
+  runId = null,
   applicationUrl,
   log,
 }) => {
@@ -2003,9 +2005,12 @@ const openIntentPrs = async ({
         baseBranch: baseFor(repoId),
         title,
         body,
-        // One creation attempt per execution: a durable-step replay reuses it,
-        // a new execution of the intent gets a new one.
-        attemptKey: executionId,
+        // One creation attempt per orchestrator run. The execution id alone
+        // is the intent id, identical across a rewind or repair relaunch, so
+        // it would replay a PR a reviewer closed in the meantime (CodeCommit
+        // cannot reopen it). A durable replay of this step keeps its run id
+        // and therefore its key.
+        attemptKey: runId ? `${executionId}:${runId}` : executionId,
       });
       if (res?.prUrl) {
         results.push({

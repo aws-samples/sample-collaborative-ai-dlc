@@ -438,6 +438,22 @@ describe('codecommit provider: pull requests', () => {
       expect(client.calls.filter((c) => c.name === 'CreatePullRequest')).toHaveLength(1);
     });
 
+    it('never reports a closed PR as opened when a caller reuses the key', async () => {
+      // Defense in depth for a caller that does not allocate a new key per
+      // attempt: CodeCommit replays the token onto the closed PR, and the
+      // provider chains to a token bound to that PR instead of returning it.
+      const { client, close } = codecommitLike();
+      expect((await create(client, 'reused')).prNumber).toBe('1');
+      close('1');
+      expect((await create(client, 'reused')).prNumber).toBe('2');
+      close('2');
+      expect((await create(client, 'reused')).prNumber).toBe('3');
+      // Converges: the open replacement is found, nothing new is created.
+      const again = await create(client, 'reused');
+      expect(again).toMatchObject({ existing: true, prNumber: '3' });
+      expect(client.calls.filter((c) => c.name === 'CreatePullRequest')).toHaveLength(6);
+    });
+
     it('reports a reused token with different parameters as a conflict', async () => {
       const { client, close } = codecommitLike();
       await create(client, 'same');
