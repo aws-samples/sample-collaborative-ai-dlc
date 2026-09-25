@@ -170,6 +170,41 @@ describe('AgentCredentialScopeCard', () => {
     expect(screen.queryByText('Saved')).not.toBeInTheDocument();
   });
 
+  it('hints that a non-Kiro value may be in the wrong field, without blocking the save', async () => {
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="personal" />);
+
+    const kiro = await screen.findByLabelText(/Kiro API Key/);
+    await user.type(kiro, 'bedrock-api-key-example');
+    expect(screen.getByRole('status')).toHaveTextContent(/starts with "ksk_"/);
+    expect(kiro).toHaveAccessibleDescription(/starts with "ksk_"/);
+
+    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await waitFor(() =>
+      expect(updatePersonalCredentials).toHaveBeenCalledWith({
+        kiroApiKey: 'bedrock-api-key-example',
+      }),
+    );
+  });
+
+  it('shows no hint for a Kiro API key in the Kiro field', async () => {
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="personal" />);
+
+    const kiro = await screen.findByLabelText(/Kiro API Key/);
+    await user.type(kiro, 'ksk_example');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(kiro).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('hints when a Kiro API key is entered in the Bedrock field', async () => {
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+
+    await user.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'ksk_example');
+    expect(screen.getByRole('status')).toHaveTextContent(/It goes in Kiro API Key/);
+  });
+
   it('surfaces a load failure and retries', async () => {
     getPersonalCredentials
       .mockRejectedValueOnce(new Error('Credential service unavailable'))
