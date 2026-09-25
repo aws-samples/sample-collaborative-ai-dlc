@@ -40,7 +40,9 @@ import { cn } from '@/lib/utils';
 import {
   RUNTIME_IMAGE_LIMIT_BYTES,
   environmentIdPreview,
+  formArchitecture,
   protectedRuntimeVersions,
+  toolsForArchitecture,
   resolvedTools,
   validateEnvironmentForm,
   type EnvironmentForm,
@@ -254,7 +256,7 @@ export function EnvironmentBuilder({
   baseEnvironment,
   baseRevision,
   baseLoading,
-  tools,
+  tools: catalogTools,
   disabled,
   showId,
   instancesComputeEnabled,
@@ -263,6 +265,13 @@ export function EnvironmentBuilder({
   actionDisabled,
   onAction,
 }: Props) {
+  // Only builds for the environment's architecture are selectable; an x86_64
+  // environment sees each tool's x86_64 versions and x86_64 recommendation.
+  const architecture = formArchitecture(form);
+  const tools = useMemo(
+    () => toolsForArchitecture(catalogTools, architecture),
+    [catalogTools, architecture],
+  );
   const [toolSearch, setToolSearch] = useState('');
   const [toolFilter, setToolFilter] = useState<'all' | 'included'>('all');
   const [advancedOpen, setAdvancedOpen] = useState(
@@ -475,9 +484,11 @@ export function EnvironmentBuilder({
                       onChange({
                         ...form,
                         compute: compute as EnvironmentForm['compute'],
-                        ...(compute === 'instances-x86_64'
-                          ? { toolVersionIds: [], baseEnvironmentId: 'standard' }
-                          : {}),
+                        // Tool versions and bases are per-architecture
+                        // builds, so neither carries across a compute change.
+                        ...(compute === form.compute
+                          ? {}
+                          : { toolVersionIds: [], baseEnvironmentId: 'standard' }),
                       })
                     }
                     disabled={disabled}
@@ -492,7 +503,7 @@ export function EnvironmentBuilder({
                   </Select>
                   <p className="text-[11px] leading-relaxed text-muted-foreground">
                     {form.compute === 'instances-x86_64'
-                      ? 'Runs on EC2 managed instances in this account with a persistent workspace volume. Catalog tools are not available on x86_64 yet. The compute type cannot be changed after creation.'
+                      ? 'Runs on EC2 managed instances in this account with a persistent workspace volume. Only tools with an x86_64 build are listed. The compute type cannot be changed after creation.'
                       : 'Default serverless compute. The compute type cannot be changed after creation.'}
                   </p>
                 </div>

@@ -268,13 +268,11 @@ export function EnvironmentRegistry() {
       environment.publishedRevisionId &&
       environment.status !== 'RETIRED' &&
       (creating || environment.environmentId !== selectedId) &&
-      // arm64 builds cannot start FROM an x86_64 base; x86_64 must derive from Standard.
-      (form.compute === 'instances-x86_64'
-        ? environment.environmentId === 'standard'
-        : !(
-            environment.compute?.type === 'instances' &&
-            environment.compute.architecture === 'x86_64'
-          )),
+      // A base must match the architecture: an image cannot be built FROM a
+      // base of another architecture. Standard serves both (its amd64 core
+      // variant is used for x86_64).
+      (environment.environmentId === 'standard' ||
+        (environment.compute?.architecture === 'x86_64') === (form.compute === 'instances-x86_64')),
   );
   const updates = environments.filter((environment) => environment.updateAvailable);
   const activeBaseDetail =

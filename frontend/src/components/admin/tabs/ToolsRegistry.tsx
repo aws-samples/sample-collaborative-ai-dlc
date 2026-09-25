@@ -47,9 +47,11 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import {
+  environmentsService,
   toolsService,
   type ManagedTool,
   type ManagedToolVersion,
+  type ToolArchitecture,
   type ToolExecutable,
   type ToolVerification,
   type ToolVersionDefinition,
@@ -57,6 +59,18 @@ import {
 import { ApiError } from '@/services/api';
 import { cn } from '@/lib/utils';
 import { Disclosure, ProcessOverview } from './environment-builder/ui';
+import { toolVersionArchitecture } from './environment-builder/model';
+
+// Each architecture keeps its own recommended version per tool family.
+const recommendedIdFor = (tool: ManagedTool | null | undefined, architecture: ToolArchitecture) =>
+  (architecture === 'x86_64' ? tool?.recommendedX86_64VersionId : tool?.recommendedVersionId) ??
+  null;
+const isRecommended = (tool: ManagedTool, version: ManagedToolVersion) =>
+  version.versionId === recommendedIdFor(tool, toolVersionArchitecture(version));
+const ARCHITECTURE_LABELS: Record<ToolArchitecture, string> = {
+  arm64: 'Linux ARM64',
+  x86_64: 'Linux x86_64',
+};
 
 const ACTIVE_STATUSES = new Set(['QUEUED', 'BUILDING', 'SCANNING']);
 type ToolFilter = 'all' | 'attention' | 'progress' | 'published';
@@ -241,6 +255,7 @@ interface ToolForm {
   version: string;
   distribution: string;
   versionPublisher: string;
+  architecture: ToolArchitecture;
   sourceUrl: string;
   preset: VerificationPreset;
   installerMode: 'generated' | 'script';
@@ -298,6 +313,7 @@ const emptyForm = (tool?: ManagedTool | null): ToolForm => {
     version: '',
     distribution: reference?.definition.distribution ?? tool?.publisher ?? '',
     versionPublisher: '',
+    architecture: 'arm64',
     sourceUrl: '',
     preset,
     installerMode: defaults.installerMode,
@@ -326,6 +342,7 @@ const formFromVersion = (tool: ManagedTool, version: ManagedToolVersion): ToolFo
   version: version.definition.version,
   distribution: version.definition.distribution ?? tool.publisher,
   versionPublisher: version.definition.publisher ?? tool.publisher,
+  architecture: toolVersionArchitecture(version),
   sourceUrl: version.definition.source.url,
   preset: version.definition.verification.preset,
   installerMode: version.definition.installer.mode,
@@ -369,6 +386,8 @@ const parsePairs = (value: string) =>
 const definitionFromForm = (form: ToolForm, creatingTool: boolean): ToolVersionDefinition => ({
   schemaVersion: 1,
   version: form.version.trim(),
+  // arm64 is the default and is never sent explicitly.
+  ...(form.architecture === 'x86_64' ? { architecture: 'x86_64' as const } : {}),
   ...(form.distribution.trim() || form.name.trim()
     ? { distribution: form.distribution.trim() || form.name.trim() }
     : {}),
@@ -437,7 +456,7 @@ const validateToolForm = (form: ToolForm, creatingTool: boolean) => {
     issues.push('Name the publisher for this distribution.');
   }
   if (!form.sourceUrl.trim()) {
-    issues.push('Add the Linux ARM64 download URL.');
+    issues.push(`Add the ${ARCHITECTURE_LABELS[form.architecture]} download URL.`);
   } else {
     try {
       const source = new URL(form.sourceUrl.trim());
@@ -549,7 +568,7 @@ const toolSidebarTask = (tool: ManagedTool, version: ManagedToolVersion | null) 
   }
   if (version.status === 'READY') return 'Publish this version';
   if (version.status === 'PUBLISHED') {
-    return version.versionId === tool.recommendedVersionId
+    return isRecommended(tool, version)
       ? 'Recommended for new environments'
       : 'Available to environments';
   }
@@ -930,6 +949,7 @@ function ToolVersionForm({
   tools,
   creatingTool,
   editing,
+  x86_64Available,
   disabled,
   onChange,
   onCancel,
@@ -939,6 +959,8 @@ function ToolVersionForm({
   tools: ManagedTool[];
   creatingTool: boolean;
   editing: boolean;
+  // Whether this deployment publishes an amd64 core to build x86_64 tools on.
+  x86_64Available: boolean;
   disabled: boolean;
   onChange: (value: ToolForm) => void;
   onCancel: () => void;
@@ -1143,16 +1165,46 @@ function ToolVersionForm({
             className="font-mono"
           />
         </div>
+        {(x86_64Available || form.architecture === 'x86_64') && (
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="tool-architecture" className="text-xs">
+              Architecture
+            </Label>
+            <Select
+              value={form.architecture}
+              onValueChange={(architecture) =>
+                onChange({ ...form, architecture: architecture as ToolArchitecture })
+              }
+              disabled={disabled || editing}
+            >
+              <SelectTrigger id="tool-architecture" className="h-9 max-w-xs text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="arm64">arm64 (serverless microVMs)</SelectItem>
+                <SelectItem value="x86_64">x86_64 (EC2 Instances)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              Each architecture is a separate version with its own download, checksum, build, and
+              security review. Add the other architecture as another version of this tool.
+            </p>
+          </div>
+        )}
         <div className="space-y-1.5 sm:col-span-2">
           <Label htmlFor="tool-source" className="text-xs">
-            Linux ARM64 download URL
+            {ARCHITECTURE_LABELS[form.architecture]} download URL
           </Label>
           <Input
             id="tool-source"
             type="url"
             value={form.sourceUrl}
             onChange={(event) => onChange({ ...form, sourceUrl: event.target.value })}
-            placeholder="https://publisher.example/tool-linux-arm64.tar.gz"
+            placeholder={
+              form.architecture === 'x86_64'
+                ? 'https://publisher.example/tool-linux-x64.tar.gz'
+                : 'https://publisher.example/tool-linux-arm64.tar.gz'
+            }
             disabled={disabled}
             className="font-mono text-xs"
           />
@@ -1544,6 +1596,22 @@ export function ToolsRegistry() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<ToolFilter>('all');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  // x86_64 tool authoring is offered only when the deployment publishes an
+  // amd64 core. Best-effort: a failed probe hides the option (safe default).
+  const [x86_64Available, setX86_64Available] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    environmentsService
+      .capabilities()
+      .then((capabilities) => {
+        if (active) setX86_64Available(Boolean(capabilities?.amd64CoreImage));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const load = useCallback(async (preferredToolId?: string, preferredVersionId?: string) => {
     const values = await toolsService.list();
@@ -1592,10 +1660,13 @@ export function ToolsRegistry() {
   const missingDependencies = useMemo(
     () =>
       (selectedVersion?.definition.dependencies ?? []).filter((toolId) => {
+        // Dependencies resolve to the recommendation for the same architecture.
         const dependency = tools.find((tool) => tool.toolId === toolId);
+        const recommendedId = selectedVersion
+          ? recommendedIdFor(dependency, toolVersionArchitecture(selectedVersion))
+          : null;
         return !dependency?.versions.some(
-          (version) =>
-            version.versionId === dependency.recommendedVersionId && version.status === 'PUBLISHED',
+          (version) => version.versionId === recommendedId && version.status === 'PUBLISHED',
         );
       }),
     [selectedVersion, tools],
@@ -1699,7 +1770,10 @@ export function ToolsRegistry() {
   };
 
   const requestRecommendation = (tool: ManagedTool, version: ManagedToolVersion) => {
-    const current = tool.versions.find((item) => item.versionId === tool.recommendedVersionId);
+    const architecture = toolVersionArchitecture(version);
+    const current = tool.versions.find(
+      (item) => item.versionId === recommendedIdFor(tool, architecture),
+    );
     const candidateName =
       version.definition.distribution ?? version.definition.publisher ?? tool.publisher;
     const currentName =
@@ -1707,8 +1781,8 @@ export function ToolsRegistry() {
     setConfirmation({
       title: current ? `Replace ${currentName} as recommended?` : `Recommend ${candidateName}?`,
       description: current
-        ? `${candidateName} ${version.definition.version} will replace ${currentName} ${current.definition.version} as the default for ${tool.name}. Existing environments remain unchanged until an administrator creates a new revision.`
-        : `${candidateName} ${version.definition.version} will become the default version offered for ${tool.name}.`,
+        ? `${candidateName} ${version.definition.version} will replace ${currentName} ${current.definition.version} as the ${architecture === 'x86_64' ? 'x86_64 ' : ''}default for ${tool.name}. Existing environments remain unchanged until an administrator creates a new revision.`
+        : `${candidateName} ${version.definition.version} will become the ${architecture === 'x86_64' ? 'x86_64 ' : ''}default version offered for ${tool.name}.`,
       actionLabel: current ? 'Replace recommendation' : 'Make recommended',
       onConfirm: () =>
         void run('recommend', () => toolsService.recommend(tool.toolId, version.versionId)),
@@ -1850,6 +1924,7 @@ export function ToolsRegistry() {
                   tools={tools}
                   creatingTool={creatingTool}
                   editing={Boolean(editingVersionId)}
+                  x86_64Available={x86_64Available}
                   disabled={Boolean(busy)}
                   onChange={(value) => {
                     setForm(value);
@@ -1909,13 +1984,23 @@ export function ToolsRegistry() {
                                 {version.definition.distribution ??
                                   version.definition.publisher ??
                                   selectedTool.publisher}{' '}
-                                {version.definition.version} · {toolStatusLabel(version)}
+                                {version.definition.version}
+                                {toolVersionArchitecture(version) === 'x86_64'
+                                  ? ' · x86_64'
+                                  : ''} ·{' '}
+                                {toolStatusLabel(version)}
                               </SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
                         {selectedVersion && <ToolStatus version={selectedVersion} />}
-                        {selectedVersion?.versionId === selectedTool.recommendedVersionId && (
+                        {selectedVersion &&
+                          toolVersionArchitecture(selectedVersion) === 'x86_64' && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              x86_64
+                            </Badge>
+                          )}
+                        {selectedVersion && isRecommended(selectedTool, selectedVersion) && (
                           <Badge variant="outline" className="gap-1 text-[10px]">
                             <Star className="h-3 w-3 fill-amber-400 text-amber-500" />
                             Recommended
@@ -1933,6 +2018,37 @@ export function ToolsRegistry() {
                           <RefreshCw className="h-3.5 w-3.5" />
                         </Button>
                         <div className="ml-auto flex flex-wrap gap-2">
+                          {x86_64Available &&
+                            selectedVersion &&
+                            toolVersionArchitecture(selectedVersion) === 'arm64' &&
+                            !selectedTool.versions.some(
+                              (item) =>
+                                toolVersionArchitecture(item) === 'x86_64' &&
+                                item.definition.version === selectedVersion.definition.version,
+                            ) && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={Boolean(busy)}
+                                onClick={() => {
+                                  // Same version, new architecture: keep the
+                                  // layout and verification, require a fresh
+                                  // x86_64 download and checksum.
+                                  setCreatingVersion(true);
+                                  setEditingVersionId(null);
+                                  setForm({
+                                    ...formFromVersion(selectedTool, selectedVersion),
+                                    architecture: 'x86_64',
+                                    sourceUrl: '',
+                                    publisherChecksum: '',
+                                    publisherEvidenceUrl: '',
+                                  });
+                                }}
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                Add x86_64 build
+                              </Button>
+                            )}
                           {selectedVersion &&
                             ['DRAFT', 'FAILED'].includes(selectedVersion.status) && (
                               <Button
@@ -2018,7 +2134,7 @@ export function ToolsRegistry() {
                             </Button>
                           )}
                           {selectedVersion?.status === 'PUBLISHED' &&
-                            selectedVersion.versionId !== selectedTool.recommendedVersionId && (
+                            !isRecommended(selectedTool, selectedVersion) && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -2026,7 +2142,10 @@ export function ToolsRegistry() {
                                 onClick={() => requestRecommendation(selectedTool, selectedVersion)}
                               >
                                 <Star className="h-3.5 w-3.5" />
-                                {selectedTool.recommendedVersionId
+                                {recommendedIdFor(
+                                  selectedTool,
+                                  toolVersionArchitecture(selectedVersion),
+                                )
                                   ? 'Replace recommendation'
                                   : 'Make recommended'}
                               </Button>
@@ -2051,9 +2170,7 @@ export function ToolsRegistry() {
                         <>
                           <ToolLifecycle
                             version={selectedVersion}
-                            recommended={
-                              selectedVersion.versionId === selectedTool.recommendedVersionId
-                            }
+                            recommended={isRecommended(selectedTool, selectedVersion)}
                           />
                           <VersionDetails
                             key={selectedVersion.versionId}
