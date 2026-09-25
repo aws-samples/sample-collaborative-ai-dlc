@@ -1,3 +1,4 @@
+import { runCredentialJob } from '../credential-session.js';
 // compose-plan-start — async composer proposals (Adaptive Workflows).
 //
 // The intents lambda creates a PENDING COMPOSE row and invokes this command
@@ -222,7 +223,7 @@ export const createComposePlanStart = ({
       return row;
     };
 
-    const job = (async () => {
+    const job = runCredentialJob(async () => {
       let g;
       try {
         const { workflow, library } = await loadLibraryFn({ workflowId, workflowVersion });
@@ -372,7 +373,7 @@ export const createComposePlanStart = ({
         activeJobs.delete(key);
         busy?.leave();
       }
-    })();
+    });
     job.catch((err) => log(`job promise rejected unexpectedly (${key}):`, err?.message));
 
     return { ok: true, accepted: true, composeId, jobKey: key };

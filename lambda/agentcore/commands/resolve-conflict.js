@@ -1,3 +1,4 @@
+import { withCredentialSession } from '../credential-session.js';
 // resolve-conflict — the scoped conflict-resolution stage (docs/v2-parallel.md
 // WP6, A3: "conflict → scoped conflict-resolution stage (sensors must pass) →
 // human gate on repeat failure").
@@ -86,7 +87,7 @@ export const buildConflictPrompt = ({ unitSlug, unitBranch, intentBranch, confli
   ].join('\n');
 };
 
-export const resolveConflict = async (
+const resolveConflictImplementation = async (
   {
     projectId,
     intentId,
@@ -290,7 +291,15 @@ export const resolveConflict = async (
         await cleanupCodexHome({ codexHome, env }).catch(() => false);
       }
     }
-    if ((result?.exitCode ?? 0) !== 0) {
+    if (result?.credentialError) {
+      await abortAll(conflictedByRepo, dirFor);
+      return {
+        ok: false,
+        reason: 'credential_unavailable',
+        detail: 'The invocation credential expired or could not be renewed.',
+      };
+    }
+    if (result?.exitCode !== 0) {
       await abortAll(conflictedByRepo, dirFor);
       return { ok: false, reason: 'cli_nonzero_exit', detail: String(result?.exitCode) };
     }
@@ -353,3 +362,6 @@ const abortAll = async (entries, dirFor) => {
     await runGit(['merge', '--abort'], { cwd: dirFor(repo) });
   }
 };
+
+export const resolveConflict = (payload, deps = {}) =>
+  withCredentialSession(() => resolveConflictImplementation(payload, deps), { env: deps.env });

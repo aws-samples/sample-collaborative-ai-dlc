@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   OUTPUT_CONTRACT,
+  CUSTOM_MCP_AUTH_ENV_SCRUB,
   MCP_EXECUTION_ANNEX,
   neutralizeHarnessDir,
   buildStagePrompt,
@@ -268,7 +269,7 @@ describe('buildMcpConfig', () => {
     expect(cfg.mcpServers.fetch).toEqual({
       command: 'uvx',
       args: ['mcp-server-fetch'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: CUSTOM_MCP_AUTH_ENV_SCRUB,
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
   });
@@ -396,7 +397,7 @@ describe('materializeStage (workspace write)', () => {
     expect(cfg.mcpServers.fetch).toEqual({
       command: 'uvx',
       args: ['mcp-server-fetch'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: CUSTOM_MCP_AUTH_ENV_SCRUB,
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
     // Custom rules go into the CLI's NATIVE rules dir (auto-loaded), NOT the prompt.
@@ -491,7 +492,7 @@ describe('buildKiroAgentConfig', () => {
     expect(cfg.mcpServers.git).toEqual({
       command: 'uvx',
       args: ['mcp-server-git'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: CUSTOM_MCP_AUTH_ENV_SCRUB,
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
   });
@@ -539,8 +540,7 @@ describe('OpenCode inline config', () => {
       environment: {
         API_KEY: '{env:LOCAL_KEY}',
         MIXED: 'Bearer {env:LOCAL_KEY}',
-        AWS_BEARER_TOKEN_BEDROCK: '',
-        KIRO_API_KEY: '',
+        ...CUSTOM_MCP_AUTH_ENV_SCRUB,
       },
     });
     expect(cfg.mcp.remote).toEqual({
@@ -653,7 +653,7 @@ describe('Codex config (per-stage CODEX_HOME)', () => {
       toml.indexOf('[mcp_servers."aidlc"]'),
     );
     expect(customSection).toContain('"FOO" = "bar"');
-    expect(customSection).not.toContain('AWS_ACCESS_KEY_ID');
+    expect(customSection).toContain('"AWS_ACCESS_KEY_ID" = ""');
     expect(customSection).not.toContain('env_vars');
   });
 
