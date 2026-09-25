@@ -31,11 +31,17 @@ import {
   unhandledCapabilities,
 } from './aidlc-capabilities.js';
 import { compileStageGraph, compileRules } from './compile.js';
+import { loopBackApplies } from './stage-loopback.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
-// Stage modes the runtime can execute. Pipeline, mob, and subagent supports use
-// serial, persona-scoped sessions; agent-team remains unrunnable because it
-// requires real concurrent sessions.
+// Stage modes the runtime can actually execute. `inline` and `subagent` run
+// natively. `pipeline` and `mob` (≥2.6.18) are run as APPROXIMATIONS: the
+// runtime still runs one agent session, and the stage prompt carries an ensemble
+// section describing the support personas and the topology protocol (see
+// `stage-materializer.js` renderEnsembleProtocol). `agent-team` remains
+// unrunnable — it needs real concurrent sessions, not a prompt — so a stage that
+// declares it is flagged `notImplemented` and fails fast at run time instead of
+// crashing the resolver.
 const RUNNABLE_MODES = ['inline', 'subagent', 'pipeline', 'mob'];
 
 // The approximated multi-persona topologies. Kept separate from RUNNABLE_MODES
@@ -390,6 +396,12 @@ const resolveStagePolicy = ({ scopeBlock, stage, stageId, errors, capabilities =
     // frontmatter field, so it is keyed on the CATALOG's runtime files and the
     // stage's own declaration instead of on a (field, value) pair.
     planApproval: planApprovalApplies({ stage, capabilities }) ? 'required' : null,
+    // The Build-and-Test loop-back is construction-protocol prose upstream, so
+    // like Plan Approval it is keyed on the CATALOG rather than on a (field,
+    // value) pair. The key says only "this release has a loop-back to
+    // reproduce"; WHICH stage may offer it, and to which target, is derived from
+    // the plan's stage order at the gate (stage-loopback.js).
+    loopBack: loopBackApplies({ capabilities }) ? 'human-offered' : null,
   };
 };
 

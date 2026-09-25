@@ -348,6 +348,7 @@ const RELEASE_EVENT_FAMILIES = [
   'v2.summary.',
   'v2.persona.',
   'v2.change.',
+  'v2.loopback.',
   'v2.review.',
   'v2.sensor.',
   'v2.gate.',

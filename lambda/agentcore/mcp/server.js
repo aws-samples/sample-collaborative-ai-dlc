@@ -216,7 +216,8 @@ export const buildToolHandlers = ({ writer, graph, bridge }) => {
     record_project_type: ({ projectType }) =>
       guard(() => bridge.recordProjectType({ projectType })),
     collect_metric: ({ metrics }) => guard(() => bridge.collectMetric({ metrics })),
-    emit_stage_note: ({ summary, type }) => guard(() => bridge.emitStageNote({ summary, type })),
+    emit_stage_note: ({ summary, type, loopBackRecommended }) =>
+      guard(() => bridge.emitStageNote({ summary, type, loopBackRecommended })),
     submit_review: ({ reviewer, verdict, findings, round }) =>
       guard(() =>
         bridge.submitReview({ reviewer, verdict, findings: findings ?? '', round: round ?? 0 }),
@@ -314,7 +315,7 @@ export const handlersForRole = (allHandlers, role, stageId = null, policy = null
 // Tool descriptions + zod arg shapes are attached in startMcpServer (where the
 // SDK + zod are present). Kept here as a single source so the catalog is
 // assertable and registration stays a thin loop.
-export const toolSchemas = (z) => ({
+export const toolSchemas = (z, policy = null) => ({
   get_artifact: {
     description:
       'Fetch one business artifact by id. Use mode "toc" or "summary" to avoid loading full markdown unless needed.',
@@ -497,8 +498,24 @@ export const toolSchemas = (z) => ({
     },
   },
   emit_stage_note: {
-    description: 'Append a short process/progress note to the execution audit trail.',
-    shape: { summary: z.string(), type: z.string().optional() },
+    description: [
+      'Append a short process/progress note to the execution audit trail.',
+      // The field is offered ONLY when the pinned release has a construction
+      // loop-back to reproduce, so an unpinned or 2.3.3-era agent sees exactly
+      // the tool it saw before this stream existed.
+      ...(policy?.loopBack === 'human-offered'
+        ? [
+            'Set loopBackRecommended to a one-line reason when build/test results show the generated code itself must be revised and you must NOT revise it yourself. It records a recommendation for the human reviewer — it does not re-run anything, and the human decides at the stage gate.',
+          ]
+        : []),
+    ].join(' '),
+    shape: {
+      summary: z.string(),
+      type: z.string().optional(),
+      ...(policy?.loopBack === 'human-offered'
+        ? { loopBackRecommended: z.string().optional() }
+        : {}),
+    },
   },
 });
 
@@ -540,7 +557,7 @@ export const registerTools = ({
   z,
   env = process.env,
 }) => {
-  const schemas = toolSchemas(z);
+  const schemas = toolSchemas(z, policy);
   const names = toolsForRole(role, stageId, policy, { checkpointOwner, canAsk });
   const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {

@@ -215,6 +215,7 @@ export function StageReviewPanel({
   onBack,
 }: StageReviewPanelProps) {
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const { stageNameOf, openItemPreview } = useIntent();
   // Gate-time "skip to stage X" (stage-skip.js): the backend computed the
   // valid forward targets (every intermediate is CONDITIONAL); '' = none.
@@ -278,28 +279,58 @@ export function StageReviewPanel({
     ? gate.options.filter((option): option is string => typeof option === 'string')
     : [];
   const canOverride = gateOptions.includes('override-and-approve');
+  // The build-and-test loop-back is the engine's third gate option
+  // gate: it is neither an approval nor a revision of THIS stage, so it records as
+  // a plain answer and the engine moves the walk back to the named target.
+  const loopBackTarget = gateOptions.includes('loop-back') ? (gate.loopBackTarget ?? null) : null;
   const gateFindings = gate.findings ?? [];
   const blockingFindingCount = gateFindings.filter((item) => item.severity === 'blocking').length;
   const canApprove = gateOptions.length === 0 || gateOptions.includes('approve');
-  const submit = async (decision: 'approve' | 'request-changes' | 'override-and-approve') => {
+  const loopBackStages =
+    loopBackTarget && Array.isArray(gate.loopBackStages) && gate.loopBackStages.length > 0
+      ? gate.loopBackStages
+      : null;
+  const confirmLoopBack = () =>
+    window.confirm(
+      [
+        `Send this work back to ${loopBackTarget}?`,
+        loopBackStages
+          ? `These stages re-run from scratch: ${loopBackStages.join(', ')}.`
+          : `Every stage from ${loopBackTarget} onwards re-runs from scratch.`,
+        'Their earlier plan approvals and reviews will be invalidated.',
+      ].join('\n'),
+    );
+  const submit = async (
+    decision: 'approve' | 'request-changes' | 'override-and-approve' | 'loop-back',
+  ) => {
     setSubmitting(true);
+    setSubmitError(null);
     try {
       const currentFeedback = getFeedback();
       await onAnswer(gate, {
-        status: decision === 'request-changes' ? 'rejected' : 'approved',
+        status:
+          decision === 'request-changes'
+            ? 'rejected'
+            : decision === 'loop-back'
+              ? 'rejected'
+              : 'approved',
         answer:
           decision === 'request-changes'
             ? { decision, feedback: currentFeedback }
-            : {
-                decision,
-                ...(decision === 'override-and-approve' && overrideReason.trim()
-                  ? { reason: overrideReason.trim() }
-                  : {}),
-                ...(skipTo ? { skipTo } : {}),
-                ...(learningsRitual && learnings.trim() ? { learnings: learnings.trim() } : {}),
-              },
+            : decision === 'loop-back'
+              ? { decision }
+              : {
+                  decision,
+                  ...(decision === 'override-and-approve' && overrideReason.trim()
+                    ? { reason: overrideReason.trim() }
+                    : {}),
+                  ...(skipTo ? { skipTo } : {}),
+                  ...(learningsRitual && learnings.trim() ? { learnings: learnings.trim() } : {}),
+                },
       });
       onBack();
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Could not save the gate answer.');
     } finally {
       setSubmitting(false);
     }
@@ -682,6 +713,18 @@ export function StageReviewPanel({
                 >
                   Request changes
                 </Button>
+                {loopBackTarget && (
+                  <Button
+                    variant="outline"
+                    disabled={submitting}
+                    onClick={() => {
+                      if (!confirmLoopBack()) return;
+                      void submit('loop-back');
+                    }}
+                  >
+                    Send back to {loopBackTarget}
+                  </Button>
+                )}
                 {canOverride && (
                   <Button
                     variant="outline"
@@ -718,6 +761,18 @@ export function StageReviewPanel({
               </>
             )}
           </div>
+          {submitError && (
+            <p role="alert" className="text-xs text-destructive">
+              {submitError}
+            </p>
+          )}
+          {pending && loopBackTarget && (
+            <p className="text-xs text-amber-600 dark:text-amber-500">
+              The agent recommends revising the generated code. Sending this back re-runs every
+              stage from {loopBackTarget} onwards from scratch, and their earlier plan approvals and
+              reviews stop counting.
+            </p>
+          )}
           {pending && skipTo && (
             <p className="text-xs text-amber-600 dark:text-amber-500">
               Every CONDITIONAL stage between this one and {skipTo} will be marked skipped;

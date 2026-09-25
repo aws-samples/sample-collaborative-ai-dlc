@@ -50,6 +50,8 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
   // batch revision loops): sent as { decision, feedback } so the engine
   // re-runs the increment with it and re-asks.
   const [feedback, setFeedback] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [answerError, setAnswerError] = useState<string | null>(null);
   const question = useMemo<Question | null>(() => {
     let parsed: Question['questions'];
     try {
@@ -83,6 +85,18 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
       }
     );
   }, [detail, gate.prompt, gate.sectionIndex, gate.unitSlug]);
+  const submitAnswer = async (input: GateAnswer) => {
+    if (submitting) return;
+    setSubmitting(true);
+    setAnswerError(null);
+    try {
+      await onAnswer(gate, input);
+    } catch (error) {
+      setAnswerError(error instanceof Error ? error.message : 'Could not save the gate answer.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   if (gate.kind === 'validation') {
     const stageArtifacts =
@@ -138,8 +152,9 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
                   key={opt}
                   size="sm"
                   variant="outline"
+                  disabled={submitting}
                   onClick={() =>
-                    onAnswer(gate, {
+                    void submitAnswer({
                       answer: opt,
                       status: /reject/i.test(opt) ? 'rejected' : 'answered',
                     })
@@ -152,20 +167,27 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               <>
                 <Button
                   size="sm"
-                  onClick={() => onAnswer(gate, { answer: 'approve', status: 'approved' })}
+                  disabled={submitting}
+                  onClick={() => void submitAnswer({ answer: 'approve', status: 'approved' })}
                 >
                   Approve
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => onAnswer(gate, { answer: 'reject', status: 'rejected' })}
+                  disabled={submitting}
+                  onClick={() => void submitAnswer({ answer: 'reject', status: 'rejected' })}
                 >
                   Reject
                 </Button>
               </>
             )}
           </div>
+          {answerError && (
+            <p role="alert" className="text-xs text-destructive">
+              {answerError}
+            </p>
+          )}
         </CardContent>
       </Card>
     );
@@ -196,6 +218,11 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             </Badge>
           )}
           <p className="whitespace-pre-line text-sm">{prompt || 'Approval required'}</p>
+          {answerError && (
+            <p role="alert" className="text-xs text-destructive">
+              {answerError}
+            </p>
+          )}
           {walkingSkeletonBranch && (
             <UnitBranchEntry
               item={walkingSkeletonBranch}
@@ -227,8 +254,9 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
                   key={opt}
                   size="sm"
                   variant={engineGateStatusFor(opt) === 'rejected' ? 'outline' : 'default'}
+                  disabled={submitting}
                   onClick={() =>
-                    onAnswer(gate, {
+                    void submitAnswer({
                       answer: {
                         decision: opt,
                         ...(/^request-changes/i.test(opt) && feedback.trim()
@@ -245,7 +273,10 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
             ) : (
               <Button
                 size="sm"
-                onClick={() => onAnswer(gate, { answer: { approved: true }, status: 'approved' })}
+                disabled={submitting}
+                onClick={() =>
+                  void submitAnswer({ answer: { approved: true }, status: 'approved' })
+                }
               >
                 Approve
               </Button>
@@ -263,12 +294,17 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
         scope={{ kind: 'intent', id: intentId, projectId }}
         userName={userName}
         onAnswer={(structuredAnswer) =>
-          onAnswer(gate, {
+          submitAnswer({
             answer: structuredAnswer,
             ...(steering.trim() ? { steering: steering.trim() } : {}),
           })
         }
       />
+      {answerError && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {answerError}
+        </p>
+      )}
       {/* Optional course correction delivered WITH the answer — collapsed so
           the primary path (answer → submit) stays unambiguous. */}
       <details open className="mt-1.5 rounded-md border border-dashed px-3 py-2">

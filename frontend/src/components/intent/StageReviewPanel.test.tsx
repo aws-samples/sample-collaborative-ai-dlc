@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // The panel pulls the intent context, the graph and a Yjs-backed textarea. None
@@ -89,8 +89,11 @@ import type { GateAnswer } from '@/services/intents';
 
 let onAnswer: Mock<(gate: IntentGate, input: GateAnswer) => Promise<void>>;
 
-const renderPanel = (g: IntentGate) => {
-  onAnswer = vi.fn<(gate: IntentGate, input: GateAnswer) => Promise<void>>(async () => {});
+const renderPanel = (
+  g: IntentGate,
+  answer: (gate: IntentGate, input: GateAnswer) => Promise<void> = async () => {},
+) => {
+  onAnswer = vi.fn<(gate: IntentGate, input: GateAnswer) => Promise<void>>(answer);
   render(
     <StageReviewPanel
       gate={g}
@@ -106,6 +109,7 @@ const renderPanel = (g: IntentGate) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
   sharedDoc = fakeYDoc();
 });
 
@@ -157,5 +161,55 @@ describe('StageReviewPanel — learnings ritual', () => {
       status: 'rejected',
       answer: { decision: 'request-changes', feedback: 'fix the headings' },
     });
+  });
+
+  it('records loop-back as rejected while preserving its decision payload', async () => {
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
+    renderPanel(
+      gate({
+        options: ['approve', 'request-changes', 'loop-back'],
+        loopBackTarget: 'code-generation',
+      }),
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
+
+    expect(onAnswer).toHaveBeenCalledWith(expect.anything(), {
+      status: 'rejected',
+      answer: { decision: 'loop-back' },
+    });
+  });
+
+  it('disables the answer while a submission is pending', async () => {
+    let resolveAnswer!: () => void;
+    const answer = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveAnswer = resolve;
+        }),
+    );
+    renderPanel(gate(), answer);
+    const approve = screen.getByRole('button', { name: /^Approve/ });
+
+    await userEvent.click(approve);
+    expect(approve).toBeDisabled();
+    await userEvent.click(approve);
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+
+    resolveAnswer();
+    await waitFor(() => expect(approve).not.toBeDisabled());
+  });
+
+  it('shows an inline error when an answer fails', async () => {
+    renderPanel(gate(), async () => {
+      throw new Error('The gate could not be saved');
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: /^Approve/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The gate could not be saved');
   });
 });
