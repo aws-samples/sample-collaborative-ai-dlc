@@ -146,6 +146,35 @@ describe('RepositoriesTab', () => {
     expect(screen.queryByRole('button', { name: /bind/i })).not.toBeInTheDocument();
   });
 
+  it('does not show an invalidated binding as write verified', async () => {
+    // A refused CodeCommit role invalidates the binding but leaves the
+    // capabilities of its last successful verification on the row.
+    sourceStatus.value = {
+      ready: false,
+      repositories: [
+        {
+          provider: 'codecommit',
+          repo: 'arn:aws:codecommit:eu-west-1:123456789012:app',
+          authType: 'codecommit-role',
+          status: 'invalid',
+          invalidReason: 'codecommit_role_denied',
+          capabilities: { repositoryWrite: true },
+          verifiedAt: '2026-07-20T00:00:00Z',
+          updatedAt: '2026-07-21T00:00:00Z',
+        },
+      ],
+    };
+
+    render(<RepositoriesTab project={project} canEdit={false} reload={vi.fn()} />);
+
+    expect(
+      await screen.findByText(
+        'Source control setup required. Starts remain blocked until every repository is verified.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Write verified')).not.toBeInTheDocument();
+  });
+
   it('discovers App repositories for a GitHub-App-bound space without personal OAuth', async () => {
     sourceStatus.value = boundStatus('github', 'github-app', 'acme/api');
     appListRepos.mockResolvedValue([repo('acme/app-only')]);

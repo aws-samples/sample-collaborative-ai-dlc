@@ -314,7 +314,9 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
                 <Badge variant="outline" className="text-[10px]">
                   {repository.authType ? authLabel(repository.authType) : 'Unbound'}
                 </Badge>
-                {repository.capabilities.repositoryWrite && (
+                {/* Capabilities are what the last verification proved; an
+                    invalidated binding no longer has them. */}
+                {repository.status === 'active' && repository.capabilities.repositoryWrite && (
                   <Badge variant="secondary" className="text-[10px]">
                     Write verified
                   </Badge>
