@@ -210,9 +210,13 @@ export interface ToolVerification {
   files: { path: string; content: string }[];
 }
 
+export type ToolArchitecture = 'arm64' | 'x86_64';
+
 export interface ToolVersionDefinition {
   schemaVersion: 1;
   version: string;
+  // Omitted for arm64 (the default); x86_64 builds are separate versions.
+  architecture?: 'x86_64';
   distribution?: string;
   publisher?: string;
   source: {
@@ -273,6 +277,7 @@ export interface ManagedTool {
   publisher: string;
   system: boolean;
   recommendedVersionId: string | null;
+  recommendedX86_64VersionId?: string | null;
   versions: ManagedToolVersion[];
   createdAt: string;
   updatedAt: string;
