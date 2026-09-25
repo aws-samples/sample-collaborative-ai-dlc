@@ -124,29 +124,39 @@ export const assertBaseArchitecture = ({ compute, baseRevision, baseEnvironmentI
   }
 };
 
-// Rewrites the resolved recipe base to the amd64 core image for x86_64
-// environments. The catalog resolver derives the base from the parent
-// environment's published (arm64) revision; an x86_64 image cannot be built
-// FROM an arm64 base, so the base ref is swapped for the amd64 build of the
-// same core. The amd64 variant is resolved from the SELECTED base revision
-// (stored alongside it), never from the deployment's environment variables —
-// during a platform upgrade the staged core is newer than the published one
-// and the two must not be mixed. Restricted to bases whose published image
-// IS the core image — derived (tool-carrying) bases are arm64-only until the
-// tool catalog gains per-architecture binaries.
+// Resolves the recipe base for x86_64 environments and checks that every tool
+// in the recipe is an x86_64 build.
+//
+// - Standard/core base: the catalog resolver derives the base from the
+//   published core revision (arm64), so the base ref is swapped for the amd64
+//   build of the same core. The amd64 variant is resolved from the SELECTED
+//   base revision (stored alongside it), never from the deployment's
+//   environment variables — during a platform upgrade the staged core is newer
+//   than the published one and the two must not be mixed.
+// - Derived base: only an x86_64 parent is valid. Its published image already
+//   is an amd64 build (it carries the parent's x86_64 tools), so it is kept.
 export const applyComputeBase = ({ recipe, compute, baseRevision = null }) => {
   if (compute?.architecture !== 'x86_64') return recipe;
-  if ((recipe.toolVersionIds ?? []).length > 0 || (recipe.resolvedTools ?? []).length > 0) {
+  const tools = [...(recipe.tools ?? []), ...(recipe.resolvedTools ?? [])];
+  const foreign = tools.find((tool) => tool.architecture !== 'x86_64');
+  if (foreign) {
     throw Object.assign(
-      new Error('Catalog tools are arm64-only; x86_64 environments cannot select tools yet'),
-      { statusCode: 409, code: 'TOOLS_UNSUPPORTED_ON_X86_64' },
+      new Error(
+        `Tool ${foreign.toolId} ${foreign.version} is an arm64 build; x86_64 environments need its x86_64 variant`,
+      ),
+      { statusCode: 409, code: 'TOOL_ARCHITECTURE_MISMATCH' },
     );
   }
   if (recipe.base?.environmentId !== 'core' && recipe.base?.environmentId !== 'standard') {
-    throw Object.assign(
-      new Error('x86_64 environments must derive from the Standard environment'),
-      { statusCode: 409, code: 'X86_64_BASE_MUST_BE_STANDARD' },
-    );
+    if (baseRevision?.recipe?.architecture !== 'x86_64') {
+      throw Object.assign(
+        new Error(
+          `Base environment ${recipe.base?.environmentId} is arm64 and cannot be used by an x86_64 environment`,
+        ),
+        { statusCode: 409, code: 'BASE_ARCHITECTURE_MISMATCH' },
+      );
+    }
+    return { ...recipe, architecture: 'x86_64' };
   }
   const amd64 = baseRevision?.amd64Image;
   if (!amd64?.imageUri || !amd64?.imageDigest) {

@@ -283,6 +283,101 @@ describe('managed environment handler', () => {
     expect(store.createEnvironment).not.toHaveBeenCalled();
   });
 
+  describe('x86_64 environments with catalog tools', () => {
+    const amdDigest = `sha256:${'b'.repeat(64)}`;
+    const standard = {
+      environmentId: 'standard',
+      status: 'PUBLISHED',
+      publishedRevisionId: 'core-1',
+    };
+    const standardRevision = {
+      ...BASE,
+      environmentId: 'standard',
+      status: 'PUBLISHED',
+      recipe: CATALOG_RECIPE,
+      flattenedRecipe: CATALOG_RECIPE,
+      amd64Image: { imageUri: BASE.imageUri, imageDigest: amdDigest },
+    };
+    const toolVersion = (versionId, architecture) => ({
+      toolId: 'go',
+      versionId,
+      status: 'PUBLISHED',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/tools',
+      imageDigest: `sha256:${(architecture === 'x86_64' ? 'e' : 'f').repeat(64)}`,
+      definition: {
+        version: '1.24.6',
+        ...(architecture === 'x86_64' ? { architecture } : {}),
+        executables: [{ name: 'go', path: 'bin/go' }],
+        dependencies: [],
+        aptPackages: [],
+        environmentVariables: {},
+        verification: { preset: 'go' },
+      },
+    });
+    const toolStore = {
+      listTools: vi.fn().mockResolvedValue([{ toolId: 'go', name: 'Go SDK' }]),
+      listAllVersions: vi
+        .fn()
+        .mockResolvedValue([toolVersion('tv-go-arm', 'arm64'), toolVersion('tv-go-x86', 'x86_64')]),
+    };
+    const create = (toolVersionIds) => {
+      const store = {
+        ...storeBase(),
+        getEnvironment: vi
+          .fn()
+          .mockImplementation(async (id) => (id === 'standard' ? standard : null)),
+        getRevision: vi.fn().mockResolvedValue(standardRevision),
+        createEnvironment: vi.fn().mockImplementation(async (item) => item),
+      };
+      const handler = createHandler({ store, toolStore });
+      return {
+        store,
+        response: handler({
+          httpMethod: 'POST',
+          path: '/environments',
+          body: JSON.stringify({
+            environmentId: 'go-x86',
+            name: 'Go x86',
+            compute: { type: 'instances', architecture: 'x86_64' },
+            recipe: { ...CATALOG_RECIPE, toolVersionIds },
+          }),
+          ...claims('platform-admin'),
+        }),
+      };
+    };
+
+    beforeEach(() => {
+      vi.stubEnv('MANAGED_INSTANCES_OPERATOR_ROLE_ARN', 'arn:aws:iam::1:role/operator');
+      vi.stubEnv('MANAGED_INSTANCES_SUBNETS', '["subnet-1"]');
+      vi.stubEnv('MANAGED_INSTANCES_SECURITY_GROUPS', '["sg-1"]');
+      vi.stubEnv('CORE_IMAGE_URI_AMD64', BASE.imageUri);
+      vi.stubEnv('CORE_IMAGE_DIGEST_AMD64', amdDigest);
+    });
+
+    it('builds from the amd64 core with the x86_64 tool image', async () => {
+      const { store, response } = create(['tv-go-x86']);
+      const result = await response;
+      expect(result.statusCode).toBe(201);
+      const { recipe, flattenedRecipe } = store.createEnvironment.mock.calls[0][0];
+      expect(recipe.architecture).toBe('x86_64');
+      expect(recipe.base.imageDigest).toBe(amdDigest);
+      expect(recipe.tools).toEqual([
+        expect.objectContaining({ versionId: 'tv-go-x86', architecture: 'x86_64' }),
+      ]);
+      expect(flattenedRecipe.resolvedTools).toEqual([
+        expect.objectContaining({ versionId: 'tv-go-x86' }),
+      ]);
+    });
+
+    it('rejects an arm64 tool build with an actionable error', async () => {
+      const { store, response } = create(['tv-go-arm']);
+      const result = await response;
+      expect(result.statusCode).toBe(409);
+      expect(JSON.parse(result.body)).toMatchObject({ code: 'TOOL_ARCHITECTURE_MISMATCH' });
+      expect(store.createEnvironment).not.toHaveBeenCalled();
+    });
+  });
+
   it('rejects retrying a failed revision pinned to an outdated base', async () => {
     const environment = {
       environmentId: 'go',

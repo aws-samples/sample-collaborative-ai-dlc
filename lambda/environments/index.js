@@ -120,6 +120,7 @@ const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId, 
     baseEnvironmentId,
     baseRevision,
     toolStore,
+    architecture: compute?.architecture === 'x86_64' ? 'x86_64' : 'arm64',
   });
   return { ...resolved, baseRevision };
 };
