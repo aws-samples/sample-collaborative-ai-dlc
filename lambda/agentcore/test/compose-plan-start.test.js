@@ -241,6 +241,49 @@ describe('compose-plan-start', () => {
     expect(prompt).toContain('bugfix: runs 2 of 3 stages');
   });
 
+  it('loads scope, persona, and knowledge from the intent release and user pins', async () => {
+    const deps = makeDeps({
+      oneShotText: '{"mode":"matched","scope":"feature"}',
+    });
+    const methodologyRelease = {
+      releaseId: 'aidlc:release-sha',
+      sourceSha: 'release-sha',
+      importerRevision: 2,
+      closureDigest: 'closure-digest',
+      catalogKey: 'catalog.json',
+      manifestKey: 'manifest.json',
+    };
+    const methodologyPins = {
+      AGENT: { 'aidlc-composer-agent': { tenantId: 'default', version: 7 } },
+    };
+
+    await createComposePlanStart(deps)({ ...basePayload, methodologyRelease, methodologyPins });
+    await waitForFinish(deps.store);
+
+    expect(deps.loadLibraryFn).toHaveBeenCalledWith({
+      workflowId: basePayload.workflowId,
+      workflowVersion: basePayload.workflowVersion,
+      methodologyRelease,
+      methodologyPins,
+    });
+    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith(
+      'SCOPE',
+      methodologyRelease,
+      methodologyPins,
+    );
+    expect(deps.listMergedBlocksFn).not.toHaveBeenCalled();
+    expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: 'aidlc-composer-agent' }),
+      { methodologyRelease },
+    );
+    expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: 'composer-agent-composing' }),
+      { methodologyRelease },
+    );
+  });
+
   it('completes a valid custom grid proposal', async () => {
     const deps = makeDeps({
       oneShotText:

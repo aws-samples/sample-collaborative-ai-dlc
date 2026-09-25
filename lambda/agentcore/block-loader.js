@@ -316,9 +316,20 @@ const loadReleaseLibrary = async ({
 // List one block type straight out of a pinned release closure (the composer
 // reads SCOPE blocks for keyword/description grounding). The release-mode
 // counterpart of listMergedBlocks, which must never run for a pinned intent.
-export const listReleaseBlocks = async (type, methodologyRelease) => {
+export const listReleaseBlocks = async (type, methodologyRelease, methodologyPins = null) => {
   const closure = await releaseClosure(methodologyRelease);
-  return closure.blocksByType?.[type] ?? [];
+  const byId = new Map(
+    (closure.blocksByType?.[type] ?? []).map((block) => [block.id ?? block.blockId, block]),
+  );
+  const overlayPins = Object.fromEntries(
+    Object.entries(methodologyPins?.[type] ?? {}).filter(
+      ([, pin]) => pin?.tenantId && pin.tenantId !== SYSTEM_TENANT,
+    ),
+  );
+  for (const block of await loadPinnedBlocks(type, overlayPins)) {
+    byId.set(block.id ?? block.blockId, block);
+  }
+  return [...byId.values()];
 };
 
 // Load everything the runtime needs for one execution: the pinned workflow plus
@@ -399,7 +410,7 @@ export const loadLibrary = async ({
 // failed integrity check to an empty body is exactly the drift the release pin
 // exists to prevent.
 export const loadBlockBody = async (block, { methodologyRelease = null } = {}) =>
-  methodologyRelease
+  methodologyRelease && (block?.tenantId ?? SYSTEM_TENANT) === SYSTEM_TENANT
     ? loadVerifiedReleaseObject({ ref: block?.bodyRef, methodologyRelease, label: 'body' })
     : getObjectText(block?.bodyRef?.s3Key);
 
@@ -412,7 +423,7 @@ export const loadBlockBody = async (block, { methodologyRelease = null } = {}) =
 // digest on the same terms as a body — tampered bytes here are arbitrary code
 // execution inside the session, not just a wrong verdict.
 export const loadBlockScript = async (block, { methodologyRelease = null } = {}) =>
-  methodologyRelease
+  methodologyRelease && (block?.tenantId ?? SYSTEM_TENANT) === SYSTEM_TENANT
     ? loadVerifiedReleaseObject({ ref: block?.scriptRef, methodologyRelease, label: 'script' })
     : getObjectText(block?.scriptRef?.s3Key);
 

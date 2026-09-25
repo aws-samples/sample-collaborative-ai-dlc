@@ -34,6 +34,7 @@
 // the shared `default` owner. Reads fall back to SYSTEM; writes never do.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { S3Client } from '@aws-sdk/client-s3';
 import {
   DynamoDBDocumentClient,
@@ -89,6 +90,7 @@ import { Logger } from '@aws-lambda-powertools/logger';
 const logger = new Logger({ persistentKeys: { component: 'workflows' } });
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const lambda = new LambdaClient({});
 const s3 = new S3Client({});
 const blocksTable = () => process.env.BLOCKS_TABLE;
 const artifactsBucket = () => process.env.ARTIFACTS_BUCKET || '';
@@ -735,6 +737,65 @@ const releasePinFor = async (releaseId, { isAdmin = false, importerRevision = nu
   return releasePinFromRecord({ ...record, ...previous.from });
 };
 
+const intentPinFor = async ({ event, releaseId, importerRevision, workflowId }) => {
+  const query = event?.queryStringParameters ?? {};
+  const intentId = typeof query.intentId === 'string' ? query.intentId : '';
+  const projectId = typeof query.projectId === 'string' ? query.projectId : '';
+  if (!intentId && !projectId) return null;
+  const notFound = () =>
+    new ReleaseRegistryError(
+      'release_not_found',
+      `workflows: release ${String(releaseId)} is not registered`,
+      { details: { releaseId: String(releaseId ?? '') } },
+    );
+  if (!intentId || !projectId || !process.env.INTENTS_FUNCTION) throw notFound();
+
+  const invocation = await lambda.send(
+    new InvokeCommand({
+      FunctionName: process.env.INTENTS_FUNCTION,
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(
+        JSON.stringify({
+          httpMethod: 'GET',
+          resource: '/projects/{projectId}/intents/{intentId}',
+          path: `/projects/${encodeURIComponent(projectId)}/intents/${encodeURIComponent(intentId)}`,
+          pathParameters: { projectId, intentId },
+          requestContext: { authorizer: { claims: getClaims(event) } },
+          queryStringParameters: { view: 'workflow-preview' },
+          headers: {},
+        }),
+      ),
+    }),
+  );
+  if (invocation.FunctionError) throw new Error('Intent authorization lookup failed');
+  let response;
+  try {
+    response = JSON.parse(Buffer.from(invocation.Payload ?? []).toString('utf8'));
+  } catch {
+    throw new Error('Intent authorization lookup returned an invalid response');
+  }
+  if (response.statusCode !== 200) throw notFound();
+
+  let detail;
+  try {
+    detail = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
+  } catch {
+    throw new Error('Intent authorization lookup returned an invalid detail');
+  }
+  const intent = detail?.workflowIntent;
+  const pin = intent?.methodologyRelease;
+  if (
+    intent?.id !== intentId ||
+    intent?.projectId !== projectId ||
+    intent?.workflowId !== workflowId ||
+    pin?.releaseId !== releaseId ||
+    (importerRevision !== null && Number(pin?.importerRevision) !== importerRevision)
+  ) {
+    throw notFound();
+  }
+  return intent;
+};
+
 const requestedRelease = (event) => {
   const raw = event?.queryStringParameters?.release;
   return typeof raw === 'string' && raw ? decodePathParam(raw) : null;
@@ -747,6 +808,7 @@ const requestedReleaseImporterRevision = (event) => {
 };
 
 const releasePlanInputs = async ({
+  event,
   releaseId,
   importerRevision = null,
   tenant,
@@ -764,7 +826,9 @@ const releasePlanInputs = async ({
       { details: { workflowId: String(workflowId ?? '') } },
     );
   }
-  const methodologyRelease = await releasePinFor(releaseId, { isAdmin, importerRevision });
+  const intent = await intentPinFor({ event, releaseId, importerRevision, workflowId });
+  const methodologyRelease =
+    intent?.methodologyRelease ?? (await releasePinFor(releaseId, { isAdmin, importerRevision }));
   const closure = await loadReleaseClosure({
     s3,
     bucket: artifactsBucket(),
@@ -776,7 +840,9 @@ const releasePlanInputs = async ({
     tableName: blocksTable(),
     tenant,
     workflowId,
-    workflowVersion: workflowVersion ?? closure.catalog?.workflow?.workflowVersion ?? 1,
+    workflowVersion:
+      intent?.workflowVersion ?? workflowVersion ?? closure.catalog?.workflow?.workflowVersion ?? 1,
+    methodologyPins: intent?.methodologyPins ?? null,
   });
   const { workflow, library } = resolvedLibrary;
   const compiled = compileWorkflow(
@@ -800,6 +866,7 @@ const getCompiled = async (event, res, tenant, workflowId) => {
     if (requested.error) return res(400, { error: requested.error });
     try {
       const inputs = await releasePlanInputs({
+        event,
         releaseId,
         importerRevision: requestedReleaseImporterRevision(event),
         tenant,
@@ -852,6 +919,7 @@ const loadPlanInputs = async (event, tenant, workflowId) => {
   if (releaseId) {
     try {
       return await releasePlanInputs({
+        event,
         releaseId,
         importerRevision: requestedReleaseImporterRevision(event),
         tenant,

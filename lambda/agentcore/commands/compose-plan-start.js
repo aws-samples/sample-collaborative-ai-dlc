@@ -179,6 +179,8 @@ export const createComposePlanStart = ({
       mode = 'front',
       workflowId,
       workflowVersion,
+      methodologyRelease = null,
+      methodologyPins = null,
       prompt = '',
       instructions = '',
       repoSignals = null,
@@ -240,6 +242,7 @@ export const createComposePlanStart = ({
           workflowId,
           workflowVersion,
           ...(methodologyRelease ? { methodologyRelease } : {}),
+          ...(methodologyPins ? { methodologyPins } : {}),
         });
         if (!workflow || !library) {
           await finish({
@@ -252,7 +255,7 @@ export const createComposePlanStart = ({
         // here: an unresolvable closure must fail the compose, not silently
         // ground the composer in an empty scope list.
         const scopeBlocks = methodologyRelease
-          ? await listReleaseBlocksFn('SCOPE', methodologyRelease)
+          ? await listReleaseBlocksFn('SCOPE', methodologyRelease, methodologyPins)
           : await listMergedBlocksFn('SCOPE').catch(() => []);
         const { scopes, summaries, grids, stages, offeredScopeIds } = buildScopeGrounding({
           workflow,
@@ -263,14 +266,15 @@ export const createComposePlanStart = ({
 
         // Composer persona + methodology knowledge from the block library
         // (fork-shadowing applies — a user's edited composer is honoured).
+        const loadBody = methodologyRelease
+          ? (block) => loadBlockBodyFn(block, { methodologyRelease })
+          : (block) => loadBlockBodyFn(block).catch(() => '');
         const agentBlock = library.agentsById?.[COMPOSER_AGENT_ID] ?? null;
-        const persona = agentBlock ? await loadBlockBodyFn(agentBlock).catch(() => '') : '';
+        const persona = agentBlock ? await loadBody(agentBlock) : '';
         const knowledgeBlocks = Object.values(library.knowledgeById ?? {}).filter(
           (k) => k.agentRef === COMPOSER_AGENT_ID,
         );
-        const knowledgeBodies = await Promise.all(
-          knowledgeBlocks.map((k) => loadBlockBodyFn(k).catch(() => '')),
-        );
+        const knowledgeBodies = await Promise.all(knowledgeBlocks.map(loadBody));
 
         const fullPrompt = buildComposePrompt({
           mode,

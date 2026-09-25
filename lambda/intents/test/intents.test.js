@@ -2506,6 +2506,23 @@ describe('POST /compose — composer sessions', () => {
       const intent = JSON.parse(
         (await createIntent(sub, projectId, { title: 'I', prompt: 'Do something ambiguous' })).body,
       );
+      const methodologyRelease = {
+        releaseId: 'aidlc:release-sha',
+        sourceSha: 'release-sha',
+        importerRevision: 2,
+        closureDigest: 'closure-digest',
+        catalogKey: 'catalog.json',
+        manifestKey: 'manifest.json',
+      };
+      const methodologyPins = {
+        AGENT: { 'aidlc-composer-agent': { tenantId: 'default', version: 7 } },
+      };
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      procStore.set(metaKey, {
+        ...procStore.get(metaKey),
+        methodologyRelease,
+        methodologyPins,
+      });
       const res = await composeReq(sub, projectId, intent.id, { instructions: 'be lean' });
       expect(res.statusCode).toBe(202);
       const compose = JSON.parse(res.body);
@@ -2527,6 +2544,8 @@ describe('POST /compose — composer sessions', () => {
         instructions: 'be lean',
         requestedCli: 'kiro',
         credentialBinding: { provider: 'kiro', source: 'platform' },
+        methodologyRelease,
+        methodologyPins,
       });
       expect(typeof payload.agentCredentialGrant).toBe('string');
       expect(payload.prompt).toContain('Do something ambiguous');
@@ -3419,6 +3438,58 @@ describe('GET list + detail', () => {
     expect(dto.intent.id).toBe(intent.id);
     expect(dto.stages).toEqual([]);
     expect(dto.artifacts).toEqual([]);
+  });
+
+  it('returns a minimal release-preview pin only to project members', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const methodologyRelease = {
+      releaseId: 'aidlc:release-sha',
+      sourceSha: 'release-sha',
+      importerRevision: 2,
+      closureDigest: 'closure-digest',
+      catalogKey: 'catalog.json',
+      manifestKey: 'manifest.json',
+    };
+    const methodologyPins = {
+      AGENT: { 'aidlc-architect-agent': { tenantId: 'default', version: 7 } },
+    };
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      methodologyRelease,
+      methodologyPins,
+    });
+
+    const detail = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      queryStringParameters: { view: 'workflow-preview' },
+      ...claims(sub),
+    });
+
+    expect(detail.statusCode).toBe(200);
+    expect(JSON.parse(detail.body)).toEqual({
+      workflowIntent: {
+        id: intent.id,
+        projectId,
+        workflowId: intent.workflowId,
+        workflowVersion: intent.workflowVersion,
+        methodologyRelease,
+        methodologyPins,
+      },
+    });
+
+    const denied = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      queryStringParameters: { view: 'workflow-preview' },
+      ...claims(`nonmember-${randomUUID()}`),
+    });
+    expect(denied.statusCode).toBe(403);
   });
 
   it('returns the full assembled DTO shape with cliModels/parkReleaseSeconds', async () => {
@@ -7154,6 +7225,25 @@ describe('AI-DLC release pinning', () => {
   const releaseSha = releaseBundle.manifest.sourceSha;
   const releaseStore = new Map();
 
+  const seedSelectableRelease = () => {
+    procStore.set(keyOf(`AIDLC_RELEASE#${releasePin.releaseId}`, 'META'), {
+      pk: `AIDLC_RELEASE#${releasePin.releaseId}`,
+      sk: 'META',
+      type: 'AidlcRelease',
+      ...releasePin,
+      profileId: RELEASE_PROFILE,
+      upstreamVersion: '2.3.3',
+      trustTier: 'T1',
+      supportState: 'selectable',
+      structurallyValid: true,
+      fidelityGaps: [],
+      visible: true,
+      runnable: true,
+      revision: 1,
+      GSI1PK: 'AIDLC_RELEASES',
+    });
+  };
+
   // The published release, plus only the release, is readable from S3.
   const installReleaseObjects = ({ withManifest = true, withCatalog = true } = {}) => {
     releaseStore.clear();
@@ -7239,6 +7329,7 @@ describe('AI-DLC release pinning', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     seedReleaseAttributedPlan();
+    seedSelectableRelease();
 
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
 
@@ -7410,7 +7501,7 @@ describe('AI-DLC per-intent release selection', () => {
   // The workflow the platform would resolve WITHOUT a selection: version 1 (so a
   // release selection resolves the catalog workflow rather than a user fork),
   // attributed to release A, and offering only a scope no release knows about.
-  const seedDeploymentWorkflowAtV1 = (scopeId = SCOPE_ONLY_IN_DEPLOYMENT) => {
+  const seedDeploymentWorkflowAtV1 = (scopeId = SCOPE_ONLY_IN_DEPLOYMENT, sourceSha = shaA) => {
     procStore.set(keyOf('WF#default#aidlc-v2', 'META'), {
       pk: 'WF#default#aidlc-v2',
       sk: 'META',
@@ -7419,7 +7510,7 @@ describe('AI-DLC per-intent release selection', () => {
     procStore.set(keyOf('WF#default#aidlc-v2', 'V#1#META'), {
       pk: 'WF#default#aidlc-v2',
       sk: 'V#1#META',
-      sourceRef: shaA,
+      sourceRef: sourceSha,
     });
     procStore.set(keyOf('WF#default#aidlc-v2', `V#1#SCOPEREF#${scopeId}`), {
       pk: 'WF#default#aidlc-v2',
@@ -7449,7 +7540,7 @@ describe('AI-DLC per-intent release selection', () => {
       consumes: [],
       sensors: [],
       humanValidation: 'none',
-      sourceRef: shaA,
+      sourceRef: sourceSha,
     });
   };
 
@@ -7465,6 +7556,7 @@ describe('AI-DLC per-intent release selection', () => {
       upstreamChannel: 'stable',
       trustTier: 'T1',
       supportState: 'selectable',
+      fidelityGaps: [],
       structurallyValid: true,
       visible: true,
       runnable: true,
@@ -7472,6 +7564,25 @@ describe('AI-DLC per-intent release selection', () => {
       revision: 1,
       GSI1PK: 'AIDLC_RELEASES',
       ...overrides,
+    });
+  };
+
+  const seedDefaultAgentOverride = (bundle, agentId = 'aidlc-architect-agent', version = 7) => {
+    const baseAgent = bundle.catalog.blocks.AGENT.find((block) => block.id === agentId);
+    const pk = `BLOCK#default#AGENT#${agentId}`;
+    const userAgent = {
+      ...baseAgent,
+      pk,
+      sk: `V#${version}`,
+      tenantId: 'default',
+      version,
+    };
+    procStore.set(keyOf(pk, `V#${version}`), userAgent);
+    procStore.set(keyOf(pk, 'V#latest'), {
+      ...userAgent,
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#default#AGENT',
+      GSI1SK: agentId,
     });
   };
 
@@ -7539,6 +7650,34 @@ describe('AI-DLC per-intent release selection', () => {
     expect(metaFor(intent.id)).toMatchObject({
       workflowVersion: 1,
       methodologyRelease: pinA,
+    });
+  });
+
+  it('snapshots a default-tenant agent override into a selected release intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    procStore.delete(keyOf('WF#default#aidlc-v2', 'V#4#SCOPEREF#feature'));
+    seedDeploymentWorkflowAtV1();
+    seedDefaultAgentOverride(bundleB);
+    seedRegistryRecord(bundleB, 'v2.9.0');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const meta = metaFor(JSON.parse(res.body).id);
+    expect(meta.methodologyRelease).toEqual(pinB);
+    expect(meta.methodologyPins.AGENT['aidlc-architect-agent']).toEqual({
+      tenantId: 'default',
+      version: 7,
+    });
+    expect(ddbMock.commandCalls(GetCommand).map((call) => call.args[0].input.Key)).toContainEqual({
+      pk: 'BLOCK#default#AGENT#aidlc-architect-agent',
+      sk: 'V#7',
     });
   });
 
@@ -7676,6 +7815,41 @@ describe('AI-DLC per-intent release selection', () => {
     expect(meta.methodologyRelease).toBeNull();
   });
 
+  it.each([
+    ['unregistered', null],
+    ['hidden', { visible: false }],
+    ['existing-only', { supportState: 'existing-only' }],
+    ['unpromoted 2.9.0', { supportState: 'structurally-valid' }],
+    [
+      'unhonoured capability',
+      {
+        supportState: 'selectable',
+        fidelityGaps: [{ blockType: 'STAGE', field: 'mode', value: 'agent-team' }],
+      },
+    ],
+  ])(
+    'does not auto-pin the deployment-ref release without eligibility: %s',
+    async (_label, registryOverrides) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1('feature', shaB);
+      if (registryOverrides) {
+        seedRegistryRecord(bundleB, 'v2.9.0', registryOverrides);
+      }
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+      });
+
+      expect(res.statusCode).toBe(201);
+      const meta = metaFor(JSON.parse(res.body).id);
+      expect(meta.aidlcRepoRef).toBe(shaB);
+      expect(meta.methodologyRelease ?? null).toBeNull();
+    },
+  );
+
   it('exposes methodologyRelease on the intent detail projection', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -7757,6 +7931,8 @@ describe('AI-DLC per-intent release selection', () => {
     // The deployment workflow offers `feature`, which release A also offers, so
     // the release-mode re-validation reproduces the plan and the pin is stamped.
     seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    seedDefaultAgentOverride(bundleA);
     const res = await createIntent(sub, projectId, {
       title: 'I',
       prompt: 'Build X',
@@ -7766,6 +7942,10 @@ describe('AI-DLC per-intent release selection', () => {
     expect(res.statusCode).toBe(201);
     const meta = metaFor(JSON.parse(res.body).id);
     expect(meta.methodologyRelease).toEqual(pinA);
+    expect(meta.methodologyPins.AGENT['aidlc-architect-agent']).toEqual({
+      tenantId: 'default',
+      version: 7,
+    });
     // Every closure block is (SYSTEM, V#1) — exactly the coordinates a reseed
     // rewrites — so none of them may be persisted as a pin.
     for (const pins of Object.values(meta.methodologyPins ?? {})) {
