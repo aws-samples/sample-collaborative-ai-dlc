@@ -1231,4 +1231,33 @@ describe('`?release=` selectability gate for non-admins', () => {
     expect(forbidden.status).toBe(404);
     expect(forbidden.body.code).toBe('release_not_found');
   });
+
+  it.each([
+    [
+      'a function error',
+      (mock) => mock.resolves({ FunctionError: 'Unhandled', Payload: Buffer.from('{}') }),
+    ],
+    ['an invoke rejection', (mock) => mock.rejects(new Error('throttled'))],
+    ['an unparseable payload', (mock) => mock.resolves({ Payload: Buffer.from('not json') })],
+    [
+      'an unparseable detail body',
+      (mock) =>
+        mock.resolves({ Payload: Buffer.from(JSON.stringify({ statusCode: 200, body: '{' })) }),
+    ],
+  ])('maps %s from the intent lookup to a dependency error', async (_label, arrange) => {
+    await promote(CANDIDATE_RELEASE_ID, 'existing-only');
+    arrange(lambdaMock.on(InvokeCommand));
+
+    const response = parse(
+      await compiledFor(
+        'aidlc-v2',
+        { release: CANDIDATE_RELEASE_ID, projectId: 'project-1', intentId: 'intent-1' },
+        memberClaims,
+      ),
+    );
+
+    expect(response.status).toBe(502);
+    expect(response.body.code).toBe('intent_lookup_failed');
+    expect(JSON.stringify(response.body)).not.toContain(CANDIDATE_RELEASE_ID);
+  });
 });
