@@ -14,7 +14,7 @@ import {
   toolArchitecture,
   toolVersionSnapshot,
 } from './tool-catalog.js';
-import { amd64CoreImageConfigured } from './compute.js';
+import { amd64CoreImageConfigured } from './compute-model.js';
 import { uploadBuildContext } from './build-lifecycle.js';
 import {
   actorFrom,
