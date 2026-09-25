@@ -211,7 +211,10 @@ describe('validation gate with findings', () => {
 
   it('offers override-and-approve INSTEAD of plain approve for an overridable block', async () => {
     stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] });
-    deps.store.getHumanTask = answeredGate({ decision: 'override-and-approve' });
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason: 'Accepted for this gate test.',
+    });
     await run();
     const gate = openedGate();
     // Plain `approve` is withheld: an approval that silently waived a
@@ -267,7 +270,10 @@ describe('validation gate with findings', () => {
 
   it('writes a receipt and an audit event for an override, then proceeds as approve', async () => {
     stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] });
-    deps.store.getHumanTask = answeredGate({ decision: 'override-and-approve' });
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason: 'Accepted for this gate test.',
+    });
 
     const res = await run();
     expect(res.ok).toBe(true);
@@ -322,12 +328,29 @@ describe('validation gate with findings', () => {
     expect(override.detail.reason).toBe(receipt.detail.reason);
   });
 
-  it('records a null reason rather than refusing an override that gave none', async () => {
-    stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] });
+  it('re-runs instead of approving a legacy override answer without a reason', async () => {
+    let attempt = 0;
+    stageVerdict = () => {
+      attempt += 1;
+      return attempt === 1
+        ? { ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] }
+        : { ok: true, state: 'SUCCEEDED' };
+    };
     deps.store.getHumanTask = answeredGate({ decision: 'override-and-approve', reason: '   ' });
+
     const res = await run();
     expect(res.ok).toBe(true);
-    expect(deps.store.putReceipt.mock.calls[0][0].detail.reason).toBeNull();
+    expect(invokes.filter((payload) => payload.command === 'run-stage-start')).toHaveLength(2);
+    expect(
+      deps.store.putReceipt.mock.calls.filter(
+        ([receipt]) => receipt.choice === 'override-and-approve' && receipt.attempt === 0,
+      ),
+    ).toHaveLength(0);
+    expect(eventTypes()).toContain('v2.stage.revision_requested');
+    expect(deps.store.createHumanTask.mock.calls[0][0].options).toEqual([
+      'request-changes',
+      'override-and-approve',
+    ]);
   });
 
   it('re-reads the receipts at the gate instead of trusting the stage result', async () => {
@@ -415,7 +438,10 @@ describe('validation gate with findings', () => {
         stages: [{ ...GATED_STAGE, policy: { ...POLICY, summaryConfirmation: 'required' } }],
       },
     }));
-    deps.store.getHumanTask = answeredGate({ decision: 'override-and-approve' });
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason: 'Accepted for this gate test.',
+    });
     stageVerdict = () => ({
       ok: true,
       state: 'SUCCEEDED',
@@ -445,7 +471,7 @@ describe('validation gate with findings', () => {
     expect(stageApproval).toMatchObject({
       choice: 'override-and-approve',
       detail: {
-        reason: null,
+        reason: 'Accepted for this gate test.',
         approvedInputs: [{ logicalKey: 'k1', snapshotHash: 'sha-1' }],
       },
     });
@@ -608,7 +634,10 @@ describe('validation gate with findings', () => {
 
   it('scopes the re-read to THIS stage instance and this attempt', async () => {
     stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] });
-    deps.store.getHumanTask = answeredGate({ decision: 'override-and-approve' });
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason: 'Accepted for this gate test.',
+    });
     deps.store.listEvents = vi.fn(async () => [
       { eventType: 'v2.question.asked', stageInstanceId: 'si-OTHER' },
     ]);
@@ -627,7 +656,10 @@ describe('operator logging at the gate', () => {
       plan: { stages: [{ ...GATED_STAGE, policy: POLICY }] },
     }));
     stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] });
-    deps.store.getHumanTask = answeredGate({ decision: 'override-and-approve' });
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason: 'Accepted for this gate test.',
+    });
     await run();
     const call = info.mock.calls.find(([message]) => message === 'gate opened with findings');
     expect(call?.[1]).toMatchObject({

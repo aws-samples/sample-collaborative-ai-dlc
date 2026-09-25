@@ -304,6 +304,15 @@ describe('IntentComposePage', () => {
       version: 7,
     });
     expect(authorizedGridCall?.[1]).toMatchObject({ projectId: 'p1', intentId: 'i1' });
+    expect(authorizedGridCall).toMatchObject([
+      'aidlc-v2',
+      {
+        release: 'aidlc:demoted',
+        releaseImporterRevision: 1,
+        projectId: 'p1',
+        intentId: 'i1',
+      },
+    ]);
     expect(executionPreview).not.toHaveBeenCalled();
     const summary = await screen.findByTestId('scope-summary');
     expect(summary.textContent).toContain('Customized scope');

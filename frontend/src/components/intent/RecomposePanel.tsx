@@ -74,17 +74,23 @@ export function RecomposePanel({
         workflowVersion,
         intent.methodologyRelease?.releaseId,
         intent.methodologyRelease?.importerRevision,
+        { projectId, intentId },
       )
       .then((c) => {
-        if (!cancelled) setCompiled(c);
+        if (!cancelled) {
+          setCompiled(c);
+          if (intent.methodologyRelease) setPhases(c.phases ?? []);
+        }
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load the workflow'));
-    workflowsService
-      .get(intent.workflowId, workflowVersion)
-      .then((wf) => {
-        if (!cancelled) setPhases(wf.phases ?? []);
-      })
-      .catch(() => {});
+    if (!intent.methodologyRelease) {
+      workflowsService
+        .get(intent.workflowId, workflowVersion)
+        .then((wf) => {
+          if (!cancelled) setPhases(wf.phases ?? []);
+        })
+        .catch(() => {});
+    }
     return () => {
       cancelled = true;
     };

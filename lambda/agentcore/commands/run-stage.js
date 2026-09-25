@@ -877,18 +877,23 @@ const changeControlChoice = (gate) => {
 // agent knows the divergence was accepted deliberately rather than missed.
 const renderChangedInputs = (changed, { reconfirmed = false } = {}) => {
   if (!changed.length) return '';
+  const artifactHistoryReadFailed = changed.some((item) => item.artifactHistoryReadFailed);
   const lines = changed.map((item) =>
-    item.approvalHistoryUnknown
-      ? `- ${item.artifactType ?? item.artifactId} has incomplete approval history (receipt size limit); current fingerprint ${item.toHash.slice(0, 12)}`
-      : `- ${item.artifactType ?? item.artifactId} changed since it was approved (${item.fromHash.slice(0, 12)} → ${item.toHash.slice(0, 12)})`,
+    item.artifactHistoryReadFailed
+      ? `- ${item.artifactType ?? item.artifactId}: current artifact history could not be read`
+      : item.approvalHistoryUnknown
+        ? `- ${item.artifactType ?? item.artifactId} has incomplete approval history (receipt size limit); current fingerprint ${item.toHash.slice(0, 12)}`
+        : `- ${item.artifactType ?? item.artifactId} changed since it was approved (${item.fromHash.slice(0, 12)} → ${item.toHash.slice(0, 12)})`,
   );
   return [
-    '## Inputs that changed since they were approved',
+    artifactHistoryReadFailed
+      ? '## Artifact history could not be read'
+      : '## Inputs that changed since they were approved',
     '',
     ...lines,
     '',
     reconfirmed
-      ? 'The human reconfirmed these changes and asked you to continue. Read the CURRENT content of each one — not a remembered version — and say in your output where the change affected your work.'
+      ? 'The human reconfirmed the current state of these inputs and asked you to continue. Read the CURRENT content of each one — not a remembered version — and say in your output where it affected your work.'
       : 'Read the CURRENT content of each one — not a remembered version — and say in your output where the change affected your work.',
   ].join('\n');
 };
@@ -2359,10 +2364,12 @@ export const runStage = async (
     const ccAttempt = Number(ccRow?.attempt ?? priorStageRow?.attempt ?? 0);
     let heads = [];
     let gCc = null;
+    let artifactHistoryReadFailed = false;
     try {
       gCc = await openGraph();
       heads = await readArtifactHeadHashes({ g: gCc, intentId });
     } catch {
+      artifactHistoryReadFailed = true;
       heads = [];
     } finally {
       await closeGraphSource(gCc);
@@ -2370,27 +2377,66 @@ export const runStage = async (
     const approvals = await (
       store.listReceipts?.(executionId, { kind: 'stage-approval' }) ?? Promise.resolve([])
     ).catch(() => []);
+    const requiredInputs = (stage.inputArtifacts ?? [])
+      .filter((input) => input?.required !== false && !input?.expectedAbsent)
+      .map((input) => input.artifact ?? input)
+      .filter(Boolean);
     changedInputs = changedApprovedInputs({
-      requiredInputs: (stage.inputArtifacts ?? [])
-        .filter((input) => input?.required !== false && !input?.expectedAbsent)
-        .map((input) => input.artifact ?? input)
-        .filter(Boolean),
+      requiredInputs,
       heads,
       approvals,
     });
+    if (artifactHistoryReadFailed) {
+      changedInputs = [...new Set(requiredInputs)].map((artifactType) => ({
+        artifactId: null,
+        artifactType,
+        logicalKey: null,
+        fromHash: null,
+        toHash: null,
+        approvedAt: null,
+        approvalHistoryUnknown: true,
+        artifactHistoryReadFailed: true,
+      }));
+    }
     if (changedInputs.length > 0) {
       changeControlFindings = changedInputs.map((changed) => ({
         code: 'change_control_input_changed',
         severity: 'advisory',
-        title: `Approved input ${changed.artifactType ?? changed.artifactId} changed since it was approved`,
+        title: changed.artifactHistoryReadFailed
+          ? `Artifact history for ${changed.artifactType} could not be read`
+          : `Approved input ${changed.artifactType ?? changed.artifactId} changed since it was approved`,
         detail: changed,
         overridable: false,
         receiptKind: null,
-        remediation: 'Confirm the stage still holds against the changed input.',
+        remediation: changed.artifactHistoryReadFailed
+          ? 'Confirm the stage against the current artifact state.'
+          : 'Confirm the stage still holds against the changed input.',
       }));
     }
     const approvalHistoryUnknown = changedInputs.some((changed) => changed.approvalHistoryUnknown);
     if (
+      changedInputs.length > 0 &&
+      stage.policy.changeControl === 'relaxed' &&
+      approvalHistoryUnknown
+    ) {
+      for (const changed of changedInputs) {
+        await store
+          .appendEvent({
+            executionId,
+            type: 'v2.change.accepted',
+            stageInstanceId,
+            unitSlug,
+            sectionIndex,
+            actor: 'agentcore',
+            summary: changed.artifactHistoryReadFailed
+              ? `Artifact history for ${changed.artifactType} could not be read; continuing under change_control: relaxed`
+              : `Approval history for ${changed.artifactType} is incomplete; continuing under change_control: relaxed`,
+            detail: changed,
+          })
+          .catch(() => {});
+      }
+      changeControlMessage = renderChangedInputs(changedInputs);
+    } else if (
       changedInputs.length > 0 &&
       stage.policy.changeControl === 'relaxed' &&
       !approvalHistoryUnknown
@@ -2536,17 +2582,23 @@ export const runStage = async (
                 kind: 'question',
                 questions: JSON.stringify([
                   {
-                    text: approvalHistoryUnknown
-                      ? `Approval history for ${changedInputs
+                    text: artifactHistoryReadFailed
+                      ? `Artifact history for ${changedInputs
                           .map((changed) => changed.artifactType ?? changed.artifactId)
                           .join(
                             ', ',
-                          )} is incomplete because the approval receipt exceeded its size limit. Reconfirm before ${stage.stageId} runs against the current artifacts?`
-                      : `${changedInputs
-                          .map((changed) => changed.artifactType ?? changed.artifactId)
-                          .join(
-                            ', ',
-                          )} changed since ${changedInputs.length === 1 ? 'it was' : 'they were'} approved. Reconfirm before ${stage.stageId} runs against ${changedInputs.length === 1 ? 'it' : 'them'}?`,
+                          )} could not be read. Reconfirm before ${stage.stageId} runs against the current artifacts?`
+                      : approvalHistoryUnknown
+                        ? `Approval history for ${changedInputs
+                            .map((changed) => changed.artifactType ?? changed.artifactId)
+                            .join(
+                              ', ',
+                            )} is incomplete because the approval receipt exceeded its size limit. Reconfirm before ${stage.stageId} runs against the current artifacts?`
+                        : `${changedInputs
+                            .map((changed) => changed.artifactType ?? changed.artifactId)
+                            .join(
+                              ', ',
+                            )} changed since ${changedInputs.length === 1 ? 'it was' : 'they were'} approved. Reconfirm before ${stage.stageId} runs against ${changedInputs.length === 1 ? 'it' : 'them'}?`,
                     type: 'single',
                     options: CHANGE_CONTROL_OPTIONS.map((label) => ({ label })),
                   },

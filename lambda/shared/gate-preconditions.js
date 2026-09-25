@@ -123,19 +123,29 @@ const summaryConfirmationRequired = (policy, events, attempt) => {
 // absence of evidence is non-compliance, not a pass.
 const lineageGaps = ({ events, artifacts, authorizationId, decidedAt }) =>
   artifacts.filter((artifact) => {
-    const stamps = (events ?? []).filter(
-      (event) =>
-        eventTypeOf(event) === 'v2.artifact.stamped' && event?.detail?.artifactType === artifact,
-    );
-    if (stamps.length === 0) return true;
-    const newestStamp = stamps
-      .toSorted((left, right) =>
-        String(left.timestamp ?? '').localeCompare(String(right.timestamp ?? '')),
-      )
-      .at(-1);
-    return (
-      newestStamp.detail?.authorizationId !== authorizationId ||
-      String(newestStamp.timestamp ?? '') <= String(decidedAt ?? '')
+    const newestByArtifact = new Map();
+    for (const event of events ?? []) {
+      if (
+        eventTypeOf(event) !== 'v2.artifact.stamped' ||
+        event?.detail?.artifactType !== artifact
+      ) {
+        continue;
+      }
+      const artifactId = event.detail?.artifactId;
+      const key = artifactId == null || artifactId === '' ? `type:${artifact}` : `id:${artifactId}`;
+      const previous = newestByArtifact.get(key);
+      if (
+        !previous ||
+        String(event.timestamp ?? '').localeCompare(String(previous.timestamp ?? '')) >= 0
+      ) {
+        newestByArtifact.set(key, event);
+      }
+    }
+    if (newestByArtifact.size === 0) return true;
+    return [...newestByArtifact.values()].some(
+      (stamp) =>
+        stamp.detail?.authorizationId !== authorizationId ||
+        String(stamp.timestamp ?? '') <= String(decidedAt ?? ''),
     );
   });
 

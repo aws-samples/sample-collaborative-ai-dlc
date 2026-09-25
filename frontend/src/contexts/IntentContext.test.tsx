@@ -152,6 +152,7 @@ describe('IntentContext', () => {
     get.mockResolvedValue(
       detail({
         workflowVersion: 7,
+        currentPhase: 'ideation',
         methodologyRelease: {
           releaseId: 'aidlc:release-a',
           sourceSha: 'a'.repeat(40),
@@ -160,6 +161,19 @@ describe('IntentContext', () => {
         },
       }),
     );
+    compiled.mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'ideation',
+          name: 'Pinned Ideation',
+          kind: 'phase',
+          path: 'release-02',
+          parentPath: null,
+          order: 1,
+        },
+      ],
+      graph: { nodes: [], edges: [] },
+    });
 
     renderProvider();
 
@@ -169,6 +183,8 @@ describe('IntentContext', () => {
         intentId: 'i1',
       }),
     );
+    await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('release-02'));
+    expect(workflowGet).not.toHaveBeenCalled();
   });
 
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {

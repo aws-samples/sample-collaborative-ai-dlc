@@ -1196,4 +1196,31 @@ describe('`?release=` selectability gate for non-admins', () => {
     expect(mismatched.status).toBe(404);
     expect(mismatched.body.code).toBe('release_not_found');
   });
+
+  it('maps intent lookup outages to a dependency error without exposing hidden pins', async () => {
+    await promote(CANDIDATE_RELEASE_ID, 'existing-only');
+    const query = {
+      release: CANDIDATE_RELEASE_ID,
+      projectId: 'project-1',
+      intentId: 'intent-1',
+    };
+    lambdaMock.on(InvokeCommand).resolves({
+      Payload: Buffer.from(JSON.stringify({ statusCode: 503, body: '{"error":"unavailable"}' })),
+    });
+
+    const unavailable = parse(await compiledFor('aidlc-v2', query, memberClaims));
+
+    expect(unavailable.status).toBe(502);
+    expect(unavailable.body.code).toBe('intent_lookup_failed');
+
+    lambdaMock.reset();
+    lambdaMock.on(InvokeCommand).resolves({
+      Payload: Buffer.from(JSON.stringify({ statusCode: 403, body: '{"error":"Forbidden"}' })),
+    });
+
+    const forbidden = parse(await compiledFor('aidlc-v2', query, memberClaims));
+
+    expect(forbidden.status).toBe(404);
+    expect(forbidden.body.code).toBe('release_not_found');
+  });
 });

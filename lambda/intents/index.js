@@ -132,6 +132,7 @@ const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
 const logger = new Logger({ persistentKeys: { component: 'intents' } });
+const GATE_OVERRIDE_REASON_MAX = 2000;
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
@@ -2647,6 +2648,36 @@ export const handler = async (event, context) => {
           error: 'status must be answered, approved, or rejected',
           code: 'invalid_gate_status',
         });
+      }
+      const overrideChoices = [
+        data.answer?.decision,
+        data.answer?.mode,
+        data.answer?.choice,
+        typeof data.answer === 'string' ? data.answer : null,
+        ...(Array.isArray(data.answer?.perQuestion)
+          ? data.answer.perQuestion.map((entry) => entry?.answer)
+          : []),
+      ];
+      if (
+        overrideChoices.some(
+          (choice) =>
+            typeof choice === 'string' && choice.trim().toLowerCase() === 'override-and-approve',
+        )
+      ) {
+        const reason = typeof data.answer.reason === 'string' ? data.answer.reason.trim() : '';
+        if (!reason) {
+          return response(400, {
+            error: 'A non-blank reason is required to override blocking findings',
+            code: 'override_reason_required',
+          });
+        }
+        if (reason.length > GATE_OVERRIDE_REASON_MAX) {
+          return response(400, {
+            error: `Override reason must be at most ${GATE_OVERRIDE_REASON_MAX} characters`,
+            code: 'override_reason_too_long',
+          });
+        }
+        data.answer = { ...data.answer, reason };
       }
       // A live Quorum edit is mutating this intent's artifacts; answering the
       // gate would resume the parked stage RIGHT INTO those writes. The run is
