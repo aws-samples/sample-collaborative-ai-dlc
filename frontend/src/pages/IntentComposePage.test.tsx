@@ -283,6 +283,11 @@ describe('IntentComposePage', () => {
       }),
     );
     renderPage();
+    await waitFor(() => expect(validateGrid).toHaveBeenCalled());
+    expect(validateGrid.mock.calls[0][1]).toMatchObject({
+      composedGrid: { a: 'EXECUTE', b: 'SKIP' },
+      scope: 'my-custom',
+    });
     await waitFor(() =>
       expect(
         validateGrid.mock.calls.some(
