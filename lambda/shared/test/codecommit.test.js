@@ -336,6 +336,90 @@ describe('codecommit provider: pull requests', () => {
     expect(create.input.clientRequestToken).toBeTruthy();
   });
 
+  describe('createPullRequest idempotency across a replaced pull request', () => {
+    // CodeCommit's documented token semantics: a reused token with the same
+    // parameters returns the ORIGINAL request's pull request; with different
+    // parameters it fails with IdempotencyParameterMismatchException.
+    const codecommitLike = () => {
+      const byToken = new Map();
+      const prs = new Map();
+      let next = 1;
+      const client = makeClient({
+        ListBranches: { branches: ['main', 'feature'] },
+        // Only open PRs are listed: a closed PR never satisfies "existing".
+        ListPullRequests: () => ({
+          pullRequestIds: [...prs.values()]
+            .filter((p) => p.pullRequestStatus === 'OPEN')
+            .map((p) => p.pullRequestId),
+        }),
+        GetPullRequest: ({ pullRequestId }) => ({ pullRequest: prs.get(pullRequestId) }),
+        GetMergeOptions: {
+          mergeOptions: ['THREE_WAY_MERGE'],
+          baseCommitId: 'b',
+          sourceCommitId: 'a',
+          destinationCommitId: 'b',
+        },
+        CreatePullRequest: ({ clientRequestToken, title, description }) => {
+          const params = JSON.stringify({ title, description });
+          const prior = byToken.get(clientRequestToken);
+          if (prior && prior.params !== params) {
+            return sdkError('IdempotencyParameterMismatchException');
+          }
+          if (prior) return { pullRequest: prs.get(prior.id) };
+          const created = pr({ id: String(next++) });
+          prs.set(created.pullRequestId, created);
+          byToken.set(clientRequestToken, { params, id: created.pullRequestId });
+          return { pullRequest: created };
+        },
+      });
+      const close = (id) => {
+        prs.get(id).pullRequestStatus = 'CLOSED';
+      };
+      return { client, close };
+    };
+    const create = (client, attemptKey, title = 'Ship it') =>
+      cc.createPullRequest({ client }, ARN, {
+        branch: 'feature',
+        baseBranch: 'main',
+        title,
+        body: 'desc',
+        attemptKey,
+      });
+
+    it('opens a new PR when replacing a closed one, with unchanged metadata', async () => {
+      const { client, close } = codecommitLike();
+      expect((await create(client, 'exec-1:initial')).prNumber).toBe('1');
+      close('1');
+      expect((await create(client, 'exec-1:1')).prNumber).toBe('2');
+    });
+
+    it('opens a new PR when replacing a closed one, with changed metadata', async () => {
+      const { client, close } = codecommitLike();
+      expect((await create(client, 'exec-1:initial')).prNumber).toBe('1');
+      close('1');
+      expect((await create(client, 'exec-1:1', 'Ship it, take two')).prNumber).toBe('2');
+    });
+
+    it('a retry of the same attempt never opens a second PR', async () => {
+      const { client } = codecommitLike();
+      const first = await create(client, 'exec-1:initial');
+      // The PR exists, so the retry finds it before any create.
+      const again = await create(client, 'exec-1:initial');
+      expect(again).toMatchObject({ existing: true, prNumber: first.prNumber });
+      expect(client.calls.filter((c) => c.name === 'CreatePullRequest')).toHaveLength(1);
+    });
+
+    it('reports a reused token with different parameters as a conflict', async () => {
+      const { client, close } = codecommitLike();
+      await create(client, 'same');
+      close('1');
+      await expect(create(client, 'same', 'different title')).rejects.toMatchObject({
+        status: 409,
+        extra: { exception: 'IdempotencyParameterMismatchException' },
+      });
+    });
+  });
+
   it('createPullRequest returns the existing open PR instead of a duplicate', async () => {
     const client = makeClient({
       ListBranches: { branches: ['main', 'feature'] },

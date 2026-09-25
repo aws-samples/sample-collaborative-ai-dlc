@@ -180,6 +180,11 @@ const mapError = (error, action) => {
   if (exception === 'ManualMergeRequiredException') return new ProviderError(409, message, extra);
   // A request the API rejects as malformed is the caller's bug, not an outage.
   if (exception === 'CommitIdRequiredException') return new ProviderError(400, message, extra);
+  // A reused creation token with different parameters: a caller bug, surfaced
+  // as a conflict instead of a generic provider failure.
+  if (exception === 'IdempotencyParameterMismatchException') {
+    return new ProviderError(409, message, extra);
+  }
   if (/FileTooLarge|FolderContentSizeLimitExceeded/.test(exception)) {
     return new ProviderError(413, message, extra);
   }
@@ -654,11 +659,20 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
 // PR creation
 // ---------------------------------------------------------------------------
 
-// Deterministic idempotency token: a retry of the same (repo, head, base)
-// create does not open a second pull request. CodeCommit caps the token at 64
-// characters.
-const clientRequestTokenFor = (arn, head, base) =>
-  `aidlc-${createHash('sha256').update(`${arn}\n${head}\n${base}`).digest('hex').slice(0, 40)}`;
+// Idempotency token for ONE logical creation attempt: (repo, head, base) plus
+// the caller's `attemptKey`. A retry of the same attempt reuses the token, so
+// it never opens a second pull request. Replacing a closed pull request is a
+// new attempt and must get a new token: CodeCommit returns the original PR for
+// a reused token with identical parameters, and rejects it with
+// IdempotencyParameterMismatchException when the title or body changed.
+// (A closed CodeCommit PR cannot be reopened, so replacement is the only
+// recovery.) CodeCommit caps the token at 64 characters.
+// https://docs.aws.amazon.com/codecommit/latest/APIReference/API_CreatePullRequest.html
+const clientRequestTokenFor = (arn, head, base, attemptKey = '') =>
+  `aidlc-${createHash('sha256')
+    .update(`${arn}\n${head}\n${base}\n${attemptKey}`)
+    .digest('hex')
+    .slice(0, 40)}`;
 
 const prSummary = (pr, { region, repositoryName }, extraFields = {}) => ({
   prUrl: pullRequestUrl({ region, repositoryName, pullRequestId: pr.pullRequestId }),
@@ -688,7 +702,7 @@ const draftFields = (pr) => {
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false },
+  { branch, baseBranch, title, body, draft = false, attemptKey = '' },
 ) => {
   const { arn, region, repositoryName } = parseRepo(repoId);
   const coordinates = { region, repositoryName };
@@ -751,7 +765,12 @@ const createPullRequest = async (
     new CreatePullRequestCommand({
       title,
       description: body,
-      clientRequestToken: clientRequestTokenFor(arn ?? repoId, branch, resolvedBase),
+      clientRequestToken: clientRequestTokenFor(
+        arn ?? repoId,
+        branch,
+        resolvedBase,
+        String(attemptKey ?? ''),
+      ),
       targets: [
         {
           repositoryName,

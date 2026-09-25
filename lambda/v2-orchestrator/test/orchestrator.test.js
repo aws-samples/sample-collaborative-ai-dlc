@@ -1640,6 +1640,48 @@ describe('PR per unit delivery', () => {
   const start = () =>
     __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
 
+  it('replaces a closed unit PR with a new creation attempt', async () => {
+    const calls = new Map();
+    configure({
+      statusFor: async ({ number }) => {
+        const call = (calls.get(number) ?? 0) + 1;
+        calls.set(number, call);
+        return {
+          providerId: `provider-${number}`,
+          number,
+          url: `https://example.test/pr/${number}`,
+          sourceBranch: 'aidlc/i1--s1-unit-auth',
+          targetBranch: 'aidlc/i1',
+          headSha: `head-${number}`,
+          targetSha: 'intent-before',
+          // PR 5 was closed and cannot reopen (CodeCommit); the replacement
+          // follows the normal draft -> merged lifecycle.
+          state: number === 5 ? 'closed' : call >= 3 ? 'merged' : 'open',
+          draft: number !== 5 && call < 3,
+          mergeable: true,
+        };
+      },
+    });
+    unitPrRows.set('owner/repo', {
+      executionId: 'i1',
+      sectionIndex: 1,
+      unitSlug: 'auth',
+      repository: 'owner/repo',
+      provider: 'github',
+      number: 5,
+      sourceBranch: 'aidlc/i1--s1-unit-auth',
+      targetBranch: 'aidlc/i1',
+      state: 'CLOSED',
+    });
+
+    const result = await start();
+    expect(result.ok).toBe(true);
+    expect(deps.unitPrProvider.createDraft).toHaveBeenCalledOnce();
+    // The key names the PR being replaced, so the provider cannot hand back
+    // the closed PR for a reused idempotency token.
+    expect(deps.unitPrProvider.createDraft.mock.calls[0][0].attemptKey).toBe('i1:1:auth:5');
+  });
+
   it('opens a draft, releases lane compute, reconciles, promotes, and verifies integration', async () => {
     const calls = new Map();
     configure({
@@ -1667,6 +1709,8 @@ describe('PR per unit delivery', () => {
     expect(deps.unitPrProvider.createDraft.mock.calls[0][0].body).toContain(
       '[AI-DLC](https://aidlc.example.test/space/p1/intent/i1) unit review for auth',
     );
+    // First creation attempt for this unit: no PR being replaced.
+    expect(deps.unitPrProvider.createDraft.mock.calls[0][0].attemptKey).toBe('i1:1:auth:initial');
     expect(deps.unitPrProvider.setDraft).toHaveBeenCalledWith(
       expect.objectContaining({ number: 7, draft: false }),
     );
@@ -2523,6 +2567,8 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
       branch: 'aidlc/i1',
       baseBranch: 'main',
       title: 'Bookstore API',
+      // One creation attempt per execution.
+      attemptKey: 'i1',
     });
     expect(deps.openPr.mock.calls[0][0].body).toContain(
       'created by [AI-DLC](https://aidlc.example.test/space/p1/intent/i1)',

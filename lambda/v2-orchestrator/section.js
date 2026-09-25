@@ -606,6 +606,10 @@ export const runParallelSection = async (segment, toolkit) => {
               baseBranch: intentBranch,
               title,
               body,
+              // One creation attempt per replaced PR: a replay of this step
+              // reuses the key (the row still names the PR being replaced);
+              // replacing the replacement later yields a new one.
+              attemptKey: `${executionId}:${segment.index}:${slug}:${existing?.number ?? 'initial'}`,
             });
             if (created?.failed || created?.conflict || created?.skipped) {
               throw new Error(
