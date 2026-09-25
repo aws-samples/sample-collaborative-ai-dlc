@@ -64,7 +64,6 @@ const codecommitInitialFor = (
   if (!bound) return undefined;
   return {
     roleArn: bound.roleArn ?? undefined,
-    externalId: bound.externalId ?? undefined,
     region: bound.region ?? undefined,
   };
 };
@@ -236,10 +235,7 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
         authType,
         ...(authType.endsWith('-oauth') ? { confirmDelegation: true } : {}),
         ...(authType === 'codecommit-role' && codecommit
-          ? {
-              roleArn: codecommit.connection.roleArn,
-              externalId: codecommit.connection.externalId,
-            }
+          ? { roleArn: codecommit.connection.roleArn }
           : {}),
       };
     }

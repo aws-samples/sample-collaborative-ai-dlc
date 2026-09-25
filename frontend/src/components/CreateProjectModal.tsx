@@ -217,10 +217,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
             authType: sourceControlAuthType,
             ...(sourceControlAuthType.endsWith('-oauth') ? { confirmDelegation: true } : {}),
             ...(sourceControlAuthType === 'codecommit-role' && codecommit
-              ? {
-                  roleArn: codecommit.connection.roleArn,
-                  externalId: codecommit.connection.externalId,
-                }
+              ? { roleArn: codecommit.connection.roleArn }
               : {}),
           },
         });

@@ -14,12 +14,8 @@ import {
   oauthCredentialRef,
   roleCredentialRef,
 } from './source-control-bindings.js';
-import {
-  assumeCodeCommitRole,
-  isCodeCommitExternalId,
-  isCodeCommitRoleArn,
-  roleAccountId,
-} from './codecommit-role.js';
+import { assumeCodeCommitRole, isCodeCommitRoleArn, roleAccountId } from './codecommit-role.js';
+import { resolveCodeCommitExternalId } from './codecommit-connection.js';
 import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
 import { signCodeCommitGitCredential } from './git-providers/codecommit-credential.js';
 
@@ -172,7 +168,14 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
 const DEFAULT_COMMITTER_NAME = 'Collaborative AI-DLC';
 const defaultCommitterEmail = (accountId) => `aidlc-bot@${accountId || 'codecommit'}.invalid`;
 
-const verifyCodeCommitRoleBinding = async ({ sts, repo, selection = {} }) => {
+const verifyCodeCommitRoleBinding = async ({
+  ddb,
+  sts,
+  repo,
+  userId,
+  selection = {},
+  projectBindings = [],
+}) => {
   if (!sts) {
     throw Object.assign(new Error('STS client is required for CodeCommit role verification'), {
       code: 'STS_UNAVAILABLE',
@@ -184,12 +187,16 @@ const verifyCodeCommitRoleBinding = async ({ sts, repo, selection = {} }) => {
       code: 'ROLE_ARN_REQUIRED',
     });
   }
-  const externalId = String(selection.externalId || '').trim();
-  if (!isCodeCommitExternalId(externalId)) {
-    throw Object.assign(new Error('The CodeCommit connection external ID is required'), {
-      code: 'EXTERNAL_ID_REQUIRED',
-    });
-  }
+  // Resolved server-side: the external id this project already uses for the
+  // role, else the caller's own connection. A selection naming any other
+  // external id is refused here, before STS sees it.
+  const externalId = await resolveCodeCommitExternalId({
+    ddb,
+    userId,
+    roleArn,
+    requested: selection.externalId,
+    projectBindings,
+  });
   const target = parseCodeCommitRepo(repo);
   if (!target.arn) {
     throw Object.assign(new Error('CodeCommit repositories must be bound by ARN'), {
@@ -256,6 +263,7 @@ const verifyBindingCredential = async ({
   confirmDelegation = false,
   actorName = null,
   selection = {},
+  projectBindings = [],
 }) => {
   if (authType === 'github-app') {
     if (provider !== 'github') throw new Error('GitHub App auth is only valid for GitHub');
@@ -264,7 +272,7 @@ const verifyBindingCredential = async ({
   if (authType === 'codecommit-role') {
     if (provider !== 'codecommit')
       throw new Error('CodeCommit role auth is only valid for CodeCommit');
-    return verifyCodeCommitRoleBinding({ sts, repo, selection });
+    return verifyCodeCommitRoleBinding({ ddb, sts, repo, userId, selection, projectBindings });
   }
   if (authType !== `${provider}-oauth`) {
     throw new Error(`Invalid auth type ${authType} for ${provider}`);

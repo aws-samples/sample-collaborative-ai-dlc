@@ -311,10 +311,10 @@ describe('CreateProjectModal', () => {
       }),
     );
     expect(sourceControlService.bind).toHaveBeenCalledWith('p1', {
+      // The external id is never sent: the backend resolves the caller's own.
       codecommit: {
         authType: 'codecommit-role',
         roleArn: 'arn:aws:iam::123456789012:role/aidlc-access',
-        externalId: 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
       },
     });
     expect(onCreated).toHaveBeenCalled();

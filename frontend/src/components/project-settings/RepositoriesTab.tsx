@@ -87,8 +87,8 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
   const [codecommitReposError, setCodecommitReposError] = useState<string | null>(null);
   useEffect(() => {
     if (!showAddRepo || repoSource !== 'codecommit-role') return;
-    const { roleArn, externalId, region } = boundRepository ?? {};
-    if (!roleArn || !externalId || !region) {
+    const { roleArn, region } = boundRepository ?? {};
+    if (!roleArn || !region) {
       setCodecommitReposError('The CodeCommit binding is incomplete; rebind it below.');
       return;
     }
@@ -96,7 +96,7 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
     setCodecommitRepos(undefined);
     setCodecommitReposError(null);
     codecommitService
-      .listRepos({ roleArn, externalId, region })
+      .listRepos({ roleArn, region })
       .then((list) => {
         if (!cancelled) setCodecommitRepos(list.repositories);
       })
@@ -108,13 +108,7 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
     };
     // boundRepository fields are the only inputs that matter for the fetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    showAddRepo,
-    repoSource,
-    boundRepository?.roleArn,
-    boundRepository?.externalId,
-    boundRepository?.region,
-  ]);
+  }, [showAddRepo, repoSource, boundRepository?.roleArn, boundRepository?.region]);
 
   const handleAddRepos = async () => {
     if (selectedNewRepos.length === 0) return;

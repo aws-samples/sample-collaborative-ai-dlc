@@ -18,15 +18,17 @@ import {
 
 // The CodeCommit handshake, in the place a Connect button sits for OAuth
 // providers. Three steps on one card:
-//   1. the platform mints an external id and renders the exact trust policy;
+//   1. the platform returns the caller's external id (minted once per user)
+//      and renders the exact trust policy;
 //   2. the user creates (or updates) an IAM role in the repository account with
 //      that trust policy and a permissions policy on their repositories;
 //   3. "Test connection" assumes the role with a discover-only session policy
 //      and lists the repositories it can see — that result is what the caller
 //      uses to let the user pick repositories.
 //
-// `initial` re-renders the card for an existing binding (project settings):
-// the external id is reused so the tenant's trust policy stays valid.
+// `initial` pre-fills the card for an existing binding (project settings). The
+// external id is the caller's own and stable, so the rendered trust policy is
+// the one they already pasted.
 
 export interface CodeCommitConnectResult {
   connection: CodeCommitRoleConnection;
@@ -69,7 +71,7 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
   useEffect(() => {
     let cancelled = false;
     codecommitService
-      .connectInfo(initial?.externalId)
+      .connectInfo()
       .then((data) => {
         if (!cancelled) setInfo(data);
       })
@@ -79,7 +81,7 @@ export function CodeCommitConnectForm({ initial, onVerified, onInvalidated, comp
     return () => {
       cancelled = true;
     };
-  }, [initial?.externalId]);
+  }, []);
 
   const policyJson = useMemo(() => (info ? JSON.stringify(info.trustPolicy, null, 2) : ''), [info]);
 

@@ -535,6 +535,7 @@ export const handler = async (event, context) => {
             authType: selection.authType,
             userId,
             selection,
+            projectBindings: existing,
             confirmDelegation:
               selection.confirmDelegation === true || data.confirmDelegation === true,
             actorName:

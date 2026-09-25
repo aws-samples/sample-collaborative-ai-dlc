@@ -8,11 +8,13 @@
 // effective permission is the intersection of the tenant role's policy and the
 // session policy, so a generous tenant role is still clamped per call.
 //
-// The external ID is minted per connection and recorded on the binding. This is
-// the standard confused-deputy guard: a repository owner's trust policy admits
-// only the external ID they were shown while connecting, and the platform only
-// ever presents the external ID stored on the binding it is serving, so a third
-// party cannot bind that role ARN from their own project.
+// The external ID is minted once per user (codecommit-connection.js) and copied
+// onto each binding at verification. This is the standard confused-deputy guard:
+// a repository owner's trust policy admits only the external ID they were shown
+// while connecting, the platform resolves that ID from the caller's own
+// connection (never from a request), and at runtime presents only the one
+// stored on the binding it is serving, so a third party cannot list or bind
+// that role ARN from their own project.
 import { randomUUID } from 'node:crypto';
 import { AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
@@ -21,11 +23,11 @@ const SESSION_DURATION_SECONDS = 900; // STS minimum; ample for one git op or AP
 const ROLE_ARN = /^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;
 
 // External ID handed to the tenant for their role trust policy. Minted once per
-// connection (not derived from the project: the trust policy must exist before
-// the project does, since repository discovery already needs the role) and
-// stored on the binding like a GitHub App installation id. The confused-deputy
-// guarantee is that the platform only ever presents the external id recorded
-// on the binding it is serving, never one supplied at request time.
+// user (not derived from the project: the trust policy must exist before the
+// project does, since repository discovery already needs the role) and stored
+// on the binding like a GitHub App installation id. The confused-deputy
+// guarantee is that the platform only ever presents an external id it resolved
+// itself, never one supplied at request time.
 const EXTERNAL_ID_PREFIX = 'aidlc:';
 const EXTERNAL_ID = /^aidlc:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

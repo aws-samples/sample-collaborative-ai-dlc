@@ -1859,6 +1859,13 @@ resource "aws_iam_role_policy" "codecommit_connector" {
           StringLike = { "sts:ExternalId" = "aidlc:*" }
         }
       },
+      {
+        # The caller's CodeCommit connection (platform-issued external ID),
+        # get-or-create only.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+        Resource = [var.git_provider_connections_table_arn]
+      },
     ]
   })
 }
@@ -1910,6 +1917,7 @@ module "codecommit_lambda" {
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
     CODECOMMIT_PLATFORM_PRINCIPALS = local.codecommit_platform_principals
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }

@@ -21,6 +21,35 @@ const event = (httpMethod, path, { body, query, authed = true } = {}) => ({
 
 const parse = (res) => ({ status: res.statusCode, body: JSON.parse(res.body) });
 
+// Composite-key connections table stand-in (userId + providerInstance), with
+// the conditional put the get-or-create relies on.
+const fakeDdb = (rows = []) => {
+  const items = new Map(rows.map((row) => [`${row.userId}|${row.providerInstance}`, row]));
+  const id = (k) => `${k.userId}|${k.providerInstance}`;
+  return {
+    items,
+    async send(command) {
+      const { input } = command;
+      if (command.constructor.name === 'GetCommand') return { Item: items.get(id(input.Key)) };
+      if (command.constructor.name === 'PutCommand') {
+        if (input.ConditionExpression && items.has(id(input.Item))) {
+          throw Object.assign(new Error('exists'), { name: 'ConditionalCheckFailedException' });
+        }
+        items.set(id(input.Item), input.Item);
+        return {};
+      }
+      throw new Error(`unexpected ${command.constructor.name}`);
+    },
+  };
+};
+
+const connection = (userId, externalId) => ({
+  userId,
+  providerInstance: 'codecommit#public',
+  provider: 'codecommit',
+  externalId,
+});
+
 const stsOk = () => ({
   calls: [],
   async send(command) {
@@ -43,6 +72,7 @@ describe('codecommit handler', () => {
     env = { ...process.env };
     process.env.CODECOMMIT_PLATFORM_PRINCIPALS = PRINCIPALS.join(',');
     process.env.CORS_ALLOWED_ORIGINS = 'http://localhost:5173';
+    process.env.GIT_PROVIDER_CONNECTIONS_TABLE = 'git-provider-connections-test';
   });
   afterEach(() => {
     process.env = env;
@@ -66,8 +96,9 @@ describe('codecommit handler', () => {
     expect(parse(await handler(event('GET', '/codecommit/status'))).body.configured).toBe(false);
   });
 
-  it('connect-info mints an external id and renders the trust policy for it', async () => {
-    const handler = createCodeCommitHandler({ stsClient: stsOk(), provider: {} });
+  it('connect-info mints the caller external id once and renders the trust policy for it', async () => {
+    const ddb = fakeDdb();
+    const handler = createCodeCommitHandler({ stsClient: stsOk(), ddbClient: ddb, provider: {} });
     const res = parse(await handler(event('GET', '/codecommit/connect-info')));
     expect(res.status).toBe(200);
     expect(res.body.externalId).toMatch(/^aidlc:[0-9a-f-]{36}$/);
@@ -75,23 +106,25 @@ describe('codecommit handler', () => {
     const [statement] = res.body.trustPolicy.Statement;
     expect(statement.Principal.AWS).toEqual(PRINCIPALS);
     expect(statement.Condition.StringEquals['sts:ExternalId']).toBe(res.body.externalId);
-    // Two calls never share an id.
+    // Persisted against its owner: the same user always gets the same id.
+    expect(ddb.items.get('user-1|codecommit#public')?.externalId).toBe(res.body.externalId);
     const again = parse(await handler(event('GET', '/codecommit/connect-info')));
-    expect(again.body.externalId).not.toBe(res.body.externalId);
+    expect(again.body.externalId).toBe(res.body.externalId);
   });
 
-  it('connect-info re-renders for an existing external id and rejects a malformed one', async () => {
-    const handler = createCodeCommitHandler({ stsClient: stsOk(), provider: {} });
+  it('connect-info never renders a request-supplied external id', async () => {
+    const handler = createCodeCommitHandler({
+      stsClient: stsOk(),
+      ddbClient: fakeDdb(),
+      provider: {},
+    });
     const res = parse(
       await handler(
         event('GET', '/codecommit/connect-info', { query: { externalId: EXTERNAL_ID } }),
       ),
     );
-    expect(res.body.externalId).toBe(EXTERNAL_ID);
-    const bad = parse(
-      await handler(event('GET', '/codecommit/connect-info', { query: { externalId: 'aidlc:x' } })),
-    );
-    expect(bad).toMatchObject({ status: 400, body: { code: 'EXTERNAL_ID_INVALID' } });
+    expect(res.status).toBe(200);
+    expect(res.body.externalId).not.toBe(EXTERNAL_ID);
   });
 
   it('connect-info is 503 when the deployment has no platform principals', async () => {
@@ -110,12 +143,14 @@ describe('codecommit handler', () => {
         return [{ name: 'svc', fullName: 'arn:aws:codecommit:eu-west-1:123456789012:svc' }];
       },
     };
-    const handler = createCodeCommitHandler({ stsClient: sts, provider });
+    const handler = createCodeCommitHandler({
+      stsClient: sts,
+      ddbClient: fakeDdb([connection('user-1', EXTERNAL_ID)]),
+      provider,
+    });
     const res = parse(
       await handler(
-        event('POST', '/codecommit/repos', {
-          body: { roleArn: ROLE, externalId: EXTERNAL_ID, region: 'eu-west-1' },
-        }),
+        event('POST', '/codecommit/repos', { body: { roleArn: ROLE, region: 'eu-west-1' } }),
       ),
     );
     expect(res.status).toBe(200);
@@ -131,11 +166,14 @@ describe('codecommit handler', () => {
 
   it('repos validates its body before touching STS', async () => {
     const sts = stsOk();
-    const handler = createCodeCommitHandler({ stsClient: sts, provider: {} });
+    const handler = createCodeCommitHandler({
+      stsClient: sts,
+      ddbClient: fakeDdb([connection('user-1', EXTERNAL_ID)]),
+      provider: {},
+    });
     const cases = [
-      [{ roleArn: 'nope', externalId: EXTERNAL_ID, region: 'eu-west-1' }, 'ROLE_ARN_INVALID'],
-      [{ roleArn: ROLE, externalId: 'aidlc:x', region: 'eu-west-1' }, 'EXTERNAL_ID_INVALID'],
-      [{ roleArn: ROLE, externalId: EXTERNAL_ID, region: 'Europe' }, 'REGION_INVALID'],
+      [{ roleArn: 'nope', region: 'eu-west-1' }, 'ROLE_ARN_INVALID'],
+      [{ roleArn: ROLE, region: 'Europe' }, 'REGION_INVALID'],
     ];
     for (const [body, code] of cases) {
       const res = parse(await handler(event('POST', '/codecommit/repos', { body })));
@@ -147,18 +185,49 @@ describe('codecommit handler', () => {
     expect(sts.calls).toHaveLength(0);
   });
 
+  it('repos refuses another user external id before STS is called', async () => {
+    // user-2 learned user-1's role ARN and external ID.
+    const OTHER = 'aidlc:7c9e6679-7425-40de-944b-e07fc1f90ae7';
+    const asOther = (body) => ({
+      ...event('POST', '/codecommit/repos', { body }),
+      requestContext: { authorizer: { claims: { sub: 'user-2' } } },
+    });
+    for (const [rows, status, code] of [
+      [[connection('user-1', EXTERNAL_ID)], 409, 'CONNECTION_REQUIRED'],
+      [
+        [connection('user-1', EXTERNAL_ID), connection('user-2', OTHER)],
+        403,
+        'EXTERNAL_ID_NOT_OWNED',
+      ],
+    ]) {
+      const sts = stsOk();
+      const handler = createCodeCommitHandler({
+        stsClient: sts,
+        ddbClient: fakeDdb(rows),
+        provider: { listRepos: async () => [] },
+      });
+      const res = parse(
+        await handler(asOther({ roleArn: ROLE, externalId: EXTERNAL_ID, region: 'eu-west-1' })),
+      );
+      expect(res).toMatchObject({ status, body: { code } });
+      expect(sts.calls).toHaveLength(0);
+    }
+  });
+
   it('repos surfaces a refused trust policy as 424 with the stable code', async () => {
     const sts = {
       async send() {
         throw Object.assign(new Error('not authorized'), { name: 'AccessDenied' });
       },
     };
-    const handler = createCodeCommitHandler({ stsClient: sts, provider: {} });
+    const handler = createCodeCommitHandler({
+      stsClient: sts,
+      ddbClient: fakeDdb([connection('user-1', EXTERNAL_ID)]),
+      provider: {},
+    });
     const res = parse(
       await handler(
-        event('POST', '/codecommit/repos', {
-          body: { roleArn: ROLE, externalId: EXTERNAL_ID, region: 'eu-west-1' },
-        }),
+        event('POST', '/codecommit/repos', { body: { roleArn: ROLE, region: 'eu-west-1' } }),
       ),
     );
     expect(res.status).toBe(424);
