@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runOneShotPrompt, parseClaudeOneShot, extractJsonObject } from '../cli/one-shot.js';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Fake child factory for captureChild: emits the given stdout/stderr then closes.
 // `stdin.end` records the piped prompt so tests can assert it goes on stdin (not
@@ -17,6 +21,48 @@ const fakeChild = ({ exitCode = 0, stdout = '', stderr = '' } = {}) => {
   });
   return child;
 };
+
+const makeProcessTreeFixture = async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agentcore-process-tree-'));
+  const fixturePath = join(directory, 'fixture.mjs');
+  const readyPath = join(directory, 'ready');
+  const sentinelPath = join(directory, 'sentinel');
+  const delayedWrite = `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 1800);`;
+  await writeFile(
+    fixturePath,
+    [
+      "import { spawn } from 'node:child_process';",
+      "import { writeFileSync } from 'node:fs';",
+      'const [mode, sentinelPath, readyPath] = process.argv.slice(2);',
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(delayedWrite)}, sentinelPath], {`,
+      "  stdio: 'ignore',",
+      '});',
+      'child.unref();',
+      "writeFileSync(readyPath, 'ready');",
+      "if (mode === 'hang') setInterval(() => {}, 1000);",
+    ].join('\n'),
+  );
+  return { directory, fixturePath, readyPath, sentinelPath };
+};
+
+const waitForFile = async (path, timeoutMs = 1500) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error(`fixture did not create ${path}`);
+};
+
+const fileExists = async (path) =>
+  access(path).then(
+    () => true,
+    () => false,
+  );
 
 describe('parseClaudeOneShot', () => {
   it('extracts the result text and token usage from stream-json lines', () => {
@@ -336,6 +382,55 @@ describe('runOneShotPrompt', () => {
     });
     expect(out).toMatchObject({ ok: false, reason: 'timeout', exitCode: null, metrics: null });
     expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it('kills a timed-out CLI process group before its grandchild can write', async () => {
+    const fixture = await makeProcessTreeFixture();
+    try {
+      const result = runOneShotPrompt({
+        prompt: 'p',
+        availableClis: ['claude'],
+        timeoutMs: 1000,
+        spawnFn: (_command, _args, options) =>
+          spawn(
+            process.execPath,
+            [fixture.fixturePath, 'hang', fixture.sentinelPath, fixture.readyPath],
+            options,
+          ),
+      });
+      await waitForFile(fixture.readyPath);
+
+      await expect(result).resolves.toMatchObject({ ok: false, reason: 'timeout' });
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      expect(await fileExists(fixture.sentinelPath)).toBe(false);
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans up a CLI process group when the CLI exits normally', async () => {
+    const fixture = await makeProcessTreeFixture();
+    try {
+      const resultPromise = runOneShotPrompt({
+        prompt: 'p',
+        availableClis: ['claude'],
+        timeoutMs: 5000,
+        spawnFn: (_command, _args, options) =>
+          spawn(
+            process.execPath,
+            [fixture.fixturePath, 'exit', fixture.sentinelPath, fixture.readyPath],
+            options,
+          ),
+      });
+
+      await waitForFile(fixture.readyPath);
+      const result = await resultPromise;
+      expect(result.reason).toBe('empty_answer');
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      expect(await fileExists(fixture.sentinelPath)).toBe(false);
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
   });
 
   it('a fast answer never trips the watchdog', async () => {
