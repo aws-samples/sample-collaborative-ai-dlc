@@ -475,6 +475,8 @@ describe('orchestrator durable handler', () => {
   });
 
   it('request-changes validation feedback re-runs the stage through resumeFrom', async () => {
+    const step = vi.fn(async (_name, fn) => fn());
+    ctx.step = step;
     deps.loadPlan.mockResolvedValue({
       valid: true,
       plan: {
@@ -514,6 +516,7 @@ describe('orchestrator durable handler', () => {
     expect(starts).toHaveLength(2);
     expect(starts[0].resumeFrom).toBeNull();
     expect(starts[1].resumeFrom).toBe('eg-validation-si-a-0');
+    expect(step).toHaveBeenCalledWith('stage-validation-revision-a-1', expect.any(Function));
   });
 
   it('forwards the project cliModels to run-stage-start', async () => {
@@ -543,6 +546,40 @@ describe('orchestrator durable handler', () => {
         aidlcRepoRef: 'a'.repeat(40),
         methodologyPins,
       });
+    }
+  });
+
+  it('forwards the pinned AI-DLC release to the plan load and every stage dispatch', async () => {
+    const methodologyRelease = {
+      releaseId: 'aidlc:abc',
+      sourceSha: 'a'.repeat(40),
+      importerRevision: 1,
+      closureDigest: 'd'.repeat(64),
+      catalogKey: `aidlc-releases/v1/${'a'.repeat(40)}/i1/catalog.json`,
+      manifestKey: `aidlc-releases/v1/${'a'.repeat(40)}/i1/manifest.json`,
+    };
+    deps.store.getExecution = vi.fn(async () => ({ ...META, methodologyRelease }));
+
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+    expect(deps.loadPlan).toHaveBeenCalledWith(expect.objectContaining({ methodologyRelease }));
+    const starts = stageStarts();
+    expect(starts.length).toBeGreaterThan(0);
+    for (const start of starts) {
+      expect(start.methodologyRelease).toEqual(methodologyRelease);
+    }
+  });
+
+  it('omits methodologyRelease entirely for an unpinned intent', async () => {
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+    for (const call of deps.loadPlan.mock.calls) {
+      expect(call[0]).not.toHaveProperty('methodologyRelease');
+    }
+    const starts = stageStarts();
+    expect(starts.length).toBeGreaterThan(0);
+    for (const start of starts) {
+      expect(start).not.toHaveProperty('methodologyRelease');
     }
   });
 
@@ -1624,6 +1661,55 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
       'cb-stage-cb-fd-s1-u-auth',
       'cb-stage-cb-fd-s1-u-auth-resume-h9',
     ]);
+  });
+
+  it('resumes a lane gate while META remains RUNNING without applying the WAITING CAS', async () => {
+    let runId = null;
+    const cas = Object.assign(new Error('META is not WAITING'), {
+      name: 'ConditionalCheckFailedException',
+    });
+    deps.store.updateExecution = vi.fn(async (input) => {
+      if (input.orchestratorRunId) runId = input.orchestratorRunId;
+      if (input.fromStatus === 'WAITING') throw cas;
+      return input.orchestratorRunId ? { orchestratorRunId: input.orchestratorRunId } : {};
+    });
+    deps.store.getExecution = vi.fn(async (_executionId, options) =>
+      options?.consistentRead
+        ? META
+        : {
+            ...META,
+            status: 'RUNNING',
+            pendingHumanTaskId: null,
+            orchestratorRunId: runId,
+          },
+    );
+    deps.store.getHumanTask = vi.fn(async () => ({ status: 'answered' }));
+    let parked = false;
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+      if (payload.stageId === 'fd' && payload.unitSlug === 'auth' && !parked) {
+        parked = true;
+        return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h-lane', unitSlug: 'auth' };
+      }
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+
+    const res = await start();
+
+    expect(res.ok).toBe(true);
+    const fdAuth = stageStarts().filter(
+      (payload) => payload.stageId === 'fd' && payload.unitSlug === 'auth',
+    );
+    expect(fdAuth.map((payload) => payload.resumeFrom)).toEqual([null, 'h-lane']);
+    expect(
+      deps.store.updateExecution.mock.calls.some(([input]) => input.fromStatus === 'WAITING'),
+    ).toBe(false);
+    expect(
+      deps.store.updateExecution.mock.calls.some(
+        ([input]) => input.status === 'RUNNING' && input.pendingHumanTaskId === null,
+      ),
+    ).toBe(false);
   });
 
   it('rewind past a section verifies every unit instance (SUCCEEDED or SKIPPED)', async () => {

@@ -2693,6 +2693,15 @@ export const handler = async (event, context) => {
       if (gate.callbackId) {
         try {
           await resumeDurableCallback(gate.callbackId, answered.answer);
+          await (
+            store.markGateCallbackConsumed?.({
+              executionId: intentId,
+              humanTaskId,
+              callbackId: gate.callbackId,
+            }) ?? Promise.resolve()
+          ).catch((markErr) =>
+            logger.error('Gate callback consumption marker write failed', markErr),
+          );
         } catch (err) {
           if (isCallbackTimeoutError(err)) {
             await repairExpiredDurableExecution({
@@ -2760,14 +2769,21 @@ export const handler = async (event, context) => {
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
-      const pending = meta.resumeRequired ?? null;
+      const marker = meta.resumeRequired ?? null;
+      const resumeGateId = marker?.humanTaskId ?? meta.pendingHumanTaskId ?? null;
+      const gate = resumeGateId ? await store.getHumanTask(intentId, resumeGateId) : null;
+      const pending = marker?.callbackId
+        ? marker
+        : meta.status === 'WAITING' &&
+            isHumanTaskAnswerStatus(gate?.status) &&
+            gate.callbackId &&
+            !gate.callbackConsumedAt
+          ? { humanTaskId: resumeGateId, callbackId: gate.callbackId }
+          : null;
       if (!pending?.callbackId) {
         return response(200, { intent: mapIntent(meta), resumed: false });
       }
       const responder = getResponder(event);
-      const gate = pending.humanTaskId
-        ? await store.getHumanTask(intentId, pending.humanTaskId)
-        : null;
       try {
         await resumeDurableCallback(pending.callbackId, gate?.answer ?? null);
       } catch (err) {
@@ -2800,6 +2816,13 @@ export const handler = async (event, context) => {
           retryable: true,
         });
       }
+      await (
+        store.markGateCallbackConsumed?.({
+          executionId: intentId,
+          humanTaskId: pending.humanTaskId,
+          callbackId: pending.callbackId,
+        }) ?? Promise.resolve()
+      ).catch((markErr) => logger.error('Gate callback consumption marker write failed', markErr));
       const updated = await store.updateExecution({
         executionId: intentId,
         resumeRequired: null,
@@ -5987,6 +6010,8 @@ const mapHumanTask = (h) => ({
   sectionIndex: h.sectionIndex ?? null,
   kind: h.kind,
   status: h.status,
+  resumeAvailable:
+    isHumanTaskAnswerStatus(h.status) && Boolean(h.callbackId) && !h.callbackConsumedAt,
   prompt: h.prompt ?? null,
   options: h.options ?? null,
   skipTargets: h.skipTargets ?? null,

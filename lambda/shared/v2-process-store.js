@@ -1393,11 +1393,15 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // Every receipt for an execution, narrowed in memory. `attempt` is the
   // invalidation filter: passing the STAGE# row's current attempt is what makes
   // a prior attempt's receipts invisible after a rewind.
-  const listReceipts = async (executionId, { kind, stageInstanceId, attempt } = {}) => {
+  const listReceipts = async (
+    executionId,
+    { kind, stageInstanceId, attempt, consistentRead = false } = {},
+  ) => {
     const rows = await queryAll(ddb, {
       TableName: table(),
       KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
       ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'RECEIPT#' },
+      ...(consistentRead ? { ConsistentRead: true } : {}),
     });
     return rows
       .filter((r) => kind == null || r.kind === kind)
@@ -1662,11 +1666,12 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // fan-in reads this to decide whether repo work happened during the run
   // (v2.git.pushed / v2.git.push_failed) before trusting a "no changes"
   // comparison. Paginated — a dropped page could hide a push failure.
-  const listEvents = async (executionId) => {
+  const listEvents = async (executionId, { consistentRead = false } = {}) => {
     const items = await queryAll(ddb, {
       TableName: table(),
       KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
       ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'EVENT#' },
+      ...(consistentRead ? { ConsistentRead: true } : {}),
     });
     return items.toSorted(bySk);
   };

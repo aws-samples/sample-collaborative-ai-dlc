@@ -302,6 +302,8 @@ export interface IntentGate {
   kind: 'approval' | 'question' | 'review-verdict' | 'validation';
   // `superseded` = the gate was retired unanswered by a cancel/rewind.
   status: 'pending' | 'answered' | 'approved' | 'rejected' | 'superseded';
+  // True while the answered gate's bound durable callback still needs delivery.
+  resumeAvailable?: boolean;
   prompt: string | null;
   options: unknown;
   // Valid "skip to stage X" targets on a validation gate (stage ids the human

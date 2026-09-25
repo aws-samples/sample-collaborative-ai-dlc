@@ -605,6 +605,14 @@ describe('createProcessStore', () => {
     expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
   });
 
+  it('listEvents requests a consistent read when requested', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+
+    await store.listEvents('e1', { consistentRead: true });
+
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.ConsistentRead).toBe(true);
+  });
+
   it('getExecutionRecords groups rows by SK prefix', async () => {
     ddb.on(QueryCommand).resolves({
       Items: [

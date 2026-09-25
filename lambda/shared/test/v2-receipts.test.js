@@ -167,6 +167,11 @@ describe('listReceipts', () => {
     });
   });
 
+  it('can query receipts consistently for a gate decision', async () => {
+    await store().listReceipts('e1', { stageInstanceId: 'si-1', attempt: 2, consistentRead: true });
+    expect(ddbMock.commandCalls(QueryCommand)[0].args[0].input.ConsistentRead).toBe(true);
+  });
+
   it('makes a PRIOR attempt invisible — the rewind invalidation, for free', async () => {
     const current = await store().listReceipts('e1', { stageInstanceId: 'si-1', attempt: 2 });
     expect(current.map((r) => r.sk)).toEqual([
@@ -187,6 +192,17 @@ describe('listReceipts', () => {
     expect(
       (await store().listReceipts('e1', { stageInstanceId: 'si-2' })).map((r) => r.sk),
     ).toEqual(['RECEIPT#summary-confirmation#si-2#2#-']);
+  });
+});
+
+describe('consistent stage reads', () => {
+  it('requests a strongly consistent stage snapshot', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { attempt: 2 } });
+    await store().getStage('e1', 'si-1', { consistentRead: true });
+    expect(ddbMock.commandCalls(GetCommand)[0].args[0].input).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'STAGE#si-1' },
+      ConsistentRead: true,
+    });
   });
 });
 

@@ -13,6 +13,7 @@ const stage = (id, extra = {}) => ({
   phase: extra.phase ?? 'inception',
   mode: extra.mode ?? 'inline',
   leadAgent: extra.leadAgent ?? 'agent-x',
+  supportAgents: extra.supportAgents ?? [],
   produces: extra.produces ?? [],
   optionalProduces: extra.optionalProduces ?? [],
   producesKinds: extra.producesKinds ?? null,

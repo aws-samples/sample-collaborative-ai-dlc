@@ -94,6 +94,7 @@ let attachmentUpdateConflict = null;
 let transactWriteBarrier = null;
 let sourceControlOperationHandler = null;
 let credentialMetadataHandler = null;
+let failResumeMarkerWrites = 0;
 
 const MANAGED_ENVIRONMENT_SNAPSHOT = {
   environmentId: 'polyglot',
@@ -118,6 +119,7 @@ const installDdbFakes = () => {
   procStore.clear();
   yjsStore.clear();
   transactWriteBarrier = null;
+  failResumeMarkerWrites = 0;
   ddbMock.on(GetCommand).callsFake((input) => {
     const key =
       input.Key.pk !== undefined
@@ -222,6 +224,14 @@ const installDdbFakes = () => {
     return { Items: items.map((i) => ({ ...i })) };
   });
   ddbMock.on(UpdateCommand).callsFake((input) => {
+    if (
+      failResumeMarkerWrites > 0 &&
+      input.Key.sk === 'META' &&
+      input.UpdateExpression?.includes('resumeRequired')
+    ) {
+      failResumeMarkerWrites -= 1;
+      throw new Error('resume marker write failed');
+    }
     const k = keyOf(input.Key.pk, input.Key.sk);
     const existing = procStore.get(k);
     const values = input.ExpressionAttributeValues || {};
@@ -236,6 +246,12 @@ const installDdbFakes = () => {
       casFail();
     }
     if (cond.includes('#status = :pending') && (!existing || existing.status !== 'pending')) {
+      casFail();
+    }
+    if (cond.includes('callbackId = :cb') && (!existing || existing.callbackId !== values[':cb'])) {
+      casFail();
+    }
+    if (cond.includes('attribute_not_exists(callbackConsumedAt)') && existing?.callbackConsumedAt) {
       casFail();
     }
     if (cond.includes('#status <> :pending') && (!existing || existing.status === 'pending')) {
@@ -7241,7 +7257,7 @@ describe('AI-DLC release pinning', () => {
 
     const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
     expect(meta.aidlcRepoRef).toBe(releaseSha);
-    expect(meta.methodologyRelease ?? null).toBeNull();
+    expect(meta.methodologyRelease).toBeNull();
     expect(getObjectKeys()).not.toContain(releasePin.manifestKey);
   });
 
@@ -7257,7 +7273,7 @@ describe('AI-DLC release pinning', () => {
     expect(res.statusCode).toBe(201);
     const intent = JSON.parse(res.body);
     const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
-    expect(meta.methodologyRelease ?? null).toBeNull();
+    expect(meta.methodologyRelease).toBeNull();
     expect(getObjectKeys()).toContain(releasePin.manifestKey);
   });
 
@@ -7560,7 +7576,7 @@ describe('AI-DLC per-intent release selection', () => {
     // The auto-pin candidate is release A, whose closure does not offer this
     // scope. Stamping it anyway would 201 here and then fail every run with a
     // permanent plan_invalid, so the intent stays on the legacy DynamoDB path.
-    expect(meta.methodologyRelease ?? null).toBeNull();
+    expect(meta.methodologyRelease).toBeNull();
     expect(meta.scope).toBe(SCOPE_ONLY_IN_DEPLOYMENT);
   });
 
@@ -7655,9 +7671,9 @@ describe('AI-DLC per-intent release selection', () => {
     const meta = metaFor(JSON.parse(res.body).id);
     // Derived from the resolved deployment ref when no release is selected.
     expect(meta.aidlcRepoRef).toBe(shaA);
-    // A1: release A does not offer this deployment-only scope, so the auto-pin is
+    // The baseline release does not offer this deployment-only scope, so the auto-pin is
     // abandoned rather than stamped onto an intent that could never run it.
-    expect(meta.methodologyRelease ?? null).toBeNull();
+    expect(meta.methodologyRelease).toBeNull();
   });
 
   it('exposes methodologyRelease on the intent detail projection', async () => {
@@ -7690,7 +7706,7 @@ describe('AI-DLC per-intent release selection', () => {
     });
   });
 
-  // ── Review round 1, findings A1/A2/A10 ──
+  // ── Attachment metadata and version handling ──
 
   it.each([
     ['a number', 7],
@@ -7750,7 +7766,7 @@ describe('AI-DLC per-intent release selection', () => {
     expect(res.statusCode).toBe(201);
     const meta = metaFor(JSON.parse(res.body).id);
     expect(meta.methodologyRelease).toEqual(pinA);
-    // A2: every closure block is (SYSTEM, V#1) — exactly the coordinates a reseed
+    // Every closure block is (SYSTEM, V#1) — exactly the coordinates a reseed
     // rewrites — so none of them may be persisted as a pin.
     for (const pins of Object.values(meta.methodologyPins ?? {})) {
       for (const pin of Object.values(pins ?? {})) {
@@ -7795,7 +7811,7 @@ describe('AI-DLC per-intent release selection', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toBeNull();
   });
 
   it('never auto-pins while the flag is off', async () => {
@@ -7811,7 +7827,7 @@ describe('AI-DLC per-intent release selection', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toBeNull();
   });
 
   it('degrades to unpinned when the stable channel names a demoted release', async () => {
@@ -7821,7 +7837,7 @@ describe('AI-DLC per-intent release selection', () => {
     seedRegistryRecord(bundleB, 'v2.9.0', { supportState: 'existing-only' });
     seedStableChannel(pinB.releaseId);
 
-    // A3: a stranded stable pointer must not block intent creation platform-wide.
+    // A stranded stable pointer must not block intent creation platform-wide.
     const res = await createIntent(sub, projectId, {
       title: 'I',
       prompt: 'Build X',
@@ -7829,7 +7845,7 @@ describe('AI-DLC per-intent release selection', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toBeNull();
   });
 
   // Closure upgrade (issue #482): the registry record moves from the i1 closure
@@ -7896,5 +7912,225 @@ describe('AI-DLC per-intent release selection', () => {
     // The existing intent's persisted pin is untouched by the registry move.
     expect(metaFor(existingId).methodologyRelease).toEqual(legacyPinB);
     expect(legacyPinB.importerRevision).toBe(1);
+  });
+});
+
+// Anti-stuck recovery. The gate answer is already
+// durable when `resumeDurableCallback` fails, so the only thing missing is the
+// record that the run STILL NEEDS RESUMING — without it the intent sits WAITING
+// with no pending gate and nothing able to wake it. Each case below must end in
+// a running run or a recoverable FAILED, never an indefinite wait.
+describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () => {
+  const resume = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/resume`,
+      pathParameters: { projectId, intentId },
+      body: null,
+      ...claims(sub),
+    });
+
+  const parkedOnGate = async (sub, projectId) => {
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+      orchestratorRunId: 'run-old',
+    });
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    return { intent, metaKey };
+  };
+
+  it('records resumeRequired on a non-timeout resume failure and recovers on resume', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+
+    const answered = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(answered.statusCode).toBe(503);
+    // The answer is durable and so is the need to resume.
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'WAITING',
+      resumeRequired: { humanTaskId: 'h1', callbackId: 'cb-h1' },
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).status).toBe('answered');
+
+    const res = await resume(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    expect(procStore.get(metaKey).resumeRequired).toBeNull();
+    // The recorded answer is re-sent verbatim — the human is not asked again.
+    const sent = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).at(-1);
+    expect(sent.args[0].input.CallbackId).toBe('cb-h1');
+    expect(JSON.parse(Buffer.from(sent.args[0].input.Result).toString())).toEqual({
+      answer: { ok: 1 },
+    });
+    expect(
+      [...procStore.values()].some(
+        (row) => row.type === 'Event' && row.eventType === 'v2.gate.resumed',
+      ),
+    ).toBe(true);
+  });
+
+  it('recovers from an answered gate when the resume marker write fails', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    failResumeMarkerWrites = 1;
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+
+    const answered = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(answered.statusCode).toBe(503);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1'))).toMatchObject({
+      status: 'answered',
+      callbackId: 'cb-h1',
+    });
+    expect(procStore.get(metaKey).resumeRequired).toBeNull();
+
+    const resumed = await resume(sub, projectId, intent.id);
+    expect(resumed.statusCode).toBe(200);
+    expect(JSON.parse(resumed.body)).toMatchObject({ resumed: true });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(2);
+  });
+
+  it.each(['approved', 'rejected'])(
+    'recovers markerless validation gates with %s status',
+    async (status) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const { intent } = await parkedOnGate(sub, projectId);
+      const gateKey = keyOf(`EXEC#${intent.id}`, 'HUMAN#h1');
+      procStore.set(gateKey, {
+        ...procStore.get(gateKey),
+        status,
+        answer: { decision: status === 'approved' ? 'approve' : 'request-changes' },
+      });
+
+      const resumed = await resume(sub, projectId, intent.id);
+
+      expect(resumed.statusCode).toBe(200);
+      expect(JSON.parse(resumed.body)).toMatchObject({ resumed: true });
+      expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+    },
+  );
+
+  it.each(['approved', 'rejected'])(
+    'marks an unconsumed %s gate as resumeAvailable',
+    async (status) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const { intent } = await parkedOnGate(sub, projectId);
+
+      const answered = await answerGate(sub, projectId, intent.id, 'h1', {
+        status,
+        answer: { decision: status === 'approved' ? 'approve' : 'request-changes' },
+      });
+
+      expect(answered.statusCode).toBe(200);
+      expect(JSON.parse(answered.body)).toMatchObject({ status, resumeAvailable: true });
+    },
+  );
+
+  it('surfaces resumeRequired on the intent DTO so the UI can offer the action', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    await answerGate(sub, projectId, intent.id, 'h1');
+
+    const detail = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(detail.body).intent.resumeRequired).toMatchObject({
+      humanTaskId: 'h1',
+      callbackId: 'cb-h1',
+    });
+    expect(procStore.get(metaKey).resumeRequired).not.toBeNull();
+  });
+
+  it('is idempotent: nothing to resume is a 200, and a second resume is harmless', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent } = await parkedOnGate(sub, projectId);
+
+    const first = await resume(sub, projectId, intent.id);
+    expect(first.statusCode).toBe(200);
+    expect(JSON.parse(first.body)).toMatchObject({ resumed: false });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    await answerGate(sub, projectId, intent.id, 'h1');
+    expect((await resume(sub, projectId, intent.id)).statusCode).toBe(200);
+    const second = await resume(sub, projectId, intent.id);
+    expect(second.statusCode).toBe(200);
+    expect(JSON.parse(second.body)).toMatchObject({ resumed: false });
+  });
+
+  it('fails the intent (rewind-recoverable) when the callback has expired', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    // Attempt 1 fails transiently (setting the marker); by the time the human
+    // clicks Resume the durable execution has aged out entirely.
+    let attempt = 0;
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).callsFake(() => {
+      attempt += 1;
+      throw attempt === 1
+        ? Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' })
+        : Object.assign(new Error('callback timed out'), { name: 'CallbackTimeoutException' });
+    });
+    await answerGate(sub, projectId, intent.id, 'h1');
+
+    const res = await resume(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'durable_execution_expired' });
+    // FAILED is the documented, rewindable state — never an indefinite WAITING.
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'FAILED',
+      failureReason: 'durable_callback_expired',
+      pendingHumanTaskId: null,
+    });
+    // The marker is cleared: a button that can no longer work is not offered.
+    expect(procStore.get(metaKey).resumeRequired).toBeNull();
+  });
+
+  it('returns 503 and keeps the marker when the retry itself fails transiently', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).callsFake(() => {
+      throw Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' });
+    });
+    await answerGate(sub, projectId, intent.id, 'h1');
+
+    const res = await resume(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'durable_callback_resume_failed',
+      retryable: true,
+    });
+    expect(procStore.get(metaKey).resumeRequired).toMatchObject({ callbackId: 'cb-h1' });
+  });
+
+  it('404s an intent from another project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const other = await seedV2Project(sub);
+    const { intent } = await parkedOnGate(sub, projectId);
+    expect((await resume(sub, other, intent.id)).statusCode).toBe(404);
   });
 });
