@@ -1,9 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
 
 import { shouldDefaultOpen } from './AppShell';
+
+const shellTestState = vi.hoisted(() => ({
+  panelsInline: true,
+  onAgentFocus: null as null | (() => void),
+}));
 
 // ---------------------------------------------------------------------------
 // Unit tests for shouldDefaultOpen (pure function — no mocking needed)
@@ -82,7 +87,7 @@ vi.mock('@/components/layout/ActivityPanel', () => ({
 vi.mock('@/components/layout/IntentActivityPanel', () => ({
   IntentActivityPanel: ({ onClose }: { onClose: () => void }) => (
     <div data-testid="intent-activity-panel">
-      <button data-testid="close-panel" onClick={onClose}>
+      <button data-testid="close-panel" aria-label="Close activity panel" onClick={onClose}>
         close
       </button>
     </div>
@@ -96,13 +101,22 @@ vi.mock('@/components/discussion', () => ({
   DiscussionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock('@/contexts/IntentContext', () => ({
-  IntentProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  IntentProvider: ({
+    children,
+    onAgentFocus,
+  }: {
+    children: React.ReactNode;
+    onAgentFocus?: () => void;
+  }) => {
+    shellTestState.onAgentFocus = onAgentFocus ?? null;
+    return <>{children}</>;
+  },
 }));
 vi.mock('@/hooks/useProjectsCache', () => ({
   useProjectSprintsCache: () => ({ sprints: [] }),
 }));
 vi.mock('@/hooks/useMediaQuery', () => ({
-  useMediaQuery: () => true,
+  useMediaQuery: () => shellTestState.panelsInline,
 }));
 vi.mock('@/hooks/useResizablePanel', () => ({
   useResizablePanel: () => ({
@@ -120,7 +134,14 @@ function renderAtRoute(path: string) {
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route element={<AppShell />}>
-          <Route path="/space/:projectId/intent/:intentId" element={<div>work</div>} />
+          <Route
+            path="/space/:projectId/intent/:intentId"
+            element={
+              <button data-testid="open-preview" onClick={() => shellTestState.onAgentFocus?.()}>
+                preview
+              </button>
+            }
+          />
           <Route
             path="/space/:projectId/intent/:intentId/review/:humanTaskId"
             element={<div>review</div>}
@@ -142,10 +163,12 @@ function renderAtRoute(path: string) {
 }
 
 beforeEach(() => {
+  shellTestState.panelsInline = true;
+  shellTestState.onAgentFocus = null;
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(min-width: 1024px)',
+      matches: query === '(min-width: 1024px)' && shellTestState.panelsInline,
       media: query,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -193,5 +216,25 @@ describe('AppShell panel default behavior', () => {
 
     await user.click(screen.getByTestId('toggle-activity'));
     expect(screen.getByTestId('panel-state').textContent).toBe('closed');
+  });
+
+  it('moves focus into a narrow activity overlay and restores its invoking control', async () => {
+    shellTestState.panelsInline = false;
+    const user = userEvent.setup();
+    renderAtRoute('/space/p1/intent/i1');
+
+    expect(await screen.findByTestId('intent-activity-panel')).toBeInTheDocument();
+    await user.click(screen.getByTestId('toggle-activity'));
+    expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
+
+    const preview = screen.getByTestId('open-preview');
+    await user.click(preview);
+
+    const close = await screen.findByRole('button', { name: 'Close activity panel' });
+    await waitFor(() => expect(close).toHaveFocus());
+
+    await user.click(close);
+    expect(screen.queryByTestId('intent-activity-panel')).not.toBeInTheDocument();
+    await waitFor(() => expect(preview).toHaveFocus());
   });
 });

@@ -2,6 +2,8 @@
 // Replaces deprecated lucide-react brand icons (GitHub, Gitlab).
 // Source: https://simpleicons.org
 
+import type { GitProvider } from '@/services/gitProvider';
+
 export const GitHubIcon = ({ className }: { className?: string }) => (
   <svg
     role="img"
@@ -63,3 +65,21 @@ export const CodeCommitIcon = ({ className }: { className?: string }) => (
     <path d="M18 11.2c0 3.2-3.5 4.3-7.5 4.6-2.3.2-3.7.5-4.5 1.4" />
   </svg>
 );
+
+const PROVIDER_ICON: Record<GitProvider, typeof GitHubIcon> = {
+  github: GitHubIcon,
+  gitlab: GitLabIcon,
+  bitbucket: BitbucketIcon,
+  codecommit: CodeCommitIcon,
+};
+
+export const GitProviderIcon = ({
+  provider,
+  className,
+}: {
+  provider: string | null | undefined;
+  className?: string;
+}) => {
+  const Icon = provider ? PROVIDER_ICON[provider as GitProvider] : null;
+  return Icon ? <Icon className={className} /> : null;
+};

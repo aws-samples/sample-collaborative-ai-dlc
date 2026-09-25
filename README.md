@@ -37,9 +37,9 @@ Collaborative AI-DLC is where a team of humans collaborates in real time with mu
 
 <p align="center">
   <a href="https://aws-samples.github.io/sample-collaborative-ai-dlc/overview-video/">
-    <img src="docs/assets/readme/collaborative-ai-dlc-overview-poster.png" alt="Scenes from the Collaborative AI-DLC overview: intent creation, collaboration, pull request delivery, and the traceability graph" width="800" />
+    <img src="docs/assets/readme/collaborative-ai-dlc-overview-poster.png" alt="Play the Collaborative AI-DLC overview: one live workspace for a team and its coding agents" width="800" />
   </a>
-  <br /><strong>See humans and remote coding agents build together in under five minutes.</strong>
+  <br /><strong>See humans and remote coding agents build together in under three minutes.</strong>
   <br /><sub>Click the preview to watch the full overview on the documentation site.</sub>
 </p>
 

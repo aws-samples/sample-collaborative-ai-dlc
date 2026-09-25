@@ -17,10 +17,18 @@ export interface ProjectActivity {
   attention: number;
 }
 
+export type ProjectIntentSummary = Pick<
+  Intent,
+  'id' | 'title' | 'status' | 'createdAt' | 'updatedAt'
+>;
+
 export interface ProjectWithSprint {
   project: Project;
   latestSprint: Sprint | null;
   latestIntent: Intent | null;
+  // Sidebar-safe summaries for all v2 Intents. Avoid persisting full prompts
+  // and runtime snapshots in sessionStorage; consumers sort these timestamps.
+  intents: ProjectIntentSummary[];
   // Max updatedAt/completedAt/createdAt across ALL of the project's intents
   // (latestIntent alone can be a stale WAITING intent — see pickIntent).
   lastIntentActivityAt: string | null;
@@ -32,6 +40,11 @@ interface CacheEntry<T> {
   data: T;
   fetchedAt: number;
 }
+
+type PersistedProjectWithSprint = Omit<ProjectWithSprint, 'intents'> & {
+  // Older session-cache entries predate the multi-Intent sidebar.
+  intents?: ProjectIntentSummary[];
+};
 
 let projectsCache: CacheEntry<ProjectWithSprint[]> | null = null;
 let projectsFetching = false;
@@ -132,6 +145,23 @@ export function deriveActivity(intents: Intent[]): ProjectActivity {
 
 const NO_ACTIVITY: ProjectActivity = { inProgress: 0, attention: 0 };
 
+function intentSummary(intent: Intent): ProjectIntentSummary {
+  return {
+    id: intent.id,
+    title: intent.title,
+    status: intent.status,
+    createdAt: intent.createdAt,
+    updatedAt: intent.updatedAt,
+  };
+}
+
+function normalizePersistedProject(project: PersistedProjectWithSprint): ProjectWithSprint {
+  return {
+    ...project,
+    intents: project.intents ?? (project.latestIntent ? [intentSummary(project.latestIntent)] : []),
+  };
+}
+
 async function fetchProjects(): Promise<ProjectWithSprint[]> {
   const projs = await projectsService.list();
   const results = await Promise.allSettled(
@@ -143,6 +173,7 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
             project,
             latestSprint: null,
             latestIntent: pickIntent(intents),
+            intents: intents.map(intentSummary),
             lastIntentActivityAt: maxIntentActivity(intents),
             activity: deriveActivity(intents),
           };
@@ -151,6 +182,7 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
             project,
             latestSprint: null,
             latestIntent: null,
+            intents: [],
             lastIntentActivityAt: null,
             activity: NO_ACTIVITY,
           };
@@ -162,6 +194,7 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
           project,
           latestSprint: latestOf(cached.data),
           latestIntent: null,
+          intents: [],
           lastIntentActivityAt: null,
           activity: NO_ACTIVITY,
         };
@@ -174,6 +207,7 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
           project,
           latestSprint: latestOf(sprints),
           latestIntent: null,
+          intents: [],
           lastIntentActivityAt: null,
           activity: NO_ACTIVITY,
         };
@@ -182,6 +216,7 @@ async function fetchProjects(): Promise<ProjectWithSprint[]> {
           project,
           latestSprint: cached ? latestOf(cached.data) : null,
           latestIntent: null,
+          intents: [],
           lastIntentActivityAt: null,
           activity: NO_ACTIVITY,
         };
@@ -199,9 +234,18 @@ let projectsQueuedRefetch: Promise<void> | null = null;
 function revalidateProjects(force = false): Promise<void> {
   if (!projectsHydrated) {
     projectsHydrated = true;
-    const persisted = loadPersisted<ProjectWithSprint[]>('projects');
+    const persisted = loadPersisted<PersistedProjectWithSprint[]>('projects');
     if (persisted && !projectsCache) {
-      projectsCache = persisted;
+      const needsIntentListRefresh = persisted.data.some(
+        (project) => project.project.kind === 'v2' && !Array.isArray(project.intents),
+      );
+      projectsCache = {
+        ...persisted,
+        data: persisted.data.map(normalizePersistedProject),
+        // The legacy fallback keeps rendering stable while a background fetch
+        // fills the complete list required by the multi-Intent sidebar.
+        fetchedAt: needsIntentListRefresh ? 0 : persisted.fetchedAt,
+      };
       // A fresh persisted entry skips the fetch below, so hydration must emit.
       notifyProjectListeners();
     }

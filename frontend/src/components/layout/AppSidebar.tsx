@@ -22,7 +22,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useIntentOptional } from '@/contexts/IntentContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
-import { useProjectsCache, projectLastActivityAt } from '@/hooks/useProjectsCache';
+import {
+  useProjectsCache,
+  projectLastActivityAt,
+  type ProjectIntentSummary,
+} from '@/hooks/useProjectsCache';
 import {
   useProjectSort,
   projectComparator,
@@ -65,6 +69,7 @@ const FILTER_EMPTY: Record<IterationFilter, string> = {
 };
 
 const STORAGE_KEY = 'aidlc-sidebar-iterations-filter';
+const MAX_INTENTS_PER_PROJECT = 5;
 
 const VALID_FILTERS: ReadonlySet<IterationFilter> = new Set(['attention', 'active', 'in-progress']);
 
@@ -84,6 +89,13 @@ function matchesFilter(status: EffectiveSprintStatus, filter: IterationFilter): 
     case 'in-progress':
       return status !== 'passed' && status !== 'idle';
   }
+}
+
+function intentActivityTime(intent: ProjectIntentSummary): number {
+  const timestamp = intent.updatedAt ?? intent.createdAt;
+  if (!timestamp) return 0;
+  const parsed = new Date(timestamp).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -152,13 +164,21 @@ export function AppSidebar() {
     localStorage.setItem(STORAGE_KEY, filter);
   };
 
-  const runningCount = projects.filter(({ project, latestSprint, latestIntent }) => {
-    const status =
-      project.kind === 'v2'
-        ? effectiveIntentStatus(latestIntent)
-        : effectiveSprintStatus(latestSprint);
-    return status === 'running' || status === 'waiting';
-  }).length;
+  const matchingCount = projects.reduce(
+    (count, { project, latestSprint, latestIntent, intents }) => {
+      if (project.kind === 'v2') {
+        const projectIntents = intents ?? (latestIntent ? [latestIntent] : []);
+        return (
+          count +
+          projectIntents.filter((intent) =>
+            matchesFilter(effectiveIntentStatus(intent), iterationFilter),
+          ).length
+        );
+      }
+      return count + (matchesFilter(effectiveSprintStatus(latestSprint), iterationFilter) ? 1 : 0);
+    },
+    0,
+  );
 
   const isOnDashboard = location.pathname === '/dashboard';
   const isOnAdmin = location.pathname === '/admin';
@@ -175,24 +195,41 @@ export function AppSidebar() {
   }
 
   const filteredIterations: IterationItem[] = sortedProjects.flatMap(
-    ({ project, latestSprint, latestIntent }) => {
+    ({ project, latestSprint, latestIntent, intents }) => {
       if (project.kind === 'v2') {
-        if (!latestIntent) return [];
-        const status = effectiveIntentStatus(latestIntent);
-        if (!matchesFilter(status, iterationFilter)) return [];
-        return [
-          {
-            key: `intent-${latestIntent.id}`,
-            title: latestIntent.title ?? 'Intent',
+        const projectIntents = intents ?? (latestIntent ? [latestIntent] : []);
+        const matchingIntents = projectIntents
+          .filter((intent) => matchesFilter(effectiveIntentStatus(intent), iterationFilter))
+          .toSorted((a, b) => intentActivityTime(b) - intentActivityTime(a));
+        let visibleIntents = matchingIntents.slice(0, MAX_INTENTS_PER_PROJECT);
+
+        // If the URL-selected Intent matches the current filter but falls
+        // beyond the cap, keep it visible instead of pinning it as historical.
+        const selectedIntent = matchingIntents.find(
+          (intent) => project.id === projectId && intent.id === intentId,
+        );
+        if (
+          selectedIntent &&
+          !visibleIntents.some((intent) => intent.id === selectedIntent.id) &&
+          visibleIntents.length === MAX_INTENTS_PER_PROJECT
+        ) {
+          visibleIntents = [...visibleIntents.slice(0, -1), selectedIntent];
+        }
+
+        return visibleIntents.map((intent) => {
+          const status = effectiveIntentStatus(intent);
+          return {
+            key: `intent-${intent.id}`,
+            title: intent.title ?? 'Intent',
             subtitle: project.name,
             status,
-            intentMeta: { projectId: project.id, intentId: latestIntent.id },
+            intentMeta: { projectId: project.id, intentId: intent.id },
             onClick: () => {
-              const section = getLastIntentSection(latestIntent.id);
-              navigate(intentSectionPath(project.id, latestIntent.id, section));
+              const section = getLastIntentSection(intent.id);
+              navigate(intentSectionPath(project.id, intent.id, section));
             },
-          },
-        ];
+          };
+        });
       }
       if (!latestSprint) return [];
       const status = effectiveSprintStatus(latestSprint);
@@ -350,13 +387,15 @@ export function AppSidebar() {
             >
               <Activity className="h-4 w-4 shrink-0" />
               <span className="flex-1 truncate">{FILTER_LABELS[iterationFilter]}</span>
-              {runningCount > 0 && (
+              {matchingCount > 0 && (
                 <span className="flex items-center gap-1.5 shrink-0">
                   <span className="relative flex h-2 w-2">
                     <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-agent-running opacity-75" />
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-agent-running" />
                   </span>
-                  <span className="text-[11px] font-medium text-agent-running">{runningCount}</span>
+                  <span className="text-[11px] font-medium text-agent-running">
+                    {matchingCount}
+                  </span>
                 </span>
               )}
             </div>

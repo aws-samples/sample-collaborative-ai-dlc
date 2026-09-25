@@ -8,12 +8,15 @@ export interface DocProvenance {
   phaseLabel: string;
   phasePath: string;
   unitSlug: string | null;
+  sectionIndex: number | null;
 }
 
 const DOCUMENT_TYPE_RE = /markdown|document|statement|research|report|notes?/i;
+const CODE_DOCUMENT_TYPE_RE = /^(code-generation-plan|code-summary)$/i;
 const MD_HEADING_RE = /^#{1,3}\s/m;
 
 export function isDocumentArtifact(a: IntentArtifact): boolean {
+  if (a.artifactType && CODE_DOCUMENT_TYPE_RE.test(a.artifactType)) return true;
   if (a.artifactType && DOCUMENT_TYPE_RE.test(a.artifactType)) return true;
   const content = a.content ?? '';
   return content.length > 600 && MD_HEADING_RE.test(content);
@@ -84,7 +87,8 @@ export function docProvenance(
       stageOrder: row?.order ?? -1,
       phaseLabel: phasePath ? phaseNameOf(phasePath) : NO_PHASE_LABEL,
       phasePath: phasePath ?? NO_PHASE_PATH,
-      unitSlug: row?.unitSlug ?? null,
+      unitSlug: row?.unitSlug ?? a.unitSlug ?? null,
+      sectionIndex: row?.sectionIndex ?? a.sectionIndex ?? null,
     };
   };
 }

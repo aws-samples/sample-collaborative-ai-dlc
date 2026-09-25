@@ -1,13 +1,62 @@
 import { api } from './api';
 
 // =============================================================================
-// Shared types — provider-agnostic shapes returned by both GitHub and GitLab.
+// Shared types — provider-agnostic shapes returned by every git provider.
 // =============================================================================
 
 // The set of supported git providers. Kept as a string-literal union (not a TS
 // enum) because the values are wire strings sent to/from the API and stored in
 // the DB — a union assigns directly from those strings with zero runtime cost.
 export type GitProvider = 'github' | 'gitlab' | 'bitbucket' | 'codecommit';
+
+export const GIT_PROVIDER_WEB_URL: Record<Exclude<GitProvider, 'codecommit'>, string> = {
+  github: 'https://github.com',
+  gitlab: 'https://gitlab.com',
+  bitbucket: 'https://bitbucket.org',
+};
+
+export const gitRepoSlug = (repo: string) =>
+  repo
+    .replace(/^https?:\/\/[^/]+\//, '')
+    .replace(/^git@[^:]+:/, '')
+    .replace(/\.git$/, '')
+    .replace(/^\/+|\/+$/g, '');
+
+export const gitProviderForRepo = (
+  repo: string,
+  fallback: string | null | undefined,
+  providers: Record<string, string> | null | undefined,
+): string | null => providers?.[repo] ?? providers?.[gitRepoSlug(repo)] ?? fallback ?? null;
+
+const configuredRepoBaseUrl = (repo: string): string | null => {
+  const trimmed = repo.replace(/\.git$/, '').replace(/\/+$/, '');
+  try {
+    const url = new URL(trimmed);
+    return ['http:', 'https:'].includes(url.protocol)
+      ? `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+      : null;
+  } catch {
+    const ssh = /^git@([^:]+):(.+)$/.exec(trimmed);
+    return ssh ? `https://${ssh[1]}/${ssh[2].replace(/^\/+/, '')}` : null;
+  }
+};
+
+export const gitBranchWebUrl = (
+  provider: string | null | undefined,
+  repo: string,
+  branch: string,
+): string | null => {
+  // A CodeCommit repository id is an ARN: its web page is the regional console.
+  if (provider === 'codecommit') return repoWebUrl('codecommit', repo, { branch });
+  if (!provider || !Object.hasOwn(GIT_PROVIDER_WEB_URL, provider)) return null;
+  const encodedBranch = branch.split('/').map(encodeURIComponent).join('/');
+  const typedProvider = provider as Exclude<GitProvider, 'codecommit'>;
+  const base =
+    configuredRepoBaseUrl(repo) ?? `${GIT_PROVIDER_WEB_URL[typedProvider]}/${gitRepoSlug(repo)}`;
+  if (typedProvider === 'gitlab') return `${base}/-/tree/${encodedBranch}`;
+  if (typedProvider === 'bitbucket') return `${base}/src/${encodedBranch}`;
+  return `${base}/tree/${encodedBranch}`;
+};
 
 // A git provider and its issue-tracker share one OAuth app/connection, so each
 // git provider maps to exactly one tracker-provider id. Centralized here so the
@@ -112,7 +161,7 @@ export interface GitComment {
 }
 
 // =============================================================================
-// Provider service interface — implemented by both GitHub and GitLab.
+// Provider service interface — implemented by GitHub, GitLab and Bitbucket.
 //
 // Every method takes the repo's canonical `repoId` (its fullName: "owner/repo"
 // for GitHub, "group/project" — possibly nested — for GitLab). Each service
