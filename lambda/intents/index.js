@@ -75,7 +75,11 @@ import {
 import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
-import { assignNativeRepositoryDirectories, repositoryId } from '../shared/native-repositories.js';
+import {
+  assignNativeRepositoryDirectories,
+  repositoryCloneUrl,
+  repositoryId,
+} from '../shared/native-repositories.js';
 import {
   executionPlanFromMethodologyCatalog,
   loadOrCreateMethodologyCatalog,
@@ -1323,14 +1327,6 @@ const isGloballyParkedForExport = (records) => {
             Number(stage.sectionIndex) === Number(unit.sectionIndex),
         ),
     );
-};
-
-const repositoryCloneUrl = (repository, provider) => {
-  const value = String(repository ?? '');
-  if (/^(?:https?|ssh):\/\//.test(value) || value.startsWith('git@')) return value;
-  if (provider === 'gitlab') return `git@gitlab.com:${value}.git`;
-  if (provider === 'bitbucket') return `git@bitbucket.org:${value}.git`;
-  return `git@github.com:${value}.git`;
 };
 
 const exportRepositories = (meta) =>

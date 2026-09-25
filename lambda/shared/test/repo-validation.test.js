@@ -1,18 +1,54 @@
 import { describe, expect, it } from 'vitest';
 
-import { isValidRepoPath, repoRelativePath } from '../repo-validation.js';
+import {
+  assertUniqueCheckoutPaths,
+  findCheckoutPathCollision,
+  isValidRepoPath,
+  repoCheckoutPath,
+} from '../repo-validation.js';
 
 const ARN = 'arn:aws:codecommit:eu-west-1:123456789012:my-service';
 
-describe('repoRelativePath', () => {
-  it('maps a CodeCommit ARN to <account>/<name> and leaves path ids untouched', () => {
-    expect(repoRelativePath(ARN)).toBe('123456789012/my-service');
-    expect(repoRelativePath('arn:aws-cn:codecommit:cn-north-1:123456789012:svc.api')).toBe(
-      '123456789012/svc.api',
+describe('repoCheckoutPath', () => {
+  it('keeps the whole CodeCommit identity under a provider namespace', () => {
+    expect(repoCheckoutPath(ARN)).toBe('codecommit/aws/eu-west-1/123456789012/my-service');
+    expect(repoCheckoutPath('arn:aws-cn:codecommit:cn-north-1:123456789012:svc.api')).toBe(
+      'codecommit/aws-cn/cn-north-1/123456789012/svc.api',
     );
-    expect(repoRelativePath('octo/hello')).toBe('octo/hello');
-    expect(repoRelativePath('group/sub/project')).toBe('group/sub/project');
-    expect(repoRelativePath(null)).toBeNull();
+  });
+  it('leaves path ids untouched', () => {
+    expect(repoCheckoutPath('octo/hello')).toBe('octo/hello');
+    expect(repoCheckoutPath('group/sub/project')).toBe('group/sub/project');
+    expect(repoCheckoutPath(null)).toBeNull();
+  });
+  it('gives same-name repositories in different regions different directories', () => {
+    const west1 = 'arn:aws:codecommit:eu-west-1:123456789012:app';
+    const west2 = 'arn:aws:codecommit:eu-west-2:123456789012:app';
+    expect(repoCheckoutPath(west1)).not.toBe(repoCheckoutPath(west2));
+    expect(findCheckoutPathCollision([west1, west2])).toBeNull();
+  });
+});
+
+describe('checkout path collisions', () => {
+  it('detects distinct repositories that share or nest a directory', () => {
+    expect(findCheckoutPathCollision(['codecommit/aws', ARN])).toEqual({
+      first: 'codecommit/aws',
+      second: ARN,
+    });
+    expect(findCheckoutPathCollision(['team/app', 'team/app/sub'])).toEqual({
+      first: 'team/app',
+      second: 'team/app/sub',
+    });
+    expect(findCheckoutPathCollision(['octo/hello', 'octo/world', ARN])).toBeNull();
+  });
+  it('does not treat the same repository listed twice as a collision', () => {
+    expect(findCheckoutPathCollision([ARN, ARN])).toBeNull();
+  });
+  it('throws a typed error for a colliding batch', () => {
+    expect(() => assertUniqueCheckoutPaths(['codecommit/aws/eu-west-1', ARN])).toThrow(
+      expect.objectContaining({ code: 'REPOSITORY_PATH_COLLISION' }),
+    );
+    expect(() => assertUniqueCheckoutPaths(['octo/hello', ARN])).not.toThrow();
   });
 });
 

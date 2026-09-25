@@ -96,6 +96,64 @@ describe('repository directory safety', () => {
   );
 });
 
+describe('CodeCommit checkout identity', () => {
+  const west1 = 'arn:aws:codecommit:eu-west-1:123456789012:app';
+  const west2 = 'arn:aws:codecommit:eu-west-2:123456789012:app';
+
+  it('clones same-name repositories from two regions into their own directories', async () => {
+    const runner = vi.fn(async () => ({ code: 0 }));
+    const results = await checkoutRepos({
+      repos: [
+        { url: west1, provider: 'codecommit' },
+        { url: west2, provider: 'codecommit' },
+      ],
+      workspaceDir: ws,
+      runner,
+      trustDirectory: async () => true,
+      withGitCredential: async (_context, operation) => operation({ env: {} }),
+    });
+    const dir1 = path.join(ws, 'codecommit/aws/eu-west-1/123456789012/app');
+    const dir2 = path.join(ws, 'codecommit/aws/eu-west-2/123456789012/app');
+    expect(results.map((r) => r.targetDir)).toEqual([dir1, dir2]);
+    expect(results.every((r) => r.cloned)).toBe(true);
+    // Each clone targets its own directory and its own regional endpoint.
+    const clones = runner.mock.calls.filter(([, args]) => args.includes('clone'));
+    expect(clones).toHaveLength(2);
+    expect(clones[0][1]).toEqual(
+      expect.arrayContaining(['https://git-codecommit.eu-west-1.amazonaws.com/v1/repos/app']),
+    );
+    expect(clones[1][1]).toEqual(
+      expect.arrayContaining(['https://git-codecommit.eu-west-2.amazonaws.com/v1/repos/app']),
+    );
+  });
+
+  it('refuses a batch whose repositories would share a directory before touching anything', async () => {
+    const runner = vi.fn(async () => ({ code: 0 }));
+    const ensureDir = vi.fn(async () => {});
+    const withGitCredential = vi.fn();
+    const options = {
+      repos: [
+        { url: 'codecommit/aws', provider: 'gitlab' },
+        { url: west1, provider: 'codecommit' },
+      ],
+      workspaceDir: ws,
+      runner,
+      ensureDir,
+      withGitCredential,
+      trustDirectory: async () => true,
+    };
+    await expect(checkoutRepos(options)).rejects.toMatchObject({
+      code: 'REPOSITORY_PATH_COLLISION',
+    });
+    await expect(ensureWorkspaceSource(options)).rejects.toMatchObject({
+      code: 'REPOSITORY_PATH_COLLISION',
+    });
+    expect(ensureDir).not.toHaveBeenCalled();
+    expect(runner).not.toHaveBeenCalled();
+    expect(withGitCredential).not.toHaveBeenCalled();
+  });
+});
+
 describe('checkoutRepo Git isolation', () => {
   it('passes the protected runner to custom directory-trust callbacks', async () => {
     const runner = vi.fn(async () => ({ code: 0 }));

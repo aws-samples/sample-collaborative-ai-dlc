@@ -42,7 +42,11 @@ import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
-import { isSafeRepo, isValidRepoPath } from '../shared/repo-validation.js';
+import {
+  findCheckoutPathCollision,
+  isSafeRepo,
+  isValidRepoPath,
+} from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { deleteCredentialScope } from '../shared/agent-credentials.js';
@@ -1152,6 +1156,21 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       .has('Repository', 'url', data.url)
       .hasNext();
     if (duplicate) return response(409, { error: 'Repository already added to this project' });
+    // Distinct repositories must not share a workspace checkout directory
+    // (the agent would reuse one's clone for the other).
+    const existingUrls = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .out('HAS_REPO')
+      .values('url')
+      .toList();
+    const collision = findCheckoutPathCollision([...existingUrls, data.url]);
+    if (collision) {
+      return response(409, {
+        error: `Repository ${collision.second} would share a checkout directory with ${collision.first}`,
+        code: 'REPOSITORY_PATH_COLLISION',
+      });
+    }
 
     // Run quick detection (non-blocking — failures are non-fatal). Detection
     // runs against the repo's own provider so GitLab repos are detected too.
@@ -1486,6 +1505,14 @@ export const handler = async (event, context) => {
             url: legacyGitRepo,
             provider: data.gitProvider || 'github',
             role: 'primary',
+          });
+        }
+
+        const collision = findCheckoutPathCollision(inputRepos.map((repo) => repo.url));
+        if (collision) {
+          return response(400, {
+            error: `Repositories ${collision.first} and ${collision.second} would share a checkout directory`,
+            code: 'REPOSITORY_PATH_COLLISION',
           });
         }
 

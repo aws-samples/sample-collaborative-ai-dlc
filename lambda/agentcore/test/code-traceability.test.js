@@ -288,6 +288,38 @@ describe('collectCodeTraceabilityBatches — multi-repo layout', () => {
   });
 });
 
+describe('collectCodeTraceabilityBatches — CodeCommit multi-repo layout', () => {
+  // Same layout as the checkout (repo-paths.js#repoTargetDir): a CodeCommit
+  // ARN is not a path, so joining it onto the workspace resolved nothing.
+  it('collects changed files of same-name CodeCommit repositories in two regions', async () => {
+    const west1 = 'arn:aws:codecommit:eu-west-1:123456789012:app';
+    const west2 = 'arn:aws:codecommit:eu-west-2:123456789012:app';
+    const root = await workspace();
+    await put(root, 'codecommit/aws/eu-west-1/123456789012/app/src/one.js', 'export {};\n');
+    await put(root, 'codecommit/aws/eu-west-2/123456789012/app/src/two.js', 'export {};\n');
+    const batches = await collectCodeTraceabilityBatches({
+      gitResult: {
+        ok: true,
+        committed: true,
+        results: [
+          { repo: west1, committed: true, sha: 'a'.repeat(40), files: ['src/one.js'] },
+          { repo: west2, committed: true, sha: 'b'.repeat(40), files: ['src/two.js'] },
+        ],
+      },
+      repos: [west1, west2],
+      workspaceDir: root,
+      stageId: 'code-generation',
+      stageInstanceId: 'si-code',
+      unitSlug: 'u1',
+    });
+    // The batch keeps the ARN as repository identity; only the disk path changed.
+    expect(batches.map((b) => [b.repository, b.files.map((f) => f.filePath)])).toEqual([
+      [west1, ['src/one.js']],
+      [west2, ['src/two.js']],
+    ]);
+  });
+});
+
 describe('loadProducedTraceability — size cap', () => {
   it('treats an oversized traceability.json as degraded (no OOM, no throw)', async () => {
     const root = await workspace();

@@ -1,11 +1,19 @@
 import { createHash } from 'node:crypto';
-import { isValidRepoPath } from './repo-validation.js';
+import {
+  CODECOMMIT_REPO_ARN_PATTERN,
+  isValidRepoPath,
+  repoCheckoutPath,
+} from './repo-validation.js';
+import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
+import { codeCommitCloneUrl } from './git-providers/codecommit-credential.js';
 
 // Reduce supported repository references and clone URLs to their canonical
-// provider identity, such as `owner/repo`.
+// provider identity, such as `owner/repo`. A CodeCommit ARN is already
+// canonical and is kept verbatim (region and account are part of it).
 const repositoryId = (repository) => {
   const value = String(repository ?? '').trim();
   if (!value) return '';
+  if (CODECOMMIT_REPO_ARN_PATTERN.test(value)) return value;
 
   let path = value;
   if (value.startsWith('git@')) {
@@ -20,7 +28,11 @@ const repositoryId = (repository) => {
   return path.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
 };
 
-const repositoryBasename = (id) => id.split('/').at(-1) || 'repository';
+// Readable directory candidates. A CodeCommit ARN reads as its repository name
+// and, when that name is shared, as its flattened checkout path
+// (codecommit_<partition>_<region>_<account>_<name>): never a colon-laden ARN.
+const repositoryBasename = (id) => repoCheckoutPath(id).split('/').at(-1) || 'repository';
+const flattenedId = (id) => repoCheckoutPath(id).replaceAll('/', '_');
 const directoryHash = (id) => createHash('sha256').update(id).digest('hex');
 
 // Preserve canonical repository identity while assigning stable local checkout
@@ -51,7 +63,7 @@ const assignNativeRepositoryDirectories = (repositories) => {
   const candidates = normalized.map(({ basename, ...repository }) => {
     const digest = directoryHash(repository.id);
     const duplicateBasename = basenameCounts.get(basename.toLowerCase()) > 1;
-    const directory = duplicateBasename ? repository.id.replaceAll('/', '_') : basename;
+    const directory = duplicateBasename ? flattenedId(repository.id) : basename;
     return { ...repository, directory, digest };
   });
 
@@ -77,4 +89,19 @@ const assignNativeRepositoryDirectories = (repositories) => {
   return projected;
 };
 
-export { assignNativeRepositoryDirectories, repositoryId };
+// Clone URL written into the native workspace manifest.
+const repositoryCloneUrl = (repository, provider) => {
+  const value = String(repository ?? '');
+  if (/^(?:https?|ssh):\/\//.test(value) || value.startsWith('git@')) return value;
+  if (provider === 'gitlab') return `git@gitlab.com:${value}.git`;
+  if (provider === 'bitbucket') return `git@bitbucket.org:${value}.git`;
+  if (provider === 'codecommit') {
+    // The regional HTTPS endpoint, the form every CodeCommit credential works
+    // with (git-remote-codecommit, credential helper, Git credentials).
+    const { region, repositoryName } = parseCodeCommitRepo(value);
+    return codeCommitCloneUrl(region, repositoryName);
+  }
+  return `git@github.com:${value}.git`;
+};
+
+export { assignNativeRepositoryDirectories, repositoryCloneUrl, repositoryId };

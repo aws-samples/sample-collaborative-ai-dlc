@@ -13,7 +13,7 @@ import { buildCloneUrl } from '../shared/git-providers.js';
 import { withGitCredential as defaultWithGitCredential } from './git-auth.js';
 import { runGitCommand, withGitHooksDisabled } from './git-runner.js';
 import { isValidRepoPath } from '../shared/repo-validation.js';
-import { repoTargetDir } from './repo-paths.js';
+import { repoTargetDirs } from './repo-paths.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'workspace' } });
 
@@ -231,12 +231,9 @@ export const checkoutRepos = async ({
   trustDirectory = trustGitDirectory,
 }) => {
   const out = [];
-  const multi = repos.length > 1;
-  // Validate the entire batch before creating directories or cloning anything.
-  const targets = repos.map((repo) => {
-    const url = typeof repo === 'string' ? repo : repo.url;
-    return { repo, url, targetDir: repoTargetDir({ url, workspaceDir, multi }) };
-  });
+  // Validate the entire batch (paths and collisions) before creating
+  // directories or cloning anything.
+  const targets = repoTargetDirs({ repos, workspaceDir });
   for (const { repo, url, targetDir } of targets) {
     const provider =
       (typeof repo === 'object' && repo?.provider) ||
@@ -401,13 +398,9 @@ export const ensureWorkspaceSource = async ({
   statFn = stat,
   trustDirectory = trustGitDirectory,
 }) => {
-  const multi = repos.length > 1;
   const restoredRepos = [];
   const failed = [];
-  const targets = repos.map((repo) => {
-    const url = typeof repo === 'string' ? repo : repo.url;
-    return { repo, url, targetDir: repoTargetDir({ url, workspaceDir, multi }) };
-  });
+  const targets = repoTargetDirs({ repos, workspaceDir });
   for (const { repo, url, targetDir } of targets) {
     const provider =
       (typeof repo === 'object' && repo?.provider) ||

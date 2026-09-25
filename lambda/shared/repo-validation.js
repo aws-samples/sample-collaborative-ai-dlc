@@ -25,18 +25,53 @@ const CODECOMMIT_REPO_ARN_PATTERN =
   /^arn:(aws|aws-cn|aws-us-gov):codecommit:([a-z]{2}(?:-[a-z]+)+-\d):(\d{12}):([\w.-]{1,100})$/;
 
 // Where a repository checks out under the workspace root, relative. Path-shaped
-// ids (github/gitlab/bitbucket "owner/repo", nested groups) are used verbatim;
-// a CodeCommit ARN maps to "<account>/<name>" so multi-repo layouts keep the
-// same two-segment shape and a repository name can never collide with an
-// owner directory from another provider.
-const repoRelativePath = (value) => {
+// ids (github/gitlab/bitbucket "owner/repo", nested groups) are used verbatim.
+// A CodeCommit ARN keeps its whole identity under a provider namespace:
+// "codecommit/<partition>/<region>/<account>/<name>". Dropping the region or
+// partition would map two same-named repositories onto one directory, and the
+// second would then be treated as a warm checkout of the first.
+const repoCheckoutPath = (value) => {
   if (typeof value !== 'string') return null;
   const arn = CODECOMMIT_REPO_ARN_PATTERN.exec(value);
-  return arn ? `${arn[3]}/${arn[4]}` : value;
+  return arn ? `codecommit/${arn[1]}/${arn[2]}/${arn[3]}/${arn[4]}` : value;
+};
+
+// First pair of distinct repositories whose checkout directories are the same
+// or nested (one inside the other), or null. Distinct ids that cannot share a
+// directory on their own can still collide across providers (a GitLab group
+// named "codecommit"), so the whole batch is compared, not just CodeCommit.
+const findCheckoutPathCollision = (urls = []) => {
+  const seen = [];
+  for (const url of urls) {
+    const rel = repoCheckoutPath(url);
+    if (typeof rel !== 'string') continue;
+    for (const prior of seen) {
+      if (prior.url === url) continue;
+      if (prior.rel === rel || rel.startsWith(`${prior.rel}/`) || prior.rel.startsWith(`${rel}/`)) {
+        return { first: prior.url, second: url };
+      }
+    }
+    seen.push({ url, rel });
+  }
+  return null;
+};
+
+// Throws before any checkout mutation: a collision means one repository's
+// clone would be reused (and its remote rewritten) for another.
+const assertUniqueCheckoutPaths = (urls = []) => {
+  const collision = findCheckoutPathCollision(urls);
+  if (collision) {
+    throw Object.assign(
+      new Error(
+        `Repositories ${collision.first} and ${collision.second} would check out into the same directory`,
+      ),
+      { code: 'REPOSITORY_PATH_COLLISION', ...collision },
+    );
+  }
 };
 
 const isValidRepoPath = (value) => {
-  const rel = repoRelativePath(value);
+  const rel = repoCheckoutPath(value);
   return (
     typeof rel === 'string' &&
     REPO_PATH_PATTERN.test(rel) &&
@@ -74,7 +109,9 @@ export {
   isSafeRepo,
   isSafeRef,
   isValidRepoPath,
-  repoRelativePath,
+  repoCheckoutPath,
+  findCheckoutPathCollision,
+  assertUniqueCheckoutPaths,
 };
 export default {
   SHELL_SAFE_REPO_PATTERN,
@@ -83,5 +120,7 @@ export default {
   isSafeRepo,
   isSafeRef,
   isValidRepoPath,
-  repoRelativePath,
+  repoCheckoutPath,
+  findCheckoutPathCollision,
+  assertUniqueCheckoutPaths,
 };
