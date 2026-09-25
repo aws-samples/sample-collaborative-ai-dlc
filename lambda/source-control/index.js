@@ -15,10 +15,9 @@ import {
   canonicalRepo,
   deleteProjectBindings,
   getBinding,
-  invalidationReasonForError,
+  invalidateBindingsForError,
   listProjectBindings,
   loggableErrorCode,
-  markBindingInvalid,
   replaceProjectBindings,
   sanitizeBinding,
 } from '../shared/source-control-bindings.js';
@@ -266,10 +265,7 @@ const validateProjectBindings = async ({
         ready: true,
       });
     } catch (error) {
-      const invalidReason = invalidationReasonForError(error);
-      if (invalidReason) {
-        await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
-      }
+      await invalidateBindingsForError(ddbClient, binding, error).catch(() => {});
       results.push({
         provider: repo.provider,
         repo: repo.repo,
@@ -405,10 +401,7 @@ const executeSourceControlOperation = async ({
       args,
     );
   } catch (error) {
-    const invalidReason = invalidationReasonForError(error);
-    if (invalidReason) {
-      await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
-    }
+    await invalidateBindingsForError(ddbClient, binding, error).catch(() => {});
     logger.error('provider operation failed', {
       provider,
       operation,

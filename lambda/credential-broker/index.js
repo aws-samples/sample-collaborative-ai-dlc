@@ -8,9 +8,8 @@ import {
   ACTIVE,
   canonicalRepo,
   getBinding,
-  invalidationReasonForError,
+  invalidateBindingsForError,
   loggableErrorCode,
-  markBindingInvalid,
 } from '../shared/source-control-bindings.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
@@ -129,10 +128,7 @@ const authorizeCredentialRequest = async (
       executionId,
     });
   } catch (error) {
-    const invalidReason = invalidationReasonForError(error);
-    if (invalidReason) {
-      await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
-    }
+    await invalidateBindingsForError(ddbClient, binding, error).catch(() => {});
     throw error;
   }
 };

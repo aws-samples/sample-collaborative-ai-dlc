@@ -143,6 +143,21 @@ const retryAfterSeconds = (error) => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 };
 
+// Pull-request and comment APIs. A denial here says nothing about repository
+// access (a tenant role may omit PR permissions, or scope them with conditions,
+// while GitPull/GetRepository still work), so it fails the one operation and
+// is marked `scope: 'operation'`: callers must not invalidate the binding for
+// it. Denials on repository, branch and content APIs keep the default scope.
+const OPERATION_SCOPED_ACTIONS = new Set([
+  'GetPullRequest',
+  'ListPullRequests',
+  'CreatePullRequest',
+  'EvaluatePullRequestApprovalRules',
+  'GetCommentsForPullRequest',
+  'PostCommentForPullRequest',
+  'PostCommentReply',
+]);
+
 // SDK exception -> ProviderError. The exception NAME is carried through (it is
 // a stable, documented enum) but the SDK's message text never is: it can quote
 // caller input, repository paths or ARNs, and this error is surfaced to API
@@ -153,7 +168,12 @@ const mapError = (error, action) => {
   const extra = { action, exception };
   const message = `CodeCommit ${action} failed: ${exception}`;
   if (exception.endsWith('DoesNotExistException')) return new ProviderError(404, message, extra);
-  if (/AccessDenied|Unauthorized/.test(exception)) return new ProviderError(403, message, extra);
+  if (/AccessDenied|Unauthorized/.test(exception)) {
+    return new ProviderError(403, message, {
+      ...extra,
+      ...(OPERATION_SCOPED_ACTIONS.has(action) ? { scope: 'operation' } : {}),
+    });
+  }
   if (/Throttl|TooManyRequests|RequestLimitExceeded/.test(exception)) {
     return new ProviderError(429, message, { ...extra, retryAfter: retryAfterSeconds(error) });
   }

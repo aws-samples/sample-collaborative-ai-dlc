@@ -243,6 +243,20 @@ const invalidateBindingsByCredentialRef = async (ddb, credentialRef, reason, opt
   return bindings.length;
 };
 
+// Persist the invalidation an error calls for. A refused CodeCommit role takes
+// down every binding that shares it (same credentialRef), across projects;
+// anything else only the binding that failed. Best-effort: callers are already
+// on an error path and rethrow the original error.
+const invalidateBindingsForError = async (ddb, binding, error, options = {}) => {
+  const reason = invalidationReasonForError(error);
+  if (!reason || !binding) return 0;
+  if (error?.code === 'ROLE_ASSUMPTION_DENIED' && binding.credentialRef) {
+    return invalidateBindingsByCredentialRef(ddb, binding.credentialRef, reason, options);
+  }
+  await markBindingInvalid(ddb, binding, reason, options);
+  return 1;
+};
+
 const invalidateProjectBindingsByDelegator = async (
   ddb,
   projectId,
@@ -274,12 +288,17 @@ const KNOWN_ERROR_CODES = Object.freeze([
   'DELEGATION_CONFIRMATION_REQUIRED',
   'EXECUTION_NOT_ACTIVE',
   'EXECUTION_NOT_FOUND',
+  'EXTERNAL_ID_NOT_OWNED',
   'INSUFFICIENT_REPOSITORY_ACCESS',
   'INVALID_REQUEST',
   'MISSING_SCOPES',
   'OPERATION_NOT_ALLOWED',
   'REPOSITORY_NOT_ON_EXECUTION',
   'REPOSITORY_NOT_ON_PROJECT',
+  'REPOSITORY_PATH_COLLISION',
+  'ROLE_ASSUMPTION_DENIED',
+  'ROLE_ASSUMPTION_FAILED',
+  'SESSION_POLICY_INVALID',
   'SOURCE_CONTROL_NOT_READY',
   'SOURCE_CONTROL_OPERATION_FAILED',
   'SOURCE_CONTROL_VERIFICATION_FAILED',
@@ -296,8 +315,21 @@ const loggableErrorCode = (error, fallback = 'UNKNOWN') => {
   return fallback;
 };
 
+// Which bindings an error invalidates, if any:
+//   - a provider denial scoped to one operation (a CodeCommit pull-request API
+//     the role does not grant) invalidates nothing: repository access may be
+//     intact, and the operation itself already failed;
+//   - STS refusing the tenant role (trust policy or external id changed, role
+//     deleted) invalidates every binding on that role: they share the
+//     credential, so none of them can work any more;
+//   - a transient STS failure or a session policy the platform built wrongly
+//     invalidates nothing: neither is the tenant's doing, and a retry (or a
+//     platform fix) recovers without a rebind.
 const invalidationReasonForError = (error) => {
   const code = error?.code;
+  if (error?.extra?.scope === 'operation') return null;
+  if (code === 'ROLE_ASSUMPTION_DENIED') return 'codecommit_role_denied';
+  if (code === 'ROLE_ASSUMPTION_FAILED' || code === 'SESSION_POLICY_INVALID') return null;
   if (code === 'CONNECTION_REQUIRED') return 'oauth_connection_unavailable';
   if (code === 'MISSING_SCOPES') return 'oauth_scopes_missing';
   if (code === 'CREDENTIAL_REFRESH_FAILED') return 'oauth_refresh_failed';
@@ -367,6 +399,7 @@ export {
   deleteProjectBindings,
   markBindingInvalid,
   invalidateBindingsByCredentialRef,
+  invalidateBindingsForError,
   invalidateProjectBindingsByDelegator,
   invalidationReasonForError,
   loggableErrorCode,
@@ -385,6 +418,7 @@ export default {
   replaceProjectBindings,
   deleteProjectBindings,
   invalidateBindingsByCredentialRef,
+  invalidateBindingsForError,
   invalidateProjectBindingsByDelegator,
   invalidationReasonForError,
   loggableErrorCode,

@@ -178,6 +178,17 @@ describe('codecommit provider: repositories and branches', () => {
       await expect(cc.getRepositoryAccess({ client }, ARN)).rejects.toMatchObject({ status });
     }
   });
+
+  it('scopes a pull-request denial to the operation, not the repository', async () => {
+    const prDenied = makeClient({ GetPullRequest: sdkError('AccessDeniedException') });
+    const prError = await cc.getPullRequestStatus({ client: prDenied }, ARN, '7').catch((e) => e);
+    expect(prError).toMatchObject({ status: 403, extra: { scope: 'operation' } });
+    // A repository-level denial keeps the default scope.
+    const repoDenied = makeClient({ GetRepository: sdkError('AccessDeniedException') });
+    const repoError = await cc.getRepositoryAccess({ client: repoDenied }, ARN).catch((e) => e);
+    expect(repoError.status).toBe(403);
+    expect(repoError.extra.scope).toBeUndefined();
+  });
 });
 
 describe('codecommit provider: issues are declared unsupported', () => {
