@@ -1,0 +1,20 @@
+[
+  {
+    "source": "https://github.com/anthropics/claude-code/issues/88711",
+    "cli": "claude",
+    "output": "Your credit balance is too low to access the Anthropic API",
+    "exhausted": true
+  },
+  {
+    "source": "https://github.com/anomalyco/opencode/issues/47685",
+    "cli": "opencode",
+    "output": "You exceeded your current quota",
+    "exhausted": true
+  },
+  {
+    "source": "https://github.com/anomalyco/opencode/issues/41740",
+    "cli": "opencode",
+    "output": "You exceeded your current quota, please check your plan and\nbilling details.\nPlease retry in 45.14551691s.",
+    "exhausted": false
+  }
+]

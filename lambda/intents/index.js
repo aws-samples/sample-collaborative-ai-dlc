@@ -1197,7 +1197,11 @@ const normalizeSource = (raw, trackers) => {
 
 // ── DTO assembly ──
 
-const CREDENTIAL_FAILURE_CODES = ['credential_unavailable', 'credential_invalid'];
+const CREDENTIAL_FAILURE_CODES = [
+  'credential_unavailable',
+  'credential_invalid',
+  'credential_quota_exhausted',
+];
 
 // New execution rows persist a structured failure. Older rows only have the
 // concatenated failureReason string, so normalize those once at the API
@@ -2515,6 +2519,9 @@ export const handler = async (event, context) => {
         answer: data.answer ?? null,
         answeredBy: responder.sub,
         answeredByName: responder.displayName,
+        ifOrchestratorRunId: gate.orchestratorRunId ?? null,
+        ifStageCallbackId: gate.stageCallbackId ?? null,
+        stageInstanceId: gate.stageInstanceId ?? null,
       };
       const answerResult = steeringMessage
         ? await store.answerHumanTaskWithSteering({
@@ -2528,9 +2535,7 @@ export const handler = async (event, context) => {
             },
           })
         : await store.answerHumanTask(answerInput);
-      const answered = steeringMessage
-        ? answerResult && { ...gate, ...answerResult.answered }
-        : answerResult;
+      const answered = steeringMessage ? answerResult?.answered : answerResult;
       if (!answered) {
         return response(409, { error: 'Gate already answered or not pending' });
       }
@@ -2568,9 +2573,11 @@ export const handler = async (event, context) => {
       // older sibling gate just records the durable Q&A — the run is parked on a
       // different callback. SendDurableExecutionCallbackSuccess resumes the
       // EXISTING execution; a fresh Invoke would start a new one.
-      if (gate.callbackId) {
+      // Binding can finish after the initial GET. ALL_NEW from the answer CAS
+      // is the authoritative callback owner at the instant the answer commits.
+      if (answered.callbackId) {
         try {
-          await resumeDurableCallback(gate.callbackId, answered.answer);
+          await resumeDurableCallback(answered.callbackId, answered.answer);
         } catch (err) {
           if (isCallbackTimeoutError(err)) {
             await repairExpiredDurableExecution({

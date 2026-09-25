@@ -278,6 +278,26 @@ describe('orchestrator durable handler', () => {
     expect(stageStarts()).toHaveLength(1);
   });
 
+  it('resumes when the human answers before the stage callback can bind', async () => {
+    deps.store.setGateCallbackId.mockResolvedValue(null);
+    deps.store.getHumanTask.mockResolvedValue({ status: 'answered' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = makeRuntime(ctx, (_payload, n) =>
+      n === 1
+        ? { ok: true }
+        : n === 2
+          ? { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' }
+          : { ok: true, state: 'SUCCEEDED' },
+    );
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(stageStarts().filter((row) => row.resumeFrom === 'h1')).toHaveLength(1);
+    expect(deps.stopSession).not.toHaveBeenCalled();
+  });
   it.each(['answered', 'approved', 'rejected'])(
     'resumes when a %s decision wins before the gate callback can be bound',
     async (status) => {
@@ -446,7 +466,7 @@ describe('orchestrator durable handler', () => {
     deps.store.getHumanTask = vi
       .fn()
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
+      .mockResolvedValue({
         humanTaskId: 'eg-validation-si-a-0',
         status: 'approved',
         answer: { decision: 'approve' },
@@ -496,8 +516,13 @@ describe('orchestrator durable handler', () => {
         status: 'rejected',
         answer: { decision: 'request-changes', feedback: 'tighten scope' },
       })
-      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
+        humanTaskId: 'eg-validation-si-a-0',
+        status: 'rejected',
+        answer: { decision: 'request-changes', feedback: 'tighten scope' },
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({
         humanTaskId: 'eg-validation-si-a-1',
         status: 'approved',
         answer: { decision: 'approve' },

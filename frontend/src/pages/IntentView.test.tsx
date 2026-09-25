@@ -200,73 +200,79 @@ describe('IntentView', () => {
     expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
   });
 
-  it('explains a removed pinned credential and links to its settings', async () => {
-    get.mockResolvedValue(
-      baseDetail({
-        status: 'FAILED',
-        agentCli: 'kiro',
-        credentialSource: 'space',
-        failureReason: 'stage_failed: backend wording may change independently',
-        failure: {
-          code: 'credential_unavailable',
-          message:
-            'The Space Kiro credential pinned to this run is no longer available. A Space owner or admin must restore or rotate it in Space Settings, then restart the run. Active runs do not fall back to Platform credentials.',
+  it.each(['credential_unavailable', 'credential_quota_exhausted'])(
+    'links %s to its pinned credential settings',
+    async (code) => {
+      get.mockResolvedValue(
+        baseDetail({
+          status: 'FAILED',
+          agentCli: 'kiro',
+          credentialSource: 'space',
+          failureReason: 'stage_failed: backend wording may change independently',
+          failure: {
+            code,
+            message:
+              'The Space Kiro credential pinned to this run is no longer available. A Space owner or admin must restore or rotate it in Space Settings, then restart the run. Active runs do not fall back to Platform credentials.',
+          },
+        }),
+      );
+      renderAt();
+
+      expect(
+        await screen.findByText(
+          /The Space Kiro credential pinned to this run is no longer available/,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/stage_failed:/)).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Credential settings' }));
+      expect(await screen.findByTestId('space-settings')).toBeInTheDocument();
+    },
+  );
+
+  it.each(['workspace_restore_failed', 'resume_state_unavailable', 'resume_state_conflict'])(
+    'offers targeted retry for a failed stage after %s',
+    async (runtimeError) => {
+      compiled.mockResolvedValue({
+        graph: {
+          nodes: [
+            { stageId: 'requirements-analysis', phasePath: '01', order: 0 },
+            { stageId: 'units-generation', phasePath: '01', order: 1 },
+          ],
+          edges: [],
         },
-      }),
-    );
-    renderAt();
-
-    expect(
-      await screen.findByText(
-        /The Space Kiro credential pinned to this run is no longer available/,
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/stage_failed:/)).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Credential settings' }));
-    expect(await screen.findByTestId('space-settings')).toBeInTheDocument();
-  });
-
-  it('retries a failed run from its earliest failed stage', async () => {
-    compiled.mockResolvedValue({
-      graph: {
-        nodes: [
-          { stageId: 'requirements-analysis', phasePath: '01', order: 0 },
-          { stageId: 'units-generation', phasePath: '01', order: 1 },
+      });
+      get.mockResolvedValue({
+        ...baseDetail({
+          status: 'FAILED',
+          currentStage: 'units-generation',
+          failureReason: 'stage_failed: units-generation',
+        }),
+        stages: [
+          {
+            stageInstanceId: 'si-requirements',
+            stageId: 'requirements-analysis',
+            state: 'SUCCEEDED',
+            phase: 'inception',
+          },
+          {
+            stageInstanceId: 'si-units',
+            stageId: 'units-generation',
+            state: 'FAILED',
+            phase: 'inception',
+            runtimeError,
+          },
         ],
-        edges: [],
-      },
-    });
-    get.mockResolvedValue({
-      ...baseDetail({
-        status: 'FAILED',
-        currentStage: 'units-generation',
-        failureReason: 'stage_failed: units-generation',
-      }),
-      stages: [
-        {
-          stageInstanceId: 'si-requirements',
-          stageId: 'requirements-analysis',
-          state: 'SUCCEEDED',
-          phase: 'inception',
-        },
-        {
-          stageInstanceId: 'si-units',
-          stageId: 'units-generation',
-          state: 'FAILED',
-          phase: 'inception',
-          runtimeError: 'workspace_restore_failed',
-        },
-      ],
-    });
-    rewind.mockResolvedValue({});
+      });
+      rewind.mockResolvedValue({});
 
-    renderAt();
+      renderAt();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Retry Units Generation' }));
-    expect(rewind).toHaveBeenCalledWith('p1', 'i1', { fromStageId: 'units-generation' });
-    expect(start).not.toHaveBeenCalled();
-  });
+      await userEvent.click(await screen.findByRole('button', { name: 'Retry Units Generation' }));
+      expect(rewind).toHaveBeenCalledWith('p1', 'i1', { fromStageId: 'units-generation' });
+      expect(start).not.toHaveBeenCalled();
+    },
+  );
 
   it('restarts when the only failed stage row is no longer in the compiled plan', async () => {
     compiled.mockResolvedValue({

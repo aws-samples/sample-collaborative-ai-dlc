@@ -3456,34 +3456,36 @@ describe('GET list + detail', () => {
     });
   });
 
-  it('normalizes legacy credential failures once at the API boundary', async () => {
-    const sub = `u-${randomUUID()}`;
-    const projectId = await seedV2Project(sub);
-    const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    const k = keyOf(`EXEC#${intent.id}`, 'META');
-    procStore.set(k, {
-      ...procStore.get(k),
-      status: 'FAILED',
-      failureReason:
-        'stage_failed: requirements-analysis: credential_invalid: The credential expired.',
-      failure: null,
-    });
+  it.each(['credential_invalid', 'credential_quota_exhausted'])(
+    'normalizes legacy %s failures once at the API boundary',
+    async (code) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      const k = keyOf(`EXEC#${intent.id}`, 'META');
+      procStore.set(k, {
+        ...procStore.get(k),
+        status: 'FAILED',
+        failureReason: `stage_failed: requirements-analysis: ${code}: The credential needs attention.`,
+        failure: null,
+      });
 
-    const list = JSON.parse(
-      (
-        await handler({
-          httpMethod: 'GET',
-          path: `/projects/${projectId}/intents`,
-          pathParameters: { projectId },
-          ...claims(sub),
-        })
-      ).body,
-    );
-    expect(list[0].failure).toEqual({
-      code: 'credential_invalid',
-      message: 'The credential expired.',
-    });
-  });
+      const list = JSON.parse(
+        (
+          await handler({
+            httpMethod: 'GET',
+            path: `/projects/${projectId}/intents`,
+            pathParameters: { projectId },
+            ...claims(sub),
+          })
+        ).body,
+      );
+      expect(list[0].failure).toEqual({
+        code,
+        message: 'The credential needs attention.',
+      });
+    },
+  );
 
   const seedOutput = (
     intentId,

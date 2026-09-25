@@ -52,6 +52,7 @@
 import processKeysPkg from '../shared/v2-process-keys.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from './pr-attribution.js';
+import { bindGateCallback, unparkGate } from './gate-callback.js';
 
 const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 
@@ -157,21 +158,28 @@ export const awaitEngineGate = async (
   const { store, broadcast, ids, runId } = toolkit;
   const { executionId, intentId, projectId } = ids;
   const humanTaskId = `eg-${name}-${runId}`;
-
+  const ownsRun = async () => {
+    const meta = await store.getExecution(executionId, { consistentRead: true });
+    return Boolean(meta) && (!runId || !meta.orchestratorRunId || meta.orchestratorRunId === runId);
+  };
   // A prior attempt of THIS run may have already opened and even answered the
   // gate (resume after a suspend) — reuse the decision instead of hanging on
   // a callback nobody will complete.
-  const existing = await ctxArg.step(`gate-pre-${name}`, () =>
-    store.getHumanTask(executionId, humanTaskId).catch(() => null),
-  );
+  // Preserve the deployed operation sequence: durable checkpoints address
+  // steps by position as well as name. New checks belong inside existing steps.
+  const existing = await ctxArg.step(`gate-pre-${name}`, async () => {
+    if (!(await ownsRun())) return { status: 'superseded' };
+    return store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
+  });
   if (existing && existing.status === 'superseded') return { superseded: true };
   if (existing && existing.status !== 'pending') return { gate: existing };
 
-  await ctxArg.step(`gate-open-${name}`, async () => {
+  const opened = await ctxArg.step(`gate-open-${name}`, async () => {
     try {
       await store.createHumanTask({
         executionId,
         humanTaskId,
+        orchestratorRunId: runId,
         stageInstanceId,
         unitSlug,
         sectionIndex,
@@ -182,8 +190,8 @@ export const awaitEngineGate = async (
         ...(recomposeTargets ? { recomposeTargets } : {}),
         ...(nextStageId !== undefined ? { nextStageId } : {}),
       });
-    } catch {
-      /* already exists from a prior attempt — idempotent open */
+    } catch (error) {
+      if (error?.name !== 'ConditionalCheckFailedException') throw error;
     }
     // Park META (WAITING + pointer): the cancel endpoint and the UI badge key
     // off it. Engine gates are barriers — no lanes are running while pending.
@@ -192,9 +200,20 @@ export const awaitEngineGate = async (
         executionId,
         status: 'WAITING',
         pendingHumanTaskId: humanTaskId,
+        ifOrchestratorRunId: runId,
       });
-    } catch {
-      /* park bookkeeping is best-effort; the gate row is the truth */
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') {
+        // Current stores create/park atomically. Also clean up gates created
+        // by a deployed older version before its META ownership write failed.
+        await store.supersedeHumanTask({
+          executionId,
+          humanTaskId,
+          supersededBy: 'run_replaced',
+        });
+        return false;
+      }
+      throw error;
     }
     try {
       await broadcast?.(intentId, {
@@ -216,38 +235,43 @@ export const awaitEngineGate = async (
     } catch {
       /* live fan-out is best-effort */
     }
+    return true;
   });
+  if (opened === false) return { superseded: true };
 
   const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
-  const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
-    store.setGateCallbackId({
+  const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, async () => {
+    const bound = await bindGateCallback(store, {
       executionId,
       humanTaskId,
       callbackId,
       stageInstanceId: stageInstanceId ?? null,
       callbackOwner: `engine:${humanTaskId}`,
-    }),
-  );
+      unitSlug,
+      sectionIndex,
+    });
+    if (!bound) return null;
+    // An answer can win immediately after binding. Save that observation in
+    // the existing bind checkpoint, retaining compatibility with old row values.
+    return store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
+  });
   if (!callbackBound) {
     throw new Error(
       `gate_callback_conflict: ${humanTaskId} already has a different callback owner`,
     );
   }
-  await callbackPromise;
+  if (!callbackBound.status || callbackBound.status === 'pending') await callbackPromise;
 
-  // Re-read after the wake: cancel/rewind supersedes and wakes with a
-  // sentinel — that run owns META from here (same discipline as stage gates).
+  // Re-read after the wake (or an answer observed while binding), so a
+  // subsequent cancellation is not hidden by the bind checkpoint.
   const gate = await ctxArg.step(`gate-after-${name}`, () =>
-    store.getHumanTask(executionId, humanTaskId).catch(() => null),
+    store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
   );
   if (!gate || gate.status === 'superseded') return { superseded: true };
-  await ctxArg.step(`gate-unpark-${name}`, async () => {
-    try {
-      await store.updateExecution({ executionId, status: 'RUNNING', pendingHumanTaskId: null });
-    } catch {
-      /* best-effort un-park */
-    }
-  });
+  const unparked = await ctxArg.step(`gate-unpark-${name}`, () =>
+    unparkGate(store, { executionId, humanTaskId, runId }),
+  );
+  if (unparked === false) return { superseded: true };
   return { gate };
 };
 

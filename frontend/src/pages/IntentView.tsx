@@ -67,7 +67,11 @@ import {
 // IntentActivityPanel where output/timeline/discussions render).
 
 const TERMINAL_STATUSES = new Set(['FAILED', 'CANCELLED', 'SUCCEEDED']);
-const CREDENTIAL_FAILURE_CODES = new Set(['credential_unavailable', 'credential_invalid']);
+const CREDENTIAL_FAILURE_CODES = new Set([
+  'credential_unavailable',
+  'credential_invalid',
+  'credential_quota_exhausted',
+]);
 const NON_EXPORTABLE_STATUSES = new Set(['DRAFT', 'CREATED']);
 const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
   { value: 'claude', label: 'Claude' },

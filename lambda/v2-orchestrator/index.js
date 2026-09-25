@@ -43,7 +43,7 @@ import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
-import { humanTaskMatchesOwner, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
+import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { resolveSkipTo, skipTargetsFrom, resolveRecomposeSkips } from '../shared/stage-skip.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
@@ -57,6 +57,7 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
+import { bindGateCallback, unparkGate } from './gate-callback.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -805,7 +806,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex)),
         store,
         suffix,
-        ids: { projectId, intentId, executionId },
+        ids: { projectId, intentId, executionId, orchestratorRunId: runId },
         workflowId,
         workflowVersion,
         ...(meta.aidlcRepoRef ? { aidlcRepoRef: meta.aidlcRepoRef } : {}),
@@ -876,61 +877,24 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         const expectedStageInstanceId = result.stageInstanceId ?? stage.stageInstanceId ?? null;
         const expectedCallbackOwner = `stage:${expectedStageInstanceId ?? label}`;
         const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
-          store.setGateCallbackId({
+          bindGateCallback(store, {
             executionId,
             humanTaskId,
             callbackId,
             stageInstanceId: expectedStageInstanceId,
             callbackOwner: expectedCallbackOwner,
-          }),
-        );
-        let answeredEarly = false;
-        if (!callbackBound) {
-          // The answer can win the CAS immediately before this bind. In that
-          // case setGateCallbackId returns null because the gate is no longer
-          // pending, but no callback is needed: resume directly with the
-          // persisted answer. Any still-pending, differently owned, or already
-          // bound gate remains an invariant violation.
-          const gateAfterBindFailure = await ctxArg.step(
-            `gate-after-bind-failure-${humanTaskId}`,
-            () => store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
-          );
-          if (gateAfterBindFailure?.status === 'superseded') {
-            ctx.logger?.info?.('run retired before gate callback bind', {
-              intentId,
-              humanTaskId,
-            });
-            return {
-              state: 'TERMINAL',
-              value: { ok: false, reason: 'retired', intentId, humanTaskId },
-            };
-          }
-          const ownsExpectedStage = humanTaskMatchesOwner({
-            task: gateAfterBindFailure,
-            stageInstanceId: expectedStageInstanceId,
             unitSlug,
             sectionIndex,
-          });
-          const callbackIdCompatible =
-            gateAfterBindFailure?.callbackId == null ||
-            gateAfterBindFailure.callbackId === callbackId;
-          const callbackOwnerCompatible =
-            gateAfterBindFailure?.callbackOwner == null ||
-            gateAfterBindFailure.callbackOwner === expectedCallbackOwner;
-          answeredEarly =
-            isHumanTaskAnswerStatus(gateAfterBindFailure?.status) &&
-            ownsExpectedStage &&
-            callbackIdCompatible &&
-            callbackOwnerCompatible;
-          if (!answeredEarly) {
-            return {
-              state: 'TERMINAL',
-              value: await fail(
-                'gate_callback_conflict',
-                `gate ${humanTaskId} bind failed without an unbound answer owned by this stage`,
-              ),
-            };
-          }
+          }),
+        );
+        if (!callbackBound) {
+          return {
+            state: 'TERMINAL',
+            value: await fail(
+              'gate_callback_conflict',
+              `gate ${humanTaskId} is already bound to a different stage callback`,
+            ),
+          };
         }
 
         // Answer/bind race (field incident): a fast human can answer in the
@@ -940,14 +904,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // parkReleaseSeconds stall the human reads as "my answer was
         // ignored"). Re-read AFTER binding: an already-answered gate skips
         // the wait entirely and resumes now.
-        if (callbackBound) {
-          answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
-            const gate = await store.getHumanTask(executionId, humanTaskId, {
-              consistentRead: true,
-            });
-            return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
-          });
-        }
+        const answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
+          const gate = await store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
+          return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+        });
         if (!answeredEarly) {
           // D1 release-on-park: if no human answers within parkReleaseSeconds, free
           // the warm microVM compute (StopRuntimeSession) while we keep waiting —
@@ -1000,7 +960,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // over the fresh row — field incident). Verify we still own the run
         // BEFORE dispatching anything.
         const ownerRunId = await ctxArg.step(`run-owner-${humanTaskId}`, async () => {
-          const currentMeta = await store.getExecution(executionId);
+          const currentMeta = await store.getExecution(executionId, { consistentRead: true });
           return currentMeta?.orchestratorRunId ?? null;
         });
         if (runId && ownerRunId && ownerRunId !== runId) {
@@ -1016,21 +976,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Credential resolution only permits active executions. Unpark META
         // before AgentCore restores a released session's workspace, otherwise
         // the re-clone is rejected while the execution still reads WAITING.
-        const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, async () => {
-          try {
-            await store.updateExecution({
-              executionId,
-              status: 'RUNNING',
-              pendingHumanTaskId: null,
-              fromStatus: 'WAITING',
-              ifOrchestratorRunId: runId,
-            });
-            return true;
-          } catch (e) {
-            if (e?.name === 'ConditionalCheckFailedException') return false;
-            throw e;
-          }
-        });
+        const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, () =>
+          unparkGate(store, { executionId, humanTaskId, runId }),
+        );
         if (!ownedUnpark) {
           logger.info('run retired while unparking gate', { humanTaskId });
           return {
@@ -1045,6 +993,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         });
       }
 
+      if (result?.reason === 'retired') {
+        return { state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId } };
+      }
       if (result?.state === 'FAILED') {
         return {
           state: 'FAILED',

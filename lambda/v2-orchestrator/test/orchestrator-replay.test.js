@@ -5,6 +5,8 @@ import {
   WaitingOperationStatus,
 } from '@aws/durable-execution-sdk-js-testing';
 import { __durableHandler } from '../index.js';
+import { awaitEngineGate } from '../section.js';
+import { awaitEngineGate as previousEngineGate } from './fixtures/engine-gate-before-recovery.js';
 
 // ---------------------------------------------------------------------------
 // REAL replay coverage for the orchestrator's async stage flow (WP1).
@@ -34,6 +36,178 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await LocalDurableTestRunner.teardownTestEnvironment();
+});
+
+it('resumes deployed engine-gate checkpoints with the recovery implementation', async () => {
+  let gate;
+  let opens = 0;
+  let binds = 0;
+  const meta = { orchestratorRunId: 'run1', status: 'RUNNING' };
+  const store = {
+    getExecution: async () => ({ ...meta }),
+    getHumanTask: async () => gate && { ...gate },
+    createHumanTask: async (input) => {
+      opens++;
+      gate = { ...input, status: 'pending' };
+    },
+    setGateCallbackId: async (input) => {
+      binds++;
+      Object.assign(gate, input);
+      return { ...gate };
+    },
+    updateExecution: async (input) => Object.assign(meta, input),
+  };
+  const toolkit = {
+    store,
+    runId: 'run1',
+    ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+  };
+  const args = { name: 'legacy', prompt: 'Continue?' };
+  const oldHandler = withDurableExecution((_event, ctx) => previousEngineGate(ctx, toolkit, args));
+  const newHandler = withDurableExecution((_event, ctx) => awaitEngineGate(ctx, toolkit, args));
+  let upgraded = false;
+  let suspended;
+  const suspension = new Promise((resolve) => {
+    suspended = resolve;
+  });
+  const runner = new LocalDurableTestRunner({
+    handlerFunction: async (...input) => {
+      const result = await (upgraded ? newHandler : oldHandler)(...input);
+      if (result.Status === 'PENDING') {
+        upgraded = true;
+        suspended();
+      }
+      return result;
+    },
+  });
+  const completion = runner.run({ payload: {} });
+  await suspension;
+  gate.status = 'approved';
+  gate.answer = { decision: 'approve' };
+  await runner
+    .getOperation('await-eg-legacy-run1')
+    .sendCallbackSuccess(JSON.stringify(gate.answer));
+  const execution = await completion;
+  expect(execution.getResult()).toMatchObject({ gate: { status: 'approved' } });
+  expect(execution.getInvocations().length).toBeGreaterThan(1);
+  expect({ opens, binds }).toEqual({ opens: 1, binds: 1 });
+  expect(meta.status).toBe('RUNNING');
+});
+
+it('completes an engine gate on a racing saved answer without a callback delivery', async () => {
+  let gate = null;
+  let binds = 0;
+  let opened = 0;
+  let resumed = 0;
+  const store = {
+    getExecution: async () => ({ orchestratorRunId: 'run1' }),
+    getHumanTask: async () => gate,
+    createHumanTask: async (input) => {
+      opened++;
+      gate = { ...input, status: 'pending' };
+    },
+    setGateCallbackId: async () => {
+      binds++;
+      return null; // the human answered before the pending-only bind
+    },
+    updateExecution: async (input) => {
+      if (input.status === 'RUNNING') resumed++;
+      return {};
+    },
+  };
+  const handler = withDurableExecution((_event, ctx) =>
+    awaitEngineGate(
+      ctx,
+      {
+        store,
+        runId: 'run1',
+        ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+        broadcast: async () => {
+          gate = { ...gate, status: 'answered', answer: { decision: 'retry' } };
+        },
+      },
+      { name: 'halt-s1-r1', prompt: 'Retry?' },
+    ),
+  );
+  const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+  const execution = await runner.run({ payload: {} });
+  expect(execution.getResult()).toMatchObject({
+    gate: { status: 'answered', answer: { decision: 'retry' } },
+  });
+  expect({ opened, binds, resumed }).toEqual({ opened: 1, binds: 1, resumed: 1 });
+});
+
+it('replays an unpark whose META write committed but whose step result was lost', async () => {
+  let gate;
+  let attempts = 0;
+  let committed = 0;
+  let interrupted = false;
+  const meta = { orchestratorRunId: 'run1', status: 'RUNNING', pendingHumanTaskId: null };
+  const store = {
+    getExecution: async () => ({ ...meta }),
+    getHumanTask: async () => gate && { ...gate },
+    createHumanTask: async (input) => {
+      gate = { ...input, status: 'pending' };
+    },
+    setGateCallbackId: async () => null,
+    updateExecution: async (input) => {
+      if (input.status === 'RUNNING') {
+        attempts++;
+        if (
+          meta.status !== input.fromStatus ||
+          meta.pendingHumanTaskId !== input.ifPendingHumanTaskId
+        ) {
+          throw Object.assign(new Error('CAS'), { name: 'ConditionalCheckFailedException' });
+        }
+        committed++;
+      }
+      Object.assign(meta, { status: input.status, pendingHumanTaskId: input.pendingHumanTaskId });
+    },
+  };
+  const handler = withDurableExecution((_event, ctx) =>
+    awaitEngineGate(
+      {
+        createCallback: (...args) => ctx.createCallback(...args),
+        step: (name, fn) =>
+          ctx.step(
+            name,
+            async () => {
+              const value = await fn();
+              if (name === 'gate-unpark-replay' && !interrupted) {
+                interrupted = true;
+                throw new Error('worker lost before checkpointing the committed unpark');
+              }
+              return value;
+            },
+            { retryStrategy: (_error, n) => ({ shouldRetry: n < 2, delay: { seconds: 0 } }) },
+          ),
+      },
+      {
+        store,
+        runId: 'run1',
+        ids: { executionId: 'e1' },
+        broadcast: async () => {
+          gate.status = 'answered';
+          gate.answer = 'approve';
+        },
+      },
+      { name: 'replay', prompt: 'Continue?' },
+    ),
+  );
+  const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+  expect((await runner.run({ payload: {} })).getResult()).toMatchObject({
+    gate: { status: 'answered' },
+  });
+  expect({ attempts, committed, interrupted }).toEqual({
+    attempts: 2,
+    committed: 1,
+    interrupted: true,
+  });
+  expect(meta).toMatchObject({
+    status: 'RUNNING',
+    pendingHumanTaskId: null,
+    orchestratorRunId: 'run1',
+  });
 });
 
 const META = {
@@ -116,6 +290,87 @@ const completeStage = async (runner, opName, result) => {
 };
 
 describe('orchestrator on the real durable runner (replay semantics)', () => {
+  it('resumes a stage gate after its unpark committed without a checkpoint', async () => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    const meta = { ...META };
+    let interrupted = false;
+    let unparkAttempts = 0;
+    world.deps.store.getExecution = async () => ({
+      ...meta,
+      pendingHumanTaskId: world.pendingHumanTaskId,
+    });
+    const update = world.deps.store.updateExecution;
+    world.deps.store.updateExecution = async (input) => {
+      if (input.ifPendingHumanTaskId) unparkAttempts++;
+      if (input.fromStatus && meta.status !== input.fromStatus) {
+        throw Object.assign(new Error('CAS'), { name: 'ConditionalCheckFailedException' });
+      }
+      Object.assign(meta, input);
+      if (input.pendingHumanTaskId !== undefined)
+        world.pendingHumanTaskId = input.pendingHumanTaskId;
+      return update(input);
+    };
+    const handler = withDurableExecution((event, ctx) => {
+      const step = (name, fn) =>
+        ctx.step(
+          name,
+          async () => {
+            const value = await fn();
+            if (name === 'gate-unpark-h1' && !interrupted) {
+              interrupted = true;
+              throw new Error('lost checkpoint after stage-gate unpark');
+            }
+            return value;
+          },
+          { retryStrategy: (_error, n) => ({ shouldRetry: n < 2, delay: { seconds: 0 } }) },
+        );
+      const wrapped = new Proxy(ctx, {
+        get: (target, key) =>
+          key === 'step'
+            ? step
+            : typeof target[key] === 'function'
+              ? target[key].bind(target)
+              : target[key],
+      });
+      return __durableHandler(event, wrapped, world.deps);
+    });
+    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const completion = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    const stageOp = await runner
+      .getOperation('stage-cb-a')
+      .waitForData(WaitingOperationStatus.STARTED);
+    meta.status = 'WAITING';
+    world.pendingHumanTaskId = 'h1';
+    world.gateStatus = 'pending';
+    await stageOp.sendCallbackSuccess(
+      JSON.stringify({ ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' }),
+    );
+    const gateOp = await runner
+      .getOperation('await-h1')
+      .waitForData(WaitingOperationStatus.STARTED);
+    world.gateStatus = 'answered';
+    await gateOp.sendCallbackSuccess(JSON.stringify({ answer: 'approve' }));
+    await completeStage(runner, 'stage-cb-a-resume-h1', { ok: true, state: 'SUCCEEDED' });
+    expect((await completion).getResult()).toMatchObject({ ok: true });
+    expect(unparkAttempts).toBe(2);
+    expect(world.statusWrites).not.toContain('FAILED');
+  });
+
+  it('does not fail a replacement attempt when an old worker returns retired', async () => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const completion = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    await completeStage(runner, 'stage-cb-a', { ok: false, state: 'FAILED', reason: 'retired' });
+    expect((await completion).getResult()).toMatchObject({ ok: false, reason: 'retired' });
+    expect(world.statusWrites).not.toContain('FAILED');
+    expect(world.statusWrites).not.toContain('SUCCEEDED');
+  });
+
   it('runs init-ws → stage a (park → human answer → resume) → stage b to SUCCEEDED with exactly-once side effects', async () => {
     const world = makeWorld();
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));

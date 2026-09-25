@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   BatchWriteCommand,
@@ -50,6 +50,146 @@ import {
   TRACKER_SYNC_STATES,
 } from '../v2-process-keys.js';
 import { createProcessStore } from '../v2-process-store.js';
+
+describe('stage attempt ownership transactions', () => {
+  const ownership = { orchestratorRunId: 'run1', stageCallbackId: 'cb1', stageInstanceId: 's1' };
+  const setup = () => {
+    const ddb = {
+      send: vi.fn(async (command) =>
+        command instanceof GetCommand ? { Item: { projectId: 'p1', startedAt: 'T' } } : {},
+      ),
+    };
+    return { ddb, store: createProcessStore({ ddb, tableName: 't', clock: () => 'T' }) };
+  };
+  it.each(['FAILED', 'SUCCEEDED', 'WAITING_FOR_HUMAN'])(
+    'fences %s by run AND callback in the write',
+    async (state) => {
+      const { ddb, store } = setup();
+      await store.updateStageState({ executionId: 'e1', stageInstanceId: 's1', state, ownership });
+      const { TransactItems: items } = ddb.send.mock.calls[0][0].input;
+      expect(items[0].ConditionCheck).toMatchObject({
+        Key: { sk: 'META' },
+        ExpressionAttributeValues: { ':ownedRun': 'run1' },
+      });
+      expect(items[1].Update).toMatchObject({
+        Key: { sk: 'STAGE#s1' },
+        ConditionExpression: 'stageCallbackId = :ownedCallback',
+        ExpressionAttributeValues: { ':ownedCallback': 'cb1' },
+      });
+    },
+  );
+  it('retires only a gate belonging to this stage callback', async () => {
+    const { ddb, store } = setup();
+    await store.supersedeHumanTask({ executionId: 'e1', humanTaskId: 'h1', ownership });
+    const { TransactItems: items } = ddb.send.mock.calls[0][0].input;
+    expect(items.map((item) => (item.ConditionCheck ?? item.Update).Key.sk)).toEqual([
+      'META',
+      'STAGE#s1',
+      'HUMAN#h1',
+    ]);
+    expect(items[2].Update.ConditionExpression).toContain('stageInstanceId = :ownedStage');
+    expect(items[2].Update.ConditionExpression).toContain('stageCallbackId = :ownedCallback');
+  });
+  it('opens the question and parks its stage and execution atomically', async () => {
+    const { ddb, store } = setup();
+    await store.createHumanTask({
+      executionId: 'e1',
+      stageInstanceId: 's1',
+      humanTaskId: 'h1',
+      ownership,
+    });
+    const writes = ddb.send.mock.calls
+      .map(([cmd]) => cmd)
+      .filter((cmd) => cmd instanceof TransactWriteCommand);
+    expect(writes).toHaveLength(1);
+    const items = writes[0].input.TransactItems;
+    expect(items).toHaveLength(3);
+    expect(items[0].Put.Item).toMatchObject({ stageCallbackId: 'cb1', orchestratorRunId: 'run1' });
+    expect(items[1].Update.ConditionExpression).toContain('stageCallbackId = :ownedCallback');
+    expect(items[2].Update.ConditionExpression).toContain('orchestratorRunId = :ownedRun');
+    expect(items[2].Update.UpdateExpression).toContain('GSI1SK');
+  });
+  it('distinguishes lost ownership from transaction storage failures', async () => {
+    const { ddb, store } = setup();
+    const write = () =>
+      store.updateStageState({
+        executionId: 'e1',
+        stageInstanceId: 's1',
+        state: 'FAILED',
+        ownership,
+      });
+    ddb.send.mockRejectedValue(
+      Object.assign(new Error('replaced'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+      }),
+    );
+    await expect(write()).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+    ddb.send.mockRejectedValue(
+      Object.assign(new Error('capacity'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ProvisionedThroughputExceeded' }],
+      }),
+    );
+    await expect(write()).rejects.toMatchObject({ name: 'TransactionCanceledException' });
+  });
+  it('creates an engine gate and its owned META wait in one transaction', async () => {
+    const { ddb, store } = setup();
+    await store.createHumanTask({
+      executionId: 'e1',
+      humanTaskId: 'eg-1',
+      orchestratorRunId: 'run1',
+    });
+    const tx = ddb.send.mock.calls.find(([cmd]) => cmd instanceof TransactWriteCommand)[0].input;
+    expect(tx.TransactItems).toHaveLength(2);
+    expect(tx.TransactItems[0].Put.Item).toMatchObject({
+      humanTaskId: 'eg-1',
+      orchestratorRunId: 'run1',
+    });
+    expect(tx.TransactItems[1].Update).toMatchObject({
+      ConditionExpression: 'orchestratorRunId = :ifOrid',
+      ExpressionAttributeValues: { ':ifOrid': 'run1', ':ph': 'eg-1', ':status': 'WAITING' },
+    });
+    expect(
+      ddb.send.mock.calls.some(
+        ([cmd]) => cmd instanceof PutCommand || cmd instanceof UpdateCommand,
+      ),
+    ).toBe(false);
+  });
+  it.each([false, true])(
+    'conditions answers on the gate run and stage callback, and returns the committed row (steering: %s)',
+    async (withSteering) => {
+      const { ddb, store } = setup();
+      const answered = { status: 'answered', callbackId: 'cb-bound-during-answer' };
+      ddb.send.mockImplementation(async (cmd) =>
+        cmd instanceof GetCommand ? { Item: answered } : {},
+      );
+      const input = {
+        executionId: 'e1',
+        humanTaskId: 'h1',
+        status: 'answered',
+        answer: 'yes',
+        ifOrchestratorRunId: 'run1',
+        ifStageCallbackId: 'cb1',
+        stageInstanceId: 's1',
+      };
+      const result = withSteering
+        ? await store.answerHumanTaskWithSteering({
+            ...input,
+            steering: { kind: 'gate-steer', message: 'Use the event bus.', targetGateId: 'h1' },
+          })
+        : await store.answerHumanTask(input);
+      expect(withSteering ? result.answered : result).toEqual(answered);
+      const tx = ddb.send.mock.calls[0][0].input.TransactItems;
+      expect(tx).toHaveLength(withSteering ? 4 : 3);
+      expect(tx[0].ConditionCheck.ExpressionAttributeValues[':run']).toBe('run1');
+      expect(tx[1].ConditionCheck.ExpressionAttributeValues[':callback']).toBe('cb1');
+      expect(tx[2].Update.ConditionExpression).toBe('#status = :pending');
+      if (withSteering) expect(tx[3].Put.Item.message).toBe('Use the event bus.');
+      expect(ddb.send.mock.calls[1][0].input.ConsistentRead).toBe(true);
+    },
+  );
+});
 
 describe('v2-process-keys', () => {
   it('namespaces every record under EXEC#<id>', () => {
@@ -195,6 +335,19 @@ describe('createProcessStore', () => {
       clock: () => 'T',
       ids: () => `id-${++n}`,
     });
+  });
+
+  it('strongly reads recovery state and scheduling truth', async () => {
+    ddb.on(GetCommand).resolves({ Item: {} });
+    await store.getStage('e1', 's1', { consistentRead: true });
+    await store.getHumanTask('e1', 'h1', { consistentRead: true });
+    await store.getUnitPlan('e1');
+    const inputs = ddb.commandCalls(GetCommand).map((call) => call.args[0].input);
+    expect(inputs).toEqual([
+      { TableName: 'v2-proc', Key: stageKey('e1', 's1'), ConsistentRead: true },
+      { TableName: 'v2-proc', Key: humanTaskKey('e1', 'h1'), ConsistentRead: true },
+      { TableName: 'v2-proc', Key: unitPlanKey('e1'), ConsistentRead: true },
+    ]);
   });
 
   it('createExecution writes META guarded against overwrite', async () => {
@@ -548,6 +701,7 @@ describe('createProcessStore', () => {
 
   it('answers with attached steering in one transaction', async () => {
     ddb.on(TransactWriteCommand).resolves({});
+    ddb.on(GetCommand).resolves({ Item: { humanTaskId: 'h1', status: 'answered' } });
 
     const result = await store.answerHumanTaskWithSteering({
       executionId: 'e1',
@@ -582,7 +736,10 @@ describe('createProcessStore', () => {
       Item: expect.objectContaining({ sk: 'STEER#T#st-id-1' }),
       ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
     });
-    expect(ddb.commandCalls(GetCommand)).toHaveLength(0);
+    expect(ddb.commandCalls(GetCommand)[0].args[0].input).toMatchObject({
+      Key: humanTaskKey('e1', 'h1'),
+      ConsistentRead: true,
+    });
   });
 
   it('listEvents queries the EVENT# prefix time-ordered and drains pagination', async () => {
@@ -1217,6 +1374,28 @@ describe('steering store methods', () => {
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe('orchestratorRunId = :ifOrid');
     expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
+  });
+
+  it('unparks only the expected run and pending gate', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { status: 'RUNNING' } });
+    ddb.on(GetCommand).resolves({ Item: { projectId: 'p1' } });
+    await store.updateExecution({
+      executionId: 'e1',
+      status: 'RUNNING',
+      pendingHumanTaskId: null,
+      fromStatus: 'WAITING',
+      ifOrchestratorRunId: 'run1',
+      ifPendingHumanTaskId: 'h1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      '#status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
+    );
+    expect(input.ExpressionAttributeValues).toMatchObject({
+      ':fromStatus': 'WAITING',
+      ':ifOrid': 'run1',
+      ':ifPendingHumanTaskId': 'h1',
+    });
   });
 
   it('getExecutionRecords groups STEER rows', async () => {
