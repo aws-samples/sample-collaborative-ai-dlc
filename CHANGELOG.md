@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-25
+
+This release adds code-file traceability and direct unit branch and pull-request links in reviews, alongside structured logging, workflow reliability fixes, and usability improvements.
+
+### Added
+
+- Code-file traceability in the intent graph. Files committed by stages become `CodeFile` nodes linked to their intent and unit, with repository, commit, and stage provenance. A valid stage-produced `traceability.json` adds implementation links from requirements, stories, and other known graph elements to the exact file revision. The graph shows the current revision per unit and file while preserving prior revisions in Neptune, and traceability survives stage resumes and retries ([#432](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/432)).
+- Direct links to unit branches and pull/merge requests in review and work-product views, including the walking-skeleton review gate. Links support GitHub, GitLab, and Bitbucket, show the relevant provider, and follow the selected work-product sort order ([#476](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/476)).
+
+### Changed
+
+- Lambda functions and the AgentCore and Yjs container runtimes use AWS Lambda Powertools structured JSON logging, with consistent service and component fields and request correlation on orchestration paths. Runtime dispatch and invocation failures now produce explicit diagnostics. Optional API event logging removes headers and redacts known credential fields, MCP configurations, and secret maps before logging ([#464](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/464)).
+- Backend dependency analysis now checks for circular dependencies, cross-workspace imports, and production imports of test code in CI and the pre-commit hook. New report, metrics, graph, and dependency inspection commands help contributors assess module coupling ([#472](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/472)).
+- Refreshed the README and documentation overview video, poster, and attribution while preserving the combined play count across the old and new video assets ([#490](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/490)).
+
+### Fixed
+
+- Human answers and gate decisions are preserved when they arrive before the agent exits or before the orchestrator binds its callback. Stages remain parked until the persisted decision can be delivered, with consistent reads and stage, lane, and callback ownership checks preventing lost answers or false callback conflicts. Gate steering is persisted before resuming execution ([#459](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/459)).
+- The sidebar shows up to five matching intents per space, ordered by recent activity, instead of retaining only the latest intent. Badge counts follow the selected status filter, and older cached entries refresh to populate the intent list ([#485](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/485)).
+- Large Quorum artifact plans stay within a scrollable panel, long paths wrap within the available width, and approval and rejection controls remain accessible on narrow screens. Artifact previews are keyboard accessible, and narrow activity overlays move and restore focus correctly ([#484](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/484)).
+
+### Notes
+
+- Code-file traceability works with existing workflows that do not produce `traceability.json`; Git still supplies the intent and unit links. Missing or invalid manifests omit the additional evidence links, and graph projection failures do not fail the stage. Existing history is not automatically backfilled.
+- Deploy the Terraform changes and updated Lambda packages and container images to apply the logging configuration. The new `powertools_log_level` setting defaults to `INFO`, and `powertools_log_event` defaults to `false`. Log queries or filters that depend on the previous plain-text format may need updating.
+
 ## [2.1.1] - 2026-09-15
 
 Hotfix for repository paths and workspace setup ([#467](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/467)).
