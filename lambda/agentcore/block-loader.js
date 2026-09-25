@@ -10,12 +10,22 @@
 import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { ddb, s3 } from './clients.js';
-import { blockPk, catalogGsi1Pk, LATEST, versionSk } from '../shared/blocks.js';
+import { blockPk, catalogGsi1Pk, LATEST, sha256, versionSk } from '../shared/blocks.js';
 import { workflowPk, workflowVersionPrefix } from '../shared/workflows.js';
 import { DEFAULT_TENANT, SYSTEM_TENANT } from '../shared/tenant.js';
+import {
+  loadReleaseClosure,
+  ReleaseResolverError,
+  resolveMethodologyLibrary,
+  resolveRuntimeFile,
+} from '../shared/release-resolver.js';
 
 const blocksTable = () => process.env.BLOCKS_TABLE;
 const artifactsBucket = () => process.env.ARTIFACTS_BUCKET;
+
+// Repo-relative path of the conductor persona: read from the intent's immutable
+// release closure when pinned, from the mutable `aidlc-runtime/<ref>/` otherwise.
+const CONDUCTOR_REPO_PATH = 'core/aidlc-common/conductor.md';
 
 const streamToString = async (body) => {
   if (!body) return '';
@@ -230,14 +240,110 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
 // catalogs. Blocks are keyed by their id (or blockId).
 const keyById = (items) => Object.fromEntries(items.map((b) => [b.id ?? b.blockId, b]));
 
+const releaseClosure = (methodologyRelease) =>
+  loadReleaseClosure({ s3, bucket: artifactsBucket(), methodologyRelease });
+
+// Read one content-addressed release object and verify its sha256 before
+// returning it. Absent ref ⇒ '' (the block genuinely carries no body/script);
+// every other outcome throws a typed ReleaseResolverError.
+const loadVerifiedReleaseObject = async ({ ref, methodologyRelease, label }) => {
+  const s3Key = ref?.s3Key;
+  if (!s3Key) return '';
+  const closure = await releaseClosure(methodologyRelease);
+  const expected = closure.objectDigests?.get?.(s3Key) ?? ref.sha256 ?? null;
+  if (!expected) {
+    throw new ReleaseResolverError(
+      'release_object_unverifiable',
+      `block-loader: release ${closure.releaseId} records no digest for ${label} object ${s3Key}`,
+      { details: { s3Key, label } },
+    );
+  }
+  // A catalog ref and the manifest object list disagreeing means the closure is
+  // internally inconsistent — refuse before fetching rather than pick a winner.
+  if (ref.sha256 && ref.sha256 !== expected) {
+    throw new ReleaseResolverError(
+      'release_closure_mismatch',
+      `block-loader: catalog ${label} digest for ${s3Key} disagrees with the release manifest`,
+      { details: { s3Key, label } },
+    );
+  }
+  const content = await getObjectText(s3Key);
+  if (sha256(content) !== expected) {
+    throw new ReleaseResolverError(
+      'release_closure_mismatch',
+      `block-loader: ${label} object ${s3Key} does not match its recorded digest in release ${closure.releaseId}`,
+      { details: { s3Key, label } },
+    );
+  }
+  return content;
+};
+
+// Release-mode library: the intent's published closure is the base and explicit
+// user-tenant pins the only overlay. `assertSystemSourceRef` still runs — release
+// blocks carry `sourceRef = sourceSha`, so a pin/ref disagreement is still loud,
+// it just can no longer be satisfied by a reseeded row.
+const loadReleaseLibrary = async ({
+  workflowId,
+  workflowVersion,
+  methodologyPins,
+  aidlcRepoRef,
+  methodologyRelease,
+}) => {
+  const closure = await releaseClosure(methodologyRelease);
+  const { workflow, library, blocksByType, workflowSource } = await resolveMethodologyLibrary({
+    closure,
+    ddb,
+    tableName: blocksTable(),
+    workflowId,
+    workflowVersion,
+    methodologyPins,
+  });
+  assertSystemSourceRef({
+    aidlcRepoRef,
+    workflowTenant: workflowSource === 'release' ? SYSTEM_TENANT : DEFAULT_TENANT,
+    workflow: { ...workflow, workflowId: workflow.workflowId ?? workflow.id ?? workflowId },
+    blocksByType,
+  });
+  return {
+    workflow,
+    // `fromRelease` is the PROVENANCE FLAG buildExecutionPlan gates the authored
+    // scope/stage policy on. It is stamped here — the one place that has actually
+    // verified a release closure — and never inferred downstream.
+    library: { ...library, fromRelease: true },
+  };
+};
+
+// List one block type straight out of a pinned release closure (the composer
+// reads SCOPE blocks for keyword/description grounding). The release-mode
+// counterpart of listMergedBlocks, which must never run for a pinned intent.
+export const listReleaseBlocks = async (type, methodologyRelease) => {
+  const closure = await releaseClosure(methodologyRelease);
+  return closure.blocksByType?.[type] ?? [];
+};
+
 // Load everything the runtime needs for one execution: the pinned workflow plus
 // the library blocks (stages/agents/sensors/rules/artifacts) it references.
+//
+// `methodologyRelease` switches the source to the intent's immutable AI-DLC
+// release closure (issue #482). Release mode reads no SYSTEM row and no catalog
+// GSI at all, and fails closed: a missing or tampered closure throws a typed
+// ReleaseResolverError rather than falling back to the reseedable SYSTEM rows.
 export const loadLibrary = async ({
   workflowId,
   workflowVersion,
   methodologyPins = null,
   aidlcRepoRef = null,
+  methodologyRelease = null,
 }) => {
+  if (methodologyRelease) {
+    return loadReleaseLibrary({
+      workflowId,
+      workflowVersion,
+      methodologyPins,
+      aidlcRepoRef,
+      methodologyRelease,
+    });
+  }
   const wf = await loadWorkflow({ workflowId, workflowVersion });
   if (!wf) return { workflow: null, library: null };
   const workflow = assembleWorkflow(wf.items, { workflowId, workflowVersion });
@@ -280,13 +386,35 @@ export const loadLibrary = async ({
 };
 
 // Fetch the markdown body for a block (its instructions/prose) from S3.
-export const loadBlockBody = async (block) => getObjectText(block?.bodyRef?.s3Key);
+//
+// With `methodologyRelease` the bytes are INTEGRITY-VERIFIED before they reach a
+// prompt: a stage body or agent persona is the agent's whole instruction set, so
+// serving tampered or truncated bytes is a silent methodology substitution. The
+// expected digest comes from the release closure's `objectDigests` (built from
+// `manifest.objects`); when that map is unavailable we fall back to the digest
+// the CATALOG records on the ref, which is itself verified against the manifest
+// digest by `loadReleaseClosure`. With neither we refuse rather than guess.
+//
+// Callers in release mode must NOT wrap these in `.catch(() => '')`: degrading a
+// failed integrity check to an empty body is exactly the drift the release pin
+// exists to prevent.
+export const loadBlockBody = async (block, { methodologyRelease = null } = {}) =>
+  methodologyRelease
+    ? loadVerifiedReleaseObject({ ref: block?.bodyRef, methodologyRelease, label: 'body' })
+    : getObjectText(block?.bodyRef?.s3Key);
 
 // Fetch a sensor block's executable check script from S3 (its `scriptRef`).
 // Returns '' when the block carries no script. The seed content-addresses the
 // upstream `core/tools/aidlc-sensor-<id>.ts` here; a `script` sensor's runner
 // materializes it to the workspace and spawns it against the checked-out code.
-export const loadBlockScript = async (block) => getObjectText(block?.scriptRef?.s3Key);
+//
+// A sensor script is EXECUTED in the workspace, so release mode verifies its
+// digest on the same terms as a body — tampered bytes here are arbitrary code
+// execution inside the session, not just a wrong verdict.
+export const loadBlockScript = async (block, { methodologyRelease = null } = {}) =>
+  methodologyRelease
+    ? loadVerifiedReleaseObject({ ref: block?.scriptRef, methodologyRelease, label: 'script' })
+    : getObjectText(block?.scriptRef?.s3Key);
 
 // Fetch the runtime snapshot manifest for a pinned ref.
 export const loadRuntimeManifest = async (ref) => {
@@ -294,16 +422,27 @@ export const loadRuntimeManifest = async (ref) => {
   return text ? JSON.parse(text) : { ref, runtimeFiles: [], sensorScripts: [] };
 };
 
-// Fetch a single runtime file's content from the pinned snapshot.
-export const loadRuntimeFile = async (ref, repoPath) =>
-  getObjectText(`aidlc-runtime/${ref}/${repoPath}`);
-
 // Fetch the conductor persona (execution-quality doctrine) from the pinned
 // runtime snapshot. The stage prompt injects it so the quality guidance can
 // never drift from upstream's authored `conductor.md`. '' when the ref/file is
 // absent (the annex's distilled quality section still applies).
-export const loadConductor = async (ref) =>
-  ref ? getObjectText(`aidlc-runtime/${ref}/core/aidlc-common/conductor.md`) : '';
+//
+// With `methodologyRelease` the bytes come from the intent's release closure and
+// are digest-verified; there is no `aidlc-runtime/` fallback and no empty-string
+// degradation, because a silently missing conductor is drift we cannot detect.
+export const loadConductor = async (ref, { methodologyRelease = null } = {}) => {
+  if (methodologyRelease) {
+    const closure = await releaseClosure(methodologyRelease);
+    const file = await resolveRuntimeFile({
+      s3,
+      bucket: artifactsBucket(),
+      closure,
+      repoPath: CONDUCTOR_REPO_PATH,
+    });
+    return file.content;
+  }
+  return ref ? getObjectText(`aidlc-runtime/${ref}/${CONDUCTOR_REPO_PATH}`) : '';
+};
 
 export const __test = {
   assembleWorkflow,

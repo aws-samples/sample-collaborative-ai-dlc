@@ -361,6 +361,7 @@ module "lambda" {
   powertools_log_event        = var.powertools_log_event
   lambda_vpc_scope            = var.lambda_vpc_scope
   aidlc_repo_ref              = var.aidlc_repo_ref
+  aidlc_release_pinning       = var.aidlc_release_pinning
   application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids

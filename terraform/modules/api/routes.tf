@@ -1123,6 +1123,115 @@ resource "aws_lambda_permission" "workflows" {
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }
 
+# -----------------------------------------------------------------------------
+# /aidlc-releases, /aidlc-release-channels, /aidlc-release-profiles
+# (issue #482 Phase 4/5 — the AI-DLC release registry and channel pointers)
+#
+# Served by the workflows Lambda: the registry rows live in the same blocks
+# table and reuse the same platform-admin guard. Mutations are admin-only;
+# GET /aidlc-releases is open but filtered to selectable records for non-admins.
+#
+#   /aidlc-releases                      GET (list), POST (register)
+#   /aidlc-releases/{releaseId}          PATCH (support-state decision, CAS)
+#   /aidlc-release-channels              GET (stable/candidate/preview)
+#   /aidlc-release-channels/{channel}    PUT (move a pointer, CAS),
+#                                        DELETE (clear a pointer, CAS)
+#   /aidlc-release-profiles              GET (admin: allowlisted profiles)
+#
+# `{releaseId}` carries a colon (`aidlc:<sha>`); callers must percent-encode it
+# and the Lambda decodes it back.
+# -----------------------------------------------------------------------------
+resource "aws_api_gateway_resource" "aidlc_releases" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "aidlc-releases"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.aidlc_releases.id
+  path_part   = "{releaseId}"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_channels" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "aidlc-release-channels"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_channel" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.aidlc_release_channels.id
+  path_part   = "{channel}"
+}
+
+resource "aws_api_gateway_resource" "aidlc_release_profiles" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.api.id
+  path_part   = "aidlc-release-profiles"
+}
+
+locals {
+  aidlc_release_routes = {
+    releases_get   = { resource = aws_api_gateway_resource.aidlc_releases.id, method = "GET" }
+    releases_post  = { resource = aws_api_gateway_resource.aidlc_releases.id, method = "POST" }
+    release_patch  = { resource = aws_api_gateway_resource.aidlc_release.id, method = "PATCH" }
+    channels_get   = { resource = aws_api_gateway_resource.aidlc_release_channels.id, method = "GET" }
+    channel_put    = { resource = aws_api_gateway_resource.aidlc_release_channel.id, method = "PUT" }
+    channel_delete = { resource = aws_api_gateway_resource.aidlc_release_channel.id, method = "DELETE" }
+    profiles_get   = { resource = aws_api_gateway_resource.aidlc_release_profiles.id, method = "GET" }
+  }
+}
+
+resource "aws_api_gateway_method" "aidlc_release" {
+  for_each      = local.aidlc_release_routes
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = each.value.resource
+  http_method   = each.value.method
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "aidlc_release" {
+  for_each                = local.aidlc_release_routes
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = each.value.resource
+  http_method             = aws_api_gateway_method.aidlc_release[each.key].http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.workflows_lambda_invoke_arn
+}
+
+module "cors_aidlc_releases" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_releases.id
+}
+
+module "cors_aidlc_release" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_release.id
+}
+
+module "cors_aidlc_release_channels" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_release_channels.id
+}
+
+module "cors_aidlc_release_channel" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_release_channel.id
+}
+
+module "cors_aidlc_release_profiles" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.aidlc_release_profiles.id
+}
+
 # =============================================================================
 # /projects/{projectId}/intents Resources (AI-DLC v2 intents)
 #
@@ -1222,6 +1331,15 @@ resource "aws_api_gateway_resource" "intent_rewind" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
   path_part   = "rewind"
+}
+
+# Re-attempt the durable callback for a gate answer that was recorded but whose
+# resume failed (META.resumeRequired) — the one-click recovery for a run left
+# WAITING with no pending gate.
+resource "aws_api_gateway_resource" "intent_resume" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "resume"
 }
 
 resource "aws_api_gateway_resource" "intent_repair" {
@@ -1422,6 +1540,7 @@ locals {
     start_post             = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
     cancel_post            = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
     rewind_post            = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
+    resume_post            = { resource = aws_api_gateway_resource.intent_resume.id, method = "POST" }
     repair_post            = { resource = aws_api_gateway_resource.intent_repair.id, method = "POST" }
     compose_post           = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
     compose_upload         = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
@@ -1547,6 +1666,12 @@ module "cors_intent_rewind" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_rewind.id
+}
+
+module "cors_intent_resume" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_resume.id
 }
 
 module "cors_intent_repair" {

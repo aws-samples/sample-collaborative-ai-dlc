@@ -17,11 +17,24 @@
 //   GET    /workflows/{workflowId}/compiled[?version=N]    derived views (live or snapshot)
 //   GET    /workflows/{workflowId}/execution-preview?scope=<scope>[&version=N][&skip=a,b]
 //
+// The AI-DLC release registry rides this lambda because
+// it lives in the same blocks table and shares the platform-admin guard:
+//   GET    /aidlc-releases                     list (admin sees every record)
+//   POST   /aidlc-releases                     register a published release
+//                                              ({profileId} or {custom:{…}})
+//   PATCH  /aidlc-releases/{releaseId}         support-state decision, or a closure
+//                                              upgrade with {importerRevision} (CAS)
+//   GET    /aidlc-release-channels             stable/candidate/preview pointers
+//   PUT    /aidlc-release-channels/{channel}   move a pointer (CAS)
+//   DELETE /aidlc-release-channels/{channel}   clear a pointer (CAS)
+//   GET    /aidlc-release-profiles             allowlisted profiles + publish state
+//
 // SYSTEM-owned workflows are the imported baseline: read-only through the API
 // and replaceable by the seed job. User-created or forked workflows live under
 // the shared `default` owner. Reads fall back to SYSTEM; writes never do.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { S3Client } from '@aws-sdk/client-s3';
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -31,7 +44,25 @@ import {
   BatchWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
-import { requirePlatformAdmin } from '../shared/authz.js';
+import { isPlatformAdmin, requirePlatformAdmin } from '../shared/authz.js';
+import {
+  clearChannel,
+  getChannels,
+  getRelease,
+  isReleaseRegistryError,
+  isSelectableRecord,
+  listRegistrableProfiles,
+  listReleases,
+  registerCustomRelease,
+  registerRelease,
+  releasePinFromRecord,
+  ReleaseRegistryError,
+  setChannel,
+  updateRelease,
+  upgradeReleaseClosure,
+} from '../shared/release-registry.js';
+import { loadReleaseClosure, resolveMethodologyLibrary } from '../shared/release-resolver.js';
+import { AIDLC_RELEASE_IMPORTER_REVISION } from '../shared/aidlc-release.js';
 import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   META,
@@ -58,7 +89,10 @@ import { Logger } from '@aws-lambda-powertools/logger';
 const logger = new Logger({ persistentKeys: { component: 'workflows' } });
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const s3 = new S3Client({});
 const blocksTable = () => process.env.BLOCKS_TABLE;
+const artifactsBucket = () => process.env.ARTIFACTS_BUCKET || '';
+const aidlcReleasePinning = () => process.env.AIDLC_RELEASE_PINNING || 'off';
 const getClaims = (event) => event?.requestContext?.authorizer?.claims || {};
 const getRequestedVersion = (event) => {
   const raw = event?.queryStringParameters?.version;
@@ -627,10 +661,157 @@ const removeRuleRef = async (event, res, tenant, workflowId, layer, ruleId) => {
   return res(204, {});
 };
 
+// A release read fails closed: an unregistered id is 404 and an unresolvable or
+// tampered closure is 409, never a fall back to the live SYSTEM rows (which is
+// exactly the methodology the caller asked NOT to see).
+const releaseReadFailure = (error) => {
+  if (isReleaseRegistryError(error)) {
+    // An invisible workflow answers with the SAME body the non-release path uses,
+    // so `?release=` can never be used to probe which workflows exist.
+    if (error.code === 'release_workflow_not_found') {
+      return { status: 404, body: { error: 'Not found' } };
+    }
+    return {
+      status: error.code === 'release_not_found' ? 404 : 400,
+      body: { error: error.message, code: error.code },
+    };
+  }
+  if (error?.name === 'ReleaseResolverError') {
+    return { status: 409, body: { error: error.message, code: error.code } };
+  }
+  throw error;
+};
+
+const releaseReadError = (res, error) => {
+  const failure = releaseReadFailure(error);
+  return res(failure.status, failure.body);
+};
+
+// ── Release-pinned reads ──
+//
+// A release-pinned intent runs the closure, not the live SYSTEM rows, so its
+// compose page must be compiled from the closure too. Passing `?release=<id>`
+// makes these read-only views resolve the SAME methodology the intent executes;
+// without it every caller keeps the exact DynamoDB behaviour it had before.
+//
+// The id must name a REGISTERED release, and the closure resolver re-verifies
+// every digest, so this cannot be used to read arbitrary bucket content.
+//
+// An admin may read any registered release (an existing intent may be pinned to a
+// demoted one). A non-admin may only name a release `isSelectableRecord` accepts —
+// the exact set the release list and the intent picker already show them.
+// Existence is not leaked: for a non-admin, "not registered" and "registered but
+// not selectable" both raise the SAME `release_not_found`, so the response cannot
+// be used to enumerate the registry.
+//
+// `importerRevision` (the `releaseImporterRevision` query parameter) names WHICH
+// of the release's closures to read. An intent pinned before a closure upgrade
+// keeps running its original closure, so its compose page must be able to ask
+// for that one rather than the record's current pointer. Only closures the
+// record has actually pointed at — the current one or an `importerHistory`
+// entry — are addressable; anything else is the same `release_not_found`.
+const releasePinFor = async (releaseId, { isAdmin = false, importerRevision = null } = {}) => {
+  const notFound = () =>
+    new ReleaseRegistryError(
+      'release_not_found',
+      `workflows: release ${String(releaseId)} is not registered`,
+      { details: { releaseId: String(releaseId ?? '') } },
+    );
+  if (importerRevision !== null && (!Number.isInteger(importerRevision) || importerRevision < 1)) {
+    throw new ReleaseRegistryError(
+      'release_importer_revision_invalid',
+      'workflows: releaseImporterRevision must be a positive integer',
+    );
+  }
+  const record = await getRelease({ ...registryArgs(), releaseId });
+  if (!record || (!isAdmin && !isSelectableRecord(record))) throw notFound();
+  if (importerRevision === null || importerRevision === Number(record.importerRevision)) {
+    return releasePinFromRecord(record);
+  }
+  const previous = (record.importerHistory ?? []).find(
+    (entry) => Number(entry?.from?.importerRevision) === importerRevision,
+  );
+  if (!previous) throw notFound();
+  return releasePinFromRecord({ ...record, ...previous.from });
+};
+
+const requestedRelease = (event) => {
+  const raw = event?.queryStringParameters?.release;
+  return typeof raw === 'string' && raw ? decodePathParam(raw) : null;
+};
+
+const requestedReleaseImporterRevision = (event) => {
+  const raw = event?.queryStringParameters?.releaseImporterRevision;
+  if (raw == null || raw === '') return null;
+  return /^\d+$/.test(String(raw)) ? Number(raw) : Number.NaN;
+};
+
+const releasePlanInputs = async ({
+  releaseId,
+  importerRevision = null,
+  tenant,
+  workflowId,
+  workflowVersion,
+  isAdmin,
+}) => {
+  // The release decides the METHODOLOGY, never the authorization: the caller must
+  // still be able to see this workflow, exactly as on the non-release path.
+  const resolved = await resolveWorkflow(tenant, workflowId);
+  if (!resolved) {
+    throw new ReleaseRegistryError(
+      'release_workflow_not_found',
+      `workflows: workflow ${String(workflowId)} is not visible to this caller`,
+      { details: { workflowId: String(workflowId ?? '') } },
+    );
+  }
+  const methodologyRelease = await releasePinFor(releaseId, { isAdmin, importerRevision });
+  const closure = await loadReleaseClosure({
+    s3,
+    bucket: artifactsBucket(),
+    methodologyRelease,
+  });
+  const resolvedLibrary = await resolveMethodologyLibrary({
+    closure,
+    ddb,
+    tableName: blocksTable(),
+    tenant,
+    workflowId,
+    workflowVersion: workflowVersion ?? closure.catalog?.workflow?.workflowVersion ?? 1,
+  });
+  const { workflow, library } = resolvedLibrary;
+  const compiled = compileWorkflow(
+    workflow.placements,
+    workflow.scopeRefs.map((scopeRef) => scopeRef.scopeId),
+    library.stagesById,
+    library.artifactsById,
+    workflow.ruleRefs,
+    library.rulesById,
+  );
+  return { workflow, library, compiled, phases: workflow.phases ?? [] };
+};
+
 // ── Compiled views ── derive scope-grid + autonomy-profile + stage-graph from
 // the placements, scope refs, and the library Stage blocks they reference.
 // Computed on demand (no cache yet); the pure compilers live in shared/compile.
 const getCompiled = async (event, res, tenant, workflowId) => {
+  const releaseId = requestedRelease(event);
+  if (releaseId) {
+    const requested = getRequestedVersion(event);
+    if (requested.error) return res(400, { error: requested.error });
+    try {
+      const inputs = await releasePlanInputs({
+        releaseId,
+        importerRevision: requestedReleaseImporterRevision(event),
+        tenant,
+        workflowId,
+        workflowVersion: requested.version,
+        isAdmin: isPlatformAdmin(event),
+      });
+      return res(200, { ...inputs.compiled, phases: inputs.phases });
+    } catch (error) {
+      return releaseReadError(res, error);
+    }
+  }
   const requested = getRequestedVersion(event);
   if (requested.error) return res(400, { error: requested.error });
   const resolved = await resolveWorkflow(tenant, workflowId);
@@ -667,6 +848,21 @@ const getCompiled = async (event, res, tenant, workflowId) => {
 const loadPlanInputs = async (event, tenant, workflowId) => {
   const requested = getRequestedVersion(event);
   if (requested.error) return { status: 400, body: { error: requested.error } };
+  const releaseId = requestedRelease(event);
+  if (releaseId) {
+    try {
+      return await releasePlanInputs({
+        releaseId,
+        importerRevision: requestedReleaseImporterRevision(event),
+        tenant,
+        workflowId,
+        workflowVersion: requested.version,
+        isAdmin: isPlatformAdmin(event),
+      });
+    } catch (error) {
+      return releaseReadFailure(error);
+    }
+  }
   const resolved = await resolveWorkflow(tenant, workflowId);
   if (!resolved) return { status: 404, body: { error: 'Not found' } };
   const items = await queryWorkflowItems(resolved.owner, workflowId, requested.version);
@@ -695,6 +891,9 @@ const loadPlanInputs = async (event, tenant, workflowId) => {
   );
   return {
     workflow,
+    // No `scopesById`: the per-scope execution policy releases ≥2.6.18 author is
+    // gated on `library.fromRelease`, which only the release branch above sets, so
+    // loading SCOPE blocks here would cost a query that nothing can read.
     library: { stagesById, artifactsById, rulesById, agentsById, sensorsById },
     compiled,
   };
@@ -952,6 +1151,273 @@ const composeWorkflow = (owner, items) => {
   };
 };
 
+// ─── AI-DLC release registry ───
+//
+// Selection surface only. Nothing here reads or writes a release closure, and
+// no execution path consults these rows: a demotion changes what NEW intents
+// may pick, never what an existing pinned intent resolves.
+
+// A release id carries a colon (`aidlc:<sha>`). API Gateway normally hands the
+// decoded segment over, but a client that percent-encodes it must round-trip
+// correctly too — so decode when, and only when, the value still looks encoded.
+const decodePathParam = (raw) => {
+  if (typeof raw !== 'string' || !raw.includes('%')) return raw ?? null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+};
+
+const registryError = (res, error) => {
+  if (!isReleaseRegistryError(error)) throw error;
+  const status =
+    error.code === 'release_not_found'
+      ? 404
+      : error.code === 'release_conflict' ||
+          error.code === 'release_revision_conflict' ||
+          // A stranded channel pointer is a state conflict, not a bad request:
+          // the caller must clear or move the pointer and retry.
+          error.code === 'release_channel_pinned'
+        ? 409
+        : 400;
+  return res(status, {
+    error: error.message,
+    code: error.code,
+    ...(error.details ? { details: error.details } : {}),
+  });
+};
+
+const registryArgs = () => ({ ddb, tableName: blocksTable() });
+
+const listReleasesRoute = async (event, res) => {
+  // Reads are open, but a non-admin only sees what they could actually select:
+  // exposing importable or hidden records would imply they are runnable.
+  const isAdmin = isPlatformAdmin(event);
+  const releases = await listReleases({ ...registryArgs(), visibleOnly: !isAdmin });
+  // The importer revision a record must reach to stop being `importerStale` —
+  // operator data, so only an admin is told.
+  return res(
+    200,
+    isAdmin ? { releases, currentImporterRevision: AIDLC_RELEASE_IMPORTER_REVISION } : { releases },
+  );
+};
+
+// Registers either an allowlisted official profile or a custom fork. The two
+// are mutually exclusive: a fork has no allowlisted profile id, and an official
+// commit must never be registered as "custom" (that would silently downgrade it
+// to import-only).
+const registerReleaseRoute = async (event, res, actor) => {
+  const input = parseBody(event);
+  if (input === undefined) return res(400, { error: 'Invalid JSON body' });
+  const custom = input.custom ?? null;
+  const hasProfileId = typeof input.profileId === 'string' && input.profileId !== '';
+  if (custom != null && hasProfileId) {
+    return res(400, {
+      error: 'provide either profileId or custom, not both',
+      code: 'release_state_invalid',
+    });
+  }
+  if (custom == null && !hasProfileId) {
+    return res(400, { error: 'profileId is required', code: 'release_profile_unknown' });
+  }
+  if (custom != null && (typeof custom !== 'object' || Array.isArray(custom))) {
+    return res(400, {
+      error: 'custom must be an object { repository, sha, baseProfile }',
+      code: 'release_custom_source_invalid',
+    });
+  }
+  if (!artifactsBucket()) {
+    return res(400, {
+      error: 'The artifacts bucket is not configured',
+      code: 'release_registry_misconfigured',
+    });
+  }
+  try {
+    const result = custom
+      ? await registerCustomRelease({
+          ...registryArgs(),
+          s3,
+          bucket: artifactsBucket(),
+          repository: custom.repository,
+          sha: custom.sha,
+          baseProfileId: custom.baseProfile,
+          actor,
+        })
+      : await registerRelease({
+          ...registryArgs(),
+          s3,
+          bucket: artifactsBucket(),
+          profileId: input.profileId,
+          actor,
+        });
+    return res(result.status === 'registered' ? 201 : 200, result);
+  } catch (error) {
+    return registryError(res, error);
+  }
+};
+
+// A closure upgrade moves the record onto a newer importer revision's closure.
+// It is its own operation, never mixed with a support decision in one CAS: an
+// admin must be able to tell which of the two a 409 refused.
+const upgradeReleaseRoute = async (input, res, actor, releaseId) => {
+  if (['supportState', 'visible', 'notes'].some((field) => Object.hasOwn(input, field))) {
+    return res(400, {
+      error: 'importerRevision cannot be combined with supportState, visible, or notes',
+      code: 'release_state_invalid',
+    });
+  }
+  if (!Number.isInteger(input.importerRevision)) {
+    return res(400, {
+      error: 'importerRevision must be an integer',
+      code: 'release_importer_revision_invalid',
+    });
+  }
+  if (!artifactsBucket()) {
+    return res(400, {
+      error: 'The artifacts bucket is not configured',
+      code: 'release_registry_misconfigured',
+    });
+  }
+  try {
+    const result = await upgradeReleaseClosure({
+      ...registryArgs(),
+      s3,
+      bucket: artifactsBucket(),
+      releaseId,
+      expectedRevision: input.expectedRevision,
+      importerRevision: input.importerRevision,
+      actor,
+    });
+    return res(200, result);
+  } catch (error) {
+    return registryError(res, error);
+  }
+};
+
+const updateReleaseRoute = async (event, res, actor, releaseId) => {
+  const input = parseBody(event);
+  if (input === undefined) return res(400, { error: 'Invalid JSON body' });
+  if (!releaseId) return res(400, { error: 'releaseId is required' });
+  if (!Number.isInteger(input.expectedRevision)) {
+    return res(400, {
+      error: 'expectedRevision must be an integer',
+      code: 'release_revision_invalid',
+    });
+  }
+  if (Object.hasOwn(input, 'importerRevision')) {
+    return upgradeReleaseRoute(input, res, actor, releaseId);
+  }
+  const patch = {};
+  for (const field of ['supportState', 'visible', 'notes']) {
+    if (Object.hasOwn(input, field)) patch[field] = input[field];
+  }
+  if (Object.keys(patch).length === 0) {
+    return res(400, {
+      error: 'one of supportState, visible, notes is required',
+      code: 'release_state_invalid',
+    });
+  }
+  try {
+    const release = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: artifactsBucket(),
+      releaseId,
+      expectedRevision: input.expectedRevision,
+      patch,
+      actor,
+    });
+    return res(200, { release });
+  } catch (error) {
+    return registryError(res, error);
+  }
+};
+
+// `pinningEnabled` mirrors the intents Lambda's AIDLC_RELEASE_PINNING switch so
+// the admin UI can say plainly whether any of these pointers are actually being
+// consulted. It is advisory only — the intents Lambda reads its OWN copy of the
+// variable, and this route never gates anything on it.
+const listChannelsRoute = async (event, res) => {
+  const channels = await getChannels({
+    ...registryArgs(),
+    selectionOnly: !isPlatformAdmin(event),
+  });
+  return res(200, { ...channels, pinningEnabled: aidlcReleasePinning() === 'on' });
+};
+
+const clearChannelRoute = async (event, res, actor, channel) => {
+  const input = parseBody(event);
+  if (input === undefined) return res(400, { error: 'Invalid JSON body' });
+  if (!Number.isInteger(input.expectedRevision)) {
+    return res(400, {
+      error: 'expectedRevision must be an integer',
+      code: 'release_revision_invalid',
+    });
+  }
+  try {
+    return res(
+      200,
+      await clearChannel({
+        ...registryArgs(),
+        channel,
+        expectedRevision: input.expectedRevision,
+        actor,
+      }),
+    );
+  } catch (error) {
+    return registryError(res, error);
+  }
+};
+
+const setChannelRoute = async (event, res, actor, channel) => {
+  const input = parseBody(event);
+  if (input === undefined) return res(400, { error: 'Invalid JSON body' });
+  if (typeof input.releaseId !== 'string' || !input.releaseId) {
+    return res(400, { error: 'releaseId is required' });
+  }
+  // `expectedRevision: null` is the explicit "the pointer does not exist yet"
+  // assertion, so the field must be PRESENT — an absent one was previously
+  // coerced to null, which silently turned a stale-revision update into a
+  // create attempt.
+  if (!Object.hasOwn(input, 'expectedRevision')) {
+    return res(400, {
+      error: 'expectedRevision is required (null asserts the pointer does not exist yet)',
+      code: 'release_revision_invalid',
+    });
+  }
+  const expectedRevision = input.expectedRevision;
+  if (expectedRevision !== null && !Number.isInteger(expectedRevision)) {
+    return res(400, {
+      error: 'expectedRevision must be an integer or null',
+      code: 'release_revision_invalid',
+    });
+  }
+  try {
+    const pointer = await setChannel({
+      ...registryArgs(),
+      s3,
+      bucket: artifactsBucket(),
+      channel,
+      releaseId: input.releaseId,
+      expectedRevision,
+      actor,
+    });
+    return res(200, { channel: pointer });
+  } catch (error) {
+    return registryError(res, error);
+  }
+};
+
+const listReleaseProfilesRoute = async (_event, res) => {
+  const profiles = await listRegistrableProfiles({
+    ...registryArgs(),
+    s3,
+    bucket: artifactsBucket(),
+  });
+  return res(200, { profiles });
+};
+
 // ─── Router ───
 
 export const handler = async (event, context) => {
@@ -975,9 +1441,42 @@ export const handler = async (event, context) => {
       if (denied) return res(denied.statusCode, { error: denied.error, code: denied.code });
     }
 
-    const { workflowId, stageId, scopeId, layer, ruleId } = event.pathParameters || {};
+    const { workflowId, stageId, scopeId, layer, ruleId, releaseId, channel } =
+      event.pathParameters || {};
     if (workflowId) logger.appendKeys({ workflowId });
     const tenant = resolveTenant(getClaims(event));
+
+    // The release registry is a flat top-level surface under /api, matched
+    // before the /workflows tree so a {workflowId} pattern can never swallow it.
+    if (path.includes('/aidlc-release')) {
+      const actor = getClaims(event).sub ?? null;
+      if (path.endsWith('/aidlc-release-profiles')) {
+        if (method !== 'GET') return res(405, { error: 'Method not allowed' });
+        const denied = requirePlatformAdmin(event);
+        if (denied) return res(denied.statusCode, { error: denied.error, code: denied.code });
+        return await listReleaseProfilesRoute(event, res);
+      }
+      if (path.endsWith('/aidlc-release-channels/{channel}')) {
+        if (method === 'PUT') return await setChannelRoute(event, res, actor, channel);
+        if (method === 'DELETE') return await clearChannelRoute(event, res, actor, channel);
+        return res(405, { error: 'Method not allowed' });
+      }
+      if (path.endsWith('/aidlc-release-channels')) {
+        if (method === 'GET') return await listChannelsRoute(event, res);
+        return res(405, { error: 'Method not allowed' });
+      }
+      if (path.endsWith('/aidlc-releases/{releaseId}')) {
+        if (method === 'PATCH')
+          return await updateReleaseRoute(event, res, actor, decodePathParam(releaseId));
+        return res(405, { error: 'Method not allowed' });
+      }
+      if (path.endsWith('/aidlc-releases')) {
+        if (method === 'GET') return await listReleasesRoute(event, res);
+        if (method === 'POST') return await registerReleaseRoute(event, res, actor);
+        return res(405, { error: 'Method not allowed' });
+      }
+      return res(404, { error: 'Not found' });
+    }
 
     if (path.endsWith('/placements/{stageId}')) {
       if (method === 'PUT') return await updatePlacement(event, res, tenant, workflowId, stageId);

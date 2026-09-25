@@ -38,7 +38,36 @@
 //     --function-name $(terraform output -raw seed_blocks_lambda_name) \
 //     --payload '{"reseed":true,"ref":"v2"}' --cli-binary-format raw-in-base64-out /tmp/out.json
 //
-// Two modes:
+//   # Stage one allowlisted AI-DLC release into immutable release storage only
+//   # (no SYSTEM blocks, no DynamoDB access, no aidlc-runtime/ or aidlc-catalogs/
+//   # writes). Preview first, then publish:
+//   aws lambda invoke \
+//     --function-name $(terraform output -raw seed_blocks_lambda_name) \
+//     --payload '{"importRelease":true,"profile":"v2.9.0","dryRun":true}' \
+//     --cli-binary-format raw-in-base64-out /tmp/out.json
+//   aws lambda invoke \
+//     --function-name $(terraform output -raw seed_blocks_lambda_name) \
+//     --payload '{"importRelease":true,"profile":"v2.9.0"}' \
+//     --cli-binary-format raw-in-base64-out /tmp/out.json
+//
+//   # After an importer revision bump, publish the SAME profile's corrected
+//   # closure at the new revision (a new i<N> prefix; older closures are never
+//   # touched), then upgrade the registry record with
+//   # PATCH /aidlc-releases/{releaseId} {"expectedRevision":<n>,"importerRevision":<N>}:
+//   aws lambda invoke \
+//     --function-name $(terraform output -raw seed_blocks_lambda_name) \
+//     --payload '{"importRelease":true,"profile":"v2.9.0","importerRevision":2}' \
+//     --cli-binary-format raw-in-base64-out /tmp/out.json
+//
+//   # Stage a CUSTOM FORK commit (import-only, never runnable). The fork must be
+//   # pinned to an exact 40-hex SHA and must name the official profile whose
+//   # frontmatter dialect it is parsed with:
+//   aws lambda invoke \
+//     --function-name $(terraform output -raw seed_blocks_lambda_name) \
+//     --payload '{"importRelease":true,"custom":{"repository":"acme/aidlc-workflows-fork","sha":"<40-hex-sha>","baseProfile":"v2.9.0"},"dryRun":true}' \
+//     --cli-binary-format raw-in-base64-out /tmp/out.json
+//
+// Three modes:
 //   - Default (insert-only): a conditional write skips any block that already
 //     exists, so re-running only inserts blocks added since the last run. Safe,
 //     but it CANNOT update an existing baseline block.
@@ -46,6 +75,13 @@
 //     WF#SYSTEM#*) first, then writes the full current baseline fresh. Scoped to
 //     SYSTEM only — customer forks (BLOCK#default# / WF#default#) are untouched.
 //     Combine with dryRun to preview the clear without deleting.
+//   - importRelease: stages one release commit under
+//     aidlc-releases/v1/<sha>/i<importerRevision>/ (official) or
+//     aidlc-releases/v1/custom/<owner>/<name>/<sha>/i<importerRevision>/ (fork)
+//     plus its content-addressed bodies/scripts/runtime objects, and returns
+//     before touching DynamoDB. An official commit is resolved only from the
+//     compatibility profile allowlist and a fork only from an exact SHA, so this
+//     mode rejects {"ref":...} and cannot be combined with reseed.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
@@ -60,6 +96,14 @@ import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchCoreFiles } from '../shared/repo-fetch.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
+import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
+import {
+  AIDLC_RELEASE_IMPORTER_REVISION,
+  buildReleaseBundle,
+  publishReleaseBundle,
+  releaseKeyArgs,
+  releaseManifestKey,
+} from '../shared/aidlc-release.js';
 import {
   buildMethodologyCatalog,
   methodologyCatalogKey,
@@ -252,10 +296,106 @@ const putObject = (key, body, contentType) =>
     }),
   );
 
+// Stages one release commit into immutable release storage. This path
+// deliberately shares nothing with the SYSTEM seed below: no DynamoDB access,
+// no SYSTEM partition clear, and no aidlc-runtime/ or aidlc-catalogs/ writes,
+// so an import can never change what a running intent resolves to.
+//
+// Two mutually exclusive sources: an allowlisted official `profile` id, or a
+// `custom` fork pinned to an exact SHA. A custom import lands on its own
+// `custom/<owner>/<name>/` prefix, is recorded T0, and is never runnable.
+const importRelease = async ({ event, dryRun, reseed }) => {
+  if (reseed) {
+    throw new Error('seed-blocks: importRelease cannot be combined with reseed');
+  }
+  if (event?.ref != null) {
+    throw new Error(
+      'seed-blocks: importRelease resolves its commit from the profile allowlist — remove "ref"',
+    );
+  }
+  // Optional explicit revision assertion. The importer can only ever produce its
+  // OWN revision (older ones were produced by mappers that no longer exist), so
+  // naming a revision is how an operator states "publish the closure at the
+  // revision I am about to upgrade the registry to" — and a payload written for
+  // a different deployment fails here instead of publishing an unexpected prefix.
+  if (
+    event?.importerRevision != null &&
+    event.importerRevision !== AIDLC_RELEASE_IMPORTER_REVISION
+  ) {
+    throw new Error(
+      `seed-blocks: importRelease publishes importer revision ${AIDLC_RELEASE_IMPORTER_REVISION}, not ${String(event.importerRevision)}`,
+    );
+  }
+  const requested = event?.profile;
+  const requestedCustom = event?.custom ?? null;
+  if (requested != null && requestedCustom != null) {
+    throw new Error('seed-blocks: importRelease takes either "profile" or "custom", not both');
+  }
+
+  let profile = null;
+  let source = null;
+  if (requestedCustom != null) {
+    if (typeof requestedCustom !== 'object' || Array.isArray(requestedCustom)) {
+      throw new Error(
+        'seed-blocks: importRelease "custom" must be an object { repository, sha, baseProfile }',
+      );
+    }
+    profile = customProfile({
+      repository: requestedCustom.repository,
+      sha: requestedCustom.sha,
+      baseProfileId: requestedCustom.baseProfile,
+    });
+    const [owner, repo] = profile.sourceRepository.split('/');
+    source = { owner, repo };
+  } else {
+    // Profile id only (never a raw SHA) so the invoke payload is self-describing.
+    profile = typeof requested === 'string' ? profileFor(requested) : null;
+    if (!profile || profile.id !== requested) {
+      throw new Error(`seed-blocks: unknown AI-DLC release profile "${String(requested)}"`);
+    }
+  }
+
+  const files = source
+    ? await fetchCoreFiles(profile.upstreamRef, source)
+    : await fetchCoreFiles(profile.upstreamRef);
+  const bundle = buildReleaseBundle({ profile, files });
+  const { manifest, objects } = bundle;
+  const summary = {
+    mode: 'importRelease',
+    dryRun,
+    profile: profile.id,
+    custom: manifest.custom === true,
+    sourceRepository: manifest.sourceRepository,
+    trustTier: manifest.trustTier,
+    releaseId: manifest.releaseId,
+    sourceSha: manifest.sourceSha,
+    importerRevision: manifest.importerRevision,
+    mapperFingerprint: manifest.mapperFingerprint ?? null,
+    manifestKey: releaseManifestKey(releaseKeyArgs(manifest)),
+    catalogKey: manifest.catalog.key,
+    closureDigest: manifest.closureDigest,
+    objectCount: objects.length,
+    runtimeFileCount: manifest.runtimeFiles.length,
+    compatibility: manifest.compatibility,
+  };
+
+  if (dryRun) {
+    logger.info('seed-blocks importRelease dry-run', summary);
+    return { ...summary, status: 'dry-run' };
+  }
+
+  const published = await publishReleaseBundle({ s3, bucket: artifactsBucket(), bundle });
+  logger.info('seed-blocks importRelease result', { ...summary, status: published.status });
+  return { ...summary, status: published.status };
+};
+
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   const dryRun = event?.dryRun === true;
   const reseed = event?.reseed === true;
+  if (event?.importRelease === true) {
+    return importRelease({ event, dryRun, reseed });
+  }
   const configuredRef = event?.ref || defaultRef();
   if (!configuredRef) {
     throw new Error('seed-blocks: no repo ref — set AIDLC_REPO_REF or pass {"ref":"<sha>"}');

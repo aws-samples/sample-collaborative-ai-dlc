@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   DynamoDBDocumentClient,
@@ -7,8 +8,16 @@ import {
   BatchWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { CORE_FILES } from '../../shared/test/fixtures/repo-files.js';
 import { buildFromFiles } from '../../shared/block-mappers.js';
+import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
+import {
+  AIDLC_COMPATIBILITY_PROFILES,
+  customProfile,
+} from '../../shared/aidlc-compatibility-profiles.js';
+import { fetchCoreFiles } from '../../shared/repo-fetch.js';
+import { AIDLC_RELEASE_IMPORTER_REVISION } from '../../shared/aidlc-release.js';
 
 const BLOCKS_TABLE = 'blocks-test';
 const ARTIFACTS_BUCKET = 'artifacts-test';
@@ -18,6 +27,21 @@ const REF = 'a'.repeat(40);
 vi.mock('../../shared/repo-fetch.js', () => ({
   fetchCoreFiles: vi.fn(async () => CORE_FILES),
 }));
+
+const RELEASE_PROFILE = 'current-stable';
+const releaseFiles = () =>
+  filesFromCompatibilityFixture({
+    profileId: RELEASE_PROFILE,
+    fixture: JSON.parse(
+      readFileSync(
+        new URL(
+          `../../shared/test/fixtures/aidlc-compatibility/${RELEASE_PROFILE}.json`,
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ),
+  });
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const s3Mock = mockClient(S3Client);
@@ -71,8 +95,26 @@ const installFakes = () => {
   });
 
   s3Mock.on(PutObjectCommand).callsFake((input) => {
+    // Honour IfNoneMatch so immutable-write paths exercise their real
+    // already-exists branch instead of silently overwriting.
+    if (input.IfNoneMatch === '*' && s3Store.has(input.Key)) {
+      const error = new Error('At least one of the pre-conditions you specified did not hold');
+      error.name = 'PreconditionFailed';
+      error.$metadata = { httpStatusCode: 412 };
+      throw error;
+    }
     s3Store.set(input.Key, input.Body);
     return {};
+  });
+
+  s3Mock.on(GetObjectCommand).callsFake((input) => {
+    if (!s3Store.has(input.Key)) {
+      const error = new Error('The specified key does not exist.');
+      error.name = 'NoSuchKey';
+      error.$metadata = { httpStatusCode: 404 };
+      throw error;
+    }
+    return { Body: { transformToString: async () => String(s3Store.get(input.Key)) } };
   });
 };
 
@@ -91,6 +133,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  fetchCoreFiles.mockImplementation(async () => CORE_FILES);
   installFakes();
 });
 
@@ -305,5 +348,282 @@ describe('seed-blocks reseed mode', () => {
     expect(result.dryRun).toBe(true);
     expect(result.cleared).toBeGreaterThan(0);
     expect(tableStore.size).toBe(before);
+  });
+});
+
+describe('seed-blocks importRelease mode', () => {
+  const profile = AIDLC_COMPATIBILITY_PROFILES[RELEASE_PROFILE];
+  const releasePrefix = `aidlc-releases/v1/${profile.upstreamRef}/i${AIDLC_RELEASE_IMPORTER_REVISION}`;
+
+  beforeEach(() => {
+    fetchCoreFiles.mockImplementation(async () => releaseFiles());
+  });
+
+  it('dry-run summarises the release without writing anything', async () => {
+    const result = await handler({ importRelease: true, profile: RELEASE_PROFILE, dryRun: true });
+
+    expect(result).toMatchObject({
+      mode: 'importRelease',
+      status: 'dry-run',
+      dryRun: true,
+      profile: RELEASE_PROFILE,
+      releaseId: profile.releaseId,
+      sourceSha: profile.upstreamRef,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      manifestKey: `${releasePrefix}/manifest.json`,
+      catalogKey: `${releasePrefix}/catalog.json`,
+    });
+    expect(result.objectCount).toBeGreaterThan(0);
+    expect(result.closureDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(s3Store.size).toBe(0);
+    expect(tableStore.size).toBe(0);
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  it('publishes only immutable release + content-addressed keys, never DynamoDB', async () => {
+    const result = await handler({ importRelease: true, profile: RELEASE_PROFILE });
+
+    expect(result.status).toBe('published');
+    expect(ddbMock.calls()).toHaveLength(0);
+    expect(tableStore.size).toBe(0);
+    for (const key of s3Store.keys()) {
+      expect(key).toMatch(/^(?:aidlc-releases\/v1\/|blocks\/(?:bodies|scripts)\/sha256\/)/);
+    }
+    expect([...s3Store.keys()].some((key) => key.startsWith('aidlc-runtime/'))).toBe(false);
+    expect([...s3Store.keys()].some((key) => key.startsWith('aidlc-catalogs/'))).toBe(false);
+    expect(s3Store.has(`${releasePrefix}/manifest.json`)).toBe(true);
+    expect(s3Store.has(`${releasePrefix}/catalog.json`)).toBe(true);
+
+    const manifest = JSON.parse(String(s3Store.get(`${releasePrefix}/manifest.json`)));
+    expect(manifest.sourceSha).toBe(profile.upstreamRef);
+    expect(manifest.closureDigest).toBe(result.closureDigest);
+    expect(manifest.objects).toHaveLength(result.objectCount);
+  });
+
+  it('re-importing the same release is idempotent', async () => {
+    await handler({ importRelease: true, profile: RELEASE_PROFILE });
+    const keys = [...s3Store.keys()].toSorted();
+
+    const again = await handler({ importRelease: true, profile: RELEASE_PROFILE });
+    expect(again.status).toBe('already-published');
+    expect([...s3Store.keys()].toSorted()).toStrictEqual(keys);
+  });
+
+  it('rejects an unknown profile, an explicit ref, and a reseed combination', async () => {
+    await expect(handler({ importRelease: true, profile: 'main' })).rejects.toThrow(
+      /unknown AI-DLC release profile/,
+    );
+    await expect(handler({ importRelease: true })).rejects.toThrow(
+      /unknown AI-DLC release profile/,
+    );
+    await expect(
+      handler({ importRelease: true, profile: '22f5d1b15a064c9ae80046e5b1761d5877e2f69f' }),
+    ).rejects.toThrow(/unknown AI-DLC release profile/);
+    await expect(
+      handler({ importRelease: true, profile: RELEASE_PROFILE, ref: 'b'.repeat(40) }),
+    ).rejects.toThrow(/remove "ref"/);
+    await expect(
+      handler({ importRelease: true, profile: RELEASE_PROFILE, reseed: true }),
+    ).rejects.toThrow(/cannot be combined with reseed/);
+    expect(s3Store.size).toBe(0);
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+});
+
+// Custom fork imports (issue #482 follow-up). The property under test: a fork is
+// fetched from its own repository at an exact SHA, lands on its own prefix, and
+// still cannot touch DynamoDB, aidlc-runtime/, or aidlc-catalogs/.
+describe('seed-blocks importRelease custom mode', () => {
+  const FORK_SHA = '0123456789abcdef0123456789abcdef01234567';
+  const FORK_REPOSITORY = 'acme/aidlc-fork';
+  const forkPrefix = `aidlc-releases/v1/custom/${FORK_REPOSITORY}/${FORK_SHA}/i${AIDLC_RELEASE_IMPORTER_REVISION}`;
+  const custom = (over = {}) => ({
+    repository: FORK_REPOSITORY,
+    sha: FORK_SHA,
+    baseProfile: RELEASE_PROFILE,
+    ...over,
+  });
+
+  beforeEach(() => {
+    fetchCoreFiles.mockImplementation(async () => releaseFiles());
+  });
+
+  it('dry-run summarises the fork as import-only T0 without writing anything', async () => {
+    const result = await handler({ importRelease: true, custom: custom(), dryRun: true });
+
+    expect(result).toMatchObject({
+      mode: 'importRelease',
+      status: 'dry-run',
+      dryRun: true,
+      profile: `custom:${FORK_REPOSITORY}@${FORK_SHA}`,
+      custom: true,
+      sourceRepository: FORK_REPOSITORY,
+      trustTier: 'T0',
+      releaseId: `aidlc-custom:${FORK_REPOSITORY}@${FORK_SHA}`,
+      sourceSha: FORK_SHA,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      manifestKey: `${forkPrefix}/manifest.json`,
+      catalogKey: `${forkPrefix}/catalog.json`,
+    });
+    expect(s3Store.size).toBe(0);
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  it('fetches the fork repository at the pinned SHA', async () => {
+    await handler({ importRelease: true, custom: custom(), dryRun: true });
+
+    expect(fetchCoreFiles).toHaveBeenLastCalledWith(FORK_SHA, {
+      owner: 'acme',
+      repo: 'aidlc-fork',
+    });
+  });
+
+  it('publishes only under the custom prefix and never touches DynamoDB', async () => {
+    const result = await handler({ importRelease: true, custom: custom() });
+
+    expect(result.status).toBe('published');
+    expect(ddbMock.calls()).toHaveLength(0);
+    expect(tableStore.size).toBe(0);
+    expect(s3Store.has(`${forkPrefix}/manifest.json`)).toBe(true);
+    for (const key of s3Store.keys()) {
+      expect(key).toMatch(/^(?:aidlc-releases\/v1\/|blocks\/(?:bodies|scripts)\/sha256\/)/);
+    }
+    expect([...s3Store.keys()].some((key) => key.startsWith('aidlc-runtime/'))).toBe(false);
+    expect([...s3Store.keys()].some((key) => key.startsWith('aidlc-catalogs/'))).toBe(false);
+    // The official prefix for this SHA must stay empty.
+    expect(
+      s3Store.has(
+        `aidlc-releases/v1/${FORK_SHA}/i${AIDLC_RELEASE_IMPORTER_REVISION}/manifest.json`,
+      ),
+    ).toBe(false);
+  });
+
+  it('is idempotent for the same fork closure', async () => {
+    await handler({ importRelease: true, custom: custom() });
+    const keys = [...s3Store.keys()].toSorted();
+
+    const again = await handler({ importRelease: true, custom: custom() });
+    expect(again.status).toBe('already-published');
+    expect([...s3Store.keys()].toSorted()).toStrictEqual(keys);
+  });
+
+  it('rejects profile+custom together, a bad custom payload, ref, and reseed', async () => {
+    await expect(
+      handler({ importRelease: true, profile: RELEASE_PROFILE, custom: custom() }),
+    ).rejects.toThrow(/either "profile" or "custom", not both/);
+    await expect(handler({ importRelease: true, custom: 'acme/fork' })).rejects.toThrow(
+      /"custom" must be an object/,
+    );
+    await expect(handler({ importRelease: true, custom: [] })).rejects.toThrow(
+      /"custom" must be an object/,
+    );
+    await expect(
+      handler({ importRelease: true, custom: custom(), ref: 'b'.repeat(40) }),
+    ).rejects.toThrow(/remove "ref"/);
+    await expect(handler({ importRelease: true, custom: custom(), reseed: true })).rejects.toThrow(
+      /cannot be combined with reseed/,
+    );
+    expect(s3Store.size).toBe(0);
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  it('rejects a mutable ref, the official repository, and an unknown base dialect', async () => {
+    await expect(handler({ importRelease: true, custom: custom({ sha: 'main' }) })).rejects.toThrow(
+      /40-hex commit SHA/,
+    );
+    await expect(
+      handler({ importRelease: true, custom: custom({ repository: 'awslabs/aidlc-workflows' }) }),
+    ).rejects.toThrow(/official repository/);
+    await expect(
+      handler({ importRelease: true, custom: custom({ baseProfile: 'nope' }) }),
+    ).rejects.toThrow(/base dialect profile must be one of/);
+    await expect(
+      handler({ importRelease: true, custom: custom({ repository: 'acme/..' }) }),
+    ).rejects.toThrow(/not a valid GitHub repository name/);
+    expect(s3Store.size).toBe(0);
+  });
+
+  it('gives the fork a different release identity than the commit it forked', async () => {
+    const fork = await handler({ importRelease: true, custom: custom(), dryRun: true });
+    const official = await handler({
+      importRelease: true,
+      profile: RELEASE_PROFILE,
+      dryRun: true,
+    });
+
+    expect(fork.releaseId).not.toBe(official.releaseId);
+    expect(fork.closureDigest).not.toBe(official.closureDigest);
+    expect(
+      customProfile({ repository: FORK_REPOSITORY, sha: FORK_SHA, baseProfileId: RELEASE_PROFILE })
+        .id,
+    ).toBe(fork.profile);
+  });
+});
+
+// Importer revision bump (issue #482): a re-import after the mappers changed
+// lands under a NEW i<revision> prefix beside the closure existing intents pin,
+// and an operator payload may assert the revision it expects to publish.
+describe('seed-blocks importRelease at the current importer revision', () => {
+  const profile = AIDLC_COMPATIBILITY_PROFILES[RELEASE_PROFILE];
+  const prefixAt = (revision) => `aidlc-releases/v1/${profile.upstreamRef}/i${revision}`;
+  const legacyManifestKey = `${prefixAt(1)}/manifest.json`;
+  const legacyCatalogKey = `${prefixAt(1)}/catalog.json`;
+
+  beforeEach(() => {
+    fetchCoreFiles.mockImplementation(async () => releaseFiles());
+  });
+
+  it('publishes at the asserted current revision with the mapper fingerprint recorded', async () => {
+    const result = await handler({
+      importRelease: true,
+      profile: RELEASE_PROFILE,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+    });
+
+    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(2);
+    expect(result).toMatchObject({
+      status: 'published',
+      importerRevision: 2,
+      manifestKey: `${prefixAt(2)}/manifest.json`,
+      catalogKey: `${prefixAt(2)}/catalog.json`,
+      mapperFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const manifest = JSON.parse(String(s3Store.get(`${prefixAt(2)}/manifest.json`)));
+    expect(manifest.mapperFingerprint).toBe(result.mapperFingerprint);
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  it('leaves an already-published revision-1 closure byte-identical and is idempotent at i2', async () => {
+    s3Store.set(legacyManifestKey, '{"legacy":"manifest"}\n');
+    s3Store.set(legacyCatalogKey, '{"legacy":"catalog"}\n');
+
+    const first = await handler({
+      importRelease: true,
+      profile: RELEASE_PROFILE,
+      importerRevision: 2,
+    });
+    const keys = [...s3Store.keys()].toSorted();
+    const again = await handler({
+      importRelease: true,
+      profile: RELEASE_PROFILE,
+      importerRevision: 2,
+    });
+
+    expect(first.status).toBe('published');
+    expect(again.status).toBe('already-published');
+    expect([...s3Store.keys()].toSorted()).toStrictEqual(keys);
+    expect(String(s3Store.get(legacyManifestKey))).toBe('{"legacy":"manifest"}\n');
+    expect(String(s3Store.get(legacyCatalogKey))).toBe('{"legacy":"catalog"}\n');
+  });
+
+  it('refuses a payload asserting any other importer revision, before fetching anything', async () => {
+    fetchCoreFiles.mockClear();
+    for (const importerRevision of [1, 3, '2']) {
+      await expect(
+        handler({ importRelease: true, profile: RELEASE_PROFILE, importerRevision }),
+      ).rejects.toThrow(/publishes importer revision 2/);
+    }
+    expect(fetchCoreFiles).not.toHaveBeenCalled();
+    expect(s3Store.size).toBe(0);
   });
 });

@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { mockClient } from 'aws-sdk-client-mock';
@@ -45,6 +46,15 @@ import {
   methodologyCatalogKey,
 } from '../../shared/methodology-catalog.js';
 import { CORE_FILES } from '../../shared/test/fixtures/repo-files.js';
+import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
+import { buildReleaseBundle } from '../../shared/aidlc-release.js';
+import { legacyReleaseBundle } from '../../shared/test/fixtures/legacy-release.js';
+import {
+  __test as releaseResolverTest,
+  methodologyReleasePinFromManifest,
+} from '../../shared/release-resolver.js';
+
+const RELEASE_PROFILE = 'current-stable';
 
 const { archiveArtifactsSpy, createNativeExportSpy, readCheckpointArtifactVersionsSpy } =
   vi.hoisted(() => ({
@@ -7103,5 +7113,788 @@ describe('stage skipping — start-time override (DRAFT screen)', () => {
     // A plain restart still works.
     const retry = await startIntent(sub, projectId, intent.id, {});
     expect(retry.statusCode).toBe(202);
+  });
+});
+
+// Release-pinned intents must resolve their methodology
+// from the published immutable closure, not from the reseedable SYSTEM rows.
+describe('AI-DLC release pinning', () => {
+  const releaseBundle = buildReleaseBundle({
+    profileId: RELEASE_PROFILE,
+    files: filesFromCompatibilityFixture({
+      profileId: RELEASE_PROFILE,
+      fixture: JSON.parse(
+        readFileSync(
+          new URL(
+            `../../shared/test/fixtures/aidlc-compatibility/${RELEASE_PROFILE}.json`,
+            import.meta.url,
+          ),
+          'utf8',
+        ),
+      ),
+    }),
+  });
+  const releasePin = methodologyReleasePinFromManifest(releaseBundle.manifest);
+  const releaseSha = releaseBundle.manifest.sourceSha;
+  const releaseStore = new Map();
+
+  // The published release, plus only the release, is readable from S3.
+  const installReleaseObjects = ({ withManifest = true, withCatalog = true } = {}) => {
+    releaseStore.clear();
+    if (withManifest) {
+      releaseStore.set(releasePin.manifestKey, JSON.stringify(releaseBundle.manifest, null, 2));
+    }
+    if (withCatalog) {
+      releaseStore.set(releasePin.catalogKey, JSON.stringify(releaseBundle.catalog, null, 2));
+    }
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (!releaseStore.has(input.Key)) {
+        const error = new Error('missing');
+        error.name = 'NoSuchKey';
+        error.$metadata = { httpStatusCode: 404 };
+        throw error;
+      }
+      return { Body: Buffer.from(releaseStore.get(input.Key)) };
+    });
+  };
+
+  // The workflow/stage the create path resolves, attributed to the release SHA
+  // so `aidlcRepoRef` lands on exactly the SHA a release was published for.
+  const seedReleaseAttributedPlan = () => {
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#META'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#META',
+      sourceRef: releaseSha,
+    });
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#4#PLACEMENT#intent-capture'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#4#PLACEMENT#intent-capture',
+      stageId: 'intent-capture',
+      order: 0,
+      scopeMembership: { feature: 'EXECUTE' },
+    });
+    procStore.set(keyOf('BLOCK#SYSTEM#STAGE#intent-capture', 'V#latest'), {
+      pk: 'BLOCK#SYSTEM#STAGE#intent-capture',
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#SYSTEM#STAGE',
+      GSI1SK: 'intent-capture',
+      id: 'intent-capture',
+      blockId: 'intent-capture',
+      tenantId: 'SYSTEM',
+      version: 1,
+      phase: 'inception',
+      mode: 'inline',
+      leadAgent: 'orchestrator',
+      produces: [],
+      consumes: [],
+      sensors: [],
+      humanValidation: 'none',
+      sourceRef: releaseSha,
+    });
+  };
+
+  const getObjectKeys = () =>
+    s3Mock.commandCalls(GetObjectCommand).map((call) => call.args[0].input.Key);
+
+  const repinToRelease = (intentId, overrides = {}) => {
+    const metaKey = keyOf(`EXEC#${intentId}`, 'META');
+    const meta = {
+      ...procStore.get(metaKey),
+      workflowVersion: 1,
+      scope: 'bugfix',
+      methodologyPins: null,
+      methodologyRelease: releasePin,
+      ...overrides,
+    };
+    procStore.set(metaKey, meta);
+    return meta;
+  };
+
+  beforeEach(() => {
+    vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');
+    // A resolved closure is immutable, so the resolver caches it for the life of
+    // the process. Each test must therefore start from a cold cache.
+    releaseResolverTest.releaseClosureCache.clear();
+  });
+
+  it('stamps the release pin on create only when the write flag is on', async () => {
+    vi.stubEnv('AIDLC_RELEASE_PINNING', 'on');
+    installReleaseObjects();
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedReleaseAttributedPlan();
+
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+    expect(meta.aidlcRepoRef).toBe(releaseSha);
+    expect(meta.methodologyRelease).toEqual(releasePin);
+  });
+
+  it('leaves the intent unpinned while the write flag is off', async () => {
+    installReleaseObjects();
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedReleaseAttributedPlan();
+
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+    expect(meta.aidlcRepoRef).toBe(releaseSha);
+    expect(meta.methodologyRelease ?? null).toBeNull();
+    expect(getObjectKeys()).not.toContain(releasePin.manifestKey);
+  });
+
+  it('creates the intent unpinned when the resolved ref has no published release', async () => {
+    vi.stubEnv('AIDLC_RELEASE_PINNING', 'on');
+    installReleaseObjects({ withManifest: false });
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedReleaseAttributedPlan();
+
+    const res = await createIntent(sub, projectId);
+
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+    expect(meta.methodologyRelease ?? null).toBeNull();
+    expect(getObjectKeys()).toContain(releasePin.manifestKey);
+  });
+
+  it('forwards the pin so a start resolves its plan from the release closure', async () => {
+    installReleaseObjects();
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedReleaseAttributedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    repinToRelease(intent.id);
+    s3Mock.resetHistory();
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      // `skipStageIds: []` clears the create-time overlay, which is what makes
+      // start re-resolve the pinned plan before launching.
+      body: JSON.stringify({ agentCli: 'kiro', skipStageIds: [] }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(getObjectKeys()).toEqual(
+      expect.arrayContaining([releasePin.manifestKey, releasePin.catalogKey]),
+    );
+  });
+
+  it('builds the native export plan from the release closure, never the legacy catalog', async () => {
+    installReleaseObjects();
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedReleaseAttributedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    repinToRelease(intent.id, { status: 'WAITING', startedAt: '2026-08-14T10:00:00.000Z' });
+    s3Mock.resetHistory();
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/export`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ harness: 'codex' }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(getObjectKeys()).toEqual(
+      expect.arrayContaining([releasePin.manifestKey, releasePin.catalogKey]),
+    );
+    expect(getObjectKeys()).not.toContain(methodologyCatalogKey(releaseSha));
+  });
+
+  it('refuses to start when the pinned release cannot be resolved', async () => {
+    installReleaseObjects({ withCatalog: false });
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedReleaseAttributedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    repinToRelease(intent.id);
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro', skipStageIds: [] }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).errors.map((error) => error.code)).toContain(
+      'release_closure_mismatch',
+    );
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+});
+
+// Per-intent release selection at create time.
+//
+// The property under test: an explicitly selected release decides the intent's
+// ref AND the vocabulary its plan is validated against. Release B is picked
+// while the DynamoDB deployment workflow is attributed to release A, so a scope
+// that only B offers must be accepted and a scope that only the deployment
+// workflow offers must be rejected — proving the validation moved to B rather
+// than merely stamping a different pin.
+describe('AI-DLC per-intent release selection', () => {
+  const bundleFor = (profileId) =>
+    buildReleaseBundle({
+      profileId,
+      files: filesFromCompatibilityFixture({
+        profileId,
+        fixture: JSON.parse(
+          readFileSync(
+            new URL(
+              `../../shared/test/fixtures/aidlc-compatibility/${profileId}.json`,
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        ),
+      }),
+    });
+
+  const bundleA = bundleFor('current-stable');
+  const bundleB = bundleFor('v2.9.0');
+  const pinA = methodologyReleasePinFromManifest(bundleA.manifest);
+  const pinB = methodologyReleasePinFromManifest(bundleB.manifest);
+  const shaA = bundleA.manifest.sourceSha;
+  const shaB = bundleB.manifest.sourceSha;
+  // `express` exists only in v2.9.0; `legacy-only` only in the DynamoDB
+  // deployment workflow seeded below. Neither release offers the other's scope.
+  const SCOPE_ONLY_IN_B = 'express';
+  const SCOPE_ONLY_IN_DEPLOYMENT = 'legacy-only';
+
+  const releaseStore = new Map();
+
+  const installReleaseObjects = () => {
+    releaseStore.clear();
+    for (const bundle of [bundleA, bundleB]) {
+      const pin = methodologyReleasePinFromManifest(bundle.manifest);
+      releaseStore.set(pin.manifestKey, JSON.stringify(bundle.manifest, null, 2));
+      releaseStore.set(pin.catalogKey, JSON.stringify(bundle.catalog, null, 2));
+    }
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (!releaseStore.has(input.Key)) {
+        const error = new Error('missing');
+        error.name = 'NoSuchKey';
+        error.$metadata = { httpStatusCode: 404 };
+        throw error;
+      }
+      return { Body: Buffer.from(releaseStore.get(input.Key)) };
+    });
+  };
+
+  // The workflow the platform would resolve WITHOUT a selection: version 1 (so a
+  // release selection resolves the catalog workflow rather than a user fork),
+  // attributed to release A, and offering only a scope no release knows about.
+  const seedDeploymentWorkflowAtV1 = (scopeId = SCOPE_ONLY_IN_DEPLOYMENT) => {
+    procStore.set(keyOf('WF#default#aidlc-v2', 'META'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'META',
+      version: 1,
+    });
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#1#META'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#1#META',
+      sourceRef: shaA,
+    });
+    procStore.set(keyOf('WF#default#aidlc-v2', `V#1#SCOPEREF#${scopeId}`), {
+      pk: 'WF#default#aidlc-v2',
+      sk: `V#1#SCOPEREF#${scopeId}`,
+      scopeId,
+    });
+    procStore.set(keyOf('WF#default#aidlc-v2', 'V#1#PLACEMENT#intent-capture'), {
+      pk: 'WF#default#aidlc-v2',
+      sk: 'V#1#PLACEMENT#intent-capture',
+      stageId: 'intent-capture',
+      order: 0,
+      scopeMembership: { [scopeId]: 'EXECUTE' },
+    });
+    procStore.set(keyOf('BLOCK#SYSTEM#STAGE#intent-capture', 'V#latest'), {
+      pk: 'BLOCK#SYSTEM#STAGE#intent-capture',
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#SYSTEM#STAGE',
+      GSI1SK: 'intent-capture',
+      id: 'intent-capture',
+      blockId: 'intent-capture',
+      tenantId: 'SYSTEM',
+      version: 1,
+      phase: 'inception',
+      mode: 'inline',
+      leadAgent: 'orchestrator',
+      produces: [],
+      consumes: [],
+      sensors: [],
+      humanValidation: 'none',
+      sourceRef: shaA,
+    });
+  };
+
+  const seedRegistryRecord = (bundle, profileId, overrides = {}) => {
+    const pin = methodologyReleasePinFromManifest(bundle.manifest);
+    procStore.set(keyOf(`AIDLC_RELEASE#${pin.releaseId}`, 'META'), {
+      pk: `AIDLC_RELEASE#${pin.releaseId}`,
+      sk: 'META',
+      type: 'AidlcRelease',
+      ...pin,
+      profileId,
+      upstreamVersion: profileId === 'current-stable' ? '2.3.3' : '2.9.0',
+      upstreamChannel: 'stable',
+      trustTier: 'T1',
+      supportState: 'selectable',
+      structurallyValid: true,
+      visible: true,
+      runnable: true,
+      notes: null,
+      revision: 1,
+      GSI1PK: 'AIDLC_RELEASES',
+      ...overrides,
+    });
+  };
+
+  const seedStableChannel = (releaseId) => {
+    procStore.set(keyOf('AIDLC_RELEASE_CHANNEL#stable', 'META'), {
+      pk: 'AIDLC_RELEASE_CHANNEL#stable',
+      sk: 'META',
+      type: 'AidlcReleaseChannel',
+      channel: 'stable',
+      releaseId,
+      revision: 1,
+    });
+  };
+
+  const metaFor = (intentId) => procStore.get(keyOf(`EXEC#${intentId}`, 'META'));
+
+  beforeEach(() => {
+    vi.stubEnv('AIDLC_RELEASE_PINNING', 'on');
+    releaseResolverTest.releaseClosureCache.clear();
+    installReleaseObjects();
+  });
+
+  it('pins to the requested release B and validates the plan against B, not the deployment', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.methodologyRelease).toEqual({ ...pinB, upstreamVersion: '2.9.0' });
+    const meta = metaFor(intent.id);
+    // The deployment workflow is attributed to A; the selection wins.
+    expect(meta.aidlcRepoRef).toBe(shaB);
+    expect(meta.aidlcRepoRef).not.toBe(shaA);
+    expect(meta.methodologyRelease).toEqual(pinB);
+    expect(meta.scope).toBe(SCOPE_ONLY_IN_B);
+  });
+
+  it('pins the closure workflow version when the current workflow version has no user fork', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    // Keep the project's mutable V4 default, but leave no V4 snapshot that
+    // release mode could mistake for a user-authored workflow fork.
+    procStore.delete(keyOf('WF#default#aidlc-v2', 'V#4#SCOPEREF#feature'));
+    seedRegistryRecord(bundleA, 'current-stable');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      methodologyReleaseId: pinA.releaseId,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.workflowVersion).toBe(1);
+    expect(intent.methodologyRelease.releaseId).toBe(pinA.releaseId);
+    expect(metaFor(intent.id)).toMatchObject({
+      workflowVersion: 1,
+      methodologyRelease: pinA,
+    });
+  });
+
+  it('rejects a scope that only the DynamoDB deployment workflow offers', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_DEPLOYMENT,
+      methodologyReleaseId: pinB.releaseId,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain(SCOPE_ONLY_IN_DEPLOYMENT);
+  });
+
+  it('leaves that same deployment-only scope unpinned rather than auto-pinning a release that cannot run it', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_DEPLOYMENT,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const meta = metaFor(JSON.parse(res.body).id);
+    expect(meta.aidlcRepoRef).toBe(shaA);
+    // The auto-pin candidate is release A, whose closure does not offer this
+    // scope. Stamping it anyway would 201 here and then fail every run with a
+    // permanent plan_invalid, so the intent stays on the legacy DynamoDB path.
+    expect(meta.methodologyRelease ?? null).toBeNull();
+    expect(meta.scope).toBe(SCOPE_ONLY_IN_DEPLOYMENT);
+  });
+
+  it('rejects a release that is registered but not selectable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0', { visible: false });
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('release_not_selectable');
+    expect(procStore.has(keyOf(`EXEC#${JSON.parse(res.body).intentId ?? 'none'}`, 'META'))).toBe(
+      false,
+    );
+  });
+
+  it('rejects an unregistered release id instead of substituting the stable one', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleA, 'current-stable');
+    seedStableChannel(pinA.releaseId);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+      methodologyReleaseId: 'aidlc:not-registered',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('release_not_found');
+  });
+
+  it('rejects a selection outright while the write flag is off', async () => {
+    vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('release_selection_disabled');
+  });
+
+  it('falls back to the stable channel when no id is requested', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+    seedStableChannel(pinB.releaseId);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const meta = metaFor(JSON.parse(res.body).id);
+    expect(meta.methodologyRelease).toEqual(pinB);
+    expect(meta.aidlcRepoRef).toBe(shaB);
+  });
+
+  it('leaves the no-selection path unpinned when no stable channel is set and the release cannot run the scope', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_DEPLOYMENT,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const meta = metaFor(JSON.parse(res.body).id);
+    // Derived from the resolved deployment ref when no release is selected.
+    expect(meta.aidlcRepoRef).toBe(shaA);
+    // A1: release A does not offer this deployment-only scope, so the auto-pin is
+    // abandoned rather than stamped onto an intent that could never run it.
+    expect(meta.methodologyRelease ?? null).toBeNull();
+  });
+
+  it('exposes methodologyRelease on the intent detail projection', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+    const intentId = JSON.parse(
+      (
+        await createIntent(sub, projectId, {
+          title: 'I',
+          prompt: 'Build X',
+          scope: SCOPE_ONLY_IN_B,
+          methodologyReleaseId: pinB.releaseId,
+        })
+      ).body,
+    ).id;
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intentId}`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).intent.methodologyRelease).toEqual({
+      ...pinB,
+      upstreamVersion: '2.9.0',
+    });
+  });
+
+  // ── Review round 1, findings A1/A2/A10 ──
+
+  it.each([
+    ['a number', 7],
+    ['an object', { releaseId: 'aidlc:x' }],
+    ['an array', ['aidlc:x']],
+    ['a boolean', true],
+  ])(
+    '400s a non-string methodologyReleaseId (%s) instead of ignoring it',
+    async (_label, value) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1();
+      seedRegistryRecord(bundleB, 'v2.9.0');
+      seedStableChannel(pinB.releaseId);
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        methodologyReleaseId: value,
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).code).toBe('release_selection_invalid');
+    },
+  );
+
+  it('treats an explicit null methodologyReleaseId as no selection', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+    seedStableChannel(pinB.releaseId);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      methodologyReleaseId: null,
+    });
+
+    // Falls through to the stable channel, which is the documented no-id path.
+    expect(res.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toEqual(pinB);
+  });
+
+  it('auto-pins when the release CAN reproduce the plan, and persists no SYSTEM pins', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    // The deployment workflow offers `feature`, which release A also offers, so
+    // the release-mode re-validation reproduces the plan and the pin is stamped.
+    seedDeploymentWorkflowAtV1('feature');
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(201);
+    const meta = metaFor(JSON.parse(res.body).id);
+    expect(meta.methodologyRelease).toEqual(pinA);
+    // A2: every closure block is (SYSTEM, V#1) — exactly the coordinates a reseed
+    // rewrites — so none of them may be persisted as a pin.
+    for (const pins of Object.values(meta.methodologyPins ?? {})) {
+      for (const pin of Object.values(pins ?? {})) {
+        expect(pin.tenantId).not.toBe('SYSTEM');
+      }
+    }
+  });
+
+  it('persists no SYSTEM pins for an explicitly selected release either', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const meta = metaFor(JSON.parse(res.body).id);
+    const pinnedTenants = Object.values(meta.methodologyPins ?? {}).flatMap((pins) =>
+      Object.values(pins ?? {}).map((pin) => pin.tenantId),
+    );
+    expect(pinnedTenants).not.toContain('SYSTEM');
+  });
+
+  it('stays unpinned rather than auto-pinning when the closure is unreadable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    // The manifest is published but its catalog is gone: the pin would resolve to
+    // a release whose plan can never be built.
+    releaseStore.delete(pinA.catalogKey);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+  });
+
+  it('never auto-pins while the flag is off', async () => {
+    vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+  });
+
+  it('degrades to unpinned when the stable channel names a demoted release', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0', { supportState: 'existing-only' });
+    seedStableChannel(pinB.releaseId);
+
+    // A3: a stranded stable pointer must not block intent creation platform-wide.
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_DEPLOYMENT,
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+  });
+
+  // Closure upgrade (issue #482): the registry record moves from the i1 closure
+  // an older importer produced to the corrected i2 closure of the same SHA.
+  it('pins new intents to the upgraded closure while an existing intent keeps its i1 pin', async () => {
+    const legacyB = legacyReleaseBundle(bundleB);
+    const legacyPinB = methodologyReleasePinFromManifest(legacyB.manifest);
+    releaseStore.set(legacyPinB.manifestKey, JSON.stringify(legacyB.manifest, null, 2));
+    releaseStore.set(legacyPinB.catalogKey, JSON.stringify(legacyB.catalog, null, 2));
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+
+    // Before the upgrade: the record points at the i1 closure. Selecting it is
+    // allowed (the record is stale, not broken).
+    seedRegistryRecord(bundleB, 'v2.9.0', {
+      importerRevision: legacyPinB.importerRevision,
+      closureDigest: legacyPinB.closureDigest,
+      catalogKey: legacyPinB.catalogKey,
+      manifestKey: legacyPinB.manifestKey,
+    });
+    const before = await createIntent(sub, projectId, {
+      title: 'Before',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+    });
+    expect(before.statusCode).toBe(201);
+    const existingId = JSON.parse(before.body).id;
+    expect(metaFor(existingId).methodologyRelease).toEqual(legacyPinB);
+
+    // After the upgrade: the record points at i2 and audits the i1 pointer.
+    seedRegistryRecord(bundleB, 'v2.9.0', {
+      revision: 2,
+      importerHistory: [
+        {
+          from: {
+            importerRevision: legacyPinB.importerRevision,
+            closureDigest: legacyPinB.closureDigest,
+            manifestKey: legacyPinB.manifestKey,
+            catalogKey: legacyPinB.catalogKey,
+          },
+          to: {
+            importerRevision: pinB.importerRevision,
+            closureDigest: pinB.closureDigest,
+            manifestKey: pinB.manifestKey,
+            catalogKey: pinB.catalogKey,
+          },
+          upgradedAt: '2026-09-24T00:00:00.000Z',
+          upgradedBy: 'admin-1',
+        },
+      ],
+    });
+    const after = await createIntent(sub, projectId, {
+      title: 'After',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+    });
+
+    expect(after.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(after.body).id).methodologyRelease).toEqual(pinB);
+    expect(pinB.importerRevision).toBe(2);
+    // The existing intent's persisted pin is untouched by the registry move.
+    expect(metaFor(existingId).methodologyRelease).toEqual(legacyPinB);
+    expect(legacyPinB.importerRevision).toBe(1);
   });
 });
