@@ -136,6 +136,20 @@ describe('evaluateGatePreconditions: summary confirmation', () => {
     expect(result).toEqual({ ok: true, findings: [] });
   });
 
+  it('treats a write stamped at the exact confirmation time as stale', () => {
+    const decidedAt = '2026-01-01T00:00:00.000Z';
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: required,
+      receipts: [receipt({ decidedAt })],
+      events: [stamp('requirements', { timestamp: decidedAt })],
+      producedArtifacts: ['requirements'],
+    });
+
+    expect(codesOf(result)).toEqual(['summary_confirmation_stale']);
+    expect(result.findings[0].detail.artifacts).toEqual(['requirements']);
+  });
+
   it('treats an UNSTAMPED write as non-compliance, not as a pass', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,
