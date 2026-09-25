@@ -39,18 +39,10 @@ if [[ ! -f "$BACKEND_FILE" ]]; then
     exit 1
 fi
 
-# Terraform applies command-specific CLI arguments only to the named command.
-# Variable inputs injected this way could make the guard evaluate a different
-# environment than plan or destroy. Harmless command-specific flags remain
-# supported, but command-specific variable overrides fail closed.
-for cli_args_name in TF_CLI_ARGS_plan TF_CLI_ARGS_destroy; do
-    cli_args_value="${!cli_args_name-}"
-    if [[ "$cli_args_value" == *"-var"* ]]; then
-        echo "Error: $cli_args_name cannot provide -var or -var-file inputs during teardown." >&2
-        echo "Put teardown variables in $TFVARS_FILE so the guard, plan, and destroy use one input set." >&2
-        exit 1
-    fi
-done
+# Terraform parses these arguments independently, including shell-style quoting.
+# Ignore command-specific overrides so console, plan, and destroy use one input
+# set without attempting to reproduce Terraform's argument parser.
+unset TF_CLI_ARGS_console TF_CLI_ARGS_plan TF_CLI_ARGS_destroy
 
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aidlc-destroy.XXXXXX")"
 cleanup() {

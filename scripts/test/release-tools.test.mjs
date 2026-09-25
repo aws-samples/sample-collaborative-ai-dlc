@@ -1066,13 +1066,14 @@ test('standalone destroy initializes its backend before loading production from 
   }
 });
 
-test('standalone destroy rejects command-specific Terraform variable inputs before mutation', () => {
+test('standalone destroy normalizes command-specific Terraform variable inputs', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-command-vars-'));
   const scripts = join(dir, 'scripts');
   const terraformDir = join(dir, 'terraform');
   const environments = join(terraformDir, 'environments');
   const fixtureDestroy = join(scripts, 'destroy.sh');
   const backendFile = join(environments, 'live.s3.tfbackend');
+  const autoTfvarsFile = join(terraformDir, 'production.auto.tfvars');
   const terraformEnv = {
     ...process.env,
     TF_CLI_ARGS: '',
@@ -1081,10 +1082,19 @@ test('standalone destroy rejects command-specific Terraform variable inputs befo
     TF_CLI_ARGS_destroy: '',
     TF_DATA_DIR: join(dir, '.terraform-data'),
     TF_IN_AUTOMATION: '1',
+    AIDLC_BACKUP_DIR: join(dir, 'backups'),
   };
   mkdirSync(scripts, { recursive: true });
   mkdirSync(environments, { recursive: true });
   cpSync(destroyTerraform, fixtureDestroy);
+  cpSync(inspector, join(scripts, 'inspect-terraform-plan.mjs'));
+  writeFileSync(
+    fixtureDestroy,
+    readFileSync(fixtureDestroy, 'utf8').replace(
+      '-target=module.neptune.aws_neptune_cluster.main',
+      '-target=terraform_data.marker',
+    ),
+  );
   writeFileSync(
     join(terraformDir, 'main.tf'),
     [
@@ -1099,11 +1109,19 @@ test('standalone destroy rejects command-specific Terraform variable inputs befo
       '  type    = bool',
       '  default = true',
       '}',
-      'resource "terraform_data" "marker" { input = var.environment }',
+      'resource "terraform_data" "marker" {',
+      '  input = var.environment',
+      '  lifecycle {',
+      '    precondition {',
+      '      condition     = var.environment != "prod"',
+      '      error_message = "production input reached destructive command"',
+      '    }',
+      '  }',
+      '}',
       '',
     ].join('\n'),
   );
-  writeFileSync(join(environments, 'live.tfvars'), 'environment = "dev"\n');
+  writeFileSync(join(environments, 'live.tfvars'), '# environment intentionally omitted\n');
   writeFileSync(backendFile, `path = ${JSON.stringify(join(dir, 'live.tfstate'))}\n`);
 
   try {
@@ -1114,25 +1132,38 @@ test('standalone destroy rejects command-specific Terraform variable inputs befo
     );
     execFileSync(
       'terraform',
-      [`-chdir=${terraformDir}`, 'apply', '-auto-approve', '-var-file=environments/live.tfvars'],
+      [`-chdir=${terraformDir}`, 'apply', '-auto-approve', '-var=environment=dev'],
       { env: terraformEnv, stdio: 'pipe' },
     );
 
-    const destroyed = run('bash', [fixtureDestroy, 'live', '--yes'], {
+    writeFileSync(autoTfvarsFile, 'environment = "prod"\n');
+    const consoleOverride = run('bash', [fixtureDestroy, 'live', '--yes'], {
+      env: { ...terraformEnv, TF_CLI_ARGS_console: '-var=environment=dev' },
+    });
+    assert.equal(consoleOverride.status, 1, consoleOverride.stderr);
+    assert.match(
+      consoleOverride.stderr,
+      /Refusing automated destruction of a production environment/,
+    );
+    assert.doesNotMatch(consoleOverride.stderr, /production input reached destructive command/);
+    rmSync(autoTfvarsFile);
+
+    const quotedOverrides = run('bash', [fixtureDestroy, 'live', '--yes'], {
       env: {
         ...terraformEnv,
-        TF_CLI_ARGS_plan: '-lock-timeout=5s -var=environment=prod',
-        TF_CLI_ARGS_destroy: '-lock-timeout=5s -var=environment=prod',
+        TF_CLI_ARGS_plan: '-v"ar"=environment=prod',
+        TF_CLI_ARGS_destroy: '-v"ar"=environment=prod',
       },
     });
+    assert.equal(quotedOverrides.status, 0, quotedOverrides.stderr);
+    assert.match(quotedOverrides.stdout, /Environment destruction complete/);
+    assert.doesNotMatch(quotedOverrides.stderr, /production input reached destructive command/);
 
-    assert.equal(destroyed.status, 1, destroyed.stderr);
-    assert.match(destroyed.stderr, /TF_CLI_ARGS_plan cannot provide -var or -var-file/);
     const state = execFileSync('terraform', [`-chdir=${terraformDir}`, 'state', 'list'], {
       encoding: 'utf8',
       env: terraformEnv,
     });
-    assert.match(state, /^terraform_data\.marker$/m);
+    assert.equal(state, '');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

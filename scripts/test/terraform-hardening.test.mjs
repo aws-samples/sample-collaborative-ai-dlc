@@ -181,10 +181,7 @@ test('teardown covers every protected data store and cannot automate production'
     destroy,
     /terraform -chdir="\$TF_DIR" console[\s\S]*?-var-file="\$TFVARS_FILE"[\s\S]*?-var="deletion_protection=false"/,
   );
-  assert.match(
-    destroy,
-    /for cli_args_name in TF_CLI_ARGS_plan TF_CLI_ARGS_destroy; do[\s\S]*?"\$cli_args_value" == \*"-var"\*/,
-  );
+  assert.match(destroy, /unset TF_CLI_ARGS_console TF_CLI_ARGS_plan TF_CLI_ARGS_destroy/);
   assert.match(destroy, /STATE_RESOURCES="\$\(terraform -chdir="\$TF_DIR" state list\)"/);
   assert.match(
     destroy,
