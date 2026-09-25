@@ -7394,7 +7394,7 @@ describe('AI-DLC per-intent release selection', () => {
   // The workflow the platform would resolve WITHOUT a selection: version 1 (so a
   // release selection resolves the catalog workflow rather than a user fork),
   // attributed to release A, and offering only a scope no release knows about.
-  const seedDeploymentWorkflowAtV1 = (scopeId = SCOPE_ONLY_IN_DEPLOYMENT) => {
+  const seedDeploymentWorkflowAtV1 = (scopeId = SCOPE_ONLY_IN_DEPLOYMENT, sourceSha = shaA) => {
     procStore.set(keyOf('WF#default#aidlc-v2', 'META'), {
       pk: 'WF#default#aidlc-v2',
       sk: 'META',
@@ -7403,7 +7403,7 @@ describe('AI-DLC per-intent release selection', () => {
     procStore.set(keyOf('WF#default#aidlc-v2', 'V#1#META'), {
       pk: 'WF#default#aidlc-v2',
       sk: 'V#1#META',
-      sourceRef: shaA,
+      sourceRef: sourceSha,
     });
     procStore.set(keyOf('WF#default#aidlc-v2', `V#1#SCOPEREF#${scopeId}`), {
       pk: 'WF#default#aidlc-v2',
@@ -7433,7 +7433,7 @@ describe('AI-DLC per-intent release selection', () => {
       consumes: [],
       sensors: [],
       humanValidation: 'none',
-      sourceRef: shaA,
+      sourceRef: sourceSha,
     });
   };
 
@@ -7449,6 +7449,7 @@ describe('AI-DLC per-intent release selection', () => {
       upstreamChannel: 'stable',
       trustTier: 'T1',
       supportState: 'selectable',
+      fidelityGaps: [],
       structurallyValid: true,
       visible: true,
       runnable: true,
@@ -7660,6 +7661,41 @@ describe('AI-DLC per-intent release selection', () => {
     expect(meta.methodologyRelease ?? null).toBeNull();
   });
 
+  it.each([
+    ['unregistered', null],
+    ['hidden', { visible: false }],
+    ['existing-only', { supportState: 'existing-only' }],
+    ['unpromoted 2.9.0', { supportState: 'structurally-valid' }],
+    [
+      'unhonoured capability',
+      {
+        supportState: 'selectable',
+        fidelityGaps: [{ blockType: 'STAGE', field: 'mode', value: 'agent-team' }],
+      },
+    ],
+  ])(
+    'does not auto-pin the deployment-ref release without eligibility: %s',
+    async (_label, registryOverrides) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1('feature', shaB);
+      if (registryOverrides) {
+        seedRegistryRecord(bundleB, 'v2.9.0', registryOverrides);
+      }
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+      });
+
+      expect(res.statusCode).toBe(201);
+      const meta = metaFor(JSON.parse(res.body).id);
+      expect(meta.aidlcRepoRef).toBe(shaB);
+      expect(meta.methodologyRelease ?? null).toBeNull();
+    },
+  );
+
   it('exposes methodologyRelease on the intent detail projection', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -7741,6 +7777,7 @@ describe('AI-DLC per-intent release selection', () => {
     // The deployment workflow offers `feature`, which release A also offers, so
     // the release-mode re-validation reproduces the plan and the pin is stamped.
     seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
     const res = await createIntent(sub, projectId, {
       title: 'I',
       prompt: 'Build X',

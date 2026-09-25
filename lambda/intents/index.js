@@ -89,6 +89,7 @@ import {
   methodologyReleasePinFromManifest,
 } from '../shared/release-resolver.js';
 import {
+  assertReleaseCapabilitiesHonoured,
   isReleaseRegistryError,
   releasePinFromRecord,
   resolveSelectableRelease,
@@ -5269,6 +5270,20 @@ export const handler = async (event, context) => {
             importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
           });
           if (manifest) {
+            // A published closure is evidence, not authorization. Only pin it
+            // when the registry has explicitly made this exact closure visible
+            // and selectable and its recorded authored behavior is still
+            // honoured by this runtime.
+            const eligibleRelease = await resolveSelectableRelease({
+              ddb,
+              tableName: BLOCKS_TABLE(),
+              releaseId: manifest.releaseId,
+            });
+            await assertReleaseCapabilitiesHonoured({
+              release: eligibleRelease,
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+            });
             // AUTO-PIN. Everything above was validated against the SYSTEM
             // DynamoDB library, which is NOT what a pinned intent will run.
             // Re-resolve the scope vocabulary and the plan against the closure
@@ -5278,6 +5293,12 @@ export const handler = async (event, context) => {
             // followed by a permanent 409 at execution time is the one outcome
             // this path must never produce.
             const candidatePin = methodologyReleasePinFromManifest(manifest);
+            const registeredPin = releasePinFromRecord(eligibleRelease);
+            if (Object.keys(candidatePin).some((key) => candidatePin[key] !== registeredPin[key])) {
+              throw new Error(
+                'The deployment-ref closure does not match its eligible registry row',
+              );
+            }
             const candidateOptions = {
               methodologyRelease: candidatePin,
               s3,

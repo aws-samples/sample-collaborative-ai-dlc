@@ -62,6 +62,12 @@ the API confirms that pinning is enabled. If the flag changes while the page is
 open, a rejected pin is retried as an unpinned intent and the UI reports the
 fallback.
 
+When pinning is enabled but no stable channel is configured, intent creation may
+still discover a published closure from the deployment ref. It pins that closure
+only if the matching registry record is registered, visible, selectable or
+certified, and its authored behavior passes the runtime promotion guard. If any
+check fails, the intent is created on the existing unpinned path.
+
 Existing intents are not migrated or repinned. Release-aware compose reads use
 the intent's stored pin, so reopening an intent does not silently change its
 methodology version.
