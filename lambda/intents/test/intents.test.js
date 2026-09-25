@@ -3424,6 +3424,58 @@ describe('GET list + detail', () => {
     expect(dto.artifacts).toEqual([]);
   });
 
+  it('returns a minimal release-preview pin only to project members', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const methodologyRelease = {
+      releaseId: 'aidlc:release-sha',
+      sourceSha: 'release-sha',
+      importerRevision: 2,
+      closureDigest: 'closure-digest',
+      catalogKey: 'catalog.json',
+      manifestKey: 'manifest.json',
+    };
+    const methodologyPins = {
+      AGENT: { 'aidlc-architect-agent': { tenantId: 'default', version: 7 } },
+    };
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      methodologyRelease,
+      methodologyPins,
+    });
+
+    const detail = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      queryStringParameters: { view: 'workflow-preview' },
+      ...claims(sub),
+    });
+
+    expect(detail.statusCode).toBe(200);
+    expect(JSON.parse(detail.body)).toEqual({
+      workflowIntent: {
+        id: intent.id,
+        projectId,
+        workflowId: intent.workflowId,
+        workflowVersion: intent.workflowVersion,
+        methodologyRelease,
+        methodologyPins,
+      },
+    });
+
+    const denied = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      queryStringParameters: { view: 'workflow-preview' },
+      ...claims(`nonmember-${randomUUID()}`),
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+
   it('returns the full assembled DTO shape with cliModels/parkReleaseSeconds', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -7261,6 +7313,7 @@ describe('AI-DLC release pinning', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     seedReleaseAttributedPlan();
+    seedSelectableRelease();
 
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
 
@@ -7274,7 +7327,6 @@ describe('AI-DLC release pinning', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     seedReleaseAttributedPlan();
-    seedSelectableRelease();
 
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
 

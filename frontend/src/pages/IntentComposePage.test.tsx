@@ -261,6 +261,11 @@ describe('IntentComposePage', () => {
   it('previews a composed grid through validate-grid instead of the scope preview', async () => {
     draftState.composedGrid = { a: 'EXECUTE', b: 'SKIP' };
     draftState.scope = 'my-custom';
+    get.mockReset().mockResolvedValue(
+      draftIntent({
+        methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 },
+      }),
+    );
     validateGrid.mockResolvedValue(
       summaryPlan({
         executedStages: 2,
@@ -272,11 +277,21 @@ describe('IntentComposePage', () => {
       }),
     );
     renderPage();
-    await waitFor(() => expect(validateGrid).toHaveBeenCalled());
-    expect(validateGrid.mock.calls[0][1]).toMatchObject({
+    await waitFor(() =>
+      expect(
+        validateGrid.mock.calls.some(
+          ([, input]) => input.projectId === 'p1' && input.intentId === 'i1',
+        ),
+      ).toBe(true),
+    );
+    const authorizedGridCall = validateGrid.mock.calls.find(
+      ([, input]) => input.projectId === 'p1' && input.intentId === 'i1',
+    );
+    expect(authorizedGridCall?.[1]).toMatchObject({
       composedGrid: { a: 'EXECUTE', b: 'SKIP' },
       scope: 'my-custom',
     });
+    expect(authorizedGridCall?.[1]).toMatchObject({ projectId: 'p1', intentId: 'i1' });
     expect(executionPreview).not.toHaveBeenCalled();
     const summary = await screen.findByTestId('scope-summary');
     expect(summary.textContent).toContain('Customized scope');
@@ -591,7 +606,10 @@ describe('IntentComposePage — a pinned release that no longer resolves', () =>
     renderPage();
 
     await waitFor(() =>
-      expect(compiled).toHaveBeenCalledWith('aidlc-v2', undefined, 'aidlc:demoted', null),
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', undefined, 'aidlc:demoted', null, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
     );
   });
 
@@ -603,7 +621,10 @@ describe('IntentComposePage — a pinned release that no longer resolves', () =>
     renderPage();
 
     await waitFor(() =>
-      expect(compiled).toHaveBeenCalledWith('aidlc-v2', undefined, 'aidlc:demoted', 1),
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', undefined, 'aidlc:demoted', 1, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
     );
   });
 

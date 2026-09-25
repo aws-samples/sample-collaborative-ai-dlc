@@ -4972,6 +4972,18 @@ export const handler = async (event, context) => {
       if (!records.meta || records.meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
+      if (event.queryStringParameters?.view === 'workflow-preview') {
+        return response(200, {
+          workflowIntent: {
+            id: records.meta.intentId,
+            projectId: records.meta.projectId,
+            workflowId: records.meta.workflowId,
+            workflowVersion: records.meta.workflowVersion,
+            methodologyRelease: records.meta.methodologyRelease ?? null,
+            methodologyPins: records.meta.methodologyPins ?? null,
+          },
+        });
+      }
       const artifacts = await fetchArtifacts(g, intentId);
       const pullRequests = await fetchPullRequests(g, intentId);
       const gates = records.humanTasks.map(mapHumanTask);

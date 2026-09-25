@@ -162,7 +162,12 @@ describe('IntentContext', () => {
 
     renderProvider();
 
-    await waitFor(() => expect(compiled).toHaveBeenCalledWith('wf', 1, 'aidlc:release-a', 3));
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('wf', 1, 'aidlc:release-a', 3, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
+    );
   });
 
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {

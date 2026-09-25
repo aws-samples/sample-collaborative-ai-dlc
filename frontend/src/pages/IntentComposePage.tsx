@@ -317,7 +317,13 @@ function IntentComposePageContent() {
     let cancelled = false;
     setReleaseViewUnavailable(false);
     workflowsService
-      .compiled(workflowId, workflowVersion, releaseId, releaseImporterRevision)
+      .compiled(
+        workflowId,
+        workflowVersion,
+        releaseId,
+        releaseImporterRevision,
+        releaseId && projectId && intentId ? { projectId, intentId } : undefined,
+      )
       .then((c) => {
         if (cancelled) return;
         setCompiled(c);
@@ -346,7 +352,15 @@ function IntentComposePageContent() {
     return () => {
       cancelled = true;
     };
-  }, [workflowId, workflowVersion, releaseId, releaseImporterRevision, intent]);
+  }, [
+    workflowId,
+    workflowVersion,
+    releaseId,
+    releaseImporterRevision,
+    projectId,
+    intentId,
+    intent,
+  ]);
   const scopeOptions = useMemo(() => Object.keys(compiled?.scopeGrid ?? {}), [compiled]);
 
   const scope = draft.scope ?? intent?.scope ?? null;
@@ -448,7 +462,7 @@ function IntentComposePageContent() {
   const gridKey = JSON.stringify(draft.composedGrid ?? null);
   const skipsKey = JSON.stringify([...skipSelections].toSorted());
   useEffect(() => {
-    if (!workflowId || !scope) return;
+    if (!workflowId || !scope || !intent) return;
     let cancelled = false;
     const skips = [...skipSelections];
     const request = draft.composedGrid
@@ -459,6 +473,7 @@ function IntentComposePageContent() {
           version: workflowVersion,
           release: releaseId,
           releaseImporterRevision,
+          ...(releaseId && projectId && intentId ? { projectId, intentId } : {}),
         })
       : workflowsService.executionPreview(
           workflowId,
@@ -467,6 +482,7 @@ function IntentComposePageContent() {
           skips.length ? skips : undefined,
           releaseId,
           releaseImporterRevision,
+          releaseId && projectId && intentId ? { projectId, intentId } : undefined,
         );
     request
       .then((preview) => {
@@ -494,7 +510,18 @@ function IntentComposePageContent() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the serialized selection
-  }, [workflowId, workflowVersion, scope, gridKey, skipsKey, releaseId, releaseImporterRevision]);
+  }, [
+    workflowId,
+    workflowVersion,
+    scope,
+    gridKey,
+    skipsKey,
+    releaseId,
+    releaseImporterRevision,
+    intent,
+    projectId,
+    intentId,
+  ]);
 
   const handleStart = async () => {
     if (!projectId || !intentId || !draftReady || uploadProgress !== null) return;
