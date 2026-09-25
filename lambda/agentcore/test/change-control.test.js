@@ -369,7 +369,42 @@ describe('runStage — change_control: relaxed', () => {
     expect(accepted[0].detail).toMatchObject({ fromHash: 'sha-old', toHash: 'sha-new' });
   });
 
-  it('requires human reconfirmation when an approval receipt has incomplete input history', async () => {
+  it('records unreadable artifact history and proceeds', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    let spawned = false;
+    const res = await runStage(
+      args,
+      deps(store, {
+        scopeFm: { changeControl: 'relaxed' },
+        deps: {
+          openGraph: async () => {
+            throw new Error('graph unavailable');
+          },
+          spawnFn: () => {
+            spawned = true;
+            return {
+              on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+              stdin: { end() {} },
+            };
+          },
+        },
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(spawned).toBe(true);
+    expect(store.of('appendEvent')).toContainEqual(
+      expect.objectContaining({
+        type: 'v2.change.accepted',
+        detail: expect.objectContaining({
+          artifactType: PRODUCER,
+          artifactHistoryReadFailed: true,
+        }),
+      }),
+    );
+  });
+
+  it('records incomplete approval history and proceeds in relaxed mode', async () => {
     const store = harnessStore({
       receipts: [
         {
@@ -380,15 +415,14 @@ describe('runStage — change_control: relaxed', () => {
     });
     const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'relaxed' } }));
 
-    expect(res).toMatchObject({
-      ok: true,
-      state: 'WAITING_FOR_HUMAN',
-      humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
-    });
-    expect(store.of('appendEvent').map((event) => event.type)).not.toContain('v2.change.accepted');
-    const [gate] = store.of('createHumanTask');
-    const [question] = JSON.parse(gate.questions);
-    expect(question.text).toContain('approval receipt exceeded its size limit');
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(store.of('createHumanTask')).toEqual([]);
+    expect(store.of('appendEvent')).toContainEqual(
+      expect.objectContaining({
+        type: 'v2.change.accepted',
+        detail: expect.objectContaining({ approvalHistoryUnknown: true }),
+      }),
+    );
   });
 });
 
@@ -430,6 +464,39 @@ describe('runStage — change_control: strict', () => {
     const types = store.of('appendEvent').map((e) => e.type);
     expect(types).toContain('v2.change.review_requested');
     expect(types).not.toContain('v2.question.asked');
+  });
+
+  it('reconfirms unreadable artifact history before spawning the agent', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    let spawned = false;
+    const res = await runStage(
+      args,
+      deps(store, {
+        scopeFm: { changeControl: 'strict' },
+        deps: {
+          openGraph: async () => {
+            throw new Error('graph unavailable');
+          },
+          spawnFn: () => {
+            spawned = true;
+            return {
+              on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+              stdin: { end() {} },
+            };
+          },
+        },
+      }),
+    );
+
+    expect(res).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+    });
+    expect(spawned).toBe(false);
+    const [gate] = store.of('createHumanTask');
+    const [question] = JSON.parse(gate.questions);
+    expect(question.text).toContain('could not be read');
   });
 
   it('reconfirm writes the receipt, tells the agent, and runs the stage', async () => {
