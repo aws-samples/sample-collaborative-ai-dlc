@@ -7586,6 +7586,47 @@ describe('AI-DLC per-intent release selection', () => {
     });
   };
 
+  const USER_METHODOLOGY_OVERRIDES = [
+    ['AGENT', 'aidlc-architect-agent'],
+    ['RULE', 'aidlc-org'],
+    ['SENSOR', 'linter'],
+    ['KNOWLEDGE', 'architect-agent-adr-template'],
+  ];
+
+  const seedDefaultMethodologyOverrides = (bundle, version = 7) => {
+    for (const [type, blockId] of USER_METHODOLOGY_OVERRIDES) {
+      const baseBlock = bundle.catalog.blocks[type].find((block) => block.id === blockId);
+      if (!baseBlock) throw new Error(`missing ${type} fixture block ${blockId}`);
+      const pk = `BLOCK#default#${type}#${blockId}`;
+      const block = { ...baseBlock, pk, sk: `V#${version}`, tenantId: 'default', version };
+      procStore.set(keyOf(pk, `V#${version}`), block);
+      procStore.set(keyOf(pk, 'V#latest'), {
+        ...block,
+        sk: 'V#latest',
+        GSI1PK: `TENANT#default#${type}`,
+        GSI1SK: blockId,
+      });
+    }
+  };
+
+  const expectMethodologyOverridesPinned = (methodologyPins) => {
+    for (const [type, blockId] of USER_METHODOLOGY_OVERRIDES) {
+      expect(methodologyPins[type][blockId]).toEqual({ tenantId: 'default', version: 7 });
+    }
+  };
+
+  const expectMethodologyOverridesReplayed = () => {
+    const fetchedKeys = ddbMock.commandCalls(GetCommand).map((call) => call.args[0].input.Key);
+    expect(fetchedKeys).toEqual(
+      expect.arrayContaining(
+        USER_METHODOLOGY_OVERRIDES.map(([type, blockId]) => ({
+          pk: `BLOCK#default#${type}#${blockId}`,
+          sk: 'V#7',
+        })),
+      ),
+    );
+  };
+
   const seedStableChannel = (releaseId) => {
     procStore.set(keyOf('AIDLC_RELEASE_CHANNEL#stable', 'META'), {
       pk: 'AIDLC_RELEASE_CHANNEL#stable',
@@ -7680,6 +7721,47 @@ describe('AI-DLC per-intent release selection', () => {
       sk: 'V#7',
     });
   });
+
+  it.each([
+    ['selected', bundleB, 'v2.9.0', SCOPE_ONLY_IN_B, true],
+    ['auto-pinned', bundleA, 'current-stable', 'feature', false],
+  ])(
+    'captures and replays default-tenant RULE, SENSOR, and KNOWLEDGE overrides through %s release creation',
+    async (_label, bundle, profileId, scope, explicitlySelected) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      if (explicitlySelected)
+        procStore.delete(keyOf('WF#default#aidlc-v2', 'V#4#SCOPEREF#feature'));
+      seedDeploymentWorkflowAtV1(explicitlySelected ? undefined : 'feature');
+      seedDefaultMethodologyOverrides(bundle);
+      seedRegistryRecord(bundle, profileId);
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope,
+        ...(explicitlySelected ? { methodologyReleaseId: pinB.releaseId } : {}),
+      });
+
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      const meta = metaFor(intent.id);
+      expect(meta.methodologyRelease).toEqual(explicitlySelected ? pinB : pinA);
+      expectMethodologyOverridesPinned(meta.methodologyPins);
+
+      ddbMock.resetHistory();
+      const started = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/start`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify({ agentCli: 'kiro', skipStageIds: [] }),
+        ...claims(sub),
+      });
+
+      expect(started.statusCode).toBe(202);
+      expectMethodologyOverridesReplayed();
+    },
+  );
 
   it('rejects a scope that only the DynamoDB deployment workflow offers', async () => {
     const sub = `u-${randomUUID()}`;

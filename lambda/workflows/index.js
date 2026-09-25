@@ -673,6 +673,12 @@ const releaseReadFailure = (error) => {
     if (error.code === 'release_workflow_not_found') {
       return { status: 404, body: { error: 'Not found' } };
     }
+    if (error.code === 'intent_lookup_failed') {
+      return {
+        status: 502,
+        body: { error: 'Intent authorization lookup failed', code: error.code },
+      };
+    }
     return {
       status: error.code === 'release_not_found' ? 404 : 400,
       body: { error: error.message, code: error.code },
@@ -773,6 +779,12 @@ const intentPinFor = async ({ event, releaseId, importerRevision, workflowId }) 
     response = JSON.parse(Buffer.from(invocation.Payload ?? []).toString('utf8'));
   } catch {
     throw new Error('Intent authorization lookup returned an invalid response');
+  }
+  if (response.statusCode >= 500) {
+    throw new ReleaseRegistryError(
+      'intent_lookup_failed',
+      'workflows: intent authorization lookup failed',
+    );
   }
   if (response.statusCode !== 200) throw notFound();
 
