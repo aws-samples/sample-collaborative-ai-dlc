@@ -743,6 +743,11 @@ const releasePinFor = async (releaseId, { isAdmin = false, importerRevision = nu
   return releasePinFromRecord({ ...record, ...previous.from });
 };
 
+// A lookup that cannot be completed is a dependency failure (502), never a 404:
+// only an answered 4xx or a mismatched intent may read as "release not found".
+const intentLookupFailed = () =>
+  new ReleaseRegistryError('intent_lookup_failed', 'workflows: intent authorization lookup failed');
+
 const intentPinFor = async ({ event, releaseId, importerRevision, workflowId }) => {
   const query = event?.queryStringParameters ?? {};
   const intentId = typeof query.intentId === 'string' ? query.intentId : '';
@@ -756,35 +761,38 @@ const intentPinFor = async ({ event, releaseId, importerRevision, workflowId }) 
     );
   if (!intentId || !projectId || !process.env.INTENTS_FUNCTION) throw notFound();
 
-  const invocation = await lambda.send(
-    new InvokeCommand({
-      FunctionName: process.env.INTENTS_FUNCTION,
-      InvocationType: 'RequestResponse',
-      Payload: Buffer.from(
-        JSON.stringify({
-          httpMethod: 'GET',
-          resource: '/projects/{projectId}/intents/{intentId}',
-          path: `/projects/${encodeURIComponent(projectId)}/intents/${encodeURIComponent(intentId)}`,
-          pathParameters: { projectId, intentId },
-          requestContext: { authorizer: { claims: getClaims(event) } },
-          queryStringParameters: { view: 'workflow-preview' },
-          headers: {},
-        }),
-      ),
-    }),
-  );
-  if (invocation.FunctionError) throw new Error('Intent authorization lookup failed');
+  let invocation;
+  try {
+    invocation = await lambda.send(
+      new InvokeCommand({
+        FunctionName: process.env.INTENTS_FUNCTION,
+        InvocationType: 'RequestResponse',
+        Payload: Buffer.from(
+          JSON.stringify({
+            httpMethod: 'GET',
+            resource: '/projects/{projectId}/intents/{intentId}',
+            path: `/projects/${encodeURIComponent(projectId)}/intents/${encodeURIComponent(intentId)}`,
+            pathParameters: { projectId, intentId },
+            requestContext: { authorizer: { claims: getClaims(event) } },
+            queryStringParameters: { view: 'workflow-preview' },
+            headers: {},
+          }),
+        ),
+      }),
+    );
+  } catch (error) {
+    logger.warn('Intent authorization lookup invoke failed', { error: error?.name });
+    throw intentLookupFailed();
+  }
+  if (invocation.FunctionError) throw intentLookupFailed();
   let response;
   try {
     response = JSON.parse(Buffer.from(invocation.Payload ?? []).toString('utf8'));
   } catch {
-    throw new Error('Intent authorization lookup returned an invalid response');
+    throw intentLookupFailed();
   }
-  if (response.statusCode >= 500) {
-    throw new ReleaseRegistryError(
-      'intent_lookup_failed',
-      'workflows: intent authorization lookup failed',
-    );
+  if (!response || typeof response.statusCode !== 'number' || response.statusCode >= 500) {
+    throw intentLookupFailed();
   }
   if (response.statusCode !== 200) throw notFound();
 
@@ -792,7 +800,7 @@ const intentPinFor = async ({ event, releaseId, importerRevision, workflowId }) 
   try {
     detail = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
   } catch {
-    throw new Error('Intent authorization lookup returned an invalid detail');
+    throw intentLookupFailed();
   }
   const intent = detail?.workflowIntent;
   const pin = intent?.methodologyRelease;
