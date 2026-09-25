@@ -70,7 +70,7 @@ The external ID is what stops another user (or another tenant) from using your r
 
 Repository identity is the **ARN** (region and account are part of it), so CodeCommit repositories appear as `name (region)` and link to the regional console. Commits made by the engine carry the committer configured on the binding (CodeCommit has no user-identity API to discover one).
 
-What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new one is opened instead), no issues tracker, no CI check statuses (approval rules are read instead). Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
+What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new one is opened instead), no issues tracker, no CI check statuses (approval rules are read instead). Because **PR per unit** relies on draft pull requests to keep each unit review unmergeable while its lane reconciles or revises it, that strategy (and its feedback revisions) is not available for a space with CodeCommit repositories: intent creation is refused with `PR_STRATEGY_UNSUPPORTED`, and one PR per intent is used instead. Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
 
 ## Branches
 

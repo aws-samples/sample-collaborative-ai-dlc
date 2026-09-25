@@ -805,6 +805,41 @@ describe('POST /projects/{id}/intents', () => {
     }
   });
 
+  it('refuses PR per unit for a CodeCommit space before creating the intent', async () => {
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/pr-strategy' })
+      .resolves({ Parameter: { Value: 'pr-per-unit' } });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      // Inherit the platform strategy, with a CodeCommit repository.
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'default')
+        .out('HAS_REPO')
+        .property(gremlin.process.cardinality.single, 'provider', 'codecommit')
+        .next();
+      const refused = await createIntent(sub, projectId);
+      expect(refused.statusCode).toBe(409);
+      expect(JSON.parse(refused.body)).toMatchObject({ code: 'PR_STRATEGY_UNSUPPORTED' });
+      const executionsOf = () =>
+        [...procStore.values()].filter((row) => row?.sk === 'META' && row.projectId === projectId);
+      expect(executionsOf()).toHaveLength(0);
+
+      // One PR per intent stays available for the same space.
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'intent-pr')
+        .next();
+      expect((await createIntent(sub, projectId)).statusCode).toBe(201);
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+    }
+  });
+
   it('falls back to the prompt slug when there is no title', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -1839,6 +1874,33 @@ describe('unit PR review feedback', () => {
     });
     return { projectId, intent };
   };
+
+  it('refuses a feedback revision on a provider without drafts before any provider call', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedActiveReview(sub);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      repoProviders: { 'owner/repo': 'codecommit' },
+    });
+    lambdaMock.resetHistory();
+    const path = `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`;
+    for (const httpMethod of ['GET', 'POST']) {
+      const res = await handler({
+        httpMethod,
+        path,
+        pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
+        ...(httpMethod === 'POST' ? { body: JSON.stringify({ commentIds: ['101'] }) } : {}),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toMatchObject({ code: 'PR_STRATEGY_UNSUPPORTED' });
+    }
+    const sourceControlCalls = lambdaMock
+      .commandCalls(InvokeCommand)
+      .filter((call) => call.args[0].input.FunctionName === 'source-control-test');
+    expect(sourceControlCalls).toHaveLength(0);
+  });
 
   it('refetches selectable comments and queues an idempotent versioned batch', async () => {
     sourceControlReviewComments = [

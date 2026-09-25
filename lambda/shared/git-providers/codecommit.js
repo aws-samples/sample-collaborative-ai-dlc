@@ -890,11 +890,19 @@ const getPullRequestState = async (ctx, repoId, prNumber) => {
   return status?.state ?? null;
 };
 
-// No-op: CodeCommit has no draft pull requests, so there is no state to change
-// and nothing to fail on. Returns the current status so a caller that flips a
-// draft flag optimistically still gets a usable status back.
-const setPullRequestDraft = async (ctx, repoId, prNumber, _draft) =>
-  getPullRequestStatus(ctx, repoId, prNumber);
+// CodeCommit has no draft pull requests. Marking ready (draft=false) is a
+// no-op that returns the current status. Asking for a draft is refused: the
+// caller relies on it to keep the PR unmergeable, and returning an open PR as
+// if that had worked would silently drop the safeguard.
+const setPullRequestDraft = async (ctx, repoId, prNumber, draft) => {
+  if (draft) {
+    throw new ProviderError(409, 'CodeCommit pull requests cannot be marked as draft', {
+      capability: 'draftPullRequests',
+      code: 'DRAFT_UNSUPPORTED',
+    });
+  }
+  return getPullRequestStatus(ctx, repoId, prNumber);
+};
 
 // UpdatePullRequestStatus documents the only legal transitions as OPEN->OPEN,
 // OPEN->CLOSED and CLOSED->CLOSED: closed is terminal, so reopening is not

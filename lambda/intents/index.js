@@ -51,7 +51,13 @@ import {
 } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
-import { effectivePrStrategy, normalizePlatformPrStrategy } from '../shared/pr-strategy.js';
+import {
+  assertPrStrategySupported,
+  draftlessProviders,
+  effectivePrStrategy,
+  normalizePlatformPrStrategy,
+} from '../shared/pr-strategy.js';
+import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
@@ -1580,6 +1586,20 @@ export const handler = async (event, context) => {
       }
       if (meta.prStrategy !== 'pr-per-unit') {
         return response(409, { error: 'This intent does not use PR per unit' });
+      }
+      // A feedback revision rewrites the unit branch under a PR that must stay
+      // unmergeable meanwhile (a draft). Refused durably, before any provider
+      // call, for providers that have no drafts.
+      const draftless = draftlessProviders(
+        (meta.repos ?? []).map((repo) =>
+          sharedRepoProvider(repo, meta.gitProvider, meta.repoProviders),
+        ),
+      );
+      if (draftless.length) {
+        return response(409, {
+          error: `Feedback revisions need draft pull requests, which ${draftless.join(', ')} does not support`,
+          code: 'PR_STRATEGY_UNSUPPORTED',
+        });
       }
       const unit = await store.getUnit(intentId, sectionIndex, unitSlug);
       const activeUnitStates = new Set([
@@ -4978,6 +4998,20 @@ export const handler = async (event, context) => {
         }
         throw error;
       }
+      // Refuse a strategy the space's providers cannot honour now, before the
+      // execution exists, rather than failing its first unit lane later.
+      const prStrategy = effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy);
+      try {
+        assertPrStrategySupported(
+          prStrategy,
+          (cfg.repos ?? []).map((repo) =>
+            sharedRepoProvider(repo, cfg.gitProvider, cfg.repoProviders),
+          ),
+        );
+      } catch (error) {
+        if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
+        return response(409, { error: error.message, code: error.code });
+      }
       const meta = await store.createExecution({
         executionId: newIntentId,
         projectId,
@@ -5005,7 +5039,7 @@ export const handler = async (event, context) => {
         deriveEnrichment: await fetchDeriveEnrichment(),
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,
-        prStrategy: effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy),
+        prStrategy,
         stageSkipping,
         skipStageIds,
         composedGrid,

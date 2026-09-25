@@ -1640,6 +1640,25 @@ describe('PR per unit delivery', () => {
   const start = () =>
     __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
 
+  it('refuses pr-per-unit on a provider without drafts before any lane starts', async () => {
+    const arn = 'arn:aws:codecommit:eu-west-1:123456789012:app';
+    configure({ repos: [arn], statusFor: async () => null });
+    const baseMeta = await deps.store.getExecution();
+    deps.store.getExecution = vi.fn(async () => ({
+      ...baseMeta,
+      repoProviders: { [arn]: 'codecommit' },
+    }));
+    const result = await start();
+    // The execution fails loudly with the reason, before any unit PR call.
+    expect(result).toMatchObject({
+      ok: false,
+      detail: expect.stringContaining('PR per unit needs draft pull requests'),
+    });
+    expect(deps.unitPrProvider.createDraft).not.toHaveBeenCalled();
+    expect(deps.unitPrProvider.setDraft).not.toHaveBeenCalled();
+    expect(unitStates.map((row) => row.state)).not.toContain('PR_DRAFT');
+  });
+
   it('replaces a closed unit PR with a new creation attempt', async () => {
     const calls = new Map();
     configure({

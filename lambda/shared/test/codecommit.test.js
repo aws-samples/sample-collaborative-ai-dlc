@@ -524,13 +524,19 @@ describe('codecommit provider: pull requests', () => {
     expect(await cc.getPullRequestStatus({ client }, ARN, 999)).toBeNull();
   });
 
-  it('setPullRequestDraft is a no-op read (no draft concept) and reopen throws 409', async () => {
+  it('setPullRequestDraft refuses a draft, reads for ready, and reopen throws 409', async () => {
     const client = makeClient({
       GetPullRequest: { pullRequest: pr() },
       GetMergeOptions: { mergeOptions: [] },
       EvaluatePullRequestApprovalRules: { evaluation: { approved: true } },
     });
-    const out = await cc.setPullRequestDraft({ client }, ARN, 7, true);
+    // Returning an open PR as if it were now a draft would drop the safeguard.
+    await expect(cc.setPullRequestDraft({ client }, ARN, 7, true)).rejects.toMatchObject({
+      status: 409,
+      extra: { capability: 'draftPullRequests', code: 'DRAFT_UNSUPPORTED' },
+    });
+    expect(client.calls).toHaveLength(0);
+    const out = await cc.setPullRequestDraft({ client }, ARN, 7, false);
     expect(out).toMatchObject({ draft: false, mergeableState: 'dirty' });
     await expect(cc.reopenPullRequest({ client }, ARN, 7)).rejects.toMatchObject({ status: 409 });
   });
