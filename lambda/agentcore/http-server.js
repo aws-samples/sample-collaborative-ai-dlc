@@ -44,6 +44,10 @@
 //       verifies + concludes, the agent only edits the conflicted files).
 //   { "command": "record-unit-pr", unitPrs:[...] } → best-effort Neptune
 //       projection for unit review PRs; DDB remains scheduling truth.
+//   { "command": "record-learning", projectId, intentId, executionId,
+//     stageInstanceId?, stageId?, learnings, recordedBy?, recordedByName? }
+//     → the learnings ritual: write a human-authored learning offered at an
+//       approval gate into the project rule stack. Never fails the run.
 //   { "command": "discussion-assist-start", ...discussion args }
 //     → accepts in ms, runs Quorum's one-shot discussion answer in a background
 //       job, then updates the pending DiscussionMessage and broadcasts it.

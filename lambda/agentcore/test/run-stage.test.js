@@ -4261,12 +4261,88 @@ describe('runStage — release-mode fidelity', () => {
     manifestKey: 'aidlc-releases/v1/manifest.json',
   };
 
-  it('still refuses agent-team, which needs real concurrent sessions', async () => {
+  // `pipeline` / `mob` execute with support personas loaded from the same library
+  // as the stage.
+  const ensembleLibrary = (mode) => {
     const lib = library();
-    lib.stagesById['requirements-analysis'].mode = 'agent-team';
+    lib.stagesById['requirements-analysis'].mode = mode;
+    lib.stagesById['requirements-analysis'].supportAgents = ['aidlc-architect-agent'];
+    lib.agentsById['aidlc-architect-agent'] = {
+      id: 'aidlc-architect-agent',
+      displayName: 'Architect',
+      bodyRef: { s3Key: 'blocks/bodies/sha256/architect' },
+    };
+    return lib;
+  };
+
+  it.each(['pipeline', 'mob'])(
+    'runs a %s stage instead of failing not_implemented',
+    async (mode) => {
+      let seen = null;
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', V2_ENSEMBLE_SESSIONS: 'off' },
+        loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
+        materializeStage: async (args) => {
+          seen = args;
+          return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+        },
+      });
+
+      const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(seen.stage.mode).toBe(mode);
+      expect(seen.supportAgents).toEqual([
+        {
+          ref: 'aidlc-architect-agent',
+          displayName: 'Architect',
+          persona: 'body:blocks/bodies/sha256/architect',
+        },
+      ]);
+    },
+  );
+
+  it.each(['pipeline', 'mob'])(
+    'does not load %s support personas for an unpinned intent',
+    async (mode) => {
+      let seen = null;
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
+        materializeStage: async (args) => {
+          seen = args;
+          return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+        },
+      });
+
+      await runStage(baseArgs, deps);
+
+      expect(seen.supportAgents).toEqual([]);
+    },
+  );
+
+  it('loads no support persona for a legacy mode', async () => {
+    let seen = null;
+    const lib = ensembleLibrary('inline');
     const deps = baseDeps({
       spawnFn: okSpawn,
       loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+      materializeStage: async (args) => {
+        seen = args;
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+
+    await runStage(baseArgs, deps);
+
+    expect(seen.supportAgents).toEqual([]);
+  });
+
+  it('still refuses agent-team, which needs real concurrent sessions', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary('agent-team') }),
     });
 
     await expect(runStage(baseArgs, deps)).resolves.toMatchObject({

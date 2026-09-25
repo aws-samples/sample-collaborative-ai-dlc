@@ -33,9 +33,15 @@ import {
 import { compileStageGraph, compileRules } from './compile.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
-// Stage modes the runtime can execute in this layer. Multi-persona modes are in
-// the authored enum but remain fail-fast until their independent sessions land.
-const RUNNABLE_MODES = ['inline', 'subagent'];
+// Stage modes the runtime can execute. Pipeline, mob, and subagent supports use
+// serial, persona-scoped sessions; agent-team remains unrunnable because it
+// requires real concurrent sessions.
+const RUNNABLE_MODES = ['inline', 'subagent', 'pipeline', 'mob'];
+
+// The approximated multi-persona topologies. Kept separate from RUNNABLE_MODES
+// so a consumer can tell "runs natively" from "runs as one session with an
+// ensemble prompt", and so the compatibility analyzer can classify them.
+const ENSEMBLE_MODES = ['pipeline', 'mob'];
 
 // Reserved lead-agent refs that are NOT domain AGENT blocks and therefore have no
 // library entry to resolve against. Upstream's initialization stages declare
@@ -1029,6 +1035,7 @@ export {
   workflowScopes,
   resolveStagePolicy,
   RUNNABLE_MODES,
+  ENSEMBLE_MODES,
   REVIEW_CLASS_RANK,
   UNIT_FOR_EACH,
   UNIT_DAG_ARTIFACT,
@@ -1040,6 +1047,7 @@ export default {
   workflowScopes,
   resolveStagePolicy,
   RUNNABLE_MODES,
+  ENSEMBLE_MODES,
   REVIEW_CLASS_RANK,
   UNIT_FOR_EACH,
   UNIT_DAG_ARTIFACT,

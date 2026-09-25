@@ -17,7 +17,12 @@
 import { Logger } from '@aws-lambda-powertools/logger';
 import { mkdir } from 'node:fs/promises';
 import { runOneShotPrompt } from '../cli/one-shot.js';
-import { loadLibrary, loadBlockBody, listMergedBlocks } from '../block-loader.js';
+import {
+  loadLibrary,
+  loadBlockBody,
+  listMergedBlocks,
+  listReleaseBlocks,
+} from '../block-loader.js';
 import { buildExecutionPlan } from '../../shared/v2-execution-plan.js';
 import {
   buildGroundingPack,
@@ -159,6 +164,7 @@ export const createComposePlanStart = ({
   loadLibraryFn = loadLibrary,
   loadBlockBodyFn = loadBlockBody,
   listMergedBlocksFn = listMergedBlocks,
+  listReleaseBlocksFn = listReleaseBlocks,
   mkdirFn = mkdir,
   env = process.env,
   busy = null,
@@ -179,6 +185,11 @@ export const createComposePlanStart = ({
       reportExcerpt = null,
       progressContext = null,
       frozenGrid = null,
+      // Immutable AI-DLC release pinned on the intent (issue #482). Present =>
+      // the workflow, library and SCOPE vocabulary the composer is grounded in
+      // all come from that closure, so a proposal is validated against the
+      // methodology the intent will actually run.
+      methodologyRelease = null,
       requestedCli: explicitlyRequestedCli = null,
       cliModels: explicitlySelectedModels = null,
     } = payload;
@@ -225,7 +236,11 @@ export const createComposePlanStart = ({
     const job = (async () => {
       let g;
       try {
-        const { workflow, library } = await loadLibraryFn({ workflowId, workflowVersion });
+        const { workflow, library } = await loadLibraryFn({
+          workflowId,
+          workflowVersion,
+          ...(methodologyRelease ? { methodologyRelease } : {}),
+        });
         if (!workflow || !library) {
           await finish({
             state: 'FAILED',
@@ -233,7 +248,12 @@ export const createComposePlanStart = ({
           });
           return;
         }
-        const scopeBlocks = await listMergedBlocksFn('SCOPE').catch(() => []);
+        // A pinned intent grounds on its release's SCOPE vocabulary. No .catch
+        // here: an unresolvable closure must fail the compose, not silently
+        // ground the composer in an empty scope list.
+        const scopeBlocks = methodologyRelease
+          ? await listReleaseBlocksFn('SCOPE', methodologyRelease)
+          : await listMergedBlocksFn('SCOPE').catch(() => []);
         const { scopes, summaries, grids, stages, offeredScopeIds } = buildScopeGrounding({
           workflow,
           library,

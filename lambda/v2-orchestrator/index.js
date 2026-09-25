@@ -1348,6 +1348,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                 events: events.filter((e) => e.stageInstanceId === stage.stageInstanceId),
                 sensorVerdicts: outcome.result?.gateSensorVerdicts ?? [],
                 reviewVerdict: outcome.result?.reviewAdvisory ?? null,
+                ensembleEvidence: outcome.result?.ensembleEvidence ?? null,
                 changedInputs: outcome.result?.changedInputs ?? [],
                 // `required_artifact_missing` is the one check the orchestrator
                 // cannot derive from receipts: it needs what the stage actually
@@ -1401,6 +1402,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               )
             : [];
           const overridable = overridableFindings(gateFindings);
+          // Blocking findings require an explicit override.
           const gateOptions = buildGateOptions({ findings: gateFindings });
           const validation = await awaitEngineGate(ctx, sectionToolkit, {
             name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
@@ -2162,6 +2164,10 @@ const findingLine = (item) =>
   [
     item.severity === 'blocking' ? `- ⛔ BLOCKING — ${item.title}` : `- ⚠️ ${item.title}`,
     item.remediation ? `: ${item.remediation}` : '',
+    // The verbatim words, on their own indented quote line. A maintained dissent
+    // whose text is only in `detail` never reaches the human reading the gate,
+    // and a paraphrase of an objection is a different objection.
+    item.quote ? `\n    > ${String(item.quote).replaceAll('\n', '\n    > ')}` : '',
   ].join('');
 
 const validationPrompt = ({

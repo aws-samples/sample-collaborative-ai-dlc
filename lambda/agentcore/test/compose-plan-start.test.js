@@ -112,6 +112,7 @@ const makeDeps = ({ oneShotText, oneShotOk = true, store = makeStore() } = {}) =
   loadLibraryFn: vi.fn(async () => ({ workflow: workflow(), library: library() })),
   loadBlockBodyFn: vi.fn(async (b) => (b?.bodyRef?.s3Key === 'persona' ? 'PERSONA' : 'KNOWLEDGE')),
   listMergedBlocksFn: vi.fn(async () => scopeBlocks),
+  listReleaseBlocksFn: vi.fn(async () => scopeBlocks),
   mkdirFn: vi.fn(async () => undefined),
   log: vi.fn(),
 });
@@ -125,6 +126,64 @@ const waitForFinish = async (store) => {
   }
   throw new Error('compose job never finished');
 };
+
+describe('compose-plan-start — release-pinned intents', () => {
+  const methodologyRelease = {
+    releaseId: 'aidlc:abc',
+    sourceSha: 'a'.repeat(40),
+    importerRevision: 1,
+    closureDigest: 'd'.repeat(64),
+    catalogKey: `aidlc-releases/v1/${'a'.repeat(40)}/i1/catalog.json`,
+    manifestKey: `aidlc-releases/v1/${'a'.repeat(40)}/i1/manifest.json`,
+  };
+  const matched =
+    '```json\n{"mode":"matched","scope":"bugfix","rationale":["fits"],"confidence":0.8}\n```';
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('grounds on the release closure and never lists merged DynamoDB blocks', async () => {
+    const deps = makeDeps({ oneShotText: matched });
+    const start = createComposePlanStart(deps);
+
+    await start({ ...basePayload, methodologyRelease });
+    const update = await waitForFinish(deps.store);
+
+    expect(update.state).toBe('COMPLETED');
+    expect(deps.loadLibraryFn).toHaveBeenCalledWith(
+      expect.objectContaining({ methodologyRelease }),
+    );
+    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith('SCOPE', methodologyRelease);
+    expect(deps.listMergedBlocksFn).not.toHaveBeenCalled();
+  });
+
+  it('fails the compose when the pinned closure cannot be resolved', async () => {
+    const deps = makeDeps({ oneShotText: matched });
+    deps.listReleaseBlocksFn = vi.fn(async () => {
+      const error = new Error('release-resolver: no published release manifest');
+      error.code = 'release_not_found';
+      throw error;
+    });
+    const start = createComposePlanStart(deps);
+
+    await start({ ...basePayload, methodologyRelease });
+    const update = await waitForFinish(deps.store);
+
+    expect(update.state).toBe('FAILED');
+    expect(update.fields.failureReason).toContain('no published release manifest');
+  });
+
+  it('keeps the merged DynamoDB catalog for an unpinned intent', async () => {
+    const deps = makeDeps({ oneShotText: matched });
+    const start = createComposePlanStart(deps);
+
+    await start(basePayload);
+    await waitForFinish(deps.store);
+
+    expect(deps.loadLibraryFn).toHaveBeenCalledWith({ workflowId: 'aidlc-v2', workflowVersion: 4 });
+    expect(deps.listMergedBlocksFn).toHaveBeenCalledWith('SCOPE');
+    expect(deps.listReleaseBlocksFn).not.toHaveBeenCalled();
+  });
+});
 
 describe('scopeGridFor / buildScopeGrounding', () => {
   it('projects a scope grid off placements', () => {

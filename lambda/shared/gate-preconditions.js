@@ -3,7 +3,7 @@
 // if it may not.
 //
 // It is PURE: every input is data the caller already read (receipts, timeline
-// events, sensor verdicts, and the reviewer's verdict), and the
+// events, sensor verdicts, the reviewer's verdict, ensemble evidence), and the
 // output is a verdict plus findings. That is deliberate. The same evaluation runs
 // twice — once in the stage runner, to decide proceed / bounded repair / carry
 // findings, and once in the orchestrator immediately before the gate opens,
@@ -24,14 +24,18 @@ import { isQuestionChannelOutput } from './aidlc-capabilities.js';
 import { eventTypeOf } from './v2-process-keys.js';
 
 // Checked in upstream's own composition order (required outputs → summary
-// lineage → plan approval → reviewer → sensors), so a human reading the
+// lineage → contribution evidence → reviewer → sensors), so a human reading the
 // findings list sees the most fundamental problem first.
 const FINDING_CODES = Object.freeze([
   'required_artifact_missing',
   'summary_confirmation_missing',
   'summary_confirmation_stale',
   'plan_approval_missing',
+  'persona_contribution_missing',
+  'pipeline_link_incomplete',
+  'stage_budget_exhausted',
   'review_advisory_findings',
+  'review_dissent_maintained',
   'sensor_gate_blocking',
   'sensor_gate_advisory',
   'change_control_input_changed',
@@ -47,6 +51,11 @@ const finding = ({
   // not a stage approval, and the audit trail has to say which one happened.
   receiptKind = null,
   remediation = null,
+  // Verbatim human-authored or agent-authored text this finding is ABOUT (today:
+  // a maintained dissent's position). Rendered as a quote rather than folded into
+  // `title`, because a summarized objection is a different objection. Omitted
+  // entirely when absent, so every other finding's shape is unchanged.
+  quote = null,
 }) => {
   if (!FINDING_CODES.includes(code)) {
     throw new Error(`gate-preconditions: unknown finding code "${code}"`);
@@ -68,6 +77,7 @@ const finding = ({
     overridable,
     receiptKind,
     remediation,
+    ...(quote ? { quote: String(quote) } : {}),
   };
 };
 
@@ -93,6 +103,10 @@ const askedAQuestion = (events, attempt) =>
   (events ?? []).some(
     (event) =>
       eventTypeOf(event) === 'v2.question.asked' &&
+      // A question raised by a session that does not own the checkpoint (the
+      // ensemble integrator, dispatched after the owner settled its
+      // confirmation) is not the stage's conditional question flow.
+      event.detail?.checkpointOwner !== false &&
       // `appendEvent` persists the attempt under `detail`; events written before
       // it did carry none and still count, as they always have.
       (event.detail?.attempt == null || sameAttempt(event.detail, attempt)),
@@ -172,6 +186,7 @@ const evaluateGatePreconditions = ({
   events = [],
   sensorVerdicts = [],
   reviewVerdict = null,
+  ensembleEvidence = null,
   // The required outputs the runner actually observed. `null` means "not
   // observed" (the orchestrator re-read, which sees receipts and events but not
   // the workspace), and an unobserved set is never reported as missing.
@@ -261,6 +276,78 @@ const evaluateGatePreconditions = ({
     }
   }
 
+  const declaredSupports = ensembleEvidence?.supports ?? [];
+  if (declaredSupports.length > 0) {
+    const contributed = new Set(
+      receiptsOfKind(receipts, 'persona-contribution', attempt).map(
+        (row) => row.detail?.agentRef ?? row.unitSlug,
+      ),
+    );
+    for (const agentRef of declaredSupports.filter((ref) => !contributed.has(ref))) {
+      findings.push(
+        finding({
+          code: 'persona_contribution_missing',
+          severity: 'advisory',
+          title: `Support persona ${agentRef} produced no contribution`,
+          detail: { agentRef },
+          remediation: `Review the stage output knowing ${agentRef}'s perspective is absent.`,
+        }),
+      );
+    }
+  }
+
+  const declaredLinks = ensembleEvidence?.links ?? [];
+  if (declaredLinks.length > 0) {
+    const completed = receiptsOfKind(receipts, 'pipeline-link', attempt).length;
+    if (completed < declaredLinks.length) {
+      findings.push(
+        finding({
+          code: 'pipeline_link_incomplete',
+          severity: 'advisory',
+          title: `Only ${completed} of ${declaredLinks.length} pipeline links completed`,
+          detail: { completed, declared: declaredLinks.length, links: declaredLinks },
+          remediation: 'Review the stage output knowing the pipeline did not run end to end.',
+        }),
+      );
+    }
+  }
+
+  // The stage's aggregate wall-clock budget cut persona sessions before they ran
+  // (or while they ran). Advisory while at least one collaborator's evidence
+  // exists: the stage output is there, the human decides knowing which
+  // perspectives are absent. When the cut left NO collaborator evidence at all
+  // (no support contribution, no pipeline link past the lead) the ensemble did
+  // not happen, so the finding blocks — overridably, so approving a stage that
+  // ran as a single session is a recorded waiver rather than a silent one.
+  const budgetCut = ensembleEvidence?.budgetExhausted ?? [];
+  if (budgetCut.length > 0) {
+    const collaboratorEvidence = [
+      ...(declaredSupports.length > 0
+        ? [receiptsOfKind(receipts, 'persona-contribution', attempt).length]
+        : []),
+      ...(declaredLinks.length > 0
+        ? [Math.max(0, receiptsOfKind(receipts, 'pipeline-link', attempt).length - 1)]
+        : []),
+    ];
+    const fullyCut =
+      collaboratorEvidence.length > 0 && collaboratorEvidence.every((count) => count === 0);
+    findings.push(
+      finding({
+        code: 'stage_budget_exhausted',
+        severity: fullyCut ? 'blocking' : 'advisory',
+        title: fullyCut
+          ? `The stage wall-clock budget ran out before any collaborator ran; ${budgetCut.length} persona session(s) were cut`
+          : `The stage wall-clock budget ran out; ${budgetCut.length} persona session(s) did not run to completion`,
+        detail: { sessions: budgetCut, ...(fullyCut ? { collaboratorEvidence: 0 } : {}) },
+        overridable: fullyCut,
+        ...(fullyCut ? { receiptKind: 'stage-approval' } : {}),
+        remediation: fullyCut
+          ? 'Override to approve the single-session output on the record, or request changes to run the stage again with a fresh budget.'
+          : 'Review the stage output knowing these sessions were cut, or request changes to run the stage again with a fresh budget.',
+      }),
+    );
+  }
+
   if (reviewVerdict?.advisory && reviewVerdict.verdict !== 'READY') {
     findings.push(
       finding({
@@ -269,6 +356,22 @@ const evaluateGatePreconditions = ({
         title: `Advisory review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
         detail: { findings: reviewVerdict.findings ?? null },
         remediation: 'The advisory reviewer does not block; decide with its findings in view.',
+      }),
+    );
+  }
+
+  for (const dissent of ensembleEvidence?.dissent ?? []) {
+    findings.push(
+      finding({
+        code: 'review_dissent_maintained',
+        severity: 'advisory',
+        title: `Maintained dissent (${dissent.agentRef ?? 'collaborator'})`,
+        // Quoted verbatim: a summarized objection is a different objection. The
+        // text rides `quote` as well as `detail` so every renderer (gate prompt,
+        // review panel) shows the words the collaborator actually wrote.
+        detail: { agentRef: dissent.agentRef ?? null, position: dissent.position ?? null },
+        quote: dissent.quote ?? dissent.position ?? null,
+        remediation: 'Decide whether the objection changes your approval.',
       }),
     );
   }

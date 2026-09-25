@@ -191,6 +191,30 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
     expect(types(store)).toEqual(['v2.checkpoint.repair_requested']);
   });
 
+  // F-4: the stage wall-clock budget can refuse the repair turn. That takes the
+  // "no resumable session" path — no counter bump, no turn — and says why.
+  it('skips the repair turn when the stage budget refuses it, and says so', async () => {
+    const store = fakeStore();
+    const messages = [];
+    let skipped = 0;
+
+    const result = await ladder(store, {
+      runRepairTurn: async (m) => messages.push(m),
+      repairAllowed: () => false,
+      onRepairSkipped: async () => {
+        skipped += 1;
+      },
+    });
+
+    expect(messages).toEqual([]);
+    expect(skipped).toBe(1);
+    expect(store.counters.summaryRepairAttempts).toBeUndefined();
+    expect(result.findings.map((finding) => finding.code)).toEqual([
+      'summary_confirmation_missing',
+    ]);
+    expect(types(store)).toEqual(['v2.summary.noncompliant']);
+  });
+
   it('fails with a rewind-eligible code when the stage has no human gate', async () => {
     const store = fakeStore();
 
