@@ -7,6 +7,8 @@
 //   V2_EXECUTION_ID, V2_INTENT_ID, V2_PROJECT_ID, V2_STAGE_ID,
 //   V2_STAGE_INSTANCE_ID
 //   V2_MCP_ROLE          author | reviewer | reader
+//   V2_STAGE_POLICY      the resolved release policy as JSON, or absent/empty for
+//                        a 2.3.3-era or unpinned run
 //   V2_PROCESS_TABLE, NEPTUNE_ENDPOINT, CONNECTIONS_TABLE, WEBSOCKET_ENDPOINT
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -18,6 +20,21 @@ import { createGraphManager } from './graph-manager.js';
 import { createProcessBridge } from './process-bridge.js';
 import { buildToolHandlers, registerTools } from './server.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
+
+// The stage policy arrives as JSON on the trusted container ENV, exactly like the
+// rest of the scope: the agent cannot influence which checkpoints it must pass.
+// A malformed value degrades to null (no checkpoints, no withdrawal) rather than
+// failing the MCP child — run-stage's completion ladder is the enforcement point
+// and it reads the policy from the plan, not from here.
+const policyFromEnv = (env) => {
+  if (!env.V2_STAGE_POLICY) return null;
+  try {
+    const parsed = JSON.parse(env.V2_STAGE_POLICY);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+};
 
 const scopeFromEnv = (env = process.env) => ({
   executionId: env.V2_EXECUTION_ID,
@@ -40,6 +57,7 @@ const scopeFromEnv = (env = process.env) => ({
   // Trusted reviewer identity (reviewer role only) — submit_review stamps this
   // on the verdict row, never the agent's self-report (empty string → null).
   reviewerAgent: env.V2_REVIEWER_AGENT || null,
+  policy: policyFromEnv(env),
 });
 
 export const startMcpServer = async ({ env = process.env } = {}) => {
@@ -67,7 +85,15 @@ export const startMcpServer = async ({ env = process.env } = {}) => {
 
   const handlers = buildToolHandlers({ graph, bridge });
   const server = new McpServer({ name: 'aidlc-v2-mcp', version: '1.0.0' });
-  const registered = registerTools({ server, handlers, role, stageId: scope.stageId, z, env });
+  const registered = registerTools({
+    server,
+    handlers,
+    role,
+    stageId: scope.stageId,
+    policy: scope.policy,
+    z,
+    env,
+  });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

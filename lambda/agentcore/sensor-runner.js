@@ -35,6 +35,38 @@ import {
   evalGraphCoverage,
 } from '../shared/v2-sensor-contract.js';
 
+// `fire_on` (upstream ≥2.7.0) declares WHEN a sensor fires:
+//   `write` — when a matching file is written, and
+//   `gate`  — once per matching EXISTING deliverable as the stage opens its gate.
+// Collaborative has no per-write hook (the CLI owns the edit loop), so `write`
+// stays approximated post-agent: it narrows the candidate set to the files this
+// stage attempt actually changed. `gate` IS reproduced, but only because the
+// caller runs it in its own pass AFTER the reviewer loop resolves — see
+// `runStageSensors({ planes })`. A sensor without `fire_on` keeps today's
+// behavior exactly, and `planes: null` keeps today's single-pass behavior.
+const FIRE_ON_WRITE = 'write';
+const FIRE_ON_GATE = 'gate';
+
+// Which pass a sensor belongs to. Everything that does not ask for the gate
+// plane runs on the write plane, which is where an unauthored `fire_on` has
+// always run.
+const planeOf = (sensor) => (sensor?.fireOn === FIRE_ON_GATE ? FIRE_ON_GATE : FIRE_ON_WRITE);
+
+// A sensor is on the gate plane when it asked to be AND the caller is running
+// that pass. `plane: null` is the legacy single-pass call, where a `gate` sensor
+// still recorded the not-applicable verdict — so the shortcut stays reachable.
+const gatePlane = (sensor, plane) =>
+  sensor?.fireOn === FIRE_ON_GATE && (plane == null || plane === FIRE_ON_GATE);
+
+// `not-applicable` is reported as INCONCLUSIVE with an explicit `notApplicable`
+// detail flag rather than a new result enum: SensorRun rows, the severity gate,
+// and the UI all key off the existing four-value vocabulary, and widening it
+// here would change how every historical verdict is read.
+const notApplicable = (reason, extra = {}) => ({
+  result: SENSOR_RESULT.INCONCLUSIVE,
+  detail: { notApplicable: true, reason, ...extra },
+});
+
 // Convert a sensor `matches` glob (e.g. `**/*.{ts,tsx}`, `**/aidlc-docs/**`)
 // into a RegExp. Supports the limited syntax the baseline sensors use: `**`,
 // `*`, and a single `{a,b}` alternation. Server-controlled input (from the
@@ -189,7 +221,7 @@ export const createSensorRunner = ({
   // produced artifact's content is read from Neptune and fed to the in-process
   // evaluator. The worst result across the produced artifacts wins (a single
   // FAIL fails the sensor). `consumes` is the upstream artifact-name list.
-  const runGraphSensor = async ({ sensor, outputArtifacts = [], consumes = [] }) => {
+  const runGraphSensor = async ({ sensor, outputArtifacts = [], consumes = [], plane = null }) => {
     // graph-coverage is INTENT-WIDE (typed-item joins across all artifacts),
     // not per-produced-artifact like the content evaluators below.
     if (sensor.sensorId === 'graph-coverage') {
@@ -214,6 +246,7 @@ export const createSensorRunner = ({
     }
     const details = [];
     let worst = SENSOR_RESULT.PASS;
+    let deliverables = 0;
     for (const { artifact: artifactType, optional } of produced) {
       // The agent ids artifacts however it likes; look them all up by type.
       const rows = await graph
@@ -223,10 +256,15 @@ export const createSensorRunner = ({
         // An absent OPTIONAL artifact is by-design (the stage MAY write it) —
         // no finding, no verdict downgrade. Only required outputs count.
         if (optional) continue;
+        // A MISSING REQUIRED deliverable is a finding, not a not-applicable: it
+        // is recorded in `details` and therefore suppresses the gate-plane
+        // not-applicable shortcut below (which only fires when the sensor found
+        // nothing to say at all).
         details.push({ artifact: artifactType, reason: 'not found in graph' });
         if (worst === SENSOR_RESULT.PASS) worst = SENSOR_RESULT.INCONCLUSIVE;
         continue;
       }
+      deliverables += rows.length;
       for (const row of rows) {
         const body = row?.content ?? '';
         const evalled =
@@ -243,13 +281,21 @@ export const createSensorRunner = ({
         if (evalled.result === SENSOR_RESULT.FAIL) worst = SENSOR_RESULT.FAIL;
       }
     }
+    if (gatePlane(sensor, plane) && deliverables === 0 && details.length === 0) {
+      return notApplicable('no matching deliverable at the gate', { fireOn: FIRE_ON_GATE });
+    }
     return { result: worst, detail: { artifacts: details } };
   };
 
   // Run one `script` sensor: glob the workspace for files the sensor matches,
   // materialize its script from S3, and spawn it once per matching file. No
   // match → INCONCLUSIVE (the stage produced no code this sensor inspects).
-  const runScriptSensor = async ({ sensor, stageId }) => {
+  // With `fire_on: write` the candidate set narrows to `changedFiles` (this
+  // attempt's git diff); when that list is unavailable the sweep falls back to
+  // the whole workspace, which is the documented approximation. The GATE plane
+  // never narrows: its whole purpose is the final bytes of every deliverable,
+  // not the delta one attempt happened to touch.
+  const runScriptSensor = async ({ sensor, stageId, changedFiles = null, plane = null }) => {
     const validation = validateScriptSpec(sensor);
     if (!validation.ok) {
       return { result: SENSOR_RESULT.BLOCKED, detail: { error: validation.error } };
@@ -260,20 +306,52 @@ export const createSensorRunner = ({
       return { result: SENSOR_RESULT.INCONCLUSIVE, detail: { reason: 'no workspace' } };
     }
     const matcher = sensor.matches ? globToRegExp(sensor.matches) : null;
-    const all = await listFiles(workspaceDir);
+    const onGatePlane = gatePlane(sensor, plane);
+    const writePlane =
+      !onGatePlane && sensor.fireOn === FIRE_ON_WRITE && Array.isArray(changedFiles);
+    const all = writePlane ? changedFiles : await listFiles(workspaceDir);
     const matched = matcher ? all.filter((f) => matcher.test(f)) : all;
     if (matched.length === 0) {
+      if (onGatePlane) {
+        return notApplicable('no matching deliverable at the gate', {
+          fireOn: FIRE_ON_GATE,
+          matches: sensor.matches ?? null,
+        });
+      }
       return {
         result: SENSOR_RESULT.INCONCLUSIVE,
-        detail: { reason: 'no files match', matches: sensor.matches ?? null },
+        detail: {
+          reason: 'no files match',
+          matches: sensor.matches ?? null,
+          ...(writePlane ? { fireOn: FIRE_ON_WRITE, changedFiles: changedFiles.length } : {}),
+        },
       };
     }
 
     // Materialize the sensor's script into the runtime-private workspace dir so
     // the spawned interpreter can load it. The block carries the scriptRef.
-    const script = await loadBlockScript(sensor).catch(() => '');
+    // A release-mode integrity failure surfaces as BLOCKED with the reason
+    // attached rather than a bare "no script": the verdict must not read as if
+    // the sensor simply had nothing to run.
+    let script = '';
+    let scriptError = null;
+    try {
+      script = await loadBlockScript(sensor);
+    } catch (error) {
+      scriptError = error;
+    }
     if (!script) {
-      return { result: SENSOR_RESULT.BLOCKED, detail: { error: 'sensor has no script' } };
+      return {
+        result: SENSOR_RESULT.BLOCKED,
+        detail: scriptError
+          ? {
+              error: scriptError?.message ?? String(scriptError),
+              ...(scriptError?.name ? { name: scriptError.name } : {}),
+              ...(scriptError?.code ? { code: scriptError.code } : {}),
+              ...(scriptError?.details ? { details: scriptError.details } : {}),
+            }
+          : { error: 'sensor has no script' },
+      };
     }
     const scriptDir = path.join(workspaceDir, '.aidlc', 'sensors');
     await mkdir(scriptDir, { recursive: true });
@@ -303,13 +381,21 @@ export const createSensorRunner = ({
   };
 
   // Run every sensor declared on a stage and return the verdicts. Each verdict:
-  // { sensorId, kind, severity, result, held, detail }. Best-effort per sensor —
-  // a thrown sensor becomes a BLOCKED verdict, never a stage crash.
+  // { sensorId, kind, severity, result, held, detail, plane }. Best-effort per
+  // sensor — a thrown sensor becomes a BLOCKED verdict, never a stage crash.
+  //
+  // `planes` selects which pass this call runs. `null` (the default) is the
+  // legacy single pass over every sensor and is what an unpinned / 2.3.3 run
+  // still does, byte for byte. A plane-aware caller runs `['write']` post-agent
+  // and `['gate']` after the reviewer loop resolves, so a gate verdict is taken
+  // on the bytes the human will actually approve.
   const runStageSensors = async ({
     sensors = [],
     outputArtifacts = [],
     inputArtifacts = [],
     stageId,
+    changedFiles = null,
+    planes = null,
   }) => {
     // Upstream-coverage checks that the stage's output references each consumed
     // artifact — an `expectedAbsent` input (producer out of scope, absence by
@@ -320,15 +406,19 @@ export const createSensorRunner = ({
       .filter((i) => !i?.expectedAbsent)
       .map((i) => i.artifact)
       .filter(Boolean);
+    const selected = Array.isArray(planes)
+      ? sensors.filter((sensor) => planes.includes(planeOf(sensor)))
+      : sensors;
     const verdicts = [];
-    for (const sensor of sensors) {
+    for (const sensor of selected) {
       const kind = sensorKind(sensor);
+      const plane = Array.isArray(planes) ? planeOf(sensor) : null;
       let outcome;
       try {
         outcome =
           kind === 'graph'
-            ? await runGraphSensor({ sensor, outputArtifacts, consumes })
-            : await runScriptSensor({ sensor, stageId });
+            ? await runGraphSensor({ sensor, outputArtifacts, consumes, plane })
+            : await runScriptSensor({ sensor, stageId, changedFiles, plane });
       } catch (e) {
         outcome = { result: SENSOR_RESULT.BLOCKED, detail: { error: e.message } };
       }
@@ -340,6 +430,9 @@ export const createSensorRunner = ({
         result: outcome.result,
         held,
         detail: outcome.detail ?? null,
+        // Only a plane-aware call states the plane, so a legacy verdict object
+        // stays exactly the shape every historical consumer reads.
+        ...(plane ? { plane } : {}),
       });
     }
     return verdicts;
@@ -348,4 +441,4 @@ export const createSensorRunner = ({
   return { runStageSensors, runGraphSensor, runScriptSensor };
 };
 
-export const __test = { globToRegExp, listFiles, resultFromScript };
+export const __test = { globToRegExp, listFiles, resultFromScript, notApplicable };

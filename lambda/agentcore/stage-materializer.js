@@ -33,10 +33,9 @@ const annexPath = path.join(
 );
 export const MCP_EXECUTION_ANNEX = readFileSync(annexPath, 'utf8').trimEnd();
 
-// Upstream bodies in newer release closures use `{{INVOKE}}` to refer to their
-// build-time engine command. This runtime does not ship that engine, so replace
-// the token in prompts and append the supported command dialect only when an
-// instructive prompt part contains it.
+// The {{INVOKE}} dialect annex — appended ONLY when a prompt part actually
+// carries the token (releases ≥2.8.2 expand it to the upstream engine CLI, which
+// does not exist here). A prompt with no token is byte-identical to before.
 const invokeAnnexPath = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'prompts',
@@ -52,12 +51,18 @@ const HARNESS_DIR_TOKEN = /\{\{HARNESS_DIR\}\}/g;
 export const neutralizeHarnessDir = (text = '') =>
   text.replace(HARNESS_DIR_TOKEN, '<runtime-managed>');
 
+// Releases ≥2.8.2 write `{{INVOKE}} engine …` in stage bodies, where {{INVOKE}}
+// expands to the upstream engine CLI at their dist build. We never build their
+// dist, and no engine binary exists in this runtime, so the token is neutralized
+// at the PROMPT layer exactly like {{HARNESS_DIR}} (the seeded body stays
+// verbatim) and the dialect annex maps each command family to its platform
+// equivalent.
 const INVOKE_TOKEN = /\{\{INVOKE\}\}/g;
 export const neutralizeInvoke = (text = '') =>
   text.replace(INVOKE_TOKEN, '<runtime-managed-engine>');
 export const hasInvokeToken = (...parts) =>
   parts.some((part) => typeof part === 'string' && part.includes('{{INVOKE}}'));
-const neutralizeTokens = (text = '') => neutralizeInvoke(neutralizeHarnessDir(text));
+export const neutralizeTokens = (text = '') => neutralizeInvoke(neutralizeHarnessDir(text));
 
 // The strict output contract — a short tail reminder of the load-bearing tool
 // calls. The annex (injected first) owns the full "MCP is your only I/O" framing;
@@ -160,6 +165,77 @@ export const renderUnitScope = (unit) => {
   ].join('\n');
 };
 
+// Render the resolved per-scope execution policy. PURE,
+// and '' unless the plan actually resolved a policy — so a legacy plan's prompt
+// is unchanged. Only the rituals the AGENT can honour are stated; the platform
+// enforces the rest (sensor selection, reviewer class) before the prompt exists.
+export const renderScopePolicy = (policy) => {
+  if (!policy) return '';
+  const lines = [];
+  if (policy.summaryConfirmation === 'required') {
+    lines.push(
+      '- **Summary confirmation is REQUIRED.** Before you record ANY stage output,',
+      '  call `confirm_summary` with your understanding of the task and every',
+      '  decision you are about to commit, and wait for "Looks correct". The normal',
+      '  platform completion path checks for its receipt; this is a workflow check,',
+      '  not a boundary against direct writes made with the container credentials.',
+      '  On "Request',
+      '  changes", revise and call it again.',
+    );
+  } else if (policy.summaryConfirmation === 'if-present') {
+    lines.push(
+      '- **Summary confirmation if-present.** If a consolidated understanding',
+      '  question is genuinely needed to avoid guessing, call `confirm_summary`',
+      '  once before producing outputs; otherwise proceed.',
+    );
+  }
+  if (policy.planApproval === 'required') {
+    lines.push(
+      '- **Plan approval is REQUIRED.** Before you write any code, call',
+      '  `request_plan_approval` with your implementation plan and how to test it,',
+      '  and wait for "Approve plan". The normal platform completion path checks for',
+      '  its receipt; this is a workflow check, not a boundary against direct writes',
+      '  made with the container credentials.',
+    );
+  }
+  // `learnings: off` states nothing here on purpose: the MCP server does not
+  // register `record_team_knowledge` / `record_learning_rule` at all for that
+  // scope, so a prompt bullet asking the agent not to call them would describe
+  // tools it cannot see.
+  if (policy.changeControl === 'relaxed') {
+    lines.push(
+      '- **Change control is RELAXED.** If an already-approved input changed,',
+      '  continue with the new content and state the acceptance explicitly in your',
+      '  summary (`CHANGE_ACCEPTED: <what changed>`) instead of stopping.',
+    );
+  } else if (policy.changeControl === 'strict') {
+    lines.push(
+      '- **Change control is STRICT.** If an already-approved input appears to',
+      '  have changed, do NOT silently build on it: say so in your summary so the',
+      '  human can reopen the affected checkpoint.',
+    );
+  }
+  if (policy.skeleton === 'on') {
+    lines.push(
+      '- **Walking skeleton is ON.** For the first construction work, deliver the',
+      '  thinnest end-to-end slice that actually runs before broadening scope.',
+    );
+  } else if (policy.skeleton === 'off') {
+    lines.push('- **Walking skeleton is OFF.** Do not add a skeleton-only ceremony pass.');
+  }
+  if (policy.reviewClass === 'advisory') {
+    lines.push(
+      '- **Review is ADVISORY.** An independent reviewer inspects your output once',
+      '  after you finish; there is no repair round, so do not hold work back for',
+      '  it.',
+    );
+  } else if (policy.reviewClass === 'none') {
+    lines.push('- **No independent reviewer runs for this scope.**');
+  }
+  if (lines.length === 0) return '';
+  return ['## Scope policy (authoritative for these rituals)', '', ...lines].join('\n');
+};
+
 // Assemble the full stage prompt. PURE. `ctx`:
 //   stage           — the resolved plan stage (stageId, phase, agentRef, in/out,
 //                      rules refs, humanValidation)
@@ -208,6 +284,8 @@ export const buildStagePrompt = ({
   if (unitScope) sections.push('', unitScope);
   const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId);
   if (workspaceDetectionContract) sections.push('', workspaceDetectionContract);
+  const scopePolicy = renderScopePolicy(stage.policy);
+  if (scopePolicy) sections.push('', scopePolicy);
   sections.push(
     '',
     '## Stage instructions',
@@ -238,6 +316,11 @@ export const buildStagePrompt = ({
     );
   }
   sections.push('', OUTPUT_CONTRACT);
+  // The dialect annex is gated on the two parts that actually INSTRUCT the agent
+  // to run engine commands: the stage body and the conductor doctrine. Personas,
+  // knowledge, and compiled context are neutralized above but only ever MENTION
+  // the token, so gating on them would append a large annex for an incidental
+  // reference.
   if (hasInvokeToken(stageBody, conductor)) {
     sections.push('', INVOKE_DIALECT_ANNEX);
   }
@@ -302,6 +385,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         V2_UNIT_SLUG: scope.unitSlug ?? '',
         V2_RESOLVED_MODEL: scope.model ?? '',
         V2_MCP_ROLE: scope.role ?? 'author',
+        // The resolved release policy, so the MCP server registers the checkpoint
+        // tools the policy requires and withholds the ones it turns off. Written
+        // ONLY when the plan resolved a policy, so an unpinned or 2.3.3-era run
+        // produces a byte-identical config.
+        ...(scope.policy ? { V2_STAGE_POLICY: JSON.stringify(scope.policy) } : {}),
         // Trusted reviewer identity (reviewer role only): the bridge stamps this
         // on the verdict row instead of trusting the agent's self-reported name
         // (upstream §12a identity marker, enforced server-side). Empty → null.
@@ -429,12 +517,26 @@ export const toOpenCodeMcp = (mcpServers = {}) => {
 
 export const OPENCODE_INSTRUCTIONS = ['.aidlc/rules.md', '.aidlc/opencode-instructions/*.md'];
 
+// AGENT.maxTurns (≥2.6.18) is upstream's hard turn cap on the two reviewer
+// agents. OpenCode's native equivalent is the agent-level `steps` limit
+// (`agent.<name>.steps`, a positive integer: the max agentic iterations before
+// the model is forced to a text-only answer). `opencode run` drives the `build`
+// agent, so that is where the cap lands. Omitted unless the block declares it,
+// so a legacy config is byte-identical. Claude honours its own native cap; Kiro
+// exposes no equivalent and is inert by design (see the compatibility matrix).
+export const OPENCODE_DEFAULT_AGENT = 'build';
+const openCodeTurnLimit = (maxTurns) =>
+  Number.isInteger(maxTurns) && maxTurns > 0
+    ? { agent: { [OPENCODE_DEFAULT_AGENT]: { steps: maxTurns } } }
+    : {};
+
 export const buildOpenCodeConfig = ({
   mcpEntry,
   scope,
   env = {},
   customServers = {},
   instructions = OPENCODE_INSTRUCTIONS,
+  maxTurns = null,
 }) => {
   // buildMcpConfig writes the reserved server last. Preserve that insertion
   // order through conversion so repository/user config cannot replace `aidlc`
@@ -445,6 +547,7 @@ export const buildOpenCodeConfig = ({
     $schema: 'https://opencode.ai/config.json',
     share: 'disabled',
     instructions,
+    ...openCodeTurnLimit(maxTurns),
     mcp: { ...others, aidlc },
   };
 };
@@ -457,7 +560,8 @@ export const materializeOpenCodeConfig = async ({
   scope,
   env = process.env,
   customServers = {},
-}) => JSON.stringify(buildOpenCodeConfig({ mcpEntry, scope, env, customServers }));
+  maxTurns = null,
+}) => JSON.stringify(buildOpenCodeConfig({ mcpEntry, scope, env, customServers, maxTurns }));
 
 // ── Codex config (per-stage CODEX_HOME) ──
 //
@@ -696,6 +800,7 @@ export const materializeCliContext = async ({
   env = process.env,
   customServers = {},
   secretEnv = {},
+  maxTurns = null,
 }) => {
   if (cli === 'kiro') {
     return {
@@ -716,6 +821,7 @@ export const materializeCliContext = async ({
         scope,
         env,
         customServers,
+        maxTurns,
       }),
     };
   }
@@ -817,6 +923,7 @@ export const materializeStage = async ({
   cli = null,
   customRules = [],
   attachments = [],
+  maxTurns = null,
 }) => {
   const aidlcDir = path.join(workspaceDir, '.aidlc');
   await mkdir(aidlcDir, { recursive: true });
@@ -833,6 +940,7 @@ export const materializeStage = async ({
     env,
     customServers,
     secretEnv,
+    maxTurns,
   });
 
   const prompt = buildStagePrompt({

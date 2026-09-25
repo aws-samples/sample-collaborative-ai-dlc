@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
+import { createRecordLearningHandler } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
 
 describe('createBusyTracker', () => {
@@ -167,6 +168,51 @@ describe('dispatchInvocation', () => {
         command: 'create-workflow-checkpoint',
       },
     });
+  });
+
+  it('dispatches record-learning to the registered AgentCore handler', async () => {
+    const recordLearning = vi.fn(async (payload) => ({
+      ok: true,
+      learningCount: payload.learnings.length,
+    }));
+
+    const response = await dispatchInvocation({
+      payload: { command: 'record-learning', learnings: ['Keep gate receipts attempt-scoped'] },
+      handlers: { recordLearning },
+    });
+
+    expect(response).toMatchObject({
+      statusCode: 200,
+      body: { ok: true, learningCount: 1, command: 'record-learning' },
+    });
+    expect(recordLearning).toHaveBeenCalledWith(
+      { command: 'record-learning', learnings: ['Keep gate receipts attempt-scoped'] },
+      {},
+    );
+  });
+
+  it('binds record-learning to the project-scoped runtime dependencies', async () => {
+    const store = { name: 'store' };
+    const openGraph = vi.fn(async () => ({ name: 'graph' }));
+    const broadcast = vi.fn();
+    const recordLearning = vi.fn(async () => ({ ok: true, recorded: true }));
+    const response = await dispatchInvocation({
+      payload: { command: 'record-learning', learnings: ['Prefer explicit retries'] },
+      handlers: {
+        recordLearning: createRecordLearningHandler({
+          recordLearning,
+          store,
+          openGraph,
+          broadcast,
+        }),
+      },
+    });
+
+    expect(response.body).toMatchObject({ ok: true, recorded: true });
+    expect(recordLearning).toHaveBeenCalledWith(
+      { command: 'record-learning', learnings: ['Prefer explicit retries'] },
+      { store, openGraph, broadcast },
+    );
   });
 
   it('routes discussion-assist-start for Quorum discussion jobs', async () => {
