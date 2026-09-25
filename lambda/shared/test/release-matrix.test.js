@@ -15,11 +15,13 @@ import { buildStagePrompt, renderScopePolicy } from '../../agentcore/stage-mater
 import { toolsForRole } from '../../agentcore/mcp/server.js';
 import {
   buildExecutionPlan,
+  planSegments,
   resolveStagePolicy,
   UNIT_DAG_ARTIFACT,
   UNIT_FOR_EACH,
 } from '../v2-execution-plan.js';
 import { evaluateGatePreconditions } from '../gate-preconditions.js';
+import { LOOP_BACK_RECOMMENDED_EVENT, resolveLoopBackOffer } from '../stage-loopback.js';
 import { resolveMethodologyLibrary } from '../release-resolver.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
 import { buildGateOptions } from '../../v2-orchestrator/index.js';
@@ -220,13 +222,40 @@ const resolveTopology = (stage, library, releaseId) =>
     env: {},
   });
 
-const matrixRow = ({ profileId, scope, plan, gateStats, checkpoints, ensembles }) => ({
+const loopBackOfferFor = ({ stage, stages, profileId }) => {
+  const segment = planSegments(stages).find((item) =>
+    item.stages.some((candidate) => candidate.stageId === stage.stageId),
+  );
+  if (!segment || segment.kind !== 'stages') return { offered: false };
+  const currentIndex = segment.stages.findIndex((candidate) => candidate.stageId === stage.stageId);
+  const events =
+    stage.policy?.loopBack === 'human-offered'
+      ? [
+          {
+            eventType: LOOP_BACK_RECOMMENDED_EVENT,
+            stageInstanceId: stage.stageInstanceId,
+            detail: { attempt: ATTEMPT, reason: `synthetic recommendation for ${profileId}` },
+          },
+        ]
+      : [];
+  return resolveLoopBackOffer({
+    stage,
+    segmentStages: segment.stages,
+    currentIndex,
+    skippedStageIds: [],
+    events,
+    attempt: ATTEMPT,
+  });
+};
+
+const matrixRow = ({ profileId, scope, plan, gateStats, checkpoints, ensembles, loopBacks }) => ({
   profile: profileId,
   scope,
   stages: plan?.stages.length ?? 0,
   gates: gateStats,
   checkpoints,
   ensembles: ensembles.length ? ensembles.join(',') : '—',
+  loopBack: loopBacks.length ? loopBacks.join(',') : '—',
 });
 
 describe('release coexistence matrix', () => {
@@ -250,6 +279,7 @@ describe('release coexistence matrix', () => {
         let gates = 0;
         let checkpoints = 0;
         const ensembles = [];
+        const loopBacks = [];
 
         try {
           const releaseResult = buildExecutionPlan({ workflow, scope, library: releaseLibrary });
@@ -349,7 +379,11 @@ describe('release coexistence matrix', () => {
             );
             expect(compliant.ok, `${profileId}/${scope}/${stage.stageId} compliant`).toBe(true);
             expect(compliant.findings.filter((item) => item.severity === 'blocking')).toEqual([]);
-            const compliantOptions = buildGateOptions({ findings: compliant.findings });
+            const compliantLoopBack = loopBackOfferFor({ stage, stages: plan.stages, profileId });
+            const compliantOptions = buildGateOptions({
+              findings: compliant.findings,
+              loopBackOffered: compliantLoopBack.offered,
+            });
             expect(compliantOptions).toContain('approve');
             expect(compliantOptions).toContain('request-changes');
 
@@ -361,13 +395,18 @@ describe('release coexistence matrix', () => {
               blocking.every((item) => item.overridable),
               `${profileId}/${scope}/${stage.stageId} blocking findings`,
             ).toBe(true);
-            const noEvidenceOptions = buildGateOptions({ findings: noEvidence.findings });
+            const noEvidenceLoopBack = loopBackOfferFor({ stage, stages: plan.stages, profileId });
+            const noEvidenceOptions = buildGateOptions({
+              findings: noEvidence.findings,
+              loopBackOffered: noEvidenceLoopBack.offered,
+            });
             expect(noEvidenceOptions).toContain('request-changes');
             expect(
               noEvidenceOptions.includes('approve') ||
                 noEvidenceOptions.includes('override-and-approve'),
               `${profileId}/${scope}/${stage.stageId} approval escape`,
             ).toBe(true);
+            if (noEvidenceLoopBack.offered) loopBacks.push(stage.stageId);
           }
 
           const hasUnitDag = plan.stages.some((stage) => stage.stageId === 'units-generation');
@@ -417,6 +456,7 @@ describe('release coexistence matrix', () => {
               gateStats: gates,
               checkpoints,
               ensembles,
+              loopBacks,
             }),
           );
         } catch (error) {
@@ -428,6 +468,7 @@ describe('release coexistence matrix', () => {
               gateStats: gates,
               checkpoints,
               ensembles,
+              loopBacks,
             }),
           );
           failures.push({ profileId, scope, error });

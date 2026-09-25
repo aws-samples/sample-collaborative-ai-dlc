@@ -360,7 +360,11 @@ const RELEASE_OUTCOME_FAILED = /(failed|blocked|halt|invalid|expired)$/;
 const RELEASE_OUTCOME_ATTENTION =
   /(requested|noncompliant|waived|gap|recommended|advisory|withheld|changed|gate|dissent|warnings|override)$/;
 
-// Persona events get a readable role label in addition to their outcome color.
+// Ensemble persona events. The suffix rule above already
+// colours them; these give the human the READABLE half — which persona acted, in
+// which role — because `v2.persona.contribution` on its own says nothing about
+// who did what, and following that is the point of putting personas on the
+// timeline at all.
 const PERSONA_EVENT_LABELS: Record<string, string> = {
   'v2.persona.contribution': 'Contribution',
   'v2.persona.link_completed': 'Pipeline link',
@@ -370,6 +374,11 @@ const PERSONA_EVENT_LABELS: Record<string, string> = {
 };
 
 const PERSONA_EXCERPT_LIMIT = 240;
+
+// The dissent-triage cap the ensemble runner enforces (MAX_DISSENT_ROUNDS). Used
+// only as the denominator when an event predates the emitter stamping its own
+// `maxRounds`: "Maintained dissent" with no round is unreadable — the human
+// cannot tell a first objection from a final, cap-exhausted one.
 const DEFAULT_MAX_DISSENT_ROUNDS = 2;
 
 function dissentRoundSuffix(event: IntentActivityEvent): string {
