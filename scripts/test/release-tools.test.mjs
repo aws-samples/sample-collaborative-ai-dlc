@@ -128,6 +128,12 @@ test('release and main deployments use isolated protected environments and GitHu
   assert.match(deployment, /docker\/setup-qemu-action@[0-9a-f]{40}/);
   assert.match(deployment, /platforms: arm64/);
   assert.match(deployment, /python3 "\$package_script" build --timestamp 0/);
+  assert.match(deployment, /AUTH_DOMAIN: \$\{\{ secrets\.AUTH_DOMAIN \}\}/);
+  assert.match(deployment, /AUTH_MODE: \$\{\{ vars\.AUTH_MODE \}\}/);
+  assert.match(deployment, /SSO_CONFIG: \$\{\{ secrets\.SSO_CONFIG \}\}/);
+  assert.match(deployment, /printf 'auth_domain {10}= %s\\n'/);
+  assert.match(deployment, /node scripts\/sso-config\.mjs "\$sso_input" "\$AUTH_MODE"/);
+  assert.match(deployment, /\$TF_ENVIRONMENT\.sso\.tfvars\.json/);
   assert.match(deployment, /AIDLC_SKIP_NPM_CI: '1'/);
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);

@@ -125,6 +125,33 @@ bash /tmp/aidlc-install.sh update \
   --sso-config /tmp/aidlc-sso.json
 ```
 
+## Custom managed-login domain
+
+By default the Cognito managed-login domain is a generated
+`<prefix>.auth.<region>.amazoncognito.com` hostname. To serve it from your own
+hostname instead, give Cognito a custom login domain:
+
+```hcl
+auth_domain          = "auth.aidlc.example.com"
+auth_certificate_arn = "" # empty reuses acm_certificate_arn
+```
+
+- The certificate must be an issued ACM certificate in `us-east-1` that covers
+  `auth_domain`, regardless of the deployment Region.
+- Cognito accepts the domain only when its parent (here `aidlc.example.com`)
+  already resolves through a DNS A record. A subdomain of `app_domain` meets
+  this once the application domain is live.
+- `auth_domain` must differ from `app_domain` and its aliases. Cognito serves it
+  from its own CloudFront distribution.
+- After apply, point `auth_domain` at the `auth_dns_target` output (a CNAME, or a
+  Route53 alias using `auth_dns_target_hosted_zone_id`). With `route53_zone_id`
+  set, Terraform creates the alias records itself.
+
+The OIDC callback and SAML ACS outputs switch to the custom domain. Register
+the new values with the identity provider. The generated prefix domain stays
+attached to the user pool, so clearing `auth_domain` rolls back without
+replacing it.
+
 ## Provider file
 
 One file can contain multiple OIDC and SAML providers:

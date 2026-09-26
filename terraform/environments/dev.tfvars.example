@@ -44,6 +44,16 @@ app_domain_aliases  = []
 acm_certificate_arn = ""
 route53_zone_id     = ""
 
+# Enterprise SSO redirects through a Cognito managed-login domain, by default a
+# generated *.amazoncognito.com hostname. Set auth_domain to use a custom
+# login domain instead. The certificate must be in us-east-1; auth_certificate_arn defaults to
+# acm_certificate_arn. Point the hostname at the auth_dns_target output.
+#
+#   auth_domain          = "auth.aidlc.example.com"
+#   auth_certificate_arn = ""
+auth_domain          = ""
+auth_certificate_arn = ""
+
 # Authentication defaults to the existing Cognito email/password flow.
 # For enterprise federation set auth_mode to "hybrid" or "sso-only" and add
 # providers here, or pass --auth-mode and --sso-config to deploy-terraform.sh.
