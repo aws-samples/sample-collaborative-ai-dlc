@@ -35,7 +35,6 @@ import { canonicalJson } from '../workflow-checkpoint.js';
 import { countAuthored, legacyReleaseBundle } from './fixtures/legacy-release.js';
 import {
   installReleaseStoreFakes,
-  keyOf,
   pointRecordAtLegacyClosure,
 } from './fixtures/release-store-fakes.js';
 
@@ -114,12 +113,6 @@ const registerLegacy = async () => {
 };
 
 const makeSelectable = async () => {
-  const key = keyOf(`AIDLC_RELEASE#${RELEASE_ID}`, 'META');
-  // The upgrade assertions exercise closure-revision coexistence. Model a
-  // catalog whose authored values are handled so the independent promotion
-  // guard does not mask those transitions; its refusal path is covered in the
-  // registry tests.
-  rows.set(key, { ...rows.get(key), fidelityGaps: [] });
   const stated = await updateRelease({
     ...registryArgs(),
     releaseId: RELEASE_ID,

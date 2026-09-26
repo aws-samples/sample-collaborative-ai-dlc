@@ -35,6 +35,7 @@ export const artifactLogicalKey = ({
   unitSlug = null,
   stageInstanceId = null,
   artifactType = null,
+  persona = null,
 }) =>
   JSON.stringify([
     dimension(intentId),
@@ -42,6 +43,7 @@ export const artifactLogicalKey = ({
     dimension(unitSlug),
     dimension(stageInstanceId),
     dimension(artifactType),
+    ...(artifactType === 'contribution' && persona ? [dimension(persona)] : []),
   ]);
 
 export const artifactLogicalKeyFromRow = (row, intentId = row?.intent_id) =>
@@ -52,6 +54,7 @@ export const artifactLogicalKeyFromRow = (row, intentId = row?.intent_id) =>
     unitSlug: row?.unit_slug,
     stageInstanceId: row?.created_by_stage_instance_id,
     artifactType: row?.artifact_type,
+    persona: row?.artifact_type === 'contribution' ? row?.collaborator : null,
   });
 
 export const artifactAliases = (row) => {
@@ -125,6 +128,14 @@ export const sameLogicalArtifact = (row, identity) => {
     row.unit_slug !== undefined &&
     row.unit_slug !== null &&
     dimension(row.unit_slug) !== dimension(identity.unitSlug)
+  ) {
+    return false;
+  }
+  if (
+    identity.artifactType === 'contribution' &&
+    identity.persona !== undefined &&
+    identity.persona !== null &&
+    dimension(row.collaborator) !== dimension(identity.persona)
   ) {
     return false;
   }
@@ -334,9 +345,15 @@ export const snapshotCurrentArtifactHeads = async ({
   return refs;
 };
 
-// Read current artifact fingerprints without materializing checkpoint versions.
-// Change control calls this before an agent starts, when no new version should
-// be written as a side effect of comparison.
+// The content fingerprint of every current logical artifact head — READ ONLY.
+//
+// `snapshotCurrentArtifactHeads` is the checkpoint writer: it materializes an
+// ArtifactVersion vertex per head. Change control needs the SAME fingerprint but
+// must not write: it runs before an agent,
+// on every pinned stage entry, and a side-effecting comparison would mint a
+// checkpoint version for a stage nobody approved. Both therefore agree by
+// construction — identical head selection, identical `artifactSnapshotHash` —
+// and only this one skips `ensureCheckpointVersion`.
 export const readCurrentArtifactHeadHashes = async ({ g, intentId }) => {
   const heads = selectCurrentArtifactHeads(await readIntentArtifactEntries(g, intentId), intentId);
   return heads

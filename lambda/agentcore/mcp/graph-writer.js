@@ -36,6 +36,7 @@ import {
   VERSIONED_RELATIONSHIP_EDGES,
 } from '../../shared/artifact-versioning.js';
 import { validateStructuredBlock } from '../../shared/artifact-extractors.js';
+import { contributionArtifactId } from '../../shared/ensemble-contribution.js';
 
 const __ = gremlin.process.statics;
 const { cardinality } = gremlin.process;
@@ -210,6 +211,10 @@ const RESERVED_PROPS = new Set([
   'verify_note',
 ]);
 
+// The server-owned `status` of a contribution a persona wrote itself (a gap stub
+// the platform wrote carries `gap`).
+const CONTRIBUTION_RECORDED_STATUS = 'recorded';
+
 const GENERATION_METADATA_PROPS = [
   'restart_reason',
   'edited_by',
@@ -356,12 +361,13 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   // — an id collision across intents must never let a write cross over.
   const vDerivedById = (id) => g.V().has('id', id).has('intent_id', scope.intentId);
 
-  const logicalIdentity = (artifactType) => ({
+  const logicalIdentity = (artifactType, persona = scope.agentRef) => ({
     intentId: scope.intentId,
     sectionIndex: scope.sectionIndex,
     unitSlug: scope.unitSlug,
     stageInstanceId: scope.stageInstanceId,
     artifactType,
+    ...(artifactType === 'contribution' && persona ? { persona: String(persona) } : {}),
   });
 
   const resolveArtifactEntry = async (id, { preferCurrentScope = true } = {}) => {
@@ -372,7 +378,12 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     if (preferCurrentScope) {
       const scopedKeys = new Set(
         matching
-          .filter((row) => sameLogicalArtifact(row, logicalIdentity(row.artifact_type)))
+          .filter((row) =>
+            sameLogicalArtifact(
+              row,
+              logicalIdentity(row.artifact_type, row.collaborator ?? scope.agentRef),
+            ),
+          )
           .map((row) => artifactLogicalKeyFromRow(row, scope.intentId)),
       );
       const currentScoped = selectCanonicalArtifact(
@@ -514,6 +525,50 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     return { linked };
   };
 
+  // Who may write a `contribution` head, and with which props. The evidence a
+  // mob or subagent stage is judged on is one contribution per support, so one
+  // session must never be able to write — or flip — another persona's:
+  //   - the platform's own writer (`systemWriter: true`, the gap stub) may write
+  //     any persona's head, `status` and `collaborator` included;
+  //   - a session with a trusted identity (`agentRef`: a dispatched persona, and
+  //     the lead under a resolved policy) may write only its deterministic stage
+  //     contribution id; `collaborator` is forced to that ref and `status` is
+  //     server-owned, so an agent cannot turn a gap stub into evidence or mark its
+  //     own work as one;
+  //   - a release-mode session with NO identity is refused outright;
+  //   - an unpinned/2.3.3 session (no policy, no identity) keeps today's
+  //     behaviour: those runs never judge contribution evidence.
+  const contributionPropsFor = ({ id, props = {}, head = null, isCreate = false }) => {
+    if (scope.systemWriter === true) return props;
+    if (!scope.agentRef) {
+      if (!scope.policy) return props;
+      throw new GraphWriteError(
+        `contribution "${id}" cannot be written by a session with no collaborator identity`,
+      );
+    }
+    const ownId = (value) =>
+      String(value ?? '') ===
+      contributionArtifactId({ stageId: scope.stageId, agentRef: scope.agentRef });
+    const foreignHead =
+      head &&
+      (!ownId(head.id) ||
+        (head.collaborator !== undefined &&
+          head.collaborator !== null &&
+          String(head.collaborator) !== scope.agentRef));
+    if (!ownId(id) || foreignHead) {
+      throw new GraphWriteError(
+        `contribution id "${id}" does not belong to ${scope.agentRef} — use the id your brief gave you`,
+      );
+    }
+    const { collaborator: _collaborator, status: _status, ...rest } = props;
+    // A persona's own create is evidence, so it also clears a gap stub the
+    // platform left on the same head in an earlier round or attempt; an update
+    // never changes `status` at all.
+    return isCreate
+      ? { ...rest, collaborator: scope.agentRef, status: CONTRIBUTION_RECORDED_STATUS }
+      : rest;
+  };
+
   // Create (or upsert) a business Artifact vertex and anchor it to the Intent.
   // `links` optionally wires it to existing artifacts in the same call.
   const createArtifact = async ({
@@ -543,7 +598,11 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     if (!intentExists)
       throw new GraphWriteError(`Intent "${scope.intentId}" not found — run init-ws first`);
 
-    const identity = logicalIdentity(artifactType);
+    const contributionPersona =
+      artifactType === 'contribution'
+        ? (scope.agentRef ?? (scope.systemWriter === true ? props.collaborator : null))
+        : null;
+    const identity = logicalIdentity(artifactType, contributionPersona);
     const baseLogicalKey = artifactLogicalKey(identity);
     let logicalKey = baseLogicalKey;
     const rows = await readIntentArtifactEntries(g, scope.intentId);
@@ -585,6 +644,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         head = selectCanonicalArtifact(logicalRows);
       }
     }
+    const contributionProps =
+      artifactType === 'contribution'
+        ? contributionPropsFor({ id, props, head, isCreate: true })
+        : props;
     if (!head) {
       await g
         .addV(ARTIFACT_LABEL)
@@ -626,7 +689,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     const rehabilitating = Boolean(head.superseded_at);
     const generation = Math.max(1, Number(head.generation) || 1) + (rehabilitating ? 1 : 0);
     const stamped = {
-      ...sanitizeProps(props),
+      ...sanitizeProps(contributionProps),
       title: String(title ?? ''),
       content: String(content ?? ''),
       ...stamp(),
@@ -803,7 +866,9 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     assertId(id);
     const head = await resolveArtifactEntry(id);
     if (!head) throw new GraphWriteError(`Artifact "${id}" not found`);
-    const clean = sanitizeProps(props);
+    const clean = sanitizeProps(
+      head.artifact_type === 'contribution' ? contributionPropsFor({ id, props, head }) : props,
+    );
     const rehabilitating = Boolean(head.superseded_at);
     const generation = Math.max(1, Number(head.generation) || 1) + (rehabilitating ? 1 : 0);
     if (rehabilitating) {
@@ -826,7 +891,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     await clearSuperseded(head.id, head.vertexId);
     await clearStale(head.id, head.vertexId);
     await linkAnsweredQuestionsToArtifact(head.vertexId);
-    return { id: head.id, updated: Object.keys(clean) };
+    return { id: head.id, artifactType: head.artifact_type ?? null, updated: Object.keys(clean) };
   };
 
   const linkArtifacts = async ({ fromId, toId, edge }) => {

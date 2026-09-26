@@ -350,7 +350,7 @@ const loadExecutionPlan = async ({
   }
   const workflow = assembleWorkflow(items, { workflowId, workflowVersion });
   // AGENT blocks are loaded here too: buildExecutionPlan resolves each stage's
-  // leadAgent / reviewer against agentsById, so omitting them
+  // leadAgent / supportAgents / reviewer against agentsById, so omitting them
   // makes EVERY agent-bearing stage fail `unresolved_agent` and rejects the plan
   // before any stage runs (the bodies still load lazily in the runtime container).
   const [stages, agents, sensors, rules, artifacts, knowledge, scopes] = await Promise.all([

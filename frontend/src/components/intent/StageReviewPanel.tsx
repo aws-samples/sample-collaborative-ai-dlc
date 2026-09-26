@@ -658,6 +658,11 @@ export function StageReviewPanel({
                       {item.remediation && (
                         <span className="text-muted-foreground"> — {item.remediation}</span>
                       )}
+                      {item.quote && (
+                        <blockquote className="mt-1 whitespace-pre-wrap border-l-2 border-muted-foreground/40 pl-2 italic text-muted-foreground">
+                          {item.quote}
+                        </blockquote>
+                      )}
                     </span>
                   </li>
                 ))}

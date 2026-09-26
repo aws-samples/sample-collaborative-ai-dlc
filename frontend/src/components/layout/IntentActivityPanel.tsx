@@ -346,6 +346,7 @@ function TimelineTab({ events }: { events: IntentActivityEvent[] }) {
 // without a frontend change.
 const RELEASE_EVENT_FAMILIES = [
   'v2.summary.',
+  'v2.persona.',
   'v2.change.',
   'v2.review.',
   'v2.sensor.',
@@ -356,7 +357,31 @@ const RELEASE_EVENT_FAMILIES = [
 ];
 const RELEASE_OUTCOME_FAILED = /(failed|blocked|halt|invalid|expired)$/;
 const RELEASE_OUTCOME_ATTENTION =
-  /(requested|noncompliant|waived|gap|recommended|advisory|withheld|changed|gate|warnings|override)$/;
+  /(requested|noncompliant|waived|gap|recommended|advisory|withheld|changed|gate|dissent|warnings|override)$/;
+
+// Persona events get a readable role label in addition to their outcome color.
+const PERSONA_EVENT_LABELS: Record<string, string> = {
+  'v2.persona.contribution': 'Contribution',
+  'v2.persona.link_completed': 'Pipeline link',
+  'v2.persona.dissent': 'Maintained dissent',
+  'v2.persona.gap': 'No evidence recorded',
+  'v2.persona.question_withdrawn': 'Question withdrawn',
+};
+
+const PERSONA_EXCERPT_LIMIT = 240;
+const DEFAULT_MAX_DISSENT_ROUNDS = 2;
+
+function dissentRoundSuffix(event: IntentActivityEvent): string {
+  if (event.type !== 'v2.persona.dissent') return '';
+  const round = event.detail?.round;
+  if (typeof round !== 'number' || !Number.isFinite(round) || round < 1) return '';
+  const max = event.detail?.maxRounds;
+  const total =
+    typeof max === 'number' && Number.isFinite(max) && max >= round
+      ? max
+      : Math.max(DEFAULT_MAX_DISSENT_ROUNDS, round);
+  return ` (round ${round}/${total})`;
+}
 
 // Gate-plane sensor families. `v2.sensor.gate` is the per-gate summary ("Gate
 // sensors: X passed, Y flagged") — the ONLY record that the gate plane ran at all
@@ -374,14 +399,22 @@ function sensorEventLabel(event: IntentActivityEvent): string | null {
   return SENSOR_EVENT_LABELS[event.type] ?? null;
 }
 
-function summaryExcerpt(summary: string | null): string {
+function personaEventLabel(event: IntentActivityEvent): string | null {
+  if (!event.type.startsWith('v2.persona.')) return null;
+  const label = `${PERSONA_EVENT_LABELS[event.type] ?? 'Persona session'}${dissentRoundSuffix(event)}`;
+  return event.actor && event.actor !== 'agentcore' ? `${label} — ${event.actor}` : label;
+}
+
+function personaExcerpt(summary: string | null): string {
   const text = (summary ?? '')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/^\|?[\s:|-]+\|[\s:|-]*$/gm, '')
     .replace(/\n{2,}/g, '\n')
     .trim();
-  return text.length > 240 ? `${text.slice(0, 240).trimEnd()}…` : text;
+  return text.length > PERSONA_EXCERPT_LIMIT
+    ? `${text.slice(0, PERSONA_EXCERPT_LIMIT).trimEnd()}…`
+    : text;
 }
 
 function releaseEventDotColor(type: string): string | null {
@@ -482,10 +515,11 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
   const questions = isAnswer ? parseQuestions(event.questions) : [];
   const questionTexts = questions.map((q) => String(q.text ?? '')).filter(Boolean);
   const answer = isAnswer ? answerSummary(event.answer, questions) : '';
-  // Sensor-plane events use a headline plus a bounded excerpt, so a gate pass
-  // reads as "Gate sensors" with the counts below it.
-  const headlineLabel = sensorEventLabel(event);
-  const excerpt = headlineLabel ? summaryExcerpt(event.summary) : '';
+  // A headline label replaces the raw summary; the summary then rides underneath
+  // as a bounded excerpt. Sensor-plane events use the same treatment so a gate
+  // pass reads as "Gate sensors" with the counts below it.
+  const headlineLabel = personaEventLabel(event) ?? sensorEventLabel(event);
+  const excerpt = headlineLabel ? personaExcerpt(event.summary) : '';
   return (
     <div className="flex gap-3 py-2">
       <div className="flex flex-col items-center">

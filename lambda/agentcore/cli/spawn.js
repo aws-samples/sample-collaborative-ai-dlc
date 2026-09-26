@@ -16,6 +16,90 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'spawn' } });
+const usesPosixProcessGroups = process.platform !== 'win32';
+const SHUTDOWN_GRACE_MS = 250;
+const liveProcessGroups = new Map();
+let shutdownHandlersInstalled = false;
+let shuttingDown = false;
+
+const signalProcessGroup = (pid, child, signal) => {
+  if (usesPosixProcessGroups && pid) {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // The group may have exited; still try the direct child below.
+    }
+  }
+  try {
+    child?.kill?.(signal);
+  } catch {
+    /* the child may have exited while cleanup was running */
+  }
+};
+
+const signalLiveProcessGroups = (signal) => {
+  for (const [pid, child] of liveProcessGroups) signalProcessGroup(pid, child, signal);
+};
+
+const installShutdownHandlers = () => {
+  if (shutdownHandlersInstalled) return;
+  shutdownHandlersInstalled = true;
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      signalLiveProcessGroups('SIGTERM');
+      setTimeout(() => {
+        signalLiveProcessGroups('SIGKILL');
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      }, SHUTDOWN_GRACE_MS);
+    });
+  }
+  process.once('exit', () => signalLiveProcessGroups('SIGKILL'));
+};
+
+const trackProcessGroup = (child) => {
+  const pid = child?.pid;
+  if (!usesPosixProcessGroups || !pid) return () => {};
+  liveProcessGroups.set(pid, child);
+  installShutdownHandlers();
+  return () => liveProcessGroups.delete(pid);
+};
+
+const killProcessTree = (child) => {
+  if (!child?.pid || !usesPosixProcessGroups) {
+    try {
+      child?.kill?.('SIGKILL');
+    } catch {
+      /* the child may have exited while the timeout was firing */
+    }
+    return;
+  }
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    // The process group may already be gone; still try the direct child as a
+    // fallback for a platform/runtime that did not establish the new group.
+    try {
+      child.kill?.('SIGKILL');
+    } catch {
+      /* the child may have exited while cleanup was running */
+    }
+  }
+};
+
+// A CLI may exit successfully after leaving background tools behind. Detached
+// POSIX children are their own process-group leaders, so reap the remaining
+// group as soon as the CLI exits, before inherited descriptors can delay close.
+const killRemainingProcessGroup = (child) => {
+  if (!child?.pid || !usesPosixProcessGroups) return;
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    /* the process group exited with the CLI */
+  }
+};
 
 // Keep only the last `max` bytes of a growing string — the tail is where a CLI
 // prints its terminating error, and it bounds memory on a chatty child.
@@ -30,6 +114,7 @@ export const runChild = ({
   promptViaStdin = false,
   captureStderrTail = 0,
   onStdout = null,
+  timeoutMs = 0,
   spawnFn = spawn,
 }) =>
   new Promise((resolve, reject) => {
@@ -41,6 +126,7 @@ export const runChild = ({
         cwd,
         env: mergedEnv,
         shell: false,
+        detached: usesPosixProcessGroups,
         stdio: [
           promptViaStdin ? 'pipe' : 'ignore',
           onStdout ? 'pipe' : 'inherit',
@@ -55,6 +141,7 @@ export const runChild = ({
       reject(e);
       return;
     }
+    const untrackProcessGroup = trackProcessGroup(child);
     let stderrTail = '';
     if (onStdout) {
       child.stdout?.on('data', (c) => {
@@ -70,13 +157,34 @@ export const runChild = ({
       });
     }
     let settled = false;
+    let timedOut = false;
+    let timer = null;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      resolve({ exitCode, stderrTail });
+      if (timer) clearTimeout(timer);
+      resolve({ exitCode, stderrTail, ...(timedOut ? { timedOut: true } : {}) });
     };
-    child.on('error', () => finish(null)); // spawn failure → runner maps to FAILED
-    child.on('close', (code) => finish(code));
+    child.on('error', () => {
+      untrackProcessGroup();
+      finish(null);
+    }); // spawn failure → runner maps to FAILED
+    child.on('exit', () => {
+      killRemainingProcessGroup(child);
+      untrackProcessGroup();
+    });
+    child.on('close', (code) => {
+      untrackProcessGroup();
+      finish(code);
+    });
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        timedOut = true;
+        killProcessTree(child);
+      }, timeoutMs);
+      timer.unref?.();
+    }
     if (promptViaStdin) {
       try {
         child.stdin?.end(prompt ?? '');
@@ -115,6 +223,7 @@ export const captureChild = ({
         cwd,
         env: mergedEnv,
         shell: false,
+        detached: usesPosixProcessGroups,
         stdio: [promptViaStdin ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
       });
     } catch (e) {
@@ -124,6 +233,7 @@ export const captureChild = ({
       resolve({ exitCode: null, stdout: '', stderr: '', timedOut: false });
       return;
     }
+    const untrackProcessGroup = trackProcessGroup(child);
     let stdout = '';
     child.stdout?.on('data', (c) => (stdout += c.toString()));
     let stderr = '';
@@ -137,14 +247,14 @@ export const captureChild = ({
       if (timer) clearTimeout(timer);
       resolve({ exitCode, stdout, stderr, timedOut });
     };
+    child.on('exit', () => {
+      killRemainingProcessGroup(child);
+      untrackProcessGroup();
+    });
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         timedOut = true;
-        try {
-          child.kill?.('SIGKILL');
-        } catch {
-          /* already gone */
-        }
+        killProcessTree(child);
         // Resolve immediately — a SIGKILLed child's close event may never
         // arrive through a mocked/edge-case stream teardown, and the caller
         // must not hang on the very thing the timeout guards against.
@@ -153,8 +263,14 @@ export const captureChild = ({
       // Never hold the event loop open for the watchdog alone.
       timer.unref?.();
     }
-    child.on('error', () => finish(null));
-    child.on('close', (code) => finish(code));
+    child.on('error', () => {
+      untrackProcessGroup();
+      finish(null);
+    });
+    child.on('close', (code) => {
+      untrackProcessGroup();
+      finish(code);
+    });
     if (promptViaStdin) {
       try {
         child.stdin?.end(prompt ?? '');

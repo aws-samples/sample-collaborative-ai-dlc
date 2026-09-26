@@ -398,14 +398,10 @@ describe('release promotion evidence', () => {
       { blockType: 'UNKNOWN', field: 'value', value: 'new' },
     ];
 
-    expect(unhonouredValues({ fidelityGaps })).toEqual([
-      fidelityGaps[0],
-      fidelityGaps[1],
-      fidelityGaps[2],
-    ]);
+    expect(unhonouredValues({ fidelityGaps })).toEqual([fidelityGaps[0], fidelityGaps[2]]);
   });
 
-  it('makes promotion availability depend on registered handlers', () => {
+  it('keeps every allowlisted compatibility profile promotable in this build', () => {
     for (const profileId of Object.keys(AIDLC_COMPATIBILITY_PROFILES)) {
       const report = analyzeAidlcCompatibility({ profileId, files: filesFor(profileId) });
       const fidelityGaps = report.fidelity.gaps.map(({ blockType, field, value }) => ({

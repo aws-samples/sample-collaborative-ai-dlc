@@ -11,6 +11,7 @@ import {
   buildOpenCodeConfig,
   buildStagePrompt,
   neutralizeInvoke,
+  renderEnsembleProtocol,
   renderScopePolicy,
 } from '../stage-materializer.js';
 import { workspaceRelativePath } from '../repo-paths.js';
@@ -180,6 +181,105 @@ describe('scope policy in the stage prompt', () => {
     });
     expect(prompt).toContain('## Scope policy (authoritative for these rituals)');
     expect(prompt).toContain('Summary confirmation is REQUIRED');
+  });
+});
+
+// Pipeline and mob run in one session with an ensemble section; the prompt
+// states this approximation explicitly.
+describe('ensemble stage modes (pipeline / mob)', () => {
+  const support = [
+    { ref: 'aidlc-architect-agent', displayName: 'Architect', persona: '# Architect persona' },
+    { ref: 'aidlc-aws-platform-agent', displayName: 'Platform', persona: '# Platform persona' },
+  ];
+
+  it('renders nothing for a legacy mode, so inline/subagent prompts are unchanged', () => {
+    for (const mode of [undefined, 'inline', 'subagent', 'agent-team']) {
+      expect(renderEnsembleProtocol({ mode, leadAgentRef: 'lead', supportAgents: support })).toBe(
+        '',
+      );
+    }
+    const legacy = buildStagePrompt({ stage: { ...STAGE, mode: 'inline' }, stageBody: 'x' });
+    expect(buildStagePrompt({ stage: STAGE, stageBody: 'x' })).toBe(legacy);
+    expect(legacy).not.toContain('## Ensemble protocol');
+  });
+
+  it('renders nothing for an ensemble mode with no resolved support agent', () => {
+    expect(renderEnsembleProtocol({ mode: 'pipeline', leadAgentRef: 'lead' })).toBe('');
+    expect(
+      buildStagePrompt({ stage: { ...STAGE, mode: 'mob' }, stageBody: 'x', supportAgents: [] }),
+    ).toBe(buildStagePrompt({ stage: STAGE, stageBody: 'x' }));
+  });
+
+  it('states the pipeline topology in declared order with every persona body', () => {
+    const rendered = renderEnsembleProtocol({
+      mode: 'pipeline',
+      leadAgentRef: 'aidlc-architect-agent',
+      supportAgents: support,
+    });
+
+    expect(rendered).toContain('stage mode: pipeline');
+    expect(rendered).toContain('The lead drafts');
+    expect(rendered).toContain('ENRICH');
+    expect(rendered).toContain('Support persona 1: Architect');
+    expect(rendered).toContain('Support persona 2: Platform');
+    expect(rendered).toContain('# Platform persona');
+    expect(rendered.indexOf('Support persona 1')).toBeLessThan(
+      rendered.indexOf('Support persona 2'),
+    );
+  });
+
+  it('asks the mob topology to record dissent instead of silently picking a winner', () => {
+    const rendered = renderEnsembleProtocol({
+      mode: 'mob',
+      leadAgentRef: 'lead',
+      supportAgents: support,
+    });
+
+    expect(rendered).toContain('stage mode: mob');
+    expect(rendered).toContain('one room');
+    expect(rendered).toContain('record the dissent');
+    expect(rendered).not.toContain('The lead drafts');
+  });
+
+  it('is honest that one session plays every persona', () => {
+    const rendered = renderEnsembleProtocol({
+      mode: 'pipeline',
+      leadAgentRef: 'lead',
+      supportAgents: support,
+    });
+
+    expect(rendered).toContain('ONE session');
+    expect(rendered).toMatch(/no separate context per/i);
+    expect(rendered).toMatch(/never claim a persona/i);
+  });
+
+  it('neutralizes engine tokens inside a support persona body', () => {
+    const rendered = renderEnsembleProtocol({
+      mode: 'mob',
+      leadAgentRef: 'lead',
+      supportAgents: [
+        { ref: 'x', persona: 'Run {{INVOKE}} engine gen stage-table in {{HARNESS_DIR}}' },
+      ],
+    });
+
+    expect(rendered).not.toContain('{{INVOKE}}');
+    expect(rendered).not.toContain('{{HARNESS_DIR}}');
+  });
+
+  it('injects the section into the prompt right after the lead persona', () => {
+    const prompt = buildStagePrompt({
+      stage: { ...STAGE, mode: 'pipeline' },
+      stageBody: 'Do the design.',
+      agentPersona: '# Lead persona',
+      supportAgents: support,
+      methodologyRelease: { releaseId: 'aidlc:abc' },
+    });
+
+    expect(prompt).toContain('## Ensemble protocol (stage mode: pipeline)');
+    expect(prompt.indexOf('## Your role')).toBeLessThan(prompt.indexOf('## Ensemble protocol'));
+    expect(prompt.indexOf('## Ensemble protocol')).toBeLessThan(
+      prompt.indexOf('## Stage instructions'),
+    );
   });
 });
 

@@ -179,6 +179,10 @@ export const createComposePlanStart = ({
       mode = 'front',
       workflowId,
       workflowVersion,
+      // Immutable AI-DLC release pinned on the intent (issue #482). Present =>
+      // the workflow, library and SCOPE vocabulary the composer is grounded in
+      // all come from that closure, so a proposal is validated against the
+      // methodology the intent will actually run.
       methodologyRelease = null,
       methodologyPins = null,
       prompt = '',
@@ -246,6 +250,9 @@ export const createComposePlanStart = ({
           });
           return;
         }
+        // A pinned intent grounds on its release's SCOPE vocabulary. No .catch
+        // here: an unresolvable closure must fail the compose, not silently
+        // ground the composer in an empty scope list.
         const scopeBlocks = methodologyRelease
           ? await listReleaseBlocksFn('SCOPE', methodologyRelease, methodologyPins)
           : await listMergedBlocksFn('SCOPE').catch(() => []);

@@ -42,6 +42,43 @@ const stage = (extra = {}) => ({
 });
 
 describe('buildStagePrompt', () => {
+  it.each(['pipeline', 'mob'])(
+    'keeps an unpinned %s prompt equal to the origin/main rendering',
+    (mode) => {
+      const shared = {
+        stage: stage({ mode }),
+        stageBody: 'Follow the stage instructions.',
+        agentPersona: 'You are the lead persona.',
+      };
+      const unpinned = buildStagePrompt({
+        ...shared,
+        supportAgents: [
+          { ref: 'support-agent', displayName: 'Support', persona: 'Review the work.' },
+        ],
+      });
+      // At 26814449, buildStagePrompt did not accept support personas or render
+      // mode-based instructions. This is the same input under that behavior.
+      const originMainRendering = buildStagePrompt(shared);
+
+      expect(unpinned).toBe(originMainRendering);
+    },
+  );
+
+  it.each(['pipeline', 'mob'])('renders the %s fallback for a pinned plan', (mode) => {
+    const prompt = buildStagePrompt({
+      stage: stage({ mode }),
+      stageBody: 'Follow the stage instructions.',
+      agentPersona: 'You are the lead persona.',
+      supportAgents: [
+        { ref: 'support-agent', displayName: 'Support', persona: 'Review the work.' },
+      ],
+      methodologyRelease: { releaseId: 'aidlc:abc' },
+    });
+
+    expect(prompt).toContain(`## Ensemble protocol (stage mode: ${mode})`);
+    expect(prompt).toContain('### Support persona 1: Support');
+  });
+
   it('includes role, instructions, inputs, outputs, and the output contract', () => {
     const prompt = buildStagePrompt({
       stage: stage(),
@@ -823,5 +860,65 @@ describe('renderIntentBlock + prompt placement', () => {
     expect(intentIdx).toBeLessThan(bodyIdx);
     // Absent intent → no section (older callers unchanged).
     expect(buildStagePrompt({ stage: stage(), stageBody: 'x' })).not.toContain('## The intent');
+  });
+});
+
+// A dispatched persona session gets the lead's policy
+// but not its checkpoint authority, and its own trusted author identity. Both keys
+// are ABSENT on every other config, which is what keeps the lead's and every
+// unpinned run's mcp-config byte-identical.
+describe('buildMcpConfig — dispatched persona session scope', () => {
+  const POLICY = { summaryConfirmation: 'required', learnings: 'off' };
+
+  it('marks a non-owner session and names its agent', () => {
+    const { env } = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: {
+        executionId: 'e',
+        intentId: 'i',
+        policy: POLICY,
+        checkpointOwner: false,
+        agentRef: 'aidlc-design-agent',
+      },
+    }).mcpServers.aidlc;
+    expect(env.V2_CHECKPOINT_OWNER).toBe('0');
+    expect(env.V2_AGENT_REF).toBe('aidlc-design-agent');
+    expect(JSON.parse(env.V2_STAGE_POLICY)).toMatchObject({ learnings: 'off' });
+  });
+
+  it('writes neither key for the owning lead session under the same policy', () => {
+    const { env } = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i', policy: POLICY },
+    }).mcpServers.aidlc;
+    expect(env).not.toHaveProperty('V2_CHECKPOINT_OWNER');
+    expect(env).not.toHaveProperty('V2_AGENT_REF');
+  });
+
+  it('writes neither key on an unpinned run, even for a non-owner', () => {
+    const { env } = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i', checkpointOwner: false },
+    }).mcpServers.aidlc;
+    expect(env).not.toHaveProperty('V2_CHECKPOINT_OWNER');
+    expect(env).not.toHaveProperty('V2_STAGE_POLICY');
+  });
+
+  it('marks a session that may not ask the human, independent of the policy', () => {
+    for (const policy of [POLICY, null]) {
+      const { env } = buildMcpConfig({
+        mcpEntry: 'x',
+        scope: { executionId: 'e', intentId: 'i', policy, canAsk: false },
+      }).mcpServers.aidlc;
+      expect(env.V2_ASK_QUESTION).toBe('0');
+    }
+  });
+
+  it('writes no ask key for a session that may ask', () => {
+    const { env } = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { executionId: 'e', intentId: 'i', policy: POLICY },
+    }).mcpServers.aidlc;
+    expect(env).not.toHaveProperty('V2_ASK_QUESTION');
   });
 });

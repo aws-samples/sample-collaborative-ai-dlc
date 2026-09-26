@@ -48,6 +48,16 @@ import {
   resolveCodexHome,
   neutralizeTokens,
 } from '../stage-materializer.js';
+import { dispatchPersona, composePersonaPrompt, OFF_MOUNT_CACHE_ENV } from '../persona-dispatch.js';
+import {
+  MAX_PERSONA_SESSION_MS,
+  STAGE_BUDGET_MS,
+  contributionArtifactId,
+  ensembleGapFindings,
+  renderLeadTopologyBrief,
+  resolveEnsembleTopology as defaultResolveEnsembleTopology,
+  runEnsembleSessions,
+} from '../ensemble-runner.js';
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
 import { materializeAttachments } from '../attachments.js';
 import { toMcpServerMap } from '../../shared/mcp-validator.js';
@@ -98,6 +108,7 @@ import { compileContextPack as defaultCompileContextPack } from '../context-comp
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
 import {
   buildExecutionPlan,
+  ENSEMBLE_MODES,
   stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
@@ -158,15 +169,10 @@ export const verifyReviewTargets = async ({
 // NEVER on the 1 GiB session mount (AgentCore offers no larger size). The
 // 2026-07 incident filled the mount with npm state until the engine commit
 // ENOSPC'd and the run finished with zero durable work. The working tree (the
-// durable part) stays on the mount; caches are re-creatable.
-export const OFF_MOUNT_CACHE_ENV = {
-  npm_config_cache: '/tmp/aidlc-cache/npm',
-  YARN_CACHE_FOLDER: '/tmp/aidlc-cache/yarn',
-  PNPM_HOME: '/tmp/aidlc-cache/pnpm',
-  PIP_CACHE_DIR: '/tmp/aidlc-cache/pip',
-  UV_CACHE_DIR: '/tmp/aidlc-cache/uv',
-  TMPDIR: '/tmp',
-};
+// durable part) stays on the mount; caches are re-creatable. Definition now
+// lives in persona-dispatch.js (every dispatched persona session needs the
+// same floor); re-exported here for existing importers of run-stage.js.
+export { OFF_MOUNT_CACHE_ENV };
 
 // Free-space floor for the disk preflight — below this, installs and even the
 // engine commit are at ENOSPC risk on the 1 GiB mount.
@@ -234,6 +240,33 @@ const resolveStage = ({
       detail: `stage "${stageId}" not in scope "${scope.scope}"`,
     };
   return { plan, stage };
+};
+
+// Load the support-agent personas an ensemble stage mode needs (`pipeline` /
+// `mob`). Resolved from the SAME library the stage came from — the release
+// closure when the intent is pinned, the DDB catalog otherwise — so a pinned
+// intent can never pull a reseeded persona into its prompt. Order is the
+// authored `support_agents` order, which the pipeline topology depends on.
+// Returns [] for every non-ensemble mode, so the legacy prompt is unchanged.
+// `modes` is the set of stage modes that get the single-session ensemble PROMPT.
+// The call site passes an EMPTY set when native persona sessions
+// (ensemble-runner.js) own the supports instead: the lead then drafts only its
+// own part, so no support persona belongs in its prompt at all.
+const loadSupportAgents = async ({ stage, library, loadBlockBody, modes = ENSEMBLE_MODES }) => {
+  if (!modes.includes(stage.mode)) return [];
+  const refs = (stage.supportAgentRefs ?? []).filter(
+    (ref) => ref && ref !== stage.agentRef && library.agentsById?.[ref],
+  );
+  return Promise.all(
+    refs.map(async (ref) => {
+      const block = library.agentsById[ref];
+      return {
+        ref,
+        displayName: block.displayName ?? block.name ?? ref,
+        persona: await loadBlockBody(block),
+      };
+    }),
+  );
 };
 
 // Concatenate the methodology knowledge bodies for an agent. Release mode does
@@ -363,8 +396,12 @@ const renderReviewerReadScope = ({ unit, contracts }) => {
   ].join('\n');
 };
 
-// Everything the reviewer prompt says before its role and reference-knowledge
-// sections. Kept separate so the stage-specific artifact target stays explicit.
+// Everything the reviewer prompt says EXCEPT the persona/knowledge tail —
+// that tail is generic across persona roles and lives in
+// composePersonaPrompt (persona-dispatch.js). Split out from
+// buildReviewerPrompt so runReviewer can hand this, alone, to dispatchPersona
+// as `brief` — the blindness seam (persona-dispatch.js) — while
+// buildReviewerPrompt keeps rendering the exact same full prompt below.
 const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
   const outputs = (stage.outputArtifacts ?? []).map((o) => o.artifact ?? o).filter(Boolean);
   const inputs = (stage.inputArtifacts ?? []).map((i) => i.artifact ?? i).filter(Boolean);
@@ -431,13 +468,12 @@ const buildReviewerPrompt = ({
   knowledge,
   round,
 }) =>
-  [
-    buildReviewerBrief({ stage, unit, reviewerAgent, round }),
-    '',
-    '## Reviewer role',
-    neutralizeTokens(reviewerPersona) || '(no reviewer persona supplied)',
-    knowledge ? `\n## Reference knowledge\n${neutralizeTokens(knowledge)}` : '',
-  ].join('\n');
+  composePersonaPrompt({
+    brief: buildReviewerBrief({ stage, unit, reviewerAgent, round }),
+    persona: reviewerPersona,
+    knowledge,
+    role: 'reviewer',
+  });
 
 const latestReviewerVerdict = async ({ store, executionId, stageInstanceId, reviewerAgent }) => {
   if (typeof store.listSensorRuns !== 'function') return null;
@@ -447,6 +483,11 @@ const latestReviewerVerdict = async ({ store, executionId, stageInstanceId, revi
     .find((r) => r.kind === 'reviewer' && r.sensorId === `reviewer:${reviewerAgent}`);
 };
 
+// Thin caller: builds the reviewer's brief + emits the pre-run event, hands
+// the CLI-dispatch mechanics to dispatchPersona (persona-dispatch.js), then
+// resolves the verdict — reviewer-specific bookkeeping that doesn't
+// generalize (yet) to other persona roles, so it stays here rather than in
+// the generic dispatcher.
 const runReviewer = async ({
   stage,
   unit = null,
@@ -467,6 +508,7 @@ const runReviewer = async ({
   materializeOpenCodeConfig,
   materializeCodexHome,
   cleanupCodexHome,
+  withOpenCodeStore,
   store,
   executionId,
   projectId,
@@ -477,49 +519,7 @@ const runReviewer = async ({
   publish,
   ids,
 }) => {
-  const driver = getDriver(cli);
-  const model = resolveStageModel({ cliModels, tierModels, agentBlock: reviewerBlock, cli, env });
-  const scope = {
-    executionId,
-    intentId,
-    projectId,
-    stageInstanceId,
-    unitSlug,
-    sectionIndex,
-    role: 'reviewer',
-    reviewerAgent,
-    model,
-  };
-  const prompt = buildReviewerPrompt({
-    stage,
-    unit,
-    reviewerAgent,
-    reviewerPersona,
-    knowledge,
-    round,
-  });
-  const mcpKwargs =
-    cli === 'kiro'
-      ? { agentName: await materializeKiroAgent({ workspaceDir, mcpEntry, scope, env }) }
-      : cli === 'opencode'
-        ? {
-            opencodeConfigContent: await materializeOpenCodeConfig({
-              workspaceDir,
-              mcpEntry,
-              scope,
-              env,
-            }),
-          }
-        : cli === 'codex'
-          ? { codexHome: await materializeCodexHome({ workspaceDir, mcpEntry, scope, env }) }
-          : { mcpConfigPath: await materializeMcpConfig({ workspaceDir, mcpEntry, scope, env }) };
-  const invocation = driver.buildInvocation({
-    prompt,
-    model,
-    allowedTools: [],
-    sessionId: cli === 'claude' ? ids() : null,
-    ...mcpKwargs,
-  });
+  const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round });
   await store
     .appendEvent({
       executionId,
@@ -531,27 +531,39 @@ const runReviewer = async ({
       summary: `Reviewer ${reviewerAgent} checking ${stage.stageId}`,
     })
     .catch(() => {});
-  const execute = () =>
-    runChild({
-      command: invocation.command,
-      args: invocation.args,
-      env: { ...OFF_MOUNT_CACHE_ENV, ...invocation.env, ...driver.envForAuth(env) },
-      cwd: workspaceDir,
-      prompt,
-      promptViaStdin: invocation.promptViaStdin,
-      spawnFn,
-    });
-  try {
-    if (cli === 'opencode') {
-      await defaultWithOpenCodeStore({ env, operation: execute });
-    } else {
-      await execute();
-    }
-  } finally {
-    if (cli === 'codex') {
-      await cleanupCodexHome({ codexHome: mcpKwargs.codexHome, env }).catch(() => false);
-    }
-  }
+  const dispatch = await dispatchPersona({
+    role: 'reviewer',
+    personaScope: { agentRef: reviewerAgent },
+    agentBlock: reviewerBlock,
+    persona: reviewerPersona,
+    knowledge,
+    brief,
+    cli,
+    cliModels,
+    tierModels,
+    env,
+    workspaceDir,
+    spawnFn,
+    mcpEntry,
+    materializeMcpConfig,
+    materializeKiroAgent,
+    materializeOpenCodeConfig,
+    materializeCodexHome,
+    cleanupCodexHome,
+    withOpenCodeStore,
+    executionId,
+    projectId,
+    intentId,
+    stageInstanceId,
+    unitSlug,
+    sectionIndex,
+    ids,
+  });
+  // Preserve the pre-extraction contract: a dispatch failure (spawn/materialize
+  // throwing) propagates out of runReviewer exactly as it did before, so the
+  // existing per-round `.catch` at the call site (records `v2.review.failed`)
+  // keeps working unchanged.
+  if (!dispatch.ok) throw dispatch.detail;
   const verdict = await latestReviewerVerdict({
     store,
     executionId,
@@ -1030,6 +1042,11 @@ const runCheckpointLadder = async ({
   policy,
   stageLabel,
   runRepairTurn = null,
+  // Whether a repair turn may START now (the stage wall-clock budget). A refusal
+  // takes the same path as "no resumable session": straight to the gate/fail rung,
+  // with `onRepairSkipped` recording why.
+  repairAllowed = () => true,
+  onRepairSkipped = async () => {},
   pendingGate = null,
   logger: log = logger,
 }) => {
@@ -1051,7 +1068,8 @@ const runCheckpointLadder = async ({
     ...new Set(findings.map((finding) => CHECKPOINT_LADDER[finding.code]?.counter).filter(Boolean)),
   ];
   const alreadyRepaired = counters.some((counter) => Number(stageRow?.[counter] ?? 0) > 0);
-  const budgetAllowsRepair = runRepairTurn && !alreadyRepaired;
+  const budgetAllowsRepair = runRepairTurn && !alreadyRepaired ? repairAllowed() : true;
+  if (!budgetAllowsRepair) await onRepairSkipped();
   if (runRepairTurn && !alreadyRepaired && budgetAllowsRepair) {
     const parkedBeforeRepair = await pendingGate?.();
     if (parkedBeforeRepair) return { findings, parked: parkedBeforeRepair };
@@ -1508,6 +1526,7 @@ export const runStage = async (
   const {
     store,
     loadLibrary,
+    resolveEnsembleTopology = defaultResolveEnsembleTopology,
     loadBlockBody,
     loadBlockScript = async () => '',
     loadConductor = async () => '',
@@ -1565,9 +1584,23 @@ export const runStage = async (
     // fail-closed). Injected for tests.
     resolveMcpSecrets = defaultResolveMcpSecrets,
     verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
+    // The aggregate stage wall clock (ensemble-runner STAGE_BUDGET_MS), read
+    // against `nowMs` (epoch ms) and anchored on THIS stage attempt's start. It
+    // is deliberately NOT anchored on the container's age: a reused container can
+    // be older than the whole budget, which dispatched zero personas. The
+    // container's own lifetime is enforced by AgentCore, not here. Injected for
+    // tests.
+    nowMs = Date.now,
+    stageBudgetMs = STAGE_BUDGET_MS,
   } = deps;
 
   const now = () => clock();
+  const stageStartedAtMs = nowMs();
+  const stageDeadlineMs = stageStartedAtMs + stageBudgetMs;
+  // A lead repair turn has no timeout of its own, so it is started only while a
+  // full persona session's worth of budget remains; past that it is skipped with a
+  // note rather than risk the runtime killing the container mid-turn.
+  const repairBudgetLeft = () => stageDeadlineMs - nowMs() >= MAX_PERSONA_SESSION_MS;
   const reviewFeedbackPrompt =
     typeof reviewFeedback === 'string' ? reviewFeedback : reviewFeedback?.prompt;
   const reviewFeedbackTargets =
@@ -2717,6 +2750,52 @@ export const runStage = async (
     return { mcpConfigPath };
   };
 
+  // Native ensemble sessions: the authored `pipeline` / `mob`
+  // / `subagent`-with-supports topology becomes REAL per-persona sessions instead
+  // of one agent role-playing everybody. Resolved on BOTH the fresh and resume
+  // legs, because a resume after a mid-ensemble park has to know the topology to
+  // skip the personas that already produced their evidence. Null => the stage
+  // keeps today's single-session behaviour, byte for byte (non-release mode,
+  // `V2_ENSEMBLE_SESSIONS=off`, or a mode that resolves no support persona).
+  //
+  // Release mode normally fails closed on a body read, but a support persona is
+  // ADDITIVE steering rather than the stage's own instructions: degrading to the
+  // single-session path preserves the behavior of existing stage execution,
+  // which is the conservative choice this whole block is written for.
+  let ensemble = null;
+  // The lead's persona body, reused verbatim for its integration session. Set on
+  // the fresh leg where the prompt is materialized; re-read on a resume leg,
+  // which never materializes a prompt at all.
+  let leadPersonaBody = null;
+  try {
+    ensemble = await resolveEnsembleTopology({
+      stage,
+      library,
+      loadBlockBody: loadBody,
+      methodologyRelease,
+      env,
+    });
+  } catch (error) {
+    const detail = `Ensemble topology could not be resolved for ${stageId}: ${
+      error?.message ?? String(error)
+    }`;
+    if (methodologyRelease) {
+      return fail(stageInstanceId, 'ensemble_topology_unresolved', detail, { clearPending: true });
+    }
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.persona.gap',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: `${detail}; continuing with the single-session ensemble prompt`,
+        detail: { mode: stage.mode, role: 'ensemble', reason: 'topology_unresolved' },
+      })
+      .catch(() => {});
+  }
+
   let invocation;
   let prompt = null;
   if (!freshRun) {
@@ -2753,11 +2832,18 @@ export const runStage = async (
         loadPromptBody(stageBlock),
         agentBlock ? loadPromptBody(agentBlock) : Promise.resolve(''),
         conductorLoad,
+        loadSupportAgents({
+          stage,
+          library,
+          loadBlockBody: loadPromptBody,
+          modes: ensemble || !methodologyRelease ? [] : ENSEMBLE_MODES,
+        }),
       ]);
     } catch (error) {
       return fail(stageInstanceId, 'methodology_body_unavailable', error?.message ?? String(error));
     }
-    const [stageBody, agentPersona, conductorResult] = bodies;
+    const [stageBody, agentPersona, conductorResult, supportAgents] = bodies;
+    leadPersonaBody = agentPersona;
     if (conductorResult.error) {
       return fail(stageInstanceId, 'conductor_unavailable', conductorResult.error.message);
     }
@@ -2832,6 +2918,8 @@ export const runStage = async (
         : { scope },
       stageBody,
       agentPersona,
+      supportAgents,
+      methodologyRelease,
       knowledge,
       conductor,
       compiledContext,
@@ -2849,6 +2937,13 @@ export const runStage = async (
       maxTurns: agentBlock?.maxTurns ?? null,
     });
     prompt = materialized.prompt;
+    // Native ensemble sessions: the lead's own role in the topology, appended
+    // where the single-session ensemble protocol would otherwise have rendered
+    // (`supportAgents` was passed empty above, so that block rendered nothing).
+    // Appended rather than woven in so the off-path prompt is untouched.
+    if (ensemble) {
+      prompt = `${prompt}\n\n${renderLeadTopologyBrief(ensemble)}`;
+    }
     // Demoted resume (D2): the parked conversation was lost with the wiped mount,
     // so we re-run the stage fresh — but prepend the human's already-given answer
     // so the agent applies it instead of re-asking the same question.
@@ -3198,6 +3293,218 @@ export const runStage = async (
       await store
         .updateStageState({ executionId, stageInstanceId, state: 'RUNNING', cli, cliSessionId })
         .catch(() => {});
+    }
+  }
+
+  // ── Native ensemble sessions ───────────────────────────────────────────────
+  // ONE call point. The lead's session has fully wound down (its CLI store is
+  // persisted, its session id captured), and the engine commit has NOT run yet —
+  // so every persona's work, whether it lands in the graph or in the working
+  // tree, is captured by the single commit below.
+  //
+  // Skipped when the lead parked (the human owes it an answer before anybody
+  // enriches its draft) or when the lead did not finish cleanly. Session budget:
+  // these are sequential dispatchPersona sessions, exactly like the reviewer loop
+  // below, so they ride the SAME liveness mechanism — run-stage-start's
+  // background job with its 60s heartbeats, which is what keeps a long stage
+  // distinguishable from a dead container. The heartbeat cannot stop the runtime's
+  // max_lifetime kill, though, so the whole topology runs against the stage's
+  // aggregate deadline (`stageDeadlineMs`): a persona past it becomes a GAP.
+  let ensembleEvidence = null;
+  let stageFindings = [];
+  if (ensemble) {
+    const leadParked = await pendingGate({
+      store,
+      executionId,
+      stageInstanceId,
+      unitSlug,
+      sectionIndex,
+    });
+    const leadFinished =
+      exitCode === 0 || (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail));
+    if (leadParked || !leadFinished) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.persona.gap',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Ensemble sessions ${
+            leadParked ? 'deferred until the lead resumes' : 'skipped'
+          } for ${stageId}: the lead session ${
+            leadParked ? 'parked on a question' : `exited ${exitCode}`
+          } before its draft was complete`,
+          detail: {
+            mode: ensemble.mode,
+            role: 'ensemble',
+            reason: leadParked ? 'lead_parked' : 'lead_incomplete',
+          },
+        })
+        .catch(() => {});
+    } else {
+      const stageRow = await store.getStage?.(executionId, stageInstanceId).catch(() => null);
+      const attempt = Number(stageRow?.attempt ?? 0);
+      const leadPersona =
+        leadPersonaBody ?? (agentBlock ? await loadBody(agentBlock).catch(() => '') : '');
+      const dispatchContext = {
+        stageId,
+        stageAttempt: attempt,
+        cli,
+        cliModels,
+        tierModels,
+        env,
+        workspaceDir,
+        spawnFn,
+        mcpEntry,
+        materializeMcpConfig,
+        materializeKiroAgent,
+        materializeOpenCodeConfig,
+        materializeCodexHome,
+        cleanupCodexHome,
+        withOpenCodeStore,
+        ids,
+      };
+      const personaScope = { policy: stage.policy ?? null, checkpointOwner: false };
+      // The graph is the evidence channel: a support's contribution counts only
+      // when the row is actually there (upstream §3.6 — artifacts alone never
+      // satisfy, and neither does a session that exited 0 writing nothing). With
+      // no graph we can observe nothing, which honestly reads as "no evidence"
+      // and reaches the human as an advisory finding, never as a failure.
+      // `systemWriter` marks this as the PLATFORM's writer: the only one allowed
+      // to record a gap stub for another persona's contribution.
+      const withGraph = async (operation, fallback) => {
+        if (!openGraph) return fallback;
+        let g = null;
+        try {
+          g = await openGraph();
+          return await operation(
+            createGraphWriter({
+              g,
+              scope: {
+                projectId,
+                intentId,
+                executionId,
+                stageInstanceId,
+                unitSlug,
+                sectionIndex,
+                systemWriter: true,
+              },
+            }),
+          );
+        } catch {
+          return fallback;
+        } finally {
+          await closeGraphSource(g);
+        }
+      };
+      // The module is written never to throw (every internal surprise degrades to a
+      // gap). This is the floor UNDER that: if it ever does, the stage still
+      // SUCCEEDS with the same advisory findings naming every persona, because
+      // these stages already run under the single-session approximation and a
+      // regression here must not block a real intent.
+      let ensembleResult = null;
+      try {
+        ensembleResult = await runEnsembleSessions({
+          topology: ensemble,
+          stage,
+          unit,
+          policy: stage.policy ?? null,
+          personaScope,
+          attempt,
+          resumeAnswer,
+          lead: { persona: leadPersona, block: agentBlock },
+          dispatchContext,
+          knowledgeFor: (agentRef) =>
+            loadMethodologyKnowledge({
+              agentRef,
+              library,
+              loadBlockBody: loadBody,
+              methodologyRelease,
+            }),
+          readContributions: () =>
+            withGraph(
+              (writer) =>
+                writer.lookupArtifacts({ artifactType: 'contribution', includeContent: true }),
+              [],
+            ),
+          // The link/integrator evidence channel: the current rows of every declared
+          // output. Compact (no bodies) — the runner only fingerprints them.
+          readStageOutputs: () =>
+            withGraph(async (writer) => {
+              const rows = [];
+              for (const artifactType of (stage.outputArtifacts ?? [])
+                .map((output) => output?.artifact ?? output)
+                .filter(Boolean)) {
+                rows.push(...(await writer.lookupArtifacts({ artifactType }).catch(() => [])));
+              }
+              return rows;
+            }, []),
+          writeGapStub: ({ agentRef, reason }) =>
+            withGraph(
+              (writer) =>
+                writer.createArtifact({
+                  artifactType: 'contribution',
+                  id: contributionArtifactId({ stageId, agentRef }),
+                  title: `Contribution gap: ${agentRef}`,
+                  content: `**Collaborator:** ${agentRef}\n\n## Contribution\n\nNone recorded — ${reason}.\n\n## Positions\n\n(none)\n`,
+                  props: { collaborator: agentRef, status: 'gap', positions: '' },
+                }),
+              null,
+            ),
+          pendingGate: () =>
+            pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex }),
+          store,
+          publish,
+          executionId,
+          projectId,
+          intentId,
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          deadlineMs: stageDeadlineMs,
+          nowMs,
+          logger,
+        });
+      } catch (error) {
+        logger.error('ensemble sessions degraded', {
+          stage: stageId,
+          mode: ensemble.mode,
+          msg: error?.message ?? String(error),
+        });
+        await store
+          .appendEvent({
+            executionId,
+            type: 'v2.persona.gap',
+            stageInstanceId,
+            unitSlug,
+            sectionIndex,
+            actor: 'agentcore',
+            summary: `Ensemble sessions failed for ${stageId}: ${error?.message ?? String(error)}`,
+            detail: {
+              mode: ensemble.mode,
+              role: 'ensemble',
+              reason: 'ensemble_error',
+              attempt,
+            },
+          })
+          .catch(() => {});
+        stageFindings = mergeFindings(
+          stageFindings,
+          ensembleGapFindings({
+            stage,
+            policy: stage.policy ?? null,
+            attempt,
+            topology: ensemble,
+            reason: `ensemble sessions failed: ${error?.message ?? String(error)}`,
+          }),
+        );
+      }
+      if (ensembleResult) {
+        ensembleEvidence = ensembleResult.ensembleEvidence;
+        stageFindings = mergeFindings(stageFindings, ensembleResult.findings);
+      }
     }
   }
 
@@ -3555,7 +3862,22 @@ export const runStage = async (
   // the agent (and its commit, which Plan Approval's lineage check reads) and
   // BEFORE the sensor pass, so a stage that never obtained its authorization never
   // burns a reviewer session. Inert without a resolved release policy.
-  let stageFindings = [];
+  // Records that a repair turn was skipped because the stage budget is spent, so
+  // the timeline says why the lead was not re-entered.
+  const noteRepairSkipped = async (what, detail = {}) => {
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.stage.repair_skipped',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: `Skipped the ${what} for ${stageLabel}: the stage wall-clock budget is spent`,
+        detail: { reason: 'stage_budget_exhausted', what, ...detail },
+      })
+      .catch(() => {});
+  };
   if (stage.policy) {
     const ladder = await runCheckpointLadder({
       store,
@@ -3567,6 +3889,8 @@ export const runStage = async (
       policy: stage.policy,
       stageLabel,
       runRepairTurn,
+      repairAllowed: repairBudgetLeft,
+      onRepairSkipped: () => noteRepairSkipped('checkpoint repair turn'),
       pendingGate: () =>
         pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex }),
     });
@@ -3574,7 +3898,9 @@ export const runStage = async (
     if (ladder.failure) {
       return fail(stageInstanceId, ladder.failure.code, ladder.failure.detail);
     }
-    // Merge checkpoint findings into the stage's single gate channel.
+    // ONE findings channel: the ensemble stream writes `stageFindings` too, so the
+    // ladder MERGES into it rather than replacing it \u2014 a stage can carry a missing
+    // authorization AND a persona gap to the same human decision.
     stageFindings = mergeFindings(stageFindings, ladder.findings);
   }
 
@@ -3698,6 +4024,7 @@ export const runStage = async (
         materializeOpenCodeConfig,
         materializeCodexHome,
         cleanupCodexHome,
+        withOpenCodeStore,
         store,
         executionId,
         projectId,
@@ -3741,6 +4068,15 @@ export const runStage = async (
       // inert for an unpinned/2.3.3 run, whose loop stays byte-identical.
       if (!methodologyRelease || !stage.policy || !runRepairTurn || round >= maxIterations) {
         continue;
+      }
+      // Out of budget: re-reviewing unrepaired bytes can only repeat this verdict,
+      // so the loop ends here with this round's NOT-READY as the result.
+      if (!repairBudgetLeft()) {
+        await noteRepairSkipped(`review repair turn after round ${round}`, {
+          round,
+          reviewerAgent,
+        });
+        break;
       }
       const reviewerFindings = String(verdict?.detail?.findings ?? '').slice(0, 8000);
       await store
@@ -4090,9 +4426,12 @@ export const runStage = async (
       withPlatformSensors(stage).length > 0 ? 'Stage sensors passed' : 'Stage completed',
     reviewTargetCheck,
     ...(reviewAdvisory ? { reviewAdvisory } : {}),
-    // Gate findings are assembled from the attempt's receipts, events, and
-    // reviewer/sensor results; the orchestrator re-reads durable receipts before
-    // opening the gate.
+    // Gate-precondition inputs. `ensembleEvidence` is what
+    // only this runner could observe — the declared topology and the evidence it
+    // actually gathered; the orchestrator re-reads the receipts itself before the
+    // gate opens and merges its findings with these. Omitted entirely when no
+    // ensemble ran, which is what keeps the gate prompt byte-identical.
+    ...(ensembleEvidence ? { ensembleEvidence } : {}),
     // Every new field is omitted when empty: a legacy stage result must stay the
     // exact object the orchestrator has always received.
     ...(gateSensorVerdicts.length ? { gateSensorVerdicts } : {}),

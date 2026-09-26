@@ -4,6 +4,9 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { createGraphWriter, GraphWriteError, flattenValueMap } from '../mcp/graph-writer.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { archiveArtifactsForStages } from '../../shared/artifact-versioning.js';
+import { evaluateGatePreconditions } from '../../shared/gate-preconditions.js';
+import { contributionArtifactId } from '../../shared/ensemble-contribution.js';
+import { parsePositions } from '../ensemble-runner.js';
 
 const PARTITION = 'agentcore-graph-writer';
 
@@ -2088,5 +2091,280 @@ describe('intent-scoped artifact identity (cross-intent isolation)', () => {
     await derive(writerA, withStory('s-new'));
     expect((await writerA.getItems({ itemType: 'Story' })).map((i) => i.slug)).toEqual(['s-new']);
     expect((await writerB.getItems({ itemType: 'Story' })).map((i) => i.slug)).toEqual(['s-old']);
+  });
+});
+
+// A support's contribution identity was whatever the agent
+// typed, so one persona could write — or overwrite — another's evidence and
+// satisfy the whole mob alone. When the container pinned an agent identity on the
+// scope, the writer now owns the collaborator prop and refuses a foreign id.
+describe('createArtifact — contribution identity is trusted, not asserted', () => {
+  const personaWriter = (agentRef) =>
+    createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageId: 'user-stories', agentRef },
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+
+  beforeEach(async () => {
+    await seedIntent();
+  });
+
+  it('forces the collaborator prop to the scope identity, ignoring the agent claim', async () => {
+    const writerAsDesign = personaWriter('design-agent');
+    await writerAsDesign.createArtifact({
+      artifactType: 'contribution',
+      id: 'contribution-user-stories-design-agent',
+      content: '**Collaborator:** quality-agent\n',
+      props: { collaborator: 'quality-agent', positions: 'AGREE: fine' },
+    });
+    const row = await writerAsDesign.getArtifact({ id: 'contribution-user-stories-design-agent' });
+    expect(row.collaborator).toBe('design-agent');
+    expect(row.positions).toBe('AGREE: fine');
+  });
+
+  it("refuses an id that names another persona's contribution", async () => {
+    await expect(
+      personaWriter('design-agent').createArtifact({
+        artifactType: 'contribution',
+        id: 'contribution-user-stories-quality-agent',
+        props: { collaborator: 'design-agent' },
+      }),
+    ).rejects.toThrow(GraphWriteError);
+  });
+
+  it('leaves every other artifact type untouched by the identity pin', async () => {
+    const created = await personaWriter('design-agent').createArtifact({
+      artifactType: 'requirements-analysis',
+      id: 'requirements-analysis',
+      props: { collaborator: 'whatever' },
+    });
+    expect(created.id).toBe('requirements-analysis');
+    const row = await personaWriter('design-agent').getArtifact({ id: 'requirements-analysis' });
+    expect(row.collaborator).toBe('whatever');
+  });
+
+  it('lets the PLATFORM writer record a gap stub for any persona (no scope identity)', async () => {
+    await writer.createArtifact({
+      artifactType: 'contribution',
+      id: 'contribution-user-stories-quality-agent',
+      props: { collaborator: 'quality-agent', status: 'gap' },
+    });
+    const row = await writer.getArtifact({ id: 'contribution-user-stories-quality-agent' });
+    expect(row).toMatchObject({ collaborator: 'quality-agent', status: 'gap' });
+  });
+});
+
+// Contribution writes are restricted to the matching persona or the platform.
+// Both creation and update enforce the identity pin for lead and support sessions.
+describe('contribution heads — only their own persona or the platform may write them', () => {
+  const POLICY = { summaryConfirmation: 'required', learnings: 'on' };
+  const sessionWriter = (over) =>
+    createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageId: 'user-stories', policy: POLICY, ...over },
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+  const platformWriter = () =>
+    createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageId: 'user-stories', systemWriter: true },
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+  const QUALITY_ID = 'contribution-user-stories-quality-agent';
+
+  beforeEach(async () => {
+    await seedIntent();
+  });
+
+  it("refuses the LEAD forging a support's contribution under a resolved policy", async () => {
+    await expect(
+      sessionWriter({ agentRef: 'product-agent' }).createArtifact({
+        artifactType: 'contribution',
+        id: QUALITY_ID,
+        content: '**Collaborator:** quality-agent\n',
+        props: { collaborator: 'quality-agent', positions: 'AGREE: fine' },
+      }),
+    ).rejects.toThrow(GraphWriteError);
+    expect(await writer.getArtifact({ id: QUALITY_ID })).toBeNull();
+  });
+
+  it('refuses a release-mode session with no identity at all', async () => {
+    await expect(
+      sessionWriter({}).createArtifact({ artifactType: 'contribution', id: QUALITY_ID }),
+    ).rejects.toThrow(GraphWriteError);
+  });
+
+  it('lets the platform writer record a gap stub, and the persona supersede it', async () => {
+    await platformWriter().createArtifact({
+      artifactType: 'contribution',
+      id: QUALITY_ID,
+      props: { collaborator: 'quality-agent', status: 'gap' },
+    });
+    expect(await writer.getArtifact({ id: QUALITY_ID })).toMatchObject({ status: 'gap' });
+
+    // A peer cannot turn the stub into evidence.
+    await expect(
+      sessionWriter({ agentRef: 'design-agent' }).updateArtifact({
+        id: QUALITY_ID,
+        props: { status: 'recorded', positions: 'AGREE: fine' },
+      }),
+    ).rejects.toThrow(GraphWriteError);
+    // Neither can the persona itself by prop-writing: `status` is server-owned.
+    await sessionWriter({ agentRef: 'quality-agent' }).updateArtifact({
+      id: QUALITY_ID,
+      props: { status: 'recorded', collaborator: 'design-agent' },
+    });
+    expect(await writer.getArtifact({ id: QUALITY_ID })).toMatchObject({
+      status: 'gap',
+      collaborator: 'quality-agent',
+    });
+    // Its own real contribution is evidence and clears the stub.
+    await sessionWriter({ agentRef: 'quality-agent' }).createArtifact({
+      artifactType: 'contribution',
+      id: QUALITY_ID,
+      props: { status: 'gap', positions: 'AGREE: fine' },
+    });
+    expect(await writer.getArtifact({ id: QUALITY_ID })).toMatchObject({
+      status: 'recorded',
+      collaborator: 'quality-agent',
+    });
+  });
+
+  it("refuses a peer flipping another persona's OBJECT, so the dissent still reaches the gate", async () => {
+    await sessionWriter({ agentRef: 'quality-agent' }).createArtifact({
+      artifactType: 'contribution',
+      id: QUALITY_ID,
+      props: { positions: 'OBJECT: the acceptance criteria are untestable' },
+    });
+    await expect(
+      sessionWriter({ agentRef: 'design-agent' }).updateArtifact({
+        id: QUALITY_ID,
+        props: { positions: 'AGREE: fine' },
+      }),
+    ).rejects.toThrow(GraphWriteError);
+    await expect(
+      sessionWriter({ agentRef: 'product-agent' }).updateArtifact({
+        id: QUALITY_ID,
+        props: { positions: 'AGREE: fine' },
+      }),
+    ).rejects.toThrow(GraphWriteError);
+
+    const row = await writer.getArtifact({ id: QUALITY_ID });
+    const objection = parsePositions(row).find((position) => position.stance === 'OBJECT');
+    expect(objection?.text).toBe('the acceptance criteria are untestable');
+    const { findings } = evaluateGatePreconditions({
+      stage: { stageId: 'user-stories', stageInstanceId: 'si-req', outputArtifacts: [] },
+      policy: POLICY,
+      ensembleEvidence: {
+        supports: ['quality-agent'],
+        dissent: [{ agentRef: 'quality-agent', position: objection.text }],
+      },
+    });
+    expect(findings.map((finding) => finding.code)).toContain('review_dissent_maintained');
+  });
+
+  it('keeps an unpinned session (no policy, no identity) on the legacy path', async () => {
+    await writer.createArtifact({
+      artifactType: 'contribution',
+      id: QUALITY_ID,
+      props: { collaborator: 'quality-agent', status: 'draft' },
+    });
+    await writer.updateArtifact({ id: QUALITY_ID, props: { status: 'final' } });
+    expect(await writer.getArtifact({ id: QUALITY_ID })).toMatchObject({ status: 'final' });
+  });
+});
+
+describe('contribution heads — persona-scoped logical identity', () => {
+  const stageId = 'review-stage';
+  const stageScope = { ...SCOPE, stageId, policy: { summaryConfirmation: 'required' } };
+  const personaWriter = (agentRef) => createGraphWriter({ g, scope: { ...stageScope, agentRef } });
+  const platformWriter = () =>
+    createGraphWriter({ g, scope: { ...stageScope, systemWriter: true } });
+  const contributionId = (agentRef) => contributionArtifactId({ stageId, agentRef });
+
+  beforeEach(async () => {
+    await seedIntent();
+  });
+
+  it('creates its own head instead of adopting another persona’s superseded head', async () => {
+    await platformWriter().createArtifact({
+      artifactType: 'contribution',
+      id: contributionId('solution-architect'),
+      props: { collaborator: 'solution-architect', status: 'gap' },
+    });
+    await g
+      .V()
+      .has('Artifact', 'id', contributionId('solution-architect'))
+      .property('superseded_at', '2026-01-01T00:00:00.000Z')
+      .next();
+
+    await personaWriter('architect').createArtifact({
+      artifactType: 'contribution',
+      id: contributionId('architect'),
+      content: 'Architect contribution',
+      props: { positions: 'AGREE: distinct view' },
+    });
+
+    expect(
+      await personaWriter('architect').getArtifact({ id: contributionId('architect') }),
+    ).toMatchObject({
+      collaborator: 'architect',
+      status: 'recorded',
+      content: 'Architect contribution',
+    });
+    expect(
+      await platformWriter().getArtifact({ id: contributionId('solution-architect') }),
+    ).toMatchObject({
+      collaborator: 'solution-architect',
+      status: 'gap',
+      superseded_at: '2026-01-01T00:00:00.000Z',
+    });
+  });
+
+  it('refuses a peer create or update without changing the peer contribution', async () => {
+    await personaWriter('solution-architect').createArtifact({
+      artifactType: 'contribution',
+      id: contributionId('solution-architect'),
+      content: 'Peer contribution',
+      props: { positions: 'OBJECT: preserve this' },
+    });
+
+    await expect(
+      personaWriter('architect').createArtifact({
+        artifactType: 'contribution',
+        id: contributionId('solution-architect'),
+        content: 'forged replacement',
+      }),
+    ).rejects.toThrow(GraphWriteError);
+    await expect(
+      personaWriter('architect').updateArtifact({
+        id: contributionId('solution-architect'),
+        props: { positions: 'AGREE: replaced' },
+      }),
+    ).rejects.toThrow(GraphWriteError);
+
+    expect(
+      await personaWriter('solution-architect').getArtifact({
+        id: contributionId('solution-architect'),
+      }),
+    ).toMatchObject({ content: 'Peer contribution', positions: 'OBJECT: preserve this' });
+  });
+
+  it('rejects an id that only collides with the persona ref as a suffix', async () => {
+    const foreignId = contributionId('solution-architect');
+    await platformWriter().createArtifact({
+      artifactType: 'contribution',
+      id: foreignId,
+      props: { collaborator: 'solution-architect', status: 'gap' },
+    });
+
+    await expect(
+      personaWriter('architect').createArtifact({
+        artifactType: 'contribution',
+        id: foreignId,
+        props: { positions: 'AGREE: forged' },
+      }),
+    ).rejects.toThrow(GraphWriteError);
   });
 });

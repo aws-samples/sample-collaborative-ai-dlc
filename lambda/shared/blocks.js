@@ -161,11 +161,8 @@ const validateBlockInput = (type, input) => {
 
 const DEPTHS = ['Minimal', 'Standard', 'Comprehensive'];
 
-// V2's stage execution modes. `inline` and `subagent` run natively; `pipeline`
-// and `mob` (≥2.6.18) run as one agent session carrying an ensemble prompt
-// section (see v2-execution-plan.js ENSEMBLE_MODES); `agent-team` is reserved and
-// still unrunnable, but must round-trip as a known value so a consumer isn't
-// surprised by an "unknown mode".
+// Stage modes accepted by block authoring and plan validation. This module checks
+// only the known values; AgentCore selects release-mode behavior from capabilities.
 const STAGE_MODES = ['inline', 'subagent', 'pipeline', 'mob', 'agent-team'];
 
 // Per-type required/shape checks. Kept small and explicit — only the fields

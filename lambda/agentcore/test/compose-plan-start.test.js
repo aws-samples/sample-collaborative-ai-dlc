@@ -127,6 +127,64 @@ const waitForFinish = async (store) => {
   throw new Error('compose job never finished');
 };
 
+describe('compose-plan-start — release-pinned intents', () => {
+  const releasePin = {
+    releaseId: 'aidlc:abc',
+    sourceSha: 'a'.repeat(40),
+    importerRevision: 1,
+    closureDigest: 'd'.repeat(64),
+    catalogKey: `aidlc-releases/v1/${'a'.repeat(40)}/i1/catalog.json`,
+    manifestKey: `aidlc-releases/v1/${'a'.repeat(40)}/i1/manifest.json`,
+  };
+  const matched =
+    '```json\n{"mode":"matched","scope":"bugfix","rationale":["fits"],"confidence":0.8}\n```';
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('grounds on the release closure and never lists merged DynamoDB blocks', async () => {
+    const deps = makeDeps({ oneShotText: matched });
+    const start = createComposePlanStart(deps);
+
+    await start({ ...basePayload, methodologyRelease: releasePin });
+    const update = await waitForFinish(deps.store);
+
+    expect(update.state).toBe('COMPLETED');
+    expect(deps.loadLibraryFn).toHaveBeenCalledWith(
+      expect.objectContaining({ methodologyRelease: releasePin }),
+    );
+    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith('SCOPE', releasePin, null);
+    expect(deps.listMergedBlocksFn).not.toHaveBeenCalled();
+  });
+
+  it('fails the compose when the pinned closure cannot be resolved', async () => {
+    const deps = makeDeps({ oneShotText: matched });
+    deps.listReleaseBlocksFn = vi.fn(async () => {
+      const error = new Error('release-resolver: no published release manifest');
+      error.code = 'release_not_found';
+      throw error;
+    });
+    const start = createComposePlanStart(deps);
+
+    await start({ ...basePayload, methodologyRelease: releasePin });
+    const update = await waitForFinish(deps.store);
+
+    expect(update.state).toBe('FAILED');
+    expect(update.fields.failureReason).toContain('no published release manifest');
+  });
+
+  it('keeps the merged DynamoDB catalog for an unpinned intent', async () => {
+    const deps = makeDeps({ oneShotText: matched });
+    const start = createComposePlanStart(deps);
+
+    await start(basePayload);
+    await waitForFinish(deps.store);
+
+    expect(deps.loadLibraryFn).toHaveBeenCalledWith({ workflowId: 'aidlc-v2', workflowVersion: 4 });
+    expect(deps.listMergedBlocksFn).toHaveBeenCalledWith('SCOPE');
+    expect(deps.listReleaseBlocksFn).not.toHaveBeenCalled();
+  });
+});
+
 describe('scopeGridFor / buildScopeGrounding', () => {
   it('projects a scope grid off placements', () => {
     expect(scopeGridFor(workflow(), 'bugfix')).toEqual({
@@ -187,7 +245,7 @@ describe('compose-plan-start', () => {
     const deps = makeDeps({
       oneShotText: '{"mode":"matched","scope":"feature"}',
     });
-    const methodologyRelease = {
+    const intentRelease = {
       releaseId: 'aidlc:release-sha',
       sourceSha: 'release-sha',
       importerRevision: 2,
@@ -199,30 +257,30 @@ describe('compose-plan-start', () => {
       AGENT: { 'aidlc-composer-agent': { tenantId: 'default', version: 7 } },
     };
 
-    await createComposePlanStart(deps)({ ...basePayload, methodologyRelease, methodologyPins });
+    await createComposePlanStart(deps)({
+      ...basePayload,
+      methodologyRelease: intentRelease,
+      methodologyPins,
+    });
     await waitForFinish(deps.store);
 
     expect(deps.loadLibraryFn).toHaveBeenCalledWith({
       workflowId: basePayload.workflowId,
       workflowVersion: basePayload.workflowVersion,
-      methodologyRelease,
+      methodologyRelease: intentRelease,
       methodologyPins,
     });
-    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith(
-      'SCOPE',
-      methodologyRelease,
-      methodologyPins,
-    );
+    expect(deps.listReleaseBlocksFn).toHaveBeenCalledWith('SCOPE', intentRelease, methodologyPins);
     expect(deps.listMergedBlocksFn).not.toHaveBeenCalled();
     expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ id: 'aidlc-composer-agent' }),
-      { methodologyRelease },
+      { methodologyRelease: intentRelease },
     );
     expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ id: 'composer-agent-composing' }),
-      { methodologyRelease },
+      { methodologyRelease: intentRelease },
     );
   });
 
