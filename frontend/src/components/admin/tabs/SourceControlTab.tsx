@@ -1,5 +1,6 @@
 // "Source Control" tab — platform-wide git provider configuration.
-// GitHub OAuth and App credentials coexist; GitLab is OAuth-only. Projects
+// GitHub OAuth and App credentials coexist; GitLab and Bitbucket are OAuth-only;
+// CodeCommit has no credential here at all (IAM role per space). Projects
 // choose the credential type when their repository bindings are verified.
 
 import { Skeleton } from '@/components/ui/skeleton';
@@ -8,6 +9,7 @@ import type { TrackerProviderStatus } from '@/services/trackers';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { GitHubSourceControlCard } from '../GitHubSourceControlCard';
+import { CodeCommitSourceControlCard } from '../CodeCommitSourceControlCard';
 import { OAuthAppConfigForm } from '../OAuthAppConfigForm';
 import { PrStrategyCard } from '../PrStrategyCard';
 
@@ -68,6 +70,8 @@ export function SourceControlTab({ providers, providersLoading, onProvidersChang
           onSaved={onProvidersChanged}
         />
       </SettingsCard>
+
+      <CodeCommitSourceControlCard />
     </div>
   );
 }

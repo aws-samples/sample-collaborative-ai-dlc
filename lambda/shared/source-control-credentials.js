@@ -8,7 +8,16 @@ import {
 } from './git-token.js';
 import { getGitHubAppConfig } from './github-auth-config.js';
 import { getProvider } from './git-providers.js';
-import { ACTIVE, appCredentialRef, oauthCredentialRef } from './source-control-bindings.js';
+import {
+  ACTIVE,
+  appCredentialRef,
+  oauthCredentialRef,
+  roleCredentialRef,
+} from './source-control-bindings.js';
+import { assumeCodeCommitRole, isCodeCommitRoleArn, roleAccountId } from './codecommit-role.js';
+import { resolveCodeCommitExternalId } from './codecommit-connection.js';
+import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
+import { signCodeCommitGitCredential } from './git-providers/codecommit-credential.js';
 
 const parseScopes = (raw) =>
   new Set(
@@ -152,20 +161,118 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
   };
 };
 
+// CodeCommit committer identity: CodeCommit has no user-identity API, so the
+// author of engine-made commits is configured on the binding. Any RFC-shaped
+// address is accepted by CodeCommit (it is not validated); the default uses the
+// reserved `.invalid` TLD so it can never route.
+const DEFAULT_COMMITTER_NAME = 'Collaborative AI-DLC';
+const defaultCommitterEmail = (accountId) => `aidlc-bot@${accountId || 'codecommit'}.invalid`;
+
+const verifyCodeCommitRoleBinding = async ({
+  ddb,
+  sts,
+  repo,
+  userId,
+  selection = {},
+  projectBindings = [],
+}) => {
+  if (!sts) {
+    throw Object.assign(new Error('STS client is required for CodeCommit role verification'), {
+      code: 'STS_UNAVAILABLE',
+    });
+  }
+  const roleArn = String(selection.roleArn || '').trim();
+  if (!isCodeCommitRoleArn(roleArn)) {
+    throw Object.assign(new Error('A valid IAM role ARN is required for CodeCommit'), {
+      code: 'ROLE_ARN_REQUIRED',
+    });
+  }
+  // Resolved server-side: the external id this project already uses for the
+  // role, else the caller's own connection. A selection naming any other
+  // external id is refused here, before STS sees it.
+  const externalId = await resolveCodeCommitExternalId({
+    ddb,
+    userId,
+    roleArn,
+    requested: selection.externalId,
+    projectBindings,
+  });
+  const target = parseCodeCommitRepo(repo);
+  if (!target.arn) {
+    throw Object.assign(new Error('CodeCommit repositories must be bound by ARN'), {
+      code: 'INVALID_REPOSITORY',
+    });
+  }
+  const accountId = roleAccountId(roleArn);
+  // Prove the whole chain once, with the write-scoped session policy the
+  // engine will use: trust policy + external ID + tenant role policy + the
+  // repository actually existing. The provider probe is read-only.
+  const credentials = await assumeCodeCommitRole({
+    sts,
+    roleArn,
+    externalId,
+    repoArn: target.arn,
+    access: 'write',
+    executionId: 'verify',
+  });
+  const access = await getProvider('codecommit').getRepositoryAccess(
+    { token: credentials },
+    target.arn,
+  );
+  if (!access.canRead) {
+    throw Object.assign(new Error('The role cannot read the CodeCommit repository'), {
+      code: 'INSUFFICIENT_REPOSITORY_ACCESS',
+    });
+  }
+  // Write authority is what the session policy asked for; a tenant role that
+  // lacks GitPush surfaces as a push failure, not a bind failure — the same
+  // trade-off as github-app, where the mint is the proof.
+  const roleAccess = { ...access, canRead: true, canWrite: true };
+  const actorName = String(selection.committerName || '').trim() || DEFAULT_COMMITTER_NAME;
+  const actorEmail =
+    String(selection.committerEmail || '').trim() || defaultCommitterEmail(target.accountId);
+  return {
+    authType: 'codecommit-role',
+    credentialRef: roleCredentialRef(roleArn),
+    roleArn,
+    externalId,
+    roleAccountId: accountId,
+    region: target.region,
+    repositoryAccountId: target.accountId,
+    actorLogin: credentials.assumedRoleArn || roleArn,
+    actorName,
+    actorEmail,
+    capabilities: {
+      ...capabilitiesFor('codecommit', roleAccess),
+      // No issue tracker and no CI check statuses on CodeCommit.
+      issues: 'none',
+      workflows: 'none',
+    },
+  };
+};
+
 const verifyBindingCredential = async ({
   ddb,
   ssm,
   secrets,
+  sts = null,
   provider,
   repo,
   authType,
   userId,
   confirmDelegation = false,
   actorName = null,
+  selection = {},
+  projectBindings = [],
 }) => {
   if (authType === 'github-app') {
     if (provider !== 'github') throw new Error('GitHub App auth is only valid for GitHub');
     return verifyGitHubAppBinding({ ssm, secrets, repo });
+  }
+  if (authType === 'codecommit-role') {
+    if (provider !== 'codecommit')
+      throw new Error('CodeCommit role auth is only valid for CodeCommit');
+    return verifyCodeCommitRoleBinding({ ddb, sts, repo, userId, selection, projectBindings });
   }
   if (authType !== `${provider}-oauth`) {
     throw new Error(`Invalid auth type ${authType} for ${provider}`);
@@ -186,13 +293,54 @@ const resolveBindingCredential = async ({
   ddb,
   ssm,
   secrets,
+  sts = null,
   binding,
   requiredAccess = 'write',
+  executionId = null,
 }) => {
   if (!binding || binding.status !== ACTIVE) {
     throw Object.assign(new Error('Source-control binding is not active'), {
       code: 'BINDING_INVALID',
     });
+  }
+  if (binding.authType === 'codecommit-role') {
+    if (
+      !sts ||
+      !binding.roleArn ||
+      !binding.externalId ||
+      binding.credentialRef !== roleCredentialRef(binding.roleArn)
+    ) {
+      throw Object.assign(new Error('CodeCommit role binding is incomplete'), {
+        code: 'BINDING_INVALID',
+      });
+    }
+    const target = parseCodeCommitRepo(binding.repo);
+    const credentials = await assumeCodeCommitRole({
+      sts,
+      roleArn: binding.roleArn,
+      externalId: binding.externalId,
+      repoArn: target.arn,
+      access: requiredAccess === 'read' ? 'read' : 'write',
+      executionId,
+    });
+    // For git: a SigV4 signature as the Basic password — the same pair the
+    // AWS credential helper emits, so git-auth.js needs no CodeCommit branch.
+    // For the provider API: the STS triple itself, consumed by the SDK client.
+    const git = signCodeCommitGitCredential({
+      region: target.region,
+      repositoryName: target.repositoryName,
+      credentials,
+    });
+    return {
+      token: credentials,
+      username: git.username,
+      password: git.password,
+      committer:
+        binding.actorName && binding.actorEmail
+          ? { name: binding.actorName, email: binding.actorEmail }
+          : null,
+      actor: binding.actorLogin || binding.actorName || null,
+    };
   }
   let token;
   let username;
@@ -292,6 +440,7 @@ export {
   capabilitiesFor,
   verifyOAuthBinding,
   verifyGitHubAppBinding,
+  verifyCodeCommitRoleBinding,
   verifyBindingCredential,
   resolveBindingCredential,
 };

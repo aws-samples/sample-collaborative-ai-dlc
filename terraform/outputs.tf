@@ -388,3 +388,8 @@ output "managed_tool_status_lambda_name" {
   description = "Managed tool build-status Lambda function name"
   value       = module.managed_environments.tool_status_lambda_name
 }
+
+output "codecommit_platform_principals" {
+  description = "Execution role ARNs a tenant must trust on a CodeCommit access role (comma-separated); also shown by the connect flow"
+  value       = module.lambda.codecommit_platform_principals
+}

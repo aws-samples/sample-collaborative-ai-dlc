@@ -483,6 +483,8 @@ module "api" {
   gitlab_lambda_name                       = module.lambda.gitlab_lambda_name
   bitbucket_lambda_invoke_arn              = module.lambda.bitbucket_lambda_invoke_arn
   bitbucket_lambda_name                    = module.lambda.bitbucket_lambda_name
+  codecommit_lambda_invoke_arn             = module.lambda.codecommit_lambda_invoke_arn
+  codecommit_lambda_name                   = module.lambda.codecommit_lambda_name
   source_control_lambda_invoke_arn         = module.lambda.source_control_lambda_invoke_arn
   source_control_lambda_name               = module.lambda.source_control_lambda_name
   trackers_lambda_invoke_arn               = module.lambda.trackers_lambda_invoke_arn

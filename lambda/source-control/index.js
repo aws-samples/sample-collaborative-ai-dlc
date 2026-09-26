@@ -5,6 +5,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { STSClient } from '@aws-sdk/client-sts';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { getProvider } from '../shared/git-providers.js';
@@ -14,10 +15,9 @@ import {
   canonicalRepo,
   deleteProjectBindings,
   getBinding,
-  invalidationReasonForError,
+  invalidateBindingsForError,
   listProjectBindings,
   loggableErrorCode,
-  markBindingInvalid,
   replaceProjectBindings,
   sanitizeBinding,
 } from '../shared/source-control-bindings.js';
@@ -29,6 +29,7 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const sts = new STSClient({});
 const logger = new Logger({ persistentKeys: { component: 'source-control' } });
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
@@ -142,6 +143,11 @@ const normalizeProviderSelections = (data = {}) => {
       selections[item.provider] = {
         authType: item.authType,
         confirmDelegation: item.confirmDelegation,
+        // codecommit-role: the tenant role and the committer identity.
+        ...(item.roleArn ? { roleArn: item.roleArn } : {}),
+        ...(item.externalId ? { externalId: item.externalId } : {}),
+        ...(item.committerName ? { committerName: item.committerName } : {}),
+        ...(item.committerEmail ? { committerEmail: item.committerEmail } : {}),
       };
     }
     return selections;
@@ -177,6 +183,7 @@ const validateProjectBindings = async ({
   ddbClient = ddb,
   ssmClient = ssm,
   secretsClient = secrets,
+  stsClient = sts,
   live = true,
 }) => {
   if (repos.length === 0) return { ready: true, repositories: [] };
@@ -231,6 +238,7 @@ const validateProjectBindings = async ({
         ddb: ddbClient,
         ssm: ssmClient,
         secrets: secretsClient,
+        sts: stsClient,
         binding,
         requiredAccess: 'write',
       });
@@ -257,10 +265,7 @@ const validateProjectBindings = async ({
         ready: true,
       });
     } catch (error) {
-      const invalidReason = invalidationReasonForError(error);
-      if (invalidReason) {
-        await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
-      }
+      await invalidateBindingsForError(ddbClient, binding, error).catch(() => {});
       results.push({
         provider: repo.provider,
         repo: repo.repo,
@@ -355,6 +360,7 @@ const executeSourceControlOperation = async ({
   ddbClient = ddb,
   ssmClient = ssm,
   secretsClient = secrets,
+  stsClient = sts,
 }) => {
   if (!SOURCE_CONTROL_OPERATIONS[operation]) {
     throw Object.assign(new Error('Unsupported source-control operation'), {
@@ -377,6 +383,7 @@ const executeSourceControlOperation = async ({
       ddb: ddbClient,
       ssm: ssmClient,
       secrets: secretsClient,
+      sts: stsClient,
       binding,
       requiredAccess: SOURCE_CONTROL_OPERATIONS[operation],
     });
@@ -394,10 +401,7 @@ const executeSourceControlOperation = async ({
       args,
     );
   } catch (error) {
-    const invalidReason = invalidationReasonForError(error);
-    if (invalidReason) {
-      await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
-    }
+    await invalidateBindingsForError(ddbClient, binding, error).catch(() => {});
     logger.error('provider operation failed', {
       provider,
       operation,
@@ -518,10 +522,13 @@ export const handler = async (event, context) => {
             ddb,
             ssm,
             secrets,
+            sts,
             provider: repo.provider,
             repo: repo.repo,
             authType: selection.authType,
             userId,
+            selection,
+            projectBindings: existing,
             confirmDelegation:
               selection.confirmDelegation === true || data.confirmDelegation === true,
             actorName:

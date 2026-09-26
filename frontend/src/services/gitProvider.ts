@@ -7,9 +7,9 @@ import { api } from './api';
 // The set of supported git providers. Kept as a string-literal union (not a TS
 // enum) because the values are wire strings sent to/from the API and stored in
 // the DB — a union assigns directly from those strings with zero runtime cost.
-export type GitProvider = 'github' | 'gitlab' | 'bitbucket';
+export type GitProvider = 'github' | 'gitlab' | 'bitbucket' | 'codecommit';
 
-export const GIT_PROVIDER_WEB_URL: Record<GitProvider, string> = {
+export const GIT_PROVIDER_WEB_URL: Record<Exclude<GitProvider, 'codecommit'>, string> = {
   github: 'https://github.com',
   gitlab: 'https://gitlab.com',
   bitbucket: 'https://bitbucket.org',
@@ -46,9 +46,11 @@ export const gitBranchWebUrl = (
   repo: string,
   branch: string,
 ): string | null => {
+  // A CodeCommit repository id is an ARN: its web page is the regional console.
+  if (provider === 'codecommit') return repoWebUrl('codecommit', repo, { branch });
   if (!provider || !Object.hasOwn(GIT_PROVIDER_WEB_URL, provider)) return null;
   const encodedBranch = branch.split('/').map(encodeURIComponent).join('/');
-  const typedProvider = provider as GitProvider;
+  const typedProvider = provider as Exclude<GitProvider, 'codecommit'>;
   const base =
     configuredRepoBaseUrl(repo) ?? `${GIT_PROVIDER_WEB_URL[typedProvider]}/${gitRepoSlug(repo)}`;
   if (typedProvider === 'gitlab') return `${base}/-/tree/${encodedBranch}`;
@@ -59,17 +61,35 @@ export const gitBranchWebUrl = (
 // A git provider and its issue-tracker share one OAuth app/connection, so each
 // git provider maps to exactly one tracker-provider id. Centralized here so the
 // association lives in one place instead of being re-derived with inline
-// ternaries at every call site.
+// ternaries at every call site. Code-host-only providers (Bitbucket has no
+// issues tracker implemented, CodeCommit has no issues at all) map to null.
 export type GitTrackerProviderId = 'github-issues' | 'gitlab-issues' | 'bitbucket-issues';
 
-const GIT_PROVIDER_TRACKER_ID: Record<GitProvider, GitTrackerProviderId> = {
+const GIT_PROVIDER_TRACKER_ID: Record<GitProvider, GitTrackerProviderId | null> = {
   github: 'github-issues',
   gitlab: 'gitlab-issues',
   bitbucket: 'bitbucket-issues',
+  codecommit: null,
 };
 
-export const trackerIdForGitProvider = (provider: GitProvider): GitTrackerProviderId =>
+export const trackerIdForGitProvider = (provider: GitProvider): GitTrackerProviderId | null =>
   GIT_PROVIDER_TRACKER_ID[provider];
+
+// Providers reached through a personal OAuth connection (Connect button, OAuth
+// callback round-trip). CodeCommit is reached through an IAM role the tenant
+// trusts the platform with; there is nothing personal to connect.
+export type OAuthGitProvider = Exclude<GitProvider, 'codecommit'>;
+export const isOAuthGitProvider = (provider: GitProvider | ''): provider is OAuthGitProvider =>
+  provider === 'github' || provider === 'gitlab' || provider === 'bitbucket';
+
+export const GIT_PROVIDERS: readonly GitProvider[] = [
+  'github',
+  'gitlab',
+  'bitbucket',
+  'codecommit',
+];
+export const isGitProvider = (value: unknown): value is GitProvider =>
+  typeof value === 'string' && (GIT_PROVIDERS as readonly string[]).includes(value);
 
 export interface GitRepo {
   id: number;
@@ -203,7 +223,34 @@ export const bitbucketService: GitProviderService = {
 export const getGitProviderService = (provider: GitProvider): GitProviderService => {
   if (provider === 'gitlab') return gitlabService;
   if (provider === 'bitbucket') return bitbucketService;
+  if (provider === 'codecommit') return codecommitStatusService;
   return githubService;
+};
+
+// =============================================================================
+// CodeCommit — no personal connection. The status route reports whether the
+// deployment can build a trust policy (platform principals present); a
+// "connection" is a role the tenant creates, handled by services/codecommit.ts.
+// The auth/disconnect members exist to satisfy the shared interface and reject
+// deliberately: the UI never renders a Connect button for this provider.
+// =============================================================================
+
+export interface CodeCommitStatus {
+  provider: 'codecommit';
+  configured: boolean;
+  principals: string[];
+}
+
+export const codecommitStatusService: GitProviderService = {
+  getAuthUrl: () => Promise.reject(new Error('CodeCommit has no OAuth connection')),
+  getStatus: async () => {
+    const status = await api.get<CodeCommitStatus>('/codecommit/status');
+    // "connected" here means "this deployment can connect CodeCommit at all";
+    // the per-role handshake happens in the connect form.
+    return { connected: status.configured, provider: 'codecommit' };
+  },
+  listRepos: () => Promise.reject(new Error('CodeCommit repositories are listed per role')),
+  disconnect: () => Promise.resolve(),
 };
 
 // =============================================================================
@@ -224,7 +271,67 @@ const GIT_PROVIDER_TERMINOLOGY: Record<GitProvider, GitProviderTerminology> = {
   github: { label: 'GitHub', changeRequest: 'Pull Request', changeRequestShort: 'PR' },
   gitlab: { label: 'GitLab', changeRequest: 'Merge Request', changeRequestShort: 'MR' },
   bitbucket: { label: 'Bitbucket', changeRequest: 'Pull Request', changeRequestShort: 'PR' },
+  codecommit: { label: 'AWS CodeCommit', changeRequest: 'Pull Request', changeRequestShort: 'PR' },
 };
 
 export const gitProviderTerminology = (provider: GitProvider): GitProviderTerminology =>
   GIT_PROVIDER_TERMINOLOGY[provider] ?? GIT_PROVIDER_TERMINOLOGY.github;
+
+// =============================================================================
+// Repository identity. GitHub/GitLab/Bitbucket ids are "owner/repo" paths; a
+// CodeCommit id is the repository ARN (region and account are part of the
+// identity). These helpers keep that difference out of the components.
+// =============================================================================
+
+const CODECOMMIT_ARN =
+  /^arn:(aws|aws-cn|aws-us-gov):codecommit:([a-z]{2}(?:-[a-z]+)+-\d):(\d{12}):([\w.-]{1,100})$/;
+
+export interface CodeCommitRepoRef {
+  arn: string;
+  partition: string;
+  region: string;
+  accountId: string;
+  name: string;
+}
+
+export const parseCodeCommitRepo = (repoId: string): CodeCommitRepoRef | null => {
+  const m = CODECOMMIT_ARN.exec(repoId ?? '');
+  return m ? { arn: repoId, partition: m[1], region: m[2], accountId: m[3], name: m[4] } : null;
+};
+
+// Human label for a repository id: "owner/repo" as-is, an ARN as "name (region)".
+export const repoDisplayName = (provider: GitProvider, repoId: string): string => {
+  if (provider !== 'codecommit') return repoId;
+  const ref = parseCodeCommitRepo(repoId);
+  return ref ? `${ref.name} (${ref.region})` : repoId;
+};
+
+const consoleHost = (partition: string, region: string) =>
+  partition === 'aws-cn'
+    ? `https://${region}.console.amazonaws.cn`
+    : `https://${region}.console.aws.amazon.com`;
+
+// Web URL of a repository (its home page, or a path within a branch). The
+// branch is taken raw; SaaS hosts get it URL-encoded segment by segment (a "/"
+// in a branch name stays a path separator), the CodeCommit console takes it
+// verbatim under refs/heads/.
+export const repoWebUrl = (
+  provider: GitProvider,
+  repoId: string,
+  opts: { branch?: string; path?: string } = {},
+): string | null => {
+  const enc = opts.branch ? opts.branch.split('/').map(encodeURIComponent).join('/') : '';
+  const sub = opts.path ? `/${opts.path}` : '';
+  if (provider === 'codecommit') {
+    const ref = parseCodeCommitRepo(repoId);
+    if (!ref) return null;
+    const base = `${consoleHost(ref.partition, ref.region)}/codesuite/codecommit/repositories/${ref.name}`;
+    const where = opts.branch ? `/browse/refs/heads/${opts.branch}/--${sub || '/'}` : '/browse';
+    return `${base}${where}?region=${ref.region}`;
+  }
+  if (provider === 'gitlab')
+    return `https://gitlab.com/${repoId}${enc ? `/-/tree/${enc}${sub}` : ''}`;
+  if (provider === 'bitbucket')
+    return `https://bitbucket.org/${repoId}${enc ? `/src/${enc}${sub}` : ''}`;
+  return `https://github.com/${repoId}${enc ? `/tree/${enc}${sub}` : ''}`;
+};

@@ -19,8 +19,13 @@ import {
 } from '@/components/ui/select';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { GitConnectButton } from '@/components/GitConnectButton';
+import {
+  CodeCommitConnectForm,
+  type CodeCommitConnectResult,
+} from '@/components/CodeCommitConnectForm';
 import { useGitProviderStatus } from '@/hooks/useGitProviderStatus';
-import type { GitProvider } from '@/services/gitProvider';
+import type { CodeCommitRoleConnection } from '@/services/codecommit';
+import { isOAuthGitProvider, repoDisplayName, type GitProvider } from '@/services/gitProvider';
 import type { Project } from '@/services/projects';
 import {
   sourceControlService,
@@ -48,6 +53,21 @@ const authLabel = (authType: SourceControlAuthType) => {
   return authType;
 };
 
+// The existing CodeCommit binding (any repository — they share one role per
+// space) seeds the connect form so the trust policy re-renders unchanged.
+const codecommitInitialFor = (
+  status: ProjectSourceControlStatus | null,
+): Partial<CodeCommitRoleConnection> | undefined => {
+  const bound = status?.repositories.find(
+    (repository) => repository.authType === 'codecommit-role' && repository.roleArn,
+  );
+  if (!bound) return undefined;
+  return {
+    roleArn: bound.roleArn ?? undefined,
+    region: bound.region ?? undefined,
+  };
+};
+
 const readableReason = (reason: string | null) =>
   reason ? reason.replaceAll('_', ' ').replace(/^\w/, (value) => value.toUpperCase()) : null;
 
@@ -58,6 +78,8 @@ function ProviderBindingControl({
   disabled,
   onAuthTypeChange,
   onConfirmedChange,
+  codecommitInitial,
+  onCodeCommitVerified,
 }: {
   provider: GitProvider;
   authType: SourceControlAuthType;
@@ -65,9 +87,14 @@ function ProviderBindingControl({
   disabled: boolean;
   onAuthTypeChange: (value: SourceControlAuthType) => void;
   onConfirmedChange: (value: boolean) => void;
+  // codecommit-role: the existing binding's role/external id/region, so the
+  // form re-renders the same trust policy and the tenant's role keeps working.
+  codecommitInitial?: Partial<CodeCommitRoleConnection>;
+  onCodeCommitVerified?: (result: CodeCommitConnectResult | null) => void;
 }) {
   const { status, loading, error, refresh } = useGitProviderStatus(provider);
   const oauth = authType.endsWith('-oauth');
+  const role = authType === 'codecommit-role';
 
   return (
     <div className="space-y-3 border-t pt-3 first:border-t-0 first:pt-0">
@@ -96,7 +123,18 @@ function ProviderBindingControl({
         )}
       </div>
 
-      {oauth && (
+      {role && (
+        <div className="ml-0 sm:ml-[4.5rem]">
+          <CodeCommitConnectForm
+            initial={codecommitInitial}
+            onVerified={(result) => onCodeCommitVerified?.(result)}
+            onInvalidated={() => onCodeCommitVerified?.(null)}
+            compact
+          />
+        </div>
+      )}
+
+      {oauth && isOAuthGitProvider(provider) && (
         <div className="ml-0 space-y-2 sm:ml-[4.5rem]">
           {error ? (
             <p className="text-xs text-destructive">{error}</p>
@@ -131,6 +169,9 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
     {},
   );
   const [confirmed, setConfirmed] = useState<Partial<Record<GitProvider, boolean>>>({});
+  // codecommit-role: a rebind must re-prove the role. null until the form's
+  // "Test connection" succeeds in this session.
+  const [codecommit, setCodecommit] = useState<CodeCommitConnectResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -186,9 +227,16 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
         setError(`Confirm ${provider} OAuth delegation before binding.`);
         return;
       }
+      if (authType === 'codecommit-role' && !codecommit) {
+        setError('Test the CodeCommit connection before binding.');
+        return;
+      }
       selections[provider] = {
         authType,
         ...(authType.endsWith('-oauth') ? { confirmDelegation: true } : {}),
+        ...(authType === 'codecommit-role' && codecommit
+          ? { roleArn: codecommit.connection.roleArn }
+          : {}),
       };
     }
     setSaving(true);
@@ -260,11 +308,15 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
                   <AlertCircle className="h-3.5 w-3.5 text-amber-600" />
                 )}
                 <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate font-mono">{repository.repo}</span>
+                <span className="min-w-0 flex-1 truncate font-mono" title={repository.repo}>
+                  {repoDisplayName(repository.provider, repository.repo)}
+                </span>
                 <Badge variant="outline" className="text-[10px]">
                   {repository.authType ? authLabel(repository.authType) : 'Unbound'}
                 </Badge>
-                {repository.capabilities.repositoryWrite && (
+                {/* Capabilities are what the last verification proved; an
+                    invalidated binding no longer has them. */}
+                {repository.status === 'active' && repository.capabilities.repositoryWrite && (
                   <Badge variant="secondary" className="text-[10px]">
                     Write verified
                   </Badge>
@@ -278,10 +330,18 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
                       agent cannot create or modify files under .github/workflows/.
                     </span>
                   )}
-                {(repository.delegatedBy || repository.installationAccount || repository.actor) && (
-                  <span className="text-muted-foreground">
-                    {repository.delegatedBy || repository.installationAccount || repository.actor}
+                {repository.authType === 'codecommit-role' && repository.roleArn ? (
+                  <span className="w-full truncate pl-5 font-mono text-[11px] text-muted-foreground">
+                    {repository.roleArn}
                   </span>
+                ) : (
+                  (repository.delegatedBy ||
+                    repository.installationAccount ||
+                    repository.actor) && (
+                    <span className="text-muted-foreground">
+                      {repository.delegatedBy || repository.installationAccount || repository.actor}
+                    </span>
+                  )
                 )}
                 {repository.invalidReason && (
                   <span className="w-full pl-5 text-[11px] text-destructive">
@@ -299,9 +359,7 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
                   <ProviderBindingControl
                     key={provider}
                     provider={provider}
-                    authType={
-                      authTypes[provider] ?? (provider === 'github' ? 'github-app' : 'gitlab-oauth')
-                    }
+                    authType={authTypes[provider] ?? defaultAuthTypeFor(provider)}
                     confirmed={Boolean(confirmed[provider])}
                     disabled={saving}
                     onAuthTypeChange={(value) =>
@@ -310,6 +368,10 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
                     onConfirmedChange={(value) =>
                       setConfirmed((current) => ({ ...current, [provider]: value }))
                     }
+                    codecommitInitial={
+                      provider === 'codecommit' ? codecommitInitialFor(status) : undefined
+                    }
+                    onCodeCommitVerified={setCodecommit}
                   />
                 ))}
               </div>

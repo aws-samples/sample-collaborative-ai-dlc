@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   getGitProviderService,
+  gitProviderTerminology,
   type GitProvider,
   type GitProviderStatus,
 } from '../services/gitProvider';
@@ -18,7 +19,7 @@ export function useGitProviderStatus(provider: GitProvider | '') {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const label = provider === 'gitlab' ? 'GitLab' : 'GitHub';
+  const label = provider ? gitProviderTerminology(provider).label : 'Git';
 
   const refresh = useCallback(async () => {
     if (!provider) {

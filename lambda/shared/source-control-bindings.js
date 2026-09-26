@@ -7,15 +7,24 @@ import {
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 
+import { canonicalCodeCommitRepo } from './git-providers/codecommit-repo.js';
+
 const CREDENTIAL_REF_INDEX = 'CredentialRefIndex';
 const ACTIVE = 'active';
 const INVALID = 'invalid';
-const AUTH_TYPES = Object.freeze(['github-oauth', 'github-app', 'gitlab-oauth', 'bitbucket-oauth']);
+const AUTH_TYPES = Object.freeze([
+  'github-oauth',
+  'github-app',
+  'gitlab-oauth',
+  'bitbucket-oauth',
+  'codecommit-role',
+]);
 const AUTH_TYPE_PROVIDER = Object.freeze({
   'github-oauth': 'github',
   'github-app': 'github',
   'gitlab-oauth': 'gitlab',
   'bitbucket-oauth': 'bitbucket',
+  'codecommit-role': 'codecommit',
 });
 
 const tableName = () => process.env.SOURCE_CONTROL_BINDINGS_TABLE;
@@ -31,8 +40,17 @@ const trimSlashes = (value) => {
 };
 
 const canonicalRepo = (provider, value) => {
-  if (!['github', 'gitlab', 'bitbucket'].includes(provider)) {
+  if (!['github', 'gitlab', 'bitbucket', 'codecommit'].includes(provider)) {
     throw new Error(`Unsupported source-control provider: ${provider}`);
+  }
+  // CodeCommit has no owner/name pair: the identity is the repository ARN
+  // (partition, region, account, name) and names are case-sensitive.
+  if (provider === 'codecommit') {
+    try {
+      return canonicalCodeCommitRepo(value);
+    } catch {
+      throw new Error('Invalid codecommit repository reference');
+    }
   }
   const raw = trimSlashes(
     String(value || '')
@@ -54,6 +72,9 @@ const credentialBindingKeyFor = (projectId, provider, repo) =>
 
 const oauthCredentialRef = (provider, userId) => `oauth#${provider}#${userId}`;
 const appCredentialRef = (installationId) => `github-app#${installationId}`;
+// One ref per tenant role: invalidating the role (trust removed, role deleted)
+// fans out to every binding that depends on it, like an app installation.
+const roleCredentialRef = (roleArn) => `codecommit-role#${roleArn}`;
 
 const assertBinding = (binding) => {
   if (!binding?.projectId || !binding?.provider || !binding?.repo || !binding?.authType) {
@@ -222,6 +243,20 @@ const invalidateBindingsByCredentialRef = async (ddb, credentialRef, reason, opt
   return bindings.length;
 };
 
+// Persist the invalidation an error calls for. A refused CodeCommit role takes
+// down every binding that shares it (same credentialRef), across projects;
+// anything else only the binding that failed. Best-effort: callers are already
+// on an error path and rethrow the original error.
+const invalidateBindingsForError = async (ddb, binding, error, options = {}) => {
+  const reason = invalidationReasonForError(error);
+  if (!reason || !binding) return 0;
+  if (error?.code === 'ROLE_ASSUMPTION_DENIED' && binding.credentialRef) {
+    return invalidateBindingsByCredentialRef(ddb, binding.credentialRef, reason, options);
+  }
+  await markBindingInvalid(ddb, binding, reason, options);
+  return 1;
+};
+
 const invalidateProjectBindingsByDelegator = async (
   ddb,
   projectId,
@@ -253,12 +288,17 @@ const KNOWN_ERROR_CODES = Object.freeze([
   'DELEGATION_CONFIRMATION_REQUIRED',
   'EXECUTION_NOT_ACTIVE',
   'EXECUTION_NOT_FOUND',
+  'EXTERNAL_ID_NOT_OWNED',
   'INSUFFICIENT_REPOSITORY_ACCESS',
   'INVALID_REQUEST',
   'MISSING_SCOPES',
   'OPERATION_NOT_ALLOWED',
   'REPOSITORY_NOT_ON_EXECUTION',
   'REPOSITORY_NOT_ON_PROJECT',
+  'REPOSITORY_PATH_COLLISION',
+  'ROLE_ASSUMPTION_DENIED',
+  'ROLE_ASSUMPTION_FAILED',
+  'SESSION_POLICY_INVALID',
   'SOURCE_CONTROL_NOT_READY',
   'SOURCE_CONTROL_OPERATION_FAILED',
   'SOURCE_CONTROL_VERIFICATION_FAILED',
@@ -275,8 +315,21 @@ const loggableErrorCode = (error, fallback = 'UNKNOWN') => {
   return fallback;
 };
 
+// Which bindings an error invalidates, if any:
+//   - a provider denial scoped to one operation (a CodeCommit pull-request API
+//     the role does not grant) invalidates nothing: repository access may be
+//     intact, and the operation itself already failed;
+//   - STS refusing the tenant role (trust policy or external id changed, role
+//     deleted) invalidates every binding on that role: they share the
+//     credential, so none of them can work any more;
+//   - a transient STS failure or a session policy the platform built wrongly
+//     invalidates nothing: neither is the tenant's doing, and a retry (or a
+//     platform fix) recovers without a rebind.
 const invalidationReasonForError = (error) => {
   const code = error?.code;
+  if (error?.extra?.scope === 'operation') return null;
+  if (code === 'ROLE_ASSUMPTION_DENIED') return 'codecommit_role_denied';
+  if (code === 'ROLE_ASSUMPTION_FAILED' || code === 'SESSION_POLICY_INVALID') return null;
   if (code === 'CONNECTION_REQUIRED') return 'oauth_connection_unavailable';
   if (code === 'MISSING_SCOPES') return 'oauth_scopes_missing';
   if (code === 'CREDENTIAL_REFRESH_FAILED') return 'oauth_refresh_failed';
@@ -311,6 +364,15 @@ const sanitizeBinding = (binding, { privileged = false } = {}) => {
       out.installationId = binding.installationId || null;
       out.installationAccount = binding.installationAccount || null;
     }
+    if (binding.authType === 'codecommit-role') {
+      // Role ARN, external ID, account and region are identity, not secrets:
+      // the tenant wrote all of them into their own trust policy. Exposing
+      // the external ID lets the settings page re-render that policy.
+      out.roleArn = binding.roleArn || null;
+      out.externalId = binding.externalId || null;
+      out.roleAccountId = binding.roleAccountId || null;
+      out.region = binding.region || null;
+    }
     out.actor = binding.actorLogin || binding.actorName || null;
   }
   return out;
@@ -327,6 +389,7 @@ export {
   credentialBindingKeyFor,
   oauthCredentialRef,
   appCredentialRef,
+  roleCredentialRef,
   prepareBinding,
   getBinding,
   listProjectBindings,
@@ -336,6 +399,7 @@ export {
   deleteProjectBindings,
   markBindingInvalid,
   invalidateBindingsByCredentialRef,
+  invalidateBindingsForError,
   invalidateProjectBindingsByDelegator,
   invalidationReasonForError,
   loggableErrorCode,
@@ -347,12 +411,14 @@ export default {
   bindingKeyFor,
   oauthCredentialRef,
   appCredentialRef,
+  roleCredentialRef,
   prepareBinding,
   getBinding,
   listProjectBindings,
   replaceProjectBindings,
   deleteProjectBindings,
   invalidateBindingsByCredentialRef,
+  invalidateBindingsForError,
   invalidateProjectBindingsByDelegator,
   invalidationReasonForError,
   loggableErrorCode,

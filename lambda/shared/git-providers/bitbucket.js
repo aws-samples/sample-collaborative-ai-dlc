@@ -1021,9 +1021,21 @@ const mergeBranch = async (ctx, repoId, { base, head, message }) => {
 };
 
 const apiBase = API_BASE;
+// Declared contract gaps: Bitbucket Cloud is a code host only (no issues in
+// this integration) and declined PRs cannot be reopened via the API.
+const capabilities = Object.freeze({
+  issues: false,
+  draftPullRequests: true,
+  reopenPullRequest: false,
+  checkStatuses: true,
+  approvalRules: false,
+  events: 'webhook',
+});
+
 export {
   id,
   displayName,
+  capabilities,
   gitHost,
   apiBase,
   buildCloneUrl,
@@ -1057,6 +1069,7 @@ export {
 export default {
   id,
   displayName,
+  capabilities,
   gitHost,
   apiBase,
   buildCloneUrl,

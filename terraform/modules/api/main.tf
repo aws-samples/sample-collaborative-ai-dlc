@@ -188,6 +188,9 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.bitbucket_callback_get,
     aws_api_gateway_integration.bitbucket_repos_get,
     aws_api_gateway_integration.bitbucket_status_get,
+    aws_api_gateway_integration.codecommit_status_get,
+    aws_api_gateway_integration.codecommit_connect_info_get,
+    aws_api_gateway_integration.codecommit_repos_post,
     aws_api_gateway_integration.bitbucket_disconnect_delete,
     aws_api_gateway_integration.bitbucket_repos_branches_get,
     aws_api_gateway_integration.bitbucket_repos_tree_get,
@@ -217,6 +220,9 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_bitbucket_callback,
     module.cors_bitbucket_repos,
     module.cors_bitbucket_status,
+    module.cors_codecommit_status,
+    module.cors_codecommit_connect_info,
+    module.cors_codecommit_repos,
     module.cors_bitbucket_disconnect,
     module.cors_bitbucket_repos_branches,
     module.cors_bitbucket_repos_tree,
@@ -505,6 +511,13 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.bitbucket_repos_owner_repo.id,
       aws_api_gateway_resource.bitbucket_repos_pulls_comments.id,
       aws_api_gateway_method.bitbucket_callback_get.authorization,
+      # CodeCommit routes — same rationale: new resources must force a stage
+      # redeploy or the live stage 403s their preflight.
+      aws_api_gateway_resource.codecommit.id,
+      aws_api_gateway_resource.codecommit_status.id,
+      aws_api_gateway_resource.codecommit_connect_info.id,
+      aws_api_gateway_resource.codecommit_repos.id,
+      aws_api_gateway_method.codecommit_repos_post.http_method,
     ]))
   }
 }

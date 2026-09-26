@@ -120,6 +120,21 @@ describe('buildCodeItems', () => {
       'https://bitbucket.org/acme/api/src/unit/auth',
     );
   });
+
+  it('links a CodeCommit branch to its regional console page', () => {
+    const arn = 'arn:aws:codecommit:eu-west-2:123456789012:app';
+    const [cc] = buildCodeItems(
+      detailWith({
+        repos: [arn],
+        branch: 'aidlc/feat',
+        gitProvider: 'codecommit',
+        pushedRepos: [arn],
+      }),
+    );
+    expect(cc.branchUrl).toBe(
+      'https://eu-west-2.console.aws.amazon.com/codesuite/codecommit/repositories/app/browse/refs/heads/aidlc/feat/--/?region=eu-west-2',
+    );
+  });
 });
 
 describe('buildUnitBranchItems', () => {

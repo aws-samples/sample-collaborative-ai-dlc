@@ -248,6 +248,18 @@ variable "bitbucket_lambda_name" {
   default     = ""
 }
 
+variable "codecommit_lambda_invoke_arn" {
+  description = "Invoke ARN of the codecommit Lambda"
+  type        = string
+  default     = ""
+}
+
+variable "codecommit_lambda_name" {
+  description = "Name of the codecommit Lambda function"
+  type        = string
+  default     = ""
+}
+
 variable "source_control_lambda_name" {
   description = "Name of the project source-control Lambda"
   type        = string

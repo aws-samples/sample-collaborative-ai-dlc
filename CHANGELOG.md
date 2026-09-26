@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **AWS CodeCommit as a fourth code host.** Spaces connect a CodeCommit repository through an IAM role in the repository's account, trusted by the platform under a per-user external ID that the platform mints and resolves server-side and assumed per request with a session policy narrowed to the one repository (`GitPull` + read API; `GitPush` + pull request/merge/branch API for writes). No OAuth app and no secret: the connect flow renders the exact trust and least-privilege permissions policies, proves the role with a discover-only policy and lists the repositories it can see. Git authentication reuses the existing `GIT_ASKPASS` broker path (the CodeCommit HTTPS credential is a SigV4 signature, presented as a username/password pair), so nothing touches disk and no CLI is added to the agent image.
+- Every provider now declares its `capabilities` (issues, draft pull requests, reopen, check statuses, approval rules, event delivery) so the engine can branch before calling a method that would only throw. CodeCommit declares no drafts, no reopen (closed is terminal), no issues, approval rules instead of check statuses, and PR per unit (which relies on drafts) is refused for CodeCommit spaces; Bitbucket now declares `issues: false` and `reopenPullRequest: false` instead of surfacing them as runtime errors.
+- Repository ids may be CodeCommit ARNs: the engine checks them out under `codecommit/<partition>/<region>/<account>/<name>` and refuses a batch whose repositories would share a directory, the UI renders `name (region)` and links to the regional console.
+- Terraform: `codecommit` connector Lambda and routes, `sts:AssumeRole` on the broker / source-control / connector roles conditioned on an `aidlc:*` external ID, `codecommit_platform_principals` output; the connector reads and writes the caller's CodeCommit connection and the credential broker can query bindings by role (a refused role invalidates every binding on it); Admin → Source Control shows those principals.
+
+### Fixed
+
+- Project Settings no longer shows an invalidated source-control binding as "Write verified": the badge now requires an active binding, not just the capabilities of its last successful verification.
+
 ## [2.1.1] - 2026-09-15
 
 Hotfix for repository paths and workspace setup ([#467](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/467)).

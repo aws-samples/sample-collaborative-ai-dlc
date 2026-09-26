@@ -2,14 +2,14 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { STSClient } from '@aws-sdk/client-sts';
 import { executionMetaKey } from '../shared/v2-process-keys.js';
 import {
   ACTIVE,
   canonicalRepo,
   getBinding,
-  invalidationReasonForError,
+  invalidateBindingsForError,
   loggableErrorCode,
-  markBindingInvalid,
 } from '../shared/source-control-bindings.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
@@ -22,6 +22,7 @@ const logger = new Logger({ persistentKeys: { component: 'credential-broker' } }
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const sts = new STSClient({});
 
 const CREDENTIAL_ACTIVE_EXECUTION_STATUSES = new Set(['CREATED', 'RUNNING']);
 const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
@@ -60,7 +61,7 @@ const executionIncludesRepository = (meta, provider, repository) => {
 
 const authorizeCredentialRequest = async (
   { executionId, projectId, provider, repository, requiredAccess = 'write' },
-  { ddbClient = ddb, ssmClient = ssm, secretsClient = secrets } = {},
+  { ddbClient = ddb, ssmClient = ssm, secretsClient = secrets, stsClient = sts } = {},
 ) => {
   if (!executionId || !projectId || !provider || !repository) {
     throw Object.assign(
@@ -121,14 +122,13 @@ const authorizeCredentialRequest = async (
       ddb: ddbClient,
       ssm: ssmClient,
       secrets: secretsClient,
+      sts: stsClient,
       binding,
       requiredAccess,
+      executionId,
     });
   } catch (error) {
-    const invalidReason = invalidationReasonForError(error);
-    if (invalidReason) {
-      await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
-    }
+    await invalidateBindingsForError(ddbClient, binding, error).catch(() => {});
     throw error;
   }
 };
@@ -183,7 +183,9 @@ export const handler = async (event, context) => {
     return {
       ok: true,
       username: credential.username,
-      password: credential.token,
+      // Providers whose git password is not the API token (CodeCommit: a
+      // SigV4 signature) return it explicitly; the rest reuse the token.
+      password: credential.password ?? credential.token,
       committer: credential.committer,
     };
   } catch (error) {
