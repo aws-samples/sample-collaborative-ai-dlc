@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router';
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router';
 import { useProjectCache } from '@/hooks/useProjectsCache';
-import { intentsService } from '@/services/intents';
+import { intentsService, type CreateIntentInput, type Intent } from '@/services/intents';
+import { aidlcReleasesService, type AidlcRelease } from '@/services/aidlcReleases';
+import { ApiError } from '@/services/api';
 import { trackersService, type TrackerIssue } from '@/services/trackers';
 import type { TrackerBinding } from '@/services/projects';
 import { sourceControlService } from '@/services/sourceControl';
@@ -21,7 +23,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Info, Loader2, X } from 'lucide-react';
+
+// Non-admins receive the reduced release projection (no sourceSha), so the
+// label falls back to the raw release id rather than crashing.
+const releaseLabel = (release: AidlcRelease) =>
+  release.upstreamVersion || release.sourceSha?.slice(0, 7) || release.releaseId;
 
 // Step one of intent creation: capture the seed (title/prompt/tracker import/
 // base branch) and create the intent as a DRAFT immediately. Everything else —
@@ -30,8 +37,21 @@ import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Loader2, X } from 'l
 // lands on next (IntentComposePage), so teammates can join the draft live.
 export default function NewIntentPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { projectId } = useParams<{ projectId: string }>();
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
+
+  // Opt-in migration (issue #482): "?fromIntent=<id>" (or route state) seeds
+  // this page from an existing intent. Nothing is migrated — the source intent
+  // is untouched and the new one recomputes its plan on the chosen version.
+  const fromIntentId =
+    searchParams.get('fromIntent') ??
+    (location.state as { fromIntentId?: string } | null)?.fromIntentId ??
+    null;
+  const [sourceIntent, setSourceIntent] = useState<Intent | null>(null);
+  const [sourceIntentFailed, setSourceIntentFailed] = useState(false);
+  const [prefilled, setPrefilled] = useState(false);
 
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -56,6 +76,71 @@ export default function NewIntentPage() {
 
   const hasTrackers = (project?.trackers.length ?? 0) > 0;
   const repos = project?.repos ?? [];
+
+  // AI-DLC version: offerable releases + the stable
+  // channel's default. Hidden entirely (and the field omitted) when the
+  // registry is empty, unreachable, or selection is disabled — creation then
+  // keeps the legacy platform-baseline behaviour.
+  const [releases, setReleases] = useState<AidlcRelease[]>([]);
+  const [stableReleaseId, setStableReleaseId] = useState<string | null>(null);
+  const [selectedReleaseId, setSelectedReleaseId] = useState<string | null>(null);
+  const [pinningEnabled, setPinningEnabled] = useState(false);
+  const [releaseSelectionDisabled, setReleaseSelectionDisabled] = useState(false);
+  const [releasesSettled, setReleasesSettled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([aidlcReleasesService.list(), aidlcReleasesService.channels()])
+      .then(([{ releases: list }, channels]) => {
+        if (cancelled) return;
+        setReleases(list);
+        const enabled = channels.pinningEnabled === true;
+        setPinningEnabled(enabled);
+        const stable = enabled ? (channels.stable?.releaseId ?? null) : null;
+        const stableOffered = stable && list.some((r) => r.releaseId === stable) ? stable : null;
+        setStableReleaseId(stableOffered);
+        setSelectedReleaseId(stableOffered);
+      })
+      .catch(() => {
+        // Registry unreachable (or pre-#482 backend) — omit the field.
+      })
+      .finally(() => {
+        if (!cancelled) setReleasesSettled(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!projectId || !fromIntentId) return;
+    let cancelled = false;
+    intentsService
+      .get(projectId, fromIntentId)
+      .then((detail) => {
+        if (!cancelled) setSourceIntent(detail.intent);
+      })
+      .catch(() => {
+        if (!cancelled) setSourceIntentFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, fromIntentId]);
+
+  // Prefill once, after BOTH the source intent and the registry fetch settle,
+  // so the title suffix can name the preselected (stable) version when there
+  // is one. The user keeps full control afterwards — this never re-applies.
+  useEffect(() => {
+    if (!sourceIntent || !releasesSettled || prefilled) return;
+    const selected = releases.find((r) => r.releaseId === selectedReleaseId) ?? null;
+    const suffix = selected ? ` (AI-DLC ${releaseLabel(selected)})` : '';
+    setTitle(`${sourceIntent.title ?? ''}${suffix}`.trim());
+    setPrompt(sourceIntent.prompt ?? '');
+    setPrefilled(true);
+  }, [sourceIntent, releasesSettled, prefilled, releases, selectedReleaseId]);
+
+  const showReleaseSelector = pinningEnabled && releases.length > 0 && !releaseSelectionDisabled;
 
   // Lazily fetch each repo's branch list (+ its actual default branch) the
   // first time the base-branch picker is expanded — most intents never open
@@ -115,16 +200,19 @@ export default function NewIntentPage() {
     if ((!title.trim() && !prompt.trim()) || !projectId) return;
     setCreating(true);
     setError(null);
+    let releaseSelectionFallback = false;
     try {
       const baseBranches = Object.fromEntries(
         Object.entries(baseBranchSelections).filter(([, branch]) => branch),
       );
       // Scope is deliberately omitted — the server defaults it and the compose
       // page is where the projection is actually chosen (collaboratively).
-      const intent = await intentsService.create(projectId, {
+      const input: CreateIntentInput = {
         title: title.trim(),
         prompt: prompt.trim(),
         baseBranches: Object.keys(baseBranches).length ? baseBranches : undefined,
+        methodologyReleaseId:
+          showReleaseSelector && selectedReleaseId ? selectedReleaseId : undefined,
         source: source
           ? {
               bindingId: source.binding.id,
@@ -133,8 +221,33 @@ export default function NewIntentPage() {
               resourceUrl: source.issue.resourceUrl,
             }
           : undefined,
+      };
+      let intent;
+      try {
+        intent = await intentsService.create(projectId, input);
+      } catch (err) {
+        // The platform flag can flip between page load and submit: retry once
+        // without the pin (nothing was created — the 400 precedes the write)
+        // and hide the selector for the rest of the session.
+        if (
+          err instanceof ApiError &&
+          err.body?.code === 'release_selection_disabled' &&
+          input.methodologyReleaseId
+        ) {
+          releaseSelectionFallback = true;
+          setReleaseSelectionDisabled(true);
+          setSelectedReleaseId(null);
+          intent = await intentsService.create(projectId, {
+            ...input,
+            methodologyReleaseId: undefined,
+          });
+        } else {
+          throw err;
+        }
+      }
+      navigate(`/space/${projectId}/intent/${intent.id}/compose`, {
+        state: releaseSelectionFallback ? { releaseSelectionFallback: true } : null,
       });
-      navigate(`/space/${projectId}/intent/${intent.id}/compose`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create intent');
     } finally {
@@ -186,6 +299,38 @@ export default function NewIntentPage() {
             >
               <X className="h-3.5 w-3.5" />
             </Button>
+          </div>
+        )}
+        {releaseSelectionDisabled && (
+          <div
+            className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm"
+            role="status"
+          >
+            AI-DLC version selection was disabled while this page was open. This intent will use the
+            platform default.
+          </div>
+        )}
+
+        {sourceIntent && (
+          <div className="flex items-start gap-2 rounded-md border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              Started from{' '}
+              <span className="font-medium text-foreground">
+                {sourceIntent.title || sourceIntent.id}
+              </span>
+              {sourceIntent.methodologyRelease?.upstreamVersion
+                ? ` (AI-DLC ${sourceIntent.methodologyRelease.upstreamVersion})`
+                : ''}
+              . The original intent is unchanged and stays on its version; this new intent
+              recomputes its plan on the version you choose below.
+            </span>
+          </div>
+        )}
+        {sourceIntentFailed && (
+          <div className="flex items-start gap-2 rounded-md border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>Could not load the source intent — starting from a blank intent instead.</span>
           </div>
         )}
 
@@ -272,6 +417,38 @@ export default function NewIntentPage() {
                 className="mt-1.5 w-full rounded-md border bg-background px-3 py-2 text-sm"
               />
             </div>
+
+            {showReleaseSelector && (
+              <div>
+                <Label htmlFor="intent-methodology-release">AI-DLC version</Label>
+                <Select
+                  value={selectedReleaseId ?? '__default__'}
+                  onValueChange={(v) => setSelectedReleaseId(v === '__default__' ? null : v)}
+                >
+                  <SelectTrigger id="intent-methodology-release" className="mt-1.5">
+                    <SelectValue placeholder="Platform default" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {!stableReleaseId && (
+                      <SelectItem value="__default__">Platform default</SelectItem>
+                    )}
+                    {releases.map((release) => (
+                      <SelectItem key={release.releaseId} value={release.releaseId}>
+                        {releaseLabel(release)}
+                        {release.releaseId === stableReleaseId ? ' (stable, default)' : ''}
+                        {release.supportState === 'certified' &&
+                        release.releaseId !== stableReleaseId
+                          ? ' (certified)'
+                          : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  This intent stays on this version; it is never migrated automatically.
+                </p>
+              </div>
+            )}
 
             {repos.length > 0 && (
               <div className="border rounded-md">

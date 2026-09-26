@@ -261,6 +261,17 @@ describe('IntentComposePage', () => {
   it('previews a composed grid through validate-grid instead of the scope preview', async () => {
     draftState.composedGrid = { a: 'EXECUTE', b: 'SKIP' };
     draftState.scope = 'my-custom';
+    get.mockReset().mockResolvedValue(
+      draftIntent({
+        workflowId: 'aidlc-v2',
+        workflowVersion: 7,
+        methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 },
+      }),
+    );
+    useProjectCache.mockReturnValue({
+      project: baseProject({ workflowId: 'project-latest', workflowVersion: 9 }),
+      loading: false,
+    });
     validateGrid.mockResolvedValue(
       summaryPlan({
         executedStages: 2,
@@ -277,6 +288,31 @@ describe('IntentComposePage', () => {
       composedGrid: { a: 'EXECUTE', b: 'SKIP' },
       scope: 'my-custom',
     });
+    await waitFor(() =>
+      expect(
+        validateGrid.mock.calls.some(
+          ([, input]) => input.projectId === 'p1' && input.intentId === 'i1',
+        ),
+      ).toBe(true),
+    );
+    const authorizedGridCall = validateGrid.mock.calls.find(
+      ([, input]) => input.projectId === 'p1' && input.intentId === 'i1',
+    );
+    expect(authorizedGridCall?.[1]).toMatchObject({
+      composedGrid: { a: 'EXECUTE', b: 'SKIP' },
+      scope: 'my-custom',
+      version: 7,
+    });
+    expect(authorizedGridCall?.[1]).toMatchObject({ projectId: 'p1', intentId: 'i1' });
+    expect(authorizedGridCall).toMatchObject([
+      'aidlc-v2',
+      {
+        release: 'aidlc:demoted',
+        releaseImporterRevision: 1,
+        projectId: 'p1',
+        intentId: 'i1',
+      },
+    ]);
     expect(executionPreview).not.toHaveBeenCalled();
     const summary = await screen.findByTestId('scope-summary');
     expect(summary.textContent).toContain('Customized scope');
@@ -544,5 +580,107 @@ describe('IntentComposePage', () => {
     expect(errors.textContent).toContain('consumes');
     const startBtn = screen.getByTestId('start-intent');
     expect(startBtn).toBeDisabled();
+  });
+});
+
+// ── Release access is gated on selectability ──
+//
+// A release-pinned intent compiles its compose views from the pinned closure. If
+// that resolution fails (the release was demoted, or is no longer offered), the
+// page must say so rather than quietly rendering the LIVE methodology — a preview
+// of stages and scopes this intent will never execute.
+describe('IntentComposePage — a pinned release that no longer resolves', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(draftState)) delete draftState[k];
+    draftState.prompt = 'Build X';
+    draftState.scope = 'feature';
+    start.mockReset().mockResolvedValue({});
+    update.mockReset().mockResolvedValue({});
+    compose.mockReset().mockResolvedValue({ composeId: 'c1', state: 'PENDING', mode: 'front' });
+    listComposes.mockReset().mockResolvedValue({ composes: [] });
+    attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
+    getProjectCapabilities.mockReset().mockResolvedValue({ available: ['kiro'], runtimeClis: [] });
+    flushDraft.mockReset().mockResolvedValue(undefined);
+    reloadIntent.mockReset().mockResolvedValue(undefined);
+    getWorkflow.mockReset().mockResolvedValue({ phases: [] });
+    executionPreview.mockReset().mockRejectedValue(new Error('release not found'));
+    validateGrid.mockReset().mockRejectedValue(new Error('release not found'));
+    compiled.mockReset().mockRejectedValue(new Error('release not found'));
+    useProjectCache.mockReset();
+    useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
+    get
+      .mockReset()
+      .mockResolvedValue(draftIntent({ methodologyRelease: { releaseId: 'aidlc:demoted' } }));
+  });
+
+  it('shows the inline notice instead of falling back to the live workflow', async () => {
+    renderPage();
+
+    const notice = await screen.findByTestId('release-view-unavailable');
+    expect(notice.textContent).toContain('no longer offered');
+    expect(notice.textContent).toContain('still runs on its pinned version');
+    // The live-workflow read is the silent fallback that must NOT happen.
+    expect(getWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('uses the intent workflow id and version for compile and preview reads', async () => {
+    useProjectCache.mockReturnValue({
+      project: baseProject({ workflowId: 'project-latest', workflowVersion: 9 }),
+      loading: false,
+    });
+    get.mockReset().mockResolvedValue(
+      draftIntent({
+        workflowId: 'aidlc-v2',
+        workflowVersion: 7,
+        methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 },
+      }),
+    );
+    renderPage();
+
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', 7, 'aidlc:demoted', 1, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
+    );
+    await waitFor(() =>
+      expect(executionPreview).toHaveBeenCalledWith(
+        'aidlc-v2',
+        'feature',
+        7,
+        undefined,
+        'aidlc:demoted',
+        1,
+        { projectId: 'p1', intentId: 'i1' },
+      ),
+    );
+  });
+
+  it("passes the pin's own importer revision so an upgraded release still compiles this intent's closure", async () => {
+    get.mockResolvedValue(
+      draftIntent({
+        workflowVersion: 7,
+        methodologyRelease: { releaseId: 'aidlc:demoted', importerRevision: 1 },
+      }),
+    );
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', 7, 'aidlc:demoted', 1, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
+    );
+  });
+
+  it('does not show the notice for an unpinned intent whose compile fails', async () => {
+    get.mockResolvedValue(draftIntent());
+
+    renderPage();
+
+    // The unpinned failure keeps its existing generic error banner.
+    await screen.findByText('release not found');
+    expect(screen.queryByTestId('release-view-unavailable')).not.toBeInTheDocument();
   });
 });

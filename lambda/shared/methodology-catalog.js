@@ -102,6 +102,38 @@ const bodyToString = async (body) => {
   return Buffer.concat(chunks).toString('utf8');
 };
 
+// A DECLARED ContentLength is advice, not a bound: S3 omits it for a chunked or
+// re-encoded response, and a hostile writer can understate it. This reader is the
+// only bound that actually holds — it counts the bytes it has accepted and calls
+// `onExceeded` the moment the running total passes `maxBytes`, so an oversized
+// object never finishes landing on the heap.
+const bodyToStringWithin = async (body, maxBytes, onExceeded) => {
+  const check = (bytes) => {
+    if (bytes > maxBytes) onExceeded(bytes);
+    return bytes;
+  };
+  if (!body) return '';
+  if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
+    check(body.byteLength);
+    return Buffer.from(body).toString('utf8');
+  }
+  if (typeof body[Symbol.asyncIterator] === 'function') {
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of body) {
+      const buffer = Buffer.from(chunk);
+      total = check(total + buffer.byteLength);
+      chunks.push(buffer);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  }
+  // A non-streaming body (the SDK's transformToString shim) is already resident,
+  // so the cap can only be enforced after the fact — still fail, never truncate.
+  const text = await bodyToString(body);
+  check(Buffer.byteLength(text, 'utf8'));
+  return text;
+};
+
 const isNotFound = (error) =>
   error?.name === 'NoSuchKey' ||
   error?.name === 'NotFound' ||
@@ -227,8 +259,12 @@ const executionPlanFromMethodologyCatalog = ({
 
 export {
   METHODOLOGY_CATALOG_SCHEMA_VERSION,
+  bodyToString,
+  bodyToStringWithin,
   buildMethodologyCatalog,
   executionPlanFromMethodologyCatalog,
+  isNotFound,
+  isPreconditionFailed,
   loadOrCreateMethodologyCatalog,
   methodologyCatalogKey,
   readMethodologyCatalog,

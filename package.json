@@ -42,6 +42,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
+    "test:aidlc-compatibility": "vitest run --config vitest.aidlc-compatibility.config.js",
+    "aidlc:compatibility:snapshot": "node scripts/snapshot-aidlc-compatibility.mjs",
     "dev:agent-output": "npm --prefix frontend run dev:agent-output",
     "test:coverage": "vitest run --coverage",
     "lint": "oxlint",

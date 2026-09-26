@@ -148,6 +148,45 @@ describe('IntentContext', () => {
     );
   });
 
+  it('compiles the workflow with the intent release pin', async () => {
+    get.mockResolvedValue(
+      detail({
+        workflowVersion: 7,
+        currentPhase: 'ideation',
+        methodologyRelease: {
+          releaseId: 'aidlc:release-a',
+          sourceSha: 'a'.repeat(40),
+          closureDigest: 'd'.repeat(64),
+          importerRevision: 3,
+        },
+      }),
+    );
+    compiled.mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'ideation',
+          name: 'Pinned Ideation',
+          kind: 'phase',
+          path: 'release-02',
+          parentPath: null,
+          order: 1,
+        },
+      ],
+      graph: { nodes: [], edges: [] },
+    });
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('wf', 7, 'aidlc:release-a', 3, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('release-02'));
+    expect(workflowGet).not.toHaveBeenCalled();
+  });
+
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {
     get.mockResolvedValue(detail());
     renderProvider();

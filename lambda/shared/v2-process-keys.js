@@ -316,6 +316,8 @@ const buildExecutionMeta = ({
   // Exact supporting block versions resolved when the intent was created.
   // Stage versions remain pinned by workflow placements.
   methodologyPins = null,
+  // Immutable AI-DLC release closure pinned for the intent's lifetime.
+  methodologyRelease = null,
   scope = null,
   currentPhase = null,
   currentStage = null,
@@ -465,6 +467,7 @@ const buildExecutionMeta = ({
   workflowVersion,
   aidlcRepoRef,
   methodologyPins,
+  ...(methodologyRelease ? { methodologyRelease } : {}),
   scope,
   currentPhase,
   currentStage,

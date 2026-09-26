@@ -229,11 +229,21 @@ const resolveStage = ({
 
 // Concatenate the methodology knowledge bodies for an agent (best-effort). This
 // is the authored, baseline-shipped tier (KNOWLEDGE blocks from the library).
-const loadMethodologyKnowledge = async ({ agentRef, library, loadBlockBody }) => {
+const loadMethodologyKnowledge = async ({
+  agentRef,
+  library,
+  loadBlockBody,
+  failOnLoadError = false,
+}) => {
   const knowledgeBlocks = Object.values(library.knowledgeById ?? {}).filter(
     (k) => k.agentRef === agentRef || k.agentRef === 'shared',
   );
-  const bodies = await Promise.all(knowledgeBlocks.map((k) => loadBlockBody(k).catch(() => '')));
+  const bodies = await Promise.all(
+    knowledgeBlocks.map((block) => {
+      const result = loadBlockBody(block);
+      return failOnLoadError ? result : result.catch(() => '');
+    }),
+  );
   return bodies.filter(Boolean).join('\n\n---\n\n');
 };
 
@@ -957,6 +967,9 @@ export const runStage = async (
     workflowVersion,
     aidlcRepoRef = null,
     methodologyPins = null,
+    // Immutable release closure pinned on the intent META row. When present,
+    // the runtime resolves all methodology content from that verified closure.
+    methodologyRelease = null,
     scope,
     // Per-run skip overlay (shared/stage-skip.js): intent-level deselections +
     // accumulated gate-time skips, forwarded by the orchestrator on EVERY
@@ -1029,7 +1042,7 @@ export const runStage = async (
   },
   deps,
 ) => {
-  const {
+  let {
     store,
     loadLibrary,
     loadBlockBody,
@@ -1086,6 +1099,18 @@ export const runStage = async (
     resolveMcpSecrets = defaultResolveMcpSecrets,
     verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
   } = deps;
+
+  const releaseOptions = methodologyRelease ? { methodologyRelease } : undefined;
+  if (methodologyRelease) {
+    const readBlockBody = loadBlockBody;
+    const readBlockScript = loadBlockScript;
+    loadBlockBody = (block) => readBlockBody(block, releaseOptions);
+    loadBlockScript = (block) => readBlockScript(block, releaseOptions);
+  }
+  const loadOptionalBody = (block) => {
+    const result = loadBlockBody(block);
+    return methodologyRelease ? result : result.catch(() => '');
+  };
 
   const now = () => clock();
   const reviewFeedbackPrompt =
@@ -1208,7 +1233,13 @@ export const runStage = async (
   // agentRef, merge, then resolve against the enriched library.
   let loaded;
   try {
-    loaded = await loadLibrary({ workflowId, workflowVersion, methodologyPins, aidlcRepoRef });
+    loaded = await loadLibrary({
+      workflowId,
+      workflowVersion,
+      methodologyPins,
+      aidlcRepoRef,
+      ...(methodologyRelease ? { methodologyRelease } : {}),
+    });
   } catch (error) {
     return fail(null, 'methodology_snapshot_unavailable', error.message);
   }
@@ -1856,9 +1887,11 @@ export const runStage = async (
   } else {
     const stageBlock = library.stagesById[stageId] ?? {};
     const [stageBody, agentPersona, conductor] = await Promise.all([
-      loadBlockBody(stageBlock).catch(() => ''),
-      agentBlock ? loadBlockBody(agentBlock).catch(() => '') : Promise.resolve(''),
-      loadConductor(aidlcRepoRef || env.AIDLC_REPO_REF).catch(() => ''),
+      loadOptionalBody(stageBlock),
+      agentBlock ? loadOptionalBody(agentBlock) : Promise.resolve(''),
+      methodologyRelease
+        ? loadConductor(aidlcRepoRef || env.AIDLC_REPO_REF, releaseOptions)
+        : loadConductor(aidlcRepoRef || env.AIDLC_REPO_REF).catch(() => ''),
     ]);
     // Knowledge has two tiers: the authored methodology (library blocks) and the
     // project's accrued team knowledge (already read from Neptune above). Both are
@@ -1867,7 +1900,8 @@ export const runStage = async (
     const methodology = await loadMethodologyKnowledge({
       agentRef: stage.agentRef,
       library,
-      loadBlockBody,
+      loadBlockBody: loadOptionalBody,
+      failOnLoadError: Boolean(methodologyRelease),
     });
     const knowledge = composeKnowledge(methodology, memory.teamKnowledge);
 
@@ -1881,7 +1915,7 @@ export const runStage = async (
         const body =
           typeof ruleBlock.body === 'string' && ruleBlock.body
             ? ruleBlock.body
-            : await loadBlockBody(ruleBlock).catch(() => '');
+            : await loadOptionalBody(ruleBlock);
         return [id, body];
       }),
     );
@@ -2608,7 +2642,7 @@ export const runStage = async (
       return fail(stageInstanceId, 'reviewer_not_found', reviewerAgent);
     }
     const [reviewerPersona, reviewerMethodology] = await Promise.all([
-      loadBlockBody(reviewerBlock).catch(() => ''),
+      loadOptionalBody(reviewerBlock),
       loadMethodologyKnowledge({
         agentRef: reviewerAgent,
         library,

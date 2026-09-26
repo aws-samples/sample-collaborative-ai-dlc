@@ -33,6 +33,17 @@ const annexPath = path.join(
 );
 export const MCP_EXECUTION_ANNEX = readFileSync(annexPath, 'utf8').trimEnd();
 
+// Upstream bodies in newer release closures use `{{INVOKE}}` to refer to their
+// build-time engine command. This runtime does not ship that engine, so replace
+// the token in prompts and append the supported command dialect only when an
+// instructive prompt part contains it.
+const invokeAnnexPath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'prompts',
+  'invoke-dialect-annex.md',
+);
+export const INVOKE_DIALECT_ANNEX = readFileSync(invokeAnnexPath, 'utf8').trimEnd();
+
 // Upstream bodies carry a literal `{{HARNESS_DIR}}` token (substituted only at
 // upstream's own dist build, which we bypass by fetching core/ raw). We neutralize
 // it at the PROMPT layer — the seeded block body stays verbatim — so the agent
@@ -40,6 +51,13 @@ export const MCP_EXECUTION_ANNEX = readFileSync(annexPath, 'utf8').trimEnd();
 const HARNESS_DIR_TOKEN = /\{\{HARNESS_DIR\}\}/g;
 export const neutralizeHarnessDir = (text = '') =>
   text.replace(HARNESS_DIR_TOKEN, '<runtime-managed>');
+
+const INVOKE_TOKEN = /\{\{INVOKE\}\}/g;
+export const neutralizeInvoke = (text = '') =>
+  text.replace(INVOKE_TOKEN, '<runtime-managed-engine>');
+export const hasInvokeToken = (...parts) =>
+  parts.some((part) => typeof part === 'string' && part.includes('{{INVOKE}}'));
+const neutralizeTokens = (text = '') => neutralizeInvoke(neutralizeHarnessDir(text));
 
 // The strict output contract — a short tail reminder of the load-bearing tool
 // calls. The annex (injected first) owns the full "MCP is your only I/O" framing;
@@ -179,10 +197,9 @@ export const buildStagePrompt = ({
   // The annex already declared it authoritative for WORK QUALITY (not mechanics);
   // injecting the real file means the agent reads upstream's actual craft notes,
   // not a hand-distilled paraphrase. Neutralized for the {{HARNESS_DIR}} token.
-  if (conductor)
-    sections.push('', '## Execution quality (conductor)', neutralizeHarnessDir(conductor));
-  if (agentPersona) sections.push('', '## Your role', neutralizeHarnessDir(agentPersona));
-  if (compiledContext) sections.push('', neutralizeHarnessDir(compiledContext));
+  if (conductor) sections.push('', '## Execution quality (conductor)', neutralizeTokens(conductor));
+  if (agentPersona) sections.push('', '## Your role', neutralizeTokens(agentPersona));
+  if (compiledContext) sections.push('', neutralizeTokens(compiledContext));
   const attachmentManifest = attachmentPromptManifest(attachments);
   if (attachmentManifest) sections.push('', attachmentManifest);
   // Unit lane: the fan-out scoping must precede the stage prose (which is
@@ -194,7 +211,7 @@ export const buildStagePrompt = ({
   sections.push(
     '',
     '## Stage instructions',
-    neutralizeHarnessDir(stageBody) || '(no stage body supplied)',
+    neutralizeTokens(stageBody) || '(no stage body supplied)',
   );
   sections.push('', '## Inputs (read via the MCP tools)', renderInputs(stage.inputArtifacts));
   sections.push(
@@ -210,7 +227,7 @@ export const buildStagePrompt = ({
     (stage.outputArtifacts ?? []).map((o) => o.artifact ?? o).filter(Boolean),
   );
   if (structureContracts) sections.push('', structureContracts);
-  if (knowledge) sections.push('', '## Reference knowledge', neutralizeHarnessDir(knowledge));
+  if (knowledge) sections.push('', '## Reference knowledge', neutralizeTokens(knowledge));
   if (stage.humanValidation === 'required') {
     sections.push(
       '',
@@ -221,6 +238,9 @@ export const buildStagePrompt = ({
     );
   }
   sections.push('', OUTPUT_CONTRACT);
+  if (hasInvokeToken(stageBody, conductor)) {
+    sections.push('', INVOKE_DIALECT_ANNEX);
+  }
   return sections.join('\n');
 };
 

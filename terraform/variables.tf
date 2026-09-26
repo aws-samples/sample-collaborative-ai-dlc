@@ -62,6 +62,17 @@ variable "aidlc_repo_ref" {
   default     = "83ed7a812c4024904f2c5e4d744e28077e0a5acd"
 }
 
+variable "aidlc_release_pinning" {
+  description = "Pin new intents to the immutable AI-DLC release published for the resolved ref (issue #482). \"on\" or \"off\"; existing intents are unaffected either way."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["on", "off"], var.aidlc_release_pinning)
+    error_message = "aidlc_release_pinning must be \"on\" or \"off\"."
+  }
+}
+
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)

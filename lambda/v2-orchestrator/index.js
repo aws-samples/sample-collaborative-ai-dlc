@@ -26,6 +26,7 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
+import { S3Client } from '@aws-sdk/client-s3';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
@@ -60,6 +61,7 @@ import { buildIntentAttribution } from './pr-attribution.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
+const s3 = new S3Client({});
 const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
@@ -68,6 +70,7 @@ const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
+const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
 const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
 const APPLICATION_URL = () => process.env.APPLICATION_URL;
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
@@ -172,6 +175,11 @@ const defaultSourceControlOperation = async ({
 
 const repoProvider = (meta, repoId) =>
   sharedRepoProvider(repoId, meta.gitProvider, meta.repoProviders);
+
+const releasePlanOptions = (meta) =>
+  meta?.methodologyRelease
+    ? { methodologyRelease: meta.methodologyRelease, s3, bucket: ARTIFACTS_BUCKET() }
+    : {};
 
 // Map a timeline event type to the live broadcast payload the UI routes on
 // (useIntentEvents → refetch on agent.workspace / agent.execution). The
@@ -610,6 +618,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         ...(intentSkipIds.length ? { skipStageIds: intentSkipIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
         ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+        ...releasePlanOptions(meta),
       }),
     );
     if (!planResult.valid || !planResult.plan) {
@@ -810,6 +819,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         workflowVersion,
         ...(meta.aidlcRepoRef ? { aidlcRepoRef: meta.aidlcRepoRef } : {}),
         ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+        ...(meta.methodologyRelease ? { methodologyRelease: meta.methodologyRelease } : {}),
         scope,
         ...(allSkipIds.length ? { skipStageIds: allSkipIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
@@ -1677,6 +1687,7 @@ const runStage = async (
     workflowVersion,
     aidlcRepoRef = null,
     methodologyPins = null,
+    methodologyRelease = null,
     scope,
     // Per-run skip overlay (intent-level + accumulated gate-time skips) —
     // forwarded so the container's plan resolution matches the walk's.
@@ -1747,6 +1758,7 @@ const runStage = async (
         workflowVersion,
         ...(aidlcRepoRef ? { aidlcRepoRef } : {}),
         ...(methodologyPins ? { methodologyPins } : {}),
+        ...(methodologyRelease ? { methodologyRelease } : {}),
         scope,
         ...(skipStageIds?.length ? { skipStageIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),

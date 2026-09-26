@@ -89,6 +89,12 @@ variable "aidlc_repo_ref" {
   type        = string
 }
 
+variable "aidlc_release_pinning" {
+  description = "Whether new intents are pinned to a published immutable AI-DLC release (\"on\"/\"off\")"
+  type        = string
+  default     = "off"
+}
+
 variable "github_oauth_secret_name" {
   description = "Secrets Manager secret name for GitHub OAuth credentials"
   type        = string

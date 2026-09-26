@@ -750,11 +750,14 @@ resource "aws_iam_role_policy" "neptune_tasks" {
 }
 
 # -----------------------------------------------------------------------------
-# Role 7: blocks (2 Lambdas — building-blocks CRUD + seed-blocks)
+# Role 7: blocks (building-blocks CRUD + workflows; seed-blocks uses Role 7b)
 # DynamoDB RW on the blocks table + its GSI1, plus S3 RW scoped to the blocks/
 # prefix (content-addressed block bodies/scripts), the aidlc-runtime/ prefix
 # (the seed job's commit-pinned internal runtime snapshot), and aidlc-catalogs/
-# (structured methodology snapshots used by historical exports). No Neptune;
+# (structured methodology snapshots used by historical exports). It also gets
+# READ-ONLY access to aidlc-releases/ so the workflows Lambda can register a
+# published release in the selection registry; only Role 7b may write there.
+# No Neptune;
 # seed-blocks optionally uses VPC NAT egress to download the pinned workflow
 # source from codeload.github.com.
 # -----------------------------------------------------------------------------
@@ -794,6 +797,8 @@ resource "aws_iam_role_policy" "blocks" {
           "dynamodb:Scan",
           "dynamodb:BatchGetItem",
           "dynamodb:BatchWriteItem",
+          "dynamodb:TransactWriteItems",
+          "dynamodb:ConditionCheckItem",
         ]
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
@@ -804,6 +809,83 @@ resource "aws_iam_role_policy" "blocks" {
           "${var.artifacts_bucket_arn}/blocks/*",
           "${var.artifacts_bucket_arn}/aidlc-runtime/*",
           "${var.artifacts_bucket_arn}/aidlc-catalogs/*",
+        ]
+      },
+      {
+        # Issue #482 Phase 4: the workflows Lambda reads a published release
+        # manifest to register it in the selection registry. READ ONLY, and
+        # deliberately a separate statement from the RW grant above so this role
+        # can never gain PutObject under aidlc-releases/ — only the seed-blocks
+        # role (Role 7b) may publish immutable release bytes.
+        #
+        # No s3:ListBucket is granted: without it S3 answers a GET for an absent
+        # key with 403 AccessDenied instead of 404 NoSuchKey, and the "is this
+        # profile published yet?" probe handles that in code
+        # (release-registry.js probePublishedManifest treats a masked 403 as "not
+        # published"). A prefix-conditioned ListBucket would NOT change the GET
+        # response anyway — s3:prefix is not part of the GetObject authorization
+        # context — so granting it would widen the role for no effect.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["${var.artifacts_bucket_arn}/aidlc-releases/*"]
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Role 7b: seed-blocks (admin one-shot only)
+# Same blocks-table and legacy S3 access as Role 7 (the SYSTEM seed/reseed
+# modes are unchanged), plus write access to aidlc-releases/: immutable,
+# commit-pinned AI-DLC release bundles. Kept separate from Role 7 so the
+# user-facing building-blocks and workflows Lambdas cannot write releases.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "seed_blocks" {
+  name               = "${var.project_name}-seed-blocks-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "seed_blocks_basic" {
+  role       = aws_iam_role.seed_blocks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "seed_blocks_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.seed_blocks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "seed_blocks" {
+  name = "seed-blocks-table-and-bucket"
+  role = aws_iam_role.seed_blocks.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          # Scan: the reseed mode scans for SYSTEM-owned partitions to clear.
+          "dynamodb:Scan",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+        ]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${var.artifacts_bucket_arn}/blocks/*",
+          "${var.artifacts_bucket_arn}/aidlc-runtime/*",
+          "${var.artifacts_bucket_arn}/aidlc-catalogs/*",
+          "${var.artifacts_bucket_arn}/aidlc-releases/*",
         ]
       }
     ]
@@ -2197,7 +2279,8 @@ module "building_blocks_lambda" {
 # Seed-blocks Lambda (admin one-shot, invoked directly via CLI). Writes the
 # SYSTEM baseline library blocks into the blocks table + artifacts bucket.
 # Idempotent (attribute_not_exists guard); supports {dryRun:true}. Mirrors the
-# migrate-tracker-fields operational-job pattern. Reuses the blocks IAM role.
+# migrate-tracker-fields operational-job pattern. Uses its own seed_blocks IAM
+# role (Role 7b) so only this admin job can publish immutable AI-DLC releases.
 # Stays deployed permanently — OSS forks are on their own upgrade timelines.
 module "seed_blocks_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -2220,7 +2303,7 @@ module "seed_blocks_lambda" {
   ]
 
   create_role = false
-  lambda_role = aws_iam_role.blocks.arn
+  lambda_role = aws_iam_role.seed_blocks.arn
 
   vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
@@ -2239,7 +2322,8 @@ module "seed_blocks_lambda" {
 # Workflows Lambda — composition over the block library: a workflow references
 # and arranges library blocks (grouping tree + skill placements + scope/
 # guardrail refs). Workflows share the blocks table (WF#… partitions) and the
-# blocks IAM role; no S3 (workflows carry no bodies), so no VPC config.
+# blocks IAM role. It carries no block bodies, so no VPC config; its only S3
+# access is a read of a published release manifest (issue #482 Phase 4).
 module "workflows_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -2259,6 +2343,8 @@ module "workflows_lambda" {
     }
   ]
 
+  hash_extra = local.shared_sources_hash
+
   create_role = false
   lambda_role = aws_iam_role.blocks.arn
 
@@ -2269,6 +2355,16 @@ module "workflows_lambda" {
     BLOCKS_TABLE                = var.blocks_table_name
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
+    # Existing-intent release reads ask the intents Lambda to authorize the
+    # project member and return that intent's stored immutable pin.
+    INTENTS_FUNCTION = module.intents_lambda.lambda_function_name
+    # Issue #482 Phase 4: read a published release manifest when registering it
+    # in the selection registry. Read-only — the role cannot write releases.
+    ARTIFACTS_BUCKET = var.artifacts_bucket_name
+    # Reported as `pinningEnabled` on GET /aidlc-release-channels so the admin UI
+    # can say whether the pointers are actually consulted. Same variable the
+    # intents Lambda gates on; this Lambda never gates on it.
+    AIDLC_RELEASE_PINNING = var.aidlc_release_pinning
   }
 }
 
@@ -2466,6 +2562,13 @@ resource "aws_iam_role_policy" "intents" {
         Resource = "${var.artifacts_bucket_arn}/aidlc-catalogs/*"
       },
       {
+        # Read-only: resolve intents pinned to an immutable AI-DLC release.
+        # Only the seed-blocks role may publish under this prefix.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${var.artifacts_bucket_arn}/aidlc-releases/*"
+      },
+      {
         # Allow cache-prefix listing where S3 evaluates it; cache readers also
         # tolerate GetObject masking a missing key as 403.
         Effect   = "Allow"
@@ -2590,6 +2693,8 @@ module "intents_lambda" {
     # Default upstream ref for legacy intents created before the ref was
     # persisted. Native distributions are fetched and cached on export.
     AIDLC_REPO_REF = var.aidlc_repo_ref
+    # Issue #482: pin new intents to their published immutable release.
+    AIDLC_RELEASE_PINNING = var.aidlc_release_pinning
     # Server-origin realtime reload hints (artifact edited/verified, quorum
     # edit lifecycle) on the intent channel — lambda/shared/ws-fanout.js.
     CONNECTIONS_TABLE  = var.connections_table_name
@@ -2599,6 +2704,24 @@ module "intents_lambda" {
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
   }
+}
+
+# Workflows is intentionally outside the VPC, so it cannot query Neptune to
+# authorize a project-scoped existing-intent preview itself. The read-only
+# preview path invokes the intents Lambda's existing detail handler, which
+# performs the project-membership and intent/project checks before returning the
+# stored release pin. Keep this to the one fixed target function.
+resource "aws_iam_role_policy" "workflows_intent_lookup" {
+  name = "workflows-intent-lookup"
+  role = aws_iam_role.blocks.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = module.intents_lambda.lambda_function_arn
+    }]
+  })
 }
 
 resource "aws_cloudwatch_event_rule" "intents_durable_watchdog" {
@@ -2763,6 +2886,14 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
+        # Release-pinned intents (issue #482): read the intent's immutable AI-DLC
+        # release manifest + catalog so the plan resolves from the published
+        # closure instead of the reseedable SYSTEM rows. Read-only, releases only.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["${var.artifacts_bucket_arn}/aidlc-releases/*"]
+      },
+      {
         # Delegate provider API operations to the source-control service.
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
@@ -2824,6 +2955,7 @@ module "v2_orchestrator_lambda" {
     APPLICATION_URL                     = var.application_url
     V2_PROCESS_TABLE                    = var.v2_executions_table_name
     BLOCKS_TABLE                        = var.blocks_table_name
+    ARTIFACTS_BUCKET                    = var.artifacts_bucket_name
     AGENTCORE_RUNTIME_ARN               = var.agentcore_runtime_arn
     SOURCE_CONTROL_FUNCTION             = module.source_control_lambda.lambda_function_name
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
