@@ -1943,6 +1943,21 @@ describe('PR per unit delivery', () => {
         };
       },
     });
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.reviewFeedback) {
+        return {
+          ok: true,
+          state: 'SUCCEEDED',
+          changedFileProvenance: {
+            state: 'unknown',
+            reason: 'git_status_failed',
+            detail: 'status unavailable',
+          },
+        };
+      }
+      return { ok: true, state: 'SUCCEEDED' };
+    });
     const batch = {
       batchId: 'batch-1',
       state: 'QUEUED',
@@ -1982,6 +1997,14 @@ describe('PR per unit delivery', () => {
         batchId: 'batch-1',
         state: 'SUCCEEDED',
         fromStates: ['RUNNING'],
+        fields: expect.objectContaining({
+          changedFileProvenance: {
+            state: 'unknown',
+            reason: 'git_status_failed',
+            detail: 'status unavailable',
+          },
+          changedFiles: null,
+        }),
       }),
     );
     const revision = stageStarts().find((payload) =>
@@ -2006,6 +2029,9 @@ describe('PR per unit delivery', () => {
     expect(deps.unitPrProvider.addComment).toHaveBeenCalledOnce();
     expect(deps.unitPrProvider.addComment.mock.calls[0][0].body).toContain(
       'AI-DLC feedback batch: batch-1',
+    );
+    expect(deps.unitPrProvider.addComment.mock.calls[0][0].body).toContain(
+      'Changed files: unknown (git_status_failed)',
     );
     expect(metrics).toContainEqual({ feedbackCycles: 1 });
   });
