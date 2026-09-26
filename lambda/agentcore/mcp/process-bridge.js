@@ -17,6 +17,7 @@
 // including the blocking poll — with no AWS and no real timers.
 
 import { randomUUID, createHash } from 'node:crypto';
+import { LOOP_BACK_RECOMMENDED_EVENT } from '../../shared/stage-loopback.js';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
 
 const DEFAULT_POLL_MS = 3000;
@@ -667,7 +668,17 @@ export const createProcessBridge = ({
   };
 
   // Append a process/audit note and broadcast it live (progress feed).
-  const emitStageNote = async ({ summary, type = 'v2.stage.note' }) => {
+  //
+  // `loopBackRecommended` is the ONE structured field on this tool:
+  // a build-and-test agent that finds a code defect it must not fix itself says
+  // so here, and the platform — not a prose convention — turns that into a typed
+  // `v2.loopback.recommended` event the orchestrator's gate reads. The attempt is
+  // stamped from the trusted container scope so the recommendation is
+  // attempt-scoped like every receipt in this phase: a rewind bumps the attempt
+  // and the recommendation stops applying without anything being deleted.
+  // Honoured only in release mode; an unpinned run records the plain note, which
+  // is what keeps its timeline byte-identical.
+  const emitStageNote = async ({ summary, type = 'v2.stage.note', loopBackRecommended = null }) => {
     const row = await store.appendEvent({
       executionId,
       type,
@@ -677,6 +688,24 @@ export const createProcessBridge = ({
       actor: stageInstanceId ?? 'agent',
       summary,
     });
+    const reason = policy ? String(loopBackRecommended ?? '').trim() : '';
+    if (reason) {
+      await store
+        .appendEvent({
+          executionId,
+          type: LOOP_BACK_RECOMMENDED_EVENT,
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: stageInstanceId ?? 'agent',
+          summary: `Agent recommends looping back to code generation: ${reason.slice(0, 300)}`,
+          detail: { attempt, reason: reason.slice(0, 300) },
+        })
+        .catch(() => {
+          /* the recommendation is advisory: a lost write withholds the OFFER, it
+             never fails the tool call or the stage */
+        });
+    }
     await broadcast({
       action: 'agent.note',
       executionId,
@@ -687,8 +716,9 @@ export const createProcessBridge = ({
       eventId: row.eventId,
       noteType: type,
       summary,
+      ...(reason ? { loopBackRecommended: true } : {}),
     });
-    return { eventId: row.eventId };
+    return { eventId: row.eventId, ...(reason ? { loopBackRecommended: true } : {}) };
   };
 
   const submitReview = async ({ reviewer, verdict, findings = '', round = 0 }) => {

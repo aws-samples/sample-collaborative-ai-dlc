@@ -752,6 +752,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     findings,
     detail,
     learningsRitual,
+    loopBackTarget,
+    loopBackStages,
     humanTaskId,
   }) => {
     const id = humanTaskId ?? nextId();
@@ -771,6 +773,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       findings,
       detail,
       learningsRitual,
+      loopBackTarget,
+      loopBackStages,
       now: now(),
     });
     await ddb.send(
@@ -1181,13 +1185,23 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     executionId,
     stageInstanceId,
     preservePendingCodeCommitRefs = false,
+    loopBackId = null,
   }) => {
-    const existing = await getStage(executionId, stageInstanceId);
+    const existing = await getStage(executionId, stageInstanceId, {
+      consistentRead: Boolean(loopBackId),
+    });
     if (!existing) return null;
+    if (loopBackId) {
+      const meta = await getExecution(executionId, { consistentRead: true });
+      if (meta?.loopBackIds?.includes(loopBackId)) {
+        return { ...existing, loopBackCount: Number(meta.loopBackCount ?? 0) };
+      }
+    }
     // A previous rewind attempt may have reset this row before its caller
     // timed out. Treat a clean PENDING row as already reset so replay does not
     // inflate the attempt counter or duplicate reset events.
     if (
+      !loopBackId &&
       existing.state === 'PENDING' &&
       existing.startedAt == null &&
       existing.cliSessionId == null &&
@@ -1215,23 +1229,74 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         id: stageInstanceId,
       }).GSI2SK,
     };
-    const { Attributes } = await ddb.send(
-      new UpdateCommand({
-        TableName: table(),
-        Key: stageKey(executionId, stageInstanceId),
-        UpdateExpression:
-          'SET #state = :state, attempt = :attempt, cli = :null, cliSessionId = :null, ' +
-          'runtimeError = :null, startedAt = :null, completedAt = :null, ' +
-          'parkedAt = :null, pendingHumanTaskId = :null, waitMs = :zero, ' +
-          'pendingCodeCommitRefs = :pendingCodeCommitRefs, ' +
-          `${counterResets}, ` +
-          'updatedAt = :ts, GSI2SK = :g2sk',
-        ExpressionAttributeNames: { '#state': 'state' },
-        ExpressionAttributeValues: values,
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
-    return Attributes;
+    if (loopBackId) {
+      values[':oldAttempt'] = Number(existing.attempt ?? 0);
+    }
+    const stageUpdate = {
+      TableName: table(),
+      Key: stageKey(executionId, stageInstanceId),
+      UpdateExpression:
+        'SET #state = :state, attempt = :attempt, cli = :null, cliSessionId = :null, ' +
+        'runtimeError = :null, startedAt = :null, completedAt = :null, ' +
+        'parkedAt = :null, pendingHumanTaskId = :null, waitMs = :zero, ' +
+        'pendingCodeCommitRefs = :pendingCodeCommitRefs, ' +
+        `${counterResets}, updatedAt = :ts, GSI2SK = :g2sk`,
+      ExpressionAttributeNames: { '#state': 'state' },
+      ExpressionAttributeValues: values,
+      ...(loopBackId
+        ? {
+            ConditionExpression: 'attribute_exists(pk) AND attempt = :oldAttempt',
+          }
+        : { ReturnValues: 'ALL_NEW' }),
+    };
+    if (!loopBackId) {
+      const { Attributes } = await ddb.send(new UpdateCommand(stageUpdate));
+      return Attributes;
+    }
+
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            { Update: stageUpdate },
+            {
+              Update: {
+                TableName: table(),
+                Key: executionMetaKey(executionId),
+                UpdateExpression:
+                  'SET loopBackCount = if_not_exists(loopBackCount, :zero) + :one, ' +
+                  'loopBackIds = list_append(if_not_exists(loopBackIds, :empty), :newLoopBackIds), ' +
+                  'updatedAt = :ts',
+                ConditionExpression:
+                  'attribute_exists(pk) AND ' +
+                  '(attribute_not_exists(loopBackIds) OR NOT contains(loopBackIds, :loopBackId)) AND ' +
+                  '(attribute_not_exists(loopBackCount) OR loopBackCount < :limit)',
+                ExpressionAttributeValues: {
+                  ':zero': 0,
+                  ':one': 1,
+                  ':empty': [],
+                  ':newLoopBackIds': [loopBackId],
+                  ':loopBackId': loopBackId,
+                  ':limit': 3,
+                  ':ts': ts,
+                },
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (error?.name !== 'TransactionCanceledException') throw error;
+      const meta = await getExecution(executionId, { consistentRead: true });
+      if (!meta?.loopBackIds?.includes(loopBackId)) throw error;
+      const row = await getStage(executionId, stageInstanceId, { consistentRead: true });
+      return row ? { ...row, loopBackCount: Number(meta.loopBackCount ?? 0) } : row;
+    }
+    const [row, meta] = await Promise.all([
+      getStage(executionId, stageInstanceId, { consistentRead: true }),
+      getExecution(executionId, { consistentRead: true }),
+    ]);
+    return row ? { ...row, loopBackCount: Number(meta?.loopBackCount ?? 0) } : row;
   };
 
   const recordMetric = async ({

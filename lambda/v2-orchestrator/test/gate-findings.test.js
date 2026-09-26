@@ -557,6 +557,27 @@ describe('validation gate with findings', () => {
     expect(deps.store.createHumanTask).not.toHaveBeenCalled();
   });
 
+  it('quotes maintained dissent verbatim in the prompt and on the finding', async () => {
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      ensembleEvidence: {
+        dissent: [
+          {
+            agentRef: 'aidlc-quality-agent',
+            class: 'knowledge',
+            position: 'OBJECT: the retry budget ignores the 429 path',
+          },
+        ],
+      },
+    });
+    await run();
+    const gate = openedGate();
+    const dissent = gate.findings.find((f) => f.code === 'review_dissent_maintained');
+    expect(dissent.quote).toBe('OBJECT: the retry budget ignores the 429 path');
+    expect(gate.prompt).toContain('    > OBJECT: the retry budget ignores the 429 path');
+  });
+
   it('reports a declared output the stage never produced, and stays inert without the observation', async () => {
     // First attempt produced the WRONG artifact type; the human sends it back and
     // the second attempt produces the declared one, so the run still completes.

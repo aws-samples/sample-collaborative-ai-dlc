@@ -158,6 +158,11 @@ export const awaitEngineGate = async (
     // The learnings ritual rides this gate. `false`/undefined is
     // every gate that does not run it, and writes nothing.
     learningsRitual = false,
+    // The stage a `loop-back` answer sends the run back to. Null on
+    // every gate that does not offer the option, and writes nothing.
+    loopBackTarget = null,
+    // The stages that loop-back re-runs, target first. Written only with the target.
+    loopBackStages = null,
   },
 ) => {
   const { store, broadcast, ids, runId } = toolkit;
@@ -189,6 +194,8 @@ export const awaitEngineGate = async (
         ...(nextStageId !== undefined ? { nextStageId } : {}),
         ...(findings?.length ? { findings } : {}),
         ...(learningsRitual ? { learningsRitual: true } : {}),
+        ...(loopBackTarget ? { loopBackTarget } : {}),
+        ...(loopBackTarget && loopBackStages?.length ? { loopBackStages } : {}),
       });
     } catch {
       /* already exists from a prior attempt — idempotent open */
@@ -222,6 +229,8 @@ export const awaitEngineGate = async (
         ...(nextStageId !== undefined ? { nextStageId } : {}),
         ...(findings?.length ? { findings } : {}),
         ...(learningsRitual ? { learningsRitual: true } : {}),
+        ...(loopBackTarget ? { loopBackTarget } : {}),
+        ...(loopBackTarget && loopBackStages?.length ? { loopBackStages } : {}),
       });
     } catch {
       /* live fan-out is best-effort */

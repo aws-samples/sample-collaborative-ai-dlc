@@ -15,11 +15,17 @@ import { buildStagePrompt, renderScopePolicy } from '../../agentcore/stage-mater
 import { toolsForRole } from '../../agentcore/mcp/server.js';
 import {
   buildExecutionPlan,
+  planSegments,
   resolveStagePolicy,
   UNIT_DAG_ARTIFACT,
   UNIT_FOR_EACH,
 } from '../v2-execution-plan.js';
 import { evaluateGatePreconditions } from '../gate-preconditions.js';
+import {
+  LOOP_BACK_OPTION,
+  LOOP_BACK_RECOMMENDED_EVENT,
+  resolveLoopBackOffer,
+} from '../stage-loopback.js';
 import { resolveMethodologyLibrary } from '../release-resolver.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
 import { buildGateOptions } from '../../v2-orchestrator/index.js';
@@ -49,6 +55,58 @@ const LEGACY_PLAN_DIGESTS = Object.freeze({
   'security-patch': '9e0201f3b5051ea669a0012672c196b0f1766dfe06d8ee3a76868e7fbe7344d5',
   workshop: '3e0ceaab383f51e4b8c0ee6d5013b317321cd818ef7ad3adf2138ab6b1d653e6',
 });
+
+const EXPECTED_LOOP_BACK_TUPLES = Object.freeze(
+  [
+    ['v2.6.18', 'bugfix', ['build-and-test']],
+    [
+      'v2.6.18',
+      'express',
+      ['build-and-test', 'deployment-pipeline', 'deployment-execution', 'observability-setup'],
+    ],
+    ['v2.6.18', 'poc', ['build-and-test']],
+    ['v2.6.18', 'refactor', ['build-and-test']],
+    [
+      'v2.6.18',
+      'security-patch',
+      ['build-and-test', 'deployment-pipeline', 'deployment-execution'],
+    ],
+    ['v2.7.0', 'bugfix', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+    [
+      'v2.7.0',
+      'express',
+      ['build-and-test', 'deployment-pipeline', 'deployment-execution', 'observability-setup'],
+    ],
+    ['v2.7.0', 'poc', ['build-and-test']],
+    ['v2.7.0', 'refactor', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+    ['v2.7.0', 'security-patch', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+    ['v2.8.2', 'bugfix', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+    [
+      'v2.8.2',
+      'express',
+      ['build-and-test', 'deployment-pipeline', 'deployment-execution', 'observability-setup'],
+    ],
+    ['v2.8.2', 'poc', ['build-and-test']],
+    ['v2.8.2', 'refactor', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+    ['v2.8.2', 'security-patch', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+    ['v2.9.0', 'bugfix', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+    [
+      'v2.9.0',
+      'express',
+      ['build-and-test', 'deployment-pipeline', 'deployment-execution', 'observability-setup'],
+    ],
+    ['v2.9.0', 'poc', ['build-and-test']],
+    ['v2.9.0', 'refactor', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+    ['v2.9.0', 'security-patch', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
+  ].flatMap(([profileId, scope, recommendingStages]) =>
+    recommendingStages.map((recommendingStageId) => ({
+      profileId,
+      scope,
+      recommendingStageId,
+      targetStageId: 'code-generation',
+    })),
+  ),
+);
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -220,19 +278,48 @@ const resolveTopology = (stage, library, releaseId) =>
     env: {},
   });
 
-const matrixRow = ({ profileId, scope, plan, gateStats, checkpoints, ensembles }) => ({
+const loopBackOfferFor = ({ stage, stages, profileId }) => {
+  const segment = planSegments(stages).find((item) =>
+    item.stages.some((candidate) => candidate.stageId === stage.stageId),
+  );
+  if (!segment || segment.kind !== 'stages') return { offered: false };
+  const currentIndex = segment.stages.findIndex((candidate) => candidate.stageId === stage.stageId);
+  const events =
+    stage.policy?.loopBack === 'human-offered'
+      ? [
+          {
+            eventType: LOOP_BACK_RECOMMENDED_EVENT,
+            stageInstanceId: stage.stageInstanceId,
+            detail: { attempt: ATTEMPT, reason: `synthetic recommendation for ${profileId}` },
+          },
+        ]
+      : [];
+  return resolveLoopBackOffer({
+    stage,
+    segmentStages: segment.stages,
+    currentIndex,
+    skippedStageIds: [],
+    events,
+    attempt: ATTEMPT,
+    loopBackCount: 0,
+  });
+};
+
+const matrixRow = ({ profileId, scope, plan, gateStats, checkpoints, ensembles, loopBacks }) => ({
   profile: profileId,
   scope,
   stages: plan?.stages.length ?? 0,
   gates: gateStats,
   checkpoints,
   ensembles: ensembles.length ? ensembles.join(',') : '—',
+  loopBack: loopBacks.length ? loopBacks.join(',') : '—',
 });
 
 describe('release coexistence matrix', () => {
   it('takes every pinned profile and offered scope from the first stage to the last', async () => {
     const rows = [];
     const failures = [];
+    const loopBackTuples = [];
 
     for (const profileId of PROFILE_IDS) {
       const context = await fixtureContext(profileId);
@@ -250,6 +337,7 @@ describe('release coexistence matrix', () => {
         let gates = 0;
         let checkpoints = 0;
         const ensembles = [];
+        const loopBacks = [];
 
         try {
           const releaseResult = buildExecutionPlan({ workflow, scope, library: releaseLibrary });
@@ -349,9 +437,14 @@ describe('release coexistence matrix', () => {
             );
             expect(compliant.ok, `${profileId}/${scope}/${stage.stageId} compliant`).toBe(true);
             expect(compliant.findings.filter((item) => item.severity === 'blocking')).toEqual([]);
-            const compliantOptions = buildGateOptions({ findings: compliant.findings });
+            const compliantLoopBack = loopBackOfferFor({ stage, stages: plan.stages, profileId });
+            const compliantOptions = buildGateOptions({
+              findings: compliant.findings,
+              loopBackOffered: compliantLoopBack.offered,
+            });
             expect(compliantOptions).toContain('approve');
             expect(compliantOptions).toContain('request-changes');
+            if (compliantLoopBack.offered) expect(compliantOptions).toContain(LOOP_BACK_OPTION);
 
             const noEvidence = evaluateGatePreconditions(
               gateInputs({ stage, topology, tools, compliant: false }),
@@ -361,13 +454,34 @@ describe('release coexistence matrix', () => {
               blocking.every((item) => item.overridable),
               `${profileId}/${scope}/${stage.stageId} blocking findings`,
             ).toBe(true);
-            const noEvidenceOptions = buildGateOptions({ findings: noEvidence.findings });
+            const noEvidenceLoopBack = loopBackOfferFor({ stage, stages: plan.stages, profileId });
+            const noEvidenceOptions = buildGateOptions({
+              findings: noEvidence.findings,
+              loopBackOffered: noEvidenceLoopBack.offered,
+            });
             expect(noEvidenceOptions).toContain('request-changes');
             if (blocking.length > 0) {
-              expect(noEvidenceOptions).toEqual(['request-changes', 'override-and-approve']);
+              expect(noEvidenceOptions).toEqual([
+                'request-changes',
+                'override-and-approve',
+                ...(noEvidenceLoopBack.offered ? [LOOP_BACK_OPTION] : []),
+              ]);
               expect(noEvidenceOptions).not.toContain('approve');
             } else {
-              expect(noEvidenceOptions).toEqual(['approve', 'request-changes']);
+              expect(noEvidenceOptions).toEqual([
+                'approve',
+                'request-changes',
+                ...(noEvidenceLoopBack.offered ? [LOOP_BACK_OPTION] : []),
+              ]);
+            }
+            if (noEvidenceLoopBack.offered) {
+              loopBacks.push(`${stage.stageId}→${noEvidenceLoopBack.target.stageId}`);
+              loopBackTuples.push({
+                profileId,
+                scope,
+                recommendingStageId: stage.stageId,
+                targetStageId: noEvidenceLoopBack.target.stageId,
+              });
             }
           }
 
@@ -418,6 +532,7 @@ describe('release coexistence matrix', () => {
               gateStats: gates,
               checkpoints,
               ensembles,
+              loopBacks,
             }),
           );
         } catch (error) {
@@ -429,6 +544,7 @@ describe('release coexistence matrix', () => {
               gateStats: gates,
               checkpoints,
               ensembles,
+              loopBacks,
             }),
           );
           failures.push({ profileId, scope, error });
@@ -439,6 +555,7 @@ describe('release coexistence matrix', () => {
     if (failures.length > 0 || process.env.AIDLC_RELEASE_MATRIX === '1') {
       console.table(rows);
     }
+    expect(loopBackTuples).toEqual(EXPECTED_LOOP_BACK_TUPLES);
     expect(
       failures.map(({ profileId, scope, error }) => `${profileId}/${scope}: ${error.message}`),
     ).toEqual([]);

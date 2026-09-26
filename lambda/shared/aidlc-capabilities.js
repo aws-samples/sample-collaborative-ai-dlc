@@ -56,6 +56,7 @@ const RUNTIME_HANDLERS = Object.freeze(
     'policy.skeleton.switch@v1',
     'policy.summary-confirmation.off@v1',
     'prompt.learnings@v1',
+    'protocol.loopback.gate-offered@v1',
     'protocol.plan-approval.outcome-gate@v1',
     'review.adversarial@v1',
     'review.advisory-findings@v1',
@@ -368,6 +369,28 @@ const AIDLC_CAPABILITIES = Object.freeze([
     // the authored output slug stands in for upstream's `workspace_requires`).
     appliesTo: `stage.workspaceRequires === true || stage.produces includes ${PLAN_APPROVAL_ARTIFACT}`,
     note: 'Upstream prevents pre-approval writes with a PreToolUse guard. The platform has no per-write hook; instead, `request_plan_approval` records an attempt-bound authorization and the completion ladder blocks outputs whose stage commit does not follow that approval. This checks the outcome, not each write.',
+  }),
+  // The Build-and-Test loop-back is construction-protocol prose upstream, not a
+  // frontmatter field, so it is keyed on the closure shipping that protocol at
+  // all: 2.3.3 has no construction protocol (inert), 2.6.18+ do. Like
+  // PROTOCOL:plan-approval it never appears in the frontmatter fidelity report.
+  Object.freeze({
+    key: 'PROTOCOL:build-and-test-loopback',
+    blockType: 'PROTOCOL',
+    field: 'build-and-test-loopback',
+    planKey: null,
+    policy: null,
+    handling: 'approximated',
+    handler: 'protocol.loopback.gate-offered@v1',
+    values: null,
+    defaultWhenAbsent: null,
+    capabilityPresentIf:
+      'runtimeFilePresent:core/aidlc-common/protocols/stage-protocol-construction.md',
+    // The target is derived from the plan, never from a stage id: the nearest
+    // preceding in-scope stage the release marks as code generation (see
+    // `stage-loopback.js`, which reads the same output slug as PLAN_APPROVAL).
+    appliesTo: `nearest preceding in-scope stage with workspaceRequires === true || produces includes ${PLAN_APPROVAL_ARTIFACT}`,
+    note: 'Upstream loops build-and-test back to code generation AUTONOMOUSLY, up to three times per intent. The platform reproduces the bound and the routing but OFFERS the jump to the human at the validation gate build-and-test already has: the agent records a recommendation through `emit_stage_note`\u2019s `loopBackRecommended` field (a typed `v2.loopback.recommended` event, never parsed prose), and the gate then carries a third `loop-back` option naming the computed target verbatim. Choosing it resets the STAGE# rows from the target through the current stage, which bumps their attempt and makes every prior plan-approval and review receipt invisible \u2014 upstream\u2019s jump invalidation, for free. At three recorded loop-backs the option is withheld and the gate says so. `approximated`, not `native`: the bound is faithful, the autonomy is deliberately not. Residual: a target inside a parallel section (a per-unit code-generation lane) is not offered \u2014 re-entering a fan-out would have to re-derive the approved unit plan, so those scopes keep the rewind API.',
   }),
 ]);
 
