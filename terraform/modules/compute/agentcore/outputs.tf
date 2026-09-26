@@ -102,3 +102,8 @@ output "managed_environment_repository_arn" {
   description = "ARN of the immutable managed environment image repository"
   value       = aws_ecr_repository.managed_environments.arn
 }
+
+output "image_digest_amd64" {
+  description = "Digest of the amd64 core image build (empty when build_amd64_image is disabled)"
+  value       = var.build_amd64_image ? data.aws_ecr_image.agentcore_amd64[0].image_digest : ""
+}

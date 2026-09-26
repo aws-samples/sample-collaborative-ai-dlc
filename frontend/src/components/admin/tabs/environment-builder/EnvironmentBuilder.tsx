@@ -58,6 +58,10 @@ interface Props {
   tools: ManagedTool[];
   disabled: boolean;
   showId: boolean;
+  // Whether this deployment can build the Instances (EC2) compute type
+  // (enable_instances_compute). When false the EC2 option is hidden so a
+  // draft can never be created against an unconfigured compute type.
+  instancesComputeEnabled: boolean;
   actionLabel: string;
   actionBusy: boolean;
   actionDisabled: boolean;
@@ -253,6 +257,7 @@ export function EnvironmentBuilder({
   tools,
   disabled,
   showId,
+  instancesComputeEnabled,
   actionLabel,
   actionBusy,
   actionDisabled,
@@ -459,6 +464,39 @@ export function EnvironmentBuilder({
                   </SelectContent>
                 </Select>
               </div>
+              {showId && (instancesComputeEnabled || form.compute === 'instances-x86_64') && (
+                <div className="max-w-md space-y-1.5">
+                  <Label htmlFor="environment-compute" className="text-xs">
+                    Compute
+                  </Label>
+                  <Select
+                    value={form.compute}
+                    onValueChange={(compute) =>
+                      onChange({
+                        ...form,
+                        compute: compute as EnvironmentForm['compute'],
+                        ...(compute === 'instances-x86_64'
+                          ? { toolVersionIds: [], baseEnvironmentId: 'standard' }
+                          : {}),
+                      })
+                    }
+                    disabled={disabled}
+                  >
+                    <SelectTrigger id="environment-compute" className="h-9 text-sm">
+                      <SelectValue placeholder="Choose the compute type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="microvms">Serverless microVMs (arm64)</SelectItem>
+                      <SelectItem value="instances-x86_64">EC2 Instances (x86_64)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    {form.compute === 'instances-x86_64'
+                      ? 'Runs on EC2 managed instances in this account with a persistent workspace volume. Catalog tools are not available on x86_64 yet. The compute type cannot be changed after creation.'
+                      : 'Default serverless compute. The compute type cannot be changed after creation.'}
+                  </p>
+                </div>
+              )}
               {baseLoading ? (
                 <Skeleton className="h-20" />
               ) : baseRevision ? (

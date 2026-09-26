@@ -174,3 +174,15 @@ variable "route53_zone_id" {
   type        = string
   default     = ""
 }
+
+variable "enable_instances_compute" {
+  description = "Enable the AgentCore Instances compute type for managed environments (x86_64 support, EC2 managed instances in this account via capacity providers)"
+  type        = bool
+  default     = false
+}
+
+variable "instances_allowed_instance_types" {
+  description = "EC2 instance types allowed on the platform-managed capacity providers"
+  type        = list(string)
+  default     = ["m6i.large"] # burstable (t-family) is not supported by AgentCore Instances
+}

@@ -112,6 +112,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     flattenedRecipe = recipe,
     createdBy,
     system = false,
+    compute = null,
   }) => {
     const createdAt = now();
     const revisionId = `r-${nextId()}`;
@@ -126,6 +127,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       system,
       status: 'DRAFT',
       baseEnvironmentId,
+      ...(compute ? { compute } : {}),
       currentRevisionId: revisionId,
       publishedRevisionId: null,
       updateAvailable: false,
@@ -335,6 +337,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'imageUri',
       'imageDigest',
       'imageSizeBytes',
+      'amd64Image',
       'projectedImageSizeBytes',
       'scanFindings',
       'highFindingsAcknowledgedAt',
@@ -346,6 +349,9 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'runtimeVersion',
       'runtimeEndpoint',
       'runtimeEndpointArn',
+      'capacityProviderArn',
+      'validationSessionId',
+      'validationAttempts',
       'verification',
       'failure',
       'publishedAt',
@@ -487,6 +493,71 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       ExpressionAttributeValues: { ':pk': `REVISION_STATUS#${status}` },
     });
 
+  // Durable cleanup work for an Instances session whose
+  // DeleteCapacityProviderSession failed. The record outlives the owning
+  // revision's terminal transition (which clears validationSessionId), so the
+  // poller can keep retrying the delete until it succeeds or the session is
+  // confirmed absent — an EBS-backed workspace volume must never be leaked by
+  // a transient delete failure. pk-per-session keeps the write idempotent; the
+  // GSI1 'SESSION_CLEANUP' partition follows the existing overloaded-GSI1
+  // pattern (ENVIRONMENTS, REVISION_STATUS#*) so the poller can list pending
+  // work without a scan.
+  const sessionCleanupKey = (sessionId) => ({ pk: `SESSION_CLEANUP#${sessionId}`, sk: 'LOOKUP' });
+
+  const putSessionCleanup = async ({
+    sessionId,
+    capacityProviderArn,
+    environmentId = null,
+    revisionId = null,
+    reason = null,
+  }) => {
+    if (!sessionId || !capacityProviderArn) return null;
+    const createdAt = now();
+    const item = {
+      ...sessionCleanupKey(sessionId),
+      GSI1PK: 'SESSION_CLEANUP',
+      GSI1SK: `${createdAt}#${sessionId}`,
+      type: 'SessionCleanup',
+      sessionId,
+      capacityProviderArn,
+      environmentId,
+      revisionId,
+      reason,
+      attempts: 0,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    await ddb.send(new PutCommand({ TableName: table(), Item: item }));
+    return item;
+  };
+
+  const listSessionCleanups = async () =>
+    queryAll(ddb, {
+      TableName: table(),
+      IndexName: 'GSI1',
+      KeyConditionExpression: 'GSI1PK = :pk',
+      ExpressionAttributeValues: { ':pk': 'SESSION_CLEANUP' },
+    });
+
+  const recordSessionCleanupAttempt = async (sessionId, reason = null) => {
+    const { Attributes } = await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: sessionCleanupKey(sessionId),
+        UpdateExpression:
+          'SET attempts = if_not_exists(attempts, :zero) + :one, reason = :reason, updatedAt = :ts',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':zero': 0, ':one': 1, ':reason': reason, ':ts': now() },
+        ReturnValues: 'ALL_NEW',
+      }),
+    );
+    return Attributes;
+  };
+
+  const deleteSessionCleanup = async (sessionId) => {
+    await ddb.send(new DeleteCommand({ TableName: table(), Key: sessionCleanupKey(sessionId) }));
+  };
+
   const markDependentsUpdateAvailable = async (baseEnvironmentId, baseRevisionId) => {
     const environments = await listEnvironments();
     const changed = [];
@@ -567,6 +638,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreRuntimeArn,
     coreRuntimeVersion = '1',
     coreImageSizeBytes = null,
+    coreAmd64Image = null,
     actor = 'platform',
   }) => {
     const createdAt = now();
@@ -641,6 +713,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         imageUri: template.id === 'standard' ? coreImageUri : null,
         imageDigest: template.id === 'standard' ? coreImageDigest : null,
         imageSizeBytes: template.id === 'standard' ? coreImageSizeBytes : null,
+        amd64Image: template.id === 'standard' ? coreAmd64Image : null,
         runtimeArn: template.id === 'standard' ? coreRuntimeArn : null,
         runtimeVersion: template.id === 'standard' ? coreRuntimeVersion : null,
         runtimeEndpoint: null,
@@ -691,16 +764,24 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreRuntimeArn,
     coreRuntimeVersion = '1',
     coreImageSizeBytes = null,
+    coreAmd64Image = null,
     actor = 'platform',
   }) => {
     const environment = await getEnvironment('standard');
     if (!environment?.publishedRevisionId) return null;
     const published = await getRevision('standard', environment.publishedRevisionId);
     if (published?.imageDigest === coreImageDigest) {
-      if (!published.imageSizeBytes && coreImageSizeBytes) {
-        await updateRevision('standard', published.revisionId, {
-          imageSizeBytes: coreImageSizeBytes,
-        });
+      // Same core as this deployment — backfill fields that predate them being
+      // stored with the revision. The amd64 variant belongs to THIS digest, so
+      // attaching it here is exact (pre-existing revisions gain their variant).
+      const backfill = {
+        ...(!published.imageSizeBytes && coreImageSizeBytes
+          ? { imageSizeBytes: coreImageSizeBytes }
+          : {}),
+        ...(!published.amd64Image && coreAmd64Image ? { amd64Image: coreAmd64Image } : {}),
+      };
+      if (Object.keys(backfill).length) {
+        await updateRevision('standard', published.revisionId, backfill);
       }
       return null;
     }
@@ -739,6 +820,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       imageUri: coreImageUri,
       imageDigest: coreImageDigest,
       imageSizeBytes: coreImageSizeBytes,
+      amd64Image: coreAmd64Image,
       runtimeArn: coreRuntimeArn,
       runtimeVersion: coreRuntimeVersion,
       runtimeEndpoint: null,
@@ -796,6 +878,10 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     updateRevision,
     publishRevision,
     listRevisionsByStatus,
+    putSessionCleanup,
+    listSessionCleanups,
+    recordSessionCleanupAttempt,
+    deleteSessionCleanup,
     markDependentsUpdateAvailable,
     reconcileBaseUpdates,
     markToolUpdatesAvailable,
