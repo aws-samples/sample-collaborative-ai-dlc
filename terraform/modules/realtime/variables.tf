@@ -43,6 +43,12 @@ variable "connections_table_arn" {
   type        = string
 }
 
+variable "kms_key_arn" {
+  description = "Customer-managed KMS key ARN for DynamoDB encryption. Empty uses the AWS-owned service default."
+  type        = string
+  default     = ""
+}
+
 variable "websocket_stage_name" {
   description = "Stage name for the WebSocket API Gateway (used as the URL path segment)"
   type        = string

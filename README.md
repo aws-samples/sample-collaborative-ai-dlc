@@ -164,7 +164,7 @@ Docker is the default container runtime and needs no configuration. The image bu
 
 See [Using an alternative container runtime](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/#using-an-alternative-container-runtime) for the socket paths, per-runtime setup, and the `DOCKER_HOST` contract.
 
-You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, Bedrock AgentCore, Secrets Manager, Systems Manager Parameter Store, and IAM. See [Prerequisites](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/) for the full service list and verification commands.
+You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, Bedrock AgentCore, Secrets Manager, Systems Manager Parameter Store, and IAM. Selecting customer-managed encryption additionally requires AWS KMS permissions. See [Prerequisites](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/) for the full service list and verification commands.
 
 Agent CLIs authenticate through credentials you configure after install, in **Admin → Agents**:
 
@@ -252,13 +252,17 @@ For a managed installation:
 bash /tmp/aidlc-install.sh destroy
 ```
 
-The command requires typing the configured environment name; `--yes` is available for deliberate automation. It backs up Terraform state before destroying all application resources and data, then removes the managed `current` link. Local configuration, immutable checkouts, the state backup, and the Terraform state bucket are retained.
+The command requires typing the configured environment name; `--yes` is available for deliberate non-production automation. It backs up Terraform state before destroying all application resources and data, then removes the managed `current` link. Local configuration, immutable checkouts, the state backup, and the Terraform state bucket are retained.
 
 For a local/manual checkout:
 
 ```bash
 ./scripts/destroy.sh dev
 ```
+
+Both automated paths refuse an effective `prod` environment, including a differently named tfvars file whose `environment` value is `prod`. A bare `terraform destroy` is intentionally blocked by deletion protection.
+
+Production removal is a break-glass operation. First create and verify independent data backups, then empty every versioned application bucket including object versions and delete markers. Only after those steps should an independent reviewer inspect a saved Terraform plan that sets `deletion_protection=false`, apply that exact plan, and run a separately reviewed destroy with `skip_final_snapshot=false`. This ordering avoids deleting DynamoDB and Neptune before discovering that non-empty production buckets cannot be removed.
 
 To also remove the Terraform state bucket created during bootstrap:
 

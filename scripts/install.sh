@@ -1185,8 +1185,15 @@ update_command() {
 }
 
 destroy_command() {
-    require_destroy_commands
     load_config
+
+    if [[ "$ENVIRONMENT" == "prod" ]]; then
+        echo "Refusing automated destruction of a production environment." >&2
+        echo "Use the documented production break-glass procedure with independently reviewed backups and plans." >&2
+        exit 1
+    fi
+
+    require_destroy_commands
     aws_environment
 
     local checkout version destroy_script

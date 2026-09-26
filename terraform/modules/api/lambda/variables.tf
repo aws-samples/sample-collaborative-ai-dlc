@@ -64,6 +64,12 @@ variable "dynamodb_table_arns" {
   type        = list(string)
 }
 
+variable "kms_key_arn" {
+  description = "Customer-managed KMS key ARN for DynamoDB encryption. Empty uses the AWS-owned service default."
+  type        = string
+  default     = ""
+}
+
 variable "artifacts_bucket_name" {
   description = "S3 bucket name for artifacts"
   type        = string
