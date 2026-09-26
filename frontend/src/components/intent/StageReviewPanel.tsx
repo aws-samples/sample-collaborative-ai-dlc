@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
-import type { GateAnswer, IntentDetail, IntentGate, IntentGraphNode } from '@/services/intents';
+import type {
+  GateAnswer,
+  IntentDetail,
+  IntentGate,
+  IntentGraphNode,
+  IntentSensorRun,
+} from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
 import { useIntentGraph } from '@/hooks/useIntentGraph';
 import { useYjsDocument } from '@/hooks/useYjsDocument';
@@ -26,7 +32,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
+import { formatTimelineTimestamp } from '@/lib/timeAgo';
 import { generateColor } from '@/utils/colors';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -72,6 +80,35 @@ function groupReviewItemsByType(items: IntentGraphNode[]): [string, IntentGraphN
     if (ib !== -1) return 1;
     return a.localeCompare(b);
   });
+}
+
+// Reviewer-run presentation helpers. Pure and exported so ordering and verdict
+// extraction are unit-testable without rendering the (Yjs-bound) panel.
+
+// Most-recent-first, stable. A run whose timestamp is missing or unparseable
+// (Date.parse → NaN) is treated as older than any parseable run and sinks to
+// the bottom; equal times (or two unparseable runs) keep their input order via
+// an index tie-break. Returns a new array; never mutates the input; never
+// throws. (FR1.1, FR1.2, NFR3 / R-01)
+export function orderReviewerRuns(runs: IntentSensorRun[]): IntentSensorRun[] {
+  return runs
+    .map((run, index) => ({ run, index, parsed: Date.parse(run.timestamp) }))
+    .toSorted((a, b) => {
+      const aNaN = Number.isNaN(a.parsed);
+      const bNaN = Number.isNaN(b.parsed);
+      if (aNaN && bNaN) return a.index - b.index;
+      if (aNaN) return 1;
+      if (bNaN) return -1;
+      if (a.parsed !== b.parsed) return b.parsed - a.parsed;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.run);
+}
+
+// The reviewer verdict: the structured detail.verdict when present
+// (stringified), else the run result — matching the existing fallback.
+export function reviewerRunVerdict(run: IntentSensorRun): string {
+  return run.detail?.verdict != null ? String(run.detail.verdict) : run.result;
 }
 
 function ReviewStat({
@@ -215,13 +252,17 @@ export function StageReviewPanel({
   );
   const sensors = detail.sensorRuns.filter((s) => s.stageInstanceId === gate.stageInstanceId);
   const reviewerRuns = sensors.filter((s) => s.sensorId.startsWith('reviewer:'));
-  const reviewerFailCount = reviewerRuns.filter(
-    (run) => run.result !== 'PASS' && run.detail?.verdict !== 'READY',
-  ).length;
+  const orderedReviewerRuns = orderReviewerRuns(reviewerRuns);
+  const latestReviewerRun = orderedReviewerRuns[0] ?? null;
+  const latestReviewerVerdict = latestReviewerRun ? reviewerRunVerdict(latestReviewerRun) : null;
+  const latestReviewerNeedsAttention =
+    latestReviewerRun !== null &&
+    latestReviewerRun.result !== 'PASS' &&
+    latestReviewerRun.detail?.verdict !== 'READY';
   // Open "At a glance" always, and "Reviewer Agent findings" too when the
-  // reviewer agent flagged issues — surface the decision-relevant evidence.
+  // latest reviewer run flagged issues — surface the decision-relevant evidence.
   const [openSections, setOpenSections] = useState<string[]>(() =>
-    reviewerFailCount > 0 ? ['summary', 'reviewer-findings'] : ['summary'],
+    latestReviewerNeedsAttention ? ['summary', 'reviewer-findings'] : ['summary'],
   );
   const revealSection = (value: string) => {
     setOpenSections((prev) => (prev.includes(value) ? prev : [...prev, value]));
@@ -293,9 +334,9 @@ export function StageReviewPanel({
             }
           />
           <ReviewStat
-            label="Reviewer findings"
-            value={reviewerFailCount || 'None'}
-            tone={reviewerFailCount ? 'warn' : 'ok'}
+            label="Reviewer verdict"
+            value={latestReviewerVerdict ?? 'None'}
+            tone={latestReviewerNeedsAttention ? 'warn' : 'ok'}
             onClick={reviewerRuns.length > 0 ? () => revealSection('reviewer-findings') : undefined}
           />
           <ReviewStat
@@ -374,47 +415,84 @@ export function StageReviewPanel({
             >
               <AccordionTrigger className="py-3 hover:no-underline">
                 <div className="flex items-center gap-2">
-                  {reviewerFailCount ? (
+                  {latestReviewerNeedsAttention ? (
                     <SearchAlert className="h-4 w-4 text-destructive" />
                   ) : (
                     <SearchCheck className="h-4 w-4 text-muted-foreground" />
                   )}
                   <span>Reviewer Agent findings</span>
                   <Badge
-                    variant={reviewerFailCount ? 'destructive' : 'secondary'}
-                    className="h-5 px-1.5 text-[10px]"
+                    variant={latestReviewerNeedsAttention ? 'outline' : 'secondary'}
+                    className={cn(
+                      'h-5 px-1.5 text-[10px]',
+                      latestReviewerNeedsAttention && 'text-destructive',
+                    )}
                   >
-                    {reviewerFailCount
-                      ? `${reviewerFailCount} issue${reviewerFailCount === 1 ? '' : 's'}`
-                      : 'No issues'}
+                    {latestReviewerVerdict}
                   </Badge>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="space-y-3">
                 <div className="space-y-2 text-sm">
-                  {reviewerRuns.map((run) => (
-                    <div key={run.sensorRunId} className="rounded-md border p-2">
-                      {typeof run.detail?.findings === 'string' && run.detail.findings ? (
-                        // The findings markdown already carries the reviewer name
-                        // and verdict (## Verdict, **Reviewer:**), so render it as
-                        // the single source of truth — no duplicate badge/id row.
-                        <div className="prose prose-sm max-w-none dark:prose-invert">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {run.detail.findings}
-                          </ReactMarkdown>
-                        </div>
-                      ) : (
-                        // No prose body — show the verdict + reviewer id so the
-                        // run isn't blank.
-                        <div className="flex items-center gap-2">
-                          <Badge variant={run.result === 'PASS' ? 'default' : 'destructive'}>
-                            {String(run.detail?.verdict ?? run.result)}
+                  {orderedReviewerRuns.map((run, index) => {
+                    // Most-recent iteration open, older ones collapsed
+                    const parsedTime = Date.parse(run.timestamp);
+                    const timeLabel = Number.isFinite(parsedTime)
+                      ? formatTimelineTimestamp(run.timestamp)
+                      : null;
+                    return (
+                      <Collapsible
+                        key={run.sensorRunId}
+                        defaultOpen={index === 0}
+                        className="rounded-md border p-2"
+                        data-testid={`reviewer-run-${run.sensorRunId}`}
+                      >
+                        <CollapsibleTrigger
+                          className="group flex w-full flex-wrap items-center gap-2 text-left"
+                          data-testid={`reviewer-run-trigger-${run.sensorRunId}`}
+                        >
+                          {timeLabel && (
+                            <span className="text-xs text-muted-foreground">{timeLabel}</span>
+                          )}
+                          <Badge
+                            variant={run.result === 'PASS' ? 'default' : 'outline'}
+                            className={run.result === 'PASS' ? undefined : 'text-destructive'}
+                          >
+                            {reviewerRunVerdict(run)}
                           </Badge>
-                          <span className="text-xs text-muted-foreground">{run.sensorId}</span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                          <ChevronRight
+                            aria-hidden
+                            className="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90"
+                          />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-2">
+                          {typeof run.detail?.findings === 'string' && run.detail.findings ? (
+                            // The findings markdown already carries the reviewer
+                            // name and verdict (## Verdict, **Reviewer:**), so
+                            // render it as the single source of truth — no
+                            // duplicate badge/id row.
+                            <div className="prose prose-sm max-w-none dark:prose-invert">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {run.detail.findings}
+                              </ReactMarkdown>
+                            </div>
+                          ) : (
+                            // No prose body — show the verdict + reviewer id so
+                            // the run isn't blank.
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                variant={run.result === 'PASS' ? 'default' : 'outline'}
+                                className={run.result === 'PASS' ? undefined : 'text-destructive'}
+                              >
+                                {String(run.detail?.verdict ?? run.result)}
+                              </Badge>
+                              <span className="text-xs text-muted-foreground">{run.sensorId}</span>
+                            </div>
+                          )}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    );
+                  })}
                 </div>
               </AccordionContent>
             </AccordionItem>
