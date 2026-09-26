@@ -62,7 +62,11 @@ npm run build
 
 # Upload to S3
 echo "Uploading to S3 bucket: $BUCKET_NAME"
-aws s3 sync dist/ s3://$BUCKET_NAME --delete
+# Publish hashed chunks before the entry point, and retain previous chunks for
+# already-open tabs. Deleting them during deployment breaks lazy imports in
+# editors that loaded the previous entry point.
+aws s3 sync dist/assets/ s3://$BUCKET_NAME/assets/ --cache-control "public,max-age=31536000,immutable"
+aws s3 sync dist/ s3://$BUCKET_NAME --exclude "assets/*" --cache-control "no-cache"
 
 # Invalidate CloudFront cache if distribution exists
 if [[ -n "$CLOUDFRONT_ID" ]]; then

@@ -24,6 +24,7 @@
 // graph.
 
 import gremlin from 'gremlin';
+import { randomUUID } from 'node:crypto';
 import { flattenVertexMap } from './graph-rows.js';
 import { selectCurrentArtifactHeads } from './artifact-versioning.js';
 
@@ -199,23 +200,49 @@ export const applyArtifactEdit = async ({
   editedByName = '',
   origin,
   editRef = '',
+  ifEditRevision,
+  ifCollaborationEpoch,
   now,
 }) => {
   if (!EDIT_ORIGINS.includes(origin)) throw new Error(`invalid edit origin: ${origin}`);
   const exists = await artifactAt(g, intentId, artifactId).hasNext();
   if (!exists) throw new Error(`Artifact "${artifactId}" not found`);
   const ts = now ?? new Date().toISOString();
-  await artifactAt(g, intentId, artifactId)
+  const editRevision = randomUUID();
+  let target = artifactAt(g, intentId, artifactId);
+  // Test the revision and epoch in the SAME graph mutation as the content write.
+  // A preflight read alone permits a delayed autosave to overwrite another editor.
+  if (ifEditRevision !== undefined)
+    target =
+      ifEditRevision === null
+        ? target.hasNot('edit_revision')
+        : target.has('edit_revision', ifEditRevision);
+  if (ifCollaborationEpoch !== undefined)
+    target =
+      ifCollaborationEpoch === null
+        ? target.hasNot('collaboration_epoch')
+        : target.has('collaboration_epoch', ifCollaborationEpoch);
+  let write = target
+    .property(cardinality.single, 'edit_revision', editRevision)
     .property(cardinality.single, 'content', String(content ?? ''))
     .property(cardinality.single, 'updated_at', ts)
     .property(cardinality.single, 'edited_by', String(editedBy ?? ''))
     .property(cardinality.single, 'edited_by_name', String(editedByName ?? ''))
     .property(cardinality.single, 'edited_at', ts)
     .property(cardinality.single, 'edit_origin', origin)
-    .property(cardinality.single, 'edit_ref', String(editRef ?? ''))
-    .next();
+    .property(cardinality.single, 'edit_ref', String(editRef ?? ''));
+  // Human autosaves share their current CRDT. A Quorum replacement starts a
+  // fresh editor document so a recovered old snapshot cannot overwrite it.
+  if (origin === 'quorum')
+    write = write.property(cardinality.single, 'collaboration_epoch', randomUUID());
+  const result = await write.id().next();
+  if (result.done) {
+    const error = new Error('Artifact changed while saving — retry from the current document');
+    error.code = 'edit_conflict';
+    throw error;
+  }
   await clearArtifactStale({ g, intentId, artifactId });
-  return { artifactId, editedAt: ts };
+  return { artifactId, editedAt: ts, editRevision };
 };
 
 /**

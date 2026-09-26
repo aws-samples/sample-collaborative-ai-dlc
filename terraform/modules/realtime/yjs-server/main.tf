@@ -8,6 +8,19 @@ locals {
   dns_suffix      = data.aws_partition.current.dns_suffix
   yjs_lb_name_raw = "${var.project_name}-yjs-${var.environment}"
   yjs_lb_name     = length(local.yjs_lb_name_raw) <= 32 ? local.yjs_lb_name_raw : "${substr(local.yjs_lb_name_raw, 0, 23)}-${substr(sha1(local.yjs_lb_name_raw), 0, 8)}"
+  worker_cpu      = coalesce(var.scaling.cpu, var.environment == "prod" ? 1024 : 256)
+  worker_memory   = coalesce(var.scaling.memory, var.environment == "prod" ? 2048 : 512)
+  service_name    = "${var.project_name}-yjs-server"
+  metric_service  = "${var.project_name}-yjs-server-${var.environment}"
+  min_capacity    = try(var.scaling.autoscaling.min_capacity, var.scaling.desired_count)
+  max_capacity    = try(var.scaling.autoscaling.max_capacity, var.scaling.desired_count)
+  valid_memory = {
+    "256"  = [512, 1024, 2048]
+    "512"  = range(1024, 4097, 1024)
+    "1024" = range(2048, 8193, 1024)
+    "2048" = range(4096, 16385, 1024)
+    "4096" = range(8192, 30721, 1024)
+  }
 }
 
 terraform {
@@ -61,11 +74,11 @@ resource "aws_ecr_lifecycle_policy" "yjs_server" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the last 3 images"
+      description  = "Keep the last 30 release images for rollout rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 3
+        countNumber = 30
       }
       action = {
         type = "expire"
@@ -79,6 +92,7 @@ module "yjs_docker_build" {
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
 
+  keep_remotely   = true
   create_ecr_repo = false
   ecr_repo        = aws_ecr_repository.yjs_server.name
   ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
@@ -181,23 +195,34 @@ resource "aws_iam_role_policy" "ecs_task" {
 
 # Task Definition
 resource "aws_ecs_task_definition" "yjs_server" {
+  skip_destroy             = true
   family                   = "${var.project_name}-yjs-server-${var.environment}"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = var.environment == "prod" ? "512" : "256"
-  memory                   = var.environment == "prod" ? "1024" : "512"
+  cpu                      = tostring(local.worker_cpu)
+  memory                   = tostring(local.worker_memory)
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "yjs-server"
-    image     = module.yjs_docker_build.image_uri
-    essential = true
+    name        = "yjs-server"
+    image       = module.yjs_docker_build.image_uri
+    essential   = true
+    stopTimeout = 120
+    # ECS ignores image-only Docker HEALTHCHECK instructions. Register the
+    # liveness probe here so container health also avoids dependency restarts.
+    healthCheck = {
+      command     = ["CMD-SHELL", "wget --spider -q http://localhost:1234/livez || exit 1"]
+      interval    = 30
+      timeout     = 5
+      startPeriod = 30
+      retries     = 3
+    }
     portMappings = [{
       containerPort = 1234
       protocol      = "tcp"
     }]
-    environment = [
+    environment = concat([
       {
         name  = "COGNITO_USER_POOL_ID"
         value = var.cognito_user_pool_id
@@ -218,7 +243,21 @@ resource "aws_ecs_task_definition" "yjs_server" {
         name  = "POWERTOOLS_LOG_LEVEL"
         value = var.powertools_log_level
       },
-    ]
+      ], [for name, value in {
+        YJS_CLUSTER_ENABLED          = tostring(var.scaling.cluster_enabled)
+        YJS_DOCUMENTS_TABLE          = var.documents_table_name
+        YJS_MEMBERS_TABLE            = try(aws_dynamodb_table.members[0].name, "")
+        YJS_SNAPSHOTS_BUCKET         = var.snapshots_bucket_name
+        YJS_SERVICE_NAME             = local.metric_service
+        YJS_MEMORY_LIMIT_MIB         = tostring(local.worker_memory)
+        YJS_MAX_CONNECTIONS          = tostring(var.scaling.max_connections)
+        YJS_MAX_DOCUMENTS            = tostring(var.scaling.max_documents)
+        YJS_MAX_DOCUMENT_BYTES       = tostring(var.scaling.max_document_bytes)
+        YJS_MAX_PAYLOAD_BYTES        = tostring(var.scaling.max_document_bytes + 1024)
+        YJS_MAX_TOTAL_DOCUMENT_BYTES = tostring(var.scaling.max_total_document_bytes)
+        YJS_MAX_BUFFERED_BYTES       = tostring(var.scaling.max_buffered_bytes)
+    } : { name = name, value = value }])
+
     secrets = [
       {
         # Realtime doc-token secret — verifies HMAC scope tokens
@@ -236,6 +275,14 @@ resource "aws_ecs_task_definition" "yjs_server" {
       }
     }
   }])
+
+  lifecycle {
+    create_before_destroy = true
+    precondition {
+      condition     = try(contains(local.valid_memory[tostring(local.worker_cpu)], local.worker_memory), false)
+      error_message = "Choose a supported Fargate CPU/memory pair (256–4096 CPU units)."
+    }
+  }
 }
 
 # CloudWatch Log Group
@@ -256,6 +303,17 @@ resource "aws_security_group" "yjs_server" {
     to_port         = 1234
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
+  }
+
+  dynamic "ingress" {
+    for_each = var.scaling.cluster_enabled ? [1] : []
+    content {
+      description = "Authenticated forwarding between document owners"
+      from_port   = 1234
+      to_port     = 1234
+      protocol    = "tcp"
+      self        = true
+    }
   }
 
   egress {
@@ -319,19 +377,20 @@ resource "aws_lb" "yjs_server" {
 
 # Target Group
 resource "aws_lb_target_group" "yjs_server" {
-  name        = local.yjs_lb_name
-  port        = 1234
-  protocol    = "HTTP"
-  vpc_id      = var.vpc_id
-  target_type = "ip"
+  name                 = local.yjs_lb_name
+  port                 = 1234
+  protocol             = "HTTP"
+  vpc_id               = var.vpc_id
+  target_type          = "ip"
+  deregistration_delay = 30
 
   health_check {
-    path                = "/"
+    path                = "/healthz"
     healthy_threshold   = 2
     unhealthy_threshold = 3
     timeout             = 5
     interval            = 30
-    matcher             = "200,426"
+    matcher             = "200"
   }
 }
 
@@ -349,11 +408,31 @@ resource "aws_lb_listener" "yjs_server" {
 
 # ECS Service
 resource "aws_ecs_service" "yjs_server" {
-  name            = "${var.project_name}-yjs-server"
+  name            = local.service_name
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.yjs_server.arn
-  desired_count   = 1
+  desired_count   = local.min_capacity
   launch_type     = "FARGATE"
+  # Only the one-time mode transition needs a stop-before-start deployment.
+  # Once every worker uses leases, replacement capacity must become healthy first.
+  deployment_minimum_healthy_percent = var.scaling.cluster_enabled && !var.scaling.mode_transition ? 100 : 0
+  deployment_maximum_percent         = var.scaling.cluster_enabled && !var.scaling.mode_transition ? 200 : 100
+  # Existing services retain AZ rebalancing when an update omits it. Explicitly
+  # disable it in the same update: ECS rejects rebalancing with maximumPercent
+  # <= 100, which we require for standalone upgrades and the mode transition.
+  availability_zone_rebalancing     = var.scaling.cluster_enabled && !var.scaling.mode_transition ? "ENABLED" : "DISABLED"
+  health_check_grace_period_seconds = 60
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  lifecycle {
+    # The scalable target owns the count in both modes. Fixed min=max applies
+    # manual changes while preventing Terraform from resetting an autoscaler.
+    ignore_changes = [desired_count]
+  }
 
   network_configuration {
     subnets          = var.private_subnet_ids
@@ -367,5 +446,10 @@ resource "aws_ecs_service" "yjs_server" {
     container_port   = 1234
   }
 
-  depends_on = [aws_lb_listener.yjs_server]
+  depends_on = [
+    aws_lb_listener.yjs_server,
+    aws_iam_role_policy.cluster,
+    aws_iam_role_policy.ecs_execution_doc_secret,
+    aws_iam_role_policy_attachment.ecs_execution,
+  ]
 }

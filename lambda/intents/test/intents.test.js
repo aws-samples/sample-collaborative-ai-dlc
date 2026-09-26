@@ -109,6 +109,7 @@ const installDdbFakes = () => {
   yjsStore.clear();
   transactWriteBarrier = null;
   ddbMock.on(GetCommand).callsFake((input) => {
+    if (input.Key.documentId) return { Item: yjsStore.get(input.Key.documentId) };
     const key =
       input.Key.pk !== undefined
         ? keyOf(input.Key.pk, input.Key.sk)
@@ -120,6 +121,10 @@ const installDdbFakes = () => {
   });
   ddbMock.on(PutCommand).callsFake((input) => {
     const item = input.Item;
+    if (item.documentId !== undefined) {
+      yjsStore.set(item.documentId, { ...item });
+      return {};
+    }
     const k = keyOf(item.pk, item.sk);
     if (input.ConditionExpression?.includes('attribute_not_exists') && procStore.has(k)) {
       const e = new Error('cond');
@@ -204,6 +209,10 @@ const installDdbFakes = () => {
     return { Items: items.map((i) => ({ ...i })) };
   });
   ddbMock.on(ScanCommand).callsFake((input) => {
+    if (input.ProjectionExpression === 'documentId')
+      return {
+        Items: [...yjsStore.entries()].map(([documentId, row]) => ({ documentId, ...row })),
+      };
     const values = input.ExpressionAttributeValues || {};
     let items = [...procStore.values()];
     if ((input.FilterExpression || '').includes('sk = :meta')) {
@@ -211,7 +220,18 @@ const installDdbFakes = () => {
     }
     return { Items: items.map((i) => ({ ...i })) };
   });
-  ddbMock.on(UpdateCommand).callsFake((input) => {
+  ddbMock.on(UpdateCommand).callsFake(async (input) => {
+    if (input.Key.documentId) {
+      const row = { documentId: input.Key.documentId, ...yjsStore.get(input.Key.documentId) };
+      if (input.ExpressionAttributeValues[':deleted']) {
+        row.deletedAt = input.ExpressionAttributeValues[':deleted'];
+        for (const key of ['ownerId', 'ownerAddress', 'leaseToken', 'leaseUntil']) delete row[key];
+      }
+      if (input.ExpressionAttributeValues[':state'])
+        row.cleanupState = input.ExpressionAttributeValues[':state'];
+      yjsStore.set(row.documentId, row);
+      return {};
+    }
     const k = keyOf(input.Key.pk, input.Key.sk);
     const existing = procStore.get(k);
     const values = input.ExpressionAttributeValues || {};
@@ -279,6 +299,11 @@ const installDdbFakes = () => {
     ) {
       casFail();
     }
+    if (
+      cond.includes(':ifDraftRevision') &&
+      (existing?.draftRevision ?? 0) !== values[':ifDraftRevision']
+    )
+      casFail();
     if (attachmentUpdateConflict && cond.includes(':ifAttachmentRevision')) {
       const conflict = attachmentUpdateConflict;
       attachmentUpdateConflict = null;
@@ -307,10 +332,12 @@ const installDdbFakes = () => {
         delete next[field];
       }
     }
+    if (input.UpdateExpression?.includes('draftRevision = if_not_exists'))
+      next.draftRevision = (existing?.draftRevision ?? 0) + 1;
     procStore.set(k, next);
     return { Attributes: { ...next } };
   });
-  ddbMock.on(DeleteCommand).callsFake((input) => {
+  ddbMock.on(DeleteCommand).callsFake(async (input) => {
     // Yjs docs are keyed by documentId alone; everything else is pk|sk.
     if (input.Key.documentId !== undefined) yjsStore.delete(input.Key.documentId);
     else procStore.delete(keyOf(input.Key.pk, input.Key.sk));
@@ -2062,9 +2089,37 @@ describe('composed grids + DRAFT PATCH', () => {
       httpMethod: 'PATCH',
       path: `/projects/${projectId}/intents/${intentId}`,
       pathParameters: { projectId, intentId },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ifDraftRevision: procStore.get(keyOf(`EXEC#${intentId}`, 'META'))?.draftRevision ?? 0,
+        ...body,
+      }),
       ...claims(sub),
     });
+
+  it('rejects a delayed draft save, preserves the newer value, and requires preconditions', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    procStoreSetStatus(intent.id, 'DRAFT');
+    const first = await patchIntent(sub, projectId, intent.id, {
+      prompt: 'AB',
+      ifDraftRevision: 0,
+    });
+    expect(first.statusCode).toBe(200);
+    const stale = await patchIntent(sub, projectId, intent.id, { prompt: 'A', ifDraftRevision: 0 });
+    expect(stale.statusCode).toBe(409);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).prompt).toBe('AB');
+    const missing = await patchIntent(sub, projectId, intent.id, {
+      prompt: 'A',
+      ifDraftRevision: undefined,
+    });
+    expect(missing.statusCode).toBe(428);
+    const retry = await patchIntent(sub, projectId, intent.id, {
+      prompt: 'ABC',
+      ifDraftRevision: 1,
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(JSON.parse(retry.body).draftRevision).toBe(2);
+  });
 
   it('creates an intent from a composed grid with a custom scope label', async () => {
     const sub = `u-${randomUUID()}`;
@@ -4817,6 +4872,20 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
     expect(again.statusCode).toBe(404);
   });
 
+  it('keeps the intent and reports a retryable conflict while collaboration cleanup is pending', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    ddbMock
+      .on(ScanCommand)
+      .rejects(Object.assign(new Error('scan budget exhausted'), { code: 'YJS_CLEANUP_PENDING' }));
+    const res = await del(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).code).toBe('deletion_pending');
+    expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'META'))).toBe(true);
+    expect(yjsStore.get(`scope#intent:${intent.id}`)?.deletedAt).toBeTruthy();
+  });
+
   it('cascades the Neptune subgraph, drains the DDB partition and removes the Yjs docs', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -4876,7 +4945,8 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
     const leftover = [...procStore.keys()].filter((k) => k.startsWith(`EXEC#${intentId}|`));
     expect(leftover).toEqual([]);
     // Yjs: only the intent-scoped docs are removed.
-    expect([...yjsStore.keys()]).toEqual(['unrelated-doc']);
+    expect([...yjsStore.keys()]).toEqual(['unrelated-doc', `scope#intent:${intentId}`]);
+    expect(yjsStore.get(`scope#intent:${intentId}`).deletedAt).toEqual(expect.any(Number));
   });
 
   it('purges every version of the intent native workspace exports from S3', async () => {
@@ -6499,16 +6569,61 @@ describe('GET /artifacts/{id}/impact', () => {
   });
 });
 
-const putContent = (sub, projectId, intentId, artifactId, content) =>
+const putContent = (sub, projectId, intentId, artifactId, content, extra = {}) =>
   handler({
     httpMethod: 'PUT',
     path: `/projects/${projectId}/intents/${intentId}/artifacts/${artifactId}/content`,
     pathParameters: { projectId, intentId, artifactId },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, collaborationEpoch: null, ifEditRevision: null, ...extra }),
     ...claims(sub),
   });
 
 describe('PUT /artifacts/{id}/content (simple edit)', () => {
+  it('rejects a delayed older projection and accepts a retry with the current revision', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    const newer = await putContent(sub, projectId, intent.id, 'mr', 'AB');
+    expect(newer.statusCode).toBe(200);
+    const stale = await putContent(sub, projectId, intent.id, 'mr', 'A');
+    expect(stale.statusCode).toBe(409);
+    expect(JSON.parse(stale.body).code).toBe('edit_conflict');
+    const state = await handler({
+      httpMethod: 'GET',
+      pathParameters: { projectId, intentId: intent.id },
+      queryStringParameters: { editState: 'mr' },
+      ...claims(sub),
+    });
+    const revision = JSON.parse(state.body);
+    expect(revision.editRevision).toBeTruthy();
+    const retry = await putContent(sub, projectId, intent.id, 'mr', 'ABC', {
+      ifEditRevision: revision.editRevision,
+    });
+    expect(retry.statusCode).toBe(200);
+    const missing = await putContent(sub, projectId, intent.id, 'mr', 'unversioned', {
+      ifEditRevision: undefined,
+    });
+    expect(missing.statusCode).toBe(428);
+  });
+
+  it('refuses a stale collaboration epoch after the content was replaced', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedEditFixture(sub);
+    await g
+      .V()
+      .has('Artifact', 'id', 'mr')
+      .has('intent_id', intent.id)
+      .property('collaboration_epoch', 'replacement')
+      .next();
+    const stale = await putContent(sub, projectId, intent.id, 'mr', 'stale draft', {
+      collaborationEpoch: null,
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(JSON.parse(stale.body).code).toBe('artifact_replaced');
+    const current = await putContent(sub, projectId, intent.id, 'mr', 'current draft', {
+      collaborationEpoch: 'replacement',
+    });
+    expect(current.statusCode).toBe(200);
+  });
   it('writes content + human provenance, marks the closure stale, records the event', async () => {
     const sub = `u-${randomUUID()}`;
     const { projectId, intent } = await seedEditFixture(sub);

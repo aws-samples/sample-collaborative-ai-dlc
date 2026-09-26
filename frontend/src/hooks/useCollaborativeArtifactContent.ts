@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { simpleDiffStringWithCursor } from 'lib0/diff';
 import { useYjsDocument } from './useYjsDocument';
 import { useAutoSave } from './useAutoSave';
+import { saveCollaborativeProjection } from '../lib/collaborativeSave';
 import { seedYjsDocumentIfEmpty } from '../lib/yjsSeed';
 
 /**
@@ -20,29 +21,41 @@ export function useCollaborativeArtifactContent({
   projectId,
   intentId,
   artifactId,
+  collaborationEpoch,
   userName,
   userColor,
   enabled,
   onAutoSave,
+  readSaveVersion,
+  onSaveError,
 }: {
   projectId: string;
   intentId: string;
   artifactId: string;
+  collaborationEpoch?: string | null;
   userName: string;
   userColor?: string;
   enabled: boolean;
-  onAutoSave?: (content: string) => Promise<void>;
+  onAutoSave?: (content: string, version?: string | null) => Promise<void>;
+  readSaveVersion?: () => Promise<string | null>;
+  onSaveError?: (error: unknown) => void;
 }) {
-  const docId = enabled ? `intent-artifact-${intentId}-${artifactId}` : null;
-  const { doc, synced, awareness, remoteUsers, setCursor } = useYjsDocument(
-    docId,
-    userName,
-    userColor,
-    {
-      intentId,
-      projectId,
-    },
-  );
+  const docId = enabled
+    ? `intent-artifact-${intentId}-${artifactId}-epoch-${collaborationEpoch ?? 'legacy'}`
+    : null;
+  const {
+    doc,
+    synced,
+    awareness,
+    remoteUsers,
+    setCursor,
+    localRevision,
+    flushDocument,
+    beforeDisconnect,
+  } = useYjsDocument(docId, userName, userColor, {
+    intentId,
+    projectId,
+  });
   const [content, setContentState] = useState('');
 
   useEffect(() => {
@@ -99,18 +112,31 @@ export function useCollaborativeArtifactContent({
   const getAutoSaveData = useCallback(() => {
     if (!doc || !docId || !synced) return null;
     const value = doc.getText('content').toString();
-    return value ? { content: value } : null;
+    return { content: value };
   }, [doc, docId, synced]);
 
-  const autoSaveHandler = useCallback(
-    async (data: { content: string }) => {
-      if (onAutoSave) await onAutoSave(data.content);
-    },
-    [onAutoSave],
-  );
+  const autoSaveHandler = useCallback(async () => {
+    if (!onAutoSave) return;
+    try {
+      const saved = await saveCollaborativeProjection({
+        readVersion: readSaveVersion ?? (async () => undefined),
+        flush: flushDocument,
+        readData: () => doc.getText('content').toString(),
+        write: (value, version) =>
+          version === undefined ? onAutoSave(value) : onAutoSave(value, version),
+      });
+      return { content: saved };
+    } catch (error) {
+      onSaveError?.(error);
+      throw error;
+    }
+  }, [onAutoSave, readSaveVersion, onSaveError, flushDocument, doc]);
 
-  useAutoSave(getAutoSaveData, autoSaveHandler, [content], {
+  const { flush } = useAutoSave(getAutoSaveData, autoSaveHandler, [localRevision], {
     enabled: enabled && synced && !!onAutoSave,
+    skipInitial: true,
+    resetKey: doc,
+    beforeDisconnect,
   });
 
   return {
@@ -123,5 +149,6 @@ export function useCollaborativeArtifactContent({
     awareness,
     remoteUsers,
     setCursor,
+    flush,
   };
 }

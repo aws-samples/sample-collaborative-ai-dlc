@@ -224,6 +224,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     pendingAttachmentUploads,
     pendingAttachmentDeletions,
     ifAttachmentRevision = null,
+    ifDraftRevision = null,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -450,6 +451,19 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('pendingAttachmentDeletions = :pad');
       values[':pad'] = pendingAttachmentDeletions;
     }
+    if (ifDraftRevision !== null) {
+      if (!Number.isSafeInteger(ifDraftRevision) || ifDraftRevision < 0)
+        throw new Error('ifDraftRevision must be a non-negative integer');
+      sets.push('draftRevision = :nextDraftRevision');
+      values[':nextDraftRevision'] = ifDraftRevision + 1;
+    } else if (
+      [title, prompt, scope, composedGrid, skipStageIds].some((value) => value !== undefined)
+    ) {
+      // Composer/orchestrator changes invalidate a browser's preflight too.
+      sets.push('draftRevision = if_not_exists(draftRevision, :draftZero) + :draftOne');
+      values[':draftZero'] = 0;
+      values[':draftOne'] = 1;
+    }
     const params = {
       TableName: table(),
       Key: executionMetaKey(executionId),
@@ -473,6 +487,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         '(attribute_not_exists(attachmentRevision) OR attachmentRevision = :ifAttachmentRevision)',
       );
       params.ExpressionAttributeValues[':ifAttachmentRevision'] = ifAttachmentRevision;
+    }
+    if (ifDraftRevision !== null) {
+      conditions.push(
+        ifDraftRevision === 0
+          ? '(attribute_not_exists(draftRevision) OR draftRevision = :ifDraftRevision)'
+          : 'draftRevision = :ifDraftRevision',
+      );
+      values[':ifDraftRevision'] = ifDraftRevision;
     }
     if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
     const { Attributes } = await ddb.send(new UpdateCommand(params));
