@@ -9,6 +9,7 @@ import {
   withPlatformSensors,
   __test,
 } from '../commands/run-stage.js';
+import { createProcessBridge } from '../mcp/process-bridge.js';
 import {
   commitAndPushAll as realCommitAndPushAll,
   gitResultForCommitRefs as realGitResultForCommitRefs,
@@ -1010,6 +1011,74 @@ describe('runStage — failure paths (always records terminal state)', () => {
   });
 });
 
+describe('runStage — release-pinned conductor', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+  const methodologyRelease = { releaseId: 'aidlc:abc', sourceSha: 'abc', closureDigest: 'd' };
+
+  it('injects the release conductor even though AIDLC_REPO_REF names another snapshot', async () => {
+    const seen = [];
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', AIDLC_REPO_REF: 'other-ref' },
+      loadConductor: async (ref, options) => {
+        seen.push({ ref, options });
+        return options?.methodologyRelease ? '# release conductor' : '# runtime-prefix conductor';
+      },
+      materializeStage: async ({ stage, conductor }) => {
+        seen.push({ conductor });
+        return { prompt: `PROMPT ${stage.stageId}`, mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+
+    const res = await runStage({ ...baseArgs, methodologyRelease }, deps);
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(seen[0]).toEqual({ ref: null, options: { methodologyRelease } });
+    expect(seen.at(-1).conductor).toBe('# release conductor');
+  });
+
+  it('fails the stage instead of running with an empty conductor when the release object is tampered with', async () => {
+    const tampered = Object.assign(new Error('runtime object does not match its recorded digest'), {
+      code: 'release_closure_mismatch',
+    });
+    let spawned = false;
+    const deps = baseDeps({
+      spawnFn: () => (spawned = true),
+      loadConductor: async () => {
+        throw tampered;
+      },
+    });
+
+    const res = await runStage({ ...baseArgs, methodologyRelease }, deps);
+
+    expect(res).toMatchObject({
+      ok: false,
+      reason: 'conductor_unavailable',
+      detail: tampered.message,
+    });
+    expect(spawned).toBe(false);
+    expect(
+      deps.store.calls.some((call) => call[0] === 'updateStageState' && call[1].state === 'FAILED'),
+    ).toBe(true);
+  });
+
+  it('keeps swallowing a conductor failure for an unpinned intent', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadConductor: async () => {
+        throw new Error('aidlc-runtime snapshot is gone');
+      },
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+  });
+});
+
 describe('runStage — MCP secret resolution + child-env injection', () => {
   // Capture the env the CLI child is spawned with (3rd arg of spawnFn) + exit 0.
   const capturingSpawn = () => {
@@ -1390,6 +1459,103 @@ describe('runStage — LLM reviewer axis', () => {
     expect(store.listSensorRuns).toHaveBeenCalledTimes(2);
     // One builder invocation plus two clean-room reviewer invocations.
     expect(spawnFn).toHaveBeenCalledTimes(3);
+  });
+
+  // `fromRelease` is the provenance flag the release policy is gated on:
+  // `review_class` / `review_cap` only act when the library came from
+  // a verified release closure, so an advisory-policy test must be in release
+  // mode. `block-loader.js` stamps this on every release-resolved library.
+  const advisoryLibrary = ({ humanValidation = 'none', reviewerMaxIterations = 3 } = {}) => {
+    const lib = libWithReviewer({ humanValidation, reviewerMaxIterations });
+    lib.stagesById['requirements-analysis'].reviewClass = 'advisory';
+    lib.fromRelease = true;
+    return lib;
+  };
+
+  it('does not fail an advisory-review stage on a NOT-READY verdict', async () => {
+    const store = storeWithVerdict('NOT-READY', 'thin acceptance criteria');
+    const deps = baseDeps({
+      store,
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: advisoryLibrary() }),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(res.reviewAdvisory).toMatchObject({
+      reviewerAgent: 'aidlc-reviewer-agent',
+      verdict: 'NOT-READY',
+      findings: 'thin acceptance criteria',
+    });
+  });
+
+  it('runs an advisory reviewer exactly once regardless of the iteration budget', async () => {
+    const store = storeWithVerdictSequence(['NOT-READY', 'NOT-READY', 'NOT-READY']);
+    const spawnFn = vi.fn(okSpawn);
+    const deps = baseDeps({
+      store,
+      spawnFn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: advisoryLibrary({ reviewerMaxIterations: 3 }),
+      }),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res.ok).toBe(true);
+    expect(store.listSensorRuns).toHaveBeenCalledTimes(1);
+    // One builder invocation plus exactly ONE clean-room reviewer invocation.
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists advisory findings so the human sees them at the gate', async () => {
+    const store = storeWithVerdict('NOT-READY', 'unmapped NFR: latency budget');
+    const broadcast = vi.fn(async () => {});
+    const deps = baseDeps({
+      store,
+      broadcast,
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: advisoryLibrary({ humanValidation: 'required' }),
+      }),
+    });
+
+    await runStage(baseArgs, deps);
+
+    const event = store.calls.find(
+      ([name, args]) => name === 'appendEvent' && args.type === 'v2.review.advisory',
+    );
+    expect(event?.[1].summary).toContain('unmapped NFR: latency budget');
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        noteType: 'v2.review.advisory',
+        kind: 'review',
+        summary: 'unmapped NFR: latency budget',
+      }),
+    );
+  });
+
+  it('runs no reviewer at all when the scope caps review to none', async () => {
+    const lib = libWithReviewer({ humanValidation: 'none' });
+    lib.scopesById = { feature: { id: 'feature', version: 1, reviewCap: 'none' } };
+    lib.fromRelease = true;
+    const store = storeWithVerdict('NOT-READY');
+    const spawnFn = vi.fn(okSpawn);
+    const deps = baseDeps({
+      store,
+      spawnFn,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(res.reviewAdvisory).toBeUndefined();
+    // Only the builder invocation — no clean-room reviewer ran.
+    expect(spawnFn).toHaveBeenCalledTimes(1);
   });
 
   it('keeps Codex reviewer sessions ephemeral and persists only the author rollout', async () => {
@@ -4076,5 +4242,736 @@ describe('runStage — intent delivery', () => {
     const res = await runStage(baseArgs, deps);
     expect(res.ok).toBe(true);
     expect(seen).toEqual({ scope: 'feature' });
+  });
+});
+
+// Release-mode runStage behavior.
+describe('runStage — release-mode fidelity', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+
+  const RELEASE_PIN = {
+    releaseId: 'aidlc:abc',
+    sourceSha: 'a'.repeat(40),
+    closureDigest: 'd'.repeat(64),
+    importerRevision: 1,
+    catalogKey: 'aidlc-releases/v1/catalog.json',
+    manifestKey: 'aidlc-releases/v1/manifest.json',
+  };
+
+  it('still refuses agent-team, which needs real concurrent sessions', async () => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].mode = 'agent-team';
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+    });
+
+    await expect(runStage(baseArgs, deps)).resolves.toMatchObject({
+      ok: false,
+      reason: 'not_implemented',
+    });
+  });
+
+  // In release mode a body that fails its integrity check must fail the
+  // STAGE, not silently produce a prompt with no instructions.
+  it('fails the stage when a release-mode body fails its integrity check', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadBlockBody: async () => {
+        const error = new Error('body object does not match its recorded digest');
+        error.code = 'release_closure_mismatch';
+        throw error;
+      },
+    });
+
+    const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+
+    expect(res).toMatchObject({ ok: false, reason: 'methodology_body_unavailable' });
+    expect(res.detail).toContain('does not match its recorded digest');
+  });
+
+  it('passes the release pin to the body reader so the digest check can run', async () => {
+    const loadBlockBody = vi.fn(async () => 'body');
+    const deps = baseDeps({ spawnFn: okSpawn, loadBlockBody });
+
+    await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+
+    expect(loadBlockBody).toHaveBeenCalledWith(expect.anything(), {
+      methodologyRelease: RELEASE_PIN,
+    });
+  });
+
+  it('keeps the legacy path lenient when a body is unreadable', async () => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadBlockBody: async () => {
+        throw new Error('s3 down');
+      },
+    });
+
+    await expect(runStage(baseArgs, deps)).resolves.toMatchObject({ ok: true });
+  });
+
+  // A scope policy that removes verification must leave an audit trail.
+  it('emits v2.policy.applied naming the reviewer and sensors the policy removed', async () => {
+    const lib = library();
+    lib.fromRelease = true;
+    lib.stagesById['requirements-analysis'].reviewer = 'aidlc-reviewer-agent';
+    lib.stagesById['requirements-analysis'].sensors = ['linter'];
+    lib.sensorsById.linter = { id: 'linter', version: 1, command: 'bun x', matches: '**/*.ts' };
+    lib.agentsById['aidlc-reviewer-agent'] = { id: 'aidlc-reviewer-agent' };
+    lib.scopesById = {
+      feature: { id: 'feature', version: 1, reviewCap: 'none', sensorsPolicy: 'off' },
+    };
+    const store = spyStore();
+    const deps = baseDeps({
+      store,
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+    });
+
+    await runStage(baseArgs, deps);
+
+    const event = store.calls.find(
+      ([name, args]) => name === 'appendEvent' && args.type === 'v2.policy.applied',
+    );
+    expect(event).toBeDefined();
+    expect(event[1].summary).toContain('aidlc-reviewer-agent');
+    expect(event[1].summary).toContain('linter');
+  });
+
+  it('emits no policy event for a legacy library, even with the same SCOPE row', async () => {
+    const lib = library();
+    lib.scopesById = { feature: { id: 'feature', version: 1, reviewCap: 'none' } };
+    const store = spyStore();
+    const deps = baseDeps({
+      store,
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+    });
+
+    await runStage(baseArgs, deps);
+
+    expect(
+      store.calls.some(
+        ([name, args]) => name === 'appendEvent' && args.type === 'v2.policy.applied',
+      ),
+    ).toBe(false);
+  });
+
+  // The write-plane candidate list must be trustworthy or absent. A repo that
+  // reported no `files` array means the list is PARTIAL, and a partial list
+  // silently narrows a sensor sweep into "no files match". The path PROJECTION
+  // itself is unit-tested in aidlc-release-adapters.test.js; here we pin the
+  // trust decision and that the projected space reaches the sensor.
+  describe('write-plane changed-file list', () => {
+    const sensorLibrary = (matches) => {
+      const lib = library();
+      lib.stagesById['requirements-analysis'].sensors = ['linter'];
+      lib.sensorsById.linter = {
+        id: 'linter',
+        version: 1,
+        command: 'bun run linter',
+        matches,
+        severity: 'advisory',
+        fireOn: 'write',
+      };
+      return lib;
+    };
+
+    const sensorDetail = async ({ gitResult, repos, matches }) => {
+      const store = spyStore();
+      const deps = baseDeps({
+        store,
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: sensorLibrary(matches) }),
+        commitAndPushAll: async () => gitResult,
+        loadBlockScript: async () => 'export default 1;',
+        ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+        redirectHeavyDirs: async () => ({ links: [] }),
+      });
+      const res = await runStage({ ...baseArgs, repos }, deps);
+      expect(res.reason ?? null).toBeNull();
+      const run = store.calls.find(
+        ([name, args]) => name === 'recordSensorRun' && args.sensorId === 'linter',
+      );
+      return run?.[1]?.detail ?? null;
+    };
+
+    const multiGit = {
+      ok: true,
+      committed: true,
+      results: [
+        { repo: 'acme/api', committed: true, files: ['src/a.ts'] },
+        { repo: 'acme/web', committed: true, files: ['src/b.ts'] },
+      ],
+    };
+
+    it('uses the write plane with the full list when every repo reported files', async () => {
+      expect(
+        await sensorDetail({
+          gitResult: multiGit,
+          repos: ['acme/api', 'acme/web'],
+          matches: '**/*.md',
+        }),
+      ).toMatchObject({ reason: 'no files match', fireOn: 'write', changedFiles: 2 });
+    });
+
+    it('hands the sensor workspace-relative paths, not repo-relative ones', async () => {
+      // `acme/web/**` can only match once the repo-relative `src/b.ts` has been
+      // projected into the workspace space.
+      const projected = await sensorDetail({
+        gitResult: multiGit,
+        repos: ['acme/api', 'acme/web'],
+        matches: 'acme/web/**',
+      });
+      expect(projected?.reason).not.toBe('no files match');
+
+      // The unprojected path space matches nothing under the repo prefix.
+      const unprojected = await sensorDetail({
+        gitResult: multiGit,
+        repos: ['acme/api', 'acme/web'],
+        matches: 'src/**',
+      });
+      expect(unprojected).toMatchObject({ reason: 'no files match', changedFiles: 2 });
+    });
+
+    it('falls back to the workspace-wide sweep when a repo reported no files array', async () => {
+      const detail = await sensorDetail({
+        gitResult: {
+          ok: true,
+          committed: true,
+          results: [
+            { repo: 'acme/api', committed: true, files: ['src/a.ts'] },
+            { repo: 'acme/web' },
+          ],
+        },
+        repos: ['acme/api', 'acme/web'],
+        matches: '**/*.md',
+      });
+      expect(detail).toMatchObject({ reason: 'no files match' });
+      expect(detail.fireOn).toBeUndefined();
+      expect(detail.changedFiles).toBeUndefined();
+    });
+
+    it('falls back to the workspace-wide sweep when the git engine reported nothing', async () => {
+      const detail = await sensorDetail({
+        gitResult: { ok: true, committed: false, results: [] },
+        repos: [],
+        matches: '**/*.md',
+      });
+      expect(detail.fireOn).toBeUndefined();
+    });
+  });
+
+  // The advisory reviewer prompt used to promise its findings were shown
+  // verbatim at the approval gate. They are not — they land on the timeline.
+  describe('advisory reviewer prompt truthfulness', () => {
+    const advisoryStage = {
+      stageId: 'requirements-analysis',
+      phase: 'inception',
+      inputArtifacts: [{ artifact: 'intent-statement' }],
+      outputArtifacts: [{ artifact: 'requirements-analysis' }],
+      reviewer: { reviewerAgent: 'aidlc-reviewer-agent', maxIterations: 1, advisory: true },
+    };
+
+    it('does not claim the findings are shown verbatim at the gate', () => {
+      const prompt = __test.buildReviewerPrompt({
+        stage: advisoryStage,
+        reviewerAgent: 'aidlc-reviewer-agent',
+        reviewerPersona: '# Reviewer',
+        knowledge: '',
+        round: 1,
+      });
+
+      expect(prompt).not.toMatch(/shown verbatim to the human reviewer at the approval/i);
+      expect(prompt).toContain('recorded on this stage');
+      expect(prompt).toMatch(/durable review\s+note/);
+      expect(prompt).toMatch(/NOT\s+inlined into the approval prompt/);
+    });
+
+    it('says nothing about advisory handling on an adversarial review', () => {
+      const prompt = __test.buildReviewerPrompt({
+        stage: { ...advisoryStage, reviewer: { reviewerAgent: 'r', maxIterations: 3 } },
+        reviewerAgent: 'r',
+        reviewerPersona: '# Reviewer',
+        knowledge: '',
+        round: 1,
+      });
+
+      expect(prompt).not.toContain('ADVISORY review');
+    });
+
+    it('neutralizes engine tokens in the reviewer persona and knowledge', () => {
+      const prompt = __test.buildReviewerPrompt({
+        stage: advisoryStage,
+        reviewerAgent: 'r',
+        reviewerPersona: 'Run {{INVOKE}} engine gen stage-table',
+        knowledge: 'See {{HARNESS_DIR}}/tools',
+        round: 1,
+      });
+
+      expect(prompt).not.toContain('{{INVOKE}}');
+      expect(prompt).not.toContain('{{HARNESS_DIR}}');
+      expect(prompt).toContain('<runtime-managed-engine>');
+      expect(prompt).toContain('<runtime-managed>');
+    });
+  });
+});
+
+// ── Release-mode knowledge and trustworthy file lists ───────────────────────
+describe('runStage — release-mode knowledge and changedFiles', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+
+  const RELEASE_PIN = {
+    releaseId: 'aidlc:abc',
+    sourceSha: 'a'.repeat(40),
+    closureDigest: 'd'.repeat(64),
+    importerRevision: 1,
+    catalogKey: 'aidlc-releases/v1/catalog.json',
+    manifestKey: 'aidlc-releases/v1/manifest.json',
+  };
+
+  // A KNOWLEDGE body is methodology. In release mode a digest mismatch on
+  // it must fail the stage exactly like a stage or agent body — swallowing it to
+  // '' runs the agent on silently reduced steering.
+  describe('KNOWLEDGE bodies fail closed in release mode', () => {
+    const knowledgeLibrary = () => {
+      const lib = library();
+      lib.knowledgeById = {
+        'product-knowledge': {
+          id: 'product-knowledge',
+          agentRef: 'aidlc-product-agent',
+          bodyRef: { s3Key: 'blocks/bodies/sha256/knowledge' },
+        },
+      };
+      return lib;
+    };
+
+    const tamperedKnowledgeDeps = (extra = {}) =>
+      baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: knowledgeLibrary() }),
+        loadBlockBody: async (block) => {
+          if (block.id === 'product-knowledge') {
+            const error = new Error('knowledge object does not match its recorded digest');
+            error.code = 'release_closure_mismatch';
+            throw error;
+          }
+          return `body:${block.bodyRef?.s3Key ?? block.id}`;
+        },
+        ...extra,
+      });
+
+    it('fails the stage when a release-mode KNOWLEDGE body fails its digest check', async () => {
+      const res = await runStage(
+        { ...baseArgs, methodologyRelease: RELEASE_PIN },
+        tamperedKnowledgeDeps(),
+      );
+
+      expect(res).toMatchObject({ ok: false, reason: 'methodology_body_unavailable' });
+      expect(res.detail).toContain('does not match its recorded digest');
+    });
+
+    it('never spawns the CLI once release-mode knowledge is untrustworthy', async () => {
+      const spawnFn = vi.fn(okSpawn);
+
+      await runStage(
+        { ...baseArgs, methodologyRelease: RELEASE_PIN },
+        tamperedKnowledgeDeps({ spawnFn }),
+      );
+
+      expect(spawnFn).not.toHaveBeenCalled();
+    });
+
+    it('keeps the LEGACY path lenient: the same failure degrades to no knowledge', async () => {
+      let seen = null;
+      const res = await runStage(
+        baseArgs,
+        tamperedKnowledgeDeps({
+          materializeStage: async (args) => {
+            seen = args;
+            return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+          },
+        }),
+      );
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(seen.knowledge).not.toContain('knowledge');
+    });
+
+    it('still injects a readable release-mode KNOWLEDGE body', async () => {
+      let seen = null;
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: knowledgeLibrary() }),
+        materializeStage: async (args) => {
+          seen = args;
+          return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+        },
+      });
+
+      const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(seen.knowledge).toContain('blocks/bodies/sha256/knowledge');
+    });
+  });
+
+  // The returned `changedFiles` must carry the SAME trust guarantee as the
+  // `fire_on: write` sensor feed. `[]` would read as "this stage changed nothing"
+  // when the truth is "the git engine could not say".
+  describe('returned changedFiles is null unless the git report is complete', () => {
+    const resultFor = async ({ gitResult, repos }) => {
+      const deps = baseDeps({
+        spawnFn: okSpawn,
+        commitAndPushAll: async () => gitResult,
+        ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+        redirectHeavyDirs: async () => ({ links: [] }),
+      });
+      return runStage({ ...baseArgs, repos }, deps);
+    };
+
+    it('reports the sorted union when every repo reported a files array', async () => {
+      const res = await resultFor({
+        gitResult: {
+          ok: true,
+          committed: true,
+          results: [
+            { repo: 'acme/web', committed: true, sha: 'b'.repeat(40), files: ['src/b.ts'] },
+            { repo: 'acme/api', committed: true, sha: 'a'.repeat(40), files: ['src/a.ts'] },
+          ],
+        },
+        repos: ['acme/api', 'acme/web'],
+      });
+
+      expect(res.changedFiles).toEqual(['src/a.ts', 'src/b.ts']);
+    });
+
+    it('reports null when one repo omitted its files array', async () => {
+      const res = await resultFor({
+        gitResult: {
+          ok: true,
+          committed: true,
+          results: [
+            { repo: 'acme/api', committed: true, sha: 'a'.repeat(40), files: ['src/a.ts'] },
+            { repo: 'acme/web', committed: true, sha: 'b'.repeat(40) },
+          ],
+        },
+        repos: ['acme/api', 'acme/web'],
+      });
+
+      // NOT ['src/a.ts'] — a partial list silently understates what changed.
+      expect(res.changedFiles).toBeNull();
+    });
+
+    it('reports null when the git engine failed', async () => {
+      const res = await resultFor({
+        gitResult: {
+          ok: false,
+          committed: false,
+          results: [{ repo: 'acme/api', committed: false, files: ['src/a.ts'] }],
+        },
+        repos: ['acme/api'],
+      });
+
+      expect(res.changedFiles).toBeNull();
+    });
+
+    it('reports null when the git engine reported no repos at all', async () => {
+      const res = await resultFor({
+        gitResult: { ok: true, committed: false, results: [] },
+        repos: [],
+      });
+
+      expect(res.changedFiles).toBeNull();
+    });
+
+    it('treats a clean commit as an empty change set, not an unknown one', async () => {
+      const res = await resultFor({
+        gitResult: {
+          ok: true,
+          committed: false,
+          results: [
+            { repo: 'acme/api', committed: false, reason: 'clean', pushed: 'up_to_date' },
+            { repo: 'acme/web', committed: true, sha: 'b'.repeat(40), files: ['src/b.ts'] },
+          ],
+        },
+        repos: ['acme/api', 'acme/web'],
+      });
+
+      expect(res.changedFiles).toEqual(['src/b.ts']);
+    });
+  });
+});
+
+const checkpointRunStore = ({ stageInstanceId, unitSlug = null }) => {
+  const store = spyStore();
+  const humanTasks = new Map();
+  const receipts = new Map();
+  const events = [];
+  const stageRow = { stageInstanceId, attempt: 0, state: 'RUNNING' };
+  const executionRow = {};
+  store.createHumanTask = async (args) => {
+    const row = { ...args, status: 'pending', answer: null, createdAt: 'T' };
+    humanTasks.set(args.humanTaskId, row);
+    return row;
+  };
+  store.getHumanTask = async (_executionId, humanTaskId) => humanTasks.get(humanTaskId) ?? null;
+  store.getStage = async () => ({ ...stageRow });
+  store.getExecution = async () => ({ ...executionRow });
+  store.updateStageState = async (patch) => {
+    store.calls.push(['updateStageState', patch]);
+    Object.assign(stageRow, patch);
+    return { ...stageRow };
+  };
+  store.updateExecution = async (patch) => {
+    store.calls.push(['updateExecution', patch]);
+    Object.assign(executionRow, patch);
+    return { ...executionRow };
+  };
+  store.resumeStageRow = async () => {
+    stageRow.state = 'RUNNING';
+    stageRow.pendingHumanTaskId = null;
+    stageRow.parkedAt = null;
+  };
+  store.appendEvent = async (event) => {
+    store.calls.push(['appendEvent', event]);
+    const row = { ...event, eventType: event.type, timestamp: 'T' };
+    events.push(row);
+    return row;
+  };
+  store.listEvents = async () => events;
+  store.listReceipts = async () => [...receipts.values()];
+  store.getReceipt = async (_executionId, selector) =>
+    receipts.get(
+      `RECEIPT#${selector.kind}#${selector.stageInstanceId}#${selector.attempt}#${selector.unitSlug ?? '-'}`,
+    ) ?? null;
+  store.putReceipt = async (args) => {
+    const sk = `RECEIPT#${args.kind}#${args.stageInstanceId}#${args.attempt}#${args.unitSlug ?? '-'}`;
+    const row = { ...args, sk };
+    receipts.set(sk, row);
+    return row;
+  };
+  store.bumpStageCounter = async ({ field }) => {
+    stageRow[field] = Number(stageRow[field] ?? 0) + 1;
+    return stageRow[field];
+  };
+  store.listSensorRuns = async () => [];
+  store.getUnitPlan = async () => ({ units: [{ slug: unitSlug, kind: 'backend' }] });
+  return { store, humanTasks, stageRow };
+};
+
+const checkpointRun = ({
+  answerInline = false,
+  answerAfterPark = false,
+  repairCheckpoint = false,
+  sensor = false,
+  unit = false,
+  reviewer = false,
+}) => {
+  const stageId = unit ? 'code-generation' : 'requirements-analysis';
+  const unitSlug = unit ? 'billing' : null;
+  const sectionIndex = unit ? 2 : null;
+  const stageInstanceId = unit
+    ? planStageInstanceId('aidlc-v2@1', stageId, unitSlug, sectionIndex)
+    : BASE_STAGE_INSTANCE_ID;
+  const { store, humanTasks, stageRow } = checkpointRunStore({ stageInstanceId, unitSlug });
+  const lib = unit ? unitLibrary() : library();
+  const stageBlock = lib.stagesById[stageId];
+  stageBlock.produces = [];
+  stageBlock.summaryConfirmation = 'required';
+  if (sensor) {
+    stageBlock.sensors = ['required-sections'];
+    lib.sensorsById['required-sections'] = {
+      id: 'required-sections',
+      command: 'bun <runtime-managed>/tools/aidlc-sensor-required-sections.ts',
+      runtime: 'bun',
+      severity: 'advisory',
+      matches: '**/aidlc-docs/**',
+    };
+  }
+  if (reviewer) {
+    stageBlock.reviewer = 'aidlc-reviewer-agent';
+    lib.agentsById['aidlc-reviewer-agent'] = {
+      id: 'aidlc-reviewer-agent',
+      modelOverride: null,
+      bodyRef: { s3Key: 'blocks/bodies/sha256/reviewer' },
+    };
+  }
+  lib.fromRelease = true;
+  lib.scopesById = { feature: { id: 'feature', reviewCap: 'adversarial' } };
+
+  const bridge = createProcessBridge({
+    store,
+    scope: {
+      executionId: baseArgs.executionId,
+      intentId: baseArgs.intentId,
+      stageId,
+      stageInstanceId,
+      unitSlug,
+      sectionIndex,
+      stageAttempt: 0,
+      policy: { summaryConfirmation: 'required' },
+    },
+    pollIntervalMs: 1,
+    parkGraceMs: 1,
+    sleep: async () => {
+      if (!answerInline) return;
+      const task = [...humanTasks.values()].find((row) => row.status === 'pending');
+      if (task) {
+        task.status = 'answered';
+        task.answer = { perQuestion: [{ answer: 'Looks correct' }] };
+        task.answeredAt = 'T';
+        task.answeredBy = 'alice';
+      }
+    },
+  });
+  let spawnCount = 0;
+  const spawnFn = () => {
+    spawnCount += 1;
+    const child = new EventEmitter();
+    child.stdin = { end() {} };
+    child.stdout = new EventEmitter();
+    if (spawnCount === (repairCheckpoint ? 2 : 1)) {
+      void bridge
+        .confirmSummary({ summary: 'The lead summary' })
+        .then((outcome) => {
+          if (answerAfterPark && outcome.parked) {
+            const task = humanTasks.get(outcome.humanTaskId);
+            task.status = 'answered';
+            task.answer = { perQuestion: [{ answer: 'Looks correct' }] };
+            task.answeredAt = 'T';
+            task.answeredBy = 'alice';
+          }
+          setImmediate(() => child.emit('close', 0));
+        })
+        .catch(() => setImmediate(() => child.emit('close', 1)));
+    } else {
+      setImmediate(() => child.emit('close', 0));
+    }
+    return child;
+  };
+  const deps = baseDeps({
+    store,
+    spawnFn,
+    loadLibrary: async () => ({ workflow: unit ? unitWorkflow() : workflow(), library: lib }),
+  });
+  const args = {
+    ...baseArgs,
+    stageId,
+    ...(unit ? { unitSlug, sectionIndex } : {}),
+  };
+  return { args, deps, humanTasks, stageRow, getSpawnCount: () => spawnCount };
+};
+
+describe('runStage — checkpoint park races', () => {
+  it('parks a gate answered after the bridge park, without repair, sensors, or review', async () => {
+    const run = checkpointRun({ answerAfterPark: true, sensor: true, reviewer: true });
+    const result = await runStage(run.args, run.deps);
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'chk-summary-confirmation-si-f952091522a81cfb-0---0',
+    });
+    expect(run.getSpawnCount()).toBe(1);
+    expect(run.stageRow.state).toBe('WAITING_FOR_HUMAN');
+    expect(run.deps.store.calls.some((call) => call[0] === 'recordSensorRun')).toBe(false);
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.checkpoint.repair_requested',
+      ),
+    ).toBe(false);
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.review.running',
+      ),
+    ).toBe(false);
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.stage.succeeded',
+      ),
+    ).toBe(false);
+  });
+
+  it('continues inline after an inline checkpoint answer without parking or repairing', async () => {
+    const run = checkpointRun({ answerInline: true });
+    const result = await runStage(run.args, run.deps);
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(run.getSpawnCount()).toBe(1);
+    expect(run.stageRow.state).toBe('SUCCEEDED');
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.checkpoint.repair_requested',
+      ),
+    ).toBe(false);
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.stage.parked',
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps a parked unit-lane checkpoint attached to its own stage and section', async () => {
+    const run = checkpointRun({ answerAfterPark: true, sensor: true, unit: true });
+    const result = await runStage(run.args, run.deps);
+
+    expect(result).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', unitSlug: 'billing' });
+    expect(run.getSpawnCount()).toBe(1);
+    expect(run.stageRow.state).toBe('WAITING_FOR_HUMAN');
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.checkpoint.repair_requested',
+      ),
+    ).toBe(false);
+  });
+
+  it('parks a repair turn that leaves its own checkpoint pending', async () => {
+    const run = checkpointRun({ repairCheckpoint: true, sensor: true, reviewer: true });
+    const result = await runStage(run.args, run.deps);
+
+    expect(result).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN' });
+    expect(run.getSpawnCount()).toBe(2);
+    expect(run.stageRow.state).toBe('WAITING_FOR_HUMAN');
+    expect([...run.humanTasks.values()]).toHaveLength(1);
+    expect([...run.humanTasks.values()][0].status).toBe('pending');
+    expect(run.deps.store.calls.some((call) => call[0] === 'recordSensorRun')).toBe(false);
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.review.running',
+      ),
+    ).toBe(false);
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.stage.succeeded',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not run a checkpoint repair when its attempt counter cannot be persisted', async () => {
+    const run = checkpointRun({ repairCheckpoint: true });
+    run.deps.store.bumpStageCounter = async () => {
+      throw new Error('counter store unavailable');
+    };
+
+    const result = await runStage(run.args, run.deps);
+
+    expect(run.getSpawnCount()).toBe(1);
+    expect(
+      run.deps.store.calls.some(
+        (call) => call[0] === 'appendEvent' && call[1].type === 'v2.checkpoint.repair_requested',
+      ),
+    ).toBe(false);
+    expect(result).toMatchObject({ ok: false });
+    expect(result.detail).toContain('counter could not be persisted');
+    expect(run.stageRow.state).toBe('FAILED');
   });
 });

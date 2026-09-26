@@ -132,6 +132,7 @@ const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
 const logger = new Logger({ persistentKeys: { component: 'intents' } });
+const GATE_OVERRIDE_REASON_MAX = 2000;
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
@@ -2648,6 +2649,36 @@ export const handler = async (event, context) => {
           code: 'invalid_gate_status',
         });
       }
+      const overrideChoices = [
+        data.answer?.decision,
+        data.answer?.mode,
+        data.answer?.choice,
+        typeof data.answer === 'string' ? data.answer : null,
+        ...(Array.isArray(data.answer?.perQuestion)
+          ? data.answer.perQuestion.map((entry) => entry?.answer)
+          : []),
+      ];
+      if (
+        overrideChoices.some(
+          (choice) =>
+            typeof choice === 'string' && choice.trim().toLowerCase() === 'override-and-approve',
+        )
+      ) {
+        const reason = typeof data.answer.reason === 'string' ? data.answer.reason.trim() : '';
+        if (!reason) {
+          return response(400, {
+            error: 'A non-blank reason is required to override blocking findings',
+            code: 'override_reason_required',
+          });
+        }
+        if (reason.length > GATE_OVERRIDE_REASON_MAX) {
+          return response(400, {
+            error: `Override reason must be at most ${GATE_OVERRIDE_REASON_MAX} characters`,
+            code: 'override_reason_too_long',
+          });
+        }
+        data.answer = { ...data.answer, reason };
+      }
       // A live Quorum edit is mutating this intent's artifacts; answering the
       // gate would resume the parked stage RIGHT INTO those writes. The run is
       // already parked — waiting for the edit to finish costs nothing (mirror
@@ -2730,6 +2761,15 @@ export const handler = async (event, context) => {
       if (gate.callbackId) {
         try {
           await resumeDurableCallback(gate.callbackId, answered.answer);
+          await (
+            store.markGateCallbackConsumed?.({
+              executionId: intentId,
+              humanTaskId,
+              callbackId: gate.callbackId,
+            }) ?? Promise.resolve()
+          ).catch((markErr) =>
+            logger.error('Gate callback consumption marker write failed', markErr),
+          );
         } catch (err) {
           if (isCallbackTimeoutError(err)) {
             await repairExpiredDurableExecution({
@@ -2797,14 +2837,21 @@ export const handler = async (event, context) => {
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
-      const pending = meta.resumeRequired ?? null;
+      const marker = meta.resumeRequired ?? null;
+      const resumeGateId = marker?.humanTaskId ?? meta.pendingHumanTaskId ?? null;
+      const gate = resumeGateId ? await store.getHumanTask(intentId, resumeGateId) : null;
+      const pending = marker?.callbackId
+        ? marker
+        : meta.status === 'WAITING' &&
+            isHumanTaskAnswerStatus(gate?.status) &&
+            gate.callbackId &&
+            !gate.callbackConsumedAt
+          ? { humanTaskId: resumeGateId, callbackId: gate.callbackId }
+          : null;
       if (!pending?.callbackId) {
         return response(200, { intent: mapIntent(meta), resumed: false });
       }
       const responder = getResponder(event);
-      const gate = pending.humanTaskId
-        ? await store.getHumanTask(intentId, pending.humanTaskId)
-        : null;
       try {
         await resumeDurableCallback(pending.callbackId, gate?.answer ?? null);
       } catch (err) {
@@ -2837,6 +2884,13 @@ export const handler = async (event, context) => {
           retryable: true,
         });
       }
+      await (
+        store.markGateCallbackConsumed?.({
+          executionId: intentId,
+          humanTaskId: pending.humanTaskId,
+          callbackId: pending.callbackId,
+        }) ?? Promise.resolve()
+      ).catch((markErr) => logger.error('Gate callback consumption marker write failed', markErr));
       const updated = await store.updateExecution({
         executionId: intentId,
         resumeRequired: null,
@@ -6079,6 +6133,8 @@ const mapHumanTask = (h) => ({
   sectionIndex: h.sectionIndex ?? null,
   kind: h.kind,
   status: h.status,
+  resumeAvailable:
+    isHumanTaskAnswerStatus(h.status) && Boolean(h.callbackId) && !h.callbackConsumedAt,
   prompt: h.prompt ?? null,
   options: h.options ?? null,
   skipTargets: h.skipTargets ?? null,

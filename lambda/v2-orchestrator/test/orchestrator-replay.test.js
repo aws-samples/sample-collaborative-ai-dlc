@@ -565,3 +565,220 @@ describe('WP5 sections on the real durable runner', () => {
     },
   );
 });
+
+// ── The answer/bind race ────────────────────────────────────────────────────
+// The bind CAS requires the gate to still be `pending`. A human who answers in
+// the window between the runtime parking the stage and the orchestrator binding
+// its durable callback makes that CAS fail — the run must distinguish an
+// already-answered gate from a conflicting callback owner.
+// These tests pin the classification: answered-early resumes WITHOUT waiting,
+// superseded retires, and a gate genuinely owned by another callback still fails.
+describe('orchestrator gate bind CAS classification (answer-before-bind race)', () => {
+  const bindFailingWorld = (gate) => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    world.gateReads = [];
+    world.deps.store.setGateCallbackId = async (input) => {
+      world.gateCallbackBindings.push(input);
+      return null; // ConditionalCheckFailedException → the store returns null
+    };
+    world.deps.store.getHumanTask = async () => {
+      world.gateReads.push(gate);
+      return gate;
+    };
+    return world;
+  };
+
+  const runTo = async (world) => {
+    const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const executionPromise = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    world.pendingHumanTaskId = 'h1';
+    await completeStage(runner, 'stage-cb-a', {
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'h1',
+      stageInstanceId: 'si-a',
+    });
+    return { runner, executionPromise };
+  };
+
+  it('resumes an already-answered, unbound gate instead of failing the run', async () => {
+    // The persisted gate is answered, unbound, and belongs to this stage instance.
+    const world = bindFailingWorld({
+      humanTaskId: 'h1',
+      status: 'answered',
+      callbackId: null,
+      stageInstanceId: 'si-a',
+      answeredAt: '2026-09-24T12:01:48.967Z',
+      answer: { decision: 'approve' },
+    });
+    const { runner, executionPromise } = await runTo(world);
+
+    // No `await-h1` wait happens at all — the resume leg is dispatched directly,
+    // which is the whole point: the answer is already durable.
+    await completeStage(runner, 'stage-cb-a-resume-h1', { ok: true, state: 'SUCCEEDED' });
+
+    const execution = await executionPromise;
+    expect(execution.getResult()).toEqual({ ok: true, intentId: 'i1', stages: 1 });
+    const starts = world.invokes.filter((p) => p.command === 'run-stage-start');
+    expect(starts.map((p) => p.resumeFrom)).toEqual([null, 'h1']);
+    expect(world.statusWrites.filter((s) => s === 'SUCCEEDED')).toHaveLength(1);
+    expect(world.statusWrites).not.toContain('FAILED');
+    expect(world.events).toContain('v2.execution.succeeded');
+  });
+
+  it('resumes when the gate already carries OUR callback id', async () => {
+    const world = bindFailingWorld({
+      humanTaskId: 'h1',
+      status: 'approved',
+      stageInstanceId: 'si-a',
+      answeredAt: '2026-09-24T12:01:48.967Z',
+      answer: { decision: 'approve' },
+    });
+    // Echo back whatever callbackId the (failed) bind attempted — an idempotent
+    // re-drive that already stamped us must not read as another lane's gate.
+    world.deps.store.getHumanTask = async () => ({
+      humanTaskId: 'h1',
+      status: 'approved',
+      stageInstanceId: 'si-a',
+      answeredAt: '2026-09-24T12:01:48.967Z',
+      answer: { decision: 'approve' },
+      callbackId: world.gateCallbackBindings.at(-1)?.callbackId ?? null,
+    });
+    const { runner, executionPromise } = await runTo(world);
+    await completeStage(runner, 'stage-cb-a-resume-h1', { ok: true, state: 'SUCCEEDED' });
+
+    const execution = await executionPromise;
+    expect(execution.getResult()).toEqual({ ok: true, intentId: 'i1', stages: 1 });
+    expect(world.statusWrites).not.toContain('FAILED');
+  });
+
+  it('retires without terminal writes when the gate was superseded while parking', async () => {
+    const world = bindFailingWorld({
+      humanTaskId: 'h1',
+      status: 'superseded',
+      callbackId: null,
+      stageInstanceId: 'si-a',
+    });
+    const { executionPromise } = await runTo(world);
+
+    const execution = await executionPromise;
+    expect(execution.getResult()).toMatchObject({ ok: false, reason: 'retired' });
+    expect(world.statusWrites).not.toContain('SUCCEEDED');
+    expect(world.statusWrites).not.toContain('FAILED');
+    expect(world.invokes.filter((p) => p.command === 'run-stage-start' && p.resumeFrom)).toEqual(
+      [],
+    );
+  });
+
+  it('still fails when the gate is bound to a DIFFERENT non-null callback', async () => {
+    const world = bindFailingWorld({
+      humanTaskId: 'h1',
+      status: 'answered',
+      callbackId: 'cb-someone-else',
+      stageInstanceId: 'si-a',
+      answeredAt: '2026-09-24T12:01:48.967Z',
+      answer: { decision: 'approve' },
+    });
+    const { executionPromise } = await runTo(world);
+
+    const execution = await executionPromise;
+    expect(execution.getResult()).toMatchObject({ ok: false, reason: 'gate_callback_conflict' });
+    expect(world.statusWrites).toContain('FAILED');
+  });
+
+  it('still fails when the status says answered but no answer was ever recorded', async () => {
+    // Status without `answeredAt` is a label, not evidence: the CAS must have
+    // failed on ownership, so this stays a conflict.
+    const world = bindFailingWorld({
+      humanTaskId: 'h1',
+      status: 'answered',
+      callbackId: null,
+      stageInstanceId: 'si-a',
+    });
+    const { executionPromise } = await runTo(world);
+
+    const execution = await executionPromise;
+    expect(execution.getResult()).toMatchObject({ ok: false, reason: 'gate_callback_conflict' });
+    expect(world.statusWrites).toContain('FAILED');
+  });
+
+  it('still fails when the gate is STILL pending (the CAS failed on ownership)', async () => {
+    const world = bindFailingWorld({
+      humanTaskId: 'h1',
+      status: 'pending',
+      callbackId: null,
+      stageInstanceId: 'si-a',
+    });
+    const { executionPromise } = await runTo(world);
+
+    const execution = await executionPromise;
+    expect(execution.getResult()).toMatchObject({ ok: false, reason: 'gate_callback_conflict' });
+    expect(world.statusWrites).toContain('FAILED');
+  });
+});
+
+// ── Missing proof for the answer/bind race: the dangling callback ────────────
+// An answered-early gate leaves a durable callback (`await-<gate>`) that NOTHING
+// will ever complete: the answer landed before the bind, so lambda/intents found
+// no callbackId to resume. The run must reach SUCCEEDED on the real durable
+// runner WITHOUT that callback being completed — if the handler awaited it on any
+// replay, the execution could never finish.
+describe('an answered-early gate never awaits its dangling callback', () => {
+  const runAnsweredEarly = async ({ bindSucceeds }) => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    const answeredGate = {
+      humanTaskId: 'h1',
+      status: 'answered',
+      callbackId: null,
+      stageInstanceId: 'si-a',
+      answeredAt: '2026-09-24T12:01:48.967Z',
+      answer: { decision: 'approve' },
+    };
+    world.deps.store.setGateCallbackId = async (input) => {
+      world.gateCallbackBindings.push(input);
+      // null ⇔ the CAS on `pending` failed because the human already answered.
+      return bindSucceeds ? {} : null;
+    };
+    world.deps.store.getHumanTask = async () => answeredGate;
+    const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const executionPromise = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    world.pendingHumanTaskId = 'h1';
+    await completeStage(runner, 'stage-cb-a', {
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'h1',
+      stageInstanceId: 'si-a',
+    });
+    // Only the RESUME leg's stage callback is completed — never `await-h1`.
+    await completeStage(runner, 'stage-cb-a-resume-h1', { ok: true, state: 'SUCCEEDED' });
+    return { world, runner, execution: await executionPromise };
+  };
+
+  it.each([
+    ['the bind CAS failed on the answered gate', false],
+    ['the bind succeeded and the answer landed before the wait', true],
+  ])('reaches SUCCEEDED when %s', async (_label, bindSucceeds) => {
+    const { world, runner, execution } = await runAnsweredEarly({ bindSucceeds });
+
+    expect(execution.getResult()).toEqual({ ok: true, intentId: 'i1', stages: 1 });
+    expect(world.statusWrites.filter((s) => s === 'SUCCEEDED')).toHaveLength(1);
+    expect(world.statusWrites).not.toContain('FAILED');
+    // The callback was created (and bound, or its bind attempted) but never
+    // completed: it is the dangling one, and the run finished regardless.
+    expect(world.gateCallbackBindings).toHaveLength(1);
+    const dangling = runner.getOperation('await-h1');
+    expect(dangling.getCallbackDetails()?.callbackId).toBe(
+      world.gateCallbackBindings[0].callbackId,
+    );
+    expect(dangling.getStatus()).toBe('STARTED');
+    // Exactly one resume leg, dispatched straight from the answered gate.
+    const starts = world.invokes.filter((p) => p.command === 'run-stage-start');
+    expect(starts.map((p) => p.resumeFrom)).toEqual([null, 'h1']);
+  });
+});

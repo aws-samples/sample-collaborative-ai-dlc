@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { realtimeService } from '../services/realtime';
+import type { GateFinding } from '../services/intents';
 
 // V2 intent realtime events broadcast by the AgentCore runtime on the
 // `intent:<intentId>` channel (see lambda/agentcore/clients.js + v2-agent.md).
@@ -58,6 +59,7 @@ export interface IntentEvent {
   questions?: unknown;
   prompt?: string | null;
   options?: unknown;
+  findings?: GateFinding[] | null;
   // agent.metric
   metricId?: string;
   metrics?: Record<string, number>;

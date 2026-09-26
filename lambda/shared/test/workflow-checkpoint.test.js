@@ -36,6 +36,27 @@ describe('workflow checkpoint', () => {
     });
   });
 
+  it('carries the release pin through the projection so a rewind stays on the same release', () => {
+    const methodologyRelease = {
+      releaseId: 'aidlc:83ed7a812c4024904f2c5e4d744e28077e0a5acd',
+      sourceSha: '83ed7a812c4024904f2c5e4d744e28077e0a5acd',
+      importerRevision: 1,
+      closureDigest: 'a'.repeat(64),
+      catalogKey: 'aidlc-releases/v1/83ed7a812c4024904f2c5e4d744e28077e0a5acd/i1/catalog.json',
+      manifestKey: 'aidlc-releases/v1/83ed7a812c4024904f2c5e4d744e28077e0a5acd/i1/manifest.json',
+    };
+    const checkpoint = buildWorkflowCheckpoint({
+      executionId: 'i1',
+      createdAt: '2026-08-14T10:00:00.000Z',
+      sourceStageInstanceId: 's1',
+      records: { ...records, meta: { ...records.meta, methodologyRelease } },
+      artifactRefs: [],
+    });
+
+    expect(checkpoint.process.meta.methodologyRelease).toEqual(methodologyRelease);
+    expect(checkpointProjection(checkpoint).meta.methodologyRelease).toEqual(methodologyRelease);
+  });
+
   it('canonicalizes nested object properties independently of insertion order', () => {
     const first = {
       stageRows: [

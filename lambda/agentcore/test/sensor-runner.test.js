@@ -322,4 +322,42 @@ describe('runStageSensors — script kind', () => {
     expect(verdicts[0]).toMatchObject({ result: 'BLOCKED' });
     expect(verdicts[0].detail.error).toBe('sensor has no script');
   });
+
+  it('preserves typed release script errors on a blocked sensor verdict', async () => {
+    await writeFile(path.join(ws, 'a.ts'), 'export const x = 1;');
+    const releaseError = Object.assign(new Error('release object digest mismatch'), {
+      name: 'ReleaseResolverError',
+      code: 'release_object_digest_mismatch',
+      details: { key: 'runtime/sha256/script' },
+    });
+    const runner = createSensorRunner({
+      graph: null,
+      loadBlockScript: async () => {
+        throw releaseError;
+      },
+      workspaceDir: ws,
+      spawnFn: fakeSpawn('{}'),
+    });
+
+    const verdicts = await runner.runStageSensors({
+      sensors: [
+        {
+          sensorId: 'linter',
+          severity: 'blocking',
+          runtime: 'bun',
+          command: 'bun x.ts',
+          matches: '**/*.ts',
+          timeoutSeconds: 5,
+          scriptRef: { s3Key: 'blocks/scripts/sha256/abc123' },
+        },
+      ],
+      stageId: 'code-generation',
+    });
+
+    expect(verdicts[0]).toMatchObject({
+      result: 'BLOCKED',
+      held: true,
+      detail: { error: releaseError.message, code: releaseError.code, name: releaseError.name },
+    });
+  });
 });

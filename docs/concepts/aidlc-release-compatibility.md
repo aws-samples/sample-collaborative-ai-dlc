@@ -88,6 +88,17 @@ until the corresponding runtime handler is registered and implemented. This
 distinction keeps newer imports inspectable without presenting them as
 safe-to-run releases.
 
+The gate handlers cover summary and plan-approval checkpoints, review policy,
+both sensor planes, change control, learnings, skeleton selection, and
+`AGENT.maxTurns`. `pipeline` and `mob` remain unsupported until this build
+registers their runtime handlers.
+
+The 2.3.3 baseline remains promotable. The 2.6.18, 2.7.0, 2.8.2, and 2.9.0
+fixtures all author `pipeline`/`mob`; those modes remain promotion gaps until
+matching handlers are available. The verified fixtures show earlier profiles
+author the same unsupported mode values, so the handler-based guard applies
+consistently across profiles rather than using version-specific exceptions.
+
 `readyForCertification` is derived from the current compatibility report. It is
 not a version allowlist, and the report's Boolean is not treated as durable
 authorization by itself: the release-promotion guard stores the authored
@@ -142,6 +153,68 @@ with the latest revision if another administrator changed the record.
 Do not delete a release closure to roll back selection. The immutable objects
 are required by intents already pinned to that release. Keep the closure and
 registry record available until those intents no longer need to resolve it.
+
+## Execution gates and policy
+
+The gate layer turns authored release policy into runtime checks. It is active
+only for a verified release closure; an unpinned intent continues on the legacy
+plan and prompt path.
+
+### Checkpoints and receipts
+
+`confirm_summary` and `request_plan_approval` are author-only MCP tools. Each
+parks a human question with fixed answer choices and writes an attempt-scoped
+`RECEIPT#` row when approved. Release-mode artifact writes are stamped with the
+active authorization. A bounded completion ladder gives a non-compliant stage
+one repair turn, then reports a gate finding or a rewind-eligible failure.
+
+Receipts use the existing execution table and remain auditable without deleting
+them. Checkpoint prompts use the existing `question` and `validation` gate kinds.
+
+Plan Approval's runtime handler checks authorization at the completion boundary,
+so it approximates the upstream pre-write guard rather than providing the same
+guarantee. Promotion remains blocked until the current build registers the
+outcome-gate handler; once available, stored and legacy records are re-evaluated
+from their verified closures without re-import.
+
+The completion ladder persists its per-attempt repair counter before it starts a
+repair turn. If that write fails, the stage fails rewindably with the original
+checkpoint finding; it does not run an uncounted repair or report success.
+
+### Gate findings and sensors
+
+The shared gate-precondition evaluator combines artifact, checkpoint, review,
+and sensor findings and determines whether the gate blocks or allows an override.
+The orchestrator presents findings at the validation gate; an allowed override
+is recorded with a receipt and timeline event.
+
+`fire_on: write` uses the post-agent changed-file sweep. `fire_on: gate` runs a
+separate pass after reviewer repairs, against declared deliverables and their
+final bytes. Blocking findings hold the gate when one exists; otherwise the
+stage fails with a rewind-eligible reason.
+
+### Scope policy
+
+- `review_cap` lowers or removes reviewer strength; `review_class: advisory`
+  runs one terminal review and carries findings to the gate.
+- `change_control: relaxed` records changed approved inputs and continues.
+  `strict` opens a two-choice question before the next stage proceeds.
+  After reconfirmation, the stage does not spawn its CLI until the attempt-scoped
+  `change-reconfirm` receipt is persisted. A failed write returns a rewindable
+  `FAILED` state; an existing receipt for the same attempt is reused idempotently.
+- `learnings: off` withholds the learning-write tools. `on` offers a learning
+  question at an existing approval gate; this is an approximation of a separate
+  upstream turn. The orchestrator sends the answer through AgentCore's
+  `record-learning` command, registered by the HTTP dispatcher.
+- `skeleton: off` skips the walking-skeleton ceremony while retaining the
+  ordinary approval gate.
+- `AGENT.maxTurns` maps to the native OpenCode turn limit; it remains inert on
+  CLIs that expose no equivalent.
+
+An answered gate whose durable callback failed to resume can be retried through
+the intent's Resume action. Callback-consumption markers and answered gate state
+prevent a duplicate resume; an expired callback transitions the intent to a
+rewind-recoverable `FAILED` state rather than leaving it indefinitely `WAITING`.
 
 ### Verification
 

@@ -87,6 +87,11 @@ export const createBusyTracker = () => {
   };
 };
 
+export const createRecordLearningHandler =
+  ({ recordLearning, store, openGraph, broadcast }) =>
+  (payload) =>
+    recordLearning(payload, { store, openGraph, broadcast });
+
 // Dispatch one parsed invocation to the right command handler. PURE of HTTP —
 // returns { statusCode, body }. `handlers` = { initWs, runStage }; `busy` is the
 // tracker so a long run-stage flips /ping to HealthyBusy.
@@ -218,6 +223,7 @@ const main = async () => {
   const { deriveArtifacts } = await import('./commands/derive-artifacts.js');
   const { createWorkflowCheckpoint } = await import('./commands/create-workflow-checkpoint.js');
   const { recordPr } = await import('./commands/record-pr.js');
+  const { recordLearning } = await import('./commands/record-learning.js');
   const { recordUnitPr } = await import('./commands/record-unit-pr.js');
   const { initLane, mergeLane, reconcileLane, refreshIntentWorkspace } =
     await import('./commands/lane.js');
@@ -308,6 +314,9 @@ const main = async () => {
     // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
     // has no Neptune access, so it forwards the structured PR data here).
     recordPr: (p) => recordPr(p, { store, openGraph, broadcast }),
+    // Learnings ritual: the human's gate answer becomes a durable
+    // project learning here, because the orchestrator has no Neptune access.
+    recordLearning: createRecordLearningHandler({ recordLearning, store, openGraph, broadcast }),
     recordUnitPr: (p) => recordUnitPr(p, { store, openGraph, broadcast }),
     // WP5 unit lanes: engine-owned lane git (docs/v2-parallel.md A3). init-lane
     // runs in the lane's own session; merge-lane in the intent session.
