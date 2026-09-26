@@ -235,6 +235,13 @@ resource "aws_dynamodb_table" "v2_executions" {
   read_capacity  = local.read_capacity
   write_capacity = local.write_capacity
 
+  # Only ephemeral authentication selection/invocation records set this field.
+  # Historical execution records are retained unchanged.
+  ttl {
+    attribute_name = "agentAuthTtl"
+    enabled        = true
+  }
+
   attribute {
     name = "pk"
     type = "S"

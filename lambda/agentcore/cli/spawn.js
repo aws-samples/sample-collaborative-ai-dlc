@@ -14,6 +14,8 @@
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
+import { childEnvironment } from './environment.js';
+import { currentCredentialSession } from '../credential-session.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'spawn' } });
 
@@ -34,7 +36,9 @@ export const runChild = ({
 }) =>
   new Promise((resolve, reject) => {
     const capture = captureStderrTail > 0;
-    const mergedEnv = { ...process.env, ...env };
+    const session = currentCredentialSession();
+    session?.assertAvailable();
+    const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
     let child;
     try {
       child = spawnFn(command, args, {
@@ -69,12 +73,27 @@ export const runChild = ({
         stderrTail = clampTail(stderrTail + c.toString(), captureStderrTail);
       });
     }
+    const cancel = () => {
+      child.kill?.('SIGKILL');
+      finish(null);
+    };
+    session?.signal.addEventListener('abort', cancel, { once: true });
     let settled = false;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      resolve({ exitCode, stderrTail });
+      session?.signal.removeEventListener('abort', cancel);
+      resolve({
+        exitCode,
+        stderrTail,
+        ...(session?.signal.aborted
+          ? {
+              credentialError: session.signal.reason?.code ?? 'credential_unavailable',
+            }
+          : {}),
+      });
     };
+    if (session?.signal.aborted) cancel();
     child.on('error', () => finish(null)); // spawn failure → runner maps to FAILED
     child.on('close', (code) => finish(code));
     if (promptViaStdin) {
@@ -108,7 +127,9 @@ export const captureChild = ({
   spawnFn = spawn,
 }) =>
   new Promise((resolve) => {
-    const mergedEnv = { ...process.env, ...env };
+    const session = currentCredentialSession();
+    session?.assertAvailable();
+    const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
     let child;
     try {
       child = spawnFn(command, args, {
@@ -128,14 +149,30 @@ export const captureChild = ({
     child.stdout?.on('data', (c) => (stdout += c.toString()));
     let stderr = '';
     if (captureStderr) child.stderr?.on('data', (c) => (stderr += c.toString()));
+    const cancel = () => {
+      child.kill?.('SIGKILL');
+      finish(null);
+    };
+    session?.signal.addEventListener('abort', cancel, { once: true });
     let settled = false;
     let timedOut = false;
     let timer = null;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
+      session?.signal.removeEventListener('abort', cancel);
       if (timer) clearTimeout(timer);
-      resolve({ exitCode, stdout, stderr, timedOut });
+      resolve({
+        exitCode,
+        stdout,
+        stderr,
+        timedOut,
+        ...(session?.signal.aborted
+          ? {
+              credentialError: session.signal.reason?.code ?? 'credential_unavailable',
+            }
+          : {}),
+      });
     };
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
@@ -153,6 +190,7 @@ export const captureChild = ({
       // Never hold the event loop open for the watchdog alone.
       timer.unref?.();
     }
+    if (session?.signal.aborted) cancel();
     child.on('error', () => finish(null));
     child.on('close', (code) => finish(code));
     if (promptViaStdin) {

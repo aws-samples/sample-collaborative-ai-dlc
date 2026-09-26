@@ -405,6 +405,16 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
     Statement = [
       local.neptune_statement,
       {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
+        Resource = [var.v2_executions_table_arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Scan"]
+        Resource = [var.environment_registry_table_arn]
+      },
+      {
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
@@ -977,8 +987,14 @@ resource "aws_iam_role_policy" "credential_broker" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Names and set-state are returned only by the metadata broker.
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+        Action   = ["ssm:DescribeParameters"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"]
         Resource = [var.v2_executions_table_arn, var.source_control_bindings_table_arn]
       },
       {
@@ -1001,6 +1017,7 @@ resource "aws_iam_role_policy" "credential_broker" {
         Action = ["ssm:GetParameter", "ssm:GetParameters"]
         Resource = [
           var.agent_credential_grant_secret_param_arn,
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/connections/*",
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/bedrock-bearer-token",
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/kiro-api-key",
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/users/*/agent-credentials/*",
@@ -1103,6 +1120,7 @@ module "credential_metadata_lambda" {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    V2_PROCESS_TABLE            = var.v2_executions_table_name
     AGENT_SETTINGS_SSM_PREFIX   = "/${var.project_name}/${var.environment}"
   }
 }

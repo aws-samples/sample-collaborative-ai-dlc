@@ -1,3 +1,4 @@
+import { withCredentialSession } from '../credential-session.js';
 // run-stage — execute ONE workflow stage inside the AgentCore session.
 //
 // The AgentCore Runtime routes the same session to the same microVM, so the git
@@ -94,7 +95,7 @@ import {
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
 import { humanTaskMatchesOwner } from '../../shared/v2-process-keys.js';
-import { credentialProviderForCli } from '../../shared/agent-credentials.js';
+import { credentialProviderForCli } from '../../shared/agent-auth-catalog.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'run-stage' } });
@@ -947,7 +948,7 @@ const mergeCodeCommitRefs = (priorRefs, gitResult) => {
   return refs;
 };
 
-export const runStage = async (
+const runStageImplementation = async (
   {
     projectId,
     intentId,
@@ -2203,7 +2204,18 @@ export const runStage = async (
       msg: spawnError?.message,
     });
     if (spawnError?.stack) logger.error(spawnError.stack);
-    return fail(stageInstanceId, 'cli_error', spawnError.message);
+    return fail(
+      stageInstanceId,
+      spawnError.code?.startsWith('credential_') ? 'credential_unavailable' : 'cli_error',
+      spawnError.message,
+    );
+  }
+  if (result?.credentialError) {
+    return fail(
+      stageInstanceId,
+      'credential_unavailable',
+      'The invocation credential expired or could not be renewed. Repair the pinned connection before resuming.',
+    );
   }
 
   const exitCode = result?.exitCode ?? 0;
@@ -2833,3 +2845,6 @@ export const __test = {
   renderReviewerReadScope,
   SHARED_CONTRACT_ARTIFACTS,
 };
+
+export const runStage = (payload, deps = {}) =>
+  withCredentialSession(() => runStageImplementation(payload, deps), { env: deps.env });

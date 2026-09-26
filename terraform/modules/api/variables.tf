@@ -326,3 +326,8 @@ variable "api_gateway_account_id" {
   description = "An attribute of the aws_api_gateway_account resource (its cloudwatch_role_arn). The value is unused — it is interpolated into the stage description to create an implicit dependency so the REST API stage waits for account-level CloudWatch logging to be configured."
   type        = string
 }
+
+variable "v2_executions_table_name" {
+  description = "Process table used for authentication policy, reviews, and invocation inventory"
+  type        = string
+}

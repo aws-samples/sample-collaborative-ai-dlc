@@ -531,6 +531,12 @@ const verifyRuntime = async ({
           toolBuilds: 'PASSED',
           endpoint: 'PASSED',
           capabilities: capabilities.clis,
+          ...(capabilities.agentAuthProtocol
+            ? {
+                agentAuthProtocol: capabilities.agentAuthProtocol,
+                agentAuthModes: capabilities.agentAuthModes ?? [],
+              }
+            : {}),
           deterministicCommand: 'PASSED',
         },
         failure: null,

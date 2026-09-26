@@ -160,6 +160,16 @@ export const runOneShotPrompt = async ({
   }
   const { exitCode, stdout, stderr, timedOut } = capture;
 
+  if (capture.credentialError)
+    return {
+      ok: false,
+      reason: 'credential_unavailable',
+      text: '',
+      cli,
+      model: model ?? null,
+      exitCode,
+      metrics: null,
+    };
   if (timedOut) {
     return {
       ok: false,
