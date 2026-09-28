@@ -738,4 +738,28 @@ describe('codecommit provider: merges and comparisons', () => {
     const out = await cc.getUnmergedConstructionTaskBranches({ client }, ARN, 'intent');
     expect(out).toEqual(['intent--task-2']);
   });
+
+  // "Could not check" must never read as "not merged".
+  const undecidable = () =>
+    makeClient({
+      ListBranches: { branches: ['main', 'intent', 'intent--task-1'] },
+      GetMergeOptions: sdkError('TipsDivergenceExceededException'),
+      DeleteBranch: {},
+    });
+
+  it('getUnmergedConstructionTaskBranches surfaces an undecidable merge status', async () => {
+    const pending = cc.getUnmergedConstructionTaskBranches(
+      { client: undecidable() },
+      ARN,
+      'intent',
+    );
+    await expect(pending).rejects.toMatchObject({ status: 409, code: 'MERGE_STATUS_UNKNOWN' });
+  });
+
+  it('cleanupConstructionTaskBranches counts an undecidable branch as failed and keeps it', async () => {
+    const client = undecidable();
+    const out = await cc.cleanupConstructionTaskBranches({ client }, ARN, 'intent');
+    expect(out).toEqual({ deleted: 0, failed: 1, skipped: 0 });
+    expect(client.calls.some((call) => call.name === 'DeleteBranch')).toBe(false);
+  });
 });

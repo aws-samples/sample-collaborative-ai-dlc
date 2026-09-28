@@ -640,8 +640,22 @@ const listConstructionTaskBranches = async (ctx, repoId, branch) => {
   return branches.filter((name) => name.startsWith(prefix));
 };
 
+// "Could not check" is not "not merged": an impossible comparison is an error,
+// never a verdict. Cleanup counts it as failed and keeps the branch; the
+// pre-PR gate surfaces it instead of reporting a false conflict. A 409, never
+// a 403, so it cannot invalidate the binding.
 const isBranchMergedInto = async (ctx, repoId, sourceBranch, targetBranch) => {
-  const { status } = await compareBranches(ctx, repoId, { base: targetBranch, head: sourceBranch });
+  const { status, detail } = await compareBranches(ctx, repoId, {
+    base: targetBranch,
+    head: sourceBranch,
+  });
+  if (status === 'unknown') {
+    throw new ProviderError(409, 'CodeCommit could not tell whether the branch is merged', {
+      action: 'GetMergeOptions',
+      code: 'MERGE_STATUS_UNKNOWN',
+      exception: detail ?? null,
+    });
+  }
   // The source brings nothing the target lacks -> it is contained in target.
   return status === 'identical' || status === 'behind';
 };
