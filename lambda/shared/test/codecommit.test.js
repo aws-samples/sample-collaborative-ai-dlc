@@ -627,6 +627,39 @@ describe('codecommit provider: merges and comparisons', () => {
     ).toMatchObject({ status: 'diverged' });
   });
 
+  it('compareBranches throws throttling, service and access failures instead of "unknown"', async () => {
+    const failing = (name) => makeClient({ GetMergeOptions: sdkError(name) });
+    const compare = (client) => cc.compareBranches({ client }, ARN, { base: 'main', head: 'f' });
+    await expect(compare(failing('ThrottlingException'))).rejects.toMatchObject({ status: 429 });
+    await expect(compare(failing('InternalFailure'))).rejects.toMatchObject({ status: 502 });
+    const denied = compare(failing('AccessDeniedException'));
+    await expect(denied).rejects.toMatchObject({ status: 403 });
+    // GetMergeOptions is a repository action: its denial is not operation-scoped.
+    await expect(denied).rejects.not.toMatchObject({ extra: { scope: 'operation' } });
+  });
+
+  it('compareBranches reports only documented impossible comparisons as "unknown"', async () => {
+    for (const name of [
+      'TipsDivergenceExceededException',
+      'MaximumItemsToCompareExceededException',
+      'MaximumFileContentToLoadExceededException',
+    ]) {
+      const client = makeClient({ GetMergeOptions: sdkError(name) });
+      expect(await cc.compareBranches({ client }, ARN, { base: 'main', head: 'f' })).toMatchObject({
+        status: 'unknown',
+        detail: name,
+      });
+    }
+    // A missing ref keeps its specific answer.
+    const missing = makeClient({
+      GetMergeOptions: sdkError('CommitDoesNotExistException'),
+      GetBranch: sdkError('BranchDoesNotExistException'),
+    });
+    expect(
+      await cc.compareBranches({ client: missing }, ARN, { base: 'main', head: 'f' }),
+    ).toMatchObject({ status: 'missing_head' });
+  });
+
   it('mergeBranch returns "merged", "conflict", or a structured error', async () => {
     const ok = makeClient({ MergeBranchesByThreeWay: { commitId: 'm1' } });
     expect(await cc.mergeBranch({ client: ok }, ARN, { base: 'main', head: 'feature' })).toBe(

@@ -565,22 +565,39 @@ const branchExists = async (ctx, repoId, branch) => {
 // Compare base...head. `aheadBy` is always null: CodeCommit has no action that
 // counts commits between two refs (GetDifferences counts changed FILES), and
 // GetCommitsFromMergeBase is an IAM permission rather than a callable action.
+//
+// Only a comparison CodeCommit documents as impossible is reported as
+// `unknown`. Throttling, service errors and access denials are thrown, so the
+// caller retries or surfaces them instead of reading "unknown" as a result.
+// https://docs.aws.amazon.com/codecommit/latest/APIReference/API_GetMergeOptions.html
+const INCOMPARABLE_EXCEPTIONS = new Set([
+  'TipsDivergenceExceededException',
+  'MaximumItemsToCompareExceededException',
+  'MaximumFileContentToLoadExceededException',
+]);
+
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
   let options;
   try {
     options = await mergeOptionsFor(ctx, repoId, { source: head, destination: resolvedBase });
   } catch (error) {
-    const exception = error?.extra?.exception ?? 'UnknownError';
-    if (error instanceof ProviderError && error.status === 404) {
+    if (!(error instanceof ProviderError)) throw error;
+    const exception = error.extra?.exception ?? 'UnknownError';
+    if (error.status === 404) {
       if (!(await branchExists(ctx, repoId, head))) {
         return { status: 'missing_head', base: resolvedBase };
       }
       if (!(await branchExists(ctx, repoId, resolvedBase))) {
         return { status: 'missing_base', base: resolvedBase };
       }
+      // Both refs exist, yet a commit could not be resolved.
+      return { status: 'unknown', base: resolvedBase, detail: exception };
     }
-    return { status: 'unknown', base: resolvedBase, detail: exception };
+    if (INCOMPARABLE_EXCEPTIONS.has(exception)) {
+      return { status: 'unknown', base: resolvedBase, detail: exception };
+    }
+    throw error;
   }
 
   const { baseCommitId, sourceCommitId, destinationCommitId } = options;
