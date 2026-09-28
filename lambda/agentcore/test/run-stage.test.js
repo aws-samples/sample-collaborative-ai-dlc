@@ -1819,6 +1819,55 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     expect(res.detail).not.toContain('fixture-secret');
   });
 
+  it.each([
+    [
+      'claude',
+      { type: 'result', subtype: 'success', is_error: true, result: 'Credit balance is too low' },
+      'credential_quota_exhausted',
+    ],
+    [
+      'codex',
+      { type: 'turn.failed', error: { message: 'You exceeded your current quota' } },
+      'credential_quota_exhausted',
+    ],
+    [
+      'opencode',
+      { type: 'error', error: { message: 'insufficient_quota: billing hard limit' } },
+      'credential_quota_exhausted',
+    ],
+    [
+      'claude',
+      { type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key' },
+      'credential_invalid',
+    ],
+    [
+      'claude',
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Handle insufficient credits in billing' }] },
+      },
+      'cli_nonzero_exit',
+    ],
+  ])('classifies a %s failure reported only on stdout: %j', async (cli, event, reason) => {
+    const deps = baseDeps({
+      availableClis: [cli],
+      credentialBindings: [{ provider: cli, source: 'space' }],
+      spawnFn: (_command, args) => ({
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),
+        stdin: { end() {} },
+        stdout: {
+          on: (ev, cb) =>
+            ev === 'data' &&
+            !args.includes('--list-sessions') &&
+            cb(Buffer.from(`${JSON.stringify(event)}\n`)),
+        },
+        stderr: { on: () => {} },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: cli }, deps);
+    expect(res).toMatchObject({ ok: false, reason });
+  });
+
   it('treats a Kiro empty-final-completion crash as success (work already done)', async () => {
     // kiro-cli exits non-zero after the turn's work because it ended with an
     // empty final message; its ACP reports "Kiro failed to generate a response".

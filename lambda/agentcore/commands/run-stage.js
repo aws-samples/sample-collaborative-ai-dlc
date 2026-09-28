@@ -2153,9 +2153,16 @@ const runStageAttempt = async (
       .catch(() => {});
   };
   let sessionUpdateQueue = Promise.resolve();
+  // Error events the JSON-output CLIs report on stdout (never agent text or
+  // tool output), kept for failure classification next to the stderr tail.
+  const reportedErrors = [];
   const cliOutput = createCliOutputSink({
     cli,
     emit: emitCliOutput,
+    onError: (message) => {
+      reportedErrors.push(message);
+      if (reportedErrors.length > 8) reportedErrors.shift();
+    },
     onSession: (observedSessionId) => {
       // OpenCode and Codex choose their own session/thread id; capture the
       // first one observed on the stream so a later resume can target it.
@@ -2595,7 +2602,8 @@ const runStageAttempt = async (
     // agent just ended without closing text and kiro-cli's ACP rejected the empty
     // message. Treat as success (not a stage failure) but record a note so the
     // signature stays visible. Sensors below still run and can hold the stage.
-    if (isCreditExhaustion(result?.stderrTail)) {
+    const failureOutput = [result?.stderrTail, ...reportedErrors].filter(Boolean).join('\n');
+    if (isCreditExhaustion(failureOutput)) {
       return fail(
         stageInstanceId,
         'credential_quota_exhausted',
@@ -2621,7 +2629,7 @@ const runStageAttempt = async (
           summary: `Kiro exited ${exitCode} with an empty final message after completing work; treated as success (ACP empty-completion).`,
         })
         .catch(() => {});
-    } else if (isCredentialFailure(result?.stderrTail)) {
+    } else if (isCredentialFailure(failureOutput)) {
       const detail =
         credentialFailureDetail({
           binding: credentialBindingForCli(credentialBindings, cli),
