@@ -7,6 +7,7 @@ import {
   isKnownProvider,
   KNOWN_PROVIDERS,
   ProviderError,
+  DEFAULT_CAPABILITIES,
 } from '../git-providers.js';
 
 const cc = getProvider('codecommit');
@@ -87,6 +88,20 @@ describe('codecommit provider: registry and identity', () => {
     // The OAuth providers keep their historical "everything supported" shape.
     expect(getCapabilities('github')).toMatchObject({ issues: true, events: 'webhook' });
     expect(getCapabilities('bitbucket')).toMatchObject({ issues: false, reopenPullRequest: false });
+  });
+
+  it('keeps a capabilities object only where it differs from the defaults', () => {
+    // GitHub declares nothing: the registry fills in DEFAULT_CAPABILITIES.
+    expect(getProvider('github').capabilities).toBeUndefined();
+    expect(getCapabilities('github')).toEqual(DEFAULT_CAPABILITIES);
+    // GitLab and Bitbucket are not copies of the defaults.
+    expect(getCapabilities('gitlab')).toMatchObject({ approvalRules: true });
+    expect(getCapabilities('bitbucket')).toMatchObject({ issues: false, reopenPullRequest: false });
+  });
+
+  it('exports the default commit author used by bindings and merges', () => {
+    expect(cc.DEFAULT_AUTHOR_NAME).toBe('Collaborative AI-DLC');
+    expect(cc.defaultAuthorEmail(ACCOUNT)).toBe(`aidlc-bot@${ACCOUNT}.invalid`);
   });
 
   it('resolves the regional git host from the repository ARN', () => {

@@ -18,6 +18,7 @@ import { assumeCodeCommitRole, isCodeCommitRoleArn, roleAccountId } from './code
 import { resolveCodeCommitExternalId } from './codecommit-connection.js';
 import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
 import { signCodeCommitGitCredential } from './git-providers/codecommit-credential.js';
+import { DEFAULT_AUTHOR_NAME, defaultAuthorEmail } from './git-providers/codecommit.js';
 
 const parseScopes = (raw) =>
   new Set(
@@ -162,12 +163,9 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
 };
 
 // CodeCommit committer identity: CodeCommit has no user-identity API, so the
-// author of engine-made commits is configured on the binding. Any RFC-shaped
-// address is accepted by CodeCommit (it is not validated); the default uses the
-// reserved `.invalid` TLD so it can never route.
-const DEFAULT_COMMITTER_NAME = 'Collaborative AI-DLC';
-const defaultCommitterEmail = (accountId) => `aidlc-bot@${accountId || 'codecommit'}.invalid`;
-
+// author of engine-made commits is configured on the binding. The defaults are
+// the provider's own (git-providers/codecommit.js), so a binding and a
+// server-side merge always name the same author.
 const verifyCodeCommitRoleBinding = async ({
   ddb,
   sts,
@@ -228,9 +226,9 @@ const verifyCodeCommitRoleBinding = async ({
   // lacks GitPush surfaces as a push failure, not a bind failure — the same
   // trade-off as github-app, where the mint is the proof.
   const roleAccess = { ...access, canRead: true, canWrite: true };
-  const actorName = String(selection.committerName || '').trim() || DEFAULT_COMMITTER_NAME;
+  const actorName = String(selection.committerName || '').trim() || DEFAULT_AUTHOR_NAME;
   const actorEmail =
-    String(selection.committerEmail || '').trim() || defaultCommitterEmail(target.accountId);
+    String(selection.committerEmail || '').trim() || defaultAuthorEmail(target.accountId);
   return {
     authType: 'codecommit-role',
     credentialRef: roleCredentialRef(roleArn),

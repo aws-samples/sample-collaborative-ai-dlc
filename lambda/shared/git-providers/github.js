@@ -931,20 +931,12 @@ const mergeBranch = async (ctx, repoId, { base, head, message }) => {
 };
 
 const apiBase = API_BASE;
-// Declared contract gaps (none for GitHub); see git-providers.js DEFAULT_CAPABILITIES.
-const capabilities = Object.freeze({
-  issues: true,
-  draftPullRequests: true,
-  reopenPullRequest: true,
-  checkStatuses: true,
-  approvalRules: false,
-  events: 'webhook',
-});
+// No `capabilities` export: GitHub supports the full contract, which is exactly
+// git-providers.js DEFAULT_CAPABILITIES (getCapabilities merges it in).
 
 export {
   id,
   displayName,
-  capabilities,
   gitHost,
   apiBase,
   buildCloneUrl,
@@ -984,7 +976,6 @@ export {
 export default {
   id,
   displayName,
-  capabilities,
   gitHost,
   apiBase,
   buildCloneUrl,

@@ -1166,6 +1166,8 @@ const capabilities = Object.freeze({
 export {
   id,
   displayName,
+  DEFAULT_AUTHOR_NAME,
+  defaultAuthorEmail,
   gitHost,
   gitHostFor,
   apiBase,
@@ -1204,6 +1206,8 @@ export {
 export default {
   id,
   displayName,
+  DEFAULT_AUTHOR_NAME,
+  defaultAuthorEmail,
   gitHost,
   gitHostFor,
   apiBase,
