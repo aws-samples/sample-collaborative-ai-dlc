@@ -1306,7 +1306,7 @@ const runStageAttempt = async (
   if (unitSlug) {
     let unitPlan;
     try {
-      unitPlan = await store.getUnitPlan(executionId);
+      unitPlan = await store.getUnitPlan(executionId, { consistentRead: true });
     } catch {
       return fail(
         stageInstanceId,

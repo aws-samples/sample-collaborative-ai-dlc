@@ -1215,7 +1215,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             );
             if (fanoutSection) {
               unitPlanForGate = await ctx.step(`load-unit-plan-${stage.stageId}${suffix}`, () =>
-                store.getUnitPlan(executionId).catch(() => null),
+                // Read-after-write: promote-units saved this plan just now.
+                store.getUnitPlan(executionId, { consistentRead: true }).catch(() => null),
               );
             }
           }

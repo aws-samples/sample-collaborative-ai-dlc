@@ -417,7 +417,10 @@ export const runParallelSection = async (segment, toolkit) => {
   const { executionId, intentId, projectId } = ids;
   const sk = `s${segment.index}`;
 
-  const unitPlan = await ctx.step(`load-unit-plan-${sk}`, () => store.getUnitPlan(executionId));
+  // Consistent: the fan-out approval patched this plan's decisions just before.
+  const unitPlan = await ctx.step(`load-unit-plan-${sk}`, () =>
+    store.getUnitPlan(executionId, { consistentRead: true }),
+  );
   if (!unitPlan || (unitPlan.units ?? []).length === 0) {
     return await fail(
       'unit_plan_missing',
