@@ -267,6 +267,7 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
           'The scoped authentication inventory must be initialized before reviewing credentials',
         );
       const rows = [];
+      let referenceCount = 0;
       let ExclusiveStartKey;
       do {
         const page = await ddb.send(
@@ -280,6 +281,12 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
           }),
         );
         for (const reference of page.Items ?? []) {
+          referenceCount += 1;
+          if (referenceCount > 5000)
+            throw authError(
+              'AGENT_AUTH_INVENTORY_TOO_LARGE',
+              'This scope requires an administrator inventory review',
+            );
           const row = await get(reference.target);
           if (row && scopeContainsRow(scope, row)) rows.push(row);
         }
@@ -431,12 +438,21 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
     },
     async applyReview({ review, actorId, policy, now }) {
       requireTable();
+      const selectedPlatform =
+        review.candidate.kind === 'connection-create' &&
+        review.candidate.select &&
+        review.candidate.connection.source === 'platform'
+          ? review.candidate.connection
+          : null;
       const next = {
-        mode: review.candidate.kind === 'policy-change' ? review.candidate.mode : policy.mode,
+        mode:
+          selectedPlatform?.mode ??
+          (review.candidate.kind === 'policy-change' ? review.candidate.mode : policy.mode),
         defaultConnectionId:
-          review.candidate.kind === 'policy-change'
+          selectedPlatform?.id ??
+          (review.candidate.kind === 'policy-change'
             ? review.candidate.defaultConnectionId
-            : policy.defaultConnectionId,
+            : policy.defaultConnectionId),
         revision: review.policyRevision + 1,
         activityRevision: policy.activityRevision,
       };

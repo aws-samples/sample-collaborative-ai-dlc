@@ -25,6 +25,7 @@ export const AGENT_AUTH_MODES_CATALOG = Object.freeze([
   }),
   Object.freeze({
     id: 'iam',
+    modelDiscovery: 'runtime',
     label: 'IAM',
     backend: 'bedrock',
     mechanisms: ['assume-role'],
@@ -32,6 +33,7 @@ export const AGENT_AUTH_MODES_CATALOG = Object.freeze([
   }),
   Object.freeze({
     id: 'litellm',
+    modelDiscovery: 'runtime',
     label: 'LiteLLM',
     backend: 'litellm',
     mechanisms: ['api-key', 'oauth-machine', 'oauth-user'],

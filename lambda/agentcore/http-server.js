@@ -1,3 +1,7 @@
+import {
+  authenticationCommandFailure,
+  authenticationCommandHandlers,
+} from './authentication-command-registry.js';
 // AgentCore Runtime HTTP server — the container contract.
 //
 // Bedrock AgentCore Runtime requires a container that listens on 0.0.0.0:8080
@@ -144,6 +148,11 @@ export const dispatchInvocation = async ({
     }
     return { statusCode: 200, body: { ...result, command, at: now() } };
   } catch (e) {
+    const failure = authenticationCommandFailure(command, e);
+    if (failure) {
+      logger.warn('Authentication command failed', { command, code: failure.code });
+      return { statusCode: 200, body: { ...failure, command, at: now() } };
+    }
     logger.error('command threw', e, { command });
     return { statusCode: 500, body: { error: e.message, command } };
   } finally {
@@ -258,13 +267,15 @@ const main = async () => {
       store,
       env: process.env,
     });
-    const credentialSession = createCredentialSession({
-      env: auth.env,
-      credentialEnvironment: auth.credentialEnvironment,
-      expiresAt: auth.expiresAt,
-      authorizationExpiresAt: auth.authorizationExpiresAt,
-      refresh: auth.refresh,
-    });
+    const credentialSession =
+      auth.credentialSession ??
+      createCredentialSession({
+        env: auth.env,
+        credentialEnvironment: auth.credentialEnvironment,
+        expiresAt: auth.expiresAt,
+        authorizationExpiresAt: auth.authorizationExpiresAt,
+        refresh: auth.refresh,
+      });
     try {
       await accountCredentialInvocation({
         ddb,
@@ -319,6 +330,7 @@ const main = async () => {
       }),
     managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),
     verifyMcp: (p) => verifyMcp(p),
+    ...authenticationCommandHandlers(),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).

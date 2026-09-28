@@ -35,7 +35,9 @@ const selectKeysBinding = async ({
   const connectionId =
     selected?.source === 'user'
       ? legacyConnectionId({ ...selected, projectId, userId })
-      : (spaceSelection?.connectionId ??
+      : ((spaceSelection?.mode && spaceSelection.mode !== policy.mode
+          ? null
+          : spaceSelection?.connectionId) ??
         (selected?.source && selected.source !== 'platform'
           ? legacyConnectionId({ ...selected, projectId, userId })
           : policy.defaultConnectionId));

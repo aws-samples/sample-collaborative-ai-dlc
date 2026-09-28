@@ -62,6 +62,7 @@ export const redeemAgentBinding = async ({
   const lease = normalizeCredentialLease(result.lease ?? apiKeyLease(result.value));
   // Keep the v1 value field for already-published key-only runtime sessions.
   return {
+    ...result,
     binding,
     lease,
     ...(lease.material?.type === 'api-key'

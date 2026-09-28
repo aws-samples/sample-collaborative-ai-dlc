@@ -282,3 +282,52 @@ describe('provider and scope isolation', () => {
     ).toEqual(historical);
   });
 });
+
+describe('provider-neutral reviewed domain actions', () => {
+  it('atomically creates and selects connections, then restores space inheritance', async () => {
+    const { repository, service } = await setup();
+    const connection = (id, projectId) => ({
+      id,
+      revision: 1,
+      mode: 'keys',
+      backend: 'bedrock',
+      mechanism: 'api-key',
+      source: projectId ? 'space' : 'platform',
+      ...(projectId ? { projectId } : {}),
+      configuration: {},
+    });
+    const activate = async (value) => {
+      const review = await service.preview(
+        {
+          kind: 'connection-create',
+          select: true,
+          connection: value,
+          storage: { secretReference: `/review/test/connections/${value.id}/key` },
+        },
+        'admin',
+      );
+      await service.apply(review.id, 'admin');
+    };
+    await activate(connection('platform-key'));
+    await activate(connection('space-key', 'p1'));
+    const select = () =>
+      resolvePolicyBindings({
+        repository,
+        projectId: 'p1',
+        providers: ['bedrock'],
+        resolveLegacy: async () => ({ bedrock: { provider: 'bedrock', source: 'platform' } }),
+      });
+    expect((await select()).bedrock.connectionId).toBe('space-key');
+    const inherit = await service.preview(
+      { kind: 'space-selection', source: 'space', projectId: 'p1', connectionId: null },
+      'admin',
+    );
+    await service.apply(inherit.id, 'admin');
+    expect((await select()).bedrock.connectionId).toBe('platform-key');
+    expect(await repository.getConnection('space-key', 1)).toMatchObject({
+      id: 'space-key',
+      revision: 1,
+    });
+    expect((await repository.getPolicy()).revision).toBe(1);
+  });
+});

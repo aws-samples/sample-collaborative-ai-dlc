@@ -59,7 +59,13 @@ export const normalizeAuthAction = async (input, repository) => {
     if (Object.keys(storage).some((key) => key !== 'secretReference'))
       throw authError('AGENT_AUTH_INVALID', 'Unsupported connection storage reference');
     repository.validateStorageReference(connection.id, storage.secretReference);
-    return { kind, ...authenticationScope(connection), connection, storage };
+    return {
+      kind,
+      ...authenticationScope(connection),
+      connection,
+      storage,
+      select: input.select === true,
+    };
   }
   if (kind === 'space-selection') {
     const scope = authenticationScope({ source: 'space', projectId: input.projectId });
@@ -88,7 +94,7 @@ export const normalizeAuthAction = async (input, repository) => {
 export const authActionWrites = ({ action, tableName }) => {
   if (action.kind === 'connection-create') {
     const row = { ...action.connection, ...action.storage };
-    return [
+    const writes = [
       ['META', 'AgentConnectionHead'],
       [`REV#${row.revision}`, 'AgentConnection'],
     ].map(([sk, type]) => ({
@@ -98,6 +104,21 @@ export const authActionWrites = ({ action, tableName }) => {
         ConditionExpression: 'attribute_not_exists(pk)',
       },
     }));
+    if (action.select && row.source === 'space')
+      writes.push({
+        Put: {
+          TableName: tableName,
+          Item: {
+            pk: `AGENTAUTH#SPACE#${row.projectId}`,
+            sk: 'META',
+            type: 'AgentSpaceSelection',
+            projectId: row.projectId,
+            mode: row.mode,
+            connectionId: row.id,
+          },
+        },
+      });
+    return writes;
   }
   if (action.kind === 'space-selection') {
     const Key = { pk: `AGENTAUTH#SPACE#${action.projectId}`, sk: 'META' };
