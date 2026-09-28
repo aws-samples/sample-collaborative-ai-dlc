@@ -2661,7 +2661,11 @@ const runStageAttempt = async (
     for (let attempt = 0; attempt < 2 && !parkSaved; attempt++) {
       parkSaved = await savePark()
         .then(() => true)
-        .catch(() => false);
+        .catch((error) => {
+          // Lost ownership is not transient: runStage classifies it.
+          if (error?.name === 'ConditionalCheckFailedException') throw error;
+          return false;
+        });
     }
     if (!parkSaved) {
       let saved;
@@ -2676,12 +2680,16 @@ const runStageAttempt = async (
       }
       // The bridge may already have parked Claude with its startup session,
       // or our write may have committed before its acknowledgment was lost.
+      // Either way the row must also carry this attempt's commit refs, or the
+      // CodeFile projection would silently drop them on resume.
       parkSaved =
         saved?.state === 'WAITING_FOR_HUMAN' &&
         saved.pendingHumanTaskId === parked.humanTaskId &&
         saved.cli === cli &&
         saved.cliSessionId === cliSessionId &&
-        Boolean(saved.cliSessionId);
+        Boolean(saved.cliSessionId) &&
+        Boolean(saved.parkedAt) &&
+        JSON.stringify(saved.pendingCodeCommitRefs ?? []) === JSON.stringify(stageCodeCommitRefs);
     }
     if (!parkSaved) {
       return failUnresumableGate(
