@@ -441,8 +441,10 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
     Statement = [
       local.neptune_statement,
       {
+        # Scoped reviews query reference partitions; inheritance removes the
+        # space selection. Conditional transactions authorize each item action.
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
         Resource = [var.v2_executions_table_arn]
       },
       {
