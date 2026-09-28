@@ -220,6 +220,12 @@ parameter-name inventory permission, agents API policy/review access and the
 ephemeral-record TTL attribute. It does not grant application AWS credentials to
 CLI processes.
 
+Deploy the caller policies with the code. Broker reservations require item writes
+and condition checks; scoped settings reviews require queries, and returning a
+space to inheritance requires deleting its selection. Terraform explicitly orders
+the broker functions, agents role output, and runtime behind their required
+policies so a scoped deployment includes these permissions.
+
 After deployment, verify existing platform/space/personal keys, a new stage and
 Composer request, a parked execution resume, and an older runtime session. Review
 a key rotation, create intervening work to confirm stale-review rejection, then
