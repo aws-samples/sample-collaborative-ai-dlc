@@ -72,9 +72,16 @@ const credentialBindingKeyFor = (projectId, provider, repo) =>
 
 const oauthCredentialRef = (provider, userId) => `oauth#${provider}#${userId}`;
 const appCredentialRef = (installationId) => `github-app#${installationId}`;
-// One ref per tenant role: invalidating the role (trust removed, role deleted)
-// fans out to every binding that depends on it, like an app installation.
-const roleCredentialRef = (roleArn) => `codecommit-role#${roleArn}`;
+// The credential is the (tenant role, external ID) pair: STS accepts or refuses
+// the pair, not the role, and the external ID is per user. A refusal fans out
+// to every binding on the same pair, and only those. External IDs are
+// `aidlc:<uuid>` (no `#`), and the ref is only ever compared, never parsed.
+const roleCredentialRef = (roleArn, externalId) => {
+  if (!roleArn || !externalId) {
+    throw new Error('A CodeCommit credential ref needs both the role ARN and the external ID');
+  }
+  return `codecommit-role#${roleArn}#${externalId}`;
+};
 
 const assertBinding = (binding) => {
   if (!binding?.projectId || !binding?.provider || !binding?.repo || !binding?.authType) {
@@ -244,7 +251,8 @@ const invalidateBindingsByCredentialRef = async (ddb, credentialRef, reason, opt
 };
 
 // Persist the invalidation an error calls for. A refused CodeCommit role takes
-// down every binding that shares it (same credentialRef), across projects;
+// down every binding on the same (role, external ID) pair (same
+// credentialRef), across projects;
 // anything else only the binding that failed. Best-effort: callers are already
 // on an error path and rethrow the original error.
 const invalidateBindingsForError = async (ddb, binding, error, options = {}) => {
@@ -324,8 +332,9 @@ const loggableErrorCode = (error, fallback = 'UNKNOWN') => {
 //     the role does not grant) invalidates nothing: repository access may be
 //     intact, and the operation itself already failed;
 //   - STS refusing the tenant role (trust policy or external id changed, role
-//     deleted) invalidates every binding on that role: they share the
-//     credential, so none of them can work any more;
+//     deleted) invalidates every binding on that role and external ID: they
+//     share the credential, so none of them can work any more. Bindings of
+//     another user on the same role carry another external ID and are kept;
 //   - a transient STS failure or a session policy the platform built wrongly
 //     invalidates nothing: neither is the tenant's doing, and a retry (or a
 //     platform fix) recovers without a rebind.

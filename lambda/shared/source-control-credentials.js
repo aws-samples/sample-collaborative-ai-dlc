@@ -231,7 +231,7 @@ const verifyCodeCommitRoleBinding = async ({
     String(selection.committerEmail || '').trim() || defaultAuthorEmail(target.accountId);
   return {
     authType: 'codecommit-role',
-    credentialRef: roleCredentialRef(roleArn),
+    credentialRef: roleCredentialRef(roleArn, externalId),
     roleArn,
     externalId,
     roleAccountId: accountId,
@@ -306,7 +306,7 @@ const resolveBindingCredential = async ({
       !sts ||
       !binding.roleArn ||
       !binding.externalId ||
-      binding.credentialRef !== roleCredentialRef(binding.roleArn)
+      binding.credentialRef !== roleCredentialRef(binding.roleArn, binding.externalId)
     ) {
       throw Object.assign(new Error('CodeCommit role binding is incomplete'), {
         code: 'BINDING_INVALID',

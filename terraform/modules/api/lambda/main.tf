@@ -994,8 +994,8 @@ resource "aws_iam_role_policy" "credential_broker" {
         Resource = [var.v2_executions_table_arn, var.source_control_bindings_table_arn]
       },
       {
-        # A refused CodeCommit role invalidates every binding on it: they are
-        # found through the credentialRef index.
+        # A refused CodeCommit credential (role + external ID) invalidates every
+        # binding on it: they are found through the credentialRef index.
         Effect   = "Allow"
         Action   = ["dynamodb:Query"]
         Resource = ["${var.source_control_bindings_table_arn}/index/*"]

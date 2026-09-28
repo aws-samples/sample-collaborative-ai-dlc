@@ -15,7 +15,7 @@ const CODECOMMIT_BINDING = {
   provider: 'codecommit',
   repo: CODECOMMIT_REPO,
   authType: 'codecommit-role',
-  credentialRef: `codecommit-role#${CODECOMMIT_ROLE}`,
+  credentialRef: `codecommit-role#${CODECOMMIT_ROLE}#aidlc:0f8fad5b-d9cb-469f-a165-70867728950e`,
   roleArn: CODECOMMIT_ROLE,
   externalId: 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
   status: 'active',
@@ -147,5 +147,25 @@ describe('source-control project contract', () => {
       }),
     ).rejects.toMatchObject({ code: 'ROLE_ASSUMPTION_FAILED' });
     expect(stsClient.calls).toHaveLength(1);
+  });
+
+  it('refuses a CodeCommit binding whose ref is not its role and external ID pair', async () => {
+    // A role-only ref would share one invalidation fan-out across users.
+    const roleOnly = { ...CODECOMMIT_BINDING, credentialRef: `codecommit-role#${CODECOMMIT_ROLE}` };
+    const stsClient = incompleteSts();
+    await expect(
+      executeSourceControlOperation({
+        projectId: 'p1',
+        provider: 'codecommit',
+        repo: CODECOMMIT_REPO,
+        operation: 'branches',
+        repos: [{ provider: 'codecommit', repo: CODECOMMIT_REPO }],
+        ddbClient: { send: async () => ({ Items: [roleOnly], Item: roleOnly }) },
+        ssmClient: {},
+        secretsClient: {},
+        stsClient,
+      }),
+    ).rejects.toMatchObject({ code: 'BINDING_INVALID' });
+    expect(stsClient.calls).toHaveLength(0);
   });
 });

@@ -162,12 +162,22 @@ describe('source-control bindings', () => {
 
   describe('error-scoped invalidation', () => {
     const ROLE = 'arn:aws:iam::123456789012:role/aidlc-codecommit-access';
+    const EXT_A = 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e';
+    const EXT_B = 'aidlc:7c9e6679-7425-40de-944b-e07fc1f90ae7';
     const binding = {
       projectId: 'p1',
       bindingKey: 'codecommit#arn:aws:codecommit:eu-west-1:123456789012:a',
-      credentialRef: roleCredentialRef(ROLE),
+      credentialRef: roleCredentialRef(ROLE, EXT_A),
       authType: 'codecommit-role',
     };
+
+    it('keys the credential on the role and the external ID', () => {
+      expect(roleCredentialRef(ROLE, EXT_A)).toBe(`codecommit-role#${ROLE}#${EXT_A}`);
+      // Two users trusting the same role are two credentials.
+      expect(roleCredentialRef(ROLE, EXT_A)).not.toBe(roleCredentialRef(ROLE, EXT_B));
+      expect(() => roleCredentialRef(ROLE)).toThrow();
+      expect(() => roleCredentialRef(undefined, EXT_A)).toThrow();
+    });
     const denied = (code) => Object.assign(new Error('x'), { code });
 
     it('maps each error to the invalidation it calls for', () => {
@@ -193,7 +203,14 @@ describe('source-control bindings', () => {
         2,
       );
       const query = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
-      expect(query.ExpressionAttributeValues[':credentialRef']).toBe(roleCredentialRef(ROLE));
+      // Only the refused pair is looked up: another user's binding on the same
+      // role (external ID B) is never part of the fan-out.
+      expect(query.ExpressionAttributeValues[':credentialRef']).toBe(
+        roleCredentialRef(ROLE, EXT_A),
+      );
+      expect(query.ExpressionAttributeValues[':credentialRef']).not.toBe(
+        roleCredentialRef(ROLE, EXT_B),
+      );
       const reasons = ddbMock
         .commandCalls(UpdateCommand)
         .map((call) => call.args[0].input.ExpressionAttributeValues[':reason']);
