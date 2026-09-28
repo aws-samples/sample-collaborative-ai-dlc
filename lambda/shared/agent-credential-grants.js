@@ -158,7 +158,15 @@ export const signAgentCredentialGrant = (
   return `${encodedClaims}.${signature}`;
 };
 
-export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now() } = {}) => {
+export const verifyCredentialToken = (
+  token,
+  secret,
+  {
+    now = Date.now,
+    audience = AGENT_CREDENTIAL_GRANT_AUDIENCE,
+    ttl = AGENT_CREDENTIAL_GRANT_TTL_SECONDS,
+  } = {},
+) => {
   if (typeof token !== 'string' || !token || Buffer.byteLength(token) > MAX_TOKEN_BYTES) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
@@ -187,16 +195,16 @@ export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now
   } catch {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
-  if (![1, 2].includes(parsed?.version) || parsed?.audience !== AGENT_CREDENTIAL_GRANT_AUDIENCE) {
+  if (![1, 2].includes(parsed?.version) || parsed?.audience !== audience) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
-  const claims = normalizedClaims(parsed);
+  const claims = { ...normalizedClaims(parsed), audience };
   const current = Math.floor(now() / 1000);
   if (
     !Number.isInteger(claims.issuedAt) ||
     !Number.isInteger(claims.expiresAt) ||
     claims.expiresAt <= claims.issuedAt ||
-    claims.expiresAt - claims.issuedAt > AGENT_CREDENTIAL_GRANT_TTL_SECONDS ||
+    claims.expiresAt - claims.issuedAt > ttl ||
     claims.issuedAt > current + CLOCK_SKEW_SECONDS
   ) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
@@ -206,6 +214,9 @@ export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now
   }
   return claims;
 };
+
+export const verifyAgentCredentialGrant = (token, secret, { now = Date.now } = {}) =>
+  verifyCredentialToken(token, secret, { now });
 
 export const loadAgentCredentialGrantSecret = async (
   ssm,
@@ -273,4 +284,11 @@ export default {
   signAgentCredentialGrant,
   verifyAgentCredentialGrant,
   verifyIssuedAgentCredentialGrant,
+};
+
+// Provider packages set their own renewal audience and authorization lifetime.
+export const signCredentialToken = (input, secret, audience) => {
+  const claims = { ...normalizedClaims(input), audience };
+  const encoded = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  return `${encoded}.${signatureFor(encoded, secret).toString('base64url')}`;
 };

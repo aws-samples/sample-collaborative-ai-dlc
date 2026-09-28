@@ -60,7 +60,7 @@ describe('provider-neutral credential leases', () => {
         },
       ],
     }));
-    const state = prepareCredentialLeases({
+    const state = await prepareCredentialLeases({
       credentials: [
         {
           binding,
@@ -86,7 +86,7 @@ describe('provider-neutral credential leases', () => {
 
   it('rejects a renewal for a different execution or identity', async () => {
     const now = Date.now();
-    const state = prepareCredentialLeases({
+    const state = await prepareCredentialLeases({
       credentials: [
         {
           binding,
@@ -112,13 +112,13 @@ describe('provider-neutral credential leases', () => {
     await expect(state.refresh()).rejects.toMatchObject({ code: 'AGENT_AUTH_LEASE_INVALID' });
   });
 
-  it('rejects expired leases, unsupported material, and unbounded renewal', () => {
+  it('rejects expired leases, unsupported material, and unbounded renewal', async () => {
     const prepare = (value) =>
       prepareCredentialLeases({ credentials: [{ binding, lease: value }], baseEnv: {} });
-    expect(() => prepare(lease({ type: 'api-key', value: 'key' }, { expiresAt: 1 }))).toThrow(
-      'expired',
-    );
-    expect(() => prepare(lease({ type: 'unsupported' }))).toThrow('unsupported');
+    await expect(
+      prepare(lease({ type: 'api-key', value: 'key' }, { expiresAt: 1 })),
+    ).rejects.toThrow('expired');
+    await expect(prepare(lease({ type: 'unsupported' }))).rejects.toThrow('unsupported');
     expect(() => lease({ type: 'api-key', value: 'key' }, { renewal: { grant: 'token' } })).toThrow(
       'invalid',
     );

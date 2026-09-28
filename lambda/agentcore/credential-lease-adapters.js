@@ -1,20 +1,18 @@
-import { credentialEnvName, authError, bindingIdentity } from '../shared/agent-auth-contracts.js';
+import {
+  CREDENTIAL_MATERIAL_ADAPTERS,
+  CREDENTIAL_RESPONSE_READERS,
+} from './credential-material-registry.js';
+export { CREDENTIAL_MATERIAL_ADAPTERS } from './credential-material-registry.js';
+import { authError, bindingIdentity } from '../shared/agent-auth-contracts.js';
 import { apiKeyLease, normalizeCredentialLease } from '../shared/agent-credential-lease.js';
-
-export const CREDENTIAL_MATERIAL_ADAPTERS = Object.freeze({
-  'api-key': ({ binding, material }) => {
-    if (typeof material.value !== 'string' || !material.value)
-      throw authError('AGENT_AUTH_LEASE_INVALID', 'API key material is invalid');
-    return { env: { [credentialEnvName(binding.provider)]: material.value } };
-  },
-});
 
 export const credentialLeaseFromResponse = (credential) =>
   credential.lease
     ? normalizeCredentialLease(credential.lease)
-    : apiKeyLease(typeof credential.value === 'string' ? credential.value : null);
+    : (CREDENTIAL_RESPONSE_READERS.map((read) => read(credential)).find(Boolean) ??
+      apiKeyLease(typeof credential.value === 'string' ? credential.value : null));
 
-export const prepareCredentialLeases = ({
+export const prepareCredentialLeases = async ({
   credentials,
   baseEnv,
   broker,
@@ -56,7 +54,7 @@ export const prepareCredentialLeases = ({
     };
   };
   const initial = prepare();
-  return {
+  const state = {
     ...initial,
     refresh: current.some(({ lease }) => lease.renewal)
       ? async () => {
@@ -64,8 +62,8 @@ export const prepareCredentialLeases = ({
             current.map(async ({ binding, lease }) => {
               if (!lease.renewal) return { binding, lease };
               const response = await broker({
-                action: 'resolve-agent-credentials',
-                grant: lease.renewal.grant,
+                action: lease.renewal.action ?? 'resolve-agent-credentials',
+                [lease.renewal.tokenField ?? 'grant']: lease.renewal.grant,
               });
               if (
                 response.purpose !== context.purpose ||
@@ -91,4 +89,25 @@ export const prepareCredentialLeases = ({
         }
       : null,
   };
+  const owned = current.filter(({ lease }) => adapters[lease.material?.type]?.createSession);
+  if (owned.length > 1)
+    throw authError(
+      'AGENT_AUTH_RUNTIME_UNSUPPORTED',
+      'This runtime supports one session-owning inference adapter per invocation',
+    );
+  if (owned.length) {
+    const credential = owned[0];
+    state.credentialSession = await adapters[credential.lease.material.type].createSession({
+      credential,
+      env: initial.env,
+      renew: async () => {
+        await state.refresh();
+        return current.find(
+          ({ binding }) => bindingIdentity(binding) === bindingIdentity(credential.binding),
+        ).lease;
+      },
+    });
+    state.env = state.credentialSession.env;
+  }
+  return state;
 };

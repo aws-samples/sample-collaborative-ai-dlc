@@ -1,3 +1,4 @@
+import { discoverAgentModels } from '../shared/agent-model-discovery.js';
 // Agents Lambda — v1 agent HISTORY (read-only) + shared admin/model plumbing.
 //
 // The v1 execution engine (ECS pool dispatch) was removed when v2 became the
@@ -527,19 +528,19 @@ export const handler = async (event, context) => {
       }
       const withModels = event.queryStringParameters?.models === '1';
       if (withModels) refreshModelPricing().catch(() => {});
-      const [claudeModels, runtimeCaps] = await Promise.all([
-        withModels
-          ? listClaudeModels({
-              listInferenceProfiles: async () => {
-                const out = await bedrock.send(
-                  new ListInferenceProfilesCommand({ maxResults: 100 }),
-                );
-                return out.inferenceProfileSummaries ?? [];
-              },
-            })
-          : [],
-        fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
-      ]);
+      const { claudeModels, runtimeCaps } = await discoverAgentModels({
+        credentialBindings,
+        withModels,
+        loadKeyModels: () =>
+          listClaudeModels({
+            listInferenceProfiles: async () => {
+              const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
+              return out.inferenceProfileSummaries ?? [];
+            },
+          }),
+        loadRuntimeCapabilities: () =>
+          fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
+      });
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
       const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
         ...cli,
@@ -1020,6 +1021,11 @@ export const handler = async (event, context) => {
       const capabilitiesProjectId = event.queryStringParameters?.projectId;
       let runtimeTarget = coreRuntimeTarget();
       let credentialBindings = PLATFORM_CREDENTIAL_BINDINGS;
+      if (!capabilitiesProjectId && process.env.V2_PROCESS_TABLE)
+        credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
+          providers: AGENT_CREDENTIAL_PROVIDERS,
+          reserve: false,
+        });
       if (capabilitiesProjectId) {
         const access = await projectRuntimeAccess(event, capabilitiesProjectId);
         if (access.denied) return response(access.statusCode, { error: access.error });
@@ -1057,15 +1063,22 @@ export const handler = async (event, context) => {
 
       // Bedrock (claude/opencode) + runtime (kiro + auth state) discovery, in
       // parallel. Both are best-effort — a failure yields empty models, never a 500.
-      const [claudeModels, runtimeCaps] = await Promise.all([
-        listClaudeModels({
-          listInferenceProfiles: async () => {
-            const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
-            return out.inferenceProfileSummaries ?? [];
-          },
-        }),
-        fetchRuntimeCapabilities(runtimeTarget, credentialBindings, capabilitiesProjectId || null),
-      ]);
+      const { claudeModels, runtimeCaps } = await discoverAgentModels({
+        credentialBindings,
+        loadKeyModels: () =>
+          listClaudeModels({
+            listInferenceProfiles: async () => {
+              const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
+              return out.inferenceProfileSummaries ?? [];
+            },
+          }),
+        loadRuntimeCapabilities: () =>
+          fetchRuntimeCapabilities(
+            runtimeTarget,
+            credentialBindings,
+            capabilitiesProjectId || null,
+          ),
+      });
       const kiroModels = runtimeCaps?.kiroModels?.models ?? [];
       // OpenCode drives the SAME Bedrock profiles as claude but requires the
       // `amazon-bedrock/` provider prefix (see cli-models validation).

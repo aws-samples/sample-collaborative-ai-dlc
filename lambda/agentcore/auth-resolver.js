@@ -1,3 +1,8 @@
+import { AUTHENTICATION_BINDING_RESOLVERS } from './authentication-command-registry.js';
+import {
+  isAuthenticatedEnvironment,
+  CREDENTIAL_ADAPTER_ENV_NAMES,
+} from './credential-material-registry.js';
 import {
   credentialLeaseFromResponse,
   prepareCredentialLeases,
@@ -15,7 +20,6 @@ import {
 import {
   AGENT_CREDENTIAL_ENV_NAMES,
   AGENT_CREDENTIAL_PROVIDERS,
-  credentialEnvName,
   credentialProviderForCli,
   normalizeCredentialBinding,
   bindingIdentity,
@@ -31,7 +35,8 @@ const grantMismatch = () =>
 
 const cleanBaseEnv = (env) => {
   const invocationEnv = { ...env };
-  for (const name of AGENT_CREDENTIAL_ENV_NAMES) delete invocationEnv[name];
+  for (const name of [...AGENT_CREDENTIAL_ENV_NAMES, ...CREDENTIAL_ADAPTER_ENV_NAMES])
+    delete invocationEnv[name];
   return invocationEnv;
 };
 
@@ -56,6 +61,7 @@ const singleBinding = ({ binding, requestedCli, mismatchMessage }) => {
 };
 
 const bindingResolvers = Object.freeze({
+  ...AUTHENTICATION_BINDING_RESOLVERS,
   [AGENT_AUTH_MODES.CAPABILITIES]: ({ payload }) =>
     payload.credentialBindings
       ? AGENT_CREDENTIAL_PROVIDERS.map((provider) => payload.credentialBindings[provider]).filter(
@@ -106,7 +112,7 @@ const bindingResolvers = Object.freeze({
 export const authenticatedClisForEnv = ({ installed = [], env = {} } = {}) =>
   installed.filter((cli) => {
     const provider = credentialProviderForCli(cli);
-    return provider && Boolean(env[credentialEnvName(provider)]);
+    return provider && isAuthenticatedEnvironment(provider, env);
   });
 
 export const resolveInvocationAgentAuth = async ({
@@ -203,7 +209,7 @@ export const resolveInvocationAgentAuth = async ({
     resolvedProviders.push(binding.provider);
   }
 
-  const leaseState = prepareCredentialLeases({
+  const leaseState = await prepareCredentialLeases({
     credentials: [...authorized.values()],
     baseEnv: invocationEnv,
     broker,

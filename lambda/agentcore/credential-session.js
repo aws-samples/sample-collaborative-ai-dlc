@@ -15,6 +15,10 @@ export const createCredentialSession = ({
   authorizationExpiresAt = null,
   refresh = null,
   refreshBeforeMs = 60_000,
+  refreshRetryMs = 30_000,
+  retryRefresh = () => false,
+  expirationCode = 'credential_expired',
+  authorizationExpirationCode = 'credential_expired',
   now = Date.now,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
@@ -34,6 +38,20 @@ export const createCredentialSession = ({
     if (timer) clearTimer(timer);
     if (expiryTimer) clearTimer(expiryTimer);
   };
+  const expiryReason = () =>
+    unavailable(
+      authorizationExpiresAt !== null && now() >= authorizationExpiresAt
+        ? authorizationExpirationCode
+        : expirationCode,
+    );
+  const scheduleRetry = () => {
+    if (disposed || controller.signal.aborted) return;
+    if (timer) clearTimer(timer);
+    timer = setTimer(() => {
+      void session.renew().catch(() => {});
+    }, refreshRetryMs);
+    timer.unref?.();
+  };
   const schedule = () => {
     if (timer) clearTimer(timer);
     if (expiryTimer) clearTimer(expiryTimer);
@@ -42,17 +60,17 @@ export const createCredentialSession = ({
     if (!Number.isFinite(deadline)) return;
     // Refresh can hang or outlive the token it is replacing. Expiry remains an
     // independent cancellation boundary while that request is outstanding.
-    expiryTimer = setTimer(() => cancel(), Math.max(1, deadline - now()));
+    expiryTimer = setTimer(() => cancel(expiryReason()), Math.max(1, deadline - now()));
     expiryTimer.unref?.();
     const canRefresh = refresh && (!authorizationExpiresAt || deadline < authorizationExpiresAt);
     const due = deadline - (canRefresh ? refreshBeforeMs : 0);
     timer = setTimer(
       () => {
         if (!canRefresh) {
-          cancel();
+          cancel(expiryReason());
           return;
         }
-        void session.renew().catch(() => cancel(unavailable('credential_refresh_failed')));
+        void session.renew().catch(() => {});
       },
       Math.max(1, due - now()),
     );
@@ -83,7 +101,7 @@ export const createCredentialSession = ({
         (authorizationExpiresAt !== null &&
           (!Number.isFinite(authorizationExpiresAt) || authorizationExpiresAt <= now()))
       ) {
-        cancel();
+        cancel(expiryReason());
         throw controller.signal.reason;
       }
     },
@@ -104,12 +122,15 @@ export const createCredentialSession = ({
         }
         // The provider's initial authorization ceiling never slides on renewal.
         expiresAt = next.expiresAt;
-        preparedEnv = { ...next.env };
-        preparedCredentialEnvironment = { ...next.credentialEnvironment };
+        preparedEnv = { ...(next.env ?? preparedEnv) };
+        preparedCredentialEnvironment = {
+          ...(next.credentialEnvironment ?? preparedCredentialEnvironment),
+        };
         schedule();
       })()
         .catch((error) => {
-          cancel(unavailable('credential_refresh_failed'));
+          if (!controller.signal.aborted && !disposed && retryRefresh(error)) scheduleRetry();
+          else cancel(unavailable('credential_refresh_failed'));
           throw error;
         })
         .finally(() => {

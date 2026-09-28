@@ -1,4 +1,8 @@
-import { assertScopeAvailable } from '../shared/agent-auth-inventory.js';
+import { authorizeAgentCredentialRequest } from './agent-authentication.js';
+import {
+  isAgentCredentialAction,
+  loggableAgentCredentialErrorCode,
+} from './agent-provider-registry.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
@@ -14,14 +18,6 @@ import {
 } from '../shared/source-control-bindings.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
-import { redeemAgentBinding } from '../shared/agent-auth-redemption.js';
-import { createAgentConnectionRepository } from '../shared/agent-connection-repository.js';
-import {
-  credentialChangeAffects,
-  bindingIdentity,
-  authError,
-} from '../shared/agent-auth-contracts.js';
-import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
 const logger = new Logger({ persistentKeys: { component: 'credential-broker' } });
@@ -33,19 +29,6 @@ const sts = new STSClient({});
 
 const CREDENTIAL_ACTIVE_EXECUTION_STATUSES = new Set(['CREATED', 'RUNNING']);
 const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
-
-const loggableAgentCredentialErrorCode = (error) => {
-  switch (error?.code) {
-    case 'AGENT_CREDENTIAL_GRANT_EXPIRED':
-      return 'AGENT_CREDENTIAL_GRANT_EXPIRED';
-    case 'AGENT_CREDENTIAL_GRANT_INVALID':
-      return 'AGENT_CREDENTIAL_GRANT_INVALID';
-    case 'AGENT_CREDENTIAL_GRANT_NOT_CONFIGURED':
-      return 'AGENT_CREDENTIAL_GRANT_NOT_CONFIGURED';
-    default:
-      return 'AGENT_CREDENTIAL_BROKER_FAILED';
-  }
-};
 
 const executionIncludesRepository = (meta, provider, repository) => {
   if (!meta || !provider || !repository) return false;
@@ -140,86 +123,11 @@ const authorizeCredentialRequest = async (
   }
 };
 
-const authorizeAgentCredentialRequest = async (
-  { grant },
-  { ssmClient = ssm, ddbClient = ddb, secret = null, env = process.env, now = undefined } = {},
-) => {
-  if (!grant) {
-    throw Object.assign(new Error('Agent credential grant is required'), {
-      code: 'AGENT_CREDENTIAL_GRANT_INVALID',
-    });
-  }
-  const claims = await verifyIssuedAgentCredentialGrant(ssmClient, grant, {
-    env,
-    secret,
-    ...(now ? { now } : {}),
-  });
-  const repository = createAgentConnectionRepository({
-    ddb: ddbClient,
-    tableName: env.V2_PROCESS_TABLE,
-    base: env.AGENT_SETTINGS_SSM_PREFIX || '',
-  });
-  await assertScopeAvailable({
-    repository,
-    bindings: claims.bindings,
-    projectId: claims.projectId,
-  });
-  const policy = await repository.getPolicy();
-  if (policy.pendingReview) {
-    const pending = await repository.getReview(policy.pendingReview);
-    if (
-      claims.bindings.some((binding) =>
-        credentialChangeAffects(pending?.candidate, binding, claims.projectId),
-      )
-    ) {
-      throw authError('AGENT_AUTH_CHANGE_IN_PROGRESS', 'The selected credential is being updated');
-    }
-  }
-  if (claims.version === 2 && claims.executionId) {
-    const { Item: execution } = await ddbClient.send(
-      new GetCommand({
-        TableName: env.V2_PROCESS_TABLE,
-        Key: executionMetaKey(claims.executionId),
-        ConsistentRead: true,
-      }),
-    );
-    if (
-      !execution ||
-      execution.projectId !== claims.projectId ||
-      (claims.purpose === 'execution' &&
-        (claims.bindings.length !== 1 ||
-          bindingIdentity(execution.credentialBinding) !== bindingIdentity(claims.bindings[0])))
-    ) {
-      throw authError(
-        'AGENT_CREDENTIAL_GRANT_INVALID',
-        'Grant does not match the execution binding',
-      );
-    }
-  }
-  const credentials = await Promise.all(
-    claims.bindings.map((binding) =>
-      redeemAgentBinding({
-        binding,
-        projectId: claims.projectId,
-        repository,
-        ssm: ssmClient,
-        base: env.AGENT_SETTINGS_SSM_PREFIX || '',
-      }),
-    ),
-  );
-  return {
-    purpose: claims.purpose,
-    projectId: claims.projectId,
-    executionId: claims.executionId,
-    credentials,
-  };
-};
-
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   const action = event?.action || 'source-control';
   try {
-    if (action === RESOLVE_AGENT_CREDENTIALS) {
+    if (isAgentCredentialAction(action)) {
       return {
         ok: true,
         ...(await authorizeAgentCredentialRequest(event || {})),
@@ -240,10 +148,9 @@ export const handler = async (event, context) => {
   } catch (error) {
     // Both code helpers return only allowlisted constants — never provider-
     // derived error text, which can carry credential material.
-    const code =
-      action === RESOLVE_AGENT_CREDENTIALS
-        ? loggableAgentCredentialErrorCode(error)
-        : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
+    const code = isAgentCredentialAction(action)
+      ? loggableAgentCredentialErrorCode(error)
+      : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
     logger.error('request denied', {
       code,
       action,

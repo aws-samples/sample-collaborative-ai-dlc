@@ -26,12 +26,21 @@ export const normalizeCredentialLease = (lease) => {
       expiresAt > authorizationExpiresAt)
   )
     return invalid();
+  if (renewal?.action) assertIdentifier(renewal.action, 'renewal action');
+  if (renewal?.tokenField && !['grant', 'renewalToken'].includes(renewal.tokenField))
+    return invalid();
   return {
     version: 1,
     material: material ? { ...material } : null,
     expiresAt,
     authorizationExpiresAt,
-    renewal: renewal ? { grant: renewal.grant } : null,
+    renewal: renewal
+      ? {
+          grant: renewal.grant,
+          ...(renewal.action ? { action: renewal.action } : {}),
+          ...(renewal.tokenField ? { tokenField: renewal.tokenField } : {}),
+        }
+      : null,
   };
 };
 
