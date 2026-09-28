@@ -1170,7 +1170,7 @@ const runStageAttempt = async (
           if (error?.name === 'ConditionalCheckFailedException') return false;
           return true; // preserve the original failure during a storage outage
         });
-      if (!saved) return { ok: false, reason: 'retired' };
+      if (!saved) return ownershipConflict(processStore, { executionId, orchestratorRunId });
     }
     await store
       .appendEvent({
@@ -2998,11 +2998,37 @@ const runStageAttempt = async (
   };
 };
 
-export const runStage = async (...args) => {
+// A failed ownership condition retires this attempt only when META names
+// another run (or the intent is gone). A stale STAGE callback, left by an
+// earlier attempt that crashed or was refused, leaves this run the owner: the
+// orchestrator exits without a terminal write on `retired`, so report a stage
+// failure it can retry instead.
+const ownershipConflict = async (store, { executionId, orchestratorRunId }) => {
+  let meta;
   try {
-    return await runStageAttempt(...args);
+    meta = await store.getExecution(executionId, { consistentRead: true });
+  } catch {
+    meta = undefined; // unknown: a failure is retryable, a wrong `retired` is not
+  }
+  if (
+    meta === null ||
+    (meta?.orchestratorRunId && orchestratorRunId && meta.orchestratorRunId !== orchestratorRunId)
+  ) {
+    return { ok: false, reason: 'retired' };
+  }
+  return {
+    ok: false,
+    reason: 'stage_attempt_conflict',
+    detail: 'An earlier attempt still owns this stage. Retry the stage to release it.',
+  };
+};
+
+export const runStage = async (payload, deps) => {
+  try {
+    return await runStageAttempt(payload, deps);
   } catch (error) {
-    if (error?.name === 'ConditionalCheckFailedException') return { ok: false, reason: 'retired' };
+    if (error?.name === 'ConditionalCheckFailedException')
+      return ownershipConflict(deps.store, payload);
     throw error;
   }
 };

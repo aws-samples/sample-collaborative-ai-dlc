@@ -2853,7 +2853,10 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
           },
         }),
       );
-      expect(result).toMatchObject({ ok: false, reason: 'retired' });
+      expect(result).toMatchObject({
+        ok: false,
+        reason: replacement === 'new-run' ? 'retired' : 'stage_attempt_conflict',
+      });
       expect(rows.get('META')).toMatchObject({ status: 'WAITING', pendingHumanTaskId: 'q-new' });
       expect(rows.get(`STAGE#${BASE_STAGE_INSTANCE_ID}`)).toMatchObject({
         state: 'WAITING_FOR_HUMAN',
@@ -2967,6 +2970,33 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     expect(res).toMatchObject({ ok: false, reason: 'resume_state_conflict' });
     expect(spawnFn).not.toHaveBeenCalled();
     expect(store.calls.some(([op]) => op === 'putStage' || op === 'updateStageState')).toBe(false);
+  });
+
+  it.each([
+    ['this run', { orchestratorRunId: 'run1' }, 'stage_attempt_conflict'],
+    ['a replacement run', { orchestratorRunId: 'run2' }, 'retired'],
+    ['a deleted intent', null, 'retired'],
+    ['an unreadable META', new Error('storage down'), 'stage_attempt_conflict'],
+  ])('reports a stale stage claim under %s as %s', async (_label, meta, reason) => {
+    const store = {
+      ...spyStore(),
+      claimStageAttempt: async () => {
+        throw Object.assign(new Error('RUNNING under cb-old'), {
+          name: 'ConditionalCheckFailedException',
+        });
+      },
+      getExecution: async () => {
+        if (meta instanceof Error) throw meta;
+        return meta;
+      },
+    };
+    const spawnFn = vi.fn(okSpawn);
+    const res = await runStage(
+      { ...baseArgs, orchestratorRunId: 'run1', stageCallbackId: 'cb-new' },
+      baseDeps({ store, spawnFn }),
+    );
+    expect(res).toMatchObject({ ok: false, reason });
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 
   it('retires a superseded Kiro answer without changing stage state', async () => {
