@@ -109,6 +109,28 @@ describe('stage attempt ownership transactions', () => {
     expect(items[2].Update.ConditionExpression).toContain('orchestratorRunId = :ownedRun');
     expect(items[2].Update.UpdateExpression).toContain('GSI1SK');
   });
+  it.each([
+    ['resumeStageRow', { stageInstanceId: 's1', cli: 'claude', cliSessionId: 'sess-2' }],
+    ['updateStageState', { stageInstanceId: 's1', state: 'SUCCEEDED' }],
+    ['updateExecution', { status: 'RUNNING' }],
+    ['supersedeHumanTask', { humanTaskId: 'h1' }],
+  ])('returns the committed row from an owned %s', async (method, input) => {
+    const committed = { sk: 'committed', waitMs: 42, updatedAt: 'T' };
+    const sent = [];
+    const ddb = {
+      send: vi.fn(async (command) => {
+        sent.push(command);
+        return command instanceof GetCommand ? { Item: committed } : {};
+      }),
+    };
+    const store = createProcessStore({ ddb, tableName: 't', clock: () => 'T' });
+    expect(await store[method]({ executionId: 'e1', ownership, ...input })).toBe(committed);
+    const write = sent.findIndex((command) => command instanceof TransactWriteCommand);
+    const read = sent.at(-1);
+    expect(write).toBeGreaterThanOrEqual(0);
+    expect(read).toBeInstanceOf(GetCommand);
+    expect(read.input.ConsistentRead).toBe(true);
+  });
   it('retries writes that collide with a concurrent lane transaction on META', async () => {
     // DynamoDB rejects (never applies) a write to an item held by an in-flight
     // transaction: TransactionConflictException for a single-item write, a
