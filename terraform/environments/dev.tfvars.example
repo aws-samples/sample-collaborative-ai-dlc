@@ -1,6 +1,16 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
+# Protect durable DynamoDB tables and Neptune against accidental deletion, and
+# retain at least seven days of automated Neptune backups.
+deletion_protection     = true
+backup_retention_period = 7
+skip_final_snapshot     = false
+
+# Optional existing customer-managed key. Leave empty to use service-owned
+# encryption. See docs/getting-started/prerequisites.md before supplying an ARN.
+kms_key_arn = ""
+
 # Keep only Lambdas already requiring private resources in the VPC. Set to
 # "public-egress" to also route OAuth connectors, credential resolution, and
 # seed-blocks through NAT.

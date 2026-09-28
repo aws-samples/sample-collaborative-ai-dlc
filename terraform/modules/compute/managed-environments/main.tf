@@ -27,6 +27,19 @@ locals {
   ecr_registry_host                       = split("/", var.environment_repository_url)[0]
 }
 
+module "dynamodb_kms_runtime_access" {
+  source = "../../security/dynamodb-kms-runtime-access"
+
+  kms_key_arn = var.kms_key_arn
+  dns_suffix  = local.dns_suffix
+  role_names = {
+    control      = aws_iam_role.control.name
+    status       = aws_iam_role.status.name
+    tool_control = aws_iam_role.tool_control.name
+    tool_status  = aws_iam_role.tool_status.name
+  }
+}
+
 resource "random_id" "context_bucket_suffix" {
   byte_length = 4
 }
