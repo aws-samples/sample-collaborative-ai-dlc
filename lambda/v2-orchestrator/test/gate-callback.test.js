@@ -62,8 +62,11 @@ describe('engine gate answer/bind races', () => {
     const store = {
       getExecution: vi.fn(async () => ({ ...meta })),
       getHumanTask: vi.fn(async () => gate && { ...gate }),
+      // Like the store: the gate and its owned META wait commit together.
       createHumanTask: vi.fn(async (row) => {
+        if (gate || row.orchestratorRunId !== meta.orchestratorRunId) throw cas();
         gate = { ...row, status: 'pending' };
+        Object.assign(meta, { status: 'WAITING', pendingHumanTaskId: row.humanTaskId });
       }),
       supersedeHumanTask: vi.fn(async () => {
         if (gate?.status === 'pending') gate.status = 'superseded';
@@ -95,6 +98,10 @@ describe('engine gate answer/bind races', () => {
       meta,
       ctx,
       toolkit,
+      seedGate: (row) => {
+        gate = row;
+      },
+      gate: () => gate && { ...gate },
       answer: () => Object.assign(gate, { status: 'answered', answer: { decision: 'retry' } }),
       supersede: () => Object.assign(gate, { status: 'superseded' }),
     };
@@ -151,13 +158,26 @@ describe('engine gate answer/bind races', () => {
     expect(f.meta).toMatchObject({ orchestratorRunId: 'replacement', status: 'CREATED' });
   });
 
-  it('retires a legacy gate if ownership changes between creating it and parking META', async () => {
+  it('parks META once, together with the new gate', async () => {
     const f = fixture();
-    const create = f.store.createHumanTask.getMockImplementation();
-    f.store.createHumanTask.mockImplementation(async (row) => {
-      await create(row);
-      f.meta.orchestratorRunId = 'replacement';
-      f.meta.pendingHumanTaskId = 'replacement-gate';
+    f.toolkit.broadcast.mockImplementation(async () => f.answer());
+    await awaitEngineGate(f.ctx, f.toolkit, args);
+    expect(
+      f.store.updateExecution.mock.calls.filter(([row]) => row.status === 'WAITING'),
+    ).toHaveLength(0);
+  });
+
+  it('retires a legacy gate whose run was replaced before it parked META', async () => {
+    const f = fixture();
+    // An older deployment created the gate but had not parked META yet; the
+    // run is replaced between reading that gate and opening it here.
+    f.seedGate({ humanTaskId: 'eg-halt-s1-r1-run1', status: 'pending' });
+    f.store.getHumanTask.mockImplementationOnce(async () => {
+      Object.assign(f.meta, {
+        orchestratorRunId: 'replacement',
+        pendingHumanTaskId: 'replacement-gate',
+      });
+      return f.gate();
     });
     expect(await awaitEngineGate(f.ctx, f.toolkit, args)).toEqual({ superseded: true });
     expect(await f.store.getHumanTask()).toMatchObject({ status: 'superseded' });

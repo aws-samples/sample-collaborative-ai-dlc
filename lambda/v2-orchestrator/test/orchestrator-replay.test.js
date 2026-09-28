@@ -146,8 +146,10 @@ it('replays an unpark whose META write committed but whose step result was lost'
   const store = {
     getExecution: async () => ({ ...meta }),
     getHumanTask: async () => gate && { ...gate },
+    // Like the store: the gate and its owned META wait commit together.
     createHumanTask: async (input) => {
       gate = { ...input, status: 'pending' };
+      Object.assign(meta, { status: 'WAITING', pendingHumanTaskId: input.humanTaskId });
     },
     setGateCallbackId: async () => null,
     updateExecution: async (input) => {

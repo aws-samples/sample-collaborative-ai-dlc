@@ -175,6 +175,9 @@ export const awaitEngineGate = async (
   if (existing && existing.status !== 'pending') return { gate: existing };
 
   const opened = await ctxArg.step(`gate-open-${name}`, async () => {
+    // With a run, createHumanTask parks META (WAITING + pointer) in the same
+    // transaction as the gate, so only an existing gate needs the park below.
+    let parkedWithGate = false;
     try {
       await store.createHumanTask({
         executionId,
@@ -190,20 +193,22 @@ export const awaitEngineGate = async (
         ...(recomposeTargets ? { recomposeTargets } : {}),
         ...(nextStageId !== undefined ? { nextStageId } : {}),
       });
+      parkedWithGate = Boolean(runId);
     } catch (error) {
       if (error?.name !== 'ConditionalCheckFailedException') throw error;
     }
     // Park META (WAITING + pointer): the cancel endpoint and the UI badge key
     // off it. Engine gates are barriers — no lanes are running while pending.
-    try {
-      await store.updateExecution({
-        executionId,
-        status: 'WAITING',
-        pendingHumanTaskId: humanTaskId,
-        ifOrchestratorRunId: runId,
-      });
-    } catch (error) {
-      if (error?.name === 'ConditionalCheckFailedException') {
+    if (!parkedWithGate) {
+      try {
+        await store.updateExecution({
+          executionId,
+          status: 'WAITING',
+          pendingHumanTaskId: humanTaskId,
+          ifOrchestratorRunId: runId,
+        });
+      } catch (error) {
+        if (error?.name !== 'ConditionalCheckFailedException') throw error;
         // Current stores create/park atomically. Also clean up gates created
         // by a deployed older version before its META ownership write failed.
         await store.supersedeHumanTask({
@@ -213,7 +218,6 @@ export const awaitEngineGate = async (
         });
         return false;
       }
-      throw error;
     }
     try {
       await broadcast?.(intentId, {
