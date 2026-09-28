@@ -109,6 +109,92 @@ describe('stage attempt ownership transactions', () => {
     expect(items[2].Update.ConditionExpression).toContain('orchestratorRunId = :ownedRun');
     expect(items[2].Update.UpdateExpression).toContain('GSI1SK');
   });
+  it('retries writes that collide with a concurrent lane transaction on META', async () => {
+    // DynamoDB rejects (never applies) a write to an item held by an in-flight
+    // transaction: TransactionConflictException for a single-item write, a
+    // TransactionConflict cancellation reason for a transaction.
+    const locked = new Set();
+    const keysOf = (command) =>
+      command instanceof TransactWriteCommand
+        ? command.input.TransactItems.map((item) => {
+            const op = item.ConditionCheck ?? item.Update ?? item.Put;
+            return op.Key ?? op.Item;
+          })
+        : [command.input.Key ?? command.input.Item];
+    const id = (key) => `${key.pk}|${key.sk}`;
+    let outputSeq = 0;
+    let rejected = 0;
+    const ddb = {
+      send: vi.fn(async (command) => {
+        if (command instanceof GetCommand) return { Item: { projectId: 'p1', startedAt: 'T' } };
+        const keys = keysOf(command).map(id);
+        if (keys.some((key) => locked.has(key))) {
+          rejected++;
+          throw command instanceof TransactWriteCommand
+            ? Object.assign(new Error('conflict'), {
+                name: 'TransactionCanceledException',
+                CancellationReasons: keys.map((key) => ({
+                  Code: locked.has(key) ? 'TransactionConflict' : 'None',
+                })),
+              })
+            : Object.assign(new Error('conflict'), { name: 'TransactionConflictException' });
+        }
+        if (!(command instanceof TransactWriteCommand)) {
+          await new Promise((resolve) => setImmediate(resolve));
+          return command.input.UpdateExpression === 'ADD outputSeq :one'
+            ? { Attributes: { outputSeq: ++outputSeq } }
+            : {};
+        }
+        keys.forEach((key) => locked.add(key));
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        keys.forEach((key) => locked.delete(key));
+        return {};
+      }),
+    };
+    const store = createProcessStore({ ddb, tableName: 't', clock: () => 'T' });
+    const lane = (slug) => ({
+      orchestratorRunId: 'run1',
+      stageCallbackId: `cb-${slug}`,
+      stageInstanceId: `s-${slug}`,
+    });
+    const results = await Promise.all([
+      store.updateStageState({
+        executionId: 'e1',
+        stageInstanceId: 's-auth',
+        state: 'SUCCEEDED',
+        ownership: lane('auth'),
+      }),
+      store.updateStageState({
+        executionId: 'e1',
+        stageInstanceId: 's-billing',
+        state: 'SUCCEEDED',
+        ownership: lane('billing'),
+      }),
+      ...['auth', 'billing', 'auth'].map((slug) =>
+        store.appendOutput({ executionId: 'e1', stageInstanceId: `s-${slug}`, content: 'x' }),
+      ),
+    ]);
+    expect(rejected).toBeGreaterThan(0);
+    expect(results.slice(2).map((row) => row.seq)).toEqual(expect.arrayContaining([1, 2, 3]));
+    expect(locked.size).toBe(0);
+  });
+  it('stops retrying a persistent conflict and surfaces it', async () => {
+    const conflict = Object.assign(new Error('conflict'), {
+      name: 'TransactionCanceledException',
+      CancellationReasons: [{ Code: 'TransactionConflict' }, { Code: 'None' }],
+    });
+    const ddb = { send: vi.fn().mockRejectedValue(conflict) };
+    const store = createProcessStore({ ddb, tableName: 't', clock: () => 'T' });
+    await expect(
+      store.updateStageState({
+        executionId: 'e1',
+        stageInstanceId: 's1',
+        state: 'FAILED',
+        ownership,
+      }),
+    ).rejects.toBe(conflict);
+    expect(ddb.send).toHaveBeenCalledTimes(5);
+  });
   it('distinguishes lost ownership from transaction storage failures', async () => {
     const { ddb, store } = setup();
     const write = () =>

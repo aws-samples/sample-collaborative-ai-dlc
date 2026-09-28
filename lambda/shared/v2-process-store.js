@@ -89,8 +89,35 @@ const queryAll = async (ddb, input) => {
   return items;
 };
 
-const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
-  if (!ddb) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
+// Worker writes fence ownership in transactions that include META, which
+// appendOutput, the orchestrator and sibling lanes write constantly. DynamoDB
+// rejects (never applies) a write that collides with an in-flight transaction
+// on the same item, and the SDK does not retry that rejection.
+const TRANSACTION_CONFLICT_ATTEMPTS = 5;
+const isTransactionConflict = (error) =>
+  error?.name === 'TransactionConflictException' ||
+  (error?.name === 'TransactionCanceledException' &&
+    Boolean(error.CancellationReasons?.some((reason) => reason?.Code === 'TransactionConflict')) &&
+    error.CancellationReasons.every((reason) =>
+      ['None', 'TransactionConflict'].includes(reason?.Code ?? 'None'),
+    ));
+const conflictBackoffMs = (attempt) => 10 * 2 ** (attempt - 1) * (1 + Math.random());
+const retryTransactionConflicts = (client) => ({
+  send: async (command, ...rest) => {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await client.send(command, ...rest);
+      } catch (error) {
+        if (!isTransactionConflict(error) || attempt >= TRANSACTION_CONFLICT_ATTEMPTS) throw error;
+        await new Promise((resolve) => setTimeout(resolve, conflictBackoffMs(attempt)));
+      }
+    }
+  },
+});
+
+const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
+  if (!client) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
+  const ddb = retryTransactionConflicts(client);
   const table = () => tableName ?? process.env.V2_PROCESS_TABLE;
   const now = () => (clock ? clock() : new Date().toISOString());
   const nextId = () => (ids ? ids() : randomUUID());
