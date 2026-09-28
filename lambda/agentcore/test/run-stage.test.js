@@ -2582,46 +2582,46 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     ).toBe(true);
   });
 
-  it('keeps a parked Codex gate retryable when retirement fails', async () => {
+  it('preserves the Codex persist failure when gate retirement fails', async () => {
     const store = spyStore(
       pendingGateSeed('q-codex', {
         createdAt: '2026-08-01T00:00:00Z',
       }),
     );
-    const retirementError = new Error('gate retirement unavailable');
     store.supersedeHumanTask = vi.fn(async () => {
-      throw retirementError;
+      throw new Error('gate retirement unavailable');
     });
 
-    await expect(
-      runStage(
-        { ...baseArgs, requestedCli: 'codex' },
-        baseDeps({
-          store,
-          env: codexStoreEnv,
-          availableClis: ['codex'],
-          spawnFn: codexSpawn(),
-          persistCodexRollout: async () => ({
-            ok: false,
-            status: 'persist_failed',
-            attempts: 5,
-            error: { code: 'ENOSPC', message: 'waiting to be backed up' },
-          }),
-          cleanupCodexHome: async () => true,
+    const result = await runStage(
+      { ...baseArgs, requestedCli: 'codex', orchestratorRunId: 'run1', stageCallbackId: 'cb1' },
+      baseDeps({
+        store: { ...store, claimStageAttempt: async () => {} },
+        env: codexStoreEnv,
+        availableClis: ['codex'],
+        spawnFn: codexSpawn(),
+        persistCodexRollout: async () => ({
+          ok: false,
+          status: 'persist_failed',
+          attempts: 5,
+          error: { code: 'ENOSPC', message: 'waiting to be backed up' },
         }),
-      ),
-    ).rejects.toBe(retirementError);
+        cleanupCodexHome: async () => true,
+      }),
+    );
 
-    expect(store.supersedeHumanTask).toHaveBeenCalledWith({
-      executionId: 'e1',
-      humanTaskId: 'q-codex',
-      supersededBy: 'codex_store_persist_failed',
-    });
+    expect(result).toMatchObject({ ok: false, reason: 'codex_store_persist_failed' });
+    expect(store.supersedeHumanTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        humanTaskId: 'q-codex',
+        supersededBy: 'codex_store_persist_failed',
+      }),
+    );
+    // The META pointer is cleared only while it still names this gate.
     expect(
-      store.calls.some(
+      store.calls.find(
         (call) => call[0] === 'updateExecution' && call[1].pendingHumanTaskId === null,
-      ),
-    ).toBe(false);
+      )?.[1],
+    ).toMatchObject({ ifOrchestratorRunId: 'run1', ifPendingHumanTaskId: 'q-codex' });
     expect(
       store.calls.some(
         (call) =>
@@ -2629,7 +2629,7 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
           call[1].state === 'FAILED' &&
           call[1].pendingHumanTaskId === null,
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('warns but allows a successful non-parked Codex run when persistence fails', async () => {

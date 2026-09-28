@@ -2577,24 +2577,9 @@ const runStageAttempt = async (
     );
   }
   if (parked && cli === 'codex' && codexStoreConfigured && !codexPersistResult?.ok) {
-    await (store.supersedeHumanTask?.({
-      executionId,
-      humanTaskId: parked.humanTaskId,
-      supersededBy: 'codex_store_persist_failed',
-    }) ?? Promise.resolve());
-    if (!unitSlug) {
-      await store
-        .updateExecution({
-          executionId,
-          pendingHumanTaskId: null,
-        })
-        .catch(() => {});
-    }
-    return fail(
-      stageInstanceId,
+    return failUnresumableGate(
       'codex_store_persist_failed',
       'Codex parked the stage, but its rollout could not be written to durable storage',
-      { clearPending: true },
     );
   }
   if (!parked && exitCode !== 0) {
