@@ -155,9 +155,16 @@ export const codeCommitPermissionsPolicy = ({
   ],
 });
 
+// Session for platform API calls made without an execution (source-control
+// operations: find-pr, create-pr, pr-status...). It is the author of every
+// pull request the platform opens, and findPullRequest filters on it
+// (ListPullRequests authorArn is an exact session-ARN match), so it must stay
+// stable: renaming it would hide pull requests already open under this name.
+export const PLATFORM_SESSION = 'bind';
+
 // RoleSessionName: 2–64 chars of [\w+=,.@-]. Keep it attributable in CloudTrail.
 const sessionName = (executionId) => {
-  const suffix = String(executionId || 'bind')
+  const suffix = String(executionId || PLATFORM_SESSION)
     .replace(/[^\w+=,.@-]/g, '-')
     .slice(0, 40);
   return `aidlc-${suffix}`.slice(0, 64);

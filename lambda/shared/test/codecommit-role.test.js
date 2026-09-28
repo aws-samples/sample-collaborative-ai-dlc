@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AssumeRoleCommand } from '@aws-sdk/client-sts';
 
 import {
+  PLATFORM_SESSION,
   SESSION_DURATION_SECONDS,
   assumeCodeCommitRole,
   codeCommitPermissionsPolicy,
@@ -98,6 +99,14 @@ describe('session policies', () => {
 });
 
 describe('assumeCodeCommitRole', () => {
+  it('keeps the platform session name stable, since it authors every platform PR', async () => {
+    // findPullRequest filters ListPullRequests on this exact session ARN.
+    expect(PLATFORM_SESSION).toBe('bind');
+    const sts = stsStub(okCredentials);
+    await assumeCodeCommitRole({ sts, roleArn: ROLE, externalId: EXTERNAL_ID, repoArn: REPO });
+    expect(sts.calls[0].input.RoleSessionName).toBe('aidlc-bind');
+  });
+
   it('assumes with the stored external id, a scoped session policy and an attributable session name', async () => {
     const sts = stsStub(okCredentials);
     const out = await assumeCodeCommitRole({

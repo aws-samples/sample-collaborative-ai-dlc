@@ -41,6 +41,10 @@ const makeClient = (handlers) => {
 
 const sdkError = (name) => Object.assign(new Error(name), { name });
 
+// The STS session the platform's pull-request calls run under.
+const SESSION_ARN = `arn:aws:sts::${ACCOUNT}:assumed-role/aidlc-codecommit-access/aidlc-bind`;
+const withSession = (client) => ({ client, token: { assumedRoleArn: SESSION_ARN } });
+
 const pr = ({
   id = '7',
   status = 'OPEN',
@@ -324,15 +328,64 @@ describe('codecommit provider: pull requests', () => {
         pullRequest: pr({ id: pullRequestId, source: pullRequestId === '7' ? 'feature' : 'other' }),
       }),
     });
-    const found = await cc.findPullRequest({ client }, ARN, {
+    const found = await cc.findPullRequest(withSession(client), ARN, {
       sourceBranch: 'feature',
       targetBranch: 'main',
     });
     expect(found.pullRequestId).toBe('7');
     expect(client.calls[0]).toMatchObject({
       name: 'ListPullRequests',
-      input: { repositoryName: REPO, pullRequestStatus: 'OPEN' },
+      input: { repositoryName: REPO, pullRequestStatus: 'OPEN', authorArn: SESSION_ARN },
     });
+  });
+
+  it('findPullRequest refuses to list without the session identity', async () => {
+    const client = makeClient({ ListPullRequests: { pullRequestIds: ['7'] } });
+    await expect(
+      cc.findPullRequest({ client }, ARN, { sourceBranch: 'feature', targetBranch: 'main' }),
+    ).rejects.toMatchObject({ status: 500 });
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it('findPullRequest scans every author-filtered page, with no lookup cap', async () => {
+    // 301 platform PRs: the old 300-lookup cap returned null here.
+    const ids = Array.from({ length: 301 }, (_, i) => String(i + 1));
+    const client = makeClient({
+      ListPullRequests: ({ nextToken }) =>
+        nextToken
+          ? { pullRequestIds: ids.slice(150) }
+          : { pullRequestIds: ids.slice(0, 150), nextToken: 'p2' },
+      GetPullRequest: ({ pullRequestId }) => ({
+        pullRequest: pr({
+          id: pullRequestId,
+          source: pullRequestId === '301' ? 'feature' : 'other',
+        }),
+      }),
+    });
+    const found = await cc.findPullRequest(withSession(client), ARN, {
+      sourceBranch: 'feature',
+      targetBranch: 'main',
+    });
+    expect(found.pullRequestId).toBe('301');
+  });
+
+  it('findPullRequest fails instead of returning null when pages remain', async () => {
+    const client = makeClient({
+      ListPullRequests: ({ nextToken }) => ({
+        pullRequestIds: [`x-${nextToken ?? 0}`],
+        nextToken: `${Number(nextToken ?? 0) + 1}`,
+      }),
+      GetPullRequest: ({ pullRequestId }) => ({
+        pullRequest: pr({ id: pullRequestId, source: 'other' }),
+      }),
+    });
+    await expect(
+      cc.findPullRequest(withSession(client), ARN, {
+        sourceBranch: 'feature',
+        targetBranch: 'main',
+      }),
+    ).rejects.toMatchObject({ status: 409, code: 'PR_LOOKUP_TRUNCATED' });
+    expect(client.calls.some((c) => c.name === 'CreatePullRequest')).toBe(false);
   });
 
   it('createPullRequest returns {prUrl, prNumber} and reports the console URL', async () => {
@@ -356,7 +409,7 @@ describe('codecommit provider: pull requests', () => {
         return { pullRequest: pr({ id: '42' }) };
       },
     });
-    const out = await cc.createPullRequest({ client }, ARN, {
+    const out = await cc.createPullRequest(withSession(client), ARN, {
       branch: 'feature',
       baseBranch: 'main',
       title: 'Ship it',
@@ -412,7 +465,7 @@ describe('codecommit provider: pull requests', () => {
       return { client, close };
     };
     const create = (client, attemptKey, title = 'Ship it') =>
-      cc.createPullRequest({ client }, ARN, {
+      cc.createPullRequest(withSession(client), ARN, {
         branch: 'feature',
         baseBranch: 'main',
         title,
@@ -476,7 +529,7 @@ describe('codecommit provider: pull requests', () => {
       ListPullRequests: { pullRequestIds: ['7'] },
       GetPullRequest: { pullRequest: pr({ id: '7' }) },
     });
-    const out = await cc.createPullRequest({ client }, ARN, {
+    const out = await cc.createPullRequest(withSession(client), ARN, {
       branch: 'feature',
       baseBranch: 'main',
       title: 't',
@@ -496,7 +549,7 @@ describe('codecommit provider: pull requests', () => {
           ? { branch: { branchName: 'main', commitId: 'bbb222' } }
           : sdkError('BranchDoesNotExistException'),
     });
-    const out = await cc.createPullRequest({ client }, ARN, {
+    const out = await cc.createPullRequest(withSession(client), ARN, {
       branch: 'never-pushed',
       baseBranch: 'main',
       title: 't',
@@ -516,7 +569,7 @@ describe('codecommit provider: pull requests', () => {
         destinationCommitId: 'same',
       },
     });
-    const out = await cc.createPullRequest({ client }, ARN, {
+    const out = await cc.createPullRequest(withSession(client), ARN, {
       branch: 'feature',
       baseBranch: 'main',
       title: 't',

@@ -455,12 +455,14 @@ const getPullRequestRaw = async (ctx, repoId, prNumber) => {
   return res?.pullRequest ?? null;
 };
 
+// ListPullRequests has no source-branch filter and returns bare ids, so each
+// candidate costs one GetPullRequest. It does filter by author, an exact match
+// on the STS session ARN (verified live): every pull request the platform
+// opens is authored by the session in ctx.token.assumedRoleArn (see
+// PLATFORM_SESSION in codecommit-role.js), so only those are listed. A pull
+// request opened by hand is not reused.
+// https://docs.aws.amazon.com/codecommit/latest/APIReference/API_ListPullRequests.html
 const LIST_PR_PAGES = 10;
-// findPullRequest is O(open pull requests): ListPullRequests has no
-// source-branch filter and returns bare ids, so each candidate costs one
-// GetPullRequest. The cap keeps a repository at CodeCommit's 1,000-open-PR
-// quota from turning one lookup into 1,000 calls.
-const FIND_PR_MAX_LOOKUPS = 300;
 
 const prStatusFilter = (state) => {
   if (state === 'closed') return 'CLOSED';
@@ -474,26 +476,28 @@ const findPullRequest = async (
   { sourceBranch, targetBranch = null, state = 'open' },
 ) => {
   const { repositoryName } = parseRepo(repoId);
+  // Without the session identity the filter would match nothing and a lookup
+  // would silently miss the platform's own pull request: fail instead.
+  const authorArn = ctx?.token?.assumedRoleArn;
+  if (!authorArn) {
+    throw new ProviderError(500, 'CodeCommit pull-request lookup needs the session identity', {
+      action: 'ListPullRequests',
+    });
+  }
   const client = clientFor(ctx, repoId);
   const pullRequestStatus = prStatusFilter(state);
   let nextToken;
-  let lookups = 0;
 
   for (let page = 0; page < LIST_PR_PAGES; page += 1) {
     const res = await callOr(
       client,
-      new ListPullRequestsCommand({ repositoryName, pullRequestStatus, nextToken }),
+      new ListPullRequestsCommand({ repositoryName, pullRequestStatus, authorArn, nextToken }),
       'ListPullRequests',
       404,
       null,
     );
     if (!res) return null;
     for (const pullRequestId of res.pullRequestIds ?? []) {
-      if (lookups >= FIND_PR_MAX_LOOKUPS) {
-        logger.warn('CodeCommit pull-request scan truncated', { repositoryName, lookups });
-        return null;
-      }
-      lookups += 1;
       const pr = await getPullRequestRaw(ctx, repoId, pullRequestId);
       const target = prTarget(pr);
       if (
@@ -504,9 +508,15 @@ const findPullRequest = async (
       }
     }
     nextToken = res.nextToken;
-    if (!nextToken) break;
+    if (!nextToken) return null;
   }
-  return null;
+  // Pages remain: "not found" cannot be claimed, and returning null would let
+  // createPullRequest open a duplicate. Deterministic, so terminal (409).
+  logger.warn('CodeCommit pull-request lookup truncated', { repositoryName });
+  throw new ProviderError(409, 'CodeCommit pull-request lookup did not reach the last page', {
+    action: 'ListPullRequests',
+    code: 'PR_LOOKUP_TRUNCATED',
+  });
 };
 
 // Merge options for a ref pair. Returns null when CodeCommit cannot compare
