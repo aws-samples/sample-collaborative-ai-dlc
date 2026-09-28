@@ -78,6 +78,22 @@ describe('stage attempt ownership transactions', () => {
       });
     },
   );
+  it('fences gate answers with the same ownership checks as worker writes', async () => {
+    const { ddb, store } = setup();
+    await store.supersedeHumanTask({ executionId: 'e1', humanTaskId: 'h1', ownership });
+    const worker = ddb.send.mock.calls[0][0].input.TransactItems;
+    ddb.send.mockClear();
+    await store.answerHumanTask({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      status: 'answered',
+      ifOrchestratorRunId: 'run1',
+      ifStageCallbackId: 'cb1',
+      stageInstanceId: 's1',
+    });
+    const answer = ddb.send.mock.calls[0][0].input.TransactItems;
+    expect(answer.slice(0, 2)).toEqual(worker.slice(0, 2));
+  });
   it('retires only a gate belonging to this stage callback', async () => {
     const { ddb, store } = setup();
     await store.supersedeHumanTask({ executionId: 'e1', humanTaskId: 'h1', ownership });
@@ -290,8 +306,8 @@ describe('stage attempt ownership transactions', () => {
       expect(withSteering ? result.answered : result).toEqual(answered);
       const tx = ddb.send.mock.calls[0][0].input.TransactItems;
       expect(tx).toHaveLength(withSteering ? 4 : 3);
-      expect(tx[0].ConditionCheck.ExpressionAttributeValues[':run']).toBe('run1');
-      expect(tx[1].ConditionCheck.ExpressionAttributeValues[':callback']).toBe('cb1');
+      expect(tx[0].ConditionCheck.ExpressionAttributeValues[':ownedRun']).toBe('run1');
+      expect(tx[1].ConditionCheck.ExpressionAttributeValues[':ownedCallback']).toBe('cb1');
       expect(tx[2].Update.ConditionExpression).toBe('#status = :pending');
       if (withSteering) expect(tx[3].Put.Item.message).toBe('Use the event bus.');
       expect(ddb.send.mock.calls[1][0].input.ConsistentRead).toBe(true);

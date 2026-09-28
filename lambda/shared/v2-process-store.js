@@ -143,26 +143,37 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   // STAGE still names this callback attempt. Check both in the SAME transaction
   // as the mutation; a read followed by an unconditional write cannot fence a
   // rewind. Repeating the same owner's mutation is allowed.
-  const writeStageAttempt = async ({ executionId, ownership, writes, claim = false }) => {
-    const stage = stageKey(executionId, ownership.stageInstanceId);
-    const ownsStage = {
-      TableName: table(),
-      Key: stage,
-      ConditionExpression: 'stageCallbackId = :ownedCallback',
-      ExpressionAttributeValues: { ':ownedCallback': ownership.stageCallbackId },
-    };
-    const ownsRun = {
+  // The single definition of that invariant, shared by worker writes and gate
+  // answers. Placeholders are namespaced so they merge into other conditions.
+  const ownershipConditions = ({
+    executionId,
+    orchestratorRunId,
+    stageInstanceId,
+    stageCallbackId,
+  }) => ({
+    ownsRun: {
       TableName: table(),
       Key: executionMetaKey(executionId),
       ConditionExpression:
         'orchestratorRunId = :ownedRun AND #ownedStatus IN (:ownedRunning, :ownedWaiting)',
       ExpressionAttributeNames: { '#ownedStatus': 'status' },
       ExpressionAttributeValues: {
-        ':ownedRun': ownership.orchestratorRunId,
+        ':ownedRun': orchestratorRunId,
         ':ownedRunning': 'RUNNING',
         ':ownedWaiting': 'WAITING',
       },
-    };
+    },
+    ownsStage: {
+      TableName: table(),
+      Key: stageKey(executionId, stageInstanceId),
+      ConditionExpression: 'stageCallbackId = :ownedCallback',
+      ExpressionAttributeValues: { ':ownedCallback': stageCallbackId },
+    },
+  });
+
+  const writeStageAttempt = async ({ executionId, ownership, writes, claim = false }) => {
+    const stage = stageKey(executionId, ownership.stageInstanceId);
+    const { ownsRun, ownsStage } = ownershipConditions({ executionId, ...ownership });
     let writesStage = false;
     let writesMeta = false;
     const guarded = writes.map((item) => {
@@ -1128,36 +1139,19 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     ifOrchestratorRunId,
     ifStageCallbackId,
     stageInstanceId,
-  }) =>
-    ifOrchestratorRunId
-      ? [
-          {
-            ConditionCheck: {
-              TableName: table(),
-              Key: executionMetaKey(executionId),
-              ConditionExpression: 'orchestratorRunId = :run AND #status IN (:running, :waiting)',
-              ExpressionAttributeNames: { '#status': 'status' },
-              ExpressionAttributeValues: {
-                ':run': ifOrchestratorRunId,
-                ':running': 'RUNNING',
-                ':waiting': 'WAITING',
-              },
-            },
-          },
-          ...(ifStageCallbackId && stageInstanceId
-            ? [
-                {
-                  ConditionCheck: {
-                    TableName: table(),
-                    Key: stageKey(executionId, stageInstanceId),
-                    ConditionExpression: 'stageCallbackId = :callback',
-                    ExpressionAttributeValues: { ':callback': ifStageCallbackId },
-                  },
-                },
-              ]
-            : []),
-        ]
-      : [];
+  }) => {
+    if (!ifOrchestratorRunId) return [];
+    const { ownsRun, ownsStage } = ownershipConditions({
+      executionId,
+      orchestratorRunId: ifOrchestratorRunId,
+      stageInstanceId,
+      stageCallbackId: ifStageCallbackId,
+    });
+    return [
+      { ConditionCheck: ownsRun },
+      ...(ifStageCallbackId && stageInstanceId ? [{ ConditionCheck: ownsStage }] : []),
+    ];
+  };
 
   // Resolve a pending human gate (CAS on status=pending so it can't be answered
   // twice). `answer` is the structured answer payload.
