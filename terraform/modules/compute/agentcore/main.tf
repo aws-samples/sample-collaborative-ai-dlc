@@ -708,6 +708,8 @@ locals {
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
+  depends_on = [aws_iam_role_policy.agentcore]
+
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn
   # The container speaks the HTTP contract (POST /invocations + GET /ping on 8080).

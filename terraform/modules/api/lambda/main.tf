@@ -442,7 +442,7 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
       local.neptune_statement,
       {
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
         Resource = [var.v2_executions_table_arn]
       },
       {
@@ -1287,6 +1287,8 @@ module "credential_broker_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
+  depends_on = [aws_iam_role_policy.credential_broker, aws_iam_role_policy_attachment.credential_broker_vpc]
+
   function_name = "${var.project_name}-credential-broker-${var.environment}"
   handler       = "index.handler"
   runtime       = "nodejs24.x"
@@ -1328,7 +1330,6 @@ module "credential_broker_lambda" {
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
   }
 
-  depends_on = [aws_iam_role_policy_attachment.credential_broker_vpc]
 }
 
 # Metadata-only companion to the value-redemption broker. It runs under the
@@ -1337,6 +1338,8 @@ module "credential_broker_lambda" {
 module "credential_metadata_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
+
+  depends_on = [aws_iam_role_policy.credential_broker, aws_iam_role_policy_attachment.credential_broker_vpc]
 
   function_name = "${var.project_name}-credential-metadata-${var.environment}"
   handler       = "index.handler"
@@ -1370,7 +1373,6 @@ module "credential_metadata_lambda" {
     AGENT_SETTINGS_SSM_PREFIX   = "/${var.project_name}/${var.environment}"
   }
 
-  depends_on = [aws_iam_role_policy_attachment.credential_broker_vpc]
 }
 
 # Projects Lambda
