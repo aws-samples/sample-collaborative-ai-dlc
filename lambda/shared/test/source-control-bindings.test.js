@@ -16,11 +16,38 @@ import {
   invalidateBindingsByCredentialRef,
   invalidateBindingsForError,
   invalidationReasonForError,
+  loggableErrorCode,
   oauthCredentialRef,
   roleCredentialRef,
   replaceProjectBindings,
   sanitizeBinding,
 } from '../source-control-bindings.js';
+import { ProviderError } from '../git-providers/errors.js';
+
+describe('typed provider error codes', () => {
+  // A provider error's code must survive the source-control boundary, which
+  // reports only allowlisted `error.code` values.
+  it.each([
+    'PULL_REQUEST_REPLAYED',
+    'DRAFT_UNSUPPORTED',
+    'PR_LOOKUP_TRUNCATED',
+    'MERGE_STATUS_UNKNOWN',
+  ])('%s reaches callers instead of the generic fallback', (code) => {
+    const error = new ProviderError(409, 'typed failure', { code });
+    expect(error.code).toBe(code);
+    expect(loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED')).toBe(code);
+    // A 409 conflict never invalidates a binding.
+    expect(invalidationReasonForError(error)).toBeNull();
+  });
+
+  it('leaves untyped provider errors without a code', () => {
+    const error = new ProviderError(502, 'upstream failure', { action: 'GetBranch' });
+    expect(error.code).toBeUndefined();
+    expect(loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED')).toBe(
+      'SOURCE_CONTROL_OPERATION_FAILED',
+    );
+  });
+});
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
