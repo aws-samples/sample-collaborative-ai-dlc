@@ -358,6 +358,87 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
     expect(world.statusWrites).not.toContain('FAILED');
   });
 
+  it('replays a deployed stage-gate history whose bind lost to the answer', async () => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    world.deps.store.getHumanTask = async () => ({
+      status: world.gateStatus,
+      stageInstanceId: 'si-a',
+      answer: { decision: 'approve' },
+    });
+    world.deps.store.setGateCallbackId = async (input) => {
+      world.gateCallbackBindings.push(input);
+      return null; // pending-only bind: the answer already won
+    };
+    // Deployed versions checkpointed the null setGateCallbackId result, then
+    // recorded gate-after-bind-failure. Record that history, then replay it on
+    // the unmodified handler after the upgrade.
+    let upgraded = false;
+    let suspended;
+    const nextSuspension = () =>
+      new Promise((resolve) => {
+        suspended = resolve;
+      });
+    let suspension = nextSuspension();
+    // A run that fails instead of suspending reports its result, not a timeout.
+    const suspendedOrFinished = () =>
+      Promise.race([
+        suspension,
+        completion.then((execution) => {
+          throw new Error(`run finished early: ${JSON.stringify(execution.getResult())}`);
+        }),
+      ]);
+    const legacy = withDurableExecution((event, ctx) => {
+      const wrapped = new Proxy(ctx, {
+        get: (target, key) =>
+          key === 'step'
+            ? (name, fn, opts) =>
+                name.startsWith('bind-callback-')
+                  ? target.step(
+                      name,
+                      async () => {
+                        await fn();
+                        return null;
+                      },
+                      opts,
+                    )
+                  : target.step(name, fn, opts)
+            : typeof target[key] === 'function'
+              ? target[key].bind(target)
+              : target[key],
+      });
+      return __durableHandler(event, wrapped, world.deps);
+    });
+    const current = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = new LocalDurableTestRunner({
+      handlerFunction: async (...input) => {
+        const result = await (upgraded ? current : legacy)(...input);
+        if (result.Status === 'PENDING') suspended();
+        return result;
+      },
+    });
+    const completion = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    await suspendedOrFinished();
+    suspension = nextSuspension();
+    await completeStage(runner, 'stage-cb-a', {
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'h1',
+    });
+    await suspendedOrFinished();
+    upgraded = true;
+    await completeStage(runner, 'stage-cb-a-resume-h1', { ok: true, state: 'SUCCEEDED' });
+    const execution = await completion;
+    expect(upgraded).toBe(true);
+    expect(execution.getResult()).toMatchObject({ ok: true });
+    const names = execution.getOperations().map((op) => op.getOperationData()?.Name);
+    expect(names).toContain('gate-after-bind-failure-h1');
+    expect(names).not.toContain('gate-answered-early-h1');
+    expect(world.gateCallbackBindings).toHaveLength(1);
+    expect(world.statusWrites).not.toContain('FAILED');
+  });
+
   it('does not fail a replacement attempt when an old worker returns retired', async () => {
     const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));

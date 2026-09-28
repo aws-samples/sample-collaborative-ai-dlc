@@ -57,7 +57,7 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
-import { bindGateCallback, unparkGate } from './gate-callback.js';
+import { bindGateCallback, ownsAnsweredGate, unparkGate } from './gate-callback.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -887,14 +887,40 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             sectionIndex,
           }),
         );
+        let answeredEarly = false;
         if (!callbackBound) {
-          return {
-            state: 'TERMINAL',
-            value: await fail(
-              'gate_callback_conflict',
-              `gate ${humanTaskId} is already bound to a different stage callback`,
-            ),
-          };
+          // bindGateCallback returns an answered gate owned by this stage, so a
+          // current bind is null only on a real conflict. Deployed versions
+          // checkpointed null for an answer that won the pending-only bind and
+          // then recorded this step; replaying those runs must find the same
+          // step name at the same position.
+          const gateAfterBindFailure = await ctxArg.step(
+            `gate-after-bind-failure-${humanTaskId}`,
+            () => store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
+          );
+          if (gateAfterBindFailure?.status === 'superseded') {
+            logger.info('run retired before gate callback bind', { humanTaskId });
+            return {
+              state: 'TERMINAL',
+              value: { ok: false, reason: 'retired', intentId, humanTaskId },
+            };
+          }
+          answeredEarly = ownsAnsweredGate(gateAfterBindFailure, {
+            callbackId,
+            callbackOwner: expectedCallbackOwner,
+            stageInstanceId: expectedStageInstanceId,
+            unitSlug,
+            sectionIndex,
+          });
+          if (!answeredEarly) {
+            return {
+              state: 'TERMINAL',
+              value: await fail(
+                'gate_callback_conflict',
+                `gate ${humanTaskId} is already bound to a different stage callback`,
+              ),
+            };
+          }
         }
 
         // Answer/bind race (field incident): a fast human can answer in the
@@ -904,10 +930,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // parkReleaseSeconds stall the human reads as "my answer was
         // ignored"). Re-read AFTER binding: an already-answered gate skips
         // the wait entirely and resumes now.
-        const answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
-          const gate = await store.getHumanTask(executionId, humanTaskId, { consistentRead: true });
-          return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
-        });
+        if (callbackBound) {
+          answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
+            const gate = await store.getHumanTask(executionId, humanTaskId, {
+              consistentRead: true,
+            });
+            return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+          });
+        }
         if (!answeredEarly) {
           // D1 release-on-park: if no human answers within parkReleaseSeconds, free
           // the warm microVM compute (StopRuntimeSession) while we keep waiting —
