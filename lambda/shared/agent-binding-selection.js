@@ -1,26 +1,11 @@
+import { assertScopeAvailable } from './agent-auth-inventory.js';
 import {
   authError,
-  normalizeCredentialBinding,
-  normalizeConnection,
+  normalizeRequestedProviders,
   credentialChangeAffects,
-} from './agent-auth-catalog.js';
-import { legacyConnectionId } from './agent-connection-repository.js';
-
-export const connectionBinding = (connection, policyRevision) =>
-  normalizeCredentialBinding({
-    version: 2,
-    provider: connection.backend,
-    backend: connection.backend,
-    mode: connection.mode,
-    mechanism: connection.mechanism,
-    source: connection.source,
-    connectionId: connection.id,
-    connectionRevision: connection.revision,
-    policyRevision,
-    projectId: connection.projectId,
-    userId: connection.userId,
-    configuration: connection.configuration,
-  });
+} from './agent-auth-contracts.js';
+import { AUTH_SELECTION_STRATEGIES } from './agent-auth-selection-strategies.js';
+export { connectionBinding } from './agent-auth-selection-strategies.js';
 
 // Called inside the metadata broker: key set-state and control records are read
 // there, never by callers that have no secret-read permission.
@@ -30,10 +15,30 @@ export const resolvePolicyBindings = async ({
   projectId,
   userId,
   reserve = false,
+  providers,
+  strategies = AUTH_SELECTION_STRATEGIES,
 }) => {
+  const requested = normalizeRequestedProviders(providers);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const policy = await repository.getPolicy();
-    const bindings = await resolveLegacy();
+    const legacyBindings = await resolveLegacy(requested);
+    const bindings = Object.fromEntries(
+      requested.map((provider) => [provider, legacyBindings[provider] ?? null]),
+    );
+    if (requested.includes('bedrock')) {
+      const strategy = strategies[policy.mode];
+      if (!strategy)
+        throw authError('AGENT_AUTH_MODE_UNAVAILABLE', 'Authentication provider has not shipped');
+      const spaceSelection = projectId ? await repository.getSpaceSelection(projectId) : null;
+      bindings.bedrock = await strategy({
+        policy,
+        legacyBindings: bindings,
+        spaceSelection,
+        projectId,
+        userId,
+        repository,
+      });
+    }
     if (policy.pendingReview) {
       const pending = await repository.getReview(policy.pendingReview);
       if (
@@ -47,39 +52,11 @@ export const resolvePolicyBindings = async ({
         );
       }
     }
-    const space = projectId ? await repository.getSpaceSelection(projectId) : null;
-    if (policy.mode !== 'keys')
-      throw authError('AGENT_AUTH_MODE_UNAVAILABLE', 'Authentication provider has not shipped');
-    // Existing key overrides keep their precedence. A deliberate space selection
-    // is complete; field fragments cannot replace an inherited destination.
-    const selected = bindings.bedrock;
-    const connectionId =
-      selected?.source === 'user'
-        ? legacyConnectionId({ ...selected, projectId, userId })
-        : (space?.connectionId ??
-          (selected?.source && selected.source !== 'platform'
-            ? legacyConnectionId({ ...selected, projectId, userId })
-            : policy.defaultConnectionId));
-    const connection = await repository.getConnection(connectionId);
-    if (
-      !connection ||
-      connection.mode !== policy.mode ||
-      (connection.source === 'space' && connection.projectId !== projectId) ||
-      (connection.source === 'user' && connection.userId !== userId)
-    ) {
-      throw authError(
-        'AGENT_AUTH_MODE_MISMATCH',
-        'The selected connection is not permitted in this space',
-      );
-    }
-    if (connection.state !== 'ready')
-      throw authError(
-        'AGENT_AUTH_CONNECTION_UNAVAILABLE',
-        'Selected connection requires credential repair',
-      );
-    normalizeConnection(connection);
-    if (!connection.id.startsWith('legacy-'))
-      bindings.bedrock = connectionBinding(connection, policy.revision);
+    await assertScopeAvailable({
+      repository,
+      bindings: Object.values(bindings).filter(Boolean),
+      projectId,
+    });
     // An absent/cleared legacy credential stays absent; never invent readiness.
     try {
       if (reserve) await repository.claimSelection(policy.revision, { projectId, bindings });

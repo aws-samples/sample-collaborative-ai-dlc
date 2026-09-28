@@ -258,7 +258,13 @@ const main = async () => {
       store,
       env: process.env,
     });
-    const credentialSession = createCredentialSession({ env: auth.env });
+    const credentialSession = createCredentialSession({
+      env: auth.env,
+      credentialEnvironment: auth.credentialEnvironment,
+      expiresAt: auth.expiresAt,
+      authorizationExpiresAt: auth.authorizationExpiresAt,
+      refresh: auth.refresh,
+    });
     try {
       await accountCredentialInvocation({
         ddb,

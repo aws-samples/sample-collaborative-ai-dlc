@@ -1,3 +1,4 @@
+import { apiKeyLease } from '../../shared/agent-credential-lease.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -158,10 +159,12 @@ describe('agent credential grant authorization', () => {
         {
           binding: { provider: 'bedrock', source: 'space' },
           value: 'bedrock-space',
+          lease: apiKeyLease('bedrock-space'),
         },
         {
           binding: { provider: 'kiro', source: 'user', userId: 'u-1' },
           value: 'kiro-user',
+          lease: apiKeyLease('kiro-user'),
         },
       ],
     });

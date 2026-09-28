@@ -13,7 +13,7 @@
 //   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 //     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
 import { PricingClient, GetProductsCommand } from '@aws-sdk/client-pricing';
@@ -46,23 +46,13 @@ import {
   AGENT_CREDENTIAL_PROVIDERS,
   credentialProviderForCli,
   credentialSourcesFromBindings,
-  writeCredentialScope,
 } from '../shared/agent-credentials.js';
 import {
   readCredentialScopeStatusViaBroker,
-  invokeMetadataBroker,
   resolveEffectiveCredentialBindingsViaBroker,
 } from '../shared/agent-credential-metadata.js';
 import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
-import { AGENT_AUTH_MODES_CATALOG, normalizeConnection } from '../shared/agent-auth-catalog.js';
-import {
-  legacyConnectionId,
-  createAgentConnectionRepository,
-} from '../shared/agent-connection-repository.js';
-import {
-  createAgentAuthChangeService,
-  credentialUpdateCandidate,
-} from '../shared/agent-auth-changes.js';
+import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
   authorizeLegacySprintRead,
@@ -95,9 +85,6 @@ const RUNTIME_MODEL_OVERRIDE = {
 // The protected core runtime remains the target for global Admin discovery.
 // Project-scoped probes resolve the project's published environment below.
 const coreRuntimeTarget = () => runtimeTargetInput(null, process.env.AGENTCORE_RUNTIME_ARN || '');
-// A session id >= 33 chars is required by InvokeAgentRuntime; the capabilities
-// command is stateless so any stable id works.
-const CAPABILITIES_SESSION_ID = 'aidlc-capabilities-probe-00000001';
 const PLATFORM_CREDENTIAL_BINDINGS = Object.fromEntries(
   AGENT_CREDENTIAL_PROVIDERS.map((provider) => [provider, { provider, source: 'platform' }]),
 );
@@ -112,13 +99,14 @@ export const fetchRuntimeCapabilities = async (
   projectId = null,
 ) => {
   if (!runtimeTarget.agentRuntimeArn) return null;
+  const runtimeSessionId = randomUUID();
   try {
     let runtimeCapabilities;
     if (Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)) {
       const probe = await agentcore.send(
         new InvokeAgentRuntimeCommand({
           ...runtimeTarget,
-          runtimeSessionId: CAPABILITIES_SESSION_ID,
+          runtimeSessionId,
           contentType: 'application/json',
           accept: 'application/json',
           payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
@@ -138,7 +126,7 @@ export const fetchRuntimeCapabilities = async (
     const res = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         ...runtimeTarget,
-        runtimeSessionId: CAPABILITIES_SESSION_ID,
+        runtimeSessionId,
         contentType: 'application/json',
         accept: 'application/json',
         payload: Buffer.from(
@@ -367,120 +355,11 @@ async function refreshModelPricing() {
   }
 }
 
-const authRepository = () =>
-  createAgentConnectionRepository({
-    ddb,
-    tableName: process.env.V2_PROCESS_TABLE,
-    base: process.env.AGENT_SETTINGS_SSM_PREFIX || '',
-  });
-const loadAuthenticationInventory = async () => {
-  const rows = await authRepository().scanInventory();
-  const scopeResult = await invokeMetadataBroker({ action: 'list-agent-credential-scopes' });
-  rows.push(...(scopeResult.scopes ?? []));
-  let offset = 0;
-  for (;;) {
-    const spaces = await withNeptune((g) =>
-      g
-        .V()
-        .hasLabel('Project')
-        .order()
-        .by('id')
-        .range(offset, offset + 100)
-        .valueMap()
-        .toList(),
-    );
-    rows.push(
-      ...spaces.map((space) => ({
-        type: 'Space',
-        id: getVal(space, 'id'),
-        projectId: getVal(space, 'id'),
-        status: 'CONFIGURED',
-      })),
-    );
-    if (spaces.length < 100) break;
-    offset += spaces.length;
-  }
-  if (process.env.ENVIRONMENT_REGISTRY_TABLE) {
-    let ExclusiveStartKey;
-    do {
-      const page = await ddb.send(
-        new ScanCommand({
-          TableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
-          ConsistentRead: true,
-          ExclusiveStartKey,
-        }),
-      );
-      rows.push(
-        ...(page.Items ?? []).filter(
-          (row) =>
-            row.type === 'EnvironmentRevision' && ['PUBLISHED', 'SUPERSEDED'].includes(row.status),
-        ),
-      );
-      ExclusiveStartKey = page.LastEvaluatedKey;
-    } while (ExclusiveStartKey);
-  }
-  return rows;
-};
-const authenticationChanges = () =>
-  createAgentAuthChangeService({
-    repository: authRepository(),
-    loadInventory: loadAuthenticationInventory,
-  });
-const authenticationView = async ({ source = 'platform', projectId, userId, scopeStatus } = {}) => {
-  const repository = authRepository();
-  const policy = await repository.getPolicy();
-  const platformStatus =
-    source === 'platform' && scopeStatus
-      ? scopeStatus
-      : await readCredentialScopeStatusViaBroker({ source: 'platform' });
-  const hasOverride = source !== 'platform' && scopeStatus?.bedrockBearerTokenSet;
-  const connection = await repository.getConnection(
-    hasOverride
-      ? legacyConnectionId({ provider: 'bedrock', source, projectId, userId })
-      : policy.defaultConnectionId,
-  );
-  const ready = hasOverride
-    ? scopeStatus.bedrockBearerTokenSet
-    : platformStatus.bedrockBearerTokenSet;
-  return {
-    policy,
-    modes: AGENT_AUTH_MODES_CATALOG,
-    reviewRequired: Boolean(process.env.V2_PROCESS_TABLE),
-    connection: connection
-      ? {
-          ...normalizeConnection(connection),
-          ...(connection.id.startsWith('legacy-') && !ready ? { state: 'missing' } : {}),
-        }
-      : null,
-    personalMechanisms: ['api-key'],
-  };
-};
-const reviewedCredentialUpdate = async ({ input, source, projectId, userId, actorId }) => {
-  const update = () =>
-    writeCredentialScope(ssm, {
-      base: process.env.AGENT_SETTINGS_SSM_PREFIX || '',
-      source,
-      projectId,
-      userId,
-      update: input,
-    });
-  if (!process.env.V2_PROCESS_TABLE) return update();
-  const activePolicy = await authRepository().getPolicy();
-  if (typeof input.bedrockBearerToken === 'string' && activePolicy.mode !== 'keys') {
-    throw Object.assign(
-      new Error('Bedrock key overrides are unavailable in the active platform mode'),
-      { code: 'AGENT_AUTH_MODE_MISMATCH' },
-    );
-  }
-  const candidate = credentialUpdateCandidate({ source, projectId, userId, update: input });
-  const service = authenticationChanges();
-  if (input.reviewAction === 'preview') return service.preview(candidate, actorId);
-  if (!input.reviewId)
-    throw Object.assign(new Error('Review the impact before applying this credential change'), {
-      code: 'AGENT_AUTH_REVIEW_REQUIRED',
-    });
-  return service.apply(input.reviewId, actorId, { candidate, writeCredentials: update });
-};
+const authenticationSettings = () => createAuthenticationSettingsService({ ddb, ssm, withNeptune });
+const authenticationView = (request) => authenticationSettings().authenticationView(request);
+const reviewedCredentialUpdate = (request) =>
+  authenticationSettings().reviewedCredentialUpdate(request);
+const authenticationChanges = () => authenticationSettings().authenticationChanges();
 const authChangeResponse = (response, error) =>
   response(
     error.code?.startsWith('AGENT_AUTH_') ? (error.code === 'AGENT_AUTH_INVALID' ? 400 : 409) : 500,
@@ -640,6 +519,8 @@ export const handler = async (event, context) => {
       let credentialBindings;
       try {
         credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
+          providers: AGENT_CREDENTIAL_PROVIDERS,
+          reserve: false,
           projectId,
           userId: credentialUserId,
         });
@@ -1148,6 +1029,8 @@ export const handler = async (event, context) => {
         runtimeTarget = access.runtimeTarget;
         try {
           credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
+            providers: AGENT_CREDENTIAL_PROVIDERS,
+            reserve: false,
             projectId: capabilitiesProjectId,
             userId: credentialUserId,
           });

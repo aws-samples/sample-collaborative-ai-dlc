@@ -104,7 +104,7 @@ import {
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
 import { humanTaskMatchesOwner, isHumanTaskAnswerStatus } from '../../shared/v2-process-keys.js';
-import { credentialProviderForCli } from '../../shared/agent-auth-catalog.js';
+import { credentialProviderForCli } from '../../shared/agent-auth-contracts.js';
 import { eventTypeOf } from '../../shared/v2-process-keys.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 

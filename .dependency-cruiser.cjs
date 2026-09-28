@@ -23,11 +23,11 @@ const sharedRuntimeDependencyPath =
 module.exports = {
   forbidden: [
     {
-      name: 'authentication-catalog-is-pure',
+      name: 'authentication-protocol-is-pure',
       comment:
         'Public authentication contracts cannot load clients, storage, or workspace modules.',
       severity: 'error',
-      from: { path: '^lambda/shared/agent-auth-catalog\\.js$' },
+      from: { path: '^lambda/shared/agent-auth-protocol\\.js$' },
       to: {},
     },
     {

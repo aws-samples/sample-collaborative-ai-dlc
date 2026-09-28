@@ -51,9 +51,11 @@ export const inspectAgentCredentialMetadata = async (
           projectId: event.projectId,
           userId: event.userId,
           reserve: event.reserve === true,
-          resolveLegacy: () =>
+          providers: event.providers,
+          resolveLegacy: (providers) =>
             resolveEffectiveCredentialBindings(ssmClient, {
               base,
+              providers,
               projectId: event.projectId,
               userId: event.userId,
             }),
@@ -71,8 +73,17 @@ export const handler = async (event, context) => {
   try {
     return { ok: true, ...(await inspectAgentCredentialMetadata(event)) };
   } catch (error) {
-    const code =
-      error?.code === 'INVALID_REQUEST' ? 'INVALID_REQUEST' : 'CREDENTIAL_METADATA_FAILED';
+    const code = [
+      'INVALID_REQUEST',
+      'AGENT_AUTH_INVALID',
+      'AGENT_AUTH_CHANGE_IN_PROGRESS',
+      'AGENT_AUTH_POLICY_CHANGED',
+      'AGENT_AUTH_MODE_UNAVAILABLE',
+      'AGENT_AUTH_MODE_MISMATCH',
+      'AGENT_AUTH_CONNECTION_UNAVAILABLE',
+    ].includes(error?.code)
+      ? error.code
+      : 'CREDENTIAL_METADATA_FAILED';
     logger.error('request denied', {
       code,
       action: event?.action || null,

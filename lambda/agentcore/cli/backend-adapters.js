@@ -1,4 +1,4 @@
-import { normalizeEndpoint } from '../../shared/agent-auth-catalog.js';
+import { normalizeEndpoint } from '../../shared/agent-auth-contracts.js';
 
 export const BEDROCK_BACKEND = Object.freeze({
   id: 'bedrock',

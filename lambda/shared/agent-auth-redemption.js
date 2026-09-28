@@ -1,5 +1,6 @@
+import { apiKeyLease, normalizeCredentialLease } from './agent-credential-lease.js';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
-import { authError, bindingIdentity, isConfiguredCredentialValue } from './agent-auth-catalog.js';
+import { authError, bindingIdentity, isConfiguredCredentialValue } from './agent-auth-contracts.js';
 import { readCredentialBindingValue } from './agent-key-repository.js';
 import { connectionBinding } from './agent-binding-selection.js';
 
@@ -9,9 +10,9 @@ const keyAdapter = async ({ ssm, connection }) => {
       new GetParameterCommand({ Name: connection.secretReference, WithDecryption: true }),
     );
     const value = result.Parameter?.Value;
-    return { value: isConfiguredCredentialValue(value) ? value : null };
+    return { lease: apiKeyLease(isConfiguredCredentialValue(value) ? value : null) };
   } catch (error) {
-    if (error?.name === 'ParameterNotFound') return { value: null };
+    if (error?.name === 'ParameterNotFound') return { lease: apiKeyLease(null) };
     throw error;
   }
 };
@@ -27,11 +28,10 @@ export const redeemAgentBinding = async ({
   base,
   adapters = KEY_REDEMPTION_ADAPTERS,
 }) => {
-  if (binding.version !== 2)
-    return {
-      binding,
-      value: (await readCredentialBindingValue(ssm, { base, binding, projectId })) || null,
-    };
+  if (binding.version !== 2) {
+    const value = (await readCredentialBindingValue(ssm, { base, binding, projectId })) || null;
+    return { binding, value, lease: apiKeyLease(value) };
+  }
   const connection = await repository.getConnection(
     binding.connectionId,
     binding.connectionRevision,
@@ -58,5 +58,16 @@ export const redeemAgentBinding = async ({
       'Credential mechanism is not supported by this broker',
     );
   // Retired definitions remain redeemable by pinned work.
-  return { binding, ...(await adapter({ ssm, connection })) };
+  const result = await adapter({ ssm, connection });
+  const lease = normalizeCredentialLease(result.lease ?? apiKeyLease(result.value));
+  // Keep the v1 value field for already-published key-only runtime sessions.
+  return {
+    binding,
+    lease,
+    ...(lease.material?.type === 'api-key'
+      ? { value: lease.material.value }
+      : lease.material === null
+        ? { value: null }
+        : {}),
+  };
 };

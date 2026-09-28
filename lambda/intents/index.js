@@ -115,7 +115,7 @@ import {
   resolveSelectedAgentCredential,
   prepareAgentInvocation,
 } from '../shared/agent-credential-service.js';
-import { credentialBindingDisplay } from '../shared/agent-auth-catalog.js';
+import { credentialBindingDisplay } from '../shared/agent-auth-contracts.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';

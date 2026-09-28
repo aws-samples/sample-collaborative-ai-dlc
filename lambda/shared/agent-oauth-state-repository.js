@@ -1,5 +1,5 @@
 import { GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { assertIdentifier } from './agent-auth-catalog.js';
+import { assertIdentifier } from './agent-auth-contracts.js';
 
 const key = (id) => ({ pk: `AGENTAUTH#OAUTH#${assertIdentifier(id, 'connectionId')}`, sk: 'META' });
 

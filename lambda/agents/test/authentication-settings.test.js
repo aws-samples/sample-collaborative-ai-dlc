@@ -1,3 +1,5 @@
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { createAgentConnectionRepository } from '../../shared/agent-connection-repository.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { DynamoDBClient, CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
@@ -66,6 +68,10 @@ beforeEach(async () => {
   );
   tables.push(TableName);
   vi.stubEnv('V2_PROCESS_TABLE', TableName);
+  await createAgentConnectionRepository({
+    ddb: DynamoDBDocumentClient.from(ddb),
+    tableName: TableName,
+  }).initializeInventory();
   ssm.reset();
   lambda.reset();
   ssm.on(GetParametersCommand).resolves({ Parameters: [] });

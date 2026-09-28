@@ -1,4 +1,4 @@
-import { authError, normalizeConnection, connectionAudience } from './agent-auth-catalog.js';
+import { authError, normalizeConnection, connectionAudience } from './agent-auth-contracts.js';
 
 export const authorizeConnectionChange = ({ actor, connection, sharedConsent = false }) => {
   const normalized = normalizeConnection(connection);

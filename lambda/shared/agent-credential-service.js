@@ -6,7 +6,7 @@ import {
   assertMatchingConnection,
   normalizeConnection,
   assertRuntimeSupportsBinding,
-} from './agent-auth-catalog.js';
+} from './agent-auth-contracts.js';
 import { resolveEffectiveCredentialBindingsViaBroker } from './agent-credential-metadata.js';
 import { issueAgentCredentialGrant } from './agent-credential-grants.js';
 
@@ -27,7 +27,12 @@ export const resolveSelectedAgentCredential = async (
         },
       },
     };
-  const bindings = await resolveBindings({ projectId, userId, reserve: true });
+  const bindings = await resolveBindings({
+    projectId,
+    userId,
+    providers: [provider],
+    reserve: true,
+  });
   const credentialBinding = bindings[provider];
   if (!credentialBinding)
     return {

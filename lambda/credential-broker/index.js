@@ -1,3 +1,4 @@
+import { assertScopeAvailable } from '../shared/agent-auth-inventory.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
@@ -19,7 +20,7 @@ import {
   credentialChangeAffects,
   bindingIdentity,
   authError,
-} from '../shared/agent-auth-catalog.js';
+} from '../shared/agent-auth-contracts.js';
 import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
@@ -157,6 +158,11 @@ const authorizeAgentCredentialRequest = async (
     ddb: ddbClient,
     tableName: env.V2_PROCESS_TABLE,
     base: env.AGENT_SETTINGS_SSM_PREFIX || '',
+  });
+  await assertScopeAvailable({
+    repository,
+    bindings: claims.bindings,
+    projectId: claims.projectId,
   });
   const policy = await repository.getPolicy();
   if (policy.pendingReview) {
