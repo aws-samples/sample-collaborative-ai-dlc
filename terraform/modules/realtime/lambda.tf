@@ -60,6 +60,16 @@ resource "aws_iam_role_policy" "lambda" {
   })
 }
 
+module "dynamodb_kms_runtime_access" {
+  source = "../security/dynamodb-kms-runtime-access"
+
+  kms_key_arn = var.kms_key_arn
+  dns_suffix  = local.realtime_dns_suffix
+  role_names = {
+    websocket = aws_iam_role.lambda.name
+  }
+}
+
 # Connection Lambda (handles $connect and $disconnect)
 module "connection_lambda" {
   source  = "terraform-aws-modules/lambda/aws"

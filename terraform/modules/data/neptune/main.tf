@@ -41,6 +41,11 @@ resource "aws_neptune_cluster_parameter_group" "main" {
   tags = var.tags
 }
 
+resource "random_id" "final_snapshot_suffix" {
+  count       = var.skip_final_snapshot ? 0 : 1
+  byte_length = 4
+}
+
 resource "aws_neptune_cluster" "main" {
   cluster_identifier                   = "${var.name_prefix}-neptune-cluster"
   engine                               = "neptune"
@@ -48,7 +53,10 @@ resource "aws_neptune_cluster" "main" {
   neptune_cluster_parameter_group_name = aws_neptune_cluster_parameter_group.main.name
   vpc_security_group_ids               = [aws_security_group.neptune.id]
   iam_database_authentication_enabled  = true
+  deletion_protection                  = var.deletion_protection
+  backup_retention_period              = var.backup_retention_period
   skip_final_snapshot                  = var.skip_final_snapshot
+  final_snapshot_identifier            = var.skip_final_snapshot ? null : "${trim(substr(var.name_prefix, 0, 39), "-")}-neptune-final-${random_id.final_snapshot_suffix[0].hex}"
 
   tags = var.tags
 }

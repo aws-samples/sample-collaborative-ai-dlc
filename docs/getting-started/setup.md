@@ -175,6 +175,12 @@ To override without editing the file — useful for CI, throwaway environments, 
 
 Keep `environment`, `project_name` and `aws_region` in the tfvars. The retired-v1-runtime cleanup step reads those three from the file directly and would not see a `--var` override.
 
+!!! warning "A production environment must be named exactly `prod`"
+
+    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB and Neptune deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
+
+    A near-miss name such as `production`, `prd`, or `prod-us` is treated as **non-production**: the hardening is silently disabled and the buckets become force-destroyable. Name the production environment `prod` and nothing else.
+
 Note that `deploy-frontend.sh` takes no `--var`: it reads Terraform outputs, so it always reflects whatever was actually applied.
 
 !!! warning "The installer's preflight checks do not run on this path"
@@ -590,9 +596,21 @@ For a local/manual checkout, pass any environment with matching `.tfvars` and `.
 
 !!! danger "Data loss"
 
-    These commands permanently delete all application data including DynamoDB tables, Neptune databases, and S3 buckets. This action cannot be undone. Interactive runs require typing the environment name; use `--yes` only for deliberate automation.
+    These commands permanently delete all application data including DynamoDB tables, Neptune databases, and S3 buckets. This action cannot be undone. Interactive runs require typing the environment name; use `--yes` only for deliberate non-production automation.
 
 Both paths back up Terraform state before destruction. Managed installs store the backup under the XDG data directory. Standalone runs use `${XDG_DATA_HOME:-~/.local/share}/collaborative-ai-dlc/backups` unless `AIDLC_BACKUP_DIR` is set. The backend state bucket is retained.
+
+Both automated paths refuse an effective `prod` environment, including a differently named tfvars file whose `environment` value is `prod`. Direct `terraform destroy` is intentionally blocked while deletion protection remains enabled.
+
+Production removal is a break-glass operation:
+
+1. Create and verify independent backups of all durable data.
+2. Empty every versioned application S3 bucket, including object versions and delete markers.
+3. Create a saved Terraform plan with `deletion_protection=false` and `skip_final_snapshot=false`.
+4. Have an independent reviewer verify that the plan contains only the intended protection updates, then apply that exact saved plan.
+5. Run a separately reviewed Terraform destroy with the same variables.
+
+Emptying the buckets before removing database protection prevents a teardown from deleting DynamoDB and Neptune and then failing on production buckets whose `force_destroy` setting is deliberately disabled.
 
 For standalone deployments whose environment files live outside the checkout:
 

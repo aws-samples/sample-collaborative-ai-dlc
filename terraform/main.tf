@@ -189,6 +189,20 @@ resource "terraform_data" "domain_preconditions" {
   }
 }
 
+resource "terraform_data" "resiliency_preconditions" {
+  input = {
+    environment         = var.environment
+    skip_final_snapshot = var.skip_final_snapshot
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.environment != "prod" || !var.skip_final_snapshot
+      error_message = "skip_final_snapshot must remain false in production."
+    }
+  }
+}
+
 # Certificate first, then the distribution that references it, then the alias
 # records that point at the distribution. Splitting the certificate and the
 # records into different graph positions is what avoids a dependency cycle.
@@ -325,8 +339,10 @@ module "s3" {
 module "dynamodb" {
   source = "./modules/data/dynamodb"
 
-  project_name = var.project_name
-  environment  = var.environment
+  project_name        = var.project_name
+  environment         = var.environment
+  kms_key_arn         = var.kms_key_arn
+  deletion_protection = var.deletion_protection
 
   tags = {
     Environment = var.environment
@@ -338,11 +354,14 @@ module "dynamodb" {
 module "neptune" {
   source = "./modules/data/neptune"
 
-  name_prefix        = "${var.project_name}-${var.environment}"
-  vpc_id             = module.networking.vpc_id
-  vpc_cidr           = module.networking.vpc_cidr_block
-  private_subnet_ids = module.networking.private_subnet_ids
-  instance_class     = "db.t3.medium"
+  name_prefix             = "${var.project_name}-${var.environment}"
+  vpc_id                  = module.networking.vpc_id
+  vpc_cidr                = module.networking.vpc_cidr_block
+  private_subnet_ids      = module.networking.private_subnet_ids
+  instance_class          = "db.t3.medium"
+  deletion_protection     = var.deletion_protection
+  backup_retention_period = var.backup_retention_period
+  skip_final_snapshot     = var.skip_final_snapshot
 
   tags = {
     Environment = var.environment
@@ -373,6 +392,7 @@ module "lambda" {
     module.dynamodb.yjs_documents_table_arn,
     module.dynamodb.agent_outputs_table_arn
   ]
+  kms_key_arn                              = var.kms_key_arn
   artifacts_bucket_name                    = module.s3.artifacts_bucket_name
   artifacts_bucket_arn                     = module.s3.artifacts_bucket_arn
   blocks_table_name                        = module.dynamodb.blocks_table_name
@@ -521,6 +541,7 @@ module "realtime" {
   cognito_client_id       = module.auth.user_pool_client_id
   connections_table_name  = module.dynamodb.connections_table_name
   connections_table_arn   = module.dynamodb.connections_table_arn
+  kms_key_arn             = var.kms_key_arn
 
   # The WebSocket stage enables access logging, which requires the account-level
   # CloudWatch role to be configured first.
@@ -577,8 +598,10 @@ module "agentcore" {
   # model selector; a concrete model id (e.g. "claude-opus-4.6") is rejected at
   # spawn with `error: Model '...' does not exist. Available models: auto`,
   # failing every stage with cli_nonzero_exit. Let kiro resolve the model.
-  kiro_model  = "auto"
-  codex_model = var.codex_model
+  kiro_model          = "auto"
+  codex_model         = var.codex_model
+  kms_key_arn         = var.kms_key_arn
+  deletion_protection = var.deletion_protection
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.
@@ -602,6 +625,7 @@ module "managed_environments" {
   powertools_log_event          = var.powertools_log_event
   registry_table_name           = module.dynamodb.environment_registry_table_name
   registry_table_arn            = module.dynamodb.environment_registry_table_arn
+  kms_key_arn                   = var.kms_key_arn
   core_image_uri                = module.agentcore.ecr_repository_url
   core_image_digest             = module.agentcore.image_digest
   core_image_size_bytes         = module.agentcore.image_size_bytes
@@ -659,8 +683,10 @@ moved {
 module "git" {
   source = "./modules/git"
 
-  project_name = var.project_name
-  environment  = var.environment
+  project_name        = var.project_name
+  environment         = var.environment
+  kms_key_arn         = var.kms_key_arn
+  deletion_protection = var.deletion_protection
 
   tags = {
     Environment = var.environment

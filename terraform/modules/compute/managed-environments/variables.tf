@@ -38,6 +38,12 @@ variable "registry_table_arn" {
   type        = string
 }
 
+variable "kms_key_arn" {
+  description = "Customer-managed KMS key ARN for DynamoDB encryption. Empty uses the AWS-owned service default."
+  type        = string
+  default     = ""
+}
+
 variable "core_image_uri" {
   description = "Protected AgentCore image repository URL"
   type        = string

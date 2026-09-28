@@ -59,6 +59,30 @@ locals {
   }
 }
 
+module "dynamodb_kms_runtime_access" {
+  source = "../../security/dynamodb-kms-runtime-access"
+
+  kms_key_arn = var.kms_key_arn
+  dns_suffix  = local.dns_suffix
+  role_names = {
+    agents_orchestrator = aws_iam_role.agents_orchestrator.name
+    bitbucket_connector = aws_iam_role.bitbucket_connector.name
+    blocks              = aws_iam_role.blocks.name
+    credential_broker   = aws_iam_role.credential_broker.name
+    discussions         = aws_iam_role.discussions.name
+    github_connector    = aws_iam_role.github_connector.name
+    gitlab_connector    = aws_iam_role.gitlab_connector.name
+    intents             = aws_iam_role.intents.name
+    neptune_artifacts   = aws_iam_role.neptune_artifacts.name
+    neptune_questions   = aws_iam_role.neptune_questions.name
+    neptune_reader      = aws_iam_role.neptune_reader.name
+    source_control      = aws_iam_role.source_control.name
+    trackers            = aws_iam_role.trackers.name
+    users               = aws_iam_role.users.name
+    v2_orchestrator     = aws_iam_role.v2_orchestrator.name
+  }
+}
+
 # =============================================================================
 # Least-privilege IAM roles — one per Lambda responsibility domain.
 #
