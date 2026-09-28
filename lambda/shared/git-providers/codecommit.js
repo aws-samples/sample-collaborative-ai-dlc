@@ -262,7 +262,8 @@ const LIST_REPO_PAGES = 20;
 // call per page of up to 1,000 names. ARNs are deterministic, so they are built
 // here instead of fetched: no per-repository BatchGetRepositories fan-out, no
 // permission for it on the tenant role, and no partial-denial retries. The
-// default branch is read at bind time (GetRepository), where access is proven.
+// default branch is read on demand (GetRepository, via getDefaultBranch and the
+// branches route), under a repository-scoped session.
 // The list can name repositories the role may not read: their names are
 // already visible through ListRepositories on "*", and binding one fails.
 const listRepos = async (ctx) => {
@@ -463,6 +464,9 @@ const getPullRequestRaw = async (ctx, repoId, prNumber) => {
 // request opened by hand is not reused.
 // https://docs.aws.amazon.com/codecommit/latest/APIReference/API_ListPullRequests.html
 const LIST_PR_PAGES = 10;
+// GetPullRequest calls in flight per batch: fast enough for 1,000 candidates
+// within the Lambda timeout, small enough not to trip API throttling.
+const PR_LOOKUP_CONCURRENCY = 10;
 
 const prStatusFilter = (state) => {
   if (state === 'closed') return 'CLOSED';
@@ -497,15 +501,23 @@ const findPullRequest = async (
       null,
     );
     if (!res) return null;
-    for (const pullRequestId of res.pullRequestIds ?? []) {
-      const pr = await getPullRequestRaw(ctx, repoId, pullRequestId);
-      const target = prTarget(pr);
-      if (
-        sameRef(target.sourceReference, sourceBranch) &&
-        (targetBranch === null || sameRef(target.destinationReference, targetBranch))
-      ) {
-        return pr;
-      }
+    // Candidates are fetched in parallel, a few at a time: the author filter
+    // narrows the list but does not bound it (CodeCommit allows 1,000 open
+    // PRs), and a sequential walk could outlast the Lambda timeout. The
+    // first match in list order wins, as with the sequential walk.
+    const ids = res.pullRequestIds ?? [];
+    for (let i = 0; i < ids.length; i += PR_LOOKUP_CONCURRENCY) {
+      const prs = await Promise.all(
+        ids.slice(i, i + PR_LOOKUP_CONCURRENCY).map((id) => getPullRequestRaw(ctx, repoId, id)),
+      );
+      const match = prs.find((pr) => {
+        const target = prTarget(pr);
+        return (
+          sameRef(target.sourceReference, sourceBranch) &&
+          (targetBranch === null || sameRef(target.destinationReference, targetBranch))
+        );
+      });
+      if (match) return match;
     }
     nextToken = res.nextToken;
     if (!nextToken) return null;
@@ -519,9 +531,8 @@ const findPullRequest = async (
   });
 };
 
-// Merge options for a ref pair. Returns null when CodeCommit cannot compare
-// them (missing ref, tips too far apart) so callers can degrade instead of
-// failing a whole operation on a comparison.
+// Merge options for a ref pair. Errors are thrown as ProviderError;
+// compareBranches decides which of them mean "cannot compare".
 const mergeOptionsFor = async (ctx, repoId, { source, destination }) => {
   const { repositoryName } = parseRepo(repoId);
   const client = clientFor(ctx, repoId);

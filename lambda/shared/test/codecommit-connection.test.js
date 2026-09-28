@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getProvider } from '../git-providers.js';
 
 import {
   ensureCodeCommitConnection,
@@ -197,6 +198,40 @@ describe('codecommit connection', () => {
         }),
       ).rejects.toMatchObject({ code: 'ROLE_ASSUMPTION_FAILED' });
       expect(sts.calls.map((call) => call.ExternalId)).toEqual([ID_A]);
+    });
+
+    it('stores the credential as the role and external ID pair', async () => {
+      const ddb = fakeDdb([connectionRow('user-a', ID_A)]);
+      const sts = {
+        async send() {
+          return {
+            Credentials: {
+              AccessKeyId: 'ASIAEXAMPLE',
+              SecretAccessKey: 'secret', // pragma: allowlist secret
+              SessionToken: 'token', // pragma: allowlist secret
+              Expiration: new Date('2026-09-18T12:15:00Z'),
+            },
+            AssumedRoleUser: { Arn: 'arn:aws:sts::123456789012:assumed-role/aidlc/aidlc-verify' },
+          };
+        },
+      };
+      const provider = getProvider('codecommit');
+      const probe = vi
+        .spyOn(provider, 'getRepositoryAccess')
+        .mockResolvedValue({ canRead: true, canWrite: true, defaultBranch: 'main' });
+      try {
+        const binding = await verifyCodeCommitRoleBinding({
+          ddb,
+          sts,
+          repo: REPO,
+          userId: 'user-a',
+          selection: { roleArn: ROLE_A },
+        });
+        expect(binding.credentialRef).toBe(`codecommit-role#${ROLE_A}#${ID_A}`);
+        expect(binding).toMatchObject({ roleArn: ROLE_A, externalId: ID_A });
+      } finally {
+        probe.mockRestore();
+      }
     });
   });
 });

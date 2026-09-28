@@ -369,6 +369,38 @@ describe('codecommit provider: pull requests', () => {
     expect(found.pullRequestId).toBe('301');
   });
 
+  it('findPullRequest fetches candidates in bounded parallel batches, first match wins', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const ids = Array.from({ length: 25 }, (_, i) => String(i + 1));
+    const client = {
+      calls: [],
+      send: async (command) => {
+        const name = command.constructor.name.replace(/Command$/, '');
+        client.calls.push({ name, input: command.input });
+        if (name === 'ListPullRequests') return { pullRequestIds: ids };
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        const id = command.input.pullRequestId;
+        // Two matches: the earlier one in list order must win.
+        return {
+          pullRequest: pr({ id, source: id === '12' || id === '14' ? 'feature' : 'other' }),
+        };
+      },
+    };
+    const found = await cc.findPullRequest(withSession(client), ARN, {
+      sourceBranch: 'feature',
+      targetBranch: 'main',
+    });
+    expect(found.pullRequestId).toBe('12');
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(10);
+    // Stops at the batch holding the match: ids 21..25 are never fetched.
+    expect(client.calls.filter((c) => c.name === 'GetPullRequest')).toHaveLength(20);
+  });
+
   it('findPullRequest fails instead of returning null when pages remain', async () => {
     const client = makeClient({
       ListPullRequests: ({ nextToken }) => ({

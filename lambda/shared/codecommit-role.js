@@ -124,8 +124,9 @@ export const codeCommitSessionPolicy = ({ repoArn, access = 'write' }) => {
 // session policies can ask for, never more. ListRepositories only accepts
 // Resource "*" (it lists names and ids, nothing else); every other action is
 // limited to the repositories the space may use. No BatchGetRepositories:
-// discovery builds ARNs from the names. No codecommit:* : the platform never creates, renames or deletes a
-// repository, and the role should not allow it either.
+// discovery builds ARNs from the names. No codecommit:* : the platform never
+// creates, renames or deletes a repository, and the role should not allow it
+// either.
 // https://docs.aws.amazon.com/codecommit/latest/userguide/auth-and-access-control-permissions-reference.html
 const REPOSITORY_PLACEHOLDER = 'arn:aws:codecommit:<region>:<account-id>:<repository-name>';
 const REPOSITORY_ACTIONS = [
