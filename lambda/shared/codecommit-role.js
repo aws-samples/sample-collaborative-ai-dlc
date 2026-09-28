@@ -85,9 +85,10 @@ const WRITE_API_ACTIONS = [
 // Session policy for one repository. `access`:
 //   'read'     — git pull + read API
 //   'write'    — read + git push + PR/merge/branch API
-//   'discover' — ListRepositories/BatchGetRepositories only (Resource must be
-//                "*" for ListRepositories per the permissions reference); used
-//                once, when the tenant picks a repository to bind.
+//   'discover' — ListRepositories only (Resource must be "*" per the
+//                permissions reference); used once, when the tenant picks a
+//                repository to bind. ARNs are built from the names, so no
+//                per-repository read is needed to list.
 export const codeCommitSessionPolicy = ({ repoArn, access = 'write' }) => {
   if (access === 'discover') {
     return {
@@ -96,7 +97,7 @@ export const codeCommitSessionPolicy = ({ repoArn, access = 'write' }) => {
         {
           Sid: 'DiscoverRepositories',
           Effect: 'Allow',
-          Action: ['codecommit:ListRepositories', 'codecommit:BatchGetRepositories'],
+          Action: ['codecommit:ListRepositories'],
           Resource: '*',
         },
       ],
@@ -121,14 +122,13 @@ export const codeCommitSessionPolicy = ({ repoArn, access = 'write' }) => {
 
 // The permissions policy a tenant attaches to their role: exactly what the
 // session policies can ask for, never more. ListRepositories only accepts
-// Resource "*" (it lists names and ids, nothing else); every other action,
-// BatchGetRepositories included, is limited to the repositories the space may
-// use. No codecommit:* : the platform never creates, renames or deletes a
+// Resource "*" (it lists names and ids, nothing else); every other action is
+// limited to the repositories the space may use. No BatchGetRepositories:
+// discovery builds ARNs from the names. No codecommit:* : the platform never creates, renames or deletes a
 // repository, and the role should not allow it either.
 // https://docs.aws.amazon.com/codecommit/latest/userguide/auth-and-access-control-permissions-reference.html
 const REPOSITORY_PLACEHOLDER = 'arn:aws:codecommit:<region>:<account-id>:<repository-name>';
 const REPOSITORY_ACTIONS = [
-  'codecommit:BatchGetRepositories',
   'codecommit:GitPull',
   'codecommit:GitPush',
   ...READ_API_ACTIONS,

@@ -91,10 +91,7 @@ describe('session policies', () => {
   it('discover is the only repo-less profile and grants listing only', () => {
     const policy = codeCommitSessionPolicy({ repoArn: null, access: 'discover' });
     expect(policy.Statement).toHaveLength(1);
-    expect(policy.Statement[0].Action).toEqual([
-      'codecommit:ListRepositories',
-      'codecommit:BatchGetRepositories',
-    ]);
+    expect(policy.Statement[0].Action).toEqual(['codecommit:ListRepositories']);
     expect(() => codeCommitSessionPolicy({ repoArn: null, access: 'read' })).toThrow(/repository/i);
     expect(() => codeCommitSessionPolicy({ repoArn: REPO, access: 'admin' })).toThrow(/access/);
   });
@@ -201,7 +198,8 @@ describe('codeCommitPermissionsPolicy', () => {
     expect(list).toMatchObject({ Action: 'codecommit:ListRepositories', Resource: '*' });
     expect(repos.Resource).toBe(REPO);
     expect(JSON.stringify(policy)).not.toContain('codecommit:*');
-    expect(repos.Action).toContain('codecommit:BatchGetRepositories');
+    // Discovery builds ARNs from ListRepositories: no per-repository batch read.
+    expect(JSON.stringify(policy)).not.toContain('BatchGetRepositories');
   });
 
   it('covers every action a session policy can ask for', () => {

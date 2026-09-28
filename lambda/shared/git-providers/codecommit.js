@@ -27,7 +27,6 @@
 import { createHash } from 'node:crypto';
 import { Logger } from '@aws-lambda-powertools/logger';
 import {
-  BatchGetRepositoriesCommand,
   CodeCommitClient,
   CreatePullRequestCommand,
   DeleteBranchCommand,
@@ -47,7 +46,7 @@ import {
   PostCommentReplyCommand,
 } from '@aws-sdk/client-codecommit';
 import { ProviderError } from './errors.js';
-import { parseCodeCommitRepo } from './codecommit-repo.js';
+import { codeCommitRepoArn, parseCodeCommitRepo } from './codecommit-repo.js';
 import { codeCommitCloneUrl, codeCommitGitHost } from './codecommit-credential.js';
 
 const logger = new Logger({
@@ -258,61 +257,39 @@ const mapRepo = (r) => ({
 });
 
 const LIST_REPO_PAGES = 20;
-// BatchGetRepositories accepts at most 25 names per call.
-const BATCH_GET_SIZE = 25;
 
-// Repository discovery is per (region, account): ListRepositories returns only
-// {repositoryId, repositoryName}, so the default branch and ARN each caller
-// needs come from a BatchGetRepositories fan-out.
+// Repository discovery is per (region, account) and is one ListRepositories
+// call per page of up to 1,000 names. ARNs are deterministic, so they are built
+// here instead of fetched: no per-repository BatchGetRepositories fan-out, no
+// permission for it on the tenant role, and no partial-denial retries. The
+// default branch is read at bind time (GetRepository), where access is proven.
+// The list can name repositories the role may not read: their names are
+// already visible through ListRepositories on "*", and binding one fails.
 const listRepos = async (ctx) => {
+  const region = ctx?.region;
+  const accountId = ctx?.accountId;
+  if (!region || !accountId) {
+    throw new ProviderError(400, 'CodeCommit discovery requires the region and account id');
+  }
   const client = clientFor(ctx);
-  const names = [];
+  const repos = [];
   let nextToken;
   for (let page = 0; page < LIST_REPO_PAGES; page += 1) {
     const res = await call(client, new ListRepositoriesCommand({ nextToken }), 'ListRepositories');
     for (const repo of res.repositories ?? []) {
-      if (repo?.repositoryName) names.push(repo.repositoryName);
+      if (!repo?.repositoryName) continue;
+      repos.push(
+        mapRepo({
+          repositoryId: repo.repositoryId,
+          repositoryName: repo.repositoryName,
+          accountId,
+          Arn: codeCommitRepoArn({ region, accountId, repositoryName: repo.repositoryName }),
+        }),
+      );
     }
     nextToken = res.nextToken;
     if (!nextToken) break;
   }
-  // BatchGetRepositories is authorized per repository: a batch naming one the
-  // role may not read is refused as a whole. ListRepositories (Resource "*")
-  // names every repository in the account, so a role scoped to a few of them
-  // hits that on the first batch. Retry such a batch name by name and skip the
-  // repositories the role cannot read; they are not bindable anyway. If the
-  // role can read none of them, the denial is the answer and is surfaced.
-  const isDenied = (error) => error instanceof ProviderError && error.status === 403;
-  const batchGet = (repositoryNames) =>
-    call(client, new BatchGetRepositoriesCommand({ repositoryNames }), 'BatchGetRepositories');
-  const repos = [];
-  let denied = 0;
-  let lastDenial = null;
-  for (let i = 0; i < names.length; i += BATCH_GET_SIZE) {
-    const batch = names.slice(i, i + BATCH_GET_SIZE);
-    const singles = [];
-    try {
-      const res = await batchGet(batch);
-      repos.push(...(res.repositories ?? []).map(mapRepo));
-    } catch (error) {
-      if (!isDenied(error)) throw error;
-      if (batch.length === 1) {
-        denied += 1;
-        lastDenial = error;
-      } else singles.push(...batch);
-    }
-    for (const name of singles) {
-      try {
-        const res = await batchGet([name]);
-        repos.push(...(res.repositories ?? []).map(mapRepo));
-      } catch (error) {
-        if (!isDenied(error)) throw error;
-        denied += 1;
-        lastDenial = error;
-      }
-    }
-  }
-  if (names.length > 0 && denied === names.length) throw lastDenial;
   return repos;
 };
 

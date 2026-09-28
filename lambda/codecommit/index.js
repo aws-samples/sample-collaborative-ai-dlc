@@ -13,7 +13,8 @@
 //   POST /codecommit/repos          { roleArn, region } -> the repositories
 //                                   the role can see in that region, listed
 //                                   with a discover-only session policy
-//                                   (ListRepositories + BatchGetRepositories).
+//                                   (ListRepositories only; ARNs are built
+//                                   from the names and the role's account).
 //                                   The external id is resolved from the
 //                                   caller's connection, never from the body.
 //
@@ -160,7 +161,11 @@ export const createCodeCommitHandler = ({
           access: 'discover',
           executionId: 'discover',
         });
-        const repos = await codecommit.listRepos({ token: credentials, region });
+        const repos = await codecommit.listRepos({
+          token: credentials,
+          region,
+          accountId: roleAccountId(roleArn),
+        });
         return response(200, {
           accountId: roleAccountId(roleArn),
           region,

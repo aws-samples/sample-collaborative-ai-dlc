@@ -421,7 +421,6 @@ They are also shown on **Admin → Source Control → AWS CodeCommit**. A space 
       "Sid": "UseSelectedRepositories",
       "Effect": "Allow",
       "Action": [
-        "codecommit:BatchGetRepositories",
         "codecommit:GitPull",
         "codecommit:GitPush",
         "codecommit:GetRepository",

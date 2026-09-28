@@ -132,59 +132,49 @@ describe('codecommit provider: registry and identity', () => {
 });
 
 describe('codecommit provider: repositories and branches', () => {
-  it('listRepos keeps the repositories a scoped role can read when a batch is denied', async () => {
-    const allowed = new Set(['svc-a', 'svc-c']);
+  it('listRepos builds ARNs from ListRepositories alone, one call per page', async () => {
+    const names = Array.from({ length: 500 }, (_, i) => `svc-${i}`);
     const client = makeClient({
-      ListRepositories: {
-        repositories: ['svc-a', 'svc-b', 'svc-c'].map((repositoryName) => ({ repositoryName })),
+      ListRepositories: { repositories: names.map((repositoryName) => ({ repositoryName })) },
+      // No per-repository fan-out: the tenant role no longer needs this action.
+      BatchGetRepositories: () => {
+        throw new Error('BatchGetRepositories must not be called');
       },
-      // Authorized per repository: one forbidden name fails the whole batch.
-      BatchGetRepositories: ({ repositoryNames }) =>
-        repositoryNames.every((name) => allowed.has(name))
-          ? {
-              repositories: repositoryNames.map((repositoryName) => ({
-                repositoryName,
-                Arn: `arn:aws:codecommit:${REGION}:${ACCOUNT}:${repositoryName}`,
-              })),
-            }
-          : sdkError('AccessDeniedException'),
     });
-    const repos = await cc.listRepos({ client, region: REGION });
-    expect(repos.map((r) => r.name)).toEqual(['svc-a', 'svc-c']);
-  });
-
-  it('listRepos surfaces the denial when the role can read none of them', async () => {
-    const client = makeClient({
-      ListRepositories: { repositories: [{ repositoryName: 'a' }, { repositoryName: 'b' }] },
-      BatchGetRepositories: sdkError('AccessDeniedException'),
-    });
-    await expect(cc.listRepos({ client, region: REGION })).rejects.toMatchObject({ status: 403 });
-  });
-
-  it('listRepos fans out ListRepositories into BatchGetRepositories', async () => {
-    const client = makeClient({
-      ListRepositories: { repositories: [{ repositoryName: REPO, repositoryId: 'id-1' }] },
-      BatchGetRepositories: ({ repositoryNames }) => ({
-        repositories: repositoryNames.map((repositoryName) => ({
-          repositoryName,
-          repositoryId: 'id-1',
-          accountId: ACCOUNT,
-          Arn: ARN,
-          defaultBranch: 'main',
-          cloneUrlHttp: `https://git-codecommit.${REGION}.amazonaws.com/v1/repos/${repositoryName}`,
-        })),
-      }),
-    });
-    const out = await cc.listRepos({ client, region: REGION });
-    const repos = Array.isArray(out) ? out : (out.items ?? out.repos);
-    expect(repos).toHaveLength(1);
+    const repos = await cc.listRepos({ client, region: REGION, accountId: ACCOUNT });
+    expect(client.calls.map((c) => c.name)).toEqual(['ListRepositories']);
+    expect(repos).toHaveLength(500);
     expect(repos[0]).toMatchObject({
-      name: REPO,
-      fullName: ARN,
-      defaultBranch: 'main',
+      name: 'svc-0',
+      fullName: `arn:aws:codecommit:${REGION}:${ACCOUNT}:svc-0`,
       region: REGION,
       accountId: ACCOUNT,
       private: true,
+      defaultBranch: null,
+    });
+  });
+
+  it('listRepos follows ListRepositories pages and derives the partition', async () => {
+    const client = makeClient({
+      ListRepositories: ({ nextToken }) =>
+        nextToken
+          ? { repositories: [{ repositoryName: 'b' }] }
+          : { repositories: [{ repositoryName: 'a' }], nextToken: 'n1' },
+    });
+    const repos = await cc.listRepos({ client, region: 'cn-north-1', accountId: ACCOUNT });
+    expect(repos.map((r) => r.fullName)).toEqual([
+      `arn:aws-cn:codecommit:cn-north-1:${ACCOUNT}:a`,
+      `arn:aws-cn:codecommit:cn-north-1:${ACCOUNT}:b`,
+    ]);
+  });
+
+  it('listRepos surfaces a ListRepositories denial and requires the account id', async () => {
+    const denied = makeClient({ ListRepositories: sdkError('AccessDeniedException') });
+    await expect(
+      cc.listRepos({ client: denied, region: REGION, accountId: ACCOUNT }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(cc.listRepos({ client: denied, region: REGION })).rejects.toMatchObject({
+      status: 400,
     });
   });
 

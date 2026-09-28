@@ -172,6 +172,8 @@ describe('codecommit handler', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ accountId: '123456789012', region: 'eu-west-1' });
     expect(res.body.repositories).toHaveLength(1);
+    // Discovery builds ARNs itself: it needs the role's account, not a batch read.
+    expect(seen[0]).toMatchObject({ region: 'eu-west-1', accountId: '123456789012' });
     expect(sts.calls).toHaveLength(1);
     const input = sts.calls[0].input;
     expect(input.ExternalId).toBe(EXTERNAL_ID);
