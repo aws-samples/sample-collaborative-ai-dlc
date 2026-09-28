@@ -65,24 +65,22 @@ additional, optional settings:
 | `SSO_CONFIG`           | Secret   | Provider file JSON as described in [Enterprise SSO](../getting-started/enterprise-sso.md#provider-file) |
 | `AUTH_DOMAIN`          | Secret   | Custom Cognito login hostname, for example `auth.<APP_DOMAIN>`                                          |
 | `AUTH_CERTIFICATE_ARN` | Secret   | `us-east-1` certificate covering `AUTH_DOMAIN`; empty reuses `ACM_CERTIFICATE_ARN`                      |
+| `AUTH_ROUTE53_ZONE_ID` | Secret   | Optional hosted zone for auth DNS; independent of application DNS                                       |
+| `AUTH_DOMAIN_ACTIVE`   | Variable | `false` (default); set `true` only after custom DNS and IdP callbacks are ready                         |
 
-`SSO_CONFIG` holds only Secrets Manager ARNs. Store each OIDC client secret in
-Secrets Manager in the deployment account and Region. `hybrid` and `sso-only`
-require `SSO_CONFIG`, and `local` rejects it. The workflow validates the
-provider file with `scripts/sso-config.mjs` and writes it as
-`prod.sso.tfvars.json`, so both the draft and the final plan use it.
+`SSO_CONFIG` stores the provider configuration with Secrets Manager ARNs, never OIDC client-secret values. Store each OIDC client secret in Secrets Manager in the deployment account and Region.
+`hybrid` and `sso-only` require `SSO_CONFIG`, and `local` rejects it.
+The workflow validates the provider file with `scripts/sso-config.mjs` and writes it as `prod.sso.tfvars.json`, so both the draft and the final plan use it. Terraform keeps the full provider map sensitive in plan output.
 
-`AUTH_DOMAIN` is not resolved before deployment, because its DNS record can
-only be created after the first apply. To enable SSO with a custom login
-domain:
+For SAML, demo secrets must use `metadata.url` or inline `metadata.xml`. The workflow rejects `metadata.file` because a GitHub secret contains no companion XML files. Local installer and standalone deployment provider files continue to support `metadata.file`.
 
-1. Set `AUTH_DOMAIN` (and `AUTH_CERTIFICATE_ARN` if needed) and deploy with
-   `AUTH_MODE` unset.
-2. Create the `AUTH_DOMAIN` DNS record pointing at the `auth_dns_target`
-   Terraform output and wait until it resolves.
-3. Register the `oidc_idp_callback_url` output with the identity provider.
-4. Set `AUTH_MODE=hybrid` and `SSO_CONFIG`, then deploy again. Move to
-   `sso-only` only after an SSO administrator has signed in successfully.
+`AUTH_DOMAIN` is not resolved before deployment, because its DNS record can only be created after the first apply. Its parent must have a public DNS A record; Terraform waits for that record before creating the Cognito domain. To enable SSO with a custom login domain:
+
+1. Set `AUTH_DOMAIN` (and `AUTH_CERTIFICATE_ARN` if needed), leave `AUTH_DOMAIN_ACTIVE` unset or `false`, and deploy. Preserve `AUTH_MODE` and `SSO_CONFIG` on an existing SSO deployment; for a new local deployment, leave them unset.
+2. If `AUTH_ROUTE53_ZONE_ID` is unset, create the `AUTH_DOMAIN` DNS record pointing at the `auth_dns_target` Terraform output. Verify DNS resolution and HTTPS.
+3. Register `auth_custom_oidc_idp_callback_url` or `auth_custom_saml_acs_url` with the identity provider while retaining its old callback.
+4. Set `AUTH_DOMAIN_ACTIVE=true` and deploy again to switch the frontend login origin. For a new SSO deployment, also set `AUTH_MODE=hybrid` and `SSO_CONFIG`.
+5. Verify sign-in before removing old callbacks or moving to `sso-only`. Set `AUTH_DOMAIN_ACTIVE=false` and redeploy to roll back the login origin.
 
 The workflow generates `prod.tfvars` and `prod.s3.tfbackend` in the runner's
 temporary directory. It never runs `bootstrap.sh` and therefore never creates

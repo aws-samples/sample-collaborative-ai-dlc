@@ -127,30 +127,30 @@ bash /tmp/aidlc-install.sh update \
 
 ## Custom managed-login domain
 
-By default the Cognito managed-login domain is a generated
-`<prefix>.auth.<region>.amazoncognito.com` hostname. To serve it from your own
-hostname instead, give Cognito a custom login domain:
+By default the Cognito managed-login domain is a generated `<prefix>.auth.<region>.amazoncognito.com` hostname.
+To serve it from your own hostname instead, provision a custom login domain:
 
 ```hcl
 auth_domain          = "auth.aidlc.example.com"
 auth_certificate_arn = "" # empty reuses acm_certificate_arn
+auth_route53_zone_id = "" # optional; independent of the application zone
+auth_domain_active   = false
 ```
 
-- The certificate must be an issued ACM certificate in `us-east-1` that covers
-  `auth_domain`, regardless of the deployment Region.
-- Cognito accepts the domain only when its parent (here `aidlc.example.com`)
-  already resolves through a DNS A record. A subdomain of `app_domain` meets
-  this once the application domain is live.
-- `auth_domain` must differ from `app_domain` and its aliases. Cognito serves it
-  from its own CloudFront distribution.
-- After apply, point `auth_domain` at the `auth_dns_target` output (a CNAME, or a
-  Route53 alias using `auth_dns_target_hosted_zone_id`). With `route53_zone_id`
-  set, Terraform creates the alias records itself.
+- The certificate must be an issued ACM certificate in `us-east-1` that covers `auth_domain`, regardless of the deployment Region.
+- Cognito accepts the domain only when its parent (here `aidlc.example.com`) already resolves through a public DNS A record. Terraform orders custom-domain creation after its application DNS records and waits for the parent A record to resolve. For externally managed parent DNS, create the parent record before applying.
+- `auth_domain` must differ from `app_domain` and its aliases. Cognito serves it from its own CloudFront distribution.
+- After apply, point `auth_domain` at the `auth_dns_target` output (a CNAME, or a Route53 alias using `auth_dns_target_hosted_zone_id`). With `auth_route53_zone_id` set, Terraform creates the alias records itself. Set this explicitly even when auth and application use the same hosted zone; the application `route53_zone_id` is never reused implicitly.
 
-The OIDC callback and SAML ACS outputs switch to the custom domain. Register
-the new values with the identity provider. The generated prefix domain stays
-attached to the user pool, so clearing `auth_domain` rolls back without
-replacing it.
+Creating the custom domain keeps the generated prefix domain selected for existing logins. This allows an existing `hybrid` or `sso-only` deployment to prepare the new domain without changing its frontend login origin.
+
+1. Apply with `auth_domain_active = false`, preserving the deployment's existing authentication mode and providers.
+2. Verify the custom hostname resolves and serves a valid HTTPS certificate.
+3. Register `auth_custom_oidc_idp_callback_url` or `auth_custom_saml_acs_url` with the identity provider while retaining the old callback. Local-only deployments have no IdP registration step.
+4. Set `auth_domain_active = true`, apply, and rebuild/deploy the frontend. The effective OIDC callback, SAML ACS, and login-origin outputs now use the custom domain.
+5. Verify sign-in before removing any old IdP callback.
+
+To roll back the login origin, set `auth_domain_active = false` and redeploy the frontend. Both domains remain attached to the user pool. To remove the custom domain afterward, also clear `auth_domain`, `auth_certificate_arn`, and `auth_route53_zone_id`.
 
 ## Provider file
 

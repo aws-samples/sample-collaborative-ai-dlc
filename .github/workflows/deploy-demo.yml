@@ -103,7 +103,9 @@ jobs:
       APP_DOMAIN_ALIASES: ${{ secrets.APP_DOMAIN_ALIASES }}
       AUTH_CERTIFICATE_ARN: ${{ secrets.AUTH_CERTIFICATE_ARN }}
       AUTH_DOMAIN: ${{ secrets.AUTH_DOMAIN }}
+      AUTH_DOMAIN_ACTIVE: ${{ vars.AUTH_DOMAIN_ACTIVE }}
       AUTH_MODE: ${{ vars.AUTH_MODE }}
+      AUTH_ROUTE53_ZONE_ID: ${{ secrets.AUTH_ROUTE53_ZONE_ID }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
@@ -140,6 +142,9 @@ jobs:
           fi
           if [[ -n "$AUTH_CERTIFICATE_ARN" ]]; then
             echo "::add-mask::$AUTH_CERTIFICATE_ARN"
+          fi
+          if [[ -n "$AUTH_ROUTE53_ZONE_ID" ]]; then
+            echo "::add-mask::$AUTH_ROUTE53_ZONE_ID"
           fi
           if [[ -n "$APP_DOMAIN_ALIASES" ]]; then
             node --input-type=module -e '
@@ -278,6 +283,19 @@ jobs:
             echo "AUTH_DOMAIN requires AUTH_CERTIFICATE_ARN or an ACM_CERTIFICATE_ARN covering it." >&2
             exit 1
           fi
+          case "${AUTH_DOMAIN_ACTIVE:-false}" in
+            true)
+              if [[ -z "$AUTH_DOMAIN" ]]; then
+                echo "AUTH_DOMAIN_ACTIVE requires AUTH_DOMAIN." >&2
+                exit 1
+              fi
+              ;;
+            false) ;;
+            *)
+              echo "AUTH_DOMAIN_ACTIVE must be true or false." >&2
+              exit 1
+              ;;
+          esac
           case "${AUTH_MODE:-local}" in
             local)
               if [[ -n "$SSO_CONFIG" ]]; then
@@ -359,6 +377,8 @@ jobs:
             {
               printf 'auth_domain          = %s\n' "$(hcl_string "$AUTH_DOMAIN")"
               printf 'auth_certificate_arn = %s\n' "$(hcl_string "$AUTH_CERTIFICATE_ARN")"
+              printf 'auth_route53_zone_id = %s\n' "$(hcl_string "$AUTH_ROUTE53_ZONE_ID")"
+              printf 'auth_domain_active   = %s\n' "${AUTH_DOMAIN_ACTIVE:-false}"
             } >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
           fi
 
@@ -368,7 +388,7 @@ jobs:
           if [[ -n "$SSO_CONFIG" ]]; then
             sso_input="$config_dir/sso-config.json"
             printf '%s' "$SSO_CONFIG" > "$sso_input"
-            sso_providers="$(node scripts/sso-config.mjs "$sso_input" "$AUTH_MODE")"
+            sso_providers="$(node scripts/sso-config.mjs "$sso_input" "$AUTH_MODE" --no-metadata-files)"
             rm -f "$sso_input"
             node -e '
               const [mode, providers] = process.argv.slice(1);

@@ -60,6 +60,12 @@ variable "custom_domain" {
   default     = ""
 }
 
+variable "custom_domain_active" {
+  description = "Select the custom domain for login outputs only after the operator has verified DNS and upstream IdP callback readiness."
+  type        = bool
+  default     = false
+}
+
 variable "custom_domain_certificate_arn" {
   description = "ARN of an issued us-east-1 ACM certificate covering custom_domain. Required when custom_domain is set."
   type        = string

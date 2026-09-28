@@ -111,6 +111,21 @@ output "auth_dns_target_hosted_zone_id" {
   value       = module.auth.custom_domain_dns_target_hosted_zone_id
 }
 
+output "auth_domain_active" {
+  description = "Whether the custom Cognito domain is selected for login and federation outputs."
+  value       = var.auth_domain != "" && var.auth_domain_active
+}
+
+output "auth_custom_oidc_idp_callback_url" {
+  description = "Custom-domain OIDC callback to register before activating the domain."
+  value       = var.auth_domain == "" ? "" : "https://${var.auth_domain}/oauth2/idpresponse"
+}
+
+output "auth_custom_saml_acs_url" {
+  description = "Custom-domain SAML ACS URL to register before activating the domain."
+  value       = var.auth_domain == "" ? "" : "https://${var.auth_domain}/saml2/idpresponse"
+}
+
 output "s3_bucket_name" {
   description = "Frontend S3 bucket name"
   value       = module.frontend.s3_bucket_name

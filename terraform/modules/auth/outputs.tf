@@ -50,13 +50,13 @@ output "saml_entity_id" {
 
 output "public_sso_providers" {
   description = "Provider names and labels safe to expose in the frontend bundle"
-  value = nonsensitive([
-    for name in sort(keys(var.sso_providers)) : {
+  value = [
+    for name in sort(nonsensitive(keys(var.sso_providers))) : {
       name        = name
-      displayName = var.sso_providers[name].display_name
-      type        = lower(var.sso_providers[name].type)
+      displayName = nonsensitive(var.sso_providers[name].display_name)
+      type        = nonsensitive(lower(var.sso_providers[name].type))
     }
-  ])
+  ]
 }
 
 output "group_names" {

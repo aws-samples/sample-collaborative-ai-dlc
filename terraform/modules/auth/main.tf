@@ -2,10 +2,10 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
-  # Managed-login redirects use the custom domain when one is configured; the
-  # prefix domain remains reachable but is no longer advertised.
+  # Provisioning a custom domain must not cut over existing SSO redirects before
+  # its DNS and upstream IdP callbacks are ready.
   hosted_ui_origin = (
-    var.custom_domain != "" ? "https://${aws_cognito_user_pool_domain.custom[0].domain}" :
+    var.custom_domain != "" && var.custom_domain_active ? "https://${aws_cognito_user_pool_domain.custom[0].domain}" :
     "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.region}.amazoncognito.com"
   )
 
@@ -187,7 +187,7 @@ resource "aws_cognito_user_pool_domain" "main" {
 
 # Optional custom managed-login domain. A user pool can hold one prefix domain
 # and one custom domain at the same time, so the prefix domain stays in place
-# and clearing custom_domain rolls back without replacing it.
+# and disabling custom_domain_active rolls back without replacing either domain.
 resource "aws_cognito_user_pool_domain" "custom" {
   count = var.custom_domain != "" ? 1 : 0
 

@@ -102,7 +102,7 @@ locals {
 }
 
 resource "terraform_data" "sso_preconditions" {
-  input = nonsensitive(var.sso_providers)
+  input = var.sso_providers
 
   lifecycle {
     precondition {
@@ -203,6 +203,11 @@ resource "terraform_data" "domain_preconditions" {
       condition     = var.auth_domain != "" || var.auth_certificate_arn == ""
       error_message = "auth_certificate_arn is set but auth_domain is empty. Set auth_domain to enable the custom managed-login domain, or clear auth_certificate_arn."
     }
+
+    precondition {
+      condition     = !var.auth_domain_active || var.auth_domain != ""
+      error_message = "auth_domain_active requires auth_domain. Provision its DNS and register its IdP callbacks before activating it."
+    }
   }
 }
 
@@ -286,7 +291,8 @@ module "auth" {
   sso_providers           = var.sso_providers
 
   custom_domain                 = var.auth_domain
-  custom_domain_certificate_arn = local.auth_certificate_arn
+  custom_domain_active          = var.auth_domain_active
+  custom_domain_certificate_arn = var.auth_domain == "" ? "" : terraform_data.auth_parent_dns[var.auth_domain].output
 }
 
 # Frontend (S3 + CloudFront)
@@ -328,9 +334,9 @@ resource "aws_route53_record" "app" {
 }
 
 resource "aws_route53_record" "auth" {
-  for_each = var.route53_zone_id == "" || var.auth_domain == "" ? toset([]) : toset(["A", "AAAA"])
+  for_each = var.auth_route53_zone_id == "" || var.auth_domain == "" ? toset([]) : toset(["A", "AAAA"])
 
-  zone_id = var.route53_zone_id
+  zone_id = var.auth_route53_zone_id
   name    = var.auth_domain
   type    = each.value
 
@@ -339,6 +345,27 @@ resource "aws_route53_record" "auth" {
     zone_id                = module.auth.custom_domain_dns_target_hosted_zone_id
     evaluate_target_health = false
   }
+}
+
+# Only the custom Cognito domain waits for the application DNS records. Making
+# the whole auth module depend on the frontend would create a dependency cycle
+# through the user pool and API. Gate the certificate input instead, and wait
+# for public A-record resolution after Route53 has accepted the parent record.
+resource "terraform_data" "auth_parent_dns" {
+  for_each = var.auth_domain == "" ? {} : { (var.auth_domain) = local.auth_certificate_arn }
+
+  input            = each.value
+  triggers_replace = [each.key, each.value]
+
+  provisioner "local-exec" {
+    command     = "node scripts/wait-for-auth-parent-dns.mjs"
+    working_dir = "${path.module}/.."
+    environment = {
+      AUTH_DOMAIN = each.key
+    }
+  }
+
+  depends_on = [aws_route53_record.app]
 }
 
 # VPC Endpoints
