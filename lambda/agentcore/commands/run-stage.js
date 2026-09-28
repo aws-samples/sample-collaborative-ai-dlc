@@ -1525,9 +1525,13 @@ const runStageAttempt = async (
     const retriesFeedbackRound = resumeGate?.stageInstanceId == null && row?.state === 'FAILED';
     if (
       resumeFrom &&
-      ((resumeGate.stageInstanceId != null && resumeGate.stageInstanceId !== stageInstanceId) ||
-        (resumeGate.unitSlug != null && resumeGate.unitSlug !== unitSlug) ||
-        (resumeGate.sectionIndex ?? null) !== sectionIndex ||
+      (!humanTaskMatchesOwner({
+        task: resumeGate,
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        engineGates: true,
+      }) ||
         (row?.state != null &&
           !['WAITING_FOR_HUMAN', 'SUCCEEDED'].includes(row.state) &&
           !retriesFeedbackRound &&

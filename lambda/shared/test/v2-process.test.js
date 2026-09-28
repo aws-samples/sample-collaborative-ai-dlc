@@ -370,6 +370,21 @@ describe('v2-process-keys', () => {
         unitSlug: 'catalog',
       }),
     ).toBe(false);
+    expect(humanTaskMatchesOwner({ task: { ...owner, unitSlug: null }, ...owner })).toBe(true);
+    expect(humanTaskMatchesOwner({ task: { ...owner, sectionIndex: '2' }, ...owner })).toBe(true);
+    const batchGate = { stageInstanceId: null, unitSlug: null, sectionIndex: 2 };
+    expect(humanTaskMatchesOwner({ task: batchGate, ...owner })).toBe(false);
+    expect(humanTaskMatchesOwner({ task: batchGate, ...owner, engineGates: true })).toBe(true);
+    expect(
+      humanTaskMatchesOwner({ task: batchGate, ...owner, sectionIndex: 3, engineGates: true }),
+    ).toBe(false);
+    expect(
+      humanTaskMatchesOwner({
+        task: { ...batchGate, unitSlug: 'catalog' },
+        ...owner,
+        engineGates: true,
+      }),
+    ).toBe(false);
   });
 
   it('builds a question human-task carrying the structured payload', () => {

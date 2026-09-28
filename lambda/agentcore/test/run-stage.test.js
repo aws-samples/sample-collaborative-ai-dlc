@@ -2953,14 +2953,15 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
       (seed) => {
         seed.humanTask.sectionIndex = 3;
       },
+      { sectionIndex: 1 },
     ],
-  ])('does not recover or overwrite a %s', async (_label, change) => {
+  ])('does not recover or overwrite a %s', async (_label, change, args = {}) => {
     const seed = ownedMissingSession();
     change(seed);
     const store = spyStore(seed);
     const spawnFn = vi.fn();
     const res = await runStage(
-      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1', ...args },
       baseDeps({
         availableClis: ['kiro'],
         store,
@@ -4272,6 +4273,40 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(retried).toMatchObject({ ok: true, state: 'SUCCEEDED', unitSlug: 'billing' });
     expect(store.calls.filter(([op]) => op === 'resumeStageRow')).toHaveLength(2);
     expect(prompts.join('\n')).toContain('Handle refunds');
+  });
+
+  it('resumes a lane gate an older bridge saved without a sectionIndex', async () => {
+    const stageInstanceId = planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing', 1);
+    const prompts = [];
+    const store = spyStore(
+      {
+        unitPlan: UNIT_PLAN,
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          stageInstanceId,
+          unitSlug: 'billing',
+          sectionIndex: null,
+          answer: { freeText: 'Use the ledger API' },
+        },
+        stage: {
+          state: 'WAITING_FOR_HUMAN',
+          pendingHumanTaskId: 'q-1',
+          cli: 'claude',
+          cliSessionId: 'session-billing',
+        },
+      },
+      { persistStageWrites: true },
+    );
+    const res = await runStage(
+      { ...unitArgs, sectionIndex: 1, resumeFrom: 'q-1' },
+      unitDeps({
+        store,
+        spawnFn: () => ({ ...okSpawn(), stdin: { end: (text) => prompts.push(text) } }),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', unitSlug: 'billing' });
+    expect(prompts.join('\n')).toContain('Use the ledger API');
   });
 
   it('keeps rejecting a stage-owned answer on a FAILED row', async () => {

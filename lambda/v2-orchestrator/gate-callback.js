@@ -22,7 +22,7 @@ export const ownsAnsweredGate = (gate, input) =>
   (gate.callbackOwner == null || gate.callbackOwner === input.callbackOwner) &&
   (input.stageInstanceId === undefined ||
     humanTaskMatchesOwner({
-      task: { ...gate, stageInstanceId: gate.stageInstanceId ?? null },
+      task: gate,
       stageInstanceId: input.stageInstanceId,
       unitSlug: input.unitSlug,
       sectionIndex: input.sectionIndex,
