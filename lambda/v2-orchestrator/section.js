@@ -2164,6 +2164,29 @@ export const runParallelSection = async (segment, toolkit) => {
     }
   };
 
+  const failDeadLaneAttempts = async (slug) => {
+    for (const stage of segment.stages) {
+      const stageInstanceId = toolkit.stageInstanceIdFor(stage.stageId, slug, segment.index);
+      try {
+        const row = await store.getStage(executionId, stageInstanceId, { consistentRead: true });
+        if (row?.state !== 'RUNNING' || !row.stageCallbackId) continue;
+        await store.failRunningStageAttempt({
+          executionId,
+          stageInstanceId,
+          stageCallbackId: row.stageCallbackId,
+          runtimeError: 'lane_released',
+        });
+      } catch (error) {
+        // Best-effort: a row left RUNNING fails the retry as stage_attempt_conflict.
+        ctx.logger?.error?.('dead lane attempt not released', {
+          slug,
+          stageInstanceId,
+          error: error?.message,
+        });
+      }
+    }
+  };
+
   // Run lanes + halt-and-ask rounds until every requested lane is MERGED, the
   // human skips, or a terminal exit. Returns null | terminal value.
   // Revision runs (feedbackTaskId set) revive MERGED lanes and inject the
@@ -2203,11 +2226,16 @@ export const runParallelSection = async (segment, toolkit) => {
       // AgentCore deployments do not replace an existing live session. Stop
       // each failed lane before retrying so it remounts the preserved
       // workspace in a fresh session running the currently deployed image.
+      // A stopped session has no live job, so a stage row it left RUNNING
+      // (lane crash, refused duplicate start) is a dead attempt the retry
+      // could never claim. Fail those rows inside the existing step.
       for (const slug of failed) {
         const sessionId = laneSessionIdFor(intentId, segment.index, slug);
-        await ctx.step(`retry-release-${sk}-${slug}${idSuffix}-r${round}`, () =>
-          stopSession(sessionId),
-        );
+        await ctx.step(`retry-release-${sk}-${slug}${idSuffix}-r${round}`, async () => {
+          const released = await stopSession(sessionId);
+          if (released?.stopped || released?.notFound) await failDeadLaneAttempts(slug);
+          return released;
+        });
       }
       round += 1;
       toRun = [...failed, ...toRun.filter((s) => laneState.get(s) === 'BLOCKED')];

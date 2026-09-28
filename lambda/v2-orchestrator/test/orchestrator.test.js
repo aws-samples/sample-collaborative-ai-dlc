@@ -2224,6 +2224,57 @@ describe('WP5 — engine-gate decisions', () => {
     expect(eventCalls.find((e) => e.type === 'v2.units.halt_decision')?.summary).toContain('retry');
   });
 
+  it.each([
+    [{ stopped: true }, true],
+    [{ stopped: false, notFound: true }, true],
+    [{ stopped: false, error: 'throttled' }, false],
+  ])(
+    'halt-and-ask RETRY releases a dead lane attempt after stopping %o',
+    async (stopResult, released) => {
+      deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'retry' } } });
+      // Round 0 left billing's cg RUNNING under a callback the lane no longer
+      // waits on (lane crash / refused duplicate start).
+      let staleRow = true;
+      const billingCg = planStageInstanceId('aidlc-v2@1', 'cg', 'billing', 1);
+      deps.store.getStage = vi.fn(async (_e, stageInstanceId) =>
+        staleRow && stageInstanceId === billingCg
+          ? { state: 'RUNNING', stageCallbackId: 'cb-stale' }
+          : null,
+      );
+      deps.store.failRunningStageAttempt = vi.fn(async (args) => {
+        if (args.stageCallbackId === 'cb-stale') staleRow = false;
+        return null;
+      });
+      deps.stopSession = vi.fn(async () => stopResult);
+      let cgBillingAttempts = 0;
+      deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+        if (payload.command === 'init-ws') return { ok: true };
+        if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+        if (payload.stageId === 'cg' && payload.unitSlug === 'billing') {
+          cgBillingAttempts += 1;
+          // The worker cannot claim a row RUNNING under another callback.
+          if (cgBillingAttempts === 1 || (staleRow && cgBillingAttempts === 2))
+            return { ok: false, state: 'FAILED', reason: 'stage_attempt_conflict' };
+        }
+        return { ok: true, state: 'SUCCEEDED' };
+      });
+      await start();
+      const releases = deps.store.failRunningStageAttempt.mock.calls
+        .map(([args]) => args)
+        .filter((args) => args.stageCallbackId === 'cb-stale');
+      if (released) {
+        expect(releases).toEqual([
+          expect.objectContaining({ stageInstanceId: billingCg, runtimeError: 'lane_released' }),
+        ]);
+        expect(cgBillingAttempts).toBe(2);
+      } else {
+        // A session that may still run the old job is never released.
+        expect(releases).toEqual([]);
+        expect(cgBillingAttempts).toBe(3);
+      }
+    },
+  );
+
   it('halt-and-ask SKIP preserves merged lanes and lets the run continue without the failed unit', async () => {
     deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'skip' } } });
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {

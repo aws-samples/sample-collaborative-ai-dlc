@@ -126,7 +126,7 @@ const stopRuntimeSession = async (sessionId, target = { agentRuntimeArn: RUNTIME
     );
     return { stopped: true };
   } catch (e) {
-    return { stopped: false, error: e.message };
+    return { stopped: false, notFound: e?.name === 'ResourceNotFoundException', error: e.message };
   }
 };
 
