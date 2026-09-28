@@ -401,6 +401,33 @@ describe('codecommit provider: pull requests', () => {
     expect(client.calls.filter((c) => c.name === 'GetPullRequest')).toHaveLength(20);
   });
 
+  it('findPullRequest keeps sequential semantics when a candidate fails in a batch', async () => {
+    const lookup = (failing, matching) => {
+      const client = makeClient({
+        ListPullRequests: { pullRequestIds: ['1', '2', '3', '4'] },
+        GetPullRequest: ({ pullRequestId }) =>
+          pullRequestId === failing
+            ? sdkError('ThrottlingException')
+            : {
+                pullRequest: pr({
+                  id: pullRequestId,
+                  source: pullRequestId === matching ? 'feature' : 'other',
+                }),
+              },
+      });
+      return cc.findPullRequest(withSession(client), ARN, {
+        sourceBranch: 'feature',
+        targetBranch: 'main',
+      });
+    };
+    // A failure after the match in the same batch does not discard it.
+    expect((await lookup('3', '2')).pullRequestId).toBe('2');
+    // A failure before the match is thrown, as the sequential walk would.
+    await expect(lookup('1', '3')).rejects.toMatchObject({ status: 429 });
+    // No match and a failure: the failure is thrown, never a null "not found".
+    await expect(lookup('4', null)).rejects.toMatchObject({ status: 429 });
+  });
+
   it('findPullRequest fails instead of returning null when pages remain', async () => {
     const client = makeClient({
       ListPullRequests: ({ nextToken }) => ({

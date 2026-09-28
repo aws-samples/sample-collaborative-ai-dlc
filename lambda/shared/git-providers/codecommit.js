@@ -464,8 +464,8 @@ const getPullRequestRaw = async (ctx, repoId, prNumber) => {
 // request opened by hand is not reused.
 // https://docs.aws.amazon.com/codecommit/latest/APIReference/API_ListPullRequests.html
 const LIST_PR_PAGES = 10;
-// GetPullRequest calls in flight per batch: fast enough for 1,000 candidates
-// within the Lambda timeout, small enough not to trip API throttling.
+// GetPullRequest calls in flight per batch: cuts the lookup to about a tenth
+// of the sequential walk, while staying small enough not to trip throttling.
 const PR_LOOKUP_CONCURRENCY = 10;
 
 const prStatusFilter = (state) => {
@@ -506,18 +506,24 @@ const findPullRequest = async (
     // PRs), and a sequential walk could outlast the Lambda timeout. The
     // first match in list order wins, as with the sequential walk.
     const ids = res.pullRequestIds ?? [];
+    const isMatch = (pr) => {
+      const target = prTarget(pr);
+      return (
+        sameRef(target.sourceReference, sourceBranch) &&
+        (targetBranch === null || sameRef(target.destinationReference, targetBranch))
+      );
+    };
     for (let i = 0; i < ids.length; i += PR_LOOKUP_CONCURRENCY) {
-      const prs = await Promise.all(
+      const settled = await Promise.allSettled(
         ids.slice(i, i + PR_LOOKUP_CONCURRENCY).map((id) => getPullRequestRaw(ctx, repoId, id)),
       );
-      const match = prs.find((pr) => {
-        const target = prTarget(pr);
-        return (
-          sameRef(target.sourceReference, sourceBranch) &&
-          (targetBranch === null || sameRef(target.destinationReference, targetBranch))
-        );
-      });
-      if (match) return match;
+      // Read the batch in list order, exactly as the sequential walk did: a
+      // match returns even if a later candidate failed, and a failure before
+      // any match is thrown (the earliest one in list order).
+      for (const outcome of settled) {
+        if (outcome.status === 'rejected') throw outcome.reason;
+        if (isMatch(outcome.value)) return outcome.value;
+      }
     }
     nextToken = res.nextToken;
     if (!nextToken) return null;
