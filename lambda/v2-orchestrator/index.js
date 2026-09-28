@@ -977,7 +977,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // before AgentCore restores a released session's workspace, otherwise
         // the re-clone is rejected while the execution still reads WAITING.
         const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, () =>
-          unparkGate(store, { executionId, humanTaskId, runId }),
+          unparkGate(store, { executionId, humanTaskId, runId, unitSlug }),
         );
         if (!ownedUnpark) {
           logger.info('run retired while unparking gate', { humanTaskId });
