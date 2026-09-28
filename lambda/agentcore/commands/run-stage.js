@@ -1519,6 +1519,10 @@ const runStageAttempt = async (
     if (resumeGate?.status === 'superseded') return { ok: false, reason: 'retired' };
     if (resumeFrom && resumeGate.status === 'pending')
       return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
+    // Engine feedback gates (batch/skeleton request-changes) belong to no
+    // stage: a halt-and-ask retry of the revision round re-dispatches the lane
+    // stage that failed while revising, so its FAILED row resumes as well.
+    const retriesFeedbackRound = resumeGate?.stageInstanceId == null && row?.state === 'FAILED';
     if (
       resumeFrom &&
       ((resumeGate.stageInstanceId != null && resumeGate.stageInstanceId !== stageInstanceId) ||
@@ -1526,6 +1530,7 @@ const runStageAttempt = async (
         (resumeGate.sectionIndex ?? null) !== sectionIndex ||
         (row?.state != null &&
           !['WAITING_FOR_HUMAN', 'SUCCEEDED'].includes(row.state) &&
+          !retriesFeedbackRound &&
           !(
             row.state === 'RUNNING' &&
             stageCallbackId &&

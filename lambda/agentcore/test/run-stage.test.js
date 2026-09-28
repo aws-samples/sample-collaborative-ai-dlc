@@ -122,6 +122,9 @@ const spyStore = (seed = {}, { persistStageWrites = false } = {}) => {
     if (persistStageWrites && name === 'resumeStageRow') {
       seed.stage = { ...seed.stage, ...args, state: 'RUNNING', pendingHumanTaskId: null };
     }
+    if (persistStageWrites && name === 'updateStageState') {
+      seed.stage = { ...seed.stage, state: args.state, runtimeError: args.runtimeError };
+    }
     return {};
   };
   return {
@@ -4182,6 +4185,85 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       expect(resumed).toMatchObject({ ok: true, state: 'SUCCEEDED', unitSlug });
       expect(prompts.join('\n')).toContain('Handle refunds in both lanes');
     }
+  });
+
+  it('retries a lane stage that failed while revising a batch request-changes gate', async () => {
+    const gate = {
+      humanTaskId: 'eg-batch-s1-w1-run1',
+      status: 'answered',
+      stageInstanceId: null,
+      unitSlug: null,
+      sectionIndex: 1,
+      answer: { decision: 'request-changes', feedback: 'Handle refunds' },
+    };
+    const store = spyStore(
+      {
+        unitPlan: UNIT_PLAN,
+        humanTask: gate,
+        stage: { state: 'SUCCEEDED', cli: 'kiro', cliSessionId: 'session-billing' },
+      },
+      { persistStageWrites: true },
+    );
+    const args = {
+      ...unitArgs,
+      sectionIndex: 1,
+      resumeFrom: gate.humanTaskId,
+      requestedCli: 'kiro',
+    };
+    const exhausted = unitDeps({
+      store,
+      availableClis: ['kiro'],
+      spawnFn: (_command, argv) => ({
+        on: (event, cb) => event === 'close' && setImmediate(() => cb(1)),
+        stdin: { end() {} },
+        stderr: {
+          on: (event, cb) =>
+            event === 'data' &&
+            !argv.includes('--list-sessions') &&
+            cb(Buffer.from('403: insufficient credits')),
+        },
+      }),
+    });
+    const failed = await runStage(args, exhausted);
+    expect(failed).toMatchObject({ ok: false, reason: 'credential_quota_exhausted' });
+    expect(store.calls.find(([op]) => op === 'updateStageState')?.[1]).toMatchObject({
+      state: 'FAILED',
+    });
+
+    const prompts = [];
+    const retried = await runStage(
+      args,
+      unitDeps({
+        store,
+        availableClis: ['kiro'],
+        spawnFn: () => ({ ...okSpawn(), stdin: { end: (text) => prompts.push(text) } }),
+      }),
+    );
+    expect(retried).toMatchObject({ ok: true, state: 'SUCCEEDED', unitSlug: 'billing' });
+    expect(store.calls.filter(([op]) => op === 'resumeStageRow')).toHaveLength(2);
+    expect(prompts.join('\n')).toContain('Handle refunds');
+  });
+
+  it('keeps rejecting a stage-owned answer on a FAILED row', async () => {
+    const store = spyStore({
+      unitPlan: UNIT_PLAN,
+      humanTask: {
+        humanTaskId: 'q-1',
+        status: 'answered',
+        stageInstanceId: planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing', 1),
+        unitSlug: 'billing',
+        sectionIndex: 1,
+        answer: { freeText: 'go' },
+      },
+      stage: { state: 'FAILED', cli: 'claude', cliSessionId: 'session-billing' },
+    });
+    const spawnFn = vi.fn(okSpawn);
+    const res = await runStage(
+      { ...unitArgs, sectionIndex: 1, resumeFrom: 'q-1' },
+      unitDeps({ store, spawnFn }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'resume_state_conflict' });
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 
   it('runs a per-unit stage under its unit-dimension instance id and stamps unitSlug on every write', async () => {
