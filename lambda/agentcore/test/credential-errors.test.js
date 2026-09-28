@@ -19,12 +19,21 @@ describe('provider credit exhaustion', () => {
     'Usage limit reached',
     'Quota usage limit exceeded',
     '{"error":{"code":"billing_hard_limit_reached"}}',
+    'You have exceeded your monthly usage limit',
+    'You have reached your usage limit',
+    'Monthly request limit reached',
   ])('recognizes an exhausted allowance: %s', (text) => {
     expect(isCreditExhaustion(text)).toBe(true);
   });
-  it.each(['429 Too Many Requests', 'rate limit exceeded', 'invalid API key', 'Credits: 0.42', ''])(
-    'does not confuse throttling, authentication or spend with exhausted credits: %s',
-    (text) => expect(isCreditExhaustion(text)).toBe(false),
+  it.each([
+    '429 Too Many Requests',
+    'rate limit exceeded',
+    'invalid API key',
+    'Credits: 0.42',
+    'You have reached your request limit, try again in 30 seconds',
+    '',
+  ])('does not confuse throttling, authentication or spend with exhausted credits: %s', (text) =>
+    expect(isCreditExhaustion(text)).toBe(false),
   );
   it.each(providerMessages)(
     'classifies a reported $cli message from $source',

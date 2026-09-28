@@ -39,7 +39,8 @@ export const isCreditExhaustion = (output = '') => {
     return false;
   return [
     /\bexceeded (?:your |the )?(?:current )?quota\b/i,
-    /\b(?:quota(?: usage)?|usage) limit (?:has been |is )?(?:reached|exceeded)\b/i,
+    /\b(?:quota(?: usage)?|usage|request) limit (?:has been |is )?(?:reached|exceeded)\b/i,
+    /\b(?:reached|exceeded) (?:your |the )?(?:monthly |daily )?(?:usage|request|credit) limit\b/i,
   ].some((pattern) => pattern.test(text));
 };
 
