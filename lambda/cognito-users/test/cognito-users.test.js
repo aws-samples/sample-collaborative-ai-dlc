@@ -3,6 +3,7 @@
 
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
+import { Logger } from '@aws-lambda-powertools/logger';
 import {
   CognitoIdentityProviderClient,
   ListUsersCommand,
@@ -241,7 +242,7 @@ describe('GET /users (directory)', () => {
     'returns a safe error when listing fails (later page: %s)',
     async (laterPage) => {
       const error = new Error('private Cognito failure details');
-      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const errorLog = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
       const listing = cognitoMock.on(ListUsersCommand);
       if (laterPage) {
         listing.resolvesOnce({
@@ -256,7 +257,7 @@ describe('GET /users (directory)', () => {
       expect(res.statusCode).toBe(500);
       expect(JSON.parse(res.body)).toEqual({ error: 'Internal server error' });
       expect(cognitoMock.commandCalls(ListUsersCommand)).toHaveLength(laterPage ? 2 : 1);
-      expect(errorLog).toHaveBeenCalledWith('Error handling users request:', error);
+      expect(errorLog).toHaveBeenCalledWith('Error handling users request', error);
     },
   );
 
