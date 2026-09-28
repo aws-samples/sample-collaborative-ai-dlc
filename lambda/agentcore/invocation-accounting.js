@@ -1,6 +1,7 @@
+import { inventoryReferenceWrites, scopeActivityWrites } from '../shared/agent-auth-inventory.js';
 import { randomUUID } from 'node:crypto';
 import { GetCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { authError, credentialChangeAffects } from '../shared/agent-auth-catalog.js';
+import { authError, credentialChangeAffects } from '../shared/agent-auth-contracts.js';
 
 // Auxiliary work can outlive HTTP requests and RUNNING intent status. Account
 // for its actual session lifetime; stale heartbeats are uncertainty, not proof
@@ -37,26 +38,55 @@ export const accountCredentialInvocation = async ({
       throw authError('AGENT_AUTH_CHANGE_IN_PROGRESS', 'The selected credential is being updated');
     }
   }
+  const invocation = {
+    ...Key,
+    type: 'AgentInvocation',
+    id,
+    executionId: payload.executionId ?? payload.intentId ?? null,
+    projectId: payload.projectId ?? null,
+    command: payload.command,
+    credentialBinding: bindings[0] ?? null,
+    credentialBindings: bindings,
+    agentAuthProtocol: 2,
+    state: 'ACTIVE',
+    startedAt: stamp(),
+    heartbeatAt: stamp(),
+  };
+  const scopeWrites = scopeActivityWrites(tableName, [invocation]);
+  for (const { Update: write } of scopeWrites) {
+    const { Item: state } = await ddb.send(
+      new GetCommand({ TableName: tableName, Key: write.Key, ConsistentRead: true }),
+    );
+    write.ConditionExpression = '(attribute_not_exists(revision) OR revision = :revision)';
+    write.ExpressionAttributeValues[':revision'] = state?.revision ?? 0;
+    if (state?.pendingReview) {
+      const { Item: pending } = await ddb.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { pk: `AGENTAUTH#REVIEW#${state.pendingReview}`, sk: 'META' },
+          ConsistentRead: true,
+        }),
+      );
+      if (
+        bindings.some((binding) =>
+          credentialChangeAffects(pending?.candidate, binding, payload.projectId),
+        )
+      )
+        throw authError(
+          'AGENT_AUTH_CHANGE_IN_PROGRESS',
+          'The selected credential is being updated',
+        );
+    }
+  }
   await ddb.send(
     new TransactWriteCommand({
       TransactItems: [
+        ...scopeWrites,
+        ...inventoryReferenceWrites(tableName, invocation),
         {
           Put: {
             TableName: tableName,
-            Item: {
-              ...Key,
-              type: 'AgentInvocation',
-              id,
-              executionId: payload.executionId ?? payload.intentId ?? null,
-              projectId: payload.projectId ?? null,
-              command: payload.command,
-              credentialBinding: bindings[0] ?? null,
-              credentialBindings: bindings,
-              agentAuthProtocol: 2,
-              state: 'ACTIVE',
-              startedAt: stamp(),
-              heartbeatAt: stamp(),
-            },
+            Item: invocation,
             ConditionExpression: 'attribute_not_exists(pk)',
           },
         },

@@ -1,6 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
-import { normalizeCredentialBinding } from './agent-auth-catalog.js';
+import { normalizeCredentialBinding } from './agent-auth-contracts.js';
 import { AGENT_AUTH_MODES } from './agent-command-registry.js';
 
 export const AGENT_CREDENTIAL_GRANT_AUDIENCE = 'aidlc-agent-credential-broker';

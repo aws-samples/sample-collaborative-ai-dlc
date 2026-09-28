@@ -1,3 +1,4 @@
+import { inventoryReferenceWrites, scopeActivityWrites } from './agent-auth-inventory.js';
 // V2 process store — the thin DynamoDB I/O shell over the pure key scheme +
 // record builders in v2-process-keys.js. The AgentCore container uses this to
 // write execution/stage/event/human/metric state; a future trigger/resume
@@ -101,10 +102,18 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     const startedAt = input.startedAt ?? now();
     const item = buildExecutionMeta({ ...input, startedAt });
     await ddb.send(
-      new PutCommand({
-        TableName: table(),
-        Item: item,
-        ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: table(),
+              Item: item,
+              ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+            },
+          },
+          ...inventoryReferenceWrites(table(), item),
+          ...scopeActivityWrites(table(), [item], { includePlatform: true }),
+        ],
       }),
     );
     return item;
@@ -475,6 +484,20 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       params.ExpressionAttributeValues[':ifAttachmentRevision'] = ifAttachmentRevision;
     }
     if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
+    if (credentialBinding !== undefined) {
+      const row = { ...executionMetaKey(executionId), projectId, credentialBinding };
+      const { ReturnValues: _returnValues, ...write } = params;
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            { Update: write },
+            ...inventoryReferenceWrites(table(), row),
+            ...scopeActivityWrites(table(), [row], { includePlatform: true }),
+          ],
+        }),
+      );
+      return getExecution(executionId, { consistentRead: true });
+    }
     const { Attributes } = await ddb.send(new UpdateCommand(params));
     return Attributes;
   };

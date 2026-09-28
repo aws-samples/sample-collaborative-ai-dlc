@@ -1,3 +1,7 @@
+import {
+  credentialLeaseFromResponse,
+  prepareCredentialLeases,
+} from './credential-lease-adapters.js';
 // Invocation-scoped agent authentication.
 //
 // AgentCore sessions are long-lived and can serve different authenticated
@@ -15,7 +19,7 @@ import {
   credentialProviderForCli,
   normalizeCredentialBinding,
   bindingIdentity,
-} from '../shared/agent-auth-catalog.js';
+} from '../shared/agent-auth-contracts.js';
 import { AGENT_AUTH_MODES } from './command-registry.js';
 import { invokeCredentialBroker } from './clients.js';
 
@@ -111,6 +115,7 @@ export const resolveInvocationAgentAuth = async ({
   store = null,
   env = process.env,
   broker = invokeCredentialBroker,
+  leaseAdapters,
 } = {}) => {
   const invocationEnv = cleanBaseEnv(env);
   let meta = null;
@@ -165,7 +170,7 @@ export const resolveInvocationAgentAuth = async ({
       const binding = normalizeCredentialBinding(credential?.binding);
       authorized.set(bindingKey(binding), {
         binding,
-        value: typeof credential?.value === 'string' ? credential.value : '',
+        lease: credentialLeaseFromResponse(credential),
       });
     }
   } catch {
@@ -189,18 +194,24 @@ export const resolveInvocationAgentAuth = async ({
       source: binding.source,
     };
     credentialBindings.push(credentialBinding);
-    const value = authorized.get(bindingKey(binding))?.value || '';
-    if (!value) {
+    const lease = authorized.get(bindingKey(binding))?.lease;
+    if (!lease?.material) {
       missingProviders.push(binding.provider);
       missingCredentialBindings.push(credentialBinding);
       continue;
     }
-    invocationEnv[credentialEnvName(binding.provider)] = value;
     resolvedProviders.push(binding.provider);
   }
 
+  const leaseState = prepareCredentialLeases({
+    credentials: [...authorized.values()],
+    baseEnv: invocationEnv,
+    broker,
+    context: { purpose: authMode, projectId, executionId },
+    ...(leaseAdapters ? { adapters: leaseAdapters } : {}),
+  });
   return {
-    env: invocationEnv,
+    ...leaseState,
     projectId,
     bindings,
     credentialBindings,

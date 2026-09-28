@@ -63,7 +63,7 @@
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import mcpValidatorPkg from '../shared/mcp-validator.js';
 import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/environment.js';
-import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-auth-catalog.js';
+import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-auth-contracts.js';
 
 const { extractSecretRefs } = mcpValidatorPkg;
 

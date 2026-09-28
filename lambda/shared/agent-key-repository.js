@@ -12,6 +12,7 @@ import {
   KEY_PROVIDERS as PROVIDER_CONFIG,
   assertIdentifier,
   assertProvider,
+  normalizeRequestedProviders,
   assertSource,
   normalizeCredentialBinding,
   isConfiguredCredentialValue,
@@ -199,15 +200,19 @@ export const deleteCredentialScope = async (
   return { deleted, missing };
 };
 
-export const resolveEffectiveCredentialBindings = async (ssm, { base, projectId, userId }) => {
+export const resolveEffectiveCredentialBindings = async (
+  ssm,
+  { base, projectId, userId, providers },
+) => {
   const sources = {
-    user: scopePaths({ base, source: 'user', userId }),
-    space: scopePaths({ base, source: 'space', projectId }),
+    user: userId ? scopePaths({ base, source: 'user', userId }) : null,
+    space: projectId ? scopePaths({ base, source: 'space', projectId }) : null,
     platform: scopePaths({ base, source: 'platform' }),
   };
   const bindings = {};
-  const unresolved = new Set(AGENT_CREDENTIAL_PROVIDERS);
+  const unresolved = new Set(normalizeRequestedProviders(providers));
   for (const source of AGENT_CREDENTIAL_SOURCES) {
+    if (!sources[source]) continue;
     const paths = Object.fromEntries(
       [...unresolved].map((provider) => [provider, sources[source][provider]]),
     );

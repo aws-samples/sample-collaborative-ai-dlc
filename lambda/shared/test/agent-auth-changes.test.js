@@ -156,6 +156,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
       );
     }
     const repository = createAgentConnectionRepository({ ddb, tableName, base: '/app/test' });
+    await repository.initializeInventory();
     const service = createAgentAuthChangeService({ repository });
     const review = await service.preview(
       credentialUpdateCandidate({
@@ -177,6 +178,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
   it('rejects new work and concurrent selection after a review, with no partial activation', async () => {
     const tableName = await table();
     const repository = createAgentConnectionRepository({ ddb, tableName, base: '/app/test' });
+    await repository.initializeInventory();
     const service = createAgentAuthChangeService({ repository });
     const review = await service.preview(policyCandidate, 'admin');
     await ddb.send(
@@ -207,6 +209,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
       tableName: await table(),
       base: '/app/test',
     });
+    await repository.initializeInventory();
     const service = createAgentAuthChangeService({ repository });
     const review = await service.preview(policyCandidate, 'admin');
     await expect(service.apply(review.id, 'other')).rejects.toMatchObject({
@@ -228,6 +231,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
       tableName: await table(),
       base: '/app/test',
     });
+    await repository.initializeInventory();
     const service = createAgentAuthChangeService({ repository });
     const review = await service.preview(policyCandidate, 'admin');
     const apply = repository.applyReview;
@@ -246,6 +250,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
       tableName: await table(),
       base: '/app/test',
     });
+    await repository.initializeInventory();
     const service = createAgentAuthChangeService({ repository });
     const candidate = credentialUpdateCandidate({
       source: 'platform',
@@ -287,6 +292,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
       tableName: await table(),
       base: '/app/test',
     });
+    await repository.initializeInventory();
     const service = createAgentAuthChangeService({ repository });
     const candidate = credentialUpdateCandidate({
       source: 'user',
@@ -316,7 +322,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
     expect(
       await service.apply(review.id, 'u1', { candidate, writeCredentials: async () => {} }),
     ).toEqual({ saved: true, revision: 1 });
-    expect((await repository.getPolicy()).activityRevision).toBe(1);
+    expect((await repository.getPolicy()).activityRevision).toBe(2);
   });
   it('retains immutable definitions for pinned work and honors explicit revocation', async () => {
     const repository = createAgentConnectionRepository({

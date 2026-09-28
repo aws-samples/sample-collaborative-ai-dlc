@@ -95,7 +95,7 @@ import {
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
 import { humanTaskMatchesOwner } from '../../shared/v2-process-keys.js';
-import { credentialProviderForCli } from '../../shared/agent-auth-catalog.js';
+import { credentialProviderForCli } from '../../shared/agent-auth-contracts.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'run-stage' } });

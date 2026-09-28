@@ -16,7 +16,7 @@
 import { SUPPORTED_CLIS, buildKiroListModels, parseKiroModels } from '../cli/drivers.js';
 import { discoverInstalledClis as defaultDiscover } from '../cli/discover.js';
 import { captureChild as defaultCapture } from '../cli/spawn.js';
-import { AGENT_AUTH_PROTOCOL_VERSION } from '../../shared/agent-auth-catalog.js';
+import { AGENT_AUTH_PROTOCOL_VERSION } from '../../shared/agent-auth-contracts.js';
 
 // The env var that proves each CLI is authed (mirrors auth-resolver's targets).
 const AUTH_ENV = {

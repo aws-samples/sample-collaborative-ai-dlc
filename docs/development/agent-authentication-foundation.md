@@ -226,3 +226,59 @@ a key rotation, create intervening work to confirm stale-review rejection, then
 apply a fresh review. Check that the policy remains Keys and that IAM/LiteLLM
 remain unavailable. Local tests and Terraform validation do not establish that a
 live AWS deployment or real-model invocation has succeeded.
+
+## Provider boundaries and scoped reviews
+
+The public catalog remains a compatibility facade. Stable identifiers live in
+`agent-auth-protocol.js`; bindings and capability contracts live in
+`agent-auth-contracts.js`; connection validation and mode registration live in
+`agent-auth-providers.js`. The selection coordinator owns snapshot consistency,
+pending-change checks, and reservation. Each mode supplies its selection strategy
+through `AUTH_SELECTION_STRATEGIES`. Kiro selection is independent of the platform
+inference mode. Callers request the provider they use; capability discovery requests
+both providers explicitly with `reserve: false`.
+
+Broker providers return a versioned credential lease: opaque typed material,
+optional credential expiry, an immutable authorization deadline, and optional
+renewal authority. Runtime material adapters translate the lease into invocation
+configuration. Grant/context matching, session ownership, expiry cancellation, and
+renewal identity checks remain generic. Legacy key responses retain the `value`
+field for published runtimes. Tests use an additional material adapter and exercise
+renewal identity mismatch, unsupported material, expiry, and a non-sliding deadline.
+Production renewal authority must be issued and verified by the registered provider;
+the controlled lease tests do not qualify a customer identity provider.
+
+Authentication settings orchestration lives in
+`lambda/agents/authentication-settings-service.js`. HTTP routing and authorization
+remain in `index.js`. Provider setup normalizes input into `connection-create`,
+`space-selection`, `policy-change`, or `credential-update` domain actions. The old
+`policy` action is accepted as an input alias. Storage applies domain actions and
+does not interpret IAM or OAuth setup operations.
+
+Personal and space reviews query strongly consistent scope reference partitions
+in the process table. They re-read only referenced authoritative records and the
+matching auxiliary execution prefixes. Personal fingerprints contain only that
+user's identities, including when a discovery invocation uses several bindings.
+Scoped HTTP reviews do not scan the process table, enumerate SSM scopes, enumerate
+Neptune projects, or scan the environment registry. Platform reviews retain the
+explicit global inventory path. Scoped revisions and activity counters prevent an
+unrelated space change or selection from invalidating a personal review. Selection,
+invocation accounting, and execution binding writes update references atomically.
+References are discovery metadata; existing execution records and credential
+bindings remain authoritative.
+
+Existing installations require one additive index initialization after deploying
+the new writers:
+
+```sh
+AWS_PROFILE=solution AWS_REGION=eu-central-1 \
+  V2_PROCESS_TABLE=<review-process-table> \
+  node scripts/initialize-agent-auth-inventory.mjs
+```
+
+This operator command indexes historical records without changing their bindings
+or secrets. Scoped reviews fail closed until the initialization marker exists;
+there is no fallback to a global scan from a personal request. Existing runtime
+images do not gain new accounting behavior until republished. Scoped enumeration
+has a 5,000-record safety limit and reports an error instead of silently truncating
+an impact review. Probe deployments with fresh AgentCore session IDs.

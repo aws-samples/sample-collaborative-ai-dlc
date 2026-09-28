@@ -2,7 +2,7 @@ import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { parseLambdaPayload } from './lambda-payload.js';
 import {
   AGENT_CREDENTIAL_METADATA_ACTIONS,
-  AGENT_CREDENTIAL_PROVIDERS,
+  normalizeRequestedProviders,
   normalizeCredentialBinding,
 } from './agent-credentials.js';
 
@@ -75,7 +75,7 @@ export const resolveEffectiveCredentialBindingsViaBroker = async (request, deps)
   }
   try {
     return Object.fromEntries(
-      AGENT_CREDENTIAL_PROVIDERS.map((provider) => [
+      normalizeRequestedProviders(request?.providers).map((provider) => [
         provider,
         result.bindings[provider] ? normalizeCredentialBinding(result.bindings[provider]) : null,
       ]),

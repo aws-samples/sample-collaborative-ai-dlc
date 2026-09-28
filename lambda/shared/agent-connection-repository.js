@@ -1,12 +1,23 @@
+import { authActionWrites } from './agent-auth-actions.js';
+import {
+  AUTH_INVENTORY_KEY,
+  authenticationScope,
+  authScopeKey,
+  inventoryReferenceWrites,
+  scopeActivityWrites,
+  scopeContainsRow,
+} from './agent-auth-inventory.js';
 import {
   GetCommand,
   PutCommand,
   UpdateCommand,
   ScanCommand,
+  QueryCommand,
   TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   authError,
+  credentialChangeAffects,
   assertIdentifier,
   normalizeConnection,
   AGENT_AUTH_MODES_CATALOG,
@@ -73,9 +84,22 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
       );
   };
   const repository = {
-    async getPolicy() {
+    async getPolicy(scope = {}) {
+      if (scope.source && scope.source !== 'platform') {
+        const policy = await repository.getPolicy();
+        const state = await repository.getScopeState(scope);
+        return { ...policy, ...state, configurationRevision: policy.revision };
+      }
       if (!tableName) return { ...DEFAULT_AUTH_POLICY };
-      return normalizeAuthPolicy((await get(AUTH_POLICY_KEY)) ?? DEFAULT_AUTH_POLICY);
+      return normalizeAuthPolicy({ ...DEFAULT_AUTH_POLICY, ...(await get(AUTH_POLICY_KEY)) });
+    },
+    async getScopeState(scope) {
+      const state = tableName ? await get(authScopeKey(scope)) : null;
+      return {
+        revision: state?.revision ?? 0,
+        activityRevision: state?.activityRevision ?? 0,
+        ...(state?.pendingReview ? { pendingReview: state.pendingReview } : {}),
+      };
     },
     async getConnection(id, revision) {
       const legacy = legacyConnection(id);
@@ -94,11 +118,24 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
       }
       requireTable();
       const row = await get(connectionKey(id, revision));
-      return row ? { ...normalizeConnection(row), secretReference: row.secretReference } : null;
+      return row
+        ? {
+            ...normalizeConnection(row),
+            ...(row.secretReference ? { secretReference: row.secretReference } : {}),
+          }
+        : null;
     },
     async getSpaceSelection(projectId) {
       if (!tableName) return null;
       return get({ pk: `AGENTAUTH#SPACE#${assertIdentifier(projectId, 'projectId')}`, sk: 'META' });
+    },
+    validateStorageReference(id, secretReference) {
+      if (
+        secretReference !== undefined &&
+        (typeof secretReference !== 'string' ||
+          !secretReference.startsWith(`${base}/connections/${id}/`))
+      )
+        throw authError('AGENT_AUTH_INVALID', 'Connection requires a dedicated secret reference');
     },
     async putConnection(connection, secretReference) {
       requireTable();
@@ -106,21 +143,27 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
       if (
         legacyConnection(normalized.id) ||
         normalized.revision < 1 ||
-        typeof secretReference !== 'string' ||
-        !secretReference.startsWith(`${base}/connections/${normalized.id}/`)
+        (secretReference !== undefined &&
+          (typeof secretReference !== 'string' ||
+            !secretReference.startsWith(`${base}/connections/${normalized.id}/`)))
       ) {
         throw authError('AGENT_AUTH_INVALID', 'Connection requires a dedicated secret reference');
       }
       await ddb.send(
         new TransactWriteCommand({
           TransactItems: [
+            ...inventoryReferenceWrites(tableName, {
+              ...connectionKey(normalized.id),
+              ...normalized,
+            }),
+            ...scopeActivityWrites(tableName, [normalized], { includePlatform: true }),
             {
               Put: {
                 TableName: tableName,
                 Item: {
                   ...connectionKey(normalized.id, normalized.revision),
                   ...normalized,
-                  secretReference,
+                  ...(secretReference ? { secretReference } : {}),
                   type: 'AgentConnection',
                 },
                 ConditionExpression: 'attribute_not_exists(pk)',
@@ -132,7 +175,7 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
                 Item: {
                   ...connectionKey(normalized.id),
                   ...normalized,
-                  secretReference,
+                  ...(secretReference ? { secretReference } : {}),
                   type: 'AgentConnectionHead',
                 },
                 ConditionExpression:
@@ -172,28 +215,123 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
       if (!context) return ddb.send(new UpdateCommand(update));
       const selectedAt = new Date().toISOString();
       const bindings = Object.values(context.bindings ?? {}).filter(Boolean);
+      const rows = bindings.map((binding) => ({
+        pk: `AGENTAUTH#SELECTION#${randomUUID()}`,
+        sk: 'META',
+        type: 'AgentSelection',
+        projectId: context.projectId ?? null,
+        credentialBinding: binding,
+        status: 'PENDING',
+        selectedAt,
+        agentAuthTtl: Math.floor(Date.now() / 1000) + 600,
+      }));
+      const scopeWrites = scopeActivityWrites(tableName, rows);
+      for (const { Update: write } of scopeWrites) {
+        const state = await get(write.Key);
+        write.ConditionExpression = '(attribute_not_exists(revision) OR revision = :revision)';
+        write.ExpressionAttributeValues[':revision'] = state?.revision ?? 0;
+        if (state?.pendingReview) {
+          const pending = await repository.getReview(state.pendingReview);
+          if (
+            bindings.some((binding) =>
+              credentialChangeAffects(pending?.candidate, binding, context.projectId),
+            )
+          )
+            throw authError(
+              'AGENT_AUTH_CHANGE_IN_PROGRESS',
+              'The selected credential is being updated',
+            );
+        }
+      }
       await ddb.send(
         new TransactWriteCommand({
           TransactItems: [
             { Update: update },
-            ...bindings.map((binding) => ({
-              Put: {
-                TableName: tableName,
-                Item: {
-                  pk: `AGENTAUTH#SELECTION#${randomUUID()}`,
-                  sk: 'META',
-                  type: 'AgentSelection',
-                  projectId: context.projectId,
-                  credentialBinding: binding,
-                  status: 'PENDING',
-                  selectedAt,
-                  agentAuthTtl: Math.floor(Date.now() / 1000) + 600,
-                },
-              },
-            })),
+            ...scopeWrites,
+            ...rows.flatMap((row) => [
+              { Put: { TableName: tableName, Item: row } },
+              ...inventoryReferenceWrites(tableName, row),
+            ]),
           ],
         }),
       );
+    },
+    async loadInventory(candidate = {}) {
+      const scope = authenticationScope(candidate);
+      if (scope.source === 'platform') return repository.scanInventory();
+      requireTable();
+      const readiness = await get(AUTH_INVENTORY_KEY);
+      if (readiness?.version !== 1)
+        throw authError(
+          'AGENT_AUTH_INVENTORY_NOT_READY',
+          'The scoped authentication inventory must be initialized before reviewing credentials',
+        );
+      const rows = [];
+      let ExclusiveStartKey;
+      do {
+        const page = await ddb.send(
+          new QueryCommand({
+            TableName: tableName,
+            ConsistentRead: true,
+            ExclusiveStartKey,
+            KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+            ExpressionAttributeValues: { ':pk': authScopeKey(scope).pk, ':prefix': 'REF#' },
+            Limit: 100,
+          }),
+        );
+        for (const reference of page.Items ?? []) {
+          const row = await get(reference.target);
+          if (row && scopeContainsRow(scope, row)) rows.push(row);
+        }
+        if (rows.length > 5000)
+          throw authError(
+            'AGENT_AUTH_INVENTORY_TOO_LARGE',
+            'This scope requires an administrator inventory review',
+          );
+        ExclusiveStartKey = page.LastEvaluatedKey;
+      } while (ExclusiveStartKey);
+      // Auxiliary records inherit their execution binding. Query only their key
+      // prefixes, never the execution's potentially large output/event partition.
+      for (const execution of rows.filter((row) => row.type === 'Execution')) {
+        for (const prefix of ['COMPOSE#', 'QEDIT#']) {
+          let cursor;
+          do {
+            const page = await ddb.send(
+              new QueryCommand({
+                TableName: tableName,
+                ConsistentRead: true,
+                ExclusiveStartKey: cursor,
+                KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+                ExpressionAttributeValues: { ':pk': execution.pk, ':prefix': prefix },
+                Limit: 100,
+              }),
+            );
+            rows.push(...(page.Items ?? []));
+            if (rows.length > 5000)
+              throw authError(
+                'AGENT_AUTH_INVENTORY_TOO_LARGE',
+                'This scope requires an administrator inventory review',
+              );
+            cursor = page.LastEvaluatedKey;
+          } while (cursor);
+        }
+      }
+      return rows;
+    },
+    async initializeInventory() {
+      // Explicit operator-only backfill. Never called from personal/space HTTP paths.
+      const rows = await repository.scanInventory();
+      for (const row of rows) {
+        const writes = inventoryReferenceWrites(tableName, row);
+        if (writes.length) await ddb.send(new TransactWriteCommand({ TransactItems: writes }));
+      }
+      await ddb.send(
+        new PutCommand({
+          TableName: tableName,
+          Item: { ...AUTH_INVENTORY_KEY, version: 1, initializedAt: new Date().toISOString() },
+        }),
+      );
+      return { records: rows.length };
     },
     async scanInventory() {
       requireTable();
@@ -255,32 +393,48 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
     },
     async lockReview(review) {
       requireTable();
+      const lock = {
+        TableName: tableName,
+        Key: authScopeKey(review.candidate),
+        UpdateExpression:
+          'SET pendingReview = :review, revision = :next, activityRevision = if_not_exists(activityRevision, :activity), #mode = if_not_exists(#mode, :mode), defaultConnectionId = if_not_exists(defaultConnectionId, :connection)',
+        ConditionExpression:
+          'attribute_not_exists(pendingReview) AND (attribute_not_exists(revision) OR revision = :revision) AND (attribute_not_exists(activityRevision) OR activityRevision = :activity)',
+        ExpressionAttributeNames: { '#mode': 'mode' },
+        ExpressionAttributeValues: {
+          ':review': review.id,
+          ':revision': review.policyRevision,
+          ':next': review.policyRevision + 1,
+          ':activity': review.activityRevision,
+          ':mode': 'keys',
+          ':connection': DEFAULT_AUTH_POLICY.defaultConnectionId,
+        },
+      };
+      if (review.configurationRevision === undefined) return ddb.send(new UpdateCommand(lock));
       await ddb.send(
-        new UpdateCommand({
-          TableName: tableName,
-          Key: AUTH_POLICY_KEY,
-          UpdateExpression:
-            'SET pendingReview = :review, revision = :next, activityRevision = if_not_exists(activityRevision, :activity), #mode = if_not_exists(#mode, :mode), defaultConnectionId = if_not_exists(defaultConnectionId, :connection)',
-          ConditionExpression:
-            'attribute_not_exists(pendingReview) AND (attribute_not_exists(revision) OR revision = :revision) AND (attribute_not_exists(activityRevision) OR activityRevision = :activity)',
-          ExpressionAttributeNames: { '#mode': 'mode' },
-          ExpressionAttributeValues: {
-            ':review': review.id,
-            ':revision': review.policyRevision,
-            ':next': review.policyRevision + 1,
-            ':activity': review.activityRevision,
-            ':mode': 'keys',
-            ':connection': DEFAULT_AUTH_POLICY.defaultConnectionId,
-          },
+        new TransactWriteCommand({
+          TransactItems: [
+            { Update: lock },
+            {
+              Update: {
+                TableName: tableName,
+                Key: AUTH_POLICY_KEY,
+                UpdateExpression: 'ADD activityRevision :one',
+                ConditionExpression:
+                  '(attribute_not_exists(revision) OR revision = :revision) AND attribute_not_exists(pendingReview)',
+                ExpressionAttributeValues: { ':one': 1, ':revision': review.configurationRevision },
+              },
+            },
+          ],
         }),
       );
     },
     async applyReview({ review, actorId, policy, now }) {
       requireTable();
       const next = {
-        mode: review.candidate.kind === 'policy' ? review.candidate.mode : policy.mode,
+        mode: review.candidate.kind === 'policy-change' ? review.candidate.mode : policy.mode,
         defaultConnectionId:
-          review.candidate.kind === 'policy'
+          review.candidate.kind === 'policy-change'
             ? review.candidate.defaultConnectionId
             : policy.defaultConnectionId,
         revision: review.policyRevision + 1,
@@ -297,7 +451,7 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
           ? {
               Update: {
                 TableName: tableName,
-                Key: AUTH_POLICY_KEY,
+                Key: authScopeKey(review.candidate),
                 UpdateExpression: 'SET updatedBy = :actor, updatedAt = :now REMOVE pendingReview',
                 ConditionExpression: 'revision = :revision AND pendingReview = :review',
                 ExpressionAttributeValues: {
@@ -312,7 +466,7 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
               Put: {
                 TableName: tableName,
                 Item: {
-                  ...AUTH_POLICY_KEY,
+                  ...authScopeKey(review.candidate),
                   ...next,
                   type: 'AgentAuthPolicy',
                   updatedBy: actorId,
@@ -327,6 +481,32 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
           ClientRequestToken: review.id,
           TransactItems: [
             policyWrite,
+            ...authActionWrites({ action: review.candidate, tableName }),
+            ...(review.candidate.kind === 'connection-create'
+              ? inventoryReferenceWrites(tableName, {
+                  pk: `AGENTAUTH#CONNECTION#${review.candidate.connection.id}`,
+                  sk: 'META',
+                  ...review.candidate.connection,
+                })
+              : []),
+            ...(review.configurationRevision !== undefined &&
+            review.candidate.kind !== 'credential-update'
+              ? [
+                  {
+                    Update: {
+                      TableName: tableName,
+                      Key: AUTH_POLICY_KEY,
+                      UpdateExpression: 'ADD activityRevision :one',
+                      ConditionExpression:
+                        '(attribute_not_exists(revision) OR revision = :revision) AND attribute_not_exists(pendingReview)',
+                      ExpressionAttributeValues: {
+                        ':one': 1,
+                        ':revision': review.configurationRevision,
+                      },
+                    },
+                  },
+                ]
+              : []),
             {
               Update: {
                 TableName: tableName,
@@ -345,7 +525,7 @@ export const createAgentConnectionRepository = ({ ddb, tableName, base = '' }) =
               Put: {
                 TableName: tableName,
                 Item: {
-                  pk: 'AGENTAUTH#AUDIT',
+                  pk: `${authScopeKey(review.candidate).pk}#AUDIT`,
                   sk: `REV#${String(next.revision).padStart(12, '0')}`,
                   type: 'AgentAuthAudit',
                   reviewId: review.id,

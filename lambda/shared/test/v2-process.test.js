@@ -198,7 +198,7 @@ describe('createProcessStore', () => {
   });
 
   it('createExecution writes META guarded against overwrite', async () => {
-    ddb.on(PutCommand).resolves({});
+    ddb.on(TransactWriteCommand).resolves({});
     await store.createExecution({
       executionId: 'e1',
       projectId: 'p1',
@@ -207,7 +207,7 @@ describe('createProcessStore', () => {
       workflowId: 'w',
       workflowVersion: 1,
     });
-    const call = ddb.commandCalls(PutCommand)[0].args[0].input;
+    const call = ddb.commandCalls(TransactWriteCommand)[0].args[0].input.TransactItems[0].Put;
     expect(call.Item.sk).toBe('META');
     expect(call.ConditionExpression).toContain('attribute_not_exists(pk)');
   });

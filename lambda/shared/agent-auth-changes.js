@@ -1,10 +1,8 @@
+import { normalizeAuthAction } from './agent-auth-actions.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  AGENT_AUTH_MODES_CATALOG,
-  KEY_PROVIDERS,
   authError,
   assertIdentifier,
-  assertSource,
   normalizeCredentialBinding,
   legacyPlatformBinding,
   credentialChangeAffects,
@@ -32,28 +30,7 @@ const hash = (value) =>
   createHash('sha256')
     .update(JSON.stringify(canonical(value)))
     .digest('hex');
-export const credentialUpdateCandidate = ({ source, projectId, userId, update }) => {
-  assertSource(source);
-  const changes = Object.entries(KEY_PROVIDERS)
-    .filter(([, descriptor]) => typeof update?.[descriptor.inputField] === 'string')
-    .map(([provider, descriptor]) => {
-      const value = update[descriptor.inputField].trim();
-      if (Buffer.byteLength(value, 'utf8') > 4096)
-        throw authError(
-          'AGENT_AUTH_INVALID',
-          'API keys must fit in a standard encrypted parameter (4096 bytes)',
-        );
-      return { provider, action: value ? 'rotate' : 'clear', digest: hash(value) };
-    });
-  if (!changes.length) throw authError('AGENT_AUTH_INVALID', 'No credential changes supplied');
-  return {
-    kind: 'credential-update',
-    source,
-    changes,
-    ...(source === 'space' ? { projectId: assertIdentifier(projectId, 'projectId') } : {}),
-    ...(source === 'user' ? { userId: assertIdentifier(userId, 'userId') } : {}),
-  };
-};
+export { credentialUpdateCandidate } from './agent-auth-key-changes.js';
 export const materialAuthInventory = (rows, now = Date.now()) => {
   const executions = new Map(
     rows.filter((row) => row.type === 'Execution').map((row) => [row.executionId, row]),
@@ -187,41 +164,25 @@ export const classifyAuthImpact = (inventory, candidate) =>
     return { ...item, connectionId, outcome, reason, action };
   });
 
+const scopedMaterialInventory = (rows, candidate, now) => {
+  const inventory = materialAuthInventory(rows, now);
+  return candidate.source === 'user'
+    ? inventory.filter((item) => (item.binding?.userId ?? item.userId) === candidate.userId)
+    : inventory;
+};
+
 export const createAgentAuthChangeService = ({
   repository,
-  loadInventory = () => repository.scanInventory(),
+  loadInventory = (candidate) => repository.loadInventory(candidate),
   now = Date.now,
   randomId = randomUUID,
 }) => {
-  const validateCandidate = async (candidate) => {
-    if (candidate?.kind === 'credential-update') return candidate;
-    if (candidate?.kind !== 'policy')
-      throw authError('AGENT_AUTH_INVALID', 'Unsupported configuration change');
-    const descriptor = AGENT_AUTH_MODES_CATALOG.find((mode) => mode.id === candidate.mode);
-    if (!descriptor?.available)
-      throw authError(
-        'AGENT_AUTH_MODE_UNAVAILABLE',
-        'This mode is not available until its provider and runtime support ship',
-      );
-    const connection = await repository.getConnection(candidate.defaultConnectionId);
-    if (
-      !connection ||
-      connection.mode !== candidate.mode ||
-      connection.source !== 'platform' ||
-      connection.state !== 'ready'
-    ) {
-      throw authError(
-        'AGENT_AUTH_INVALID',
-        'A ready platform connection matching the selected mode is required',
-      );
-    }
-    return { kind: 'policy', mode: candidate.mode, defaultConnectionId: connection.id };
-  };
+  const validateCandidate = (candidate) => normalizeAuthAction(candidate, repository);
   return {
     async preview(candidate, actorId) {
       assertIdentifier(actorId, 'actorId');
       candidate = await validateCandidate(candidate);
-      const policy = await repository.getPolicy();
+      const policy = await repository.getPolicy(candidate);
       if (policy.pendingReview) {
         const pending = await repository.getReview(policy.pendingReview);
         if (pending?.actorId === actorId && hash(pending.candidate) === hash(candidate)) {
@@ -239,9 +200,10 @@ export const createAgentAuthChangeService = ({
           'Finish the pending credential change before reviewing another',
         );
       }
-      const inventory = materialAuthInventory(await loadInventory(), now());
-      const latest = await repository.getPolicy();
+      const inventory = scopedMaterialInventory(await loadInventory(candidate), candidate, now());
+      const latest = await repository.getPolicy(candidate);
       if (
+        latest.configurationRevision !== policy.configurationRevision ||
         latest.revision !== policy.revision ||
         latest.activityRevision !== policy.activityRevision
       ) {
@@ -250,20 +212,15 @@ export const createAgentAuthChangeService = ({
           'Work or configuration changed while preparing the preview; review again',
         );
       }
-      const visible =
-        candidate.kind === 'credential-update' && candidate.source !== 'platform'
-          ? inventory.filter((item) =>
-              candidate.source === 'space'
-                ? item.projectId === candidate.projectId
-                : (item.binding?.userId ?? item.userId) === candidate.userId,
-            )
-          : inventory;
-      const items = classifyAuthImpact(visible, candidate, now());
+      const items = classifyAuthImpact(inventory, candidate, now());
       const review = {
         id: randomId(),
         actorId,
         candidate,
         policyRevision: policy.revision,
+        ...(policy.configurationRevision !== undefined
+          ? { configurationRevision: policy.configurationRevision }
+          : {}),
         activityRevision: policy.activityRevision,
         inventoryHash: hash(inventory),
         createdAt: new Date(now()).toISOString(),
@@ -296,14 +253,17 @@ export const createAgentAuthChangeService = ({
           'Proposed credential changes differ from the reviewed changes',
         );
       if (review.appliedRevision) return { saved: true, revision: review.appliedRevision };
-      const policy = await repository.getPolicy();
+      const policy = await repository.getPolicy(review.candidate);
       const resuming = policy.pendingReview === review.id;
       if (
         !resuming &&
         (review.expiresAt <= now() ||
+          policy.configurationRevision !== review.configurationRevision ||
           policy.revision !== review.policyRevision ||
           policy.activityRevision !== review.activityRevision ||
-          hash(materialAuthInventory(await loadInventory(), now())) !== review.inventoryHash)
+          hash(
+            scopedMaterialInventory(await loadInventory(review.candidate), review.candidate, now()),
+          ) !== review.inventoryHash)
       ) {
         throw authError(
           'AGENT_AUTH_REVIEW_STALE',
