@@ -937,6 +937,9 @@ export const runParallelSection = async (segment, toolkit) => {
           })),
         },
       });
+      // A retired revision belongs to a replaced run: the replacement may
+      // already own this batch, so write nothing and exit.
+      if (revision.state === 'TERMINAL') return { terminal: revision.value };
       if (revision.state !== 'SUCCEEDED') {
         const revisionFailure = `${revision.reason ?? 'feedback_revision_failed'}${
           revision.detail ? `: ${revision.detail}` : ''
@@ -1118,6 +1121,7 @@ export const runParallelSection = async (segment, toolkit) => {
 
     for (let reconciliation = 0; ; reconciliation += 1) {
       const feedback = await processNextFeedback(`r${reconciliation}-pre`);
+      if (feedback.terminal) return { slug, state: 'TERMINAL', value: feedback.terminal };
       if (feedback.failed) {
         return laneFailed(laneCtx, slug, round, {
           stageId: 'review-feedback',
@@ -1289,6 +1293,9 @@ export const runParallelSection = async (segment, toolkit) => {
         const pollFeedback = await processNextFeedback(
           `r${reconciliation}-observation-${observation}`,
         );
+        if (pollFeedback.terminal) {
+          return { slug, state: 'TERMINAL', value: pollFeedback.terminal };
+        }
         if (pollFeedback.failed) {
           return laneFailed(laneCtx, slug, round, {
             stageId: 'review-feedback',

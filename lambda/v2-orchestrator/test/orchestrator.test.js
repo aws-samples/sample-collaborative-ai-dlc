@@ -2035,6 +2035,48 @@ describe('PR per unit delivery', () => {
     expect(metrics).toContainEqual({ feedbackCycles: 1 });
   });
 
+  it('leaves the feedback batch to the replacement run when the revision retires', async () => {
+    configure({
+      statusFor: async ({ number }) => ({
+        providerId: `provider-${number}`,
+        number,
+        url: `https://example.test/pr/${number}`,
+        sourceBranch: 'aidlc/i1--s1-unit-auth',
+        targetBranch: 'aidlc/i1',
+        headSha: `head-${number}`,
+        targetSha: 'intent-before',
+        state: 'open',
+        draft: true,
+        mergeable: true,
+      }),
+    });
+    const batch = { batchId: 'batch-1', state: 'QUEUED', comments: [] };
+    deps.store.listFeedbackBatches = vi.fn(async (_executionId, { state }) =>
+      batch.state === state ? [batch] : [],
+    );
+    deps.store.updateFeedbackBatch = vi.fn(async (args) => {
+      batch.state = args.state;
+      return { ...batch };
+    });
+    deps.invokeRuntime = makeRuntime(ctx, (payload) =>
+      payload.reviewFeedback
+        ? { ok: false, state: 'FAILED', reason: 'retired' }
+        : sectionScript(payload),
+    );
+
+    const result = await start();
+    expect(result).toMatchObject({ ok: false, reason: 'retired' });
+    expect(deps.store.updateFeedbackBatch.mock.calls.map(([args]) => args.state)).toEqual([
+      'RUNNING',
+    ]);
+    expect(
+      deps.store.appendEvent.mock.calls.some(([event]) => event.type === 'v2.feedback.failed'),
+    ).toBe(false);
+    expect(deps.store.updateExecution.mock.calls.some(([args]) => args.status === 'FAILED')).toBe(
+      false,
+    );
+  });
+
   it('preserves a partial multi-repository merge, records outcomes, and halts', async () => {
     const calls = new Map();
     configure({
