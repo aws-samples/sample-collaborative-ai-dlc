@@ -58,7 +58,7 @@ export const redeemAgentBinding = async ({
       'Credential mechanism is not supported by this broker',
     );
   // Retired definitions remain redeemable by pinned work.
-  const result = await adapter({ ssm, connection });
+  const result = await adapter({ ssm, connection, binding });
   const lease = normalizeCredentialLease(result.lease ?? apiKeyLease(result.value));
   // Keep the v1 value field for already-published key-only runtime sessions.
   return {
