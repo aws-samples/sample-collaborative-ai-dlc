@@ -16,6 +16,7 @@ import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { agentCredentialFormatWarning } from '@/lib/agentCredentialFormat';
+import { ApiError } from '@/services/api';
 
 // Credential storage scopes. Intents pin an opaque binding to one of these;
 // they do not store a separate secret.
@@ -200,7 +201,9 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       setSaveResult('saved');
     } catch (error) {
       if (!isCurrentIdentity()) return;
-      if ((error as { code?: string })?.code === 'AGENT_AUTH_REVIEW_STALE') setPendingReview(null);
+      // The API carries the auth error code in the response body, not on the error.
+      if (error instanceof ApiError && error.body?.code === 'AGENT_AUTH_REVIEW_STALE')
+        setPendingReview(null);
       setErrorMessage(
         error instanceof Error
           ? error.message

@@ -5,6 +5,7 @@ import { AgentAuthenticationModeSettings } from './AgentAuthenticationModeSettin
 import { AgentCredentialScopeCard } from './AgentCredentialScopeCard';
 import { AuthenticationImpactReview } from './AuthenticationImpactReview';
 import { genericSummary } from './agent-auth/summary';
+import { ApiError } from '@/services/api';
 import type { AgentAuthProviderUi } from './agent-auth/contract';
 import {
   agentsService,
@@ -160,7 +161,10 @@ describe('authentication settings and impact review', () => {
   });
   it('discards a stale preview and permits review of the entered key again', async () => {
     vi.mocked(agentsService.updateSettings).mockRejectedValueOnce(
-      Object.assign(new Error('Work changed; review again'), { code: 'AGENT_AUTH_REVIEW_STALE' }),
+      new ApiError(409, 'Work changed; review again', {
+        error: 'Work changed; review again',
+        code: 'AGENT_AUTH_REVIEW_STALE',
+      }),
     );
     render(<AgentCredentialScopeCard scope="platform" />);
     await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
