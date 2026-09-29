@@ -40,18 +40,15 @@ import type {
 import { cn } from '@/lib/utils';
 import {
   RUNTIME_IMAGE_LIMIT_BYTES,
-  computeFromKey,
-  computeKey,
-  computeLabel,
   environmentIdPreview,
   isDefaultCompute,
   protectedRuntimeVersions,
   resolvedTools,
-  sameCompute,
   validateEnvironmentForm,
   type EnvironmentForm,
   type KeyValueEntry,
 } from './model';
+import { ComputeBadge, ComputeSelector } from './ComputeSelector';
 import { ProcessOverview, Section } from './ui';
 
 interface Props {
@@ -271,16 +268,6 @@ export function EnvironmentBuilder({
 }: Props) {
   const [toolSearch, setToolSearch] = useState('');
   const [toolFilter, setToolFilter] = useState<'all' | 'included'>('all');
-  // Cells the deployment can build, plus the form's current compute when it is
-  // not among them (an existing environment created on a since-disabled cell
-  // must still render its own value).
-  const selectableComputes = useMemo(() => {
-    const cells = computeOptions.filter((cell) => cell.available);
-    return cells.some((cell) => sameCompute(cell, form.compute))
-      ? cells
-      : [...cells, { ...form.compute, available: true }];
-  }, [computeOptions, form.compute]);
-  const selectedComputeCell = selectableComputes.find((cell) => sameCompute(cell, form.compute));
   const [advancedOpen, setAdvancedOpen] = useState(
     form.aptPackages.length > 0 ||
       form.environmentVariables.length > 0 ||
@@ -480,49 +467,32 @@ export function EnvironmentBuilder({
                   </SelectContent>
                 </Select>
               </div>
-              {showId && (computeOptions.length > 1 || !isDefaultCompute(form.compute)) && (
-                <div className="max-w-md space-y-1.5">
-                  <Label htmlFor="environment-compute" className="text-xs">
-                    Compute
-                  </Label>
-                  <Select
-                    value={computeKey(form.compute)}
-                    onValueChange={(key) => {
-                      const compute = computeFromKey(key);
-                      onChange({
-                        ...form,
-                        compute,
-                        // A different architecture cannot keep an arm64 tool
-                        // selection or a derived base — reset to the Standard base.
-                        ...(compute.architecture !== form.compute.architecture
-                          ? { toolVersionIds: [], baseEnvironmentId: 'standard' }
-                          : {}),
-                      });
-                    }}
-                    disabled={disabled}
-                  >
-                    <SelectTrigger id="environment-compute" className="h-9 text-sm">
-                      <SelectValue placeholder="Choose the compute type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {selectableComputes.map((cell) => (
-                        <SelectItem key={computeKey(cell)} value={computeKey(cell)}>
-                          {computeLabel(cell)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[11px] leading-relaxed text-muted-foreground">
-                    {form.compute.type === 'instances'
-                      ? `Runs on EC2 managed instances in this account (${
-                          selectedComputeCell?.allowedInstanceTypes?.join(', ') || 'deployment default'
-                        }) with a persistent workspace volume.${
-                          form.compute.architecture === 'x86_64'
-                            ? ' Catalog tools are not available on x86_64 yet.'
-                            : ''
-                        } The compute type cannot be changed after creation.`
-                      : 'Default serverless compute. The compute type cannot be changed after creation.'}
-                  </p>
+              {showId &&
+                (computeOptions.some((cell) => cell.available && !isDefaultCompute(cell)) ||
+                  !isDefaultCompute(form.compute)) && (
+                  <div className="max-w-md">
+                    <ComputeSelector
+                      value={form.compute}
+                      cells={computeOptions}
+                      disabled={disabled}
+                      onChange={(compute) =>
+                        onChange({
+                          ...form,
+                          compute,
+                          // Tool versions and bases are per-architecture builds,
+                          // so neither carries across an architecture change.
+                          ...(compute.architecture !== form.compute.architecture
+                            ? { toolVersionIds: [], baseEnvironmentId: 'standard' }
+                            : {}),
+                        })
+                      }
+                    />
+                  </div>
+                )}
+              {!showId && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>Compute</span>
+                  <ComputeBadge compute={form.compute} />
                 </div>
               )}
               {baseLoading ? (
