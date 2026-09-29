@@ -51,7 +51,7 @@ const capacityProviderSpec = (architecture) => ({
         launchParameters: {
           operatingSystem: OPERATING_SYSTEMS[architecture] ?? OPERATING_SYSTEMS.x86_64,
           instanceRequirements: {
-            allowedInstanceTypes: allowedInstanceTypes(),
+            allowedInstanceTypes: allowedInstanceTypes(architecture),
           },
         },
       },

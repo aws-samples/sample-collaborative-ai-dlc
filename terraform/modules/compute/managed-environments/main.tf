@@ -635,12 +635,13 @@ module "status_lambda" {
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
 
     # Instances compute type (empty/no-op when disabled)
-    MANAGED_INSTANCES_OPERATOR_ROLE_ARN = var.instances_compute_enabled ? aws_iam_role.instances_operator.arn : ""
-    MANAGED_INSTANCES_SUBNETS           = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
-    MANAGED_INSTANCES_SECURITY_GROUPS   = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
-    MANAGED_INSTANCES_ALLOWED_TYPES     = jsonencode(var.instances_allowed_instance_types)
-    MANAGED_INSTANCES_WORKSPACE_GIB     = tostring(var.instances_workspace_gib)
-    MANAGED_INSTANCES_CP_NAME_PREFIX    = replace("${var.project_name}_${var.environment}", "-", "_")
+    MANAGED_INSTANCES_OPERATOR_ROLE_ARN   = var.instances_compute_enabled ? aws_iam_role.instances_operator.arn : ""
+    MANAGED_INSTANCES_SUBNETS             = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
+    MANAGED_INSTANCES_SECURITY_GROUPS     = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
+    MANAGED_INSTANCES_ALLOWED_TYPES       = jsonencode(var.instances_allowed_instance_types)
+    MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = jsonencode(var.instances_allowed_instance_types_arm64)
+    MANAGED_INSTANCES_WORKSPACE_GIB       = tostring(var.instances_workspace_gib)
+    MANAGED_INSTANCES_CP_NAME_PREFIX      = replace("${var.project_name}_${var.environment}", "-", "_")
   }
 
   depends_on = [aws_iam_role_policy_attachment.status_vpc]

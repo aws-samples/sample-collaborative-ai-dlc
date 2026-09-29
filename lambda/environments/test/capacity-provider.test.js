@@ -146,3 +146,32 @@ describe('ensureCapacityProvider', () => {
     ]);
   });
 });
+
+describe('capacity provider instance types per architecture', () => {
+  it('launches the architecture-specific allowlist', async () => {
+    process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = '["m7g.large"]';
+    const sends = [];
+    const controlClient = {
+      send: vi.fn().mockImplementation(async (command) => {
+        sends.push(command);
+        return command.constructor.name === 'ListCapacityProvidersCommand'
+          ? { capacityProviders: [] }
+          : {};
+      }),
+    };
+    await ensureCapacityProvider({ controlClient, architecture: 'arm64' });
+    await ensureCapacityProvider({ controlClient, architecture: 'x86_64' });
+    const creates = sends.filter((c) => c.constructor.name === 'CreateCapacityProviderCommand');
+    const launch = (c) =>
+      c.input.computeConfiguration.ec2Configuration.launchTemplateSource.launchParameters;
+    expect(launch(creates[0])).toMatchObject({
+      operatingSystem: 'LINUX_ARM64',
+      instanceRequirements: { allowedInstanceTypes: ['m7g.large'] },
+    });
+    expect(launch(creates[1])).toMatchObject({
+      operatingSystem: 'LINUX_X86_64',
+      instanceRequirements: { allowedInstanceTypes: ['t3.large'] },
+    });
+    delete process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64;
+  });
+});

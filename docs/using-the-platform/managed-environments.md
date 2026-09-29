@@ -532,7 +532,8 @@ The compute type is opt-in per deployment:
 enable_instances_compute = true
 
 # Optional overrides
-instances_allowed_instance_types = ["m6i.large"] # burstable (t-family) is not supported
+instances_allowed_instance_types       = ["m6i.large"] # x86_64; burstable (t-family) is not supported
+instances_allowed_instance_types_arm64 = ["m7g.large"] # arm64 (Graviton)
 instances_workspace_gib          = 50
 ```
 
@@ -549,7 +550,9 @@ operator role is created unconditionally (capacity providers are retained and
 keep referencing it), and existing capacity providers, runtimes, and published
 revisions are left in place. New Instances drafts are refused and existing
 Instances revisions stop being rebuilt/validated until the flag is re-enabled.
-Changing `instances_allowed_instance_types` or `instances_workspace_gib`
+An instance family is built for one architecture only, so each architecture
+has its own allowlist; the capability matrix reports the list per cell.
+Changing an allowlist or `instances_workspace_gib`
 produces a new capacity provider on the next runtime creation; runtimes
 created earlier keep the provider they were built with.
 
