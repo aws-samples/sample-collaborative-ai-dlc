@@ -17,6 +17,7 @@
 // tokens from the stream-json result event; kiro: the stderr credit footer)
 // or null when the CLI reports nothing usable.
 
+import { mkdir } from 'node:fs/promises';
 import { getDriver, selectCli, parseKiroCredits } from './drivers.js';
 import { captureChild } from './spawn.js';
 import { resolveStageModel } from '../model-resolver.js';
@@ -117,6 +118,7 @@ export const runOneShotPrompt = async ({
   persistKiroStore = defaultPersistKiroStore,
   withOpenCodeStore = defaultWithOpenCodeStore,
   cleanupCodexHome = defaultCleanupCodexHome,
+  makeDirectory = mkdir,
 } = {}) => {
   const cli = selectCli({ requested: requestedCli, availableClis });
   if (!cli) return { ok: false, reason: 'no_cli', text: '', cli: null, model: null, metrics: null };
@@ -131,6 +133,22 @@ export const runOneShotPrompt = async ({
     opencodeConfigContent,
     codexHome,
   });
+  // Callers pass fresh per-invocation directories. Node reports a missing cwd
+  // only as a child 'error' with no output, so create it before anything runs.
+  try {
+    await makeDirectory(cwd, { recursive: true });
+  } catch {
+    if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
+    return {
+      ok: false,
+      reason: 'cli_failed',
+      text: '',
+      cli,
+      model: model ?? null,
+      exitCode: null,
+      metrics: null,
+    };
+  }
   // Kiro's SQLite conversation store: bracket exactly like resolve-conflict —
   // restore (mount → local) before the spawn so we never run against a stale
   // local store after a microVM reap, persist after so lane conversations the

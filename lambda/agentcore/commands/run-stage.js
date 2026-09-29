@@ -509,17 +509,22 @@ const runReviewer = async ({
       promptViaStdin: invocation.promptViaStdin,
       spawnFn,
     });
+  let result;
   try {
-    if (cli === 'opencode') {
-      await defaultWithOpenCodeStore({ env, operation: execute });
-    } else {
-      await execute();
-    }
+    result =
+      cli === 'opencode'
+        ? await defaultWithOpenCodeStore({ env, operation: execute })
+        : await execute();
   } finally {
     if (cli === 'codex') {
       await cleanupCodexHome({ codexHome: mcpKwargs.codexHome, env }).catch(() => false);
     }
   }
+  // A lost credential fails the review (v2.review.failed); it is not a missing verdict.
+  if (result?.credentialError)
+    throw Object.assign(new Error('Invocation credential is no longer available'), {
+      code: result.credentialError,
+    });
   const verdict = await latestReviewerVerdict({
     store,
     executionId,
@@ -862,7 +867,8 @@ const captureKiroSession = async ({ env, driver, workspaceDir, spawnFn }) => {
 // one extra kiro-cli spawn per container, not per stage. `/usage` only calls
 // Kiro's usage API; it does not itself spend credits. Null (and cached null on
 // hard failure only) when the rate can't be read — the credits metric is then
-// recorded unpriced rather than priced at a guess.
+// recorded unpriced rather than priced at a guess. A lost credential leaves the
+// cache empty so the next stage retries.
 let cachedKiroCreditRate; // undefined = not fetched; null/number = fetched
 export const resetKiroCreditRateCache = () => {
   cachedKiroCreditRate = undefined;
@@ -870,7 +876,7 @@ export const resetKiroCreditRateCache = () => {
 const captureKiroCreditRate = async ({ env, driver, workspaceDir, spawnFn }) => {
   if (cachedKiroCreditRate !== undefined) return cachedKiroCreditRate;
   const usage = buildKiroUsage();
-  const { stdout, stderr } = await captureChild({
+  const { stdout, stderr, credentialError } = await captureChild({
     command: usage.command,
     args: usage.args,
     env: driver.envForAuth(env),
@@ -878,8 +884,10 @@ const captureKiroCreditRate = async ({ env, driver, workspaceDir, spawnFn }) => 
     captureStderr: true,
     spawnFn,
   });
-  cachedKiroCreditRate = parseKiroCreditRate(`${stderr ?? ''}\n${stdout ?? ''}`);
-  return cachedKiroCreditRate;
+  const rate = parseKiroCreditRate(`${stderr ?? ''}\n${stdout ?? ''}`);
+  if (rate == null && credentialError) return null;
+  cachedKiroCreditRate = rate;
+  return rate;
 };
 
 // Recognise Kiro's BENIGN empty-final-completion crash. kiro-cli's ACP layer

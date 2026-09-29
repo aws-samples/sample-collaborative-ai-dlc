@@ -5,6 +5,7 @@ import {
   quorumCliModels,
   machineCliModels,
 } from '../model-resolver.js';
+import { getDriver } from '../cli/drivers.js';
 
 describe('resolveModelId', () => {
   it('passes a full id through untouched', () => {
@@ -28,6 +29,15 @@ describe('resolveModelId', () => {
 
   it('defaults to the us geo when region is unknown/absent', () => {
     expect(resolveModelId('opus', { env: {} })).toBe('us.anthropic.claude-opus-4-6-v1');
+  });
+
+  it('takes the geo from the inference region the Bedrock CLIs are pointed at', () => {
+    const env = { AWS_REGION: 'us-east-1', BEDROCK_REGION: 'eu-west-1' };
+    expect(getDriver('claude').envForAuth(env).AWS_REGION).toBe('eu-west-1');
+    expect(resolveModelId('sonnet', { env })).toBe('eu.anthropic.claude-sonnet-4-6');
+    expect(resolveModelId('sonnet', { env: { ...env, BEDROCK_REGION: '' } })).toBe(
+      'us.anthropic.claude-sonnet-4-6',
+    );
   });
 
   it('passes an unknown bare token through (CLI decides)', () => {
