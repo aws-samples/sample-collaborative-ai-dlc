@@ -253,8 +253,7 @@ const main = async () => {
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
-  const { authenticatedClisForEnv, resolveInvocationAgentAuth } =
-    await import('./auth-resolver.js');
+  const { authenticatedClis, resolveInvocationAgentAuth } = await import('./auth-resolver.js');
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
@@ -291,7 +290,10 @@ const main = async () => {
     return {
       ...auth,
       credentialSession,
-      availableClis: authenticatedClisForEnv({ installed: installedClis, env: auth.env }),
+      availableClis: authenticatedClis({
+        installed: installedClis,
+        providers: auth.resolvedProviders,
+      }),
     };
   };
 
@@ -327,6 +329,8 @@ const main = async () => {
       capabilities(p, {
         env: context.env,
         discoverInstalledClis: async () => installedClis,
+        authenticatedProviders: context.resolvedProviders,
+        materialTypes: context.materialTypes ?? [],
       }),
     managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),
     verifyMcp: (p) => verifyMcp(p),

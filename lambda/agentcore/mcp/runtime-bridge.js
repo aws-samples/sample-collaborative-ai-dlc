@@ -4,6 +4,7 @@ import { mkdtemp, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { INFERENCE_CREDENTIAL_ENV } from '../cli/environment.js';
+import { CREDENTIAL_ADAPTER_ENV_NAMES } from '../credential-material-registry.js';
 
 // The CLI only speaks MCP over an invocation-scoped socket. The runtime starts
 // the actual server with its application identity and immutable trusted scope.
@@ -20,7 +21,11 @@ export const createRuntimeMcpBridge = async ({
   const socketPath = path.join(directory, 'bridge.sock');
   const children = new Set();
   const sockets = new Set();
-  const serverEnv = { ...runtimeEnv, ...trustedEnv };
+  // Provider-controlled names are dropped from ambient env only: the trusted scope (its
+  // AWS_REGION included) is runtime-owned and must reach the server as built.
+  const ambient = { ...runtimeEnv };
+  for (const key of CREDENTIAL_ADAPTER_ENV_NAMES) delete ambient[key];
+  const serverEnv = { ...ambient, ...trustedEnv };
   for (const key of INFERENCE_CREDENTIAL_ENV) delete serverEnv[key];
   const server = createServer((socket) => {
     sockets.add(socket);

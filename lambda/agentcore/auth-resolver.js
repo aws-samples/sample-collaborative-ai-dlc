@@ -1,8 +1,5 @@
 import { AUTHENTICATION_BINDING_RESOLVERS } from './authentication-command-registry.js';
-import {
-  isAuthenticatedEnvironment,
-  CREDENTIAL_ADAPTER_ENV_NAMES,
-} from './credential-material-registry.js';
+import { CREDENTIAL_ADAPTER_ENV_NAMES } from './credential-material-registry.js';
 import {
   credentialLeaseFromResponse,
   prepareCredentialLeases,
@@ -109,11 +106,10 @@ const bindingResolvers = Object.freeze({
   },
 });
 
-export const authenticatedClisForEnv = ({ installed = [], env = {} } = {}) =>
-  installed.filter((cli) => {
-    const provider = credentialProviderForCli(cli);
-    return provider && isAuthenticatedEnvironment(provider, env);
-  });
+// A CLI is authenticated only by a lease prepared for this invocation, never by env,
+// so ambient values cannot fake it. `providers` is the resolver's resolvedProviders.
+export const authenticatedClis = ({ installed = [], providers = [] } = {}) =>
+  installed.filter((cli) => providers.includes(credentialProviderForCli(cli)));
 
 export const resolveInvocationAgentAuth = async ({
   payload = {},
@@ -145,6 +141,7 @@ export const resolveInvocationAgentAuth = async ({
   if (bindings.length === 0) {
     return {
       env: invocationEnv,
+      materialTypes: [],
       projectId,
       bindings,
       credentialBindings,

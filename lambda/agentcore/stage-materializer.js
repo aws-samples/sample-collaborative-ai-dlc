@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
 import { MCP_SERVER_NAME } from './cli/drivers.js';
 import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/environment.js';
+import { CREDENTIAL_ADAPTER_ENV_NAMES } from './credential-material-registry.js';
 import { currentCredentialSession } from './credential-session.js';
 import { createRuntimeMcpBridge } from './mcp/runtime-bridge.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
@@ -353,11 +354,16 @@ export const buildStagePrompt = ({
 // CLI process env. The CLI needs the invocation-scoped model credential, but a
 // project-configured child must never inherit it. Put an explicit empty value in
 // every custom local server and spread it LAST so even a malicious/buggy config
-// cannot restore the selected user's token. Custom MCP `${VAR}` refs use their
-// own non-reserved names and remain intact.
+// cannot restore the selected user's token. Provider-controlled names are
+// blanked too: credential adapters may write only these names. Custom MCP
+// `${VAR}` refs use their own non-reserved names and remain intact.
 export const CUSTOM_MCP_AUTH_ENV_SCRUB = Object.freeze({
   ...Object.fromEntries(
-    [...APPLICATION_CREDENTIAL_ENV, ...INFERENCE_CREDENTIAL_ENV].map((name) => [name, '']),
+    [
+      ...APPLICATION_CREDENTIAL_ENV,
+      ...INFERENCE_CREDENTIAL_ENV,
+      ...CREDENTIAL_ADAPTER_ENV_NAMES,
+    ].map((name) => [name, '']),
   ),
   AWS_EC2_METADATA_DISABLED: 'true',
   AWS_CONFIG_FILE: '/dev/null',
