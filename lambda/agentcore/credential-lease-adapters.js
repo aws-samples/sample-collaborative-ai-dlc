@@ -1,16 +1,32 @@
 import {
   CREDENTIAL_MATERIAL_ADAPTERS,
-  CREDENTIAL_RESPONSE_READERS,
+  CREDENTIAL_MATERIAL_ENV_NAMES,
 } from './credential-material-registry.js';
 export { CREDENTIAL_MATERIAL_ADAPTERS } from './credential-material-registry.js';
 import { authError, bindingIdentity } from '../shared/agent-auth-contracts.js';
 import { apiKeyLease, normalizeCredentialLease } from '../shared/agent-credential-lease.js';
+import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/environment.js';
 
+// Custom MCP children are scrubbed of exactly these names plus every controlled env name, so
+// an adapter that wrote any other name would hand its credential to project MCP servers.
+const assertProviderEnv = (type, controlledEnv, ...environments) => {
+  const permitted = [
+    ...APPLICATION_CREDENTIAL_ENV,
+    ...INFERENCE_CREDENTIAL_ENV,
+    ...(controlledEnv[type] ?? []),
+  ];
+  if (environments.some((names) => names.some((name) => !permitted.includes(name))))
+    throw authError(
+      'AGENT_AUTH_LEASE_INVALID',
+      'Credential adapter wrote an environment variable its provider does not control',
+    );
+};
+
+// Brokers that predate leases send only a key `value`; it stays the last reader.
 export const credentialLeaseFromResponse = (credential) =>
   credential.lease
     ? normalizeCredentialLease(credential.lease)
-    : (CREDENTIAL_RESPONSE_READERS.map((read) => read(credential)).find(Boolean) ??
-      apiKeyLease(typeof credential.value === 'string' ? credential.value : null));
+    : apiKeyLease(typeof credential.value === 'string' ? credential.value : null);
 
 export const prepareCredentialLeases = async ({
   credentials,
@@ -18,12 +34,14 @@ export const prepareCredentialLeases = async ({
   broker,
   context,
   adapters = CREDENTIAL_MATERIAL_ADAPTERS,
+  controlledEnv = CREDENTIAL_MATERIAL_ENV_NAMES,
   now = Date.now,
 }) => {
   let current = credentials.map(({ binding, lease }) => ({ binding, lease }));
   const prepare = () => {
     const env = { ...baseEnv };
     const credentialEnvironment = {};
+    const materialTypes = new Set();
     for (const { binding, lease } of current) {
       if (!lease.material) continue;
       if (
@@ -39,8 +57,15 @@ export const prepareCredentialLeases = async ({
           'Credential material is unsupported by this runtime',
         );
       const prepared = adapter({ binding, material: lease.material });
+      assertProviderEnv(
+        lease.material.type,
+        controlledEnv,
+        Object.keys(prepared.env ?? {}),
+        Object.keys(prepared.credentialEnvironment ?? {}),
+      );
       Object.assign(env, prepared.env);
       Object.assign(credentialEnvironment, prepared.credentialEnvironment);
+      materialTypes.add(lease.material.type);
     }
     const minimum = (field) => {
       const values = current.map(({ lease }) => lease[field]).filter((value) => value !== null);
@@ -49,6 +74,8 @@ export const prepareCredentialLeases = async ({
     return {
       env,
       credentialEnvironment,
+      // Capability hooks run only for the materials this invocation adapted.
+      materialTypes: [...materialTypes],
       expiresAt: minimum('expiresAt'),
       authorizationExpiresAt: minimum('authorizationExpiresAt'),
     };
@@ -97,7 +124,8 @@ export const prepareCredentialLeases = async ({
     );
   if (owned.length) {
     const credential = owned[0];
-    state.credentialSession = await adapters[credential.lease.material.type].createSession({
+    const { type } = credential.lease.material;
+    const session = await adapters[type].createSession({
       credential,
       env: initial.env,
       renew: async () => {
@@ -107,7 +135,19 @@ export const prepareCredentialLeases = async ({
         ).lease;
       },
     });
-    state.env = state.credentialSession.env;
+    try {
+      assertProviderEnv(
+        type,
+        controlledEnv,
+        Object.keys(session.env ?? {}).filter((name) => session.env[name] !== initial.env[name]),
+        Object.keys(session.credentialEnvironment ?? {}),
+      );
+    } catch (error) {
+      await session.release?.();
+      throw error;
+    }
+    state.credentialSession = session;
+    state.env = session.env;
   }
   return state;
 };
