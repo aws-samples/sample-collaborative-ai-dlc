@@ -668,9 +668,9 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
         },
       ],
       [
-        '/commits/head-7/refs',
+        '/repository/merge_base?',
         {
-          json: [{ type: 'branch', name: 'intent' }],
+          json: { id: 'head-7' },
         },
       ],
     ]);
@@ -698,6 +698,48 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
     expect(await gl.isCommitAncestor({ token: 't', fetchImpl }, 'g/p', 'head-7', 'intent')).toBe(
       true,
     );
+  });
+
+  it('checks exact submitted SHA ancestry through the repository merge base', async () => {
+    const baseSha = '6b13c79d7d5d828fb0e90fd7b631016d1fd6e318';
+    const headSha = '9792b59590a1a06e4cb203e2f1ff2e94f3f85f1f';
+    const fetchImpl = makeFetch([
+      [
+        '/repository/merge_base?',
+        (url) => {
+          expect(url).toContain(`refs%5B%5D=${baseSha}`);
+          expect(url).toContain(`refs%5B%5D=${headSha}`);
+          return { json: { id: baseSha } };
+        },
+      ],
+    ]);
+
+    await expect(
+      gl.isCommitAncestor({ token: 't', fetchImpl }, 'jeromevdl/test-pyramid', baseSha, headSha),
+    ).resolves.toBe(true);
+  });
+
+  it('rejects an exact submitted SHA whose merge base differs', async () => {
+    const fetchImpl = makeFetch([['/repository/merge_base?', { json: { id: '0'.repeat(40) } }]]);
+
+    await expect(
+      gl.isCommitAncestor(
+        { token: 't', fetchImpl },
+        'jeromevdl/test-pyramid',
+        '1'.repeat(40),
+        '2'.repeat(40),
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it('does not accept an abbreviated GitLab ancestor hash', async () => {
+    const fetchImpl = makeFetch([
+      ['/repository/merge_base?', { json: { id: 'abcdef1234567890abcdef1234567890abcdef12' } }],
+    ]);
+
+    await expect(
+      gl.isCommitAncestor({ token: 't', fetchImpl }, 'g/p', 'abcdef1', 'intent'),
+    ).resolves.toBe(false);
   });
 
   it('createPullRequest resolves the project default branch when baseBranch is omitted', async () => {
@@ -951,11 +993,11 @@ describe('bitbucket provider — workspace listing + tree + ancestor + validatio
     expect(fetchImpl.calls[0].url).toContain('/merge-base/target-sha..intent');
   });
 
-  it('isCommitAncestor matches when merge-base returns the full hash for a short ancestor', async () => {
+  it('isCommitAncestor rejects an abbreviated ancestor hash', async () => {
     const fetchImpl = makeFetch([['/merge-base/', { json: { hash: 'abcdef1234567890' } }]]);
     expect(
       await bb.isCommitAncestor({ token: 't', fetchImpl }, 'ws/repo', 'abcdef1', 'intent'),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('isCommitAncestor returns false when the merge-base is a different commit', async () => {
@@ -1289,5 +1331,32 @@ describe('OAuth metadata', () => {
       fetchImpl,
     });
     expect(refreshed.scope).toBe('account email repository pullrequest');
+  });
+});
+
+describe('provider branch heads', () => {
+  it.each([
+    ['github', '/git/ref/heads/unit/auth', { object: { sha: 'a'.repeat(40) } }],
+    ['gitlab', '/repository/branches/unit%2Fauth', { commit: { id: 'b'.repeat(40) } }],
+    ['bitbucket', '/refs/branches/unit%2Fauth', { target: { hash: 'c'.repeat(40) } }],
+  ])('reads the exact %s branch head', async (providerId, urlFragment, json) => {
+    const provider = getProvider(providerId);
+    const fetchImpl = makeFetch([[urlFragment, { json }]]);
+
+    const result = await provider.getBranchHead(
+      { token: 't', fetchImpl },
+      'owner/repo',
+      'unit/auth',
+    );
+
+    expect(result).toEqual({
+      branch: 'unit/auth',
+      sha:
+        providerId === 'github'
+          ? 'a'.repeat(40)
+          : providerId === 'gitlab'
+            ? 'b'.repeat(40)
+            : 'c'.repeat(40),
+    });
   });
 });
