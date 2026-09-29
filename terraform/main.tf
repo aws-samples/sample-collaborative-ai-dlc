@@ -720,6 +720,7 @@ module "managed_environments" {
   core_image_uri_amd64             = var.enable_instances_compute ? module.agentcore.ecr_repository_url : ""
   core_image_digest_amd64          = module.agentcore.image_digest_amd64
   instances_allowed_instance_types = var.instances_allowed_instance_types
+  instances_workspace_gib          = var.instances_workspace_gib
 
   tags = {
     Environment = var.environment

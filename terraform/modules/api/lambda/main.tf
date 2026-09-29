@@ -752,8 +752,12 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
         ]
       },
       {
+        # GetItem: resolve the assigned environment snapshot. PutItem: an
+        # Instances workspace release that fails during the intent-deletion
+        # cascade is queued as a SESSION_CLEANUP# record for the environments
+        # status poller to retry (shared/session-cleanup-store.js).
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
         Resource = var.environment_registry_table_arn
       },
     ]
@@ -2578,8 +2582,12 @@ resource "aws_iam_role_policy" "intents" {
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
+        # GetItem: resolve the assigned environment snapshot. PutItem: an
+        # Instances workspace release that fails during the intent-deletion
+        # cascade is queued as a SESSION_CLEANUP# record for the environments
+        # status poller to retry (shared/session-cleanup-store.js).
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
         Resource = var.environment_registry_table_arn
       },
       {

@@ -391,7 +391,7 @@ module "control_lambda" {
     # Instances compute type (empty/no-op when disabled)
     CORE_IMAGE_URI_AMD64                = var.core_image_uri_amd64
     CORE_IMAGE_DIGEST_AMD64             = var.core_image_digest_amd64
-    MANAGED_INSTANCES_OPERATOR_ROLE_ARN = var.instances_compute_enabled ? aws_iam_role.instances_operator[0].arn : ""
+    MANAGED_INSTANCES_OPERATOR_ROLE_ARN = var.instances_compute_enabled ? aws_iam_role.instances_operator.arn : ""
     MANAGED_INSTANCES_SUBNETS           = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
     MANAGED_INSTANCES_SECURITY_GROUPS   = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
   }
@@ -413,11 +413,18 @@ resource "aws_iam_role" "status" {
 # assumes the operator role to provision and manage the EC2 managed instances
 # in this account; the AWS managed policy scopes what it may touch (resources
 # tagged with the capacity provider id).
+#
+# The role is created UNCONDITIONALLY. Capacity providers are retained after
+# creation (see runtime-backends/capacity-provider.js) and keep referencing
+# this role for the lifetime of every runtime built on them — if the role
+# followed instances_compute_enabled, flipping the flag off after Instances
+# environments have been used would destroy the role under live capacity
+# providers and leave their published revisions unusable. Only the status
+# lambda's grants and the environment variables that expose the feature to
+# the API are gated; an idle role costs nothing.
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "instances_operator" {
-  count = var.instances_compute_enabled ? 1 : 0
-
   name = "${var.project_name}-instances-operator-${var.environment}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -431,9 +438,7 @@ resource "aws_iam_role" "instances_operator" {
 }
 
 resource "aws_iam_role_policy_attachment" "instances_operator" {
-  count = var.instances_compute_enabled ? 1 : 0
-
-  role       = aws_iam_role.instances_operator[0].name
+  role       = aws_iam_role.instances_operator.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/BedrockAgentCoreRuntimeInstancesOperatorRolePolicy"
 }
 
@@ -482,7 +487,7 @@ resource "aws_iam_role_policy" "status_instances" {
       {
         Effect   = "Allow"
         Action   = ["iam:PassRole"]
-        Resource = aws_iam_role.instances_operator[0].arn
+        Resource = aws_iam_role.instances_operator.arn
         Condition = {
           StringEquals = {
             "iam:PassedToService" = "bedrock-agentcore.${local.dns_suffix}"
@@ -630,7 +635,7 @@ module "status_lambda" {
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
 
     # Instances compute type (empty/no-op when disabled)
-    MANAGED_INSTANCES_OPERATOR_ROLE_ARN = var.instances_compute_enabled ? aws_iam_role.instances_operator[0].arn : ""
+    MANAGED_INSTANCES_OPERATOR_ROLE_ARN = var.instances_compute_enabled ? aws_iam_role.instances_operator.arn : ""
     MANAGED_INSTANCES_SUBNETS           = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
     MANAGED_INSTANCES_SECURITY_GROUPS   = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
     MANAGED_INSTANCES_ALLOWED_TYPES     = jsonencode(var.instances_allowed_instance_types)

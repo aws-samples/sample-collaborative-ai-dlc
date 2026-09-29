@@ -264,3 +264,14 @@ variable "instances_allowed_instance_types" {
   type        = list(string)
   default     = ["m6i.large"] # burstable (t-family) is not supported by AgentCore Instances
 }
+
+variable "instances_workspace_gib" {
+  description = "Size in GiB of the persistent EBS workspace volume attached to every AgentCore Instances session (replaces the fixed 1 GiB session storage of microVMs). Changing it produces a new capacity provider; existing runtimes keep theirs."
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.instances_workspace_gib > 0 && floor(var.instances_workspace_gib) == var.instances_workspace_gib
+    error_message = "instances_workspace_gib must be a positive whole number of GiB."
+  }
+}
