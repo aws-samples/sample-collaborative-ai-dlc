@@ -34,6 +34,7 @@ import {
 } from '@/services/environments';
 import { cn } from '@/lib/utils';
 import { EnvironmentBuilder } from './environment-builder/EnvironmentBuilder';
+import { ComputeBadge } from './environment-builder/ComputeSelector';
 import {
   EnvironmentRevisionWorkspace,
   isActiveRevision,
@@ -522,6 +523,7 @@ export function EnvironmentRegistry() {
                         <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
                           {item.environmentId}
                         </span>
+                        <ComputeBadge compute={item.compute} className="mt-1" />
                       </span>
                       <StatusBadge
                         status={item.updateAvailable ? 'UPDATE_AVAILABLE' : item.status}
@@ -604,6 +606,7 @@ export function EnvironmentRegistry() {
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="text-base font-semibold">{environment.name}</h3>
                           <StatusBadge status={environment.status} />
+                          <ComputeBadge compute={environment.compute} />
                         </div>
                         <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                           <span className="font-mono text-[10px]">{environment.environmentId}</span>
