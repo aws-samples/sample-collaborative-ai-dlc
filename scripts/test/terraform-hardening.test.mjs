@@ -38,6 +38,10 @@ const moduleBlock = (text, moduleName) => {
   assert.ok(block, `missing module "${moduleName}"`);
   return block;
 };
+const lambdaModuleBlocks = (text) =>
+  [...text.matchAll(/^module "([^"]+)" \{/gm)]
+    .map((match) => moduleBlock(text, match[1]))
+    .filter((block) => /source\s+= "terraform-aws-modules\/lambda\/aws"/.test(block));
 const dynamodbCallerRoles = (text) =>
   [
     ...new Set(
@@ -114,6 +118,78 @@ test('root KMS configuration accepts existing keys without owning their lifecycl
   assert.match(example, /^deletion_protection\s+= true$/m);
   assert.match(example, /^backup_retention_period\s+= 7$/m);
   assert.match(example, /^skip_final_snapshot\s+= false$/m);
+});
+
+test('lambda_vpc_scope all places every Lambda in private subnets', () => {
+  const variables = read('terraform/variables.tf');
+  assert.match(
+    variables,
+    /variable "lambda_vpc_scope"[\s\S]*?contains\(\["required", "public-egress", "all"\]/,
+  );
+
+  const rootMain = read('terraform/main.tf');
+  for (const moduleName of ['auth', 'realtime', 'managed_environments']) {
+    const block = moduleBlock(rootMain, moduleName);
+    assert.match(block, /lambda_vpc_scope\s+= var\.lambda_vpc_scope/);
+    assert.match(block, /module\.networking\.private_subnet_ids/);
+    assert.match(block, /module\.networking\.default_security_group_id/);
+  }
+
+  for (const path of [
+    'terraform/modules/api/lambda/main.tf',
+    'terraform/modules/api/agents.tf',
+    'terraform/modules/auth/main.tf',
+    'terraform/modules/realtime/lambda.tf',
+    'terraform/modules/compute/managed-environments/main.tf',
+  ]) {
+    const source = read(path);
+    const modules = lambdaModuleBlocks(source);
+    assert.ok(modules.length > 0, `${path} must contain Lambda modules`);
+    for (const block of modules) {
+      assert.match(block, /vpc_subnet_ids\s+=/, `${path} has a Lambda without VPC placement`);
+      assert.match(
+        block,
+        /vpc_security_group_ids\s+=/,
+        `${path} has a Lambda without VPC security groups`,
+      );
+    }
+
+    const lambdaRoles = [
+      ...new Set(
+        modules.flatMap((block) =>
+          [...block.matchAll(/lambda_role\s+= aws_iam_role\.([^.]+)\.arn/g)].map(
+            (match) => match[1],
+          ),
+        ),
+      ),
+    ].toSorted();
+    const vpcRoles = [
+      ...new Set(
+        resourceBlocks(source, 'aws_iam_role_policy_attachment')
+          .filter(({ body }) => body.includes('AWSLambdaVPCAccessExecutionRole'))
+          .flatMap(({ body }) =>
+            [...body.matchAll(/role\s+= aws_iam_role\.([^.]+)\.name/g)].map((match) => match[1]),
+          ),
+      ),
+    ].toSorted();
+    assert.deepEqual(
+      lambdaRoles.filter((role) => !vpcRoles.includes(role)),
+      [],
+      `${path} must grant VPC permissions to every custom Lambda role`,
+    );
+  }
+
+  const lambdaMain = read('terraform/modules/api/lambda/main.tf');
+  assert.match(
+    lambdaMain,
+    /enable_public_egress\s+= contains\(\["public-egress", "all"\], var\.lambda_vpc_scope\)/,
+  );
+
+  const deploy = read('scripts/deploy-terraform.sh');
+  assert.match(
+    deploy,
+    /"\$lambda_vpc_scope" == "public-egress" \|\| "\$lambda_vpc_scope" == "all"/,
+  );
 });
 
 test('DynamoDB CMK access covers deployment and every runtime caller', () => {

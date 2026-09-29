@@ -289,6 +289,7 @@ Bootstrap creates `terraform/environments/dev.s3.tfbackend`. The environment arg
 cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 # Set aws_region = "<aws-region>" in dev.tfvars.
 # For static provider egress IPs, set lambda_vpc_scope = "public-egress".
+# To place every Lambda in the VPC, set lambda_vpc_scope = "all".
 # For a custom domain, also set app_domain plus either acm_certificate_arn or
 # route53_zone_id — see "Custom domain → Without the installer" above.
 ./scripts/deploy-terraform.sh dev
@@ -326,7 +327,7 @@ These environment variables are useful when iterating:
 | `AIDLC_BACKEND_FILE`  | Path to an alternative `.s3.tfbackend`.                                                                    |
 | `AIDLC_CONFIG_DIR`    | Directory holding `environments/`, if you keep Terraform configuration outside the checkout.               |
 
-With `lambda_vpc_scope = "public-egress"`, the deployment summary prints the NAT addresses to add to provider allow-lists. Development environments expose one address and production environments expose two; allow-list every address printed. See [Git and Tracker Integration → Static egress IPs](../using-the-platform/git-integration.md#static-egress-ips) for the affected services.
+With `lambda_vpc_scope = "public-egress"` or `"all"`, the deployment summary prints the NAT addresses to add to provider allow-lists. Development environments expose one address and production environments expose two; allow-list every address printed. See [Git and Tracker Integration → Static egress IPs](../using-the-platform/git-integration.md#static-egress-ips) for details.
 
 For infrastructure-only changes that do not modify the upstream AI-DLC pin,
 baseline blocks, or default workflow, skip the post-apply reseed:

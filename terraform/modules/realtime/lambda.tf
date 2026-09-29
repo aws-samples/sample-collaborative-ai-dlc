@@ -8,6 +8,7 @@ data "aws_caller_identity" "current" {}
 locals {
   realtime_partition  = data.aws_partition.realtime.partition
   realtime_dns_suffix = data.aws_partition.realtime.dns_suffix
+  all_lambdas_in_vpc  = var.lambda_vpc_scope == "all"
 }
 
 # IAM Role for Lambda functions
@@ -60,6 +61,13 @@ resource "aws_iam_role_policy" "lambda" {
   })
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:${local.realtime_partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 module "dynamodb_kms_runtime_access" {
   source = "../security/dynamodb-kms-runtime-access"
 
@@ -92,6 +100,9 @@ module "connection_lambda" {
   create_role = false
   lambda_role = aws_iam_role.lambda.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
+
   environment_variables = {
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
@@ -100,6 +111,8 @@ module "connection_lambda" {
     REALTIME_SECRET_PARAM   = aws_ssm_parameter.realtime_doc_secret.name
     DOC_TOKEN_ENFORCE       = var.doc_token_enforce ? "true" : "false"
   }
+
+  depends_on = [aws_iam_role_policy_attachment.lambda_vpc]
 }
 
 # Message Lambda (handles $default)
@@ -124,12 +137,17 @@ module "message_lambda" {
   create_role = false
   lambda_role = aws_iam_role.lambda.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
+
   environment_variables = {
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     CONNECTIONS_TABLE       = var.connections_table_name
     WEBSOCKET_ENDPOINT      = "https://${aws_apigatewayv2_api.websocket.id}.execute-api.${data.aws_region.current.region}.${local.realtime_dns_suffix}/${var.websocket_stage_name}"
   }
+
+  depends_on = [aws_iam_role_policy_attachment.lambda_vpc]
 }
 
 # Authorizer Lambda (validates Cognito token)
@@ -154,10 +172,15 @@ module "authorizer_lambda" {
   create_role = false
   lambda_role = aws_iam_role.lambda.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
+
   environment_variables = {
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     COGNITO_USER_POOL_ID    = var.cognito_user_pool_id
     COGNITO_CLIENT_ID       = var.cognito_client_id
   }
+
+  depends_on = [aws_iam_role_policy_attachment.lambda_vpc]
 }

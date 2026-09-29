@@ -11,6 +11,7 @@ locals {
 
   sso_enabled        = var.auth_mode != "local"
   local_enabled      = var.auth_mode != "sso-only"
+  all_lambdas_in_vpc = var.lambda_vpc_scope == "all"
   sso_provider_names = nonsensitive(toset(keys(var.sso_providers)))
   oidc_provider_names = nonsensitive(toset([
     for name, provider in var.sso_providers : name
@@ -67,6 +68,10 @@ module "sso_token_lambda" {
   ]
 
   hash_extra = local.sso_sources_hash
+
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
+  attach_network_policy  = local.all_lambdas_in_vpc
 
   environment_variables = {
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name

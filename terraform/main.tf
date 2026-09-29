@@ -289,6 +289,9 @@ module "auth" {
   app_url                 = local.app_url
   auth_mode               = var.auth_mode
   sso_providers           = var.sso_providers
+  lambda_vpc_scope        = var.lambda_vpc_scope
+  vpc_subnet_ids          = module.networking.private_subnet_ids
+  vpc_security_group_ids  = [module.networking.default_security_group_id]
 
   custom_domain                 = var.auth_domain
   custom_domain_active          = var.auth_domain_active
@@ -605,6 +608,9 @@ module "realtime" {
   connections_table_name  = module.dynamodb.connections_table_name
   connections_table_arn   = module.dynamodb.connections_table_arn
   kms_key_arn             = var.kms_key_arn
+  lambda_vpc_scope        = var.lambda_vpc_scope
+  vpc_subnet_ids          = module.networking.private_subnet_ids
+  vpc_security_group_ids  = [module.networking.default_security_group_id]
 
   # The WebSocket stage enables access logging, which requires the account-level
   # CloudWatch role to be configured first.
@@ -705,6 +711,9 @@ module "managed_environments" {
   environment_repository_url    = module.agentcore.managed_environment_repository_url
   environment_repository_arn    = module.agentcore.managed_environment_repository_arn
   cors_allowed_origins          = local.cors_allowed_origins
+  lambda_vpc_scope              = var.lambda_vpc_scope
+  lambda_vpc_subnet_ids         = module.networking.private_subnet_ids
+  lambda_vpc_security_group_ids = [module.networking.default_security_group_id]
 
   tags = {
     Environment = var.environment

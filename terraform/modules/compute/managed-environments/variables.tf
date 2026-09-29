@@ -44,6 +44,24 @@ variable "kms_key_arn" {
   default     = ""
 }
 
+variable "lambda_vpc_scope" {
+  description = "Lambda VPC placement scope"
+  type        = string
+  default     = "required"
+}
+
+variable "lambda_vpc_subnet_ids" {
+  description = "Private subnet IDs used when lambda_vpc_scope is all"
+  type        = list(string)
+  default     = []
+}
+
+variable "lambda_vpc_security_group_ids" {
+  description = "Security group IDs used when lambda_vpc_scope is all"
+  type        = list(string)
+  default     = []
+}
+
 variable "core_image_uri" {
   description = "Protected AgentCore image repository URL"
   type        = string

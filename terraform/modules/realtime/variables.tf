@@ -49,6 +49,24 @@ variable "kms_key_arn" {
   default     = ""
 }
 
+variable "lambda_vpc_scope" {
+  description = "Lambda VPC placement scope"
+  type        = string
+  default     = "required"
+}
+
+variable "vpc_subnet_ids" {
+  description = "Private subnet IDs used when lambda_vpc_scope is all"
+  type        = list(string)
+  default     = []
+}
+
+variable "vpc_security_group_ids" {
+  description = "Security group IDs used when lambda_vpc_scope is all"
+  type        = list(string)
+  default     = []
+}
+
 variable "websocket_stage_name" {
   description = "Stage name for the WebSocket API Gateway (used as the URL path segment)"
   type        = string
