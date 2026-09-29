@@ -168,7 +168,11 @@ function ProviderBindingControl({
           <CodeCommitConnectForm
             // Remount for another bound role so no stale role/test result stays.
             key={codecommitInitial?.roleArn ?? 'none'}
-            initial={codecommitInitial}
+            // Replacing the bound role starts empty: testing that same ARN here
+            // would prove the caller's ID while bind re-verifies the stored one.
+            initial={
+              codecommitInitial?.roleArn ? { region: codecommitInitial.region } : codecommitInitial
+            }
             onVerified={(result) => onCodeCommitVerified?.(result)}
             onInvalidated={() => onCodeCommitVerified?.(null)}
             compact
@@ -316,6 +320,8 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
     setError(null);
     try {
       await sourceControlService.unbind(project.id);
+      setCodecommitReverify(true);
+      setCodecommit(null);
       await load();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Failed to remove bindings');

@@ -160,6 +160,26 @@ describe('source-control bindings', () => {
     expect(sanitizeBinding(binding, { privileged: true }).delegatedBy).toBe('Owner');
   });
 
+  it('never exposes the CodeCommit external ID, even to privileged callers', () => {
+    const binding = {
+      provider: 'codecommit',
+      repo: 'arn:aws:codecommit:eu-west-1:123456789012:demo',
+      authType: 'codecommit-role',
+      credentialRef:
+        'codecommit-role#arn:aws:iam::123456789012:role/r#aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
+      roleArn: 'arn:aws:iam::123456789012:role/r',
+      externalId: 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
+      region: 'eu-west-1',
+      status: 'active',
+    };
+    for (const view of [sanitizeBinding(binding), sanitizeBinding(binding, { privileged: true })]) {
+      expect(view).not.toHaveProperty('externalId');
+      expect(view).not.toHaveProperty('credentialRef');
+      expect(JSON.stringify(view)).not.toContain('0f8fad5b');
+    }
+    expect(sanitizeBinding(binding, { privileged: true }).roleArn).toBe(binding.roleArn);
+  });
+
   describe('error-scoped invalidation', () => {
     const ROLE = 'arn:aws:iam::123456789012:role/aidlc-codecommit-access';
     const EXT_A = 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e';

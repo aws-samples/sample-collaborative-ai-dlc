@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { getStatus, bind, connectInfo, listRepos } = vi.hoisted(() => ({
+const { getStatus, bind, unbind, connectInfo, listRepos } = vi.hoisted(() => ({
   getStatus: vi.fn(),
   bind: vi.fn(),
+  unbind: vi.fn(),
   connectInfo: vi.fn(),
   listRepos: vi.fn(),
 }));
@@ -13,7 +14,7 @@ vi.mock('@/services/sourceControl', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/sourceControl')>();
   return {
     ...actual,
-    sourceControlService: { ...actual.sourceControlService, getStatus, bind },
+    sourceControlService: { ...actual.sourceControlService, getStatus, bind, unbind },
   };
 });
 vi.mock('@/services/codecommit', async (importOriginal) => {
@@ -96,6 +97,41 @@ describe('SourceControlBindingSection, CodeCommit rebind', () => {
     expect(await screen.findByTestId('codecommit-trust-policy')).toHaveTextContent(ADMIN_ID);
 
     await userEvent.click(screen.getByRole('button', { name: 'Rebind and verify' }));
+    expect(await screen.findByText('Test the CodeCommit connection before binding.')).toBeVisible();
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it('starts the replacement form without the bound role ARN', async () => {
+    render(<SourceControlBindingSection project={project} canEdit />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Use a different role' }));
+    await screen.findByTestId('codecommit-trust-policy');
+    expect(screen.getByLabelText('2. Role ARN')).toHaveValue('');
+  });
+
+  it('drops a tested role when the bindings are removed', async () => {
+    const OTHER = 'arn:aws:iam::123456789012:role/other-role';
+    listRepos.mockReset().mockResolvedValue({
+      accountId: '123456789012',
+      region: 'eu-west-1',
+      repositories: [],
+    });
+    unbind.mockReset().mockResolvedValue(undefined);
+    render(<SourceControlBindingSection project={project} canEdit />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Use a different role' }));
+    await screen.findByTestId('codecommit-trust-policy');
+    await userEvent.type(screen.getByLabelText('2. Role ARN'), OTHER);
+    await userEvent.click(screen.getByRole('button', { name: '3. Test connection' }));
+    await waitFor(() => expect(listRepos).toHaveBeenCalledTimes(1));
+
+    getStatus.mockResolvedValue({
+      ready: false,
+      repositories: [
+        { ...boundStatus.repositories[0], authType: null, status: 'unbound', roleArn: null },
+      ],
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Remove bindings' }));
+    await waitFor(() => expect(unbind).toHaveBeenCalledTimes(1));
+    await userEvent.click(await screen.findByRole('button', { name: 'Bind and verify' }));
     expect(await screen.findByText('Test the CodeCommit connection before binding.')).toBeVisible();
     expect(bind).not.toHaveBeenCalled();
   });

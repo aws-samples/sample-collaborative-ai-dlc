@@ -93,9 +93,8 @@ export interface SourceControlRepositoryStatus {
   delegatedBy?: string | null;
   installationId?: string | null;
   installationAccount?: string | null;
-  // codecommit-role: identity the tenant wrote into their own trust policy.
+  // codecommit-role: the tenant's role. The external ID never leaves the server.
   roleArn?: string | null;
-  externalId?: string | null;
   roleAccountId?: string | null;
   region?: string | null;
   actor?: string | null;
