@@ -4,7 +4,10 @@ import {
   normalizeRequestedProviders,
   credentialChangeAffects,
 } from './agent-auth-contracts.js';
-import { AUTH_SELECTION_STRATEGIES } from './agent-auth-selection-strategies.js';
+import {
+  AUTH_SELECTION_STRATEGIES,
+  selectionStrategyFor,
+} from './agent-auth-selection-strategies.js';
 export { connectionBinding } from './agent-auth-selection-strategies.js';
 
 // Called inside the metadata broker: key set-state and control records are read
@@ -26,7 +29,7 @@ export const resolvePolicyBindings = async ({
       requested.map((provider) => [provider, legacyBindings[provider] ?? null]),
     );
     if (requested.includes('bedrock')) {
-      const strategy = strategies[policy.mode];
+      const strategy = selectionStrategyFor(policy.mode, strategies);
       if (!strategy)
         throw authError('AGENT_AUTH_MODE_UNAVAILABLE', 'Authentication provider has not shipped');
       const spaceSelection = projectId ? await repository.getSpaceSelection(projectId) : null;
