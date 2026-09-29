@@ -208,3 +208,47 @@ variable "route53_zone_id" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Cognito managed-login domain (optional)
+#
+# Enterprise SSO redirects through the Cognito managed-login domain, which
+# defaults to a generated *.amazoncognito.com prefix. auth_domain provisions a
+# custom hostname; auth_domain_active selects it after DNS and IdP preparation.
+# Cognito requires the parent of auth_domain to resolve through a DNS A record
+# before it accepts the domain; a subdomain of app_domain satisfies that.
+# ---------------------------------------------------------------------------
+
+variable "auth_domain" {
+  description = "Custom hostname to provision for Cognito managed login (e.g. auth.aidlc.example.com). The generated domain remains active until auth_domain_active is true."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.auth_domain == "" || can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.auth_domain))
+    error_message = "auth_domain must be a bare lowercase hostname without scheme, port or path (e.g. auth.aidlc.example.com)."
+  }
+}
+
+variable "auth_domain_active" {
+  description = "Use the provisioned custom domain for login and federation outputs. Set true only after its DNS resolves and the custom OIDC/SAML callback URLs are registered with the IdP. False keeps the generated domain active."
+  type        = bool
+  default     = false
+}
+
+variable "auth_route53_zone_id" {
+  description = "Public Route53 hosted zone containing auth_domain. Creates its A/AAAA alias records when both values are set. Independent of the application's route53_zone_id; empty leaves auth DNS externally managed."
+  type        = string
+  default     = ""
+}
+
+variable "auth_certificate_arn" {
+  description = "ARN of an issued us-east-1 ACM certificate covering auth_domain. Empty reuses acm_certificate_arn, which must then cover auth_domain as well."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.auth_certificate_arn == "" || can(regex("^arn:aws[a-z-]*:acm:us-east-1:[0-9]{12}:certificate/", var.auth_certificate_arn))
+    error_message = "auth_certificate_arn must be an ACM certificate ARN in us-east-1 — Cognito custom domains only accept certificates from that region."
+  }
+}

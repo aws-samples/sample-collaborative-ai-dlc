@@ -44,7 +44,7 @@ const normalizeMappings = (value, providerName) => {
   return result;
 };
 
-const normalizeProvider = (provider, baseDir) => {
+const normalizeProvider = (provider, baseDir, allowMetadataFiles) => {
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
     throw new Error('Every provider must be an object');
   }
@@ -111,6 +111,11 @@ const normalizeProvider = (provider, baseDir) => {
     if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
       throw new Error(`${name}.metadata must specify exactly one of url, file, or xml`);
     }
+    if (!allowMetadataFiles && Object.hasOwn(metadata, 'file')) {
+      throw new Error(
+        'SSO_CONFIG cannot use metadata.file because GitHub secrets contain no companion files. Use metadata.url or inline metadata.xml.',
+      );
+    }
     const supplied = ['url', 'file', 'xml'].filter(
       (key) => typeof metadata[key] === 'string' && metadata[key].trim(),
     );
@@ -135,12 +140,17 @@ const normalizeProvider = (provider, baseDir) => {
   return [name, normalized];
 };
 
-export const normalizeSsoConfig = (input, { mode = 'hybrid', baseDir = process.cwd() } = {}) => {
+export const normalizeSsoConfig = (
+  input,
+  { mode = 'hybrid', baseDir = process.cwd(), allowMetadataFiles = true } = {},
+) => {
   if (!MODES.has(mode)) throw new Error(`auth mode must be one of: ${[...MODES].join(', ')}`);
   if (!input || typeof input !== 'object' || !Array.isArray(input.providers)) {
     throw new Error('SSO configuration must contain a providers array');
   }
-  const entries = input.providers.map((provider) => normalizeProvider(provider, baseDir));
+  const entries = input.providers.map((provider) =>
+    normalizeProvider(provider, baseDir, allowMetadataFiles),
+  );
   const providers = Object.fromEntries(entries);
   if (Object.keys(providers).length !== entries.length) {
     throw new Error('Provider names must be unique');
@@ -162,23 +172,31 @@ export const normalizeSsoConfig = (input, { mode = 'hybrid', baseDir = process.c
   return providers;
 };
 
-export const loadAndNormalizeSsoConfig = (path, mode) => {
+export const loadAndNormalizeSsoConfig = (path, mode, options = {}) => {
   const absolute = resolve(path);
   const input = JSON.parse(readFileSync(absolute, 'utf8'));
-  return normalizeSsoConfig(input, { mode, baseDir: dirname(absolute) });
+  return normalizeSsoConfig(input, { ...options, mode, baseDir: dirname(absolute) });
 };
 
 if (
   process.argv[1] &&
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
 ) {
-  const [path, mode = 'hybrid'] = process.argv.slice(2);
-  if (!path) {
-    console.error('Usage: sso-config.mjs <config.json> [local|hybrid|sso-only]');
+  const [path, mode = 'hybrid', ...flags] = process.argv.slice(2);
+  if (!path || flags.some((flag) => flag !== '--no-metadata-files')) {
+    console.error(
+      'Usage: sso-config.mjs <config.json> [local|hybrid|sso-only] [--no-metadata-files]',
+    );
     process.exit(2);
   }
   try {
-    process.stdout.write(`${JSON.stringify(loadAndNormalizeSsoConfig(path, mode))}\n`);
+    process.stdout.write(
+      `${JSON.stringify(
+        loadAndNormalizeSsoConfig(path, mode, {
+          allowMetadataFiles: !flags.includes('--no-metadata-files'),
+        }),
+      )}\n`,
+    );
   } catch (error) {
     console.error(`Invalid SSO configuration: ${error.message}`);
     process.exit(2);
