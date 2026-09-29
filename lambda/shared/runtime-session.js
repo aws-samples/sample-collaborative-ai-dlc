@@ -37,6 +37,7 @@
 // it would plug in here as a third operation without touching the callers.
 // ---------------------------------------------------------------------------
 
+import { mapWithConcurrency } from './concurrency.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 import {
   DeleteCapacityProviderSessionCommand,
@@ -58,7 +59,8 @@ export const capacityProviderIdFromArn = (arn) => {
   return id || null;
 };
 
-const sdkTarget = (target) => ({
+// The AgentCore SDK input for a runtime target (drops capacityProviderArn).
+export const sdkTarget = (target) => ({
   agentRuntimeArn: target.agentRuntimeArn,
   ...(target.qualifier ? { qualifier: target.qualifier } : {}),
 });
@@ -81,13 +83,13 @@ export const stopSession = async ({ client, target, sessionId }) => {
   }
 };
 
-export const stopSessions = async ({ client, target, sessionIds = [] }) => {
-  const results = [];
-  for (const sessionId of new Set(sessionIds)) {
-    results.push({ sessionId, ...(await stopSession({ client, target, sessionId })) });
-  }
-  return results;
-};
+// Stops run concurrently (up to 8 in flight): a section rewind stops the intent
+// session plus every lane session, and each stop is an independent API call.
+export const stopSessions = async ({ client, target, sessionIds = [] }) =>
+  mapWithConcurrency([...new Set(sessionIds)], 8, async (sessionId) => ({
+    sessionId,
+    ...(await stopSession({ client, target, sessionId })),
+  }));
 
 // Release one session's persistent workspace. Returns one of:
 //   { released: true }                     delete succeeded

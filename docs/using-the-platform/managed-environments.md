@@ -519,10 +519,10 @@ exposed by `GET /environments/capabilities` as a matrix
 and the **Compute** selector renders exactly the available cells. Today the
 matrix is:
 
-| type \ architecture | arm64 | x86_64 |
-|---|---|---|
-| `microvms`  | default | not offered by the service yet |
-| `instances` | with `enable_instances_compute` | with `enable_instances_compute` + the amd64 core image |
+| type \ architecture | arm64                           | x86_64                                                 |
+| ------------------- | ------------------------------- | ------------------------------------------------------ |
+| `microvms`          | default                         | not offered by the service yet                         |
+| `instances`         | with `enable_instances_compute` | with `enable_instances_compute` + the amd64 core image |
 
 #### Enable it on the deployment
 
@@ -595,13 +595,13 @@ compute ends, the workspace is retained and re-attached by the next invocation
 of the same session id) from **releasing** it (the workspace is deleted). The
 volume retention policy is explicit and bound to the intent's lifetime:
 
-| Event | Operation | Workspace volume |
-|---|---|---|
-| A stage is parked / a unit lane finishes | stop | retained — resume re-attaches it |
-| A run ends (`SUCCEEDED` / `CANCELLED`) | stop | retained — rewind relaunches into the same workspace |
-| Rewind / relaunch | stop | retained — re-attached by session id |
-| The intent is permanently deleted | **release** | deleted with the intent |
-| Environment runtime validation ends | **release** | deleted (disposable session) |
+| Event                                    | Operation   | Workspace volume                                     |
+| ---------------------------------------- | ----------- | ---------------------------------------------------- |
+| A stage is parked / a unit lane finishes | stop        | retained — resume re-attaches it                     |
+| A run ends (`SUCCEEDED` / `CANCELLED`)   | stop        | retained — rewind relaunches into the same workspace |
+| Rewind / relaunch                        | stop        | retained — re-attached by session id                 |
+| The intent is permanently deleted        | **release** | deleted with the intent                              |
+| Environment runtime validation ends      | **release** | deleted (disposable session)                         |
 
 A workspace is part of the intent's state for as long as the intent exists:
 a finished run can be rewound and a parked stage resumed, and both rely on
