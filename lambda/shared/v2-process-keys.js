@@ -1012,6 +1012,7 @@ const buildFeedbackBatchRow = ({
   requestedByName,
   stageInstanceId: null,
   output: null,
+  changedFileProvenance: null,
   changedFiles: null,
   verification: null,
   commitSha: null,

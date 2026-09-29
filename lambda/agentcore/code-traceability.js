@@ -176,7 +176,24 @@ export const collectCodeTraceabilityBatches = async ({
       continue;
     }
     const repoDir = multi ? path.join(workspaceDir, change.repo) : workspaceDir;
-    const normalized = [...new Set(change.files.map(normalizeWorkspacePath).filter(Boolean))];
+    // Sensor provenance uses workspace-relative paths; graph CodeFile paths
+    // are relative to their repository. Older results without provenance
+    // already expose repository-relative files.
+    const repoPrefix = `${change.repo}/`;
+    const hasKnownProvenance = change.provenance?.state === 'known';
+    const changedFiles = hasKnownProvenance ? change.provenance.files : change.files;
+    const normalized = [
+      ...new Set(
+        changedFiles
+          .map((file) =>
+            multi && hasKnownProvenance && file.startsWith(repoPrefix)
+              ? file.slice(repoPrefix.length)
+              : file,
+          )
+          .map(normalizeWorkspacePath)
+          .filter(Boolean),
+      ),
+    ];
     const files = [];
     for (const file of normalized) {
       if (await isPresentFile(repoDir, file)) files.push(file);

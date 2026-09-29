@@ -349,6 +349,96 @@ describe('buildExecutionPlan — plan shape', () => {
     expect(plan.stages[0].sensors[0].scriptRef).toBeNull();
   });
 
+  it('threads validated verdict mode, scope, and normalized project config into the plan', () => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a', { sensors: ['custom-checker'] }) },
+      sensorsById: {
+        'custom-checker': {
+          command: 'custom-checker.ts',
+          severity: 'advisory',
+          runtime: 'bun',
+          verdictMode: 'stdout-json',
+          scope: 'project',
+          projectConfig: 'config/pyproject.toml',
+        },
+      },
+    });
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+    expect(plan.stages[0].sensors[0]).toMatchObject({
+      verdictMode: 'stdout-json',
+      scope: 'project',
+      projectConfig: 'config/pyproject.toml',
+    });
+  });
+
+  it.each([
+    ['verdictMode', 'yaml', 'sensor_invalid_verdict_mode'],
+    ['scope', 'workspace', 'sensor_invalid_scope'],
+  ])('rejects an unsupported sensor %s while building the plan', (field, value, code) => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a', { sensors: ['custom-checker'] }) },
+      sensorsById: {
+        'custom-checker': {
+          command: 'custom-checker.ts',
+          runtime: 'bun',
+          [field]: value,
+        },
+      },
+    });
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+
+    expect(valid).toBe(false);
+    expect(errors.find((error) => error.code === code)).toMatchObject({
+      stageId: 'a',
+      ref: 'custom-checker',
+      field,
+    });
+    expect(plan.stages[0].sensors[0][field]).not.toBe(value);
+  });
+
+  it.each([
+    ['absolute path', '/etc/tsconfig.json'],
+    ['Windows absolute path', 'C:\\secrets\\tsconfig.json'],
+    ['parent traversal', '../tsconfig.json'],
+    ['nested parent traversal', 'config/../../tsconfig.json'],
+    ['non-normalized traversal', 'config/../tsconfig.json'],
+  ])('rejects a sensor projectConfig containing %s', (_label, projectConfig) => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a', { sensors: ['custom-checker'] }) },
+      sensorsById: {
+        'custom-checker': {
+          command: 'custom-checker.ts',
+          runtime: 'bun',
+          scope: 'project',
+          projectConfig,
+        },
+      },
+    });
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+
+    expect(valid).toBe(false);
+    expect(errors.find((error) => error.code === 'sensor_invalid_project_config')).toMatchObject({
+      stageId: 'a',
+      ref: 'custom-checker',
+      field: 'projectConfig',
+    });
+    expect(plan.stages[0].sensors[0].projectConfig).toBe('tsconfig.json');
+  });
+
   it('flags agent-team as not implemented without crashing', () => {
     const lib = baseLibrary({ stagesById: { a: stage('a', { mode: 'agent-team' }) } });
     const { plan } = buildExecutionPlan({

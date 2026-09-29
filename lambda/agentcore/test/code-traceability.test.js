@@ -102,6 +102,10 @@ describe('collectCodeTraceabilityBatches', () => {
     expect(commit).toMatchObject({
       committed: true,
       files: ['records/u1/traceability.json', 'src/index.ts'],
+      provenance: {
+        state: 'known',
+        files: ['records/u1/traceability.json', 'src/index.ts'],
+      },
     });
 
     const [batch] = await collectCodeTraceabilityBatches({
@@ -246,46 +250,58 @@ describe('collectCodeTraceabilityBatches — multi-repo layout', () => {
   // Layout MUST match workspace.js#repoTargetDir: multi-repo lays each repo out
   // under <workspaceDir>/<owner>/<repo> (the full "owner/repo" url), single-repo
   // clones straight into <workspaceDir>. Proven by init-ws.test.js:743.
-  it('resolves files under <ws>/<owner>/<repo> for each repo in a multi-repo run', async () => {
-    const root = await workspace();
-    await put(root, 'acme/api/src/handler.ts', 'export const h = 1;\n');
-    await put(root, 'acme/web/src/App.tsx', 'export const App = () => null;\n');
-    const multiGit = {
-      ok: true,
-      committed: true,
-      results: [
-        {
-          repo: 'acme/api',
-          committed: true,
-          pushed: true,
-          sha: 'a'.repeat(40),
-          files: ['src/handler.ts'],
-        },
-        {
-          repo: 'acme/web',
-          committed: true,
-          pushed: true,
-          sha: 'b'.repeat(40),
-          files: ['src/App.tsx'],
-        },
-      ],
-    };
-    const batches = await collectCodeTraceabilityBatches({
-      gitResult: multiGit,
-      repos: ['acme/api', 'acme/web'],
-      workspaceDir: root,
-      stageId: 'code-generation',
-      stageInstanceId: 'si-code',
-      unitSlug: 'u1',
-    });
-    expect(batches.map((b) => b.repository).toSorted()).toEqual(['acme/api', 'acme/web']);
-    const api = batches.find((b) => b.repository === 'acme/api');
-    const web = batches.find((b) => b.repository === 'acme/web');
-    expect(api.files.map((f) => f.filePath)).toEqual(['src/handler.ts']);
-    expect(web.files.map((f) => f.filePath)).toEqual(['src/App.tsx']);
-    // Wrong layout (bare name) would resolve zero files — guard against regression.
-    expect(api.files.length + web.files.length).toBe(2);
-  });
+  it.each(['legacy', 'workspace', 'rehydrated'])(
+    'resolves files under <ws>/<owner>/<repo> for %s Git results',
+    async (format) => {
+      const root = await workspace();
+      await put(root, 'acme/api/src/handler.ts', 'export const h = 1;\n');
+      await put(root, 'acme/web/src/App.tsx', 'export const App = () => null;\n');
+      const multiGit = {
+        ok: true,
+        committed: true,
+        results: [
+          {
+            repo: 'acme/api',
+            committed: true,
+            pushed: true,
+            sha: 'a'.repeat(40),
+            files: ['src/handler.ts'],
+          },
+          {
+            repo: 'acme/web',
+            committed: true,
+            pushed: true,
+            sha: 'b'.repeat(40),
+            files: ['src/App.tsx'],
+          },
+        ],
+      };
+      if (format !== 'legacy') {
+        for (const change of multiGit.results) {
+          change.provenance = {
+            state: 'known',
+            files: change.files.map((file) => `${change.repo}/${file}`),
+          };
+          if (format === 'workspace') change.files = change.provenance.files;
+        }
+      }
+      const batches = await collectCodeTraceabilityBatches({
+        gitResult: multiGit,
+        repos: ['acme/api', 'acme/web'],
+        workspaceDir: root,
+        stageId: 'code-generation',
+        stageInstanceId: 'si-code',
+        unitSlug: 'u1',
+      });
+      expect(batches.map((b) => b.repository).toSorted()).toEqual(['acme/api', 'acme/web']);
+      const api = batches.find((b) => b.repository === 'acme/api');
+      const web = batches.find((b) => b.repository === 'acme/web');
+      expect(api.files.map((f) => f.filePath)).toEqual(['src/handler.ts']);
+      expect(web.files.map((f) => f.filePath)).toEqual(['src/App.tsx']);
+      // Wrong layout (bare name) would resolve zero files — guard against regression.
+      expect(api.files.length + web.files.length).toBe(2);
+    },
+  );
 });
 
 describe('loadProducedTraceability — size cap', () => {
