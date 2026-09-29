@@ -153,8 +153,21 @@ function ProviderBindingControl({
       )}
 
       {role && !(codecommitReverify && codecommitInitial?.roleArn) && (
-        <div className="ml-0 sm:ml-[4.5rem]">
+        <div className="ml-0 space-y-2 sm:ml-[4.5rem]">
+          {codecommitInitial?.roleArn && (
+            <Button
+              size="sm"
+              variant="link"
+              className="h-auto p-0 text-xs"
+              onClick={() => onCodecommitReverifyChange?.(true)}
+              disabled={disabled}
+            >
+              Keep the bound role
+            </Button>
+          )}
           <CodeCommitConnectForm
+            // Remount for another bound role so no stale role/test result stays.
+            key={codecommitInitial?.roleArn ?? 'none'}
             initial={codecommitInitial}
             onVerified={(result) => onCodeCommitVerified?.(result)}
             onInvalidated={() => onCodeCommitVerified?.(null)}
@@ -245,6 +258,11 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
   };
 
   useEffect(() => {
+    setCodecommitReverify(true);
+    setCodecommit(null);
+  }, [project.id]);
+
+  useEffect(() => {
     void load();
     // repositoryKey deliberately refreshes status after repository add/remove.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -283,6 +301,9 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
       const next = await sourceControlService.bind(project.id, selections);
       setStatus(next);
       onStatusChange?.(next);
+      // The bound role is now the reference: back to re-verify, drop the test.
+      setCodecommitReverify(true);
+      setCodecommit(null);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to bind source control');
     } finally {

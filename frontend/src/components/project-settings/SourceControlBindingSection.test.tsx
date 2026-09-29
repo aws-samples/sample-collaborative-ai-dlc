@@ -99,4 +99,20 @@ describe('SourceControlBindingSection, CodeCommit rebind', () => {
     expect(await screen.findByText('Test the CodeCommit connection before binding.')).toBeVisible();
     expect(bind).not.toHaveBeenCalled();
   });
+
+  it('can go back to re-verifying the bound role after choosing a different one', async () => {
+    render(<SourceControlBindingSection project={project} canEdit />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Use a different role' }));
+    await screen.findByTestId('codecommit-trust-policy');
+    await userEvent.click(screen.getByRole('button', { name: 'Keep the bound role' }));
+    expect(await screen.findByTestId('codecommit-reverify')).toHaveTextContent(ROLE);
+    expect(screen.queryByTestId('codecommit-trust-policy')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Rebind and verify' }));
+    await waitFor(() =>
+      expect(bind).toHaveBeenCalledWith('p1', {
+        codecommit: { authType: 'codecommit-role', roleArn: ROLE },
+      }),
+    );
+  });
 });
