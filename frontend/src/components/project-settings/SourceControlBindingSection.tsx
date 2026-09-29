@@ -80,6 +80,8 @@ function ProviderBindingControl({
   onConfirmedChange,
   codecommitInitial,
   onCodeCommitVerified,
+  codecommitReverify = false,
+  onCodecommitReverifyChange,
 }: {
   provider: GitProvider;
   authType: SourceControlAuthType;
@@ -91,6 +93,11 @@ function ProviderBindingControl({
   // form re-renders the same trust policy and the tenant's role keeps working.
   codecommitInitial?: Partial<CodeCommitRoleConnection>;
   onCodeCommitVerified?: (result: CodeCommitConnectResult | null) => void;
+  // codecommit-role with an existing binding: re-verify that role through the
+  // project binding (the server keeps the external ID it already trusts),
+  // without the caller's personal discovery or trust policy.
+  codecommitReverify?: boolean;
+  onCodecommitReverifyChange?: (value: boolean) => void;
 }) {
   const { status, loading, error, refresh } = useGitProviderStatus(provider);
   const oauth = authType.endsWith('-oauth');
@@ -123,7 +130,29 @@ function ProviderBindingControl({
         )}
       </div>
 
-      {role && (
+      {role && codecommitReverify && codecommitInitial?.roleArn && (
+        <div className="ml-0 space-y-2 sm:ml-[4.5rem]" data-testid="codecommit-reverify">
+          <p className="text-xs text-muted-foreground">
+            Re-verifying the role already bound to this space:
+          </p>
+          <p className="truncate font-mono text-[11px]">{codecommitInitial.roleArn}</p>
+          <p className="text-xs text-muted-foreground">
+            The platform presents the external ID this role already trusts. Do not change the role's
+            trust policy.
+          </p>
+          <Button
+            size="sm"
+            variant="link"
+            className="h-auto p-0 text-xs"
+            onClick={() => onCodecommitReverifyChange?.(false)}
+            disabled={disabled}
+          >
+            Use a different role
+          </Button>
+        </div>
+      )}
+
+      {role && !(codecommitReverify && codecommitInitial?.roleArn) && (
         <div className="ml-0 sm:ml-[4.5rem]">
           <CodeCommitConnectForm
             initial={codecommitInitial}
@@ -172,6 +201,9 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
   // codecommit-role: a rebind must re-prove the role. null until the form's
   // "Test connection" succeeds in this session.
   const [codecommit, setCodecommit] = useState<CodeCommitConnectResult | null>(null);
+  // With an existing codecommit-role binding, rebind re-verifies that role by
+  // default; switching to "Use a different role" requires a fresh test.
+  const [codecommitReverify, setCodecommitReverify] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -227,16 +259,22 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
         setError(`Confirm ${provider} OAuth delegation before binding.`);
         return;
       }
-      if (authType === 'codecommit-role' && !codecommit) {
+      // codecommit-role: either the bound role, re-verified server-side with
+      // the external ID the project already uses, or a role the caller just
+      // tested with their own connection.
+      const reverifyRole = codecommitReverify ? codecommitInitialFor(status)?.roleArn : undefined;
+      const roleArn =
+        authType === 'codecommit-role'
+          ? (reverifyRole ?? codecommit?.connection.roleArn)
+          : undefined;
+      if (authType === 'codecommit-role' && !roleArn) {
         setError('Test the CodeCommit connection before binding.');
         return;
       }
       selections[provider] = {
         authType,
         ...(authType.endsWith('-oauth') ? { confirmDelegation: true } : {}),
-        ...(authType === 'codecommit-role' && codecommit
-          ? { roleArn: codecommit.connection.roleArn }
-          : {}),
+        ...(roleArn ? { roleArn } : {}),
       };
     }
     setSaving(true);
@@ -372,6 +410,11 @@ export function SourceControlBindingSection({ project, canEdit, onStatusChange }
                       provider === 'codecommit' ? codecommitInitialFor(status) : undefined
                     }
                     onCodeCommitVerified={setCodecommit}
+                    codecommitReverify={codecommitReverify}
+                    onCodecommitReverifyChange={(value) => {
+                      setCodecommitReverify(value);
+                      setCodecommit(null);
+                    }}
                   />
                 ))}
               </div>

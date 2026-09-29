@@ -7,6 +7,7 @@ import {
   resolveCodeCommitExternalId,
 } from '../codecommit-connection.js';
 import { verifyCodeCommitRoleBinding } from '../source-control-credentials.js';
+import { assumeCodeCommitRole } from '../codecommit-role.js';
 
 const TABLE = 'git-provider-connections-test';
 const ROLE_A = 'arn:aws:iam::123456789012:role/aidlc-codecommit-access';
@@ -232,6 +233,66 @@ describe('codecommit connection', () => {
       } finally {
         probe.mockRestore();
       }
+    });
+
+    // Owner A bound the project; admin B has their own connection. The role
+    // trusts only A's external ID. Re-verifying the existing binding must work
+    // for B, while B's personal discovery on that role stays denied.
+    it('lets a co-admin re-verify an owner-trusted role while discovery stays denied', async () => {
+      const ddb = fakeDdb([connectionRow('user-a', ID_A), connectionRow('user-b', ID_B)]);
+      const presented = [];
+      const ownerTrustingSts = {
+        async send(command) {
+          presented.push(command.input.ExternalId);
+          if (command.input.ExternalId !== ID_A) {
+            throw Object.assign(new Error('not authorized'), { name: 'AccessDenied' });
+          }
+          return {
+            Credentials: {
+              AccessKeyId: 'ASIAEXAMPLE',
+              SecretAccessKey: 'secret', // pragma: allowlist secret
+              SessionToken: 'token', // pragma: allowlist secret
+              Expiration: new Date('2026-09-18T12:15:00Z'),
+            },
+            AssumedRoleUser: { Arn: 'arn:aws:sts::123456789012:assumed-role/aidlc/aidlc-verify' },
+          };
+        },
+      };
+      const provider = getProvider('codecommit');
+      const probe = vi
+        .spyOn(provider, 'getRepositoryAccess')
+        .mockResolvedValue({ canRead: true, canWrite: true, defaultBranch: 'main' });
+      try {
+        const binding = await verifyCodeCommitRoleBinding({
+          ddb,
+          sts: ownerTrustingSts,
+          repo: REPO,
+          userId: 'user-b',
+          selection: { roleArn: ROLE_A },
+          projectBindings: [{ authType: 'codecommit-role', roleArn: ROLE_A, externalId: ID_A }],
+        });
+        expect(binding.credentialRef).toBe(`codecommit-role#${ROLE_A}#${ID_A}`);
+      } finally {
+        probe.mockRestore();
+      }
+
+      // Discovery resolves without project bindings (the /repos route), so B
+      // presents their own external ID and the role refuses it.
+      const discoverId = await resolveCodeCommitExternalId({
+        ddb,
+        userId: 'user-b',
+        roleArn: ROLE_A,
+      });
+      await expect(
+        assumeCodeCommitRole({
+          sts: ownerTrustingSts,
+          roleArn: ROLE_A,
+          externalId: discoverId,
+          access: 'discover',
+          executionId: 'discover',
+        }),
+      ).rejects.toMatchObject({ code: 'ROLE_ASSUMPTION_DENIED' });
+      expect(presented).toEqual([ID_A, ID_B]);
     });
   });
 });
