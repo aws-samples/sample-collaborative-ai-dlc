@@ -68,21 +68,74 @@ export interface RuntimeCliStatus {
 
 export type AgentCredentialSource = 'user' | 'space' | 'platform';
 
+export interface AgentConnectionView {
+  id: string;
+  revision?: number;
+  mode: string;
+  backend: string;
+  mechanism: string;
+  source: string;
+  projectId?: string;
+  userId?: string;
+  state: string;
+  configuration: Readonly<Record<string, unknown>>;
+}
+
+export interface AgentAuthModeView {
+  id: string;
+  label: string;
+  available: boolean;
+  backend?: string;
+  mechanisms?: string[];
+  modelDiscovery?: string;
+  /** A ready platform connection that lets the policy switch without setup. */
+  defaultConnectionId?: string;
+}
+
 export interface AgentAuthenticationView {
   policy: { mode: string; revision: number; defaultConnectionId: string; pendingReview?: string };
-  modes: { id: string; label: string; available: boolean }[];
+  modes: AgentAuthModeView[];
   reviewRequired: boolean;
-  connection: {
-    id: string;
-    backend: string;
-    mechanism: string;
-    source: string;
-    state: string;
-    configuration: { endpoint?: string; issuer?: string };
-  } | null;
+  connection: AgentConnectionView | null;
   personalMechanisms: string[];
+  /** Absent from older backends; callers fall back to the saved Bedrock key. */
+  hasOverride?: boolean;
+  canManageConnections?: boolean;
 }
+
+type AgentAuthActionScope = {
+  source: AgentCredentialSource;
+  projectId?: string;
+  userId?: string;
+};
+
+/** The normalized candidate the server stores on a review. */
+export type AgentAuthAction =
+  | { kind: 'policy-change'; mode: string; defaultConnectionId: string }
+  | { kind: 'space-selection'; source: 'space'; projectId: string; connectionId: string | null }
+  | (AgentAuthActionScope & {
+      kind: 'connection-create';
+      connection: AgentConnectionView;
+      select: boolean;
+    })
+  | (AgentAuthActionScope & {
+      kind: 'credential-update';
+      changes: { provider: string; action: 'rotate' | 'clear'; digest: string }[];
+    });
+
+/** What the browser may ask the server to turn into a reviewed change. */
+export type AgentAuthChangeRequest =
+  | { kind?: 'policy-change'; mode: string; defaultConnectionId: string }
+  | { kind: 'space-selection'; projectId: string; connectionId: null }
+  | {
+      kind: 'connection-draft';
+      mode: string;
+      projectId?: string;
+      configuration: Record<string, unknown>;
+    };
+
 export interface AgentAuthImpactReview {
+  candidate?: AgentAuthAction;
   id: string;
   createdAt: string;
   policyRevision: number;
@@ -276,14 +329,24 @@ export const agentsService = {
           : `/projects/${projectId}/agent-credentials`;
     return api.put(path, { ...update, reviewAction: 'preview' });
   },
-  async previewAuthenticationChange(candidate: {
-    mode: string;
-    defaultConnectionId: string;
-  }): Promise<AgentAuthImpactReview> {
-    return api.put('/agents/settings', { authenticationChange: { action: 'preview', candidate } });
+  async previewAuthenticationChange(
+    request: AgentAuthChangeRequest,
+  ): Promise<AgentAuthImpactReview> {
+    return api.put('/agents/settings', {
+      authenticationChange: { action: 'preview', candidate: request },
+    });
   },
   async applyAuthenticationChange(reviewId: string): Promise<{ saved: boolean }> {
     return api.put('/agents/settings', { authenticationChange: { action: 'apply', reviewId } });
+  },
+  // Provider-owned setup steps (defaults, generated policies, verification).
+  // Platform admins only; `mode` and `action` select the registered handler.
+  async authenticationProviderAction<T>(
+    mode: string,
+    action: string,
+    body: Record<string, unknown> = {},
+  ): Promise<T> {
+    return api.post('/agents/authentication-setup', { ...body, mode, action });
   },
 
   async getProjectCapabilities(projectId: string, withModels = false): Promise<AgentCapabilities> {
