@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   collectIntentSessionIds,
   deleteIntentCascade,
-  deleteRuntimeSessions,
   laneSessionIdFor,
   runtimeSessionIdFor,
 } from '../intent-deletion.js';
@@ -126,50 +125,6 @@ describe('collectIntentSessionIds', () => {
   });
 });
 
-describe('deleteRuntimeSessions', () => {
-  it('deletes the main and every provided session against the capacity provider', async () => {
-    const agentcore = { send: vi.fn().mockResolvedValue({}) };
-    await deleteRuntimeSessions(agentcore, CP_ARN, 'int-1', {
-      sessionIds: [
-        laneSessionIdFor('int-1', 1, 'alpha'),
-        laneSessionIdFor('int-1', 1, 'beta'),
-        runtimeSessionIdFor('int-1'), // duplicate of the implicit main — deduped
-      ],
-    });
-    const deletes = sentCommands(agentcore, 'DeleteCapacityProviderSessionCommand');
-    expect(deletes.map((command) => command.input.sessionId)).toEqual([
-      'aidlc-intent-int-1'.padEnd(33, '0'),
-      'aidlc-intent-int-1-s1-alpha'.padEnd(33, '0'),
-      'aidlc-intent-int-1-s1-beta'.padEnd(33, '0'),
-    ]);
-    expect(deletes[0].input.capacityProviderId).toBe('cp-123');
-  });
-
-  it('tolerates sessions that never existed', async () => {
-    const agentcore = {
-      send: vi
-        .fn()
-        .mockRejectedValue(
-          Object.assign(new Error('no such session'), { name: 'ResourceNotFoundException' }),
-        ),
-    };
-    await expect(
-      deleteRuntimeSessions(agentcore, CP_ARN, 'int-1', {
-        sessionIds: [laneSessionIdFor('int-1', 1, 'alpha')],
-      }),
-    ).resolves.toBeUndefined();
-  });
-
-  it('throws on an unexpected error so the caller can retry the delete', async () => {
-    const agentcore = {
-      send: vi
-        .fn()
-        .mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDeniedException' })),
-    };
-    await expect(deleteRuntimeSessions(agentcore, CP_ARN, 'int-1')).rejects.toThrow('denied');
-  });
-});
-
 describe('deleteIntentCascade on the Instances compute type', () => {
   it('deletes every persisted lane session, including one no longer in the plan', async () => {
     const store = storeStub(records);
@@ -216,7 +171,28 @@ describe('deleteIntentCascade on the Instances compute type', () => {
     expect(store.deleteExecution).toHaveBeenCalled();
   });
 
-  it('keeps the intent records when a lane session delete fails — cascade retryable', async () => {
+  it('resolves the capacity provider from the META snapshot when no target override is passed', async () => {
+    const store = storeStub(records);
+    const agentcore = { send: vi.fn().mockResolvedValue({}) };
+    await deleteIntentCascade({
+      g: gStub(),
+      store,
+      ddb: null,
+      agentcore,
+      intentId: 'int-1',
+      meta: instancesMeta,
+    });
+    const deletes = sentCommands(agentcore, 'DeleteCapacityProviderSessionCommand');
+    expect(deletes).toHaveLength(4);
+    expect(deletes[0].input.capacityProviderId).toBe('cp-123');
+    const stops = sentCommands(agentcore, 'StopRuntimeSessionCommand');
+    expect(stops[0].input).toMatchObject({
+      agentRuntimeArn: instancesMeta.environment.runtimeArn,
+      qualifier: 'revision_r_1',
+    });
+  });
+
+  it('queues a failed lane release on the shared cleanup store and still completes the cascade', async () => {
     const store = storeStub(records);
     const laneSession = laneSessionIdFor('int-1', 1, 'beta');
     const agentcore = {
@@ -230,19 +206,27 @@ describe('deleteIntentCascade on the Instances compute type', () => {
         return {};
       }),
     };
-    await expect(
-      deleteIntentCascade({
-        g: gStub(),
-        store,
-        ddb: null,
-        agentcore,
-        intentId: 'int-1',
-        meta: instancesMeta,
-        agentcoreRuntimeTarget: { agentRuntimeArn: instancesMeta.environment.runtimeArn },
-      }),
-    ).rejects.toThrow('denied');
-    // META survives, the intent still lists, and a re-run re-reads the SAME
-    // records and retries the lane delete.
-    expect(store.deleteExecution).not.toHaveBeenCalled();
+    const sessionCleanupStore = { enqueue: vi.fn().mockResolvedValue({}) };
+    await deleteIntentCascade({
+      g: gStub(),
+      store,
+      ddb: null,
+      agentcore,
+      intentId: 'int-1',
+      meta: { ...instancesMeta, projectId: 'proj-1' },
+      sessionCleanupStore,
+    });
+    // ONE failure policy for releases: the volume's identity is now durable
+    // work for the environments poller, so the intent records can go — the
+    // cascade no longer has to be re-run for a session that would not delete.
+    expect(sessionCleanupStore.enqueue).toHaveBeenCalledTimes(1);
+    expect(sessionCleanupStore.enqueue).toHaveBeenCalledWith({
+      sessionId: laneSession,
+      capacityProviderArn: CP_ARN,
+      source: 'intent-deletion',
+      reason: 'denied',
+      context: { intentId: 'int-1', projectId: 'proj-1' },
+    });
+    expect(store.deleteExecution).toHaveBeenCalledWith('int-1');
   });
 });
