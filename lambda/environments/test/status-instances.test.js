@@ -509,3 +509,92 @@ describe('validation-session cleanup retention and retry', () => {
     expect(cleanupStore.recordAttempt).not.toHaveBeenCalled();
   });
 });
+
+describe('overlapping validation polls', () => {
+  it('does not fail a revision that an overlapping poll already marked READY', async () => {
+    // Poll A reattaches to the persisted validation session while poll B
+    // finishes validation, marks the revision READY and releases the session.
+    // A's invoke then fails on the released session (non-transient) and it
+    // tries to fail the revision from its stale VERIFYING view.
+    const stale = {
+      ...verifyingRevision,
+      status: 'VERIFYING',
+      validationSessionId: 'managed-environment-r-1-shared-session',
+      validationAttempts: 1,
+    };
+    const updates = [];
+    const store = {
+      getRevision: vi
+        .fn()
+        .mockResolvedValue({ ...stale, status: 'READY', validationSessionId: null }),
+      updateRevision: vi.fn().mockImplementation(async (_e, _r, patch, options) => {
+        updates.push(patch);
+        throw Object.assign(new Error(`Revision is READY, expected ${options?.fromStatus}`), {
+          name: 'ConditionalCheckFailedException',
+        });
+      }),
+      updateEnvironment: vi.fn(),
+    };
+    const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
+    const runtimeClient = {
+      send: vi.fn().mockImplementation(async (command) => {
+        if (command.constructor.name === 'InvokeAgentRuntimeCommand') {
+          throw Object.assign(new Error('session is being deprovisioned'), {
+            name: 'ValidationException',
+          });
+        }
+        return {};
+      }),
+    };
+    const result = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: stale,
+        controlClient,
+        runtimeClient,
+        cleanupStore: cleanupStoreStub(),
+      }),
+    );
+    // The stale poll went through failRevision (a FAILED patch was attempted)…
+    expect(updates.some((patch) => patch.status === 'FAILED')).toBe(true);
+    // …and resolved to the winner's outcome instead of throwing.
+    expect(result.revision.status).toBe('READY');
+    expect(store.updateEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('treats a revision another poll already marked READY as handled, not failed', async () => {
+    // Poll A holds a stale VERIFYING view while poll B completes validation.
+    const stale = { ...verifyingRevision, status: 'VERIFYING' };
+    const store = {
+      getRevision: vi.fn().mockResolvedValue({ ...stale, status: 'READY' }),
+      updateRevision: vi.fn().mockImplementation(async () => {
+        throw Object.assign(new Error('Revision is READY, expected VERIFYING'), {
+          name: 'ConditionalCheckFailedException',
+        });
+      }),
+      updateEnvironment: vi.fn(),
+    };
+    const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
+    const runtimeClient = {
+      send: vi.fn().mockImplementation(async (command) => {
+        if (command.constructor.name === 'InvokeAgentRuntimeCommand') {
+          throw Object.assign(new Error('session gone'), { name: 'ResourceNotFoundException' });
+        }
+        return {};
+      }),
+    };
+    const result = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: stale,
+        controlClient,
+        runtimeClient,
+        cleanupStore: cleanupStoreStub(),
+      }),
+    );
+    expect(result.ignored).toBe(true);
+    expect(result.revision.status).toBe('READY');
+  });
+});
