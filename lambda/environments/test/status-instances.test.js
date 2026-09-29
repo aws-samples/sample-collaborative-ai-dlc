@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createRuntimeForRevision, retrySessionCleanups, verifyRuntime } from '../status.js';
-import { capacityProviderName } from '../compute.js';
+import { createRuntimeForRevision, verifyRuntime } from '../status.js';
+import { retryQueuedReleases } from '../../shared/runtime-session.js';
+import { capacityProviderName } from '../runtime-backends/capacity-provider.js';
 
 const INSTANCES_ENV = {
   MANAGED_INSTANCES_OPERATOR_ROLE_ARN: 'arn:aws:iam::123456789012:role/operator',
@@ -169,9 +170,16 @@ const mutableStore = (initialRevision) => {
       return current;
     }),
     updateEnvironment: vi.fn().mockResolvedValue(instancesEnvironment),
-    putSessionCleanup: vi.fn().mockResolvedValue({}),
   };
 };
+
+// The shared session-cleanup store (durable queue of failed releases).
+const cleanupStoreStub = () => ({
+  enqueue: vi.fn().mockResolvedValue({}),
+  listPending: vi.fn().mockResolvedValue([]),
+  recordAttempt: vi.fn().mockResolvedValue({}),
+  remove: vi.fn().mockResolvedValue(undefined),
+});
 
 const validationOk = () => [
   {
@@ -210,6 +218,7 @@ describe('verifyRuntime validation session reuse on the Instances compute type',
         revision: store.current,
         controlClient,
         runtimeClient: failingRuntime,
+        cleanupStore: cleanupStoreStub(),
       }),
     );
     expect(first.pending).toBe(true);
@@ -236,6 +245,7 @@ describe('verifyRuntime validation session reuse on the Instances compute type',
         revision: store.current,
         controlClient,
         runtimeClient: healthyRuntime,
+        cleanupStore: cleanupStoreStub(),
       }),
     );
     expect(second.revision.status).toBe('READY');
@@ -274,6 +284,7 @@ describe('verifyRuntime validation session reuse on the Instances compute type',
         revision: store.current,
         controlClient,
         runtimeClient,
+        cleanupStore: cleanupStoreStub(),
       }),
     );
     expect(result.revision.status).toBe('FAILED');
@@ -306,6 +317,7 @@ describe('verifyRuntime validation session reuse on the Instances compute type',
         revision: store.current,
         controlClient,
         runtimeClient,
+        cleanupStore: cleanupStoreStub(),
       }),
     );
     // TimeoutError is not retryable on microVMs — permanent failure, session stopped.
@@ -343,6 +355,7 @@ describe('validation-session cleanup retention and retry', () => {
 
   it('persists cleanup work when the delete fails after SUCCESSFUL validation (READY)', async () => {
     const store = mutableStore({ ...verifyingRevision });
+    const cleanupStore = cleanupStoreStub();
     const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
     const runtimeClient = runtimeFailingDeletes(validationOk());
 
@@ -353,6 +366,7 @@ describe('validation-session cleanup retention and retry', () => {
         revision: store.current,
         controlClient,
         runtimeClient,
+        cleanupStore,
       }),
     );
     // The revision still reaches READY — cleanup is retried out of band.
@@ -362,12 +376,15 @@ describe('validation-session cleanup retention and retry', () => {
     const sessionId = runtimeClient.send.mock.calls.find(
       (call) => call[0].constructor.name === 'InvokeAgentRuntimeCommand',
     )[0].input.runtimeSessionId;
-    expect(store.putSessionCleanup).toHaveBeenCalledWith({
+    expect(cleanupStore.enqueue).toHaveBeenCalledWith({
       sessionId,
       capacityProviderArn: verifyingRevision.capacityProviderArn,
-      environmentId: instancesEnvironment.environmentId,
-      revisionId: verifyingRevision.revisionId,
+      source: 'environment-validation',
       reason: 'internal error',
+      context: {
+        environmentId: instancesEnvironment.environmentId,
+        revisionId: verifyingRevision.revisionId,
+      },
     });
   });
 
@@ -377,6 +394,7 @@ describe('validation-session cleanup retention and retry', () => {
       validationSessionId: 'managed-environment-r-1-persisted-session',
       validationAttempts: 30,
     });
+    const cleanupStore = cleanupStoreStub();
     const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
     const runtimeClient = runtimeFailingDeletes([transientError()]);
 
@@ -387,10 +405,11 @@ describe('validation-session cleanup retention and retry', () => {
         revision: store.current,
         controlClient,
         runtimeClient,
+        cleanupStore,
       }),
     );
     expect(result.revision.status).toBe('FAILED');
-    expect(store.putSessionCleanup).toHaveBeenCalledWith(
+    expect(cleanupStore.enqueue).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'managed-environment-r-1-persisted-session',
         capacityProviderArn: verifyingRevision.capacityProviderArn,
@@ -400,6 +419,7 @@ describe('validation-session cleanup retention and retry', () => {
 
   it('does not persist cleanup work when the session is already absent', async () => {
     const store = mutableStore({ ...verifyingRevision });
+    const cleanupStore = cleanupStoreStub();
     const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
     const [capabilities, deterministic] = validationOk();
     const runtimeClient = {
@@ -426,10 +446,11 @@ describe('validation-session cleanup retention and retry', () => {
         revision: store.current,
         controlClient,
         runtimeClient,
+        cleanupStore,
       }),
     );
     expect(result.revision.status).toBe('READY');
-    expect(store.putSessionCleanup).not.toHaveBeenCalled();
+    expect(cleanupStore.enqueue).not.toHaveBeenCalled();
   });
 
   it('poller retries the SAME session id and clears the record only after success', async () => {
@@ -440,25 +461,22 @@ describe('validation-session cleanup retention and retry', () => {
       revisionId: 'r-1',
       attempts: 0,
     };
-    const store = {
-      listSessionCleanups: vi.fn().mockResolvedValue([record]),
-      deleteSessionCleanup: vi.fn().mockResolvedValue(undefined),
-      recordSessionCleanupAttempt: vi.fn().mockResolvedValue({ ...record, attempts: 1 }),
+    const cleanupStore = {
+      ...cleanupStoreStub(),
+      listPending: vi.fn().mockResolvedValue([record]),
+      recordAttempt: vi.fn().mockResolvedValue({ ...record, attempts: 1 }),
     };
 
     // First retry still fails — the record survives, attempts are bumped.
     const failing = { send: vi.fn().mockRejectedValue(deleteFailure()) };
-    const firstPass = await retrySessionCleanups({ store, runtimeClient: failing });
+    const firstPass = await retryQueuedReleases({ client: failing, cleanupStore });
     expect(firstPass).toEqual([{ sessionId: record.sessionId, cleaned: false }]);
-    expect(store.deleteSessionCleanup).not.toHaveBeenCalled();
-    expect(store.recordSessionCleanupAttempt).toHaveBeenCalledWith(
-      record.sessionId,
-      'internal error',
-    );
+    expect(cleanupStore.remove).not.toHaveBeenCalled();
+    expect(cleanupStore.recordAttempt).toHaveBeenCalledWith(record.sessionId, 'internal error');
 
     // A later poll succeeds — SAME session id, record cleared only now.
     const healthy = { send: vi.fn().mockResolvedValue({}) };
-    const secondPass = await retrySessionCleanups({ store, runtimeClient: healthy });
+    const secondPass = await retryQueuedReleases({ client: healthy, cleanupStore });
     expect(secondPass).toEqual([{ sessionId: record.sessionId, cleaned: true }]);
     expect(healthy.send.mock.calls[0][0].constructor.name).toBe(
       'DeleteCapacityProviderSessionCommand',
@@ -467,7 +485,7 @@ describe('validation-session cleanup retention and retry', () => {
       capacityProviderId: 'cp-1',
       sessionId: record.sessionId,
     });
-    expect(store.deleteSessionCleanup).toHaveBeenCalledWith(record.sessionId);
+    expect(cleanupStore.remove).toHaveBeenCalledWith(record.sessionId);
   });
 
   it('poller clears the record when the session is confirmed absent', async () => {
@@ -476,19 +494,18 @@ describe('validation-session cleanup retention and retry', () => {
       capacityProviderArn: verifyingRevision.capacityProviderArn,
       attempts: 3,
     };
-    const store = {
-      listSessionCleanups: vi.fn().mockResolvedValue([record]),
-      deleteSessionCleanup: vi.fn().mockResolvedValue(undefined),
-      recordSessionCleanupAttempt: vi.fn(),
+    const cleanupStore = {
+      ...cleanupStoreStub(),
+      listPending: vi.fn().mockResolvedValue([record]),
     };
-    const runtimeClient = {
+    const client = {
       send: vi
         .fn()
         .mockRejectedValue(Object.assign(new Error('gone'), { name: 'ResourceNotFoundException' })),
     };
-    const results = await retrySessionCleanups({ store, runtimeClient });
+    const results = await retryQueuedReleases({ client, cleanupStore });
     expect(results).toEqual([{ sessionId: record.sessionId, cleaned: true, absent: true }]);
-    expect(store.deleteSessionCleanup).toHaveBeenCalledWith(record.sessionId);
-    expect(store.recordSessionCleanupAttempt).not.toHaveBeenCalled();
+    expect(cleanupStore.remove).toHaveBeenCalledWith(record.sessionId);
+    expect(cleanupStore.recordAttempt).not.toHaveBeenCalled();
   });
 });

@@ -16,9 +16,7 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import {
   BedrockAgentCoreClient,
-  DeleteCapacityProviderSessionCommand,
   InvokeAgentRuntimeCommand,
-  StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import {
   RETRYABLE_ECR_ERRORS,
@@ -28,18 +26,16 @@ import {
 } from './build-lifecycle.js';
 import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
-import {
-  WORKSPACE_VOLUME_NAME,
-  capacityProviderIdFromArn,
-  ensureCapacityProvider,
-  environmentArchitecture,
-} from './compute.js';
+import { runtimeBackendFor } from './runtime-backends/index.js';
+import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
+import { retryQueuedReleases } from '../shared/runtime-session.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ecr = new ECRClient({});
 const control = new BedrockAgentCoreControlClient({});
 const runtime = new BedrockAgentCoreClient({});
 const defaultStore = createEnvironmentStore({ ddb });
+const defaultCleanupStore = createSessionCleanupStore({ ddb });
 
 const logger = new Logger({ persistentKeys: { component: 'environments' } });
 
@@ -78,22 +74,6 @@ const RETRYABLE_CONTROL_ERRORS = new Set([
   'ThrottlingException',
   'TooManyRequestsException',
 ]);
-
-// The first invocation of an Instances-backed runtime provisions an EC2
-// instance and can exceed client timeouts while it boots. Those errors are
-// transient — retry the validation on the next poll instead of failing the
-// revision permanently.
-const INSTANCES_TRANSIENT_ERRORS = new Set([
-  'TimeoutError',
-  'RequestTimeout',
-  'ServiceUnavailableException',
-  'RuntimeClientError',
-]);
-
-// DeleteCapacityProviderSession outcomes that mean the session (and its EBS
-// volume) is already gone — cleanup is complete, not failed. Mirrors the
-// tolerance in lambda/shared/intent-deletion.js.
-const SESSION_ABSENT_ERRORS = new Set(['ResourceNotFoundException', 'ValidationException']);
 
 const isConditionalFailure = (error) => error?.name === 'ConditionalCheckFailedException';
 
@@ -167,50 +147,15 @@ const createRuntimeForRevision = async ({
       ...parseJsonEnv('MANAGED_RUNTIME_ENVIRONMENT', {}),
       RUNTIME_COMPATIBILITY_VERSION: revision.runtimeCompatibilityVersion,
     };
-    const instances = environment.compute?.type === 'instances';
-    // Instances runtimes attach to a capacity provider and inherit its VPC —
-    // passing networkConfiguration alongside capacityProviderConfiguration is
-    // rejected by the control plane. The EBS volume declared on the capacity
-    // provider replaces managed session storage at the same mount path.
-    let computeParams;
-    if (instances) {
-      const provider = await ensureCapacityProvider({
-        controlClient,
-        architecture: environmentArchitecture(environment),
-      });
-      if (provider.pending) return { environment, revision, pending: true };
-      capacityProviderArn = provider.capacityProviderArn;
-      computeParams = {
-        capacityProviderConfiguration: {
-          capacityProviderArn: provider.capacityProviderArn,
-        },
-        filesystemConfigurations: [
-          {
-            capacityProviderVolume: {
-              volumeName: WORKSPACE_VOLUME_NAME,
-              mountPath: '/mnt/workspace',
-            },
-          },
-        ],
-      };
-    } else {
-      const networkMode = process.env.MANAGED_RUNTIME_NETWORK_MODE || 'PUBLIC';
-      const subnets = parseJsonEnv('MANAGED_RUNTIME_SUBNETS', []);
-      const securityGroups = parseJsonEnv('MANAGED_RUNTIME_SECURITY_GROUPS', []);
-      computeParams = {
-        networkConfiguration: {
-          networkMode,
-          ...(networkMode === 'VPC' ? { networkModeConfig: { subnets, securityGroups } } : {}),
-        },
-        filesystemConfigurations: [
-          {
-            sessionStorage: {
-              mountPath: '/mnt/workspace',
-            },
-          },
-        ],
-      };
-    }
+    // The backend owns everything compute-specific about the runtime: network
+    // vs capacity provider, session storage vs persistent volume, and any
+    // dependency that must exist first (a capacity provider still CREATING
+    // reports pending and the poller re-enters on the next tick).
+    const backend = runtimeBackendFor(environment);
+    const prepared = await backend.prepareRuntime({ controlClient });
+    if (prepared.pending) return { environment, revision, pending: true };
+    capacityProviderArn = prepared.capacityProviderArn ?? null;
+    const computeParams = prepared.runtimeParams;
     created = await controlClient.send(
       new CreateAgentRuntimeCommand({
         agentRuntimeName: runtimeNameFor(environment.environmentId, revision.revisionId),
@@ -438,13 +383,110 @@ const inspectImage = async ({
   }
 };
 
+// Validation-session identity. Backends that reuse one session across polls
+// (Instances: the first invoke provisions an EC2 instance) persist it on the
+// revision so the next poll reattaches instead of restarting the cold start;
+// per-poll backends (microVMs) mint a fresh one every time.
+const acquireValidationSession = async ({ store, backend, environment, revision }) => {
+  const reuse = backend.validation.reuseSession;
+  let session = reuse ? revision.validationSessionId : null;
+  if (session) return { session, revision };
+  session = `managed-environment-${revision.revisionId}-${randomUUID()}`.padEnd(33, '0');
+  if (!reuse) return { session, revision };
+  const updated = await store.updateRevision(
+    environment.environmentId,
+    revision.revisionId,
+    { validationSessionId: session, validationAttempts: 0 },
+    { fromStatus: 'VERIFYING' },
+  );
+  return { session, revision: updated };
+};
+
+// Runs the two validation commands on the session and applies the backend's
+// session policy on the way out: a transient invoke error on a reusable
+// session keeps it alive for the next poll (bounded by maxAttempts); every
+// other outcome — success, hard failure, exhausted budget — releases it. The
+// poller itself never decides what a transient error is or what "release"
+// means for the compute type.
+const runValidationCommands = async ({
+  store,
+  backend,
+  environment,
+  revision,
+  runtimeClient,
+  cleanupStore,
+  session,
+}) => {
+  let retain = false;
+  try {
+    const capabilities = await invokeValidationCommand({
+      runtimeClient,
+      revision,
+      sessionId: session,
+      payload: { command: 'capabilities' },
+    });
+    if (capabilities.ok !== true || !Array.isArray(capabilities.clis)) {
+      throw new Error('capability validation failed');
+    }
+    const nonce = `check-${revision.revisionId}`;
+    const deterministic = await invokeValidationCommand({
+      runtimeClient,
+      revision,
+      sessionId: session,
+      payload: { command: 'managed-runtime-check', nonce },
+    });
+    if (
+      deterministic.ok !== true ||
+      deterministic.nonce !== nonce ||
+      deterministic.compatibilityVersion !== revision.runtimeCompatibilityVersion ||
+      deterministic.nonRoot !== true
+    ) {
+      throw new Error('deterministic runtime validation failed');
+    }
+    return { capabilities, deterministic };
+  } catch (error) {
+    const transient =
+      backend.validation.reuseSession &&
+      (backend.validation.isTransientInvokeError(error) ||
+        RETRYABLE_CONTROL_ERRORS.has(error?.name));
+    if (!transient) throw error;
+    const attempts = Number(revision.validationAttempts ?? 0) + 1;
+    if (attempts > backend.validation.maxAttempts) {
+      throw new Error(
+        `runtime validation did not complete within ${backend.validation.maxAttempts} polls: ${error?.message ?? error}`,
+        { cause: error },
+      );
+    }
+    retain = true;
+    await store.updateRevision(
+      environment.environmentId,
+      revision.revisionId,
+      { validationAttempts: attempts },
+      { fromStatus: 'VERIFYING' },
+    );
+    throw error;
+  } finally {
+    if (!retain) {
+      await backend.releaseValidationSession({
+        runtimeClient,
+        revision,
+        sessionId: session,
+        cleanupStore,
+        environmentId: environment.environmentId,
+      });
+    }
+  }
+};
+
 const verifyRuntime = async ({
   store,
   environment,
   revision,
   controlClient = control,
   runtimeClient = runtime,
+  cleanupStore = defaultCleanupStore,
 }) => {
+  const backend = runtimeBackendFor(environment);
   try {
     if (!revision.runtimeArn || !revision.runtimeId || !revision.runtimeVersion) {
       throw new Error('runtime identity is incomplete');
@@ -518,133 +560,22 @@ const verifyRuntime = async ({
     if (endpoint.status !== 'READY') {
       throw new Error(endpoint.failureReason || `endpoint is ${endpoint.status}`);
     }
-    // One validation session per revision on the Instances compute type: the
-    // first invocation provisions an EC2 instance, so on a transient error the
-    // session is kept alive and the next poll reattaches to it instead of
-    // starting a new cold start (and stopping the one that was provisioning).
-    // microVM validation keeps the original per-poll session semantics.
-    const instances = environment.compute?.type === 'instances';
-    let session = instances ? revision.validationSessionId : null;
-    if (!session) {
-      session = `managed-environment-${revision.revisionId}-${randomUUID()}`.padEnd(33, '0');
-      if (instances) {
-        revision = await store.updateRevision(
-          environment.environmentId,
-          revision.revisionId,
-          { validationSessionId: session, validationAttempts: 0 },
-          { fromStatus: 'VERIFYING' },
-        );
-      }
-    }
-    let capabilities;
-    let deterministic;
-    let keepSessionForRetry = false;
-    try {
-      capabilities = await invokeValidationCommand({
-        runtimeClient,
-        revision,
-        sessionId: session,
-        payload: { command: 'capabilities' },
-      });
-      if (capabilities.ok !== true || !Array.isArray(capabilities.clis)) {
-        throw new Error('capability validation failed');
-      }
-      const nonce = `check-${revision.revisionId}`;
-      deterministic = await invokeValidationCommand({
-        runtimeClient,
-        revision,
-        sessionId: session,
-        payload: { command: 'managed-runtime-check', nonce },
-      });
-      if (
-        deterministic.ok !== true ||
-        deterministic.nonce !== nonce ||
-        deterministic.compatibilityVersion !== revision.runtimeCompatibilityVersion ||
-        deterministic.nonRoot !== true
-      ) {
-        throw new Error('deterministic runtime validation failed');
-      }
-    } catch (error) {
-      keepSessionForRetry =
-        instances &&
-        (INSTANCES_TRANSIENT_ERRORS.has(error?.name) || RETRYABLE_CONTROL_ERRORS.has(error?.name));
-      if (keepSessionForRetry) {
-        // Bounded retry: give the cold start a deadline instead of letting the
-        // revision stay VERIFYING indefinitely. The poller runs every minute.
-        const attempts = Number(revision.validationAttempts ?? 0) + 1;
-        const maxAttempts = Number(process.env.MANAGED_INSTANCES_VALIDATION_MAX_POLLS || 30);
-        if (attempts > maxAttempts) {
-          keepSessionForRetry = false; // exhausted — stop the session and fail below
-          throw new Error(
-            `runtime validation did not complete within ${maxAttempts} polls: ${error?.message ?? error}`,
-          );
-        }
-        await store.updateRevision(
-          environment.environmentId,
-          revision.revisionId,
-          { validationAttempts: attempts },
-          { fromStatus: 'VERIFYING' },
-        );
-      }
-      throw error;
-    } finally {
-      if (!keepSessionForRetry) {
-        try {
-          await runtimeClient.send(
-            new StopRuntimeSessionCommand({
-              agentRuntimeArn: revision.runtimeArn,
-              qualifier: revision.runtimeEndpoint,
-              runtimeSessionId: session,
-            }),
-          );
-        } catch (error) {
-          logger.warn('Managed runtime validation session cleanup failed', {
-            session,
-            error: error?.message ?? String(error),
-          });
-        }
-        // Instances sessions keep their EBS volume across stop/idle/lifetime;
-        // only an explicit session delete releases it. Validation sessions are
-        // disposable, so delete on every terminal outcome. A failed delete is
-        // NOT swallowed: the provider/session identity is persisted as durable
-        // cleanup work (the terminal transition below clears
-        // validationSessionId, so the revision row cannot carry it), and the
-        // poller retries the delete until it succeeds or the session is
-        // confirmed absent — see retrySessionCleanups.
-        const capacityProviderId = capacityProviderIdFromArn(revision.capacityProviderArn);
-        if (instances && capacityProviderId) {
-          try {
-            await runtimeClient.send(
-              new DeleteCapacityProviderSessionCommand({
-                capacityProviderId,
-                sessionId: session,
-              }),
-            );
-          } catch (error) {
-            if (!SESSION_ABSENT_ERRORS.has(error?.name)) {
-              logger.warn('Managed runtime validation session delete failed — retained for retry', {
-                session,
-                error: error?.message ?? String(error),
-              });
-              try {
-                await store.putSessionCleanup({
-                  sessionId: session,
-                  capacityProviderArn: revision.capacityProviderArn,
-                  environmentId: environment.environmentId,
-                  revisionId: revision.revisionId,
-                  reason: error?.message ?? String(error),
-                });
-              } catch (persistError) {
-                // Double failure — the volume may leak until an operator
-                // intervenes; surface it loudly but do not block the
-                // revision's terminal transition.
-                logger.error('Failed to persist session cleanup work', persistError, { session });
-              }
-            }
-          }
-        }
-      }
-    }
+    const { session, revision: sessionRevision } = await acquireValidationSession({
+      store,
+      backend,
+      environment,
+      revision,
+    });
+    revision = sessionRevision;
+    const { capabilities, deterministic } = await runValidationCommands({
+      store,
+      backend,
+      environment,
+      revision,
+      runtimeClient,
+      cleanupStore,
+      session,
+    });
     const completedAt = new Date().toISOString();
     const elevatedFindings =
       Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0) +
@@ -662,7 +593,7 @@ const verifyRuntime = async ({
           completedAt,
           imageBuild: 'PASSED',
           baseDigest: 'PASSED',
-          architecture: environmentArchitecture(environment),
+          architecture: backend.architecture,
           nonRoot: deterministic.nonRoot === true,
           workspaceWritable: deterministic.workspaceWritable === true,
           protectedRuntime: deterministic.protectedRuntime === true,
@@ -687,7 +618,7 @@ const verifyRuntime = async ({
   } catch (error) {
     if (
       RETRYABLE_CONTROL_ERRORS.has(error?.name) ||
-      (environment.compute?.type === 'instances' && INSTANCES_TRANSIENT_ERRORS.has(error?.name))
+      backend.validation.isTransientInvokeError(error)
     ) {
       return { environment, revision, pending: true };
     }
@@ -764,55 +695,13 @@ const handleScanEvent = async ({ store, event, ecrClient, controlClient }) => {
   });
 };
 
-// Retry every pending validation-session cleanup until the delete succeeds or
-// the session is confirmed absent. The records are written by verifyRuntime
-// when DeleteCapacityProviderSession fails on a terminal validation outcome —
-// without this pass a transient delete failure would leak the session's EBS
-// workspace volume (and its storage charges) forever, because the revision's
-// terminal transition clears validationSessionId. The record is only removed
-// AFTER a successful delete (or a confirmed-absent miss); any other failure
-// keeps it and bumps the attempt counter for observability.
-const retrySessionCleanups = async ({ store, runtimeClient }) => {
-  const pending = await store.listSessionCleanups();
-  const results = [];
-  for (const record of pending) {
-    const capacityProviderId = capacityProviderIdFromArn(record.capacityProviderArn);
-    if (!capacityProviderId) {
-      // Unactionable record (no provider identity) — drop it.
-      await store.deleteSessionCleanup(record.sessionId);
-      results.push({ sessionId: record.sessionId, dropped: true });
-      continue;
-    }
-    try {
-      await runtimeClient.send(
-        new DeleteCapacityProviderSessionCommand({
-          capacityProviderId,
-          sessionId: record.sessionId,
-        }),
-      );
-      await store.deleteSessionCleanup(record.sessionId);
-      results.push({ sessionId: record.sessionId, cleaned: true });
-    } catch (error) {
-      if (SESSION_ABSENT_ERRORS.has(error?.name)) {
-        await store.deleteSessionCleanup(record.sessionId);
-        results.push({ sessionId: record.sessionId, cleaned: true, absent: true });
-        continue;
-      }
-      logger.warn('Session cleanup retry failed — kept for the next poll', {
-        session: record.sessionId,
-        attempts: (record.attempts ?? 0) + 1,
-        error: error?.message ?? String(error),
-      });
-      await store
-        .recordSessionCleanupAttempt(record.sessionId, error?.message ?? String(error))
-        .catch(() => {});
-      results.push({ sessionId: record.sessionId, cleaned: false });
-    }
-  }
-  return results;
-};
-
-const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, runtimeClient }) => {
+const pollManagedEnvironmentStatus = async ({
+  store,
+  ecrClient,
+  controlClient,
+  runtimeClient,
+  cleanupStore = defaultCleanupStore,
+}) => {
   const results = [];
   // Each item is isolated: the poll is the ONLY driver of every transition
   // (BUILDING/SCANNING inspection, acknowledged security findings → runtime
@@ -897,10 +786,13 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
         revision,
         controlClient,
         runtimeClient,
+        cleanupStore,
       }),
     );
   }
-  const sessionCleanups = await retrySessionCleanups({ store, runtimeClient });
+  // Releases that failed earlier (validation sessions, deleted intents) are
+  // queued on the shared cleanup store; the poller is the retry driver.
+  const sessionCleanups = await retryQueuedReleases({ client: runtimeClient, cleanupStore });
   return { checked: results.length, results, sessionCleanups };
 };
 
@@ -909,6 +801,7 @@ export const createStatusHandler = ({
   ecrClient = ecr,
   controlClient = control,
   runtimeClient = runtime,
+  cleanupStore = defaultCleanupStore,
 } = {}) =>
   createBuildLifecycleHandler({
     label: 'Managed environment',
@@ -918,6 +811,7 @@ export const createStatusHandler = ({
         ecrClient,
         controlClient,
         runtimeClient,
+        cleanupStore,
       }),
     handleBuildEvent: (event) =>
       handleBuildEvent({
@@ -942,7 +836,6 @@ export {
   verifyRuntime,
   createRuntimeForRevision,
   pollManagedEnvironmentStatus,
-  retrySessionCleanups,
   runtimeNameFor,
   endpointNameFor,
 };

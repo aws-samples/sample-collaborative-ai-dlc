@@ -109,10 +109,22 @@ describe('managed environment handler', () => {
       ...claims(),
     });
     expect(disabled.statusCode).toBe(200);
-    expect(JSON.parse(disabled.body)).toEqual({
+    const disabledBody = JSON.parse(disabled.body);
+    expect(disabledBody).toMatchObject({
       instancesCompute: false,
       amd64CoreImage: false,
+      default: { type: 'microvms', architecture: 'arm64' },
     });
+    // The matrix is the contract the UI renders from: only microVMs/arm64
+    // is selectable, and every unavailable cell carries its reason.
+    expect(
+      disabledBody.combinations.map((c) => [c.type, c.architecture, c.available, c.reason ?? null]),
+    ).toEqual([
+      ['microvms', 'arm64', true, null],
+      ['microvms', 'x86_64', false, 'MICROVMS_ARCHITECTURE_UNSUPPORTED'],
+      ['instances', 'arm64', false, 'INSTANCES_COMPUTE_NOT_CONFIGURED'],
+      ['instances', 'x86_64', false, 'INSTANCES_COMPUTE_NOT_CONFIGURED'],
+    ]);
 
     // Instances-enabled deployment.
     vi.stubEnv('MANAGED_INSTANCES_OPERATOR_ROLE_ARN', 'arn:aws:iam::1:role/operator');
@@ -125,10 +137,14 @@ describe('managed environment handler', () => {
       path: '/environments/capabilities',
       ...claims(),
     });
-    expect(JSON.parse(enabled.body)).toEqual({
-      instancesCompute: true,
-      amd64CoreImage: true,
-    });
+    const enabledBody = JSON.parse(enabled.body);
+    expect(enabledBody).toMatchObject({ instancesCompute: true, amd64CoreImage: true });
+    expect(
+      enabledBody.combinations.filter((c) => c.available).map((c) => c.type + '/' + c.architecture),
+    ).toEqual(['microvms/arm64', 'instances/arm64', 'instances/x86_64']);
+    expect(
+      enabledBody.combinations.find((c) => c.type === 'instances' && c.architecture === 'x86_64'),
+    ).toMatchObject({ allowedInstanceTypes: ['m6i.large'] });
     vi.unstubAllEnvs();
   });
 

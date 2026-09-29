@@ -1,11 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  applyComputeBase,
   capacityProviderName,
   ensureCapacityProvider,
-  environmentArchitecture,
-  normalizeCompute,
-} from '../compute.js';
+} from '../runtime-backends/capacity-provider.js';
 
 const INSTANCES_ENV = {
   MANAGED_INSTANCES_OPERATOR_ROLE_ARN: 'arn:aws:iam::123456789012:role/operator',
@@ -31,142 +28,6 @@ afterEach(() => {
     if (saved[key] === undefined) delete process.env[key];
     else process.env[key] = saved[key];
   }
-});
-
-describe('normalizeCompute', () => {
-  it('returns null for the default microVMs compute', () => {
-    expect(normalizeCompute(undefined)).toBeNull();
-    expect(normalizeCompute(null)).toBeNull();
-    expect(normalizeCompute({ type: 'microvms' })).toBeNull();
-    expect(normalizeCompute({ type: 'microvms', architecture: 'arm64' })).toBeNull();
-  });
-
-  it('rejects unknown types and architectures', () => {
-    expect(() => normalizeCompute({ type: 'bare-metal' })).toThrow(/compute\.type/);
-    expect(() => normalizeCompute({ type: 'instances', architecture: 'riscv' })).toThrow(
-      /compute\.architecture/,
-    );
-    expect(() => normalizeCompute('instances')).toThrow(/must be an object/);
-  });
-
-  it('rejects x86_64 on microVMs (arm64-only compute type)', () => {
-    expect(() => normalizeCompute({ type: 'microvms', architecture: 'x86_64' })).toThrow(/arm64/);
-  });
-
-  it('accepts instances and defaults the architecture to x86_64', () => {
-    expect(normalizeCompute({ type: 'instances' })).toEqual({
-      type: 'instances',
-      architecture: 'x86_64',
-    });
-    expect(normalizeCompute({ type: 'instances', architecture: 'arm64' })).toEqual({
-      type: 'instances',
-      architecture: 'arm64',
-    });
-  });
-
-  it('rejects instances when the deployment is not configured for it', () => {
-    delete process.env.MANAGED_INSTANCES_OPERATOR_ROLE_ARN;
-    expect(() => normalizeCompute({ type: 'instances' })).toThrow(/not configured/);
-  });
-
-  it('rejects x86_64 when no amd64 core image is published', () => {
-    delete process.env.CORE_IMAGE_URI_AMD64;
-    expect(() => normalizeCompute({ type: 'instances', architecture: 'x86_64' })).toThrow(
-      /x86_64 core image/,
-    );
-  });
-});
-
-describe('environmentArchitecture', () => {
-  it('defaults to arm64 and honors the compute field', () => {
-    expect(environmentArchitecture({})).toBe('arm64');
-    expect(environmentArchitecture(null)).toBe('arm64');
-    expect(
-      environmentArchitecture({ compute: { type: 'instances', architecture: 'x86_64' } }),
-    ).toBe('x86_64');
-  });
-});
-
-describe('applyComputeBase', () => {
-  const recipe = {
-    schemaVersion: 'catalog-1',
-    toolVersionIds: [],
-    base: {
-      environmentId: 'core',
-      revisionId: 'core-1',
-      imageUri: 'arm64-uri',
-      imageDigest: 'sha256:arm',
-    },
-  };
-
-  it('leaves arm64 recipes untouched', () => {
-    expect(
-      applyComputeBase({ recipe, compute: { type: 'instances', architecture: 'arm64' } }),
-    ).toBe(recipe);
-  });
-
-  it('swaps the base image for the amd64 variant stored on the base revision', () => {
-    const baseRevision = {
-      revisionId: 'core-1',
-      amd64Image: { imageUri: 'amd64-uri', imageDigest: 'sha256:amd' },
-    };
-    const swapped = applyComputeBase({
-      recipe,
-      compute: { type: 'instances', architecture: 'x86_64' },
-      baseRevision,
-    });
-    expect(swapped.base.imageUri).toBe('amd64-uri');
-    expect(swapped.base.imageDigest).toBe('sha256:amd');
-    expect(swapped.architecture).toBe('x86_64');
-    expect(swapped.base.environmentId).toBe('core');
-  });
-
-  it('uses the published revision variant even when a newer core is deployed (upgrade window)', () => {
-    // Deployment env vars carry the NEW core; the published Standard revision
-    // still points at the OLD one until publication. The x86 base must follow
-    // the revision, not the deployment.
-    process.env.CORE_IMAGE_URI_AMD64 = 'newer-deployment-uri';
-    process.env.CORE_IMAGE_DIGEST_AMD64 = `sha256:${'f'.repeat(64)}`;
-    const publishedRevision = {
-      revisionId: 'core-old',
-      amd64Image: { imageUri: 'published-amd64-uri', imageDigest: 'sha256:published-amd' },
-    };
-    const swapped = applyComputeBase({
-      recipe,
-      compute: { type: 'instances', architecture: 'x86_64' },
-      baseRevision: publishedRevision,
-    });
-    expect(swapped.base.imageUri).toBe('published-amd64-uri');
-    expect(swapped.base.imageDigest).toBe('sha256:published-amd');
-  });
-
-  it('rejects an x86_64 recipe when the base revision has no amd64 variant', () => {
-    expect(() =>
-      applyComputeBase({
-        recipe,
-        compute: { type: 'instances', architecture: 'x86_64' },
-        baseRevision: { revisionId: 'core-1' },
-      }),
-    ).toThrow(/no x86_64 variant/);
-  });
-
-  it('rejects x86_64 recipes that select catalog tools', () => {
-    expect(() =>
-      applyComputeBase({
-        recipe: { ...recipe, toolVersionIds: ['tool@1'] },
-        compute: { type: 'instances', architecture: 'x86_64' },
-      }),
-    ).toThrow(/arm64-only/);
-  });
-
-  it('rejects x86_64 environments derived from non-standard bases', () => {
-    expect(() =>
-      applyComputeBase({
-        recipe: { ...recipe, base: { ...recipe.base, environmentId: 'custom-base' } },
-        compute: { type: 'instances', architecture: 'x86_64' },
-      }),
-    ).toThrow(/Standard environment/);
-  });
 });
 
 describe('ensureCapacityProvider', () => {

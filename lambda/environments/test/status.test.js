@@ -30,12 +30,17 @@ const mutableStore = (initialRevision = revision) => {
     listRevisionsByStatus: vi
       .fn()
       .mockImplementation(async (status) => (current.status === status ? [current] : [])),
-    listSessionCleanups: vi.fn().mockResolvedValue([]),
-    putSessionCleanup: vi.fn().mockResolvedValue({}),
-    recordSessionCleanupAttempt: vi.fn().mockResolvedValue({}),
-    deleteSessionCleanup: vi.fn().mockResolvedValue(undefined),
   };
 };
+
+// Shared session-cleanup store (durable queue of failed releases); the poller
+// drains it on every tick, so every handler in this suite gets an empty one.
+const cleanupStoreStub = () => ({
+  enqueue: vi.fn().mockResolvedValue({}),
+  listPending: vi.fn().mockResolvedValue([]),
+  recordAttempt: vi.fn().mockResolvedValue({}),
+  remove: vi.fn().mockResolvedValue(undefined),
+});
 
 const buildEvent = {
   source: 'aws.codebuild',
@@ -72,6 +77,7 @@ describe('managed environment status handler', () => {
   it('requires acceptance for Critical findings and records issue details', async () => {
     const store = mutableStore();
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: imageClient(
         { CRITICAL: 1 },
@@ -112,6 +118,7 @@ describe('managed environment status handler', () => {
   it('requires acknowledgement for High findings', async () => {
     const store = mutableStore();
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: imageClient({ HIGH: 2 }),
       controlClient: { send: vi.fn() },
@@ -132,6 +139,7 @@ describe('managed environment status handler', () => {
       }),
     };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: imageClient({}),
       controlClient,
@@ -173,6 +181,7 @@ describe('managed environment status handler', () => {
       send: vi.fn().mockResolvedValue({ status: 'CREATING' }),
     };
     const creatingHandler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: creatingControl,
@@ -196,6 +205,7 @@ describe('managed environment status handler', () => {
       }),
     };
     const readyHandler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: readyControl,
@@ -219,6 +229,7 @@ describe('managed environment status handler', () => {
       name: 'ImageNotFoundException',
     });
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn().mockRejectedValue(notFound) },
       controlClient: { send: vi.fn() },
@@ -251,6 +262,7 @@ describe('managed environment status handler', () => {
       }),
     };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient,
@@ -282,6 +294,7 @@ describe('managed environment status handler', () => {
     };
     const store = mutableStore(failed);
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: imageClient({ CRITICAL: 5 }),
       controlClient: { send: vi.fn() },
@@ -305,6 +318,7 @@ describe('managed environment status handler', () => {
     const imageDigest = `sha256:${'c'.repeat(64)}`;
     const store = mutableStore({ ...revision, imageDigest });
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: { send: vi.fn() },
@@ -329,6 +343,7 @@ describe('managed environment status handler', () => {
     const ecrClient = { send: vi.fn() };
     const controlClient = { send: vi.fn() };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient,
       controlClient,
@@ -348,6 +363,7 @@ describe('managed environment status handler', () => {
   it('ignores late build failure events after validation has started', async () => {
     const store = mutableStore({ ...revision, status: 'VERIFYING' });
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: { send: vi.fn() },
@@ -406,6 +422,7 @@ describe('managed environment status handler', () => {
         }),
     };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
@@ -464,6 +481,7 @@ describe('managed environment status handler', () => {
         .mockResolvedValueOnce({}),
     };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
@@ -502,6 +520,7 @@ describe('managed environment status handler', () => {
       }),
     };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
@@ -552,6 +571,7 @@ describe('managed environment status handler', () => {
         .mockRejectedValueOnce(cleanupError),
     };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
@@ -587,7 +607,10 @@ describe('managed environment status handler', () => {
           }
         })
         .find(
-          (o) => o && o.level === 'WARN' && String(o.message).includes('session cleanup failed'),
+          (o) =>
+            o &&
+            o.level === 'WARN' &&
+            String(o.message).includes('stop-runtime-session best-effort miss'),
         );
       expect(cleanupWarn).toBeDefined();
       expect(cleanupWarn.error).toContain('runtime session not found');
@@ -601,6 +624,7 @@ describe('managed environment status handler', () => {
       getLookup: vi.fn().mockRejectedValue(new Error('registry unavailable')),
     };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient: { send: vi.fn() },
       controlClient: { send: vi.fn() },
@@ -648,7 +672,6 @@ describe('managed environment status handler', () => {
         if (status === 'SECURITY_REVIEW') return [acknowledged];
         return [];
       }),
-      listSessionCleanups: vi.fn().mockResolvedValue([]),
     };
     const ecrClient = { send: vi.fn().mockRejectedValue(new Error('inspection exploded')) };
     const controlClient = {
@@ -659,6 +682,7 @@ describe('managed environment status handler', () => {
       }),
     };
     const handler = createStatusHandler({
+      cleanupStore: cleanupStoreStub(),
       store,
       ecrClient,
       controlClient,
