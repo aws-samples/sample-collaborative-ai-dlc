@@ -315,6 +315,17 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         statusCode: 409,
       });
     }
+    // fromStatus is an optimistic precondition ("I am acting on the revision
+    // as I last read it"). Check it BEFORE the transition table: a writer whose
+    // view is stale — e.g. an overlapping status poll that lost the race to
+    // the one that already moved the revision to READY — must see the same
+    // conditional failure DynamoDB would raise, so callers treat it as
+    // "already handled" instead of an invalid transition.
+    if (fromStatus && existing.status !== fromStatus) {
+      throw Object.assign(new Error(`Revision is ${existing.status}, expected ${fromStatus}`), {
+        name: 'ConditionalCheckFailedException',
+      });
+    }
     if (patch.status) assertRevisionTransition(existing.status, patch.status);
     const updatedAt = now();
     const nextStatus = patch.status ?? existing.status;

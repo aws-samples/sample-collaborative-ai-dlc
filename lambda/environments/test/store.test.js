@@ -337,6 +337,22 @@ describe('environment registry store', () => {
     });
   });
 
+  it('reports a stale fromStatus as a conditional failure, not an invalid transition', async () => {
+    // An overlapping status poll already moved the revision to READY; the
+    // slower one still believes it is VERIFYING and tries to fail it.
+    const ddb = {
+      send: vi.fn().mockResolvedValue({
+        Item: { environmentId: 'x86', revisionId: 'r-1', status: 'READY' },
+      }),
+    };
+    const store = createEnvironmentStore({ ddb, tableName: 'registry' });
+    await expect(
+      store.updateRevision('x86', 'r-1', { status: 'FAILED' }, { fromStatus: 'VERIFYING' }),
+    ).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+    // Only the read — no write attempted.
+    expect(ddb.send).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects recipe changes after a revision is queued', async () => {
     const ddb = {
       send: vi.fn().mockResolvedValue({

@@ -108,21 +108,31 @@ const invokeValidationCommand = async ({ runtimeClient, revision, payload, sessi
 };
 
 const failRevision = async (store, environmentId, revision, reason, detail = null) => {
-  const failed = await store.updateRevision(
-    environmentId,
-    revision.revisionId,
-    {
-      status: 'FAILED',
-      validationSessionId: null,
-      validationAttempts: null,
-      failure: {
-        reason,
-        detail,
-        failedAt: new Date().toISOString(),
+  let failed;
+  try {
+    failed = await store.updateRevision(
+      environmentId,
+      revision.revisionId,
+      {
+        status: 'FAILED',
+        validationSessionId: null,
+        validationAttempts: null,
+        failure: {
+          reason,
+          detail,
+          failedAt: new Date().toISOString(),
+        },
       },
-    },
-    { fromStatus: revision.status },
-  );
+      { fromStatus: revision.status },
+    );
+  } catch (error) {
+    // Another writer moved the revision since this caller read it — e.g. an
+    // overlapping status poll (validation on Instances outlasts the 1-minute
+    // schedule) that already validated it and marked it READY. Its outcome
+    // wins; this failure observation is stale.
+    if (!isConditionalFailure(error)) throw error;
+    return (await store.getRevision(environmentId, revision.revisionId)) ?? revision;
+  }
   await updateEnvironmentForRevision(store, environmentId, revision.revisionId, {
     status: 'FAILED',
   });
