@@ -52,6 +52,8 @@
 import processKeysPkg from '../shared/v2-process-keys.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from './pr-attribution.js';
+import { assertPrStrategySupported } from '../shared/pr-strategy.js';
+import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 
 const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 
@@ -432,6 +434,17 @@ export const runParallelSection = async (segment, toolkit) => {
   // slug → in-flight lane DurablePromise (wavefront cross-lane coordination).
   const lanePromises = new Map();
   const usesUnitPrs = prStrategy === 'pr-per-unit';
+  // Fail closed before any lane starts: an execution persisted with
+  // pr-per-unit on a provider without draft pull requests (created before the
+  // intent-time check, or via another path) must not run unit PRs unprotected.
+  if (usesUnitPrs) {
+    assertPrStrategySupported(
+      prStrategy,
+      (cloneBase.repos ?? []).map((repo) =>
+        sharedRepoProvider(repo, cloneBase.gitProvider, cloneBase.repoProviders),
+      ),
+    );
+  }
   // A repair/relaunch starts a new durable history but keeps already-integrated
   // units. Hydrate those terminal lanes so the walking skeleton and its review
   // gate are not replayed and dependency waits can continue from durable DDB
@@ -606,6 +619,10 @@ export const runParallelSection = async (segment, toolkit) => {
               baseBranch: intentBranch,
               title,
               body,
+              // One creation attempt per replaced PR: a replay of this step
+              // reuses the key (the row still names the PR being replaced);
+              // replacing the replacement later yields a new one.
+              attemptKey: `${executionId}:${segment.index}:${slug}:${existing?.number ?? 'initial'}`,
             });
             if (created?.failed || created?.conflict || created?.skipped) {
               throw new Error(

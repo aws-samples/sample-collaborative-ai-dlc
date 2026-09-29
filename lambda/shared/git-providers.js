@@ -31,9 +31,27 @@
 import github from './git-providers/github.js';
 import gitlab from './git-providers/gitlab.js';
 import bitbucket from './git-providers/bitbucket.js';
+import codecommit from './git-providers/codecommit.js';
 import { ProviderError } from './git-providers/errors.js';
 
-const REGISTRY = { github, gitlab, bitbucket };
+const REGISTRY = { github, gitlab, bitbucket, codecommit };
+
+// Every provider declares the contract gaps it cannot honour so callers can
+// branch BEFORE invoking a method that can only throw. Missing keys read as
+// "supported" -- the historical default for the three OAuth providers.
+const DEFAULT_CAPABILITIES = Object.freeze({
+  issues: true,
+  draftPullRequests: true,
+  reopenPullRequest: true,
+  checkStatuses: true,
+  approvalRules: false,
+  events: 'webhook',
+});
+
+const getCapabilities = (providerId) => ({
+  ...DEFAULT_CAPABILITIES,
+  ...getProvider(providerId).capabilities,
+});
 
 const DEFAULT_PROVIDER = 'github';
 
@@ -54,7 +72,14 @@ const getProvider = (providerId) => {
 
 // Convenience helpers for callers (e.g. the agentcore workspace) that only
 // need the host/clone plumbing, not the full REST surface.
-const gitHost = (providerId) => getProvider(providerId).gitHost;
+// Regional providers (CodeCommit) have no single host; pass the repoId to
+// resolve it, otherwise the provider-wide constant is returned.
+const gitHost = (providerId, repoId) => {
+  const provider = getProvider(providerId);
+  if (provider.gitHost) return provider.gitHost;
+  if (repoId && typeof provider.gitHostFor === 'function') return provider.gitHostFor(repoId);
+  return null;
+};
 const buildCloneUrl = (providerId, repoId, token) =>
   getProvider(providerId).buildCloneUrl(repoId, token);
 
@@ -66,6 +91,8 @@ export {
   normalizeProviderId,
   isKnownProvider,
   getProvider,
+  getCapabilities,
+  DEFAULT_CAPABILITIES,
   gitHost,
   buildCloneUrl,
 };
@@ -76,6 +103,8 @@ export default {
   normalizeProviderId,
   isKnownProvider,
   getProvider,
+  getCapabilities,
+  DEFAULT_CAPABILITIES,
   gitHost,
   buildCloneUrl,
 };

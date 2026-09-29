@@ -2,6 +2,13 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
+  # Provisioning a custom domain must not cut over existing SSO redirects before
+  # its DNS and upstream IdP callbacks are ready.
+  hosted_ui_origin = (
+    var.custom_domain != "" && var.custom_domain_active ? "https://${aws_cognito_user_pool_domain.custom[0].domain}" :
+    "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.region}.amazoncognito.com"
+  )
+
   sso_enabled        = var.auth_mode != "local"
   local_enabled      = var.auth_mode != "sso-only"
   sso_provider_names = nonsensitive(toset(keys(var.sso_providers)))
@@ -176,6 +183,17 @@ resource "random_id" "cognito_domain" {
 resource "aws_cognito_user_pool_domain" "main" {
   domain       = "${substr(replace(lower("${var.project_name}-${var.environment}"), "/[^a-z0-9-]/", "-"), 0, 50)}-${random_id.cognito_domain.hex}"
   user_pool_id = aws_cognito_user_pool.main.id
+}
+
+# Optional custom managed-login domain. A user pool can hold one prefix domain
+# and one custom domain at the same time, so the prefix domain stays in place
+# and disabling custom_domain_active rolls back without replacing either domain.
+resource "aws_cognito_user_pool_domain" "custom" {
+  count = var.custom_domain != "" ? 1 : 0
+
+  domain          = var.custom_domain
+  certificate_arn = var.custom_domain_certificate_arn
+  user_pool_id    = aws_cognito_user_pool.main.id
 }
 
 resource "aws_cognito_identity_provider" "main" {

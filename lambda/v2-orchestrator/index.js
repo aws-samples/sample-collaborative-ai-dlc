@@ -208,13 +208,13 @@ const defaultDeps = () => ({
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
-  openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body }) =>
+  openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body, attemptKey }) =>
     defaultSourceControlOperation({
       projectId,
       provider: gitProvider,
       repo: repoId,
       operation: 'create-pr',
-      args: { branch, baseBranch, title, body },
+      args: { branch, baseBranch, title, body, attemptKey },
     }),
   // PR-time verification (2026-07 incident): compare base...head BEFORE the PR
   // call so a never-pushed or commit-less intent branch is a LOUD failure, not
@@ -249,13 +249,22 @@ const defaultDeps = () => ({
           state: gitProvider === 'gitlab' && state === 'open' ? 'opened' : state,
         },
       }),
-    createDraft: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body }) =>
+    createDraft: ({
+      projectId,
+      gitProvider,
+      repoId,
+      branch,
+      baseBranch,
+      title,
+      body,
+      attemptKey,
+    }) =>
       defaultSourceControlOperation({
         projectId,
         provider: gitProvider,
         repo: repoId,
         operation: 'create-pr',
-        args: { branch, baseBranch, title, body, draft: true },
+        args: { branch, baseBranch, title, body, draft: true, attemptKey },
       }),
     status: ({ projectId, gitProvider, repoId, number }) =>
       defaultSourceControlOperation({
@@ -1017,7 +1026,18 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // before AgentCore restores a released session's workspace, otherwise
         // the re-clone is rejected while the execution still reads WAITING.
         const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, async () => {
+          // Lane gates never park META: another lane may own its single pending
+          // gate pointer, and this lane's META status has remained RUNNING. The
+          // conditional ownership update leaves that status and pointer intact.
           try {
+            if (unitSlug) {
+              await store.updateExecution({
+                executionId,
+                orchestratorRunId: runId,
+                ifOrchestratorRunId: runId,
+              });
+              return true;
+            }
             await store.updateExecution({
               executionId,
               status: 'RUNNING',
@@ -1557,6 +1577,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         store,
         meta,
         executionId,
+        runId,
         applicationUrl,
         log: (m) => logger.info(m),
       }),
@@ -1877,6 +1898,7 @@ const openIntentPrs = async ({
   store,
   meta,
   executionId,
+  runId = null,
   applicationUrl,
   log,
 }) => {
@@ -2042,6 +2064,12 @@ const openIntentPrs = async ({
         baseBranch: baseFor(repoId),
         title,
         body,
+        // One creation attempt per orchestrator run. The execution id alone
+        // is the intent id, identical across a rewind or repair relaunch, so
+        // it would replay a PR a reviewer closed in the meantime (CodeCommit
+        // cannot reopen it). A durable replay of this step keeps its run id
+        // and therefore its key.
+        attemptKey: runId ? `${executionId}:${runId}` : executionId,
       });
       if (res?.prUrl) {
         results.push({
