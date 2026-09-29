@@ -214,6 +214,25 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
 
   const configuredCount =
     Number(Boolean(settings?.bedrockBearerTokenSet)) + Number(Boolean(settings?.kiroApiKeySet));
+  const authentication = settings?.authentication;
+  const policyMode = authentication?.policy.mode;
+  // Keys is the built-in legacy-key owner; every other mode authenticates
+  // Bedrock agents through a connection, so saved Bedrock keys are inert.
+  const connectionMode = policyMode !== undefined && policyMode !== 'keys';
+  const modeLabel =
+    authentication?.modes.find((option) => option.id === policyMode)?.label ?? policyMode;
+  const hasOverride = authentication?.hasOverride ?? Boolean(settings?.bedrockBearerTokenSet);
+  const connectionReady =
+    authentication?.connection?.mode === policyMode &&
+    authentication?.connection?.state === 'ready';
+  const inheritsConnection = scope !== 'platform' && !hasOverride;
+  const description = !connectionMode
+    ? COPY[scope].description
+    : scope === 'platform'
+      ? `Agents use the platform ${modeLabel} connection. Kiro keeps its separate API key.`
+      : scope === 'space'
+        ? `Agents inherit the platform ${modeLabel} connection unless this space has its own. Kiro keeps its separate API key.`
+        : `Agents use the ${modeLabel} connection managed by administrators. Kiro keeps your personal API key.`;
   const fallbackText = (provider: 'bedrock' | 'kiro') => {
     if (scope !== 'space') return null;
     const available =
@@ -227,16 +246,24 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     <SettingsCard
       icon={<KeyRound />}
       title={COPY[scope].title}
-      description={COPY[scope].description}
+      description={description}
       badge={
-        !loading && (
+        !loading &&
+        (connectionMode ? (
+          <ConfigStatusBadge
+            ok={connectionReady}
+            okLabel={inheritsConnection ? 'Using platform connection' : `${modeLabel} configured`}
+            notOkLabel={`${modeLabel} needs attention`}
+            notOkTone="warning"
+          />
+        ) : (
           <ConfigStatusBadge
             ok={configuredCount > 0}
             okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
             notOkLabel="No credentials"
             notOkTone="warning"
           />
-        )
+        ))
       }
     >
       {loading ? (
@@ -279,11 +306,13 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         </div>
       ) : (
         <div className="space-y-5">
-          {settings?.authentication && (
+          {authentication && (
             <AgentAuthenticationModeSettings
-              authentication={settings.authentication}
+              key={`${identity}:${authentication.policy.revision}`}
+              authentication={authentication}
               scope={scope}
-              hasOverride={Boolean(settings.bedrockBearerTokenSet)}
+              projectId={projectId}
+              hasOverride={hasOverride}
               onApplied={load}
             />
           )}
@@ -308,13 +337,12 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
             rotatePlaceholder="Enter a new token to rotate, or leave blank"
             onClear={() => clearSecret('bedrockBearerToken')}
             clearing={clearingSecret === 'bedrockBearerToken'}
-            disabled={
-              saving ||
-              clearingSecret !== null ||
-              (settings?.authentication?.policy.mode !== undefined &&
-                settings.authentication.policy.mode !== 'keys')
+            disabled={saving || clearingSecret !== null || connectionMode}
+            helpText={
+              connectionMode
+                ? `Agents authenticate with ${modeLabel}. Saved Bedrock keys are not used in this mode.`
+                : `Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`
             }
-            helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
             warningText={agentCredentialFormatWarning('bedrockBearerToken', bearerToken)}
           />
           <SecretField

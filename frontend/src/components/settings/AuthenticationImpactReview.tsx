@@ -1,5 +1,7 @@
 import { Button } from '@/components/ui/button';
-import type { AgentAuthImpactReview } from '@/services/agents';
+import type { AgentAuthAction, AgentAuthImpactReview, AgentAuthModeView } from '@/services/agents';
+import { agentAuthProviderUi } from './agent-auth/registry';
+import { summarizeConfiguration } from './agent-auth/summary';
 
 const labels: Record<string, string> = {
   continues: 'Continues with existing identity',
@@ -9,13 +11,51 @@ const labels: Record<string, string> = {
   unknown: 'Cannot yet determine',
 };
 
+// Describes the normalized candidate the server stored, not what the form sent.
+function CandidateDescription({
+  candidate,
+  modes,
+}: {
+  candidate: AgentAuthAction;
+  modes?: readonly AgentAuthModeView[];
+}) {
+  if (candidate.kind === 'connection-create') {
+    const { connection } = candidate;
+    const ui = agentAuthProviderUi(connection.mode);
+    const summary = summarizeConfiguration(ui, connection.configuration);
+    return (
+      <div className="break-all text-xs">
+        <p>
+          {`Proposed ${connection.source === 'user' ? 'personal' : connection.source} ${ui?.noun ?? 'connection'}`}
+        </p>
+        {summary.map((line) => (
+          <p key={line.label}>
+            {line.label}: {line.value}
+          </p>
+        ))}
+      </div>
+    );
+  }
+  if (candidate.kind === 'space-selection' && candidate.connectionId === null)
+    return <p className="text-xs">Use the platform connection for new work in this space.</p>;
+  if (candidate.kind === 'policy-change')
+    return (
+      <p className="text-xs">
+        Proposed mode: {modes?.find((mode) => mode.id === candidate.mode)?.label ?? candidate.mode}
+      </p>
+    );
+  return null;
+}
+
 export function AuthenticationImpactReview({
   review,
+  modes,
   applying,
   onApply,
   onCancel,
 }: {
   review: AgentAuthImpactReview;
+  modes?: readonly AgentAuthModeView[];
   applying: boolean;
   onApply: () => void;
   onCancel: () => void;
@@ -27,6 +67,7 @@ export function AuthenticationImpactReview({
         Prepared {new Date(review.createdAt).toLocaleString()} · Configuration revision{' '}
         {review.policyRevision}
       </p>
+      {review.candidate && <CandidateDescription candidate={review.candidate} modes={modes} />}
       {review.limitations.map((limitation) => (
         <p key={limitation} className="text-xs text-muted-foreground">
           {limitation}

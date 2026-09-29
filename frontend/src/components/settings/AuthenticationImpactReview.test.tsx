@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { AgentAuthenticationModeSettings } from './AgentAuthenticationModeSettings';
 import { AgentCredentialScopeCard } from './AgentCredentialScopeCard';
 import { AuthenticationImpactReview } from './AuthenticationImpactReview';
+import { genericSummary } from './agent-auth/summary';
+import type { AgentAuthProviderUi } from './agent-auth/contract';
 import {
   agentsService,
   type AgentAuthenticationView,
@@ -23,6 +25,18 @@ vi.mock('@/services/agents', () => ({
     applyAuthenticationChange: vi.fn(),
   },
 }));
+vi.mock('./agent-auth/registry', () => {
+  const ui: AgentAuthProviderUi = {
+    mode: 'test-connection',
+    noun: 'test link',
+    Setup: () => null,
+    summarize: (configuration) => [{ label: 'Gateway', value: String(configuration.endpoint) }],
+  };
+  return {
+    AGENT_AUTH_PROVIDER_UIS: [ui],
+    agentAuthProviderUi: (mode?: string | null) => (mode === ui.mode ? ui : undefined),
+  };
+});
 const authentication: AgentAuthenticationView = {
   policy: { mode: 'keys', revision: 0, defaultConnectionId: 'legacy-platform-bedrock' },
   modes: [
@@ -34,6 +48,7 @@ const authentication: AgentAuthenticationView = {
   personalMechanisms: ['api-key'],
   connection: {
     id: 'legacy-platform-bedrock',
+    mode: 'keys',
     backend: 'bedrock',
     mechanism: 'api-key',
     source: 'platform',
@@ -106,7 +121,8 @@ describe('authentication settings and impact review', () => {
     );
     expect(screen.getByText(/Inherits platform connection/)).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('administrator must reconnect');
-    expect(screen.getByText('Gateway: https://gateway.example')).toBeInTheDocument();
+    expect(screen.getByText('Endpoint: https://gateway.example')).toBeInTheDocument();
+    expect(screen.getByText('Issuer: https://idp.example')).toBeInTheDocument();
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
   });
   it('shows evidence limits and requires an explicit apply click', async () => {
@@ -160,5 +176,122 @@ describe('authentication settings and impact review', () => {
     expect(
       await screen.findByRole('button', { name: 'Apply reviewed change' }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('reviewed candidate description', () => {
+  const renderCandidate = (
+    candidate: AgentAuthImpactReview['candidate'],
+    modes = authentication.modes,
+  ) =>
+    render(
+      <AuthenticationImpactReview
+        review={{ ...review, candidate }}
+        modes={modes}
+        applying={false}
+        onApply={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+  const connection = {
+    id: 'test-connection-1',
+    revision: 1,
+    mode: 'test-connection',
+    backend: 'bedrock',
+    mechanism: 'oauth-machine',
+    source: 'space',
+    projectId: 'p1',
+    state: 'ready',
+    configuration: { endpoint: 'https://gateway.example', audience: 'models' },
+  };
+
+  it('describes a proposed connection with the provider noun and summary', () => {
+    renderCandidate({
+      kind: 'connection-create',
+      source: 'space',
+      projectId: 'p1',
+      select: true,
+      connection,
+    });
+    expect(screen.getByText('Proposed space test link')).toBeInTheDocument();
+    expect(screen.getByText('Gateway: https://gateway.example')).toBeInTheDocument();
+    expect(screen.queryByText(/Audience/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to a generic noun and summary for modes without a UI', () => {
+    renderCandidate({
+      kind: 'connection-create',
+      source: 'platform',
+      select: true,
+      connection: { ...connection, mode: 'plain-mode', source: 'platform' },
+    });
+    expect(screen.getByText('Proposed platform connection')).toBeInTheDocument();
+    expect(screen.getByText('Endpoint: https://gateway.example')).toBeInTheDocument();
+    expect(screen.getByText('Audience: models')).toBeInTheDocument();
+  });
+
+  it('describes a return to platform inheritance', () => {
+    renderCandidate({
+      kind: 'space-selection',
+      source: 'space',
+      projectId: 'p1',
+      connectionId: null,
+    });
+    expect(
+      screen.getByText('Use the platform connection for new work in this space.'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not describe selecting a specific space connection as inheritance', () => {
+    renderCandidate({
+      kind: 'space-selection',
+      source: 'space',
+      projectId: 'p1',
+      connectionId: 'test-platform',
+    });
+    expect(
+      screen.queryByText('Use the platform connection for new work in this space.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('names the proposed mode by its label', () => {
+    const candidate = {
+      kind: 'policy-change',
+      mode: 'keys',
+      defaultConnectionId: 'legacy-platform-bedrock',
+    } as const;
+    const first = renderCandidate(candidate);
+    expect(screen.getByText('Proposed mode: Keys')).toBeInTheDocument();
+    first.unmount();
+    renderCandidate(candidate, []);
+    expect(screen.getByText('Proposed mode: keys')).toBeInTheDocument();
+  });
+
+  it('adds no description to credential updates', () => {
+    renderCandidate({
+      kind: 'credential-update',
+      source: 'platform',
+      changes: [{ provider: 'bedrock', action: 'rotate', digest: 'a'.repeat(64) }],
+    });
+    expect(screen.queryByText(/Proposed|Use the platform connection/)).not.toBeInTheDocument();
+  });
+
+  it('summarizes only non-empty string configuration fields with readable labels', () => {
+    expect(
+      genericSummary({
+        endpoint: 'https://gateway.example',
+        clientId: 'agents',
+        token_url: 'https://idp.example/token',
+        scopes: ['models'],
+        port: 443,
+        enabled: true,
+        nested: { secret: 'hidden' },
+        empty: '',
+      }),
+    ).toEqual([
+      { label: 'Endpoint', value: 'https://gateway.example' },
+      { label: 'Client id', value: 'agents' },
+      { label: 'Token url', value: 'https://idp.example/token' },
+    ]);
   });
 });
