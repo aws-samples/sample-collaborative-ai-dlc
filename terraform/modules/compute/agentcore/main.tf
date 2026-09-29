@@ -399,6 +399,12 @@ resource "aws_iam_role_policy" "agentcore" {
           ]
         },
         {
+          # Only the broker may assume inference roles; the runtime receives leased credentials.
+          Effect   = "Deny"
+          Action   = ["sts:AssumeRole"]
+          Resource = "*"
+        },
+        {
           Effect   = "Allow"
           Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
           Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
