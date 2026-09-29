@@ -9,11 +9,7 @@ import {
   authModeDescriptor,
   withoutTrailingSlashes,
 } from '../agent-auth-catalog.js';
-import {
-  selectConnection,
-  executionCredentialBinding,
-  prepareAgentInvocation,
-} from '../agent-credential-service.js';
+import { executionCredentialBinding, prepareAgentInvocation } from '../agent-credential-service.js';
 import { authorizeConnectionChange, validateOAuthCredential } from '../agent-oauth-contract.js';
 import {
   issueAgentCredentialGrant,
@@ -74,56 +70,7 @@ describe('authentication contracts and scope selection', () => {
       'does not belong',
     );
   });
-  it('limits personal overrides to keys bound to the effective gateway', () => {
-    const platform = gateway();
-    const personal = gateway({ id: 'personal', source: 'user', userId: 'u1' });
-    expect(
-      selectConnection({
-        policy: { mode: 'litellm' },
-        platform,
-        personal,
-        userId: 'u1',
-        cli: 'codex',
-      }),
-    ).toEqual(personal);
-    expect(() =>
-      selectConnection({
-        policy: { mode: 'litellm' },
-        platform,
-        personal,
-        userId: 'u2',
-        cli: 'codex',
-      }),
-    ).toThrow('caller API key');
-    const other = gateway({
-      id: 'space',
-      source: 'space',
-      projectId: 'p1',
-      configuration: { endpoint: 'https://other.example/v1' },
-    });
-    expect(() =>
-      selectConnection({
-        policy: { mode: 'litellm' },
-        platform,
-        space: other,
-        personal,
-        projectId: 'p1',
-        userId: 'u1',
-        cli: 'claude',
-      }),
-    ).toThrow('effective gateway');
-    expect(() => selectConnection({ policy: { mode: 'keys' }, platform, cli: 'claude' })).toThrow(
-      'platform authentication mode',
-    );
-  });
-  it('fails closed on a revoked selected connection and excludes personal IAM and OAuth', () => {
-    expect(() =>
-      selectConnection({
-        policy: { mode: 'litellm' },
-        platform: gateway({ state: 'revoked' }),
-        cli: 'claude',
-      }),
-    ).toThrow('repair');
+  it('excludes personal IAM and OAuth connections', () => {
     expect(() => gateway({ mechanism: 'oauth-machine', source: 'user', userId: 'u1' })).toThrow(
       'scope',
     );
@@ -136,14 +83,6 @@ describe('authentication contracts and scope selection', () => {
       source: 'platform',
       configuration: { roleArn: 'arn:aws:iam::123456789012:role/inference', region: 'eu-west-1' },
     });
-    expect(
-      selectConnection({
-        policy: { mode: 'iam' },
-        platform: role,
-        personal: gateway(),
-        cli: 'claude',
-      }),
-    ).toEqual(role);
     expect(() => normalizeConnection({ ...role, source: 'user', userId: 'u1' })).toThrow('scope');
   });
   it('validates complete endpoint/IdP configuration and does not mix identities', () => {

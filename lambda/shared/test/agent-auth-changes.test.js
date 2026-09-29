@@ -1,13 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { DynamoDBClient, CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
-import {
-  DynamoDBDocumentClient,
-  PutCommand,
-  BatchWriteCommand,
-  GetCommand,
-  ScanCommand,
-} from '@aws-sdk/lib-dynamodb';
+import { PutCommand, BatchWriteCommand, GetCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { createAgentConnectionRepository } from '../agent-connection-repository.js';
 import {
   createAgentAuthChangeService,
@@ -20,42 +13,10 @@ import { redeemAgentBinding } from '../agent-auth-redemption.js';
 import { createOAuthStateRepository } from '../agent-oauth-state-repository.js';
 import { createOAuthCredentialCoordinator } from '../agent-oauth-contract.js';
 import { normalizeConnection, connectionAudience } from '../agent-auth-catalog.js';
+import { cleanup, createAuthTable, ddb, requireDynamoDbLocal } from './helpers/auth-table.js';
 
-const client = new DynamoDBClient({
-  endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
-  region: 'us-east-1',
-  credentials: { accessKeyId: 'local', secretAccessKey: 'local' },
-});
-const ddb = DynamoDBDocumentClient.from(client, {
-  marshallOptions: { removeUndefinedValues: true },
-});
-const tables = [];
-const table = async () => {
-  const TableName = `agent-auth-${randomUUID()}`;
-  await client.send(
-    new CreateTableCommand({
-      TableName,
-      BillingMode: 'PAY_PER_REQUEST',
-      KeySchema: [
-        { AttributeName: 'pk', KeyType: 'HASH' },
-        { AttributeName: 'sk', KeyType: 'RANGE' },
-      ],
-      AttributeDefinitions: [
-        { AttributeName: 'pk', AttributeType: 'S' },
-        { AttributeName: 'sk', AttributeType: 'S' },
-      ],
-    }),
-  );
-  tables.push(TableName);
-  return TableName;
-};
-beforeAll(() => {
-  if (!process.env.DYNAMODB_LOCAL_ENDPOINT) throw new Error('DynamoDB Local is required');
-});
-afterAll(async () => {
-  await Promise.all(tables.map((TableName) => client.send(new DeleteTableCommand({ TableName }))));
-  client.destroy();
-});
+beforeAll(requireDynamoDbLocal);
+afterAll(cleanup);
 const policyCandidate = {
   kind: 'policy',
   mode: 'keys',
@@ -125,7 +86,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
     expect(impact.find((item) => item.outcome === 'loses-access').binding.provider).toBe('kiro');
   });
   it('inventories more than 100 executions, drafts, failed work and auxiliary invocations', async () => {
-    const tableName = await table();
+    const tableName = await createAuthTable();
     const records = Array.from({ length: 135 }, (_, index) => ({
       pk: `EXEC#e${index}`,
       sk: 'META',
@@ -176,7 +137,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
     expect((await repository.getReview(review.id)).items).toBeUndefined();
   });
   it('rejects new work and concurrent selection after a review, with no partial activation', async () => {
-    const tableName = await table();
+    const tableName = await createAuthTable();
     const repository = createAgentConnectionRepository({ ddb, tableName, base: '/app/test' });
     await repository.initializeInventory();
     const service = createAgentAuthChangeService({ repository });
@@ -206,7 +167,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
   it('conditionally applies a reviewed policy, preserves old references, and handles duplicate submission', async () => {
     const repository = createAgentConnectionRepository({
       ddb,
-      tableName: await table(),
+      tableName: await createAuthTable(),
       base: '/app/test',
     });
     await repository.initializeInventory();
@@ -228,7 +189,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
   it('detects a policy race between inventory recheck and the transaction', async () => {
     const repository = createAgentConnectionRepository({
       ddb,
-      tableName: await table(),
+      tableName: await createAuthTable(),
       base: '/app/test',
     });
     await repository.initializeInventory();
@@ -247,7 +208,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
   it('binds secret updates to the review and safely retries a failed write', async () => {
     const repository = createAgentConnectionRepository({
       ddb,
-      tableName: await table(),
+      tableName: await createAuthTable(),
       base: '/app/test',
     });
     await repository.initializeInventory();
@@ -289,7 +250,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
   it('holds only the affected credential while an interrupted write is retried', async () => {
     const repository = createAgentConnectionRepository({
       ddb,
-      tableName: await table(),
+      tableName: await createAuthTable(),
       base: '/app/test',
     });
     await repository.initializeInventory();
@@ -327,7 +288,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
   it('retains immutable definitions for pinned work and honors explicit revocation', async () => {
     const repository = createAgentConnectionRepository({
       ddb,
-      tableName: await table(),
+      tableName: await createAuthTable(),
       base: '/app/test',
     });
     const connection = {
@@ -395,7 +356,7 @@ describe('OAuth refresh across broker instances with durable leases', () => {
     expiresAt,
   });
   const setup = async () => {
-    const stateRepository = createOAuthStateRepository({ ddb, tableName: await table() });
+    const stateRepository = createOAuthStateRepository({ ddb, tableName: await createAuthTable() });
     const secrets = new Map([['secret-1', credential('old', 1)]]);
     const secretRepository = {
       read: async (ref) => secrets.get(ref),
@@ -477,7 +438,7 @@ describe('OAuth refresh across broker instances with durable leases', () => {
       id: 'machine-oauth',
       mechanism: 'oauth-machine',
     });
-    const stateRepository = createOAuthStateRepository({ ddb, tableName: await table() });
+    const stateRepository = createOAuthStateRepository({ ddb, tableName: await createAuthTable() });
     const previous = {
       ...configuration,
       grantType: 'client_credentials',

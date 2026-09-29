@@ -3,8 +3,6 @@ import {
   credentialProviderForCli,
   legacyPlatformBinding,
   normalizeCredentialBinding,
-  assertMatchingConnection,
-  normalizeConnection,
   assertRuntimeSupportsBinding,
 } from './agent-auth-contracts.js';
 import { resolveEffectiveCredentialBindingsViaBroker } from './agent-credential-metadata.js';
@@ -114,55 +112,4 @@ export const prepareAgentInvocation = async (
       ? await issueGrant({ purpose, projectId, executionId, bindings })
       : null,
   };
-};
-
-// Future provider packages plug into this resolver, never into intent handlers.
-// Resolve a COMPLETE connection before considering a personal API-key override.
-export const selectConnection = ({
-  policy,
-  platform,
-  space = null,
-  personal = null,
-  projectId,
-  userId,
-  cli,
-}) => {
-  if (cli === 'kiro') {
-    const selected = personal ?? space ?? platform;
-    return selected ? normalizeConnection(selected) : null;
-  }
-  const effective = normalizeConnection(space ?? platform);
-  if (effective.mode !== policy.mode)
-    throw authError(
-      'AGENT_AUTH_MODE_MISMATCH',
-      'Space connection cannot override the platform authentication mode',
-    );
-  if (effective.source === 'space' && effective.projectId !== projectId)
-    throw authError('AGENT_AUTH_CONTEXT_MISMATCH', 'Connection does not belong to this space');
-  if (effective.state !== 'ready')
-    throw authError(
-      'AGENT_AUTH_CONNECTION_UNAVAILABLE',
-      'Connection needs reconnect or credential repair',
-    );
-  if (personal && policy.mode !== 'iam') {
-    const override = normalizeConnection(personal);
-    if (
-      override.source !== 'user' ||
-      override.userId !== userId ||
-      override.mechanism !== 'api-key'
-    ) {
-      throw authError(
-        'AGENT_AUTH_CONTEXT_MISMATCH',
-        'Personal overrides require the caller API key',
-      );
-    }
-    assertMatchingConnection(override, effective);
-    if (override.state !== 'ready')
-      throw authError(
-        'AGENT_AUTH_CONNECTION_UNAVAILABLE',
-        'Personal connection needs credential repair',
-      );
-    return override;
-  }
-  return effective;
 };

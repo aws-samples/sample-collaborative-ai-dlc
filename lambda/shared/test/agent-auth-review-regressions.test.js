@@ -1,53 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import { DynamoDBClient, CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
-import {
-  DynamoDBDocumentClient,
-  PutCommand,
-  QueryCommand,
-  ScanCommand,
-  GetCommand,
-} from '@aws-sdk/lib-dynamodb';
+import { PutCommand, QueryCommand, ScanCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { createAgentConnectionRepository } from '../agent-connection-repository.js';
 import { createAgentAuthChangeService, credentialUpdateCandidate } from '../agent-auth-changes.js';
 import { resolveSelectedAgentCredential } from '../agent-credential-service.js';
 import { resolvePolicyBindings } from '../agent-binding-selection.js';
 import { inspectAgentCredentialMetadata } from '../../credential-metadata/index.js';
 import { createProcessStore } from '../v2-process-store.js';
+import { cleanup, createAuthTable, ddb, requireDynamoDbLocal } from './helpers/auth-table.js';
 
-const client = new DynamoDBClient({
-  endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
-  region: 'us-east-1',
-  credentials: { accessKeyId: 'local', secretAccessKey: 'local' },
-});
-const ddb = DynamoDBDocumentClient.from(client, {
-  marshallOptions: { removeUndefinedValues: true },
-});
-const tables = [];
-beforeAll(() => {
-  if (!process.env.DYNAMODB_LOCAL_ENDPOINT) throw new Error('DynamoDB Local is required');
-});
-afterAll(async () => {
-  await Promise.all(tables.map((TableName) => client.send(new DeleteTableCommand({ TableName }))));
-  client.destroy();
-});
+beforeAll(requireDynamoDbLocal);
+afterAll(cleanup);
 const setup = async () => {
-  const tableName = `auth-review-${randomUUID()}`;
-  await client.send(
-    new CreateTableCommand({
-      TableName: tableName,
-      BillingMode: 'PAY_PER_REQUEST',
-      KeySchema: [
-        { AttributeName: 'pk', KeyType: 'HASH' },
-        { AttributeName: 'sk', KeyType: 'RANGE' },
-      ],
-      AttributeDefinitions: [
-        { AttributeName: 'pk', AttributeType: 'S' },
-        { AttributeName: 'sk', AttributeType: 'S' },
-      ],
-    }),
-  );
-  tables.push(tableName);
+  const tableName = await createAuthTable('auth-review');
   const calls = [];
   const recordingDdb = {
     send: (command) => {
