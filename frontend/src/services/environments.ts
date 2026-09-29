@@ -119,7 +119,7 @@ export interface ManagedEnvironment {
   system: boolean;
   status: EnvironmentStatus;
   baseEnvironmentId: string | null;
-  compute?: { type: 'microvms' | 'instances'; architecture: 'arm64' | 'x86_64' } | null;
+  compute?: ComputeSelection | null;
   currentRevisionId: string;
   publishedRevisionId: string | null;
   updateAvailable: boolean;
@@ -290,9 +290,27 @@ export interface ProjectEnvironmentAssignment {
   updatedAt?: string;
 }
 
+export type ComputeType = 'microvms' | 'instances';
+export type ComputeArchitecture = 'arm64' | 'x86_64';
+export interface ComputeSelection {
+  type: ComputeType;
+  architecture: ComputeArchitecture;
+}
+
+// One cell of the (compute type × architecture) matrix this deployment
+// supports. Compute type and architecture are independent axes — the UI
+// renders exactly the available cells instead of hardcoding combinations.
+export interface ComputeCapability extends ComputeSelection {
+  available: boolean;
+  reason?: string;
+  allowedInstanceTypes?: string[];
+}
+
 export interface EnvironmentCapabilities {
   instancesCompute: boolean;
   amd64CoreImage: boolean;
+  default: ComputeSelection;
+  combinations: ComputeCapability[];
 }
 
 const environmentPath = (environmentId: string) =>
@@ -310,7 +328,7 @@ export const environmentsService = {
     name: string;
     description?: string;
     baseEnvironmentId: string;
-    compute?: { type: 'microvms' | 'instances'; architecture?: 'arm64' | 'x86_64' };
+    compute?: ComputeSelection;
     recipe: EnvironmentRecipeInput;
   }) => api.post<EnvironmentMutationResult>('/environments', input),
   update: (

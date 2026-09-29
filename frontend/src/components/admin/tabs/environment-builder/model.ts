@@ -1,10 +1,41 @@
 import type {
   CatalogEnvironmentRecipe,
+  ComputeCapability,
+  ComputeSelection,
   EnvironmentRecipeInput,
   EnvironmentRevision,
   EnvironmentToolSnapshot,
   ManagedEnvironment,
 } from '@/services/environments';
+
+export const DEFAULT_COMPUTE: ComputeSelection = { type: 'microvms', architecture: 'arm64' };
+
+// The effective compute of an environment record (absent field = default).
+export const computeOf = (environment: Pick<ManagedEnvironment, 'compute'> | null | undefined) =>
+  environment?.compute ?? DEFAULT_COMPUTE;
+
+export const sameCompute = (a: ComputeSelection, b: ComputeSelection) =>
+  a.type === b.type && a.architecture === b.architecture;
+
+export const isDefaultCompute = (compute: ComputeSelection) => sameCompute(compute, DEFAULT_COMPUTE);
+
+// Stable string form for <Select> values and React keys.
+export const computeKey = (compute: ComputeSelection) => `${compute.type}/${compute.architecture}`;
+export const computeFromKey = (key: string): ComputeSelection => {
+  const [type, architecture] = key.split('/');
+  return { type, architecture } as ComputeSelection;
+};
+
+const COMPUTE_TYPE_LABELS: Record<ComputeSelection['type'], string> = {
+  microvms: 'Serverless microVMs',
+  instances: 'EC2 Instances',
+};
+
+export const computeLabel = (compute: ComputeSelection) =>
+  `${COMPUTE_TYPE_LABELS[compute.type] ?? compute.type} (${compute.architecture})`;
+
+export const availableComputes = (capabilities: { combinations: ComputeCapability[] } | null) =>
+  (capabilities?.combinations ?? []).filter((cell) => cell.available);
 
 export const RUNTIME_IMAGE_LIMIT_BYTES = 2048 * 1024 * 1024;
 
@@ -18,7 +49,7 @@ export interface EnvironmentForm {
   name: string;
   description: string;
   baseEnvironmentId: string;
-  compute: 'microvms' | 'instances-x86_64';
+  compute: ComputeSelection;
   toolVersionIds: string[];
   aptPackages: KeyValueEntry[];
   environmentVariables: KeyValueEntry[];
@@ -30,7 +61,7 @@ export const emptyEnvironmentForm = (): EnvironmentForm => ({
   name: '',
   description: '',
   baseEnvironmentId: 'standard',
-  compute: 'microvms',
+  compute: DEFAULT_COMPUTE,
   toolVersionIds: [],
   aptPackages: [],
   environmentVariables: [],
@@ -72,10 +103,7 @@ export const formFromRevision = (
       environment.environmentId === 'standard'
         ? ''
         : (recipe?.base?.environmentId ?? environment.baseEnvironmentId ?? 'standard'),
-    compute:
-      environment.compute?.type === 'instances' && environment.compute.architecture === 'x86_64'
-        ? 'instances-x86_64'
-        : 'microvms',
+    compute: computeOf(environment),
     toolVersionIds: directToolVersionIds(revision),
     aptPackages: (recipe?.aptPackages ?? []).map((pkg) => ({
       name: pkg.name,

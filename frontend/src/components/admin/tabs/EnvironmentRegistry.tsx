@@ -39,10 +39,12 @@ import {
   isActiveRevision,
 } from './environment-builder/EnvironmentRevisionWorkspace';
 import {
+  computeOf,
   emptyEnvironmentForm,
   formFingerprint,
   formFromRevision,
   isCatalogRecipe,
+  isDefaultCompute,
   recipeFromForm,
   type EnvironmentForm,
 } from './environment-builder/model';
@@ -269,12 +271,9 @@ export function EnvironmentRegistry() {
       environment.status !== 'RETIRED' &&
       (creating || environment.environmentId !== selectedId) &&
       // arm64 builds cannot start FROM an x86_64 base; x86_64 must derive from Standard.
-      (form.compute === 'instances-x86_64'
+      (form.compute.architecture === 'x86_64'
         ? environment.environmentId === 'standard'
-        : !(
-            environment.compute?.type === 'instances' &&
-            environment.compute.architecture === 'x86_64'
-          )),
+        : computeOf(environment).architecture !== 'x86_64'),
   );
   const updates = environments.filter((environment) => environment.updateAvailable);
   const activeBaseDetail =
@@ -325,9 +324,7 @@ export function EnvironmentRegistry() {
         name: form.name.trim(),
         description: form.description.trim(),
         baseEnvironmentId: form.baseEnvironmentId,
-        ...(form.compute === 'instances-x86_64'
-          ? { compute: { type: 'instances' as const, architecture: 'x86_64' as const } }
-          : {}),
+        ...(isDefaultCompute(form.compute) ? {} : { compute: form.compute }),
         recipe: recipeFromForm(form),
       });
       setCreating(false);
@@ -590,7 +587,7 @@ export function EnvironmentRegistry() {
                     tools={tools}
                     disabled={Boolean(busy)}
                     showId
-                    instancesComputeEnabled={capabilities?.instancesCompute ?? false}
+                    computeOptions={capabilities?.combinations ?? []}
                     actionLabel="Create draft"
                     actionBusy={busy === 'create'}
                     actionDisabled={Boolean(busy) || baseLoading || !baseRevision}
@@ -713,7 +710,7 @@ export function EnvironmentRegistry() {
                           tools={tools}
                           disabled={Boolean(busy)}
                           showId={false}
-                          instancesComputeEnabled={capabilities?.instancesCompute ?? false}
+                          computeOptions={capabilities?.combinations ?? []}
                           actionLabel="Save as new revision"
                           actionBusy={busy === 'save'}
                           actionDisabled={Boolean(busy) || baseLoading || !baseRevision || !isDirty}

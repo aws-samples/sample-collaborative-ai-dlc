@@ -31,6 +31,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import type {
+  ComputeCapability,
   EnvironmentRevision,
   ManagedEnvironment,
   ManagedTool,
@@ -39,9 +40,14 @@ import type {
 import { cn } from '@/lib/utils';
 import {
   RUNTIME_IMAGE_LIMIT_BYTES,
+  computeFromKey,
+  computeKey,
+  computeLabel,
   environmentIdPreview,
+  isDefaultCompute,
   protectedRuntimeVersions,
   resolvedTools,
+  sameCompute,
   validateEnvironmentForm,
   type EnvironmentForm,
   type KeyValueEntry,
@@ -58,10 +64,10 @@ interface Props {
   tools: ManagedTool[];
   disabled: boolean;
   showId: boolean;
-  // Whether this deployment can build the Instances (EC2) compute type
-  // (enable_instances_compute). When false the EC2 option is hidden so a
-  // draft can never be created against an unconfigured compute type.
-  instancesComputeEnabled: boolean;
+  // The (compute type × architecture) cells this deployment can build and
+  // run — from GET /environments/capabilities. The selector renders exactly
+  // these, so a draft can never be created against an unconfigured cell.
+  computeOptions: ComputeCapability[];
   actionLabel: string;
   actionBusy: boolean;
   actionDisabled: boolean;
@@ -257,7 +263,7 @@ export function EnvironmentBuilder({
   tools,
   disabled,
   showId,
-  instancesComputeEnabled,
+  computeOptions,
   actionLabel,
   actionBusy,
   actionDisabled,
@@ -265,6 +271,16 @@ export function EnvironmentBuilder({
 }: Props) {
   const [toolSearch, setToolSearch] = useState('');
   const [toolFilter, setToolFilter] = useState<'all' | 'included'>('all');
+  // Cells the deployment can build, plus the form's current compute when it is
+  // not among them (an existing environment created on a since-disabled cell
+  // must still render its own value).
+  const selectableComputes = useMemo(() => {
+    const cells = computeOptions.filter((cell) => cell.available);
+    return cells.some((cell) => sameCompute(cell, form.compute))
+      ? cells
+      : [...cells, { ...form.compute, available: true }];
+  }, [computeOptions, form.compute]);
+  const selectedComputeCell = selectableComputes.find((cell) => sameCompute(cell, form.compute));
   const [advancedOpen, setAdvancedOpen] = useState(
     form.aptPackages.length > 0 ||
       form.environmentVariables.length > 0 ||
@@ -464,35 +480,47 @@ export function EnvironmentBuilder({
                   </SelectContent>
                 </Select>
               </div>
-              {showId && (instancesComputeEnabled || form.compute === 'instances-x86_64') && (
+              {showId && (computeOptions.length > 1 || !isDefaultCompute(form.compute)) && (
                 <div className="max-w-md space-y-1.5">
                   <Label htmlFor="environment-compute" className="text-xs">
                     Compute
                   </Label>
                   <Select
-                    value={form.compute}
-                    onValueChange={(compute) =>
+                    value={computeKey(form.compute)}
+                    onValueChange={(key) => {
+                      const compute = computeFromKey(key);
                       onChange({
                         ...form,
-                        compute: compute as EnvironmentForm['compute'],
-                        ...(compute === 'instances-x86_64'
+                        compute,
+                        // A different architecture cannot keep an arm64 tool
+                        // selection or a derived base — reset to the Standard base.
+                        ...(compute.architecture !== form.compute.architecture
                           ? { toolVersionIds: [], baseEnvironmentId: 'standard' }
                           : {}),
-                      })
-                    }
+                      });
+                    }}
                     disabled={disabled}
                   >
                     <SelectTrigger id="environment-compute" className="h-9 text-sm">
                       <SelectValue placeholder="Choose the compute type" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="microvms">Serverless microVMs (arm64)</SelectItem>
-                      <SelectItem value="instances-x86_64">EC2 Instances (x86_64)</SelectItem>
+                      {selectableComputes.map((cell) => (
+                        <SelectItem key={computeKey(cell)} value={computeKey(cell)}>
+                          {computeLabel(cell)}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                   <p className="text-[11px] leading-relaxed text-muted-foreground">
-                    {form.compute === 'instances-x86_64'
-                      ? 'Runs on EC2 managed instances in this account with a persistent workspace volume. Catalog tools are not available on x86_64 yet. The compute type cannot be changed after creation.'
+                    {form.compute.type === 'instances'
+                      ? `Runs on EC2 managed instances in this account (${
+                          selectedComputeCell?.allowedInstanceTypes?.join(', ') || 'deployment default'
+                        }) with a persistent workspace volume.${
+                          form.compute.architecture === 'x86_64'
+                            ? ' Catalog tools are not available on x86_64 yet.'
+                            : ''
+                        } The compute type cannot be changed after creation.`
                       : 'Default serverless compute. The compute type cannot be changed after creation.'}
                   </p>
                 </div>
