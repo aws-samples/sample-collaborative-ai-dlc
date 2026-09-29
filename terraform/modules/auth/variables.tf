@@ -72,6 +72,24 @@ variable "custom_domain_certificate_arn" {
   default     = ""
 }
 
+variable "lambda_vpc_scope" {
+  description = "Lambda VPC placement scope"
+  type        = string
+  default     = "required"
+}
+
+variable "vpc_subnet_ids" {
+  description = "Private subnet IDs used when lambda_vpc_scope is all"
+  type        = list(string)
+  default     = []
+}
+
+variable "vpc_security_group_ids" {
+  description = "Security group IDs used when lambda_vpc_scope is all"
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)

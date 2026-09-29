@@ -11,9 +11,10 @@ skip_final_snapshot     = false
 # encryption. See docs/getting-started/prerequisites.md before supplying an ARN.
 kms_key_arn = ""
 
-# Keep only Lambdas already requiring private resources in the VPC. Set to
-# "public-egress" to also route OAuth connectors, credential resolution, and
-# seed-blocks through NAT.
+# Controls which Lambda functions run in the VPC:
+# "required"      - only Lambdas that access private resources (default)
+# "public-egress" - required Lambdas plus integrations needing static NAT IPs
+# "all"           - every Lambda function
 lambda_vpc_scope = "required"
 
 # Bedrock model pinning (for claude and opencode drivers)

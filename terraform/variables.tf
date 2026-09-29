@@ -68,13 +68,13 @@ variable "skip_final_snapshot" {
 }
 
 variable "lambda_vpc_scope" {
-  description = "Lambda VPC placement scope: required keeps only private-resource Lambdas in the VPC; public-egress also routes selected public-service traffic through NAT"
+  description = "Lambda VPC placement scope: required keeps only private-resource Lambdas in the VPC; public-egress adds selected public-service Lambdas; all places every Lambda in the VPC"
   type        = string
   default     = "required"
 
   validation {
-    condition     = contains(["required", "public-egress"], var.lambda_vpc_scope)
-    error_message = "lambda_vpc_scope must be one of: required, public-egress."
+    condition     = contains(["required", "public-egress", "all"], var.lambda_vpc_scope)
+    error_message = "lambda_vpc_scope must be one of: required, public-egress, all."
   }
 }
 

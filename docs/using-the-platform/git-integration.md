@@ -21,6 +21,8 @@ The status of each provider is visible in **Admin → Trackers**. Until a provid
 
 Deployments that require provider IP allow-listing can set it to `"public-egress"` in the environment's `.tfvars` file. This also routes the OAuth connectors, credential broker, and seed-blocks through the NAT gateways.
 
+Set it to `"all"` to place every Lambda function in the private subnets. This includes the `"public-egress"` functions, so all outbound Lambda traffic uses the NAT gateways. Use this only when your network policy requires it: every Lambda then depends on NAT availability, and VPC attachment can increase cold-start latency.
+
 Development environments have one address; production environments have two, and both must be allow-listed to avoid intermittent provider failures. These addresses are printed after applying the Terraform configuration.
 
 ### Project-bound authentication

@@ -5,7 +5,8 @@ data "aws_partition" "current" {}
 locals {
   partition            = data.aws_partition.current.partition
   dns_suffix           = data.aws_partition.current.dns_suffix
-  enable_public_egress = var.lambda_vpc_scope == "public-egress"
+  enable_public_egress = contains(["public-egress", "all"], var.lambda_vpc_scope)
+  all_lambdas_in_vpc   = var.lambda_vpc_scope == "all"
 
   powertools_service_name = var.powertools_service_name
 
@@ -376,6 +377,13 @@ resource "aws_iam_role" "cognito_reader" {
 resource "aws_iam_role_policy_attachment" "cognito_reader_basic" {
   role       = aws_iam_role.cognito_reader.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "cognito_reader_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.cognito_reader.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "cognito_reader" {
@@ -1093,6 +1101,8 @@ module "credential_broker_lambda" {
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
   }
+
+  depends_on = [aws_iam_role_policy_attachment.credential_broker_vpc]
 }
 
 # Metadata-only companion to the value-redemption broker. It runs under the
@@ -1121,6 +1131,9 @@ module "credential_metadata_lambda" {
   create_role = false
   lambda_role = aws_iam_role.credential_broker.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
@@ -1129,6 +1142,8 @@ module "credential_metadata_lambda" {
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
     AGENT_SETTINGS_SSM_PREFIX   = "/${var.project_name}/${var.environment}"
   }
+
+  depends_on = [aws_iam_role_policy_attachment.credential_broker_vpc]
 }
 
 # Projects Lambda
@@ -1617,6 +1632,8 @@ module "github_lambda" {
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.github_connector_vpc]
 }
 
 # -----------------------------------------------------------------------------
@@ -1718,6 +1735,8 @@ module "gitlab_lambda" {
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.gitlab_connector_vpc]
 }
 
 # -----------------------------------------------------------------------------
@@ -1820,6 +1839,8 @@ module "bitbucket_lambda" {
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.bitbucket_connector_vpc]
 }
 
 # Trackers Lambda — provider-agnostic tracker integration. Git-backed providers
@@ -2069,7 +2090,7 @@ module "discussions_lambda" {
   }
 }
 
-# Cognito Users Lambda (lists users from Cognito - no VPC needed)
+# Cognito Users Lambda (lists users from Cognito)
 module "cognito_users_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -2096,6 +2117,9 @@ module "cognito_users_lambda" {
   create_role = false
   lambda_role = aws_iam_role.cognito_reader.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -2105,6 +2129,8 @@ module "cognito_users_lambda" {
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
     SSO_ROLE_CONFIG             = var.sso_role_config
   }
+
+  depends_on = [aws_iam_role_policy_attachment.cognito_reader_vpc]
 }
 
 # Purge Neptune Lambda (admin utility, invoked directly via CLI)
@@ -2183,7 +2209,7 @@ module "migrate_tracker_fields_lambda" {
 }
 
 # Building Blocks Lambda — CRUD over the reusable-block library. DynamoDB + S3
-# only, so no VPC config. Generic over all block types; block metadata lives in
+# only. Generic over all block types; block metadata lives in
 # the blocks table, bodies/scripts in the artifacts bucket under blocks/.
 module "building_blocks_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -2207,6 +2233,9 @@ module "building_blocks_lambda" {
   create_role = false
   lambda_role = aws_iam_role.blocks.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -2216,6 +2245,8 @@ module "building_blocks_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.blocks_vpc]
 }
 
 # Seed-blocks Lambda (admin one-shot, invoked directly via CLI). Writes the
@@ -2258,12 +2289,14 @@ module "seed_blocks_lambda" {
     ENVIRONMENT                 = var.environment
     AIDLC_REPO_REF              = var.aidlc_repo_ref
   }
+
+  depends_on = [aws_iam_role_policy_attachment.blocks_vpc]
 }
 
 # Workflows Lambda — composition over the block library: a workflow references
 # and arranges library blocks (grouping tree + skill placements + scope/
 # guardrail refs). Workflows share the blocks table (WF#… partitions) and the
-# blocks IAM role; no S3 (workflows carry no bodies), so no VPC config.
+# blocks IAM role; workflows carry no bodies.
 module "workflows_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -2286,6 +2319,9 @@ module "workflows_lambda" {
   create_role = false
   lambda_role = aws_iam_role.blocks.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -2294,6 +2330,8 @@ module "workflows_lambda" {
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.blocks_vpc]
 }
 
 # -----------------------------------------------------------------------------
@@ -2747,6 +2785,13 @@ resource "aws_iam_role_policy_attachment" "v2_orchestrator_basic" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "v2_orchestrator_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.v2_orchestrator.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role_policy" "v2_orchestrator" {
   name = "v2-orchestrator"
   role = aws_iam_role.v2_orchestrator.id
@@ -2840,6 +2885,9 @@ module "v2_orchestrator_lambda" {
   create_role = false
   lambda_role = aws_iam_role.v2_orchestrator.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
     POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
@@ -2854,8 +2902,7 @@ module "v2_orchestrator_lambda" {
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts
-    # stage-level events). Reaches the connections table over the public DDB
-    # endpoint (the orchestrator is not VPC-attached).
+    # stage-level events).
     CONNECTIONS_TABLE                    = var.connections_table_name
     WEBSOCKET_ENDPOINT                   = var.websocket_api_endpoint_https
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
@@ -2863,6 +2910,8 @@ module "v2_orchestrator_lambda" {
   }
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  depends_on = [aws_iam_role_policy_attachment.v2_orchestrator_vpc]
 }
 
 # `live` alias for the orchestrator — durable functions are invocable only via a
