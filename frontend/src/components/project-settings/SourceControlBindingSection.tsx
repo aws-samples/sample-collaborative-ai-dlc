@@ -54,7 +54,7 @@ const authLabel = (authType: SourceControlAuthType) => {
 };
 
 // The existing CodeCommit binding (any repository — they share one role per
-// space) seeds the connect form so the trust policy re-renders unchanged.
+// space) gives the role to re-verify and the region for a replacement role.
 const codecommitInitialFor = (
   status: ProjectSourceControlStatus | null,
 ): Partial<CodeCommitRoleConnection> | undefined => {
@@ -89,8 +89,8 @@ function ProviderBindingControl({
   disabled: boolean;
   onAuthTypeChange: (value: SourceControlAuthType) => void;
   onConfirmedChange: (value: boolean) => void;
-  // codecommit-role: the existing binding's role/external id/region, so the
-  // form re-renders the same trust policy and the tenant's role keeps working.
+  // codecommit-role: the existing binding's role and region. Its external ID
+  // stays server-side; re-verify resolves it from the stored binding.
   codecommitInitial?: Partial<CodeCommitRoleConnection>;
   onCodeCommitVerified?: (result: CodeCommitConnectResult | null) => void;
   // codecommit-role with an existing binding: re-verify that role through the
