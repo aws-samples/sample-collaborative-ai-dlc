@@ -10,15 +10,11 @@ import {
   bindingIdentity,
   authError,
 } from '../shared/agent-auth-contracts.js';
-import {
-  createAgentProviderContext,
-  loggableAgentCredentialErrorCode,
-} from './agent-provider-registry.js';
+import { createAgentProviderContext } from './agent-provider-registry.js';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
-const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
 export const authorizeAgentCredentialRequest = async (
-  { grant, action = RESOLVE_AGENT_CREDENTIALS, renewalToken },
+  event = {},
   {
     ssmClient = ssm,
     ddbClient = ddb,
@@ -28,12 +24,13 @@ export const authorizeAgentCredentialRequest = async (
     ...providerDependencies
   } = {},
 ) => {
-  if (!grant && !renewalToken)
-    throw authError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is required');
-  const context = await createAgentProviderContext(
-    { grant, action, renewalToken },
-    { ssmClient, ddbClient, secret, env, now, ...providerDependencies },
-  );
+  const context = await createAgentProviderContext(event, {
+    ssmClient,
+    secret,
+    env,
+    now,
+    ...providerDependencies,
+  });
   const { claims, adapters, verification } = context;
   const repository = createAgentConnectionRepository({
     ddb: ddbClient,
@@ -93,8 +90,7 @@ export const authorizeAgentCredentialRequest = async (
         });
       } catch (error) {
         if (!context.isolateDiscoveryFailure(binding)) throw error;
-        // Broken Bedrock authentication does not suppress independent Kiro availability.
-        return { binding, error: loggableAgentCredentialErrorCode(error) };
+        return { binding, error: context.loggableErrorCode(error) };
       }
     }),
   );
