@@ -752,11 +752,12 @@ module "managed_environments" {
   lambda_vpc_subnet_ids         = module.networking.private_subnet_ids
   lambda_vpc_security_group_ids = [module.networking.default_security_group_id]
 
-  instances_compute_enabled        = var.enable_instances_compute
-  core_image_uri_amd64             = var.enable_instances_compute ? module.agentcore.ecr_repository_url : ""
-  core_image_digest_amd64          = module.agentcore.image_digest_amd64
-  instances_allowed_instance_types = var.instances_allowed_instance_types
-  instances_workspace_gib          = var.instances_workspace_gib
+  instances_compute_enabled              = var.enable_instances_compute
+  core_image_uri_amd64                   = var.enable_instances_compute ? module.agentcore.ecr_repository_url : ""
+  core_image_digest_amd64                = module.agentcore.image_digest_amd64
+  instances_allowed_instance_types       = var.instances_allowed_instance_types
+  instances_allowed_instance_types_arm64 = var.instances_allowed_instance_types_arm64
+  instances_workspace_gib                = var.instances_workspace_gib
 
   tags = {
     Environment = var.environment

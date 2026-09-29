@@ -292,9 +292,15 @@ variable "enable_instances_compute" {
 }
 
 variable "instances_allowed_instance_types" {
-  description = "EC2 instance types allowed on the platform-managed capacity providers"
+  description = "x86_64 EC2 instance types allowed on the platform-managed capacity providers (burstable t-family is not supported)"
   type        = list(string)
   default     = ["m6i.large"] # burstable (t-family) is not supported by AgentCore Instances
+}
+
+variable "instances_allowed_instance_types_arm64" {
+  description = "arm64 (Graviton) EC2 instance types allowed on the platform-managed capacity providers. An instance family is built for one architecture only, so arm64 Instances environments need their own list."
+  type        = list(string)
+  default     = ["m7g.large"]
 }
 
 variable "instances_workspace_gib" {

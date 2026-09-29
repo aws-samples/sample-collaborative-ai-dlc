@@ -37,12 +37,21 @@ export const instancesComputeConfigured = () =>
 export const amd64CoreImageConfigured = () =>
   Boolean(process.env.CORE_IMAGE_URI_AMD64 && process.env.CORE_IMAGE_DIGEST_AMD64);
 
-// EC2 instance types the deployment's capacity providers may launch (a
-// deployment-wide allowlist today; per-environment selection would become a
-// capacity provider per (architecture, allowlist) — the provider fingerprint
-// already accounts for it).
-export const allowedInstanceTypes = () =>
-  parseJsonEnv('MANAGED_INSTANCES_ALLOWED_TYPES', ['m6i.large']);
+// EC2 instance types the deployment's capacity providers may launch, per
+// architecture — an instance family is built for exactly one of them (m6i is
+// x86_64, m7g is arm64/Graviton), so a single list cannot serve both cells.
+// Deployment-wide today; per-environment selection would become a capacity
+// provider per (architecture, allowlist) — the provider fingerprint already
+// accounts for it.
+const INSTANCE_TYPE_ENV = {
+  x86_64: ['MANAGED_INSTANCES_ALLOWED_TYPES', ['m6i.large']],
+  arm64: ['MANAGED_INSTANCES_ALLOWED_TYPES_ARM64', ['m7g.large']],
+};
+
+export const allowedInstanceTypes = (architecture = 'x86_64') => {
+  const [name, fallback] = INSTANCE_TYPE_ENV[architecture] ?? INSTANCE_TYPE_ENV.x86_64;
+  return parseJsonEnv(name, fallback);
+};
 
 // Every (type, architecture) cell with whether THIS deployment can build and
 // run it, and why not when it cannot. Exposed on GET /environments/capabilities
@@ -51,14 +60,16 @@ export const allowedInstanceTypes = () =>
 export const capabilities = () => {
   const instances = instancesComputeConfigured();
   const amd64 = amd64CoreImageConfigured();
-  const instanceTypes = allowedInstanceTypes();
   const cell = (type, architecture, available, reason = null) => ({
     type,
     architecture,
     available,
     ...(available ? {} : { reason }),
-    ...(type === 'instances' && available ? { allowedInstanceTypes: instanceTypes } : {}),
+    ...(type === 'instances' && available
+      ? { allowedInstanceTypes: allowedInstanceTypes(architecture) }
+      : {}),
   });
+  const armTypes = allowedInstanceTypes('arm64').length > 0;
   return {
     // Kept for callers that only need the two flags.
     instancesCompute: instances,
@@ -67,7 +78,12 @@ export const capabilities = () => {
     combinations: [
       cell('microvms', 'arm64', true),
       cell('microvms', 'x86_64', false, 'MICROVMS_ARCHITECTURE_UNSUPPORTED'),
-      cell('instances', 'arm64', instances, instances ? null : 'INSTANCES_COMPUTE_NOT_CONFIGURED'),
+      cell(
+        'instances',
+        'arm64',
+        instances && armTypes,
+        !instances ? 'INSTANCES_COMPUTE_NOT_CONFIGURED' : armTypes ? null : 'NO_INSTANCE_TYPES',
+      ),
       cell(
         'instances',
         'x86_64',
@@ -114,6 +130,12 @@ export const normalizeCompute = (input) => {
           'The Instances compute type is not configured on this deployment (set enable_instances_compute)',
           409,
           'INSTANCES_COMPUTE_NOT_CONFIGURED',
+        );
+      case 'NO_INSTANCE_TYPES':
+        throw httpError(
+          `No ${architecture} instance types are allowed on this deployment`,
+          409,
+          'NO_INSTANCE_TYPES',
         );
       case 'AMD64_CORE_IMAGE_MISSING':
         throw httpError(

@@ -185,7 +185,7 @@ describe('capabilities matrix', () => {
         type: 'instances',
         architecture: 'arm64',
         available: true,
-        allowedInstanceTypes: ['t3.large'],
+        allowedInstanceTypes: ['m7g.large'],
       },
       {
         type: 'instances',
@@ -220,6 +220,27 @@ describe('capabilities matrix', () => {
       available: false,
       reason: 'INSTANCES_COMPUTE_NOT_CONFIGURED',
     });
+  });
+
+  it('keeps a separate allowlist per architecture and disables an empty one', () => {
+    process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = '["m8g.large"]';
+    let cells = Object.fromEntries(
+      capabilities().combinations.map((c) => [`${c.type}/${c.architecture}`, c]),
+    );
+    expect(cells['instances/arm64'].allowedInstanceTypes).toEqual(['m8g.large']);
+    expect(cells['instances/x86_64'].allowedInstanceTypes).toEqual(['t3.large']);
+    process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = '[]';
+    cells = Object.fromEntries(
+      capabilities().combinations.map((c) => [`${c.type}/${c.architecture}`, c]),
+    );
+    expect(cells['instances/arm64']).toMatchObject({
+      available: false,
+      reason: 'NO_INSTANCE_TYPES',
+    });
+    expect(() => normalizeCompute({ type: 'instances', architecture: 'arm64' })).toThrow(
+      /No arm64 instance types/,
+    );
+    delete process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64;
   });
 
   it('normalizeCompute agrees with the matrix', () => {
