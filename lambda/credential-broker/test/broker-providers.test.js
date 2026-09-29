@@ -99,6 +99,7 @@ const harness = ({ registry, tokenClient, ssmSend } = {}) => {
   const authorize = (event, extra = {}) => authorizeAgentCredentialRequest(event, deps(extra));
   return {
     issue,
+    ddbClient,
     ssmClient,
     authorize,
     renew: (token, extra) =>
@@ -150,6 +151,7 @@ describe('host-owned renewal and lease composition', () => {
     expect(key).toEqual(kiroCredential);
     expect(h.issue).toHaveBeenCalledExactlyOnceWith({
       connectionId: 'test-1',
+      configuration: { region: 'eu-west-1' },
       grantId: 'grant-fixture-0001',
       request: 'resolve',
     });
@@ -258,6 +260,117 @@ describe('host-owned renewal and lease composition', () => {
     expect(renewed.lease.material.token).toBe('per-request');
     expect(createDependencies).toHaveBeenCalledOnce();
     expect(issue).toHaveBeenCalledOnce();
+  });
+});
+
+describe('connection verification', () => {
+  const GRANT_EXPIRY = START + 300_000;
+  // Never stored: only the signed binding describes this connection.
+  const unsaved = connectionBinding(
+    normalizeConnection({
+      id: 'test-connection-mode-verification-1',
+      revision: 1,
+      mode: TEST_CONNECTION_MODE.id,
+      backend: TEST_CONNECTION_MODE.backend,
+      mechanism: TEST_CONNECTION_MODE.mechanisms[0],
+      source: 'space',
+      projectId: 'p',
+      configuration: { region: 'eu-north-1' },
+    }),
+    4,
+  );
+  const readKeys = (h) => h.ddbClient.send.mock.calls.map(([command]) => command.input.Key.pk);
+
+  it('redeems the signed binding with two reads, no renewal and the grant as its deadline', async () => {
+    const h = harness();
+    expect(await h.authorize({ grant: h.grant('verify-connection', [unsaved]) })).toEqual({
+      purpose: 'verify-connection',
+      projectId: 'p',
+      executionId: null,
+      credentials: [
+        {
+          testRenewalToken: null,
+          lease: {
+            version: 1,
+            material: { type: FIXTURE_MATERIAL_TYPE, token: 'inert-token' },
+            expiresAt: GRANT_EXPIRY,
+            authorizationExpiresAt: GRANT_EXPIRY,
+            renewal: null,
+          },
+          binding: unsaved,
+        },
+      ],
+    });
+    // The adapter's `connection` is the signed binding, so its configuration is the unsaved one.
+    expect(h.issue).toHaveBeenCalledExactlyOnceWith({
+      connectionId: 'test-connection-mode-verification-1',
+      configuration: { region: 'eu-north-1' },
+      grantId: 'grant-fixture-0001',
+      request: 'verify',
+    });
+    // Scope lock and policy only: an unsaved connection has no row to look up.
+    expect(readKeys(h)).toHaveLength(2);
+    expect(readKeys(h)).toContain('AGENTAUTH#POLICY');
+    expect(readKeys(h).some((pk) => pk.startsWith('AGENTAUTH#CONNECTION#'))).toBe(false);
+    expect(h.ssmClient.send).not.toHaveBeenCalled();
+  });
+
+  it('refuses providers that did not opt in before any read', async () => {
+    const optedOut = harness({
+      registry: createBrokerProviderRegistry([
+        KEY_BROKER_PROVIDER,
+        createFixtureBrokerProvider({ verification: false }),
+      ]),
+    });
+    const keys = harness();
+    for (const [h, target] of [
+      [keys, kiro],
+      [optedOut, unsaved],
+    ]) {
+      await expect(
+        h.authorize({ grant: h.grant('verify-connection', [target]) }),
+      ).rejects.toMatchObject({
+        code: INVALID,
+        message: 'Connection verification is not supported for this mechanism',
+      });
+      expect(h.ddbClient.send).not.toHaveBeenCalled();
+      expect(h.ssmClient.send).not.toHaveBeenCalled();
+      expect(h.issue).not.toHaveBeenCalled();
+    }
+  });
+
+  it('never renews a verification', async () => {
+    const h = harness();
+    const grant = h.grant('verify-connection', [unsaved]);
+    const claims = verifyAgentCredentialGrant(grant, SECRET, { now: () => START });
+    const policy = FIXTURE_RENEWAL;
+    // Even correctly signed under the renewal audience, the purpose is refused.
+    const forged = signCredentialToken(
+      { ...claims, expiresAt: claims.issuedAt + policy.ttlSeconds },
+      SECRET,
+      policy.audience,
+    );
+
+    for (const token of [grant, forged])
+      await expect(h.renew(token)).rejects.toMatchObject({ code: INVALID });
+    expect(() =>
+      verifyRenewal({ token: forged, key: SECRET, policy, owns: () => true, now: () => START }),
+    ).toThrow('Renewal requires one pinned connection');
+    expect(() => signRenewal({ claims, binding: unsaved, policy, key: SECRET })).toThrow(
+      'Renewal requires one pinned connection',
+    );
+    expect(h.issue).not.toHaveBeenCalled();
+  });
+
+  it('verifies only under a verification grant', async () => {
+    const h = harness();
+    const context = await createAgentProviderContext(
+      { grant: h.grant('capabilities', [binding]) },
+      { secret: SECRET, now: () => START, tokenClient: { issue: h.issue } },
+    );
+    expect(context.verification).toBe(false);
+    await expect(context.verify(binding)).rejects.toMatchObject({ code: INVALID });
+    expect(h.issue).not.toHaveBeenCalled();
   });
 });
 

@@ -16,14 +16,18 @@ export const fixtureTokenClient = () => ({
 });
 
 // Shaped like a real second provider: expiring material from a lazily created client, a renewal
-// policy, capability isolation and a classifier. The classifier maps every AccessDenied, as a
-// careless provider would, so suites can show the host scopes it to this provider's adapter.
+// policy, connection verification, capability isolation and a classifier. The classifier maps
+// every AccessDenied, as a careless provider would, so suites can show the host scopes it to
+// this provider's adapter. Like a real provider it reads configuration from `connection`, which a
+// verification fills with the signed binding of an unsaved connection; the id comes from the
+// binding because a binding names it connectionId.
 export const createFixtureBrokerProvider = (overrides = {}) => ({
   id: 'test-provider',
   adapters: {
-    [FIXTURE_ADAPTER_KEY]: async ({ connection, claims, request, deps }) => {
+    [FIXTURE_ADAPTER_KEY]: async ({ connection, binding, claims, request, deps }) => {
       const { token, expiresAt } = await deps.tokenClient.issue({
-        connectionId: connection.id,
+        connectionId: binding.connectionId,
+        configuration: connection.configuration,
         grantId: claims.grantId,
         request,
       });
@@ -31,6 +35,7 @@ export const createFixtureBrokerProvider = (overrides = {}) => ({
     },
   },
   renewal: FIXTURE_RENEWAL,
+  verification: true,
   isolateCapabilityFailures: true,
   errorCodes: [FIXTURE_DENIED],
   classifyError: (error) =>

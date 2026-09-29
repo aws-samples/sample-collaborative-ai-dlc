@@ -90,6 +90,16 @@ const normalizedClaims = (claims) => {
       ? null
       : requiredString(claims.executionId, 'executionId');
   const bindings = normalizeGrantBindings(claims.bindings);
+  // Verification authorizes one unsaved connection definition, never an execution's identity.
+  if (
+    purpose === AGENT_AUTH_MODES.VERIFY_CONNECTION &&
+    (executionId !== null || bindings.length !== 1 || bindings[0].version !== 2)
+  ) {
+    throw grantError(
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'Connection verification grants require exactly one connection and no execution',
+    );
+  }
   if (bindings.some((binding) => binding.source === 'space') && !projectId) {
     throw grantError(
       'AGENT_CREDENTIAL_GRANT_INVALID',

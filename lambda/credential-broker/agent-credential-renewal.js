@@ -1,9 +1,10 @@
 import { authError } from '../shared/agent-auth-protocol.js';
+import { AGENT_AUTH_MODES } from '../shared/agent-command-registry.js';
 import { signCredentialToken, verifyCredentialToken } from '../shared/agent-credential-grants.js';
 import { normalizeCredentialLease } from '../shared/agent-credential-lease.js';
 
 // A connection-verification grant never carries renewal authority.
-const VERIFY_CONNECTION = 'verify-connection';
+const { VERIFY_CONNECTION } = AGENT_AUTH_MODES;
 
 const invalidRenewal = () =>
   authError('AGENT_CREDENTIAL_GRANT_INVALID', 'Renewal requires one pinned connection');

@@ -15,8 +15,34 @@ const RESERVED_CAPABILITY_KEYS = Object.freeze([
   'at',
 ]);
 // Unknown keys are refused so a misspelled controlledEnv cannot leave ambient values in place.
-const PROVIDER_KEYS = Object.freeze(['id', 'modes', 'materials', 'controlledEnv', 'capabilities']);
+const PROVIDER_KEYS = Object.freeze([
+  'id',
+  'modes',
+  'materials',
+  'controlledEnv',
+  'capabilities',
+  'verify',
+  'verificationFailures',
+]);
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ERROR_CODE = /^[A-Z][A-Z0-9_]+$/;
+// Connection-check messages for failures before a verifier runs (grant and broker errors) and
+// for the command's own refusals. They cross the runtime HTTP boundary in place of the error,
+// so providers may add codes for their broker errors but never reword these.
+const FOUNDATION_VERIFICATION_FAILURES = Object.freeze({
+  AGENT_CREDENTIAL_GRANT_EXPIRED:
+    'The authorization for this connection check expired. Run Test connection again.',
+  AGENT_CREDENTIAL_GRANT_INVALID:
+    'The runtime rejected the authorization for this connection check. Check that the application and runtime use the same credential broker configuration.',
+  AGENT_CREDENTIAL_GRANT_NOT_CONFIGURED:
+    'The credential grant signing configuration is missing. Check the application and credential broker deployment.',
+  CREDENTIAL_BROKER_NOT_CONFIGURED:
+    'The runtime has no credential broker configured. Check the runtime deployment.',
+  AGENT_AUTH_RUNTIME_UNSUPPORTED:
+    'This runtime cannot check connections of this mode. Publish an environment whose runtime supports connection verification for this mode.',
+  AGENT_AUTH_VERIFICATION_FAILED:
+    'The runtime could not prepare inference credentials for this connection check. Check the credential broker configuration and runtime logs.',
+});
 const isRecord = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 export const composeRuntimeAuthProviders = (providers) => {
@@ -28,6 +54,8 @@ export const composeRuntimeAuthProviders = (providers) => {
   const modes = [];
   const controlledEnv = new Set();
   const contributors = [];
+  const verifiers = new Map();
+  const verificationFailures = { ...FOUNDATION_VERIFICATION_FAILURES };
   for (const provider of providers) {
     if (!isRecord(provider)) throw new TypeError('Runtime authentication provider is required');
     const {
@@ -36,6 +64,8 @@ export const composeRuntimeAuthProviders = (providers) => {
       materials,
       controlledEnv: envNames = [],
       capabilities,
+      verify,
+      verificationFailures: failures,
     } = provider;
     assertIdentifier(id, 'Runtime authentication provider id');
     const invalid = (problem) => new TypeError(`Runtime authentication provider ${id} ${problem}`);
@@ -76,6 +106,21 @@ export const composeRuntimeAuthProviders = (providers) => {
         throw invalid('declares an invalid capabilities hook');
       contributors.push({ types: Object.keys(materials), capabilities });
     }
+    if (verify !== undefined) {
+      if (typeof verify !== 'function') throw invalid('declares an invalid verifier');
+      for (const mode of advertised) verifiers.set(mode, verify);
+    }
+    if (failures !== undefined) {
+      if (!verify) throw invalid('declares verification failures without a verifier');
+      if (!isRecord(failures)) throw invalid('declares invalid verification failures');
+      for (const [code, message] of Object.entries(failures)) {
+        if (!ERROR_CODE.test(code) || typeof message !== 'string' || !message.trim())
+          throw invalid('declares invalid verification failures');
+        if (Object.hasOwn(verificationFailures, code))
+          throw invalid(`redefines verification failure ${code}`);
+        verificationFailures[code] = message;
+      }
+    }
   }
   // Only providers whose material this invocation adapted contribute. A failing hook
   // contributes nothing, so the rest of the probe (Kiro included) still answers.
@@ -103,6 +148,9 @@ export const composeRuntimeAuthProviders = (providers) => {
     materialEnv: Object.freeze(materialEnv),
     modes: Object.freeze(modes),
     capabilityContributions,
+    verificationModes: Object.freeze([...verifiers.keys()]),
+    verifierFor: (mode) => verifiers.get(mode) ?? null,
+    verificationFailures: Object.freeze(verificationFailures),
   });
 };
 
@@ -116,3 +164,7 @@ export const CREDENTIAL_ADAPTER_ENV_NAMES = RUNTIME_AUTH.controlledEnv;
 export const CREDENTIAL_MATERIAL_ENV_NAMES = RUNTIME_AUTH.materialEnv;
 export const RUNTIME_AGENT_AUTH_MODES = RUNTIME_AUTH.modes;
 export const runtimeCapabilityContributions = RUNTIME_AUTH.capabilityContributions;
+// Modes whose provider can check an unsaved connection, advertised as agentAuthVerification.
+export const RUNTIME_VERIFICATION_MODES = RUNTIME_AUTH.verificationModes;
+export const connectionVerifierFor = RUNTIME_AUTH.verifierFor;
+export const CONNECTION_VERIFICATION_FAILURES = RUNTIME_AUTH.verificationFailures;
