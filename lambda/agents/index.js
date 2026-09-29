@@ -13,6 +13,8 @@ import { discoverAgentModels } from '../shared/agent-model-discovery.js';
 //     model picker (probes the AgentCore runtime; refreshes model-pricing SSM)
 //   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 //     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
+//   - POST /agents/authentication-setup        — Admin setup steps of registered
+//     authentication providers (authentication-settings-providers.js)
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
@@ -353,11 +355,18 @@ async function refreshModelPricing() {
   }
 }
 
-const authenticationSettings = () => createAuthenticationSettingsService({ ddb, ssm, withNeptune });
+const authenticationSettings = () =>
+  createAuthenticationSettingsService({
+    ddb,
+    ssm,
+    withNeptune,
+    agentcore,
+    logger,
+    resolveTarget: (projectId) => withNeptune((g) => resolveProjectRuntimeTarget(g, projectId)),
+  });
 const authenticationView = (request) => authenticationSettings().authenticationView(request);
 const reviewedCredentialUpdate = (request) =>
   authenticationSettings().reviewedCredentialUpdate(request);
-const authenticationChanges = () => authenticationSettings().authenticationChanges();
 const authChangeResponse = (response, error) =>
   response(
     error.code?.startsWith('AGENT_AUTH_') ? (error.code === 'AGENT_AUTH_INVALID' ? 400 : 409) : 500,
@@ -380,6 +389,7 @@ export const handler = async (event, context) => {
   const projectId = pathParameters?.projectId;
   const taskId = pathParameters?.taskId ? decodeURIComponent(pathParameters.taskId) : null;
   const credentialUserId = event.requestContext?.authorizer?.claims?.sub || '';
+  const actor = { userId: credentialUserId, platformAdmin: isPlatformAdmin(event) };
   logger.appendKeys({
     ...(projectId && { projectId }),
     ...(taskId && { taskId }),
@@ -387,6 +397,23 @@ export const handler = async (event, context) => {
   });
 
   try {
+    // POST /agents/authentication-setup — provider setup steps (defaults, generated
+    // documents, connection checks), selected by the body's mode and action.
+    if (httpMethod === 'POST' && path.endsWith('/agents/authentication-setup')) {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      if (!input || typeof input !== 'object' || Array.isArray(input))
+        return response(400, { error: 'Invalid authentication setup request' });
+      const result = await authenticationSettings().providerAction(input, actor);
+      return response(result.statusCode, result.body);
+    }
+
     // ===== HIERARCHICAL AGENT CREDENTIALS =====
 
     // GET/PUT /users/me/agent-credentials — the authenticated user's personal
@@ -407,6 +434,7 @@ export const handler = async (event, context) => {
                     source: 'user',
                     userId: credentialUserId,
                     scopeStatus: status,
+                    actor,
                   }),
                 }
               : {}),
@@ -473,6 +501,7 @@ export const handler = async (event, context) => {
                     source: 'space',
                     projectId,
                     scopeStatus: space,
+                    actor,
                   }),
                 }
               : {}),
@@ -673,7 +702,10 @@ export const handler = async (event, context) => {
           ...platformCredentialStatus,
           ...(process.env.V2_PROCESS_TABLE
             ? {
-                authentication: await authenticationView({ scopeStatus: platformCredentialStatus }),
+                authentication: await authenticationView({
+                  scopeStatus: platformCredentialStatus,
+                  actor,
+                }),
               }
             : {}),
           cliModels,
@@ -702,13 +734,17 @@ export const handler = async (event, context) => {
       const errors = [];
 
       if (input.authenticationChange) {
-        const service = authenticationChanges();
+        const settings = authenticationSettings();
+        const service = settings.authenticationChanges();
         try {
           const request = input.authenticationChange;
           if (request.action === 'preview')
             return response(
               200,
-              await service.preview({ ...request.candidate, kind: 'policy' }, credentialUserId),
+              await service.preview(
+                await settings.changeCandidate(request.candidate),
+                credentialUserId,
+              ),
             );
           if (request.action === 'apply')
             return response(200, await service.apply(request.reviewId, credentialUserId));

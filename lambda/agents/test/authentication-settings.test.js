@@ -1,97 +1,19 @@
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { createAgentConnectionRepository } from '../../shared/agent-connection-repository.js';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import { DynamoDBClient, CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
+import { describe, expect, it } from 'vitest';
+import { PutParameterCommand } from '@aws-sdk/client-ssm';
+import { AUTHENTICATION_SETTINGS_PROVIDERS } from '../authentication-settings-providers.js';
+import { authModeDescriptor } from '../../shared/agent-auth-providers.js';
 import {
-  SSMClient,
-  GetParametersCommand,
-  GetParametersByPathCommand,
-  PutParameterCommand,
-} from '@aws-sdk/client-ssm';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
-import { mockClient } from 'aws-sdk-client-mock';
+  addSpace,
+  invoke,
+  mocks,
+  scopeStatuses,
+  useSettingsHarness,
+} from './helpers/settings-harness.js';
 
-const ssm = mockClient(SSMClient);
-const lambda = mockClient(LambdaClient);
-const tables = [];
-const ddb = new DynamoDBClient({
-  endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
-  region: 'us-east-1',
-  credentials: { accessKeyId: 'local', secretAccessKey: 'local' },
-});
-let handler;
-const request = (body, { admin = true, personal = false } = {}) => ({
-  httpMethod: 'PUT',
-  path: personal ? '/users/me/agent-credentials' : '/agents/settings',
-  body: JSON.stringify(body),
-  requestContext: {
-    authorizer: {
-      claims: {
-        sub: 'reviewer',
-        ...(admin ? { 'cognito:groups': 'platform-admin' } : {}),
-      },
-    },
-  },
-});
-const invoke = async (...args) => {
-  const result = await handler(request(...args));
-  return { status: result.statusCode, data: JSON.parse(result.body) };
-};
-
-beforeAll(async () => {
-  vi.stubEnv('AWS_ENDPOINT_URL_DYNAMODB', process.env.DYNAMODB_LOCAL_ENDPOINT);
-  vi.stubEnv('AWS_REGION', 'us-east-1');
-  vi.stubEnv('AWS_ACCESS_KEY_ID', 'local');
-  vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'local');
-  vi.stubEnv('GREMLIN_PARTITION', `auth-settings-${randomUUID()}`);
-  vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/test');
-  vi.stubEnv('AGENT_CREDENTIAL_METADATA_FUNCTION', 'metadata');
-  vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', '');
-  ({ handler } = await import('../index.js'));
-});
-beforeEach(async () => {
-  const TableName = `agent-auth-api-${randomUUID()}`;
-  await ddb.send(
-    new CreateTableCommand({
-      TableName,
-      BillingMode: 'PAY_PER_REQUEST',
-      KeySchema: [
-        { AttributeName: 'pk', KeyType: 'HASH' },
-        { AttributeName: 'sk', KeyType: 'RANGE' },
-      ],
-      AttributeDefinitions: [
-        { AttributeName: 'pk', AttributeType: 'S' },
-        { AttributeName: 'sk', AttributeType: 'S' },
-      ],
-    }),
-  );
-  tables.push(TableName);
-  vi.stubEnv('V2_PROCESS_TABLE', TableName);
-  await createAgentConnectionRepository({
-    ddb: DynamoDBDocumentClient.from(ddb),
-    tableName: TableName,
-  }).initializeInventory();
-  ssm.reset();
-  lambda.reset();
-  ssm.on(GetParametersCommand).resolves({ Parameters: [] });
-  ssm.on(GetParametersByPathCommand).resolves({ Parameters: [] });
-  ssm.on(PutParameterCommand).resolves({});
-  lambda.on(InvokeCommand).resolves({
-    Payload: Buffer.from(
-      JSON.stringify({
-        ok: true,
-        scopes: [],
-        status: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
-      }),
-    ),
-  });
-});
-afterAll(async () => {
-  await Promise.all(tables.map((TableName) => ddb.send(new DeleteTableCommand({ TableName }))));
-  ddb.destroy();
-  vi.unstubAllEnvs();
-});
+useSettingsHarness();
+const { ssm } = mocks;
+const view = async (options) =>
+  (await invoke({}, { method: 'GET', ...options })).data.authentication;
 
 describe('reviewed credential settings API', () => {
   it('requires platform authorization and a reviewed update before writing secrets', async () => {
@@ -127,7 +49,14 @@ describe('reviewed credential settings API', () => {
     });
   });
   it('binds a personal review and write to the authenticated caller', async () => {
-    const input = { bedrockBearerToken: 'personal-fixture', userId: 'someone-else' };
+    const input = { bedrockBearerToken: 'personal-fixture' };
+    // A caller-chosen user id is not a key field, so it is refused rather than ignored.
+    expect(
+      await invoke(
+        { ...input, userId: 'someone-else', reviewAction: 'preview' },
+        { admin: false, personal: true },
+      ),
+    ).toMatchObject({ status: 400, data: { code: 'AGENT_AUTH_INVALID' } });
     const preview = await invoke(
       { ...input, reviewAction: 'preview' },
       { admin: false, personal: true },
@@ -142,24 +71,129 @@ describe('reviewed credential settings API', () => {
       '/collab/test/users/reviewer/agent-credentials/bedrock-bearer-token',
     );
   });
-  it('keeps future modes gated and reports missing inherited credentials', async () => {
+  it('keeps unregistered modes gated and reports missing inherited credentials', async () => {
     expect(
       await invoke({
         authenticationChange: {
           action: 'preview',
-          candidate: { mode: 'iam', defaultConnectionId: 'future' },
+          candidate: { mode: 'unregistered-test-mode', defaultConnectionId: 'future' },
         },
       }),
     ).toMatchObject({
       status: 409,
       data: { code: 'AGENT_AUTH_MODE_UNAVAILABLE' },
     });
-    const result = await handler({ ...request({}), httpMethod: 'GET' });
-    expect(result.statusCode).toBe(200);
-    expect(JSON.parse(result.body).authentication).toMatchObject({
+    expect(await view()).toMatchObject({
       policy: { mode: 'keys', revision: 0 },
       reviewRequired: true,
       connection: { id: 'legacy-platform-bedrock', state: 'missing' },
     });
+  });
+  it('accepts only key fields on the personal and space key routes', async () => {
+    await addSpace('p1');
+    for (const scope of [{ personal: true }, { projectId: 'p1' }]) {
+      for (const extra of [
+        { bedrockIam: { region: 'eu-west-1' } },
+        { authenticationChange: { action: 'preview' } },
+        { cliModels: {} },
+      ]) {
+        expect(
+          await invoke({ kiroApiKey: 'kiro-fixture', ...extra, reviewAction: 'preview' }, scope),
+        ).toMatchObject({ status: 400, data: { code: 'AGENT_AUTH_INVALID' } });
+      }
+      expect(
+        (await invoke({ kiroApiKey: 'kiro-fixture', reviewAction: 'preview' }, scope)).data
+          .candidate,
+      ).toMatchObject({ kind: 'credential-update', changes: [{ provider: 'kiro' }] });
+    }
+    // The platform body mixes keys with model settings and stays open.
+    expect(
+      await invoke({
+        cliModels: { claude: 'model-fixture' },
+        bedrockBearerToken: 'platform-fixture',
+        reviewAction: 'preview',
+      }),
+    ).toMatchObject({ status: 200, data: { candidate: { kind: 'credential-update' } } });
+    expect(ssm.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+});
+
+describe('keys authentication view', () => {
+  it('describes the platform scope with the keys default and the caller’s permission', async () => {
+    const admin = await view();
+    expect(admin).toMatchObject({
+      hasOverride: false,
+      canManageConnections: true,
+      personalMechanisms: ['api-key'],
+    });
+    expect(admin.modes.find((mode) => mode.id === 'keys')).toMatchObject({
+      available: true,
+      defaultConnectionId: 'legacy-platform-bedrock',
+    });
+    expect((await view({ admin: false })).canManageConnections).toBe(false);
+  });
+  it('reports the caller’s permission on the personal and space scopes too', async () => {
+    await addSpace('p1');
+    await addSpace('owned', { callerRole: 'owner' });
+    for (const scope of [{ personal: true }, { projectId: 'p1' }, { projectId: 'owned' }])
+      expect((await view(scope)).canManageConnections, JSON.stringify(scope)).toBe(true);
+    // A space owner reads the space view but manages only its keys, not its connections.
+    for (const scope of [{ personal: true }, { projectId: 'owned' }])
+      expect(
+        (await view({ ...scope, admin: false })).canManageConnections,
+        JSON.stringify(scope),
+      ).toBe(false);
+  });
+  it('keeps personal and space key overrides ahead of the platform key', async () => {
+    await addSpace('p1');
+    scopeStatuses.platform = { bedrockBearerTokenSet: true, kiroApiKeySet: false };
+    expect(await view({ personal: true, admin: false })).toMatchObject({
+      hasOverride: false,
+      canManageConnections: false,
+      connection: { id: 'legacy-platform-bedrock', state: 'ready' },
+    });
+    expect(await view({ projectId: 'p1' })).toMatchObject({
+      hasOverride: false,
+      connection: { id: 'legacy-platform-bedrock', state: 'ready' },
+    });
+    scopeStatuses.user = { bedrockBearerTokenSet: true, kiroApiKeySet: false };
+    scopeStatuses.space = { bedrockBearerTokenSet: true, kiroApiKeySet: false };
+    expect(await view({ personal: true })).toMatchObject({
+      hasOverride: true,
+      connection: { id: 'legacy-user-bedrock-reviewer', source: 'user', state: 'ready' },
+    });
+    expect(await view({ projectId: 'p1' })).toMatchObject({
+      hasOverride: true,
+      connection: { id: 'legacy-space-bedrock-p1', source: 'space', state: 'ready' },
+    });
+  });
+});
+
+describe('authentication settings provider registration', () => {
+  it('registers only available modes, each once, with drafts of their own mechanisms', () => {
+    const modes = AUTHENTICATION_SETTINGS_PROVIDERS.map((provider) => provider.mode);
+    expect(new Set(modes).size).toBe(modes.length);
+    // Keys flows are the built-in credential routes.
+    expect(modes).not.toContain('keys');
+    for (const provider of AUTHENTICATION_SETTINGS_PROVIDERS) {
+      const descriptor = authModeDescriptor(provider.mode);
+      expect(descriptor?.planned, provider.mode).toBe(false);
+      if (provider.draft) expect(descriptor.mechanisms).toContain(provider.draft.mechanism);
+      for (const action of Object.values(provider.actions ?? {}))
+        expect(typeof action).toBe('function');
+    }
+  });
+  it('serves the setup route to platform administrators only', async () => {
+    const post = (admin) =>
+      invoke(
+        { mode: 'keys', action: 'defaults' },
+        { admin, method: 'POST', path: '/agents/authentication-setup' },
+      );
+    expect(await post(false)).toMatchObject({
+      status: 403,
+      data: { code: 'PLATFORM_ADMIN_REQUIRED' },
+    });
+    // Keys registers no setup steps.
+    expect((await post(true)).status).toBe(404);
   });
 });
