@@ -1,0 +1,341 @@
+{
+  "capturedOn": "a637d1b",
+  "policyRevision": 3,
+  "cases": [
+    {
+      "name": "keys platform connection with an empty configuration",
+      "via": "connection",
+      "input": {
+        "id": "keys-platform",
+        "revision": 1,
+        "mode": "keys",
+        "backend": "bedrock",
+        "mechanism": "api-key",
+        "source": "platform",
+        "configuration": {}
+      },
+      "expected": {
+        "normalized": "{\"id\":\"keys-platform\",\"revision\":1,\"mode\":\"keys\",\"backend\":\"bedrock\",\"mechanism\":\"api-key\",\"source\":\"platform\",\"state\":\"ready\",\"configuration\":{}}",
+        "identity": "{\"version\":2,\"provider\":\"bedrock\",\"source\":\"platform\",\"connectionId\":\"keys-platform\",\"connectionRevision\":1,\"policyRevision\":3,\"mode\":\"keys\",\"backend\":\"bedrock\",\"mechanism\":\"api-key\",\"configuration\":{}}"
+      }
+    },
+    {
+      "name": "keys space connection trims its region",
+      "via": "connection",
+      "input": {
+        "id": "keys-space",
+        "revision": 2,
+        "mode": "keys",
+        "backend": "bedrock",
+        "mechanism": "api-key",
+        "source": "space",
+        "projectId": "p1",
+        "configuration": {
+          "region": " eu-west-1 "
+        }
+      },
+      "expected": {
+        "normalized": "{\"id\":\"keys-space\",\"revision\":2,\"mode\":\"keys\",\"backend\":\"bedrock\",\"mechanism\":\"api-key\",\"source\":\"space\",\"state\":\"ready\",\"projectId\":\"p1\",\"configuration\":{\"region\":\"eu-west-1\"}}",
+        "identity": "{\"version\":2,\"provider\":\"bedrock\",\"source\":\"space\",\"connectionId\":\"keys-space\",\"connectionRevision\":2,\"policyRevision\":3,\"mode\":\"keys\",\"backend\":\"bedrock\",\"mechanism\":\"api-key\",\"configuration\":{\"region\":\"eu-west-1\"},\"projectId\":\"p1\"}"
+      }
+    },
+    {
+      "name": "keys user connection without a configuration normalizes to {}",
+      "via": "connection",
+      "input": {
+        "id": "keys-user",
+        "revision": 1,
+        "mode": "keys",
+        "backend": "bedrock",
+        "mechanism": "api-key",
+        "source": "user",
+        "userId": "u1"
+      },
+      "expected": {
+        "normalized": "{\"id\":\"keys-user\",\"revision\":1,\"mode\":\"keys\",\"backend\":\"bedrock\",\"mechanism\":\"api-key\",\"source\":\"user\",\"state\":\"ready\",\"userId\":\"u1\",\"configuration\":{}}",
+        "identity": "{\"version\":2,\"provider\":\"bedrock\",\"source\":\"user\",\"connectionId\":\"keys-user\",\"connectionRevision\":1,\"policyRevision\":3,\"mode\":\"keys\",\"backend\":\"bedrock\",\"mechanism\":\"api-key\",\"configuration\":{},\"userId\":\"u1\"}"
+      }
+    },
+    {
+      "name": "kiro connection with an explicit kiro mode",
+      "via": "connection",
+      "input": {
+        "id": "kiro-user",
+        "revision": 1,
+        "mode": "kiro",
+        "backend": "kiro",
+        "mechanism": "api-key",
+        "source": "user",
+        "userId": "u1",
+        "configuration": {}
+      },
+      "expected": {
+        "normalized": "{\"id\":\"kiro-user\",\"revision\":1,\"mode\":\"kiro\",\"backend\":\"kiro\",\"mechanism\":\"api-key\",\"source\":\"user\",\"state\":\"ready\",\"userId\":\"u1\",\"configuration\":{}}",
+        "identity": "{\"version\":2,\"provider\":\"kiro\",\"source\":\"user\",\"connectionId\":\"kiro-user\",\"connectionRevision\":1,\"policyRevision\":3,\"mode\":\"kiro\",\"backend\":\"kiro\",\"mechanism\":\"api-key\",\"configuration\":{},\"userId\":\"u1\"}"
+      }
+    },
+    {
+      "name": "kiro connection without a mode",
+      "via": "connection",
+      "input": {
+        "id": "kiro-platform",
+        "revision": 0,
+        "backend": "kiro",
+        "mechanism": "api-key",
+        "source": "platform",
+        "configuration": {}
+      },
+      "expected": {
+        "normalized": "{\"id\":\"kiro-platform\",\"revision\":0,\"mode\":\"kiro\",\"backend\":\"kiro\",\"mechanism\":\"api-key\",\"source\":\"platform\",\"state\":\"ready\",\"configuration\":{}}",
+        "identity": "{\"version\":2,\"provider\":\"kiro\",\"source\":\"platform\",\"connectionId\":\"kiro-platform\",\"connectionRevision\":0,\"policyRevision\":3,\"mode\":\"kiro\",\"backend\":\"kiro\",\"mechanism\":\"api-key\",\"configuration\":{}}"
+      }
+    },
+    {
+      "name": "legacy space Kiro key",
+      "via": "legacy",
+      "input": "legacy-space-kiro-p1",
+      "expected": {
+        "normalized": "{\"id\":\"legacy-space-kiro-p1\",\"revision\":0,\"mode\":\"kiro\",\"backend\":\"kiro\",\"mechanism\":\"api-key\",\"source\":\"space\",\"state\":\"ready\",\"projectId\":\"p1\",\"configuration\":{}}",
+        "identity": "{\"version\":2,\"provider\":\"kiro\",\"source\":\"space\",\"connectionId\":\"legacy-space-kiro-p1\",\"connectionRevision\":0,\"policyRevision\":3,\"mode\":\"kiro\",\"backend\":\"kiro\",\"mechanism\":\"api-key\",\"configuration\":{},\"projectId\":\"p1\"}"
+      }
+    },
+    {
+      "name": "legacy user Bedrock key",
+      "via": "legacy",
+      "input": "legacy-user-bedrock-u1",
+      "expected": {
+        "normalized": "{\"id\":\"legacy-user-bedrock-u1\",\"revision\":0,\"mode\":\"keys\",\"backend\":\"bedrock\",\"mechanism\":\"api-key\",\"source\":\"user\",\"state\":\"ready\",\"userId\":\"u1\",\"configuration\":{}}",
+        "identity": "{\"version\":2,\"provider\":\"bedrock\",\"source\":\"user\",\"connectionId\":\"legacy-user-bedrock-u1\",\"connectionRevision\":0,\"policyRevision\":3,\"mode\":\"keys\",\"backend\":\"bedrock\",\"mechanism\":\"api-key\",\"configuration\":{},\"userId\":\"u1\"}"
+      }
+    },
+    {
+      "name": "v1 space Bedrock binding",
+      "via": "binding",
+      "input": {
+        "provider": "bedrock",
+        "source": "space"
+      },
+      "expected": {
+        "identity": "{\"provider\":\"bedrock\",\"source\":\"space\"}"
+      }
+    },
+    {
+      "name": "v1 user Kiro binding",
+      "via": "binding",
+      "input": {
+        "provider": "kiro",
+        "source": "user",
+        "userId": "u1"
+      },
+      "expected": {
+        "identity": "{\"provider\":\"kiro\",\"source\":\"user\",\"userId\":\"u1\"}"
+      }
+    },
+    {
+      "name": "planned IAM configuration with region first",
+      "via": "planned-configuration",
+      "input": {
+        "id": "iam-platform",
+        "revision": 1,
+        "mode": "iam",
+        "backend": "bedrock",
+        "mechanism": "assume-role",
+        "source": "platform",
+        "configuration": {
+          "region": "eu-west-1",
+          "roleArn": "arn:aws:iam::123456789012:role/aidlc-bedrock"
+        }
+      },
+      "expected": {
+        "configuration": "{\"region\":\"eu-west-1\",\"roleArn\":\"arn:aws:iam::123456789012:role/aidlc-bedrock\"}"
+      }
+    },
+    {
+      "name": "planned IAM configuration with roleArn first",
+      "via": "planned-configuration",
+      "input": {
+        "id": "iam-platform",
+        "revision": 1,
+        "mode": "iam",
+        "backend": "bedrock",
+        "mechanism": "assume-role",
+        "source": "platform",
+        "configuration": {
+          "roleArn": "arn:aws:iam::123456789012:role/aidlc-bedrock",
+          "region": "eu-west-1"
+        }
+      },
+      "expected": {
+        "configuration": "{\"roleArn\":\"arn:aws:iam::123456789012:role/aidlc-bedrock\",\"region\":\"eu-west-1\"}"
+      }
+    },
+    {
+      "name": "planned LiteLLM api-key gateway drops the trailing slash",
+      "via": "planned-configuration",
+      "input": {
+        "id": "litellm-platform",
+        "revision": 1,
+        "mode": "litellm",
+        "backend": "litellm",
+        "mechanism": "api-key",
+        "source": "platform",
+        "configuration": {
+          "endpoint": "https://gw.example.com/"
+        }
+      },
+      "expected": {
+        "configuration": "{\"endpoint\":\"https://gw.example.com\"}"
+      }
+    },
+    {
+      "name": "planned LiteLLM oauth-machine trims fields and sorts unique scopes",
+      "via": "planned-configuration",
+      "input": {
+        "id": "litellm-machine",
+        "revision": 1,
+        "mode": "litellm",
+        "backend": "litellm",
+        "mechanism": "oauth-machine",
+        "source": "platform",
+        "configuration": {
+          "endpoint": "https://gw.example.com/v1/",
+          "issuer": "https://idp.example.com/",
+          "audience": " inference ",
+          "clientId": " aidlc ",
+          "scopes": ["b", "a", "b"]
+        }
+      },
+      "expected": {
+        "configuration": "{\"endpoint\":\"https://gw.example.com/v1\",\"issuer\":\"https://idp.example.com\",\"audience\":\"inference\",\"clientId\":\"aidlc\",\"scopes\":[\"a\",\"b\"]}"
+      }
+    },
+    {
+      "name": "planned LiteLLM oauth-user in a space keeps its field order",
+      "via": "planned-configuration",
+      "input": {
+        "id": "litellm-space-user",
+        "revision": 1,
+        "mode": "litellm",
+        "backend": "litellm",
+        "mechanism": "oauth-user",
+        "source": "space",
+        "projectId": "p1",
+        "configuration": {
+          "scopes": ["model.invoke"],
+          "clientId": "aidlc",
+          "audience": "inference",
+          "issuer": "https://idp.example.com",
+          "endpoint": "https://gw.example.com/v1"
+        }
+      },
+      "expected": {
+        "configuration": "{\"scopes\":[\"model.invoke\"],\"clientId\":\"aidlc\",\"audience\":\"inference\",\"issuer\":\"https://idp.example.com\",\"endpoint\":\"https://gw.example.com/v1\"}"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "name": "keys connection with a null configuration",
+      "via": "connection",
+      "input": {
+        "id": "keys-platform",
+        "revision": 1,
+        "mode": "keys",
+        "backend": "bedrock",
+        "mechanism": "api-key",
+        "source": "platform",
+        "configuration": null
+      },
+      "error": {
+        "code": "AGENT_AUTH_INVALID",
+        "message": "Connection configuration contains unsupported fields"
+      }
+    },
+    {
+      "name": "keys connection with a field of another mechanism",
+      "via": "connection",
+      "input": {
+        "id": "keys-platform",
+        "revision": 1,
+        "mode": "keys",
+        "backend": "bedrock",
+        "mechanism": "api-key",
+        "source": "platform",
+        "configuration": {
+          "region": "eu-west-1",
+          "roleArn": "arn:aws:iam::123456789012:role/aidlc-bedrock"
+        }
+      },
+      "error": {
+        "code": "AGENT_AUTH_INVALID",
+        "message": "Connection configuration contains unsupported fields"
+      }
+    },
+    {
+      "name": "keys connection with an empty region",
+      "via": "connection",
+      "input": {
+        "id": "keys-platform",
+        "revision": 1,
+        "mode": "keys",
+        "backend": "bedrock",
+        "mechanism": "api-key",
+        "source": "platform",
+        "configuration": {
+          "region": ""
+        }
+      },
+      "error": {
+        "code": "AGENT_AUTH_INVALID",
+        "message": "region is invalid"
+      }
+    },
+    {
+      "name": "planned LiteLLM oauth-machine without an issuer",
+      "via": "planned-configuration",
+      "input": {
+        "id": "litellm-machine",
+        "revision": 1,
+        "mode": "litellm",
+        "backend": "litellm",
+        "mechanism": "oauth-machine",
+        "source": "platform",
+        "configuration": {
+          "endpoint": "https://gw.example.com/v1",
+          "audience": "inference",
+          "clientId": "aidlc",
+          "scopes": ["model.invoke"]
+        }
+      },
+      "error": {
+        "code": "AGENT_AUTH_INVALID",
+        "message": "OAuth issuer, clientId and audience are required"
+      }
+    }
+  ],
+  "catalog": [
+    {
+      "id": "keys",
+      "label": "Keys",
+      "backend": "bedrock",
+      "mechanisms": ["api-key"],
+      "available": true
+    },
+    {
+      "id": "iam",
+      "modelDiscovery": "runtime",
+      "label": "IAM",
+      "backend": "bedrock",
+      "mechanisms": ["assume-role"],
+      "available": false
+    },
+    {
+      "id": "litellm",
+      "modelDiscovery": "runtime",
+      "label": "LiteLLM",
+      "backend": "litellm",
+      "mechanisms": ["api-key", "oauth-machine", "oauth-user"],
+      "available": false
+    }
+  ]
+}
