@@ -31,7 +31,6 @@ import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
-  StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
@@ -63,6 +62,7 @@ import {
 } from '../shared/stage-loopback.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
+import { stopSession as stopSharedSession } from '../shared/runtime-session.js';
 import {
   awaitEngineGate,
   parseChoice,
@@ -158,22 +158,14 @@ const defaultInvokeRuntime = async (
   return parsed;
 };
 
-// Free a parked stage's warm microVM compute (D1 release-on-park). Resume
-// re-mounts the persistent session storage, so the parked CLI conversation is
-// not lost. Best-effort: a failed/already-stopped session must not break resume.
-const stopRuntimeSession = async (sessionId, target = { agentRuntimeArn: RUNTIME_ARN() }) => {
-  try {
-    await agentcore.send(
-      new StopRuntimeSessionCommand({
-        runtimeSessionId: sessionId,
-        ...target,
-      }),
-    );
-    return { stopped: true };
-  } catch (e) {
-    return { stopped: false, error: e.message };
-  }
-};
+// Free a parked stage's warm compute (D1 release-on-park). This is a STOP, not
+// a release: the persistent workspace (session storage on microVMs, the EBS
+// volume on Instances) survives and resume re-attaches it, so the parked CLI
+// conversation is not lost — see the retention policy in
+// shared/runtime-session.js. Best-effort: a failed/already-stopped session must
+// not break resume.
+const stopRuntimeSession = async (sessionId, target = { agentRuntimeArn: RUNTIME_ARN() }) =>
+  stopSharedSession({ client: agentcore, target, sessionId });
 
 const streamToString = async (body) => {
   if (typeof body.transformToString === 'function') return body.transformToString();
