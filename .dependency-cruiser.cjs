@@ -33,11 +33,12 @@ module.exports = {
     {
       name: 'runtime-cannot-issue-or-load-agent-secrets',
       comment:
-        'Runtime authentication uses the redemption broker; it cannot load key storage or grant signing code.',
+        'Runtime authentication uses the redemption broker; it cannot load key storage, connection records or grant signing code, not even through a shared module.',
       severity: 'error',
       from: { path: '^lambda/agentcore/', pathNot: '/test/' },
       to: {
-        path: '^lambda/shared/(agent-key-repository|agent-credential-grants|agent-auth-redemption|agent-credentials)\\.js$',
+        path: '^lambda/shared/(agent-key-repository|agent-credential-grants|agent-auth-redemption|agent-credentials|agent-connection-repository)\\.js$',
+        reachable: true,
       },
     },
     {

@@ -6,9 +6,11 @@ This document records the foundation contracts and operations described in
 ## Delivery and upgrade
 
 The foundation ships **Keys** and the existing separate Kiro integration. IAM and
-LiteLLM are represented by validated contracts and extension tests, but cannot be
-selected in settings. Their production providers, configuration flows and
-qualification belong to the following IAM and LiteLLM changes.
+LiteLLM are registered as planned descriptors, so stored rows that name them keep
+parsing. A mode becomes available, in settings and for selection, only when a
+provider registers a real descriptor in its place. Their production providers,
+configuration flows and qualification belong to the following IAM and LiteLLM
+changes.
 
 Deployment preserves existing platform, space and personal secret paths. No
 credential copy, bulk execution rewrite, mode switch or administrator migration
@@ -30,7 +32,9 @@ legacy bindings.
 
 | Owner                                          | Contract                                                                                                 |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `lambda/shared/agent-auth-catalog.js`          | Dependency-free identifiers, mechanisms, scopes, connection validation and safe display metadata         |
+| `lambda/shared/agent-auth-protocol.js`         | Dependency-free identifiers, mechanisms and scopes                                                       |
+| `lambda/shared/agent-auth-mode-registry.js`    | Mode descriptor validation and the catalog; each descriptor owns its connection configuration check      |
+| `lambda/shared/agent-auth-catalog.js`          | Compatibility facade over the contracts and the mode host (`agent-auth-providers.js`)                    |
 | `lambda/shared/agent-key-repository.js`        | Existing SSM paths and key storage; the old `agent-credentials.js` module remains a compatibility facade |
 | `lambda/shared/agent-connection-repository.js` | Policy, immutable connection revisions, review records, selection reservations and audit writes          |
 | `lambda/shared/agent-credential-service.js`    | Selection and invocation grant preparation for API and orchestration callers                             |
@@ -77,9 +81,12 @@ work; revoking it denies subsequent redemption.
 ## Selection and configuration
 
 Keys retain personal → space → platform precedence. Kiro retains the same
-precedence independently of the platform mode. The future IAM contract permits
-space/platform roles, with role management restricted to platform administrators.
-Personal OAuth and IAM identities are rejected.
+precedence independently of the platform mode. Every other available mode uses the
+default selection: the space's connection when it was selected for the policy
+mode, otherwise the policy's default connection. It must be a ready platform or
+space connection of that mode, and a space connection must belong to that space.
+The `assume-role` mechanism permits space/platform connections managed only by
+platform administrators. Personal OAuth and IAM identities are rejected.
 
 The LiteLLM contract resolves a complete connection before applying a personal
 API-key override. Endpoint, issuer, client, audience and scopes form its
@@ -229,37 +236,70 @@ policies so a scoped deployment includes these permissions.
 After deployment, verify existing platform/space/personal keys, a new stage and
 Composer request, a parked execution resume, and an older runtime session. Review
 a key rotation, create intervening work to confirm stale-review rejection, then
-apply a fresh review. Check that the policy remains Keys and that IAM/LiteLLM
-remain unavailable. Local tests and Terraform validation do not establish that a
-live AWS deployment or real-model invocation has succeeded.
+apply a fresh review. Check that the policy remains Keys and that modes without a
+registered provider remain unavailable. Local tests and Terraform validation do
+not establish that a live AWS deployment or real-model invocation has succeeded.
 
-## Provider boundaries and scoped reviews
+## Provider boundaries
 
-The public catalog remains a compatibility facade. Stable identifiers live in
-`agent-auth-protocol.js`; bindings and capability contracts live in
-`agent-auth-contracts.js`; connection validation and mode registration live in
-`agent-auth-providers.js`. The selection coordinator owns snapshot consistency,
-pending-change checks, and reservation. Each mode supplies its selection strategy
-through `AUTH_SELECTION_STRATEGIES`. Kiro selection is independent of the platform
-inference mode. Callers request the provider they use; capability discovery requests
-both providers explicitly with `reserve: false`.
+Each deployable composes its providers in one root: a file with static imports and
+one frozen list. In each backend deployable, one foundation host reads the root,
+validates it when the Lambda or image loads, and publishes the views existing
+importers use. Duplicate ids, adapter keys, material types, renewal actions,
+audiences or error codes fail initialization. The runtime and settings hosts also
+refuse a provider for a mode that is not available, and registration tests check
+that every available mode has broker adapters. Backend hosts build the same views
+from an injected list. The frontend registry is a plain lookup; frontend tests mock
+it, so no test asserts what a root contains.
 
-Broker providers return a versioned credential lease: opaque typed material,
-optional credential expiry, an immutable authorization deadline, and optional
-renewal authority. Runtime material adapters translate the lease into invocation
+| Root                                                      | Host (factory)                                                                          | Registers                                                                    |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `lambda/shared/agent-auth-modes.js`                       | `agent-auth-providers.js` (`createAuthModeRegistry` from `agent-auth-mode-registry.js`) | Mode descriptors, bundled by every Lambda and the runtime image              |
+| `lambda/credential-broker/agent-broker-providers.js`      | `agent-provider-registry.js` (`createBrokerProviderRegistry`)                           | Redemption adapters, renewal policy, verification, isolation, error codes    |
+| `lambda/agentcore/runtime-auth-providers.js`              | `credential-material-registry.js` (`composeRuntimeAuthProviders`)                       | Advertised modes, material adapters, controlled env, capabilities, verifiers |
+| `lambda/agents/authentication-settings-providers.js`      | `authentication-settings-service.js` (`providers` option)                               | Connection drafts and setup actions                                          |
+| `frontend/src/components/settings/agent-auth/registry.ts` | The settings shells                                                                     | Setup component, noun and configuration summary                              |
+
+Keys is registered in the shared, broker and runtime roots. Its settings flows are
+the built-in credential routes and cards, so it has no settings or UI entry.
+
+Bindings and capability contracts live in `agent-auth-contracts.js`. The selection
+coordinator owns snapshot consistency, pending-change checks, and reservation. Keys
+keeps its own strategy in `AUTH_SELECTION_STRATEGIES`; planned and
+unregistered modes have no strategy and are refused. Kiro selection is independent
+of the platform inference mode. Callers request the provider they use; capability
+discovery requests both providers explicitly with `reserve: false`.
+
+Broker adapters return material and its expiry. The host composes the versioned
+credential lease: opaque typed material, optional credential expiry, an immutable
+authorization deadline, and optional renewal authority. It signs and verifies
+renewal tokens from the provider's declared policy, so the grant signing key never
+reaches a provider. A provider's classifier sees only errors thrown by its own
+adapters. Runtime material adapters translate the lease into invocation
 configuration. Grant/context matching, session ownership, expiry cancellation, and
 renewal identity checks remain generic. Legacy key responses retain the `value`
-field for published runtimes. Tests use an additional material adapter and exercise
-renewal identity mismatch, unsupported material, expiry, and a non-sliding deadline.
-Production renewal authority must be issued and verified by the registered provider;
-the controlled lease tests do not qualify a customer identity provider.
+field for published runtimes. Foundation suites register fixture providers through
+the roots and exercise renewal identity mismatch, unsupported material, error
+scoping, discovery isolation, expiry, and a non-sliding deadline. These controlled
+tests do not qualify a customer identity provider.
+
+A CLI counts as authenticated only when the invocation prepared a lease for its
+credential provider; ambient environment values never authenticate it. The runtime
+advertises `agentAuthModes` and `agentAuthVerification` from its registered
+providers; Lambdas qualify a runtime for a mode by that evidence.
 
 Authentication settings orchestration lives in
 `lambda/agents/authentication-settings-service.js`. HTTP routing and authorization
-remain in `index.js`. Provider setup normalizes input into `connection-create`,
-`space-selection`, `policy-change`, or `credential-update` domain actions. The old
-`policy` action is accepted as an input alias. Storage applies domain actions and
-does not interpret IAM or OAuth setup operations.
+remain in `index.js`. The authentication-change preview accepts `policy-change`
+(with `policy` as an input alias), `space-selection` with a null connection to
+return a space to inheritance, and `connection-draft` for a mode whose provider
+declares a draft. The service mints the reviewed `connection-create` itself; key
+changes are reviewed through the credential routes. Provider setup steps use
+`POST /agents/authentication-setup` with `{ mode, action, projectId? }`, for platform
+administrators only. Storage applies domain actions and does not interpret provider
+setup operations.
+
+## Scoped reviews
 
 Personal and space reviews query strongly consistent scope reference partitions
 in the process table. They re-read only referenced authoritative records and the
@@ -288,3 +328,117 @@ there is no fallback to a global scan from a personal request. Existing runtime
 images do not gain new accounting behavior until republished. Scoped enumeration
 has a 5,000-record safety limit and reports an error instead of silently truncating
 an impact review. Probe deployments with fresh AgentCore session IDs.
+
+## Adding an authentication provider
+
+A provider adds its own files plus an import and one list entry in each root it
+needs. It does not edit hosts, handlers, services, selection, grants, the broker
+entry, the runtime resolver, capabilities, Terraform, or foundation tests. The
+fixed-list guards `lambda/shared/test/agent-auth-boundary.test.js` and
+`frontend/src/components/settings/agent-auth/boundary.test.ts` report IAM names in
+foundation modules and settings shells by file and line; keep a new provider's
+names out of those files as well.
+
+1. **Shared descriptor** (`lambda/shared/agent-auth-<id>-schema.js`). It imports only
+   `agent-auth-protocol.js` and `agent-auth-mode-registry.js` and exports a
+   `defineAuthMode` descriptor: `id`, `label`, `backend`, `mechanisms` and
+   `normalizeConfiguration`, optionally `modelDiscovery` and `defaultConnectionId`.
+   The normalizer receives `(configuration, { mechanism })`, builds on
+   `normalizeConfigurationFields`, is pure, and throws `AGENT_AUTH_INVALID`. Its
+   output is part of binding identity and must stay byte-stable. Root: replace the
+   planned stub at its position in `agent-auth-modes.js`, or append a new mode.
+2. **Broker provider** (`lambda/credential-broker/<id>-provider.js`). It declares an
+   `id` and `adapters` keyed `'<backend>:<mechanism>'`, and optionally `renewal`,
+   `verification`, `isolateCapabilityFailures`, `errorCodes`, `classifyError`,
+   `legacyResponse` and `createDependencies`. An adapter receives
+   `{ ssm, connection, binding, claims, request, deps }`, where `request` is
+   `resolve`, `renew` or `verify`, and returns `{ material, expiresAt }`. Create SDK
+   clients in `createDependencies`, which runs once on first use, never at import.
+   Root: `agent-broker-providers.js`.
+3. **Runtime provider** (`lambda/agentcore/<id>-runtime-provider.js`). It declares an
+   `id`, the `modes` it serves and `materials` keyed by material type, and optionally
+   `controlledEnv`, `capabilities`, `verify` and `verificationFailures`. A material
+   adapter maps `{ binding, material }` to `{ env?, credentialEnvironment? }` and may
+   expose `createSession` to own a renewing session. Root:
+   `runtime-auth-providers.js`, with a static import so `container-deps.test.js`
+   checks the provider's packages against the image manifest. It cannot reach key
+   storage, connection records or grant signing, even through a shared module
+   (`npm run dep:check`). A space qualifies for the mode once its published runtime
+   advertises it.
+4. **Settings provider** (`lambda/agents/authentication-<id>-settings.js`). It
+   declares a `mode`, and optionally a `draft` (`mechanism`, `prepare`) and named
+   `actions`. An action is `async (input, ctx) => ({ statusCode, body })`; `ctx`
+   carries `env`, `logger`, `projectId`, `runtimeTarget` and `verifyConnection`. It
+   holds no AWS clients, grants, or repositories. Root:
+   `authentication-settings-providers.js`.
+5. **Frontend UI** (`frontend/src/components/settings/agent-auth/<id>/`). It imports
+   only `contract.ts` and `services/agents.ts` and exports
+   `{ mode, noun, Setup, summarize? }`. `Setup` receives `AgentAuthSetupProps`; its
+   `onSubmit(configuration)` is previewed as a `connection-draft`. Setup steps call
+   `agentsService.authenticationProviderAction`. Root: `registry.ts`.
+
+The hosts enforce these contracts:
+
+- **Renewal policy.** `renewal` declares `action`, `tokenField` (`grant` or
+  `renewalToken`), `audience` and `ttlSeconds`. The action must be new to the
+  broker, the audience distinct from the grant's and every other provider's, and
+  the lifetime 1 to 86,400 seconds. The host issues the token on resolve, accepts
+  the same token on renew, and fixes the authorization deadline at grant issue plus
+  `ttlSeconds`. Material expiry can only shorten a lease. An adapter may return a
+  whole lease only without renewal or a deadline.
+- **Connection verification.** The broker provider declares `verification: true`;
+  the runtime provider's `verify({ binding, env })` returns `verified` and an
+  optional `code` and `error`, never a secret. The agents Lambda requires the mode
+  in the runtime's `agentAuthVerification`, signs a `verify-connection` grant for
+  the one unsaved binding, and checks it on the probed session. The broker redeems
+  it with no connection read and no renewal, capped at the grant expiry. Messages
+  for provider codes go in `verificationFailures`; foundation messages cannot be
+  redefined.
+- **Runtime authentication.** CLI availability follows prepared leases, so a
+  provider sets no environment marker. A material adapter or its session may
+  write only inference or AWS credential names the foundation already scrubs, or
+  names in its provider's `controlledEnv`; any other name fails preparation with
+  `AGENT_AUTH_LEASE_INVALID`. Controlled names are stripped from the ambient
+  environment and the MCP bridge, set empty in every custom stdio MCP server, and
+  reserved from custom MCP secret references.
+- **Error codes.** `errorCodes` match `^[A-Z][A-Z0-9_]+$` and are disjoint from the
+  base codes. A `classifyError` result outside them is ignored.
+
+Put provider tests in new files. Compose explicit lists through the host
+factories, or drive a handler with the helpers in `lambda/shared/test/helpers/`
+(`auth-table.js`, `auth-modes.js`), `lambda/credential-broker/test/helpers/`,
+`lambda/agentcore/test/helpers/` and `lambda/agents/test/helpers/settings-harness.js`.
+The foundation's registration tests run over the real roots: every available mode
+needs broker adapters for its mechanisms and a runtime advertisement, and every
+settings provider needs an available mode. A missing entry fails there; do not edit
+those tests to make it pass.
+
+Add SDK clients to the consuming workspace at the root's `@aws-sdk/*` version, for
+example `npm i @aws-sdk/client-sts@3.1092.0 -w lambda/credential-broker`, and run
+`npm run sdk:check`. That check compares declared ranges only, so also confirm the
+lockfile has no `node_modules/@aws-sdk/<client>/node_modules/@aws-sdk/core` entry
+for the new client: a nested core ships a second SDK core in the bundle. The
+runtime image installs only `lambda/agentcore/package.json`.
+
+Providers add no Terraform. The agents Lambda receives the broker principal as
+`CREDENTIAL_BROKER_ROLE_ARN` for trust policies, and the runtime role denies
+`sts:AssumeRole`, so only the broker assumes provider roles. Never replace or
+rename `aws_iam_role.credential_broker`: provider inference roles trust its unique
+principal ID, which a same-name replacement does not keep. Never manage its inline
+policies exclusively either. The IAM provider's setup attaches the broker's
+cross-account `sts:AssumeRole` policy outside Terraform, and it must survive every
+apply.
+
+LiteLLM uses the same roots and contracts. It still needs foundation work that no
+provider has needed yet:
+
+- a slot/backend split, so a non-Bedrock binding can fill a CLI's inference slot
+  (binding normalization, `connectionBinding`, grant provider order and a
+  descriptor slot);
+- a lease-selected inference backend in the runtime (lease adapters, one-shot,
+  run-stage, conflict resolution, stage materialization and backend adapters);
+- reviewed creation of secret-bearing connections and their state lifecycle
+  (actions, activation, repository storage, `credentialChangeAffects` and
+  invocation accounting);
+- space-administrator authorization for provider actions and changes, which are
+  platform-administrator-only today.
