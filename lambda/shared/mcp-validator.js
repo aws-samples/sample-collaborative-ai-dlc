@@ -231,12 +231,12 @@ function validateHttpOrSse(server, path, issues, type) {
     }
     if (!parsed) {
       issues.push({ path: `${path}.url`, message: `Invalid URL: "${server.url}".` });
-    } else if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      // Remote MCP endpoints are HTTP(S) only (Kiro/Claude). Reject file:, ftp:,
-      // etc. — a parseable URL is not sufficient.
+    } else if (parsed.protocol !== 'https:') {
+      // Remote MCP traffic can carry credentials and workspace content.
+      // The transport type remains http/sse, but its URL must use TLS.
       issues.push({
         path: `${path}.url`,
-        message: `URL must use http:// or https:// (got "${parsed.protocol}//").`,
+        message: `Remote MCP URL must use https:// (got "${parsed.protocol}//"). Configure an HTTPS endpoint.`,
       });
     }
   }

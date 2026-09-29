@@ -1011,6 +1011,40 @@ describe('runStage — failure paths (always records terminal state)', () => {
 });
 
 describe('runStage — MCP secret resolution + child-env injection', () => {
+  it.each([
+    ['global', undefined],
+    ['project', undefined],
+    ['global', 'q-1'],
+    ['project', 'q-1'],
+  ])(
+    'rejects stored %s HTTP config (resume: %s) before secrets or spawn',
+    async (tier, resumeFrom) => {
+      const resolveMcpSecrets = vi.fn();
+      const spawnFn = vi.fn();
+      const deps = baseDeps({ resolveMcpSecrets, spawnFn });
+      const res = await runStage(
+        {
+          ...baseArgs,
+          resumeFrom,
+          mcpServersByTier: {
+            [tier]: {
+              remote: { type: 'http', url: 'http://example.com/mcp' },
+            },
+          },
+        },
+        deps,
+      );
+      expect(res).toMatchObject({ ok: false, reason: 'mcp_config_error' });
+      expect(res.detail).toContain(`${tier} MCP configuration at remote.url`);
+      expect(res.detail).toContain('https://');
+      expect(resolveMcpSecrets).not.toHaveBeenCalled();
+      expect(spawnFn).not.toHaveBeenCalled();
+      expect(
+        deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+      ).toBe(true);
+    },
+  );
+
   // Capture the env the CLI child is spawned with (3rd arg of spawnFn) + exit 0.
   const capturingSpawn = () => {
     const cap = { env: null };

@@ -378,10 +378,10 @@ export function CustomMcpServersSection({
               A JSON object of MCP servers keyed by name, merged into the agent's config for the
               selected CLI. Each value: stdio servers use <code>command</code>/<code>args</code>/
               <code>env</code>, remote servers use <code>type</code> (<code>http</code>/
-              <code>sse</code>)/<code>url</code>/<code>headers</code>. Bare commands must be one of{' '}
-              <code>node</code>, <code>npx</code>, <code>bun</code>, <code>bunx</code>,{' '}
-              <code>uv</code>, <code>uvx</code>, <code>python</code>, <code>python3</code> (or an
-              absolute path).
+              <code>sse</code>)/<code>url</code>/<code>headers</code>. Remote URLs must use{' '}
+              <code>https://</code>. Bare commands must be one of <code>node</code>,{' '}
+              <code>npx</code>, <code>bun</code>, <code>bunx</code>, <code>uv</code>,{' '}
+              <code>uvx</code>, <code>python</code>, <code>python3</code> (or an absolute path).
             </span>
           </p>
         )}

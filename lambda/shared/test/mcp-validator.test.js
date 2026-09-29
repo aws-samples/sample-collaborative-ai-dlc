@@ -137,26 +137,30 @@ describe('validateMcpServers', () => {
     );
   });
 
-  it('rejects non-http(s) url schemes (file:, ftp:, etc.)', () => {
+  it('rejects non-https url schemes (file:, ftp:, etc.)', () => {
     for (const url of ['file:///etc/passwd', 'ftp://example.com/x', 'ws://example.com']) {
       const res = validateMcpServers({ x: { type: 'http', url } });
       expect(res.valid, url).toBe(false);
       expect(res.issues).toContainEqual(
         expect.objectContaining({
           path: 'x.url',
-          message: expect.stringMatching(/must use http:\/\/ or https:\/\//),
+          message: expect.stringMatching(/must use https:\/\//),
         }),
       );
     }
   });
 
-  it('accepts http and https urls', () => {
-    expect(
-      validateMcpServers({ a: { type: 'http', url: 'http://localhost:3000/mcp' } }).valid,
-    ).toBe(true);
-    expect(validateMcpServers({ b: { type: 'sse', url: 'https://example.com/sse' } }).valid).toBe(
-      true,
-    );
+  it.each([
+    ['http', 'http://example.com/mcp'],
+    ['sse', 'http://example.com/sse'],
+    ['http', 'http://localhost:3000/mcp'],
+  ])('rejects plaintext %s URL %s', (type, url) => {
+    const res = validateMcpServers({ remote: { type, url } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual({
+      path: 'remote.url',
+      message: expect.stringMatching(/must use https:\/\//),
+    });
   });
 
   it('caps the number of servers', () => {
