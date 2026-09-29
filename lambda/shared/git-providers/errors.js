@@ -8,6 +8,10 @@ class ProviderError extends Error {
     this.name = 'ProviderError';
     this.status = status;
     this.extra = extra;
+    // A stable machine code (extra.code) is also exposed as `code`, the field
+    // every boundary reads (loggableErrorCode, invalidationReasonForError).
+    // Without it a typed provider error reaches callers as a generic failure.
+    if (typeof extra?.code === 'string') this.code = extra.code;
   }
 }
 

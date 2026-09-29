@@ -3,13 +3,15 @@ import { Check } from 'lucide-react';
 import {
   getGitProviderService,
   trackerIdForGitProvider,
-  type GitProvider,
+  type OAuthGitProvider,
 } from '../services/gitProvider';
 import { ApiError } from '../services/api';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 
+// Only providers with a personal OAuth connection. CodeCommit is connected
+// through an IAM role (see CodeCommitConnectForm), so it can never reach here.
 export interface GitConnectButtonProps {
-  provider: GitProvider;
+  provider: OAuthGitProvider;
   connected: boolean;
   reauthorizationRequired?: boolean;
   missingScopes?: string[];

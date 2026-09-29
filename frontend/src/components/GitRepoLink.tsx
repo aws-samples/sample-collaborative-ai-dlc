@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 import { GitProviderIcon } from '@/components/icons/git-providers';
-import { GIT_PROVIDER_WEB_URL, type GitProvider } from '@/services/gitProvider';
+import { repoDisplayName, repoWebUrl, type GitProvider } from '@/services/gitProvider';
 
 interface RepoLinkProps {
   gitRepo: string;
@@ -17,16 +17,18 @@ export function GitRepoLink({
   iconClassName,
   noLink,
 }: RepoLinkProps) {
-  const href = `${GIT_PROVIDER_WEB_URL[gitProvider]}/${gitRepo}`;
+  const href = repoWebUrl(gitProvider, gitRepo);
 
   const content = (
     <>
       <GitProviderIcon provider={gitProvider} className={cn('h-3 w-3 shrink-0', iconClassName)} />
-      <span className="truncate">{gitRepo}</span>
+      <span className="truncate" title={gitRepo}>
+        {repoDisplayName(gitProvider, gitRepo)}
+      </span>
     </>
   );
 
-  if (noLink) {
+  if (noLink || !href) {
     return (
       <span className={cn('inline-flex min-w-0 max-w-full items-center gap-1', className)}>
         {content}
