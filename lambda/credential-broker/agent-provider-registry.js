@@ -264,17 +264,38 @@ export const createAgentProviderContext = async (
         now,
       })
     : verifyAgentCredentialGrant(presentedToken, key, { now });
+  // The grant rules already pin a verification to one v2 binding and no execution. The host
+  // also refuses to renew one (verifyRenewal rejects the purpose too), and only a provider
+  // that opted in may redeem an unsaved connection.
+  const verification = claims.purpose === AGENT_AUTH_MODES.VERIFY_CONNECTION;
+  const verifier = verification ? registry.ownerOf(claims.bindings[0]) : null;
+  if (verification && renewing)
+    throw authError('AGENT_CREDENTIAL_GRANT_INVALID', 'Connection verification is not renewable');
+  if (verification && !verifier?.verification)
+    throw authError(
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'Connection verification is not supported for this mechanism',
+    );
+  const adapters = registry.adaptersFor({
+    claims,
+    request: renewing ? 'renew' : verification ? 'verify' : 'resolve',
+    key,
+    presentedToken: renewing ? presentedToken : null,
+    provider: renewing ?? verifier,
+    overrides,
+  });
   return {
     claims,
-    verification: false,
-    adapters: registry.adaptersFor({
-      claims,
-      request: renewing ? 'renew' : 'resolve',
-      key,
-      presentedToken: renewing ? presentedToken : null,
-      provider: renewing,
-      overrides,
-    }),
+    verification,
+    adapters,
+    // The signed binding stands in for the connection row: no repository read, and the
+    // 'verify' lease carries no renewal and ends with the grant.
+    verify: async (binding) => {
+      const adapter = verification ? adapters[`${binding.backend}:${binding.mechanism}`] : null;
+      if (!adapter)
+        throw authError('AGENT_CREDENTIAL_GRANT_INVALID', 'Grant does not verify this connection');
+      return adapter({ ssm: ssmClient, connection: binding, binding });
+    },
     // Discovery only: renewals and every other purpose fail closed.
     isolateDiscoveryFailure: (binding) =>
       !renewing &&

@@ -25,6 +25,7 @@ import {
 } from '../../shared/agent-auth-contracts.js';
 import {
   RUNTIME_AGENT_AUTH_MODES,
+  RUNTIME_VERIFICATION_MODES,
   runtimeCapabilityContributions,
 } from '../credential-material-registry.js';
 
@@ -40,6 +41,7 @@ export const capabilities = async (_payload, deps = {}) => {
     ),
     materialTypes = [],
     agentAuthModes = RUNTIME_AGENT_AUTH_MODES,
+    agentAuthVerification = RUNTIME_VERIFICATION_MODES,
     capabilityContributions = runtimeCapabilityContributions,
   } = deps;
 
@@ -84,6 +86,7 @@ export const capabilities = async (_payload, deps = {}) => {
     kiroModels,
     agentAuthProtocol: AGENT_AUTH_PROTOCOL_VERSION,
     agentAuthModes: [...agentAuthModes],
+    agentAuthVerification: [...agentAuthVerification],
     invocationAccounting: true,
   };
 };

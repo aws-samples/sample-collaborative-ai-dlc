@@ -15,6 +15,8 @@ export const FAKE_RUNTIME_MODES = Object.freeze([TEST_CONNECTION_MODE, TEST_PLAN
 export const FAKE_MATERIAL_TYPE = 'test-token';
 export const FAKE_CONTROLLED_ENV = 'TEST_PROVIDER_REGION';
 export const FAKE_TOKEN_ENV = 'TEST_PROVIDER_TOKEN';
+// The broker fixture provider's declared error code; the runtime provider words it.
+export const FAKE_VERIFICATION_DENIED = 'TEST_PROVIDER_DENIED';
 
 // Delivers its token only through credentialEnvironment, like a session endpoint would, so
 // no key env var exists that an env-based authentication check could observe.
@@ -33,6 +35,15 @@ export const FAKE_RUNTIME_PROVIDER = Object.freeze({
   }),
   controlledEnv: Object.freeze([FAKE_CONTROLLED_ENV, FAKE_TOKEN_ENV]),
   capabilities: async ({ env }) => ({ testModels: [`${env[FAKE_CONTROLLED_ENV]}.test-model`] }),
+  // Checks with the env its material adapted, as a model listing would.
+  verify: async ({ binding, env }) => ({
+    verified: true,
+    connectionId: binding.connectionId,
+    region: env[FAKE_CONTROLLED_ENV],
+  }),
+  verificationFailures: Object.freeze({
+    [FAKE_VERIFICATION_DENIED]: 'The test provider refused this connection. Check its settings.',
+  }),
 });
 
 // A v2 platform binding of the synthetic mode, as the broker returns it.

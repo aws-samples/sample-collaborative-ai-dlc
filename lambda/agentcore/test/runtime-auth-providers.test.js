@@ -3,10 +3,13 @@ import { connect } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CONNECTION_VERIFICATION_FAILURES,
   CREDENTIAL_ADAPTER_ENV_NAMES,
   CREDENTIAL_MATERIAL_ADAPTERS,
   RUNTIME_AGENT_AUTH_MODES,
+  RUNTIME_VERIFICATION_MODES,
   composeRuntimeAuthProviders,
+  connectionVerifierFor,
 } from '../credential-material-registry.js';
 import { KEYS_RUNTIME_PROVIDER } from '../keys-runtime-provider.js';
 import { authenticatedClis, resolveInvocationAgentAuth } from '../auth-resolver.js';
@@ -25,6 +28,7 @@ import {
   FAKE_MATERIAL_TYPE,
   FAKE_TOKEN_ENV,
   FAKE_RUNTIME_PROVIDER,
+  FAKE_VERIFICATION_DENIED,
 } from './helpers/fake-runtime-provider.js';
 
 // Both roots keep every real registration and gain the synthetic mode and its provider, so
@@ -38,6 +42,7 @@ vi.mock('../runtime-auth-providers.js', async (importOriginal) =>
   (await import('./helpers/fake-runtime-provider.js')).withRuntimeProviders(importOriginal),
 );
 
+const verify = async () => ({ verified: true });
 const provider = (overrides = {}) => ({
   id: 'fixture-runtime',
   modes: ['keys'],
@@ -137,11 +142,92 @@ describe('composeRuntimeAuthProviders', () => {
       [provider({ controlledEnv: 'FIXTURE_ENDPOINT' }), 'invalid controlled env names'],
       [provider({ controlledEnv: ['FIXTURE-ENDPOINT'] }), 'invalid controlled env names'],
       [provider({ capabilities: {} }), 'invalid capabilities hook'],
+      [provider({ verify: {} }), 'invalid verifier'],
+      [provider({ verificationFailures: {} }), 'verification failures without a verifier'],
+      [provider({ verify, verificationFailures: [] }), 'invalid verification failures'],
+      [
+        provider({ verify, verificationFailures: { 'fixture-denied': 'Denied.' } }),
+        'invalid verification failures',
+      ],
+      [
+        provider({ verify, verificationFailures: { FIXTURE_DENIED: ' ' } }),
+        'invalid verification failures',
+      ],
       [provider({ id: 'bad id' }), 'Runtime authentication provider id is invalid'],
       [null, 'Runtime authentication provider is required'],
     ])
       expect(() => composeRuntimeAuthProviders([entry])).toThrow(message);
     expect(() => composeRuntimeAuthProviders(KEYS_RUNTIME_PROVIDER)).toThrow('must be a list');
+  });
+});
+
+describe('connection verifiers', () => {
+  it('serves each verifier for its modes and merges provider failure messages', () => {
+    const composed = composeRuntimeAuthProviders([
+      FAKE_RUNTIME_PROVIDER,
+      provider({
+        verify,
+        verificationFailures: { SECOND_PROVIDER_DENIED: 'The second provider refused.' },
+      }),
+    ]);
+    expect(composed.verificationModes).toEqual(['test-connection-mode', 'keys']);
+    expect(composed.verifierFor('test-connection-mode')).toBe(FAKE_RUNTIME_PROVIDER.verify);
+    expect(composed.verifierFor('keys')).toBe(verify);
+    for (const mode of ['planned-test-mode', 'toString', undefined])
+      expect(composed.verifierFor(mode)).toBeNull();
+    expect(composed.verificationFailures).toMatchObject({
+      [FAKE_VERIFICATION_DENIED]:
+        FAKE_RUNTIME_PROVIDER.verificationFailures[FAKE_VERIFICATION_DENIED],
+      SECOND_PROVIDER_DENIED: 'The second provider refused.',
+      AGENT_CREDENTIAL_GRANT_EXPIRED: expect.stringContaining('expired'),
+    });
+    expect(Object.isFrozen(composed.verificationModes)).toBe(true);
+    expect(Object.isFrozen(composed.verificationFailures)).toBe(true);
+    expect(composeRuntimeAuthProviders([KEYS_RUNTIME_PROVIDER]).verificationModes).toEqual([]);
+  });
+
+  it('advertises verification exactly for the modes whose provider registers a verifier', () => {
+    const composed = composeRuntimeAuthProviders([KEYS_RUNTIME_PROVIDER, FAKE_RUNTIME_PROVIDER]);
+    expect(composed.modes).toEqual(['keys', 'test-connection-mode']);
+    expect(composed.verificationModes).toEqual(['test-connection-mode']);
+    expect(composed.verifierFor('keys')).toBeNull();
+    const {
+      verify: _verify,
+      verificationFailures: _failures,
+      ...unverified
+    } = FAKE_RUNTIME_PROVIDER;
+    const withoutVerifier = composeRuntimeAuthProviders([KEYS_RUNTIME_PROVIDER, unverified]);
+    expect(withoutVerifier.modes).toEqual(['keys', 'test-connection-mode']);
+    expect(withoutVerifier.verificationModes).toEqual([]);
+    expect(withoutVerifier.verifierFor('test-connection-mode')).toBeNull();
+  });
+
+  it('refuses a provider that rewords a foundation or another provider failure', () => {
+    for (const code of [
+      'AGENT_CREDENTIAL_GRANT_EXPIRED',
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'AGENT_CREDENTIAL_GRANT_NOT_CONFIGURED',
+      'CREDENTIAL_BROKER_NOT_CONFIGURED',
+      'AGENT_AUTH_RUNTIME_UNSUPPORTED',
+      'AGENT_AUTH_VERIFICATION_FAILED',
+      FAKE_VERIFICATION_DENIED,
+    ])
+      expect(() =>
+        composeRuntimeAuthProviders([
+          FAKE_RUNTIME_PROVIDER,
+          provider({ verify, verificationFailures: { [code]: 'Reworded.' } }),
+        ]),
+      ).toThrow(
+        `Runtime authentication provider fixture-runtime redefines verification failure ${code}`,
+      );
+  });
+
+  it('publishes the registered verifier and its failures through the host views', () => {
+    expect(RUNTIME_VERIFICATION_MODES).toContain('test-connection-mode');
+    expect(connectionVerifierFor('test-connection-mode')).toBe(FAKE_RUNTIME_PROVIDER.verify);
+    expect(CONNECTION_VERIFICATION_FAILURES[FAKE_VERIFICATION_DENIED]).toBe(
+      FAKE_RUNTIME_PROVIDER.verificationFailures[FAKE_VERIFICATION_DENIED],
+    );
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHmac } from 'node:crypto';
 import {
   signAgentCredentialGrant,
   verifyAgentCredentialGrant,
@@ -73,5 +74,74 @@ describe('agent credential grants', () => {
         SECRET,
       ),
     ).toThrow('Space credential grants require a projectId');
+  });
+
+  describe('connection verification', () => {
+    const connection = {
+      version: 2,
+      provider: 'bedrock',
+      backend: 'bedrock',
+      mode: 'keys',
+      mechanism: 'api-key',
+      source: 'platform',
+      connectionId: 'keys-verification-1',
+      connectionRevision: 1,
+      policyRevision: 3,
+      configuration: {},
+    };
+    const resign = (token, changes) => {
+      const claims = JSON.parse(Buffer.from(token.split('.')[0], 'base64url').toString('utf8'));
+      const encoded = Buffer.from(JSON.stringify({ ...claims, ...changes })).toString('base64url');
+      return `${encoded}.${createHmac('sha256', SECRET).update(encoded).digest('base64url')}`;
+    };
+    const verification = (overrides) => ({
+      purpose: 'verify-connection',
+      bindings: [connection],
+      ...overrides,
+    });
+
+    it('round-trips a grant for exactly one unsaved connection', () => {
+      const token = signAgentCredentialGrant(verification(), SECRET, {
+        now: () => NOW,
+        randomId: () => 'grant-verify-123456',
+      });
+
+      expect(verifyAgentCredentialGrant(token, SECRET, { now: () => NOW })).toMatchObject({
+        version: 2,
+        purpose: 'verify-connection',
+        executionId: null,
+        bindings: [connection],
+      });
+    });
+
+    it.each([
+      ['an execution', verification({ executionId: 'e-1' })],
+      [
+        'a second binding',
+        verification({ bindings: [connection, { provider: 'kiro', source: 'platform' }] }),
+      ],
+      [
+        'a version-one binding',
+        verification({ bindings: [{ provider: 'bedrock', source: 'platform' }] }),
+      ],
+    ])('rejects a verification grant carrying %s at signing and verification', (_label, input) => {
+      const message =
+        'Connection verification grants require exactly one connection and no execution';
+      expect(() => signAgentCredentialGrant(input, SECRET)).toThrow(message);
+      // A validly signed token relabelled as verification must still fail the claims rule.
+      const token = signAgentCredentialGrant({ ...input, purpose: 'capabilities' }, SECRET, {
+        now: () => NOW,
+      });
+      expect(() =>
+        verifyAgentCredentialGrant(resign(token, { purpose: 'capabilities' }), SECRET, {
+          now: () => NOW,
+        }),
+      ).not.toThrow();
+      expect(() =>
+        verifyAgentCredentialGrant(resign(token, { purpose: 'verify-connection' }), SECRET, {
+          now: () => NOW,
+        }),
+      ).toThrow(message);
+    });
   });
 });
