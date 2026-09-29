@@ -256,7 +256,12 @@ describe('EnvironmentsTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockResolvedValue([custom, standard]);
-    capabilities.mockResolvedValue({ instancesCompute: false, amd64CoreImage: false });
+    capabilities.mockResolvedValue({
+      instancesCompute: false,
+      amd64CoreImage: false,
+      default: { type: 'microvms', architecture: 'arm64' },
+      combinations: [{ type: 'microvms', architecture: 'arm64', available: true }],
+    });
     listTools.mockResolvedValue([javaTool]);
     get.mockImplementation(async (environmentId: string) =>
       environmentId === 'standard'
