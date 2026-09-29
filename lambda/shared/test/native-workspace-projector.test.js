@@ -153,7 +153,7 @@ describe('projectNativeWorkspace', () => {
     expect(state).toContain('- **State Version**: 7');
   });
 
-  it('projects one parked code-generation unit with the selected external harness', () => {
+  it('projects one parked code-generation unit independently of a sibling handoff', () => {
     const value = input();
     value.stages[2].forEach = 'unit-of-work';
     value.stages.push({
@@ -178,6 +178,15 @@ describe('projectNativeWorkspace', () => {
         sectionIndex: 0,
         attempt: 2,
         state: 'WAITING_FOR_HUMAN',
+      },
+      {
+        stageInstanceId: 'si-code-web',
+        stageId: 'code-generation',
+        unitSlug: 'payment-web',
+        sectionIndex: 0,
+        attempt: 2,
+        state: 'WAITING_FOR_HUMAN',
+        pendingHumanTaskId: 'external-web',
       },
     ];
     value.unitPlan = {
@@ -218,6 +227,31 @@ describe('projectNativeWorkspace', () => {
               name: 'checkout-web',
               baseSha: 'b'.repeat(40),
               branch: 'aidlc/intent-1/payment-api/g3',
+            },
+          ],
+        },
+      },
+      {
+        humanTaskId: 'external-web',
+        executionId: 'execution-123',
+        stageInstanceId: 'si-code-web',
+        sectionIndex: 0,
+        unitSlug: 'payment-web',
+        kind: 'external-development',
+        status: 'pending',
+        externalDevelopment: {
+          stageAttempt: 2,
+          harness: 'codex',
+          repositories: [
+            {
+              name: 'checkout-api',
+              baseSha: 'c'.repeat(40),
+              branch: 'aidlc/intent-1/payment-web/g3',
+            },
+            {
+              name: 'checkout-web',
+              baseSha: 'd'.repeat(40),
+              branch: 'aidlc/intent-1/payment-web/g3',
             },
           ],
         },

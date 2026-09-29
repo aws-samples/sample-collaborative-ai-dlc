@@ -818,6 +818,47 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     humanTaskId,
     stageAttempt,
     externalDevelopment,
+    submissionId = null,
+  }) => {
+    const ts = now();
+    const claimCondition = submissionId
+      ? 'externalDevelopment.submissionId = :submissionId'
+      : 'attribute_not_exists(externalDevelopment.submissionId)';
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression: `#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt AND ${claimCondition}`,
+          UpdateExpression: 'SET externalDevelopment = :externalDevelopment, updatedAt = :ts',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':pending': 'pending',
+            ':stageAttempt': stageAttempt,
+            ':externalDevelopment': externalDevelopment,
+            ':ts': ts,
+            ...(submissionId ? { ':submissionId': submissionId } : {}),
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  // Claim exclusive ownership before an import mutates a lane checkout or its
+  // canonical artifacts. Cancellation and competing submissions use
+  // conditions on the same field, so only the winning owner can proceed.
+  const claimExternalDevelopment = async ({
+    executionId,
+    humanTaskId,
+    stageAttempt,
+    submissionId,
+    claimedBy,
+    externalDevelopment,
   }) => {
     const ts = now();
     try {
@@ -826,13 +867,18 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           TableName: table(),
           Key: humanTaskKey(executionId, humanTaskId),
           ConditionExpression:
-            '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+            '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt AND attribute_not_exists(externalDevelopment.submissionId)',
           UpdateExpression: 'SET externalDevelopment = :externalDevelopment, updatedAt = :ts',
           ExpressionAttributeNames: { '#status': 'status' },
           ExpressionAttributeValues: {
             ':pending': 'pending',
             ':stageAttempt': stageAttempt,
-            ':externalDevelopment': externalDevelopment,
+            ':externalDevelopment': {
+              ...externalDevelopment,
+              submissionId,
+              submissionClaimedAt: ts,
+              submissionClaimedBy: claimedBy ?? null,
+            },
             ':ts': ts,
           },
           ReturnValues: 'ALL_NEW',
@@ -845,13 +891,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
-  // Atomically accept one external-development submission. Cancellation and
-  // concurrent submissions update the same task row, so exactly one pending
-  // task owner can persist accepted metadata and answer the gate.
+  // Atomically accept the external-development submission owned by this
+  // request. A different claimant can neither persist accepted metadata nor
+  // answer the gate.
   const acceptExternalDevelopment = async ({
     executionId,
     humanTaskId,
     stageAttempt,
+    submissionId,
     externalDevelopment,
     answer,
     answeredBy,
@@ -864,7 +911,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           TableName: table(),
           Key: humanTaskKey(executionId, humanTaskId),
           ConditionExpression:
-            '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+            '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt AND externalDevelopment.submissionId = :submissionId',
           UpdateExpression:
             'SET externalDevelopment = :externalDevelopment, #status = :answered, answer = :answer, answeredBy = :by, answeredByName = :byName, answeredAt = :ts, updatedAt = :ts, GSI2SK = :g2sk',
           ExpressionAttributeNames: { '#status': 'status' },
@@ -872,6 +919,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
             ':pending': 'pending',
             ':answered': 'answered',
             ':stageAttempt': stageAttempt,
+            ':submissionId': submissionId,
             ':externalDevelopment': externalDevelopment,
             ':answer': answer,
             ':by': answeredBy ?? null,
@@ -987,6 +1035,30 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }).GSI2SK,
     },
   });
+
+  // Cancellation is mutually exclusive with a claimed import. If cancellation
+  // wins first the status CAS blocks a later claim; if the import claim wins
+  // first this ownership condition blocks cancellation until import finishes.
+  const cancelExternalDevelopment = async ({ stageAttempt, ...input }) => {
+    try {
+      const update = humanTaskAnswerUpdate({ ...input, answeredAt: now() });
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          ...update,
+          ConditionExpression: `${update.ConditionExpression} AND externalDevelopment.stageAttempt = :stageAttempt AND attribute_not_exists(externalDevelopment.submissionId)`,
+          ExpressionAttributeValues: {
+            ...update.ExpressionAttributeValues,
+            ':stageAttempt': stageAttempt,
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
 
   // Resolve a pending human gate (CAS on status=pending so it can't be answered
   // twice). `answer` is the structured answer payload.
@@ -2673,10 +2745,12 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     listEvents,
     createHumanTask,
     updateExternalDevelopment,
+    claimExternalDevelopment,
     acceptExternalDevelopment,
     getHumanTask,
     setGateCallbackId,
     answerHumanTask,
+    cancelExternalDevelopment,
     answerHumanTaskWithSteering,
     supersedeHumanTask,
     markGateRevised,

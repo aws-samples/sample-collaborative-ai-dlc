@@ -237,6 +237,18 @@ const installDdbFakes = () => {
     ) {
       casFail();
     }
+    if (
+      cond.includes('attribute_not_exists(externalDevelopment.submissionId)') &&
+      existing?.externalDevelopment?.submissionId
+    ) {
+      casFail();
+    }
+    if (
+      cond.includes('externalDevelopment.submissionId = :submissionId') &&
+      existing?.externalDevelopment?.submissionId !== values[':submissionId']
+    ) {
+      casFail();
+    }
     if (cond.includes('attribute_exists(pk)') && !existing) casFail();
     if (cond.includes('#state = :ready') && (!existing || existing.state !== values[':ready'])) {
       casFail();
@@ -4188,15 +4200,105 @@ describe('POST /gates/{humanTaskId}/submit', () => {
     expect(acceptanceWrites).toHaveLength(1);
     expect(acceptanceWrites[0].args[0].input).toMatchObject({
       ConditionExpression:
-        '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+        '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt AND externalDevelopment.submissionId = :submissionId',
       ExpressionAttributeValues: expect.objectContaining({
         ':stageAttempt': 2,
+        ':submissionId': expect.any(String),
         ':answered': 'answered',
       }),
     });
     expect(acceptanceWrites[0].args[0].input.UpdateExpression).toContain(
       'externalDevelopment = :externalDevelopment',
     );
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+    delete process.env.AGENTCORE_RUNTIME_ARN;
+  });
+
+  it("imports through the intent's saved runtime target", async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/fallback';
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, humanTaskId } = await seedExternalHandoff(sub);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+    });
+    sourceControlOperationHandler = ({ operation }) =>
+      operation === 'branch-head'
+        ? { branch: 'aidlc/i1--s1-unit-auth', sha: 'b'.repeat(40) }
+        : true;
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({
+            ok: true,
+            imported: ['auth-code-generation-plan', 'auth-code-summary'],
+          }),
+      },
+    });
+
+    const result = await submitHandoff(sub, projectId, intent.id, humanTaskId, documents());
+
+    expect(result.statusCode).toBe(200);
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input).toMatchObject({
+      agentRuntimeArn: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeArn,
+      qualifier: MANAGED_ENVIRONMENT_SNAPSHOT.runtimeEndpoint,
+    });
+    delete process.env.AGENTCORE_RUNTIME_ARN;
+  });
+
+  it('claims one submission before import and blocks competing submission or cancellation', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent, humanTaskId } = await seedExternalHandoff(sub);
+    sourceControlOperationHandler = ({ operation }) =>
+      operation === 'branch-head'
+        ? { branch: 'aidlc/i1--s1-unit-auth', sha: 'b'.repeat(40) }
+        : true;
+    let signalImportStarted;
+    let releaseImport;
+    const importStarted = new Promise((resolve) => {
+      signalImportStarted = resolve;
+    });
+    const importBlocked = new Promise((resolve) => {
+      releaseImport = resolve;
+    });
+    agentcoreMock.on(InvokeAgentRuntimeCommand).callsFake(async () => {
+      signalImportStarted();
+      await importBlocked;
+      return {
+        response: {
+          transformToString: async () =>
+            JSON.stringify({
+              ok: true,
+              imported: ['auth-code-generation-plan', 'auth-code-summary'],
+            }),
+        },
+      };
+    });
+
+    const winningSubmission = submitHandoff(sub, projectId, intent.id, humanTaskId, documents());
+    await importStarted;
+    const competingSubmission = await submitHandoff(
+      sub,
+      projectId,
+      intent.id,
+      humanTaskId,
+      documents(),
+    );
+    const competingCancellation = await answerGate(sub, projectId, intent.id, humanTaskId, {
+      status: 'answered',
+      answer: { decision: 'run-managed' },
+    });
+    releaseImport();
+    const accepted = await winningSubmission;
+
+    expect(accepted.statusCode).toBe(200);
+    expect(competingSubmission.statusCode).toBe(409);
+    expect(JSON.parse(competingSubmission.body).code).toBe('handoff_submission_in_progress');
+    expect(competingCancellation.statusCode).toBe(409);
+    expect(JSON.parse(competingCancellation.body).code).toBe('handoff_submission_in_progress');
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
     expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
     delete process.env.AGENTCORE_RUNTIME_ARN;
   });

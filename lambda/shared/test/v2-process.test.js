@@ -603,12 +603,49 @@ describe('createProcessStore', () => {
     expect(result).toMatchObject({ status: 'pending' });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe(
-      '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+      '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt AND attribute_not_exists(externalDevelopment.submissionId)',
     );
     expect(input.ExpressionAttributeValues[':stageAttempt']).toBe(2);
   });
 
-  it('atomically accepts external development only for the pending stage attempt', async () => {
+  it('claims external-development import ownership before artifact mutation', async () => {
+    ddb.on(UpdateCommand).resolves({
+      Attributes: {
+        status: 'pending',
+        externalDevelopment: {
+          stageAttempt: 2,
+          submissionId: 'submission-1',
+          submissionClaimedAt: 'T',
+          submissionClaimedBy: 'u1',
+        },
+      },
+    });
+
+    const result = await store.claimExternalDevelopment({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      stageAttempt: 2,
+      submissionId: 'submission-1',
+      claimedBy: 'u1',
+      externalDevelopment: { stageAttempt: 2, candidate: { documents: {} } },
+    });
+
+    expect(result.externalDevelopment).toMatchObject({
+      submissionId: 'submission-1',
+      submissionClaimedBy: 'u1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toContain(
+      'attribute_not_exists(externalDevelopment.submissionId)',
+    );
+    expect(input.ExpressionAttributeValues[':externalDevelopment']).toMatchObject({
+      submissionId: 'submission-1',
+      submissionClaimedAt: 'T',
+      submissionClaimedBy: 'u1',
+    });
+  });
+
+  it('atomically accepts external development only for its submission owner', async () => {
     ddb.on(UpdateCommand).resolves({
       Attributes: {
         status: 'answered',
@@ -621,7 +658,12 @@ describe('createProcessStore', () => {
       executionId: 'e1',
       humanTaskId: 'h1',
       stageAttempt: 2,
-      externalDevelopment: { stageAttempt: 2, acceptedResult: { acceptedAt: 'T' } },
+      submissionId: 'submission-1',
+      externalDevelopment: {
+        stageAttempt: 2,
+        submissionId: 'submission-1',
+        acceptedResult: { acceptedAt: 'T' },
+      },
       answer: { decision: 'accepted' },
       answeredBy: 'u1',
       answeredByName: 'User One',
@@ -633,8 +675,9 @@ describe('createProcessStore', () => {
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe(
-      '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt',
+      '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt AND externalDevelopment.submissionId = :submissionId',
     );
+    expect(input.ExpressionAttributeValues[':submissionId']).toBe('submission-1');
     expect(input.UpdateExpression).toContain('externalDevelopment = :externalDevelopment');
     expect(input.UpdateExpression).toContain('#status = :answered');
     expect(input.UpdateExpression).toContain('answer = :answer');
@@ -649,6 +692,7 @@ describe('createProcessStore', () => {
       executionId: 'e1',
       humanTaskId: 'h1',
       stageAttempt: 2,
+      submissionId: 'submission-1',
       externalDevelopment: { stageAttempt: 2, acceptedResult: { acceptedAt: 'T' } },
       answer: { decision: 'accepted' },
       answeredBy: 'u1',
@@ -657,6 +701,28 @@ describe('createProcessStore', () => {
 
     expect(result).toBeNull();
     expect(ddb.commandCalls(UpdateCommand)).toHaveLength(1);
+  });
+
+  it('cancels external development only while no import owns the task', async () => {
+    ddb.on(UpdateCommand).resolves({
+      Attributes: { status: 'answered', answer: { decision: 'run-managed' } },
+    });
+
+    const result = await store.cancelExternalDevelopment({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      stageAttempt: 2,
+      status: 'answered',
+      answer: { decision: 'run-managed' },
+      answeredBy: 'u1',
+      answeredByName: 'User One',
+    });
+
+    expect(result.status).toBe('answered');
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      '#status = :pending AND externalDevelopment.stageAttempt = :stageAttempt AND attribute_not_exists(externalDevelopment.submissionId)',
+    );
   });
 
   it('listEvents queries the EVENT# prefix time-ordered and drains pagination', async () => {

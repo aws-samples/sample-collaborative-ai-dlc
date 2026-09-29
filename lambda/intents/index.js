@@ -2654,19 +2654,26 @@ export const handler = async (event, context) => {
         lastSubmittedAt: new Date().toISOString(),
       };
       if (findings.length > 0) {
-        await store.updateExternalDevelopment({
+        const validationStored = await store.updateExternalDevelopment({
           executionId: intentId,
           humanTaskId,
           stageAttempt,
           externalDevelopment,
         });
+        if (!validationStored) {
+          return response(409, {
+            error: 'Another submission or cancellation owns this external-development handoff',
+            code: 'handoff_submission_in_progress',
+          });
+        }
         return response(422, {
           error: 'External-development submission failed validation',
           code: 'handoff_validation_failed',
           findings,
         });
       }
-      if (!AGENTCORE_RUNTIME_ARN()) {
+      const runtimeTarget = runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN());
+      if (!runtimeTarget.agentRuntimeArn) {
         return response(503, { error: 'The handoff import runtime is not configured' });
       }
 
@@ -2692,25 +2699,32 @@ export const handler = async (event, context) => {
           }),
         ),
       };
-      const candidateStored = await store.updateExternalDevelopment({
+      const submissionId = randomUUID();
+      const claimed = await store.claimExternalDevelopment({
         executionId: intentId,
         humanTaskId,
         stageAttempt,
+        submissionId,
+        claimedBy: responder.sub,
         externalDevelopment: {
           ...externalDevelopment,
           validationFindings: [],
           candidate,
         },
       });
-      if (!candidateStored) {
-        return response(409, { error: 'The external-development handoff is no longer current' });
+      if (!claimed) {
+        return response(409, {
+          error: 'Another submission or cancellation owns this external-development handoff',
+          code: 'handoff_submission_in_progress',
+        });
       }
+      const claimedExternalDevelopment = claimed.externalDevelopment;
 
       let imported;
       try {
         const runtime = await agentcore.send(
           new InvokeAgentRuntimeCommand({
-            agentRuntimeArn: AGENTCORE_RUNTIME_ARN(),
+            ...runtimeTarget,
             runtimeSessionId: laneSessionIdFor(intentId, gate.sectionIndex, gate.unitSlug),
             contentType: 'application/json',
             accept: 'application/json',
@@ -2748,6 +2762,7 @@ export const handler = async (event, context) => {
           executionId: intentId,
           humanTaskId,
           stageAttempt,
+          submissionId,
           externalDevelopment: {
             ...externalDevelopment,
             candidate,
@@ -2772,8 +2787,9 @@ export const handler = async (event, context) => {
         executionId: intentId,
         humanTaskId,
         stageAttempt,
+        submissionId,
         externalDevelopment: {
-          ...externalDevelopment,
+          ...claimedExternalDevelopment,
           validationFindings: [],
           candidate,
           acceptedResult,
@@ -2867,6 +2883,7 @@ export const handler = async (event, context) => {
       // than one pending gate; answer the one addressed by the URL, never blindly
       // META.pendingHumanTaskId.
       const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
+      const answerWithSteering = Boolean(steeringMessage) && gate.kind !== 'external-development';
       const answerInput = {
         executionId: intentId,
         humanTaskId,
@@ -2875,29 +2892,47 @@ export const handler = async (event, context) => {
         answeredBy: responder.sub,
         answeredByName: responder.displayName,
       };
-      const answerResult = steeringMessage
-        ? await store.answerHumanTaskWithSteering({
-            ...answerInput,
-            steering: {
-              kind: 'gate-steer',
-              message: steeringMessage,
-              targetGateId: humanTaskId,
-              createdBy: responder.sub,
-              createdByName: responder.displayName,
-            },
-          })
-        : await store.answerHumanTask(answerInput);
-      const answered = steeringMessage
-        ? answerResult && { ...gate, ...answerResult.answered }
-        : answerResult;
+      let answered;
+      let steer = null;
+      if (gate.kind === 'external-development') {
+        answered = await store.cancelExternalDevelopment({
+          ...answerInput,
+          stageAttempt: externalDevelopmentStageAttempt(gate),
+        });
+      } else if (answerWithSteering) {
+        const answerResult = await store.answerHumanTaskWithSteering({
+          ...answerInput,
+          steering: {
+            kind: 'gate-steer',
+            message: steeringMessage,
+            targetGateId: humanTaskId,
+            createdBy: responder.sub,
+            createdByName: responder.displayName,
+          },
+        });
+        answered = answerResult && { ...gate, ...answerResult.answered };
+        steer = answerResult?.steering ?? null;
+      } else {
+        answered = await store.answerHumanTask(answerInput);
+      }
       if (!answered) {
+        if (gate.kind === 'external-development') {
+          const current = await store.getHumanTask(intentId, humanTaskId, {
+            consistentRead: true,
+          });
+          if (current?.status === 'pending' && current.externalDevelopment?.submissionId) {
+            return response(409, {
+              error: 'An external-development submission is currently being imported',
+              code: 'handoff_submission_in_progress',
+            });
+          }
+        }
         return response(409, { error: 'Gate already answered or not pending' });
       }
       // Optional course correction riding on the answer (docs/v2-steering.md):
       // its STEER row and HUMAN decision were committed atomically above, so an
       // early orchestrator recovery cannot observe one without the other.
-      const steer = steeringMessage ? answerResult.steering : null;
-      if (steeringMessage) {
+      if (answerWithSteering) {
         await store
           .appendEvent({
             executionId: intentId,

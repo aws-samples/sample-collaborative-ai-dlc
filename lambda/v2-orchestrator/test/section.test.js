@@ -285,6 +285,91 @@ describe('awaitExternalDevelopment', () => {
     });
   });
 
+  it('uses the lane retry identity and releases capacity for the parked wait', async () => {
+    const order = [];
+    let taskRead = 0;
+    let releaseCallback;
+    let signalCapacityReleased;
+    const callback = new Promise((resolve) => {
+      releaseCallback = resolve;
+    });
+    const capacityReleased = new Promise((resolve) => {
+      signalCapacityReleased = resolve;
+    });
+    const store = {
+      getStage: vi.fn(async () => ({ attempt: 0 })),
+      putStage: vi.fn(async (input) => input),
+      createHumanTask: vi.fn(async (input) => input),
+      updateStageState: vi.fn(async (input) => input),
+      appendEvent: vi.fn(async () => ({})),
+      setGateCallbackId: vi.fn(async () => ({})),
+      getHumanTask: vi.fn(async () => {
+        taskRead += 1;
+        return taskRead === 1
+          ? { humanTaskId: 'external-s1-auth-r1-a0', status: 'pending' }
+          : {
+              humanTaskId: 'external-s1-auth-r1-a0',
+              status: 'answered',
+              answer: { decision: 'accepted' },
+            };
+      }),
+      getExecution: vi.fn(async () => ({ status: 'RUNNING', orchestratorRunId: 'run-1' })),
+      completeExternalDevelopmentStage: vi.fn(async (input) => {
+        order.push('complete');
+        return input;
+      }),
+    };
+    const releaseCapacity = vi.fn(() => {
+      order.push('release');
+      signalCapacityReleased();
+    });
+    const acquireCapacity = vi.fn(async () => {
+      order.push('acquire');
+    });
+
+    const resultPromise = awaitExternalDevelopment(
+      {
+        step: async (_name, fn) => fn(),
+        createCallback: async () => [callback, 'callback-1'],
+      },
+      {
+        store,
+        broadcast: vi.fn(async () => {}),
+        stopSession: vi.fn(async () => {}),
+        ids: { executionId: 'e1', intentId: 'i1', projectId: 'p1' },
+        runId: 'run-1',
+        stageInstanceIdFor: () => 'si-code-auth',
+      },
+      {
+        stage: { stageId: 'code-generation', phase: 'construction' },
+        unitSlug: 'auth',
+        sectionIndex: 1,
+        repositories: [
+          {
+            name: 'api',
+            baseSha: 'a'.repeat(40),
+            branch: 'aidlc/i1--s1-unit-auth',
+          },
+        ],
+        branch: 'aidlc/i1--s1-unit-auth',
+        harness: 'codex',
+        sessionId: 'lane-auth',
+        identitySuffix: '-r1',
+        releaseCapacity,
+        acquireCapacity,
+      },
+    );
+
+    await capacityReleased;
+    expect(store.createHumanTask).toHaveBeenCalledWith(
+      expect.objectContaining({ humanTaskId: 'external-s1-auth-r1-a0' }),
+    );
+    expect(acquireCapacity).not.toHaveBeenCalled();
+    releaseCallback();
+    await expect(resultPromise).resolves.toMatchObject({ state: 'SUCCEEDED' });
+    expect(order).toEqual(['release', 'acquire', 'complete']);
+  });
+
   it('returns to managed execution without completing the external stage', async () => {
     const store = {
       getStage: vi.fn(async () => null),

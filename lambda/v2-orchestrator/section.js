@@ -285,7 +285,19 @@ export const parseChoice = (answer, allowed) => {
 export const awaitExternalDevelopment = async (
   ctxArg,
   toolkit,
-  { stage, unitSlug, sectionIndex, repositories, branch, harness, assignedTo = null, sessionId },
+  {
+    stage,
+    unitSlug,
+    sectionIndex,
+    repositories,
+    branch,
+    harness,
+    assignedTo = null,
+    sessionId,
+    identitySuffix = '',
+    releaseCapacity = () => {},
+    acquireCapacity = async () => {},
+  },
 ) => {
   const { store, broadcast, stopSession, ids, aidlcRepoRef, runId, stageInstanceIdFor } = toolkit;
   const { executionId, intentId, projectId } = ids;
@@ -300,7 +312,7 @@ export const awaitExternalDevelopment = async (
     store.getStage(executionId, stageInstanceId).catch(() => null),
   );
   const attempt = Number(prior?.attempt ?? 0);
-  const humanTaskId = `external-s${sectionIndex}-${unitSlug}-a${attempt}`;
+  const humanTaskId = `external-s${sectionIndex}-${unitSlug}${identitySuffix}-a${attempt}`;
 
   await ctxArg.step(`external-stage-open-${sectionIndex}-${unitSlug}-a${attempt}`, async () => {
     await store.putStage({
@@ -387,6 +399,7 @@ export const awaitExternalDevelopment = async (
     await ctxArg
       .step(`external-release-${humanTaskId}`, () => stopSession(sessionId))
       .catch(() => {});
+    releaseCapacity();
     await callbackPromise;
   }
 
@@ -410,6 +423,11 @@ export const awaitExternalDevelopment = async (
     return { state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId, humanTaskId } };
   }
 
+  if (!['run-managed', 'accepted'].includes(task.answer?.decision)) {
+    return { state: 'FAILED', reason: 'external_development_not_accepted' };
+  }
+  await acquireCapacity();
+
   if (task.answer?.decision === 'run-managed') {
     await store
       .appendEvent({
@@ -424,10 +442,6 @@ export const awaitExternalDevelopment = async (
       .catch(() => {});
     return { state: 'RUN_MANAGED', task, branch };
   }
-  if (task.answer?.decision !== 'accepted') {
-    return { state: 'FAILED', reason: 'external_development_not_accepted' };
-  }
-
   const completed = await ctxArg.step(`external-complete-${humanTaskId}`, () =>
     store.completeExternalDevelopmentStage({
       executionId,
@@ -1834,6 +1848,11 @@ export const runParallelSection = async (segment, toolkit) => {
       permitHeld = false;
       semaphore.release();
     };
+    const acquirePermit = async () => {
+      if (permitHeld) return;
+      await semaphore.acquire();
+      permitHeld = true;
+    };
     try {
       await laneCtx.step(`unit-run-${sk}-${slug}${rTag}`, async () => {
         try {
@@ -2033,6 +2052,9 @@ export const runParallelSection = async (segment, toolkit) => {
                 harness: pendingExternalDevelopment.harness,
                 assignedTo: pendingExternalDevelopment.assignedTo,
                 sessionId: laneSession,
+                identitySuffix: rTag,
+                releaseCapacity: releasePermit,
+                acquireCapacity: acquirePermit,
               })
             : await runAndDeriveStage(stage, { resumeFrom: feedbackTaskId });
         if (outcome.state === 'RUN_MANAGED') {

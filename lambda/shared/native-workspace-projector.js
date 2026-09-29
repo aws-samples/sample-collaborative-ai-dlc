@@ -1048,13 +1048,20 @@ const projectNativeWorkspace = ({
       .filter((stage) => stage?.stageInstanceId)
       .map((stage) => [stage.stageInstanceId, stage.stageId]),
   );
+  const gateProjectionTasks =
+    mode === 'unit-handoff'
+      ? humanTasks.filter(
+          (task) =>
+            task?.humanTaskId !== handoffTaskId &&
+            task?.stageInstanceId === handoffProjection.handoff.stageInstanceId &&
+            task?.unitSlug === handoffProjection.selectedUnit &&
+            task?.sectionIndex != null &&
+            Number(task.sectionIndex) === Number(handoffProjection.handoff.sectionIndex),
+        )
+      : humanTasks;
   const awaitingGateStageIds = new Set(
-    humanTasks
-      .filter(
-        (task) =>
-          task?.status === 'pending' &&
-          !(mode === 'unit-handoff' && task.humanTaskId === handoffTaskId),
-      )
+    gateProjectionTasks
+      .filter((task) => task?.status === 'pending')
       .map((task) => task.stageId ?? stageIdByInstance.get(task.stageInstanceId))
       .filter(Boolean),
   );
