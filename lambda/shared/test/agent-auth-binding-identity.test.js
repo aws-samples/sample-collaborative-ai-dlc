@@ -4,10 +4,8 @@ import {
   normalizeConnection,
   normalizeCredentialBinding,
 } from '../agent-auth-contracts.js';
-import {
-  AGENT_AUTH_MODES_CATALOG,
-  normalizeConnectionConfiguration,
-} from '../agent-auth-providers.js';
+import { KEYS_MODE, PLANNED_IAM_MODE, PLANNED_LITELLM_MODE } from '../agent-auth-builtin-modes.js';
+import { createAuthModeRegistry } from '../agent-auth-mode-registry.js';
 import { connectionBinding } from '../agent-auth-selection-strategies.js';
 import { legacyConnection } from '../agent-connection-repository.js';
 import golden from './fixtures/agent-auth-binding-identity.json' with { type: 'json' };
@@ -43,9 +41,11 @@ import golden from './fixtures/agent-auth-binding-identity.json' with { type: 'j
 // Planned modes are pinned at the configuration level only. A provider PR replaces a planned
 // descriptor in the shared root, so these two readers are the only evaluation allowed to move:
 // they must keep reading the built-in planned descriptors, not whatever the root registers.
-const plannedConfiguration = ({ backend, mechanism, configuration }) =>
-  normalizeConnectionConfiguration(backend, mechanism, configuration);
-const builtInCatalog = () => AGENT_AUTH_MODES_CATALOG;
+const PLANNED_MODES = Object.freeze({ iam: PLANNED_IAM_MODE, litellm: PLANNED_LITELLM_MODE });
+const plannedConfiguration = ({ mode, mechanism, configuration }) =>
+  PLANNED_MODES[mode].normalizeConfiguration(configuration, { mechanism });
+const builtInCatalog = () =>
+  createAuthModeRegistry([KEYS_MODE, PLANNED_IAM_MODE, PLANNED_LITELLM_MODE]).catalog;
 
 const pinned = (connection) => ({
   normalized: JSON.stringify(connection),

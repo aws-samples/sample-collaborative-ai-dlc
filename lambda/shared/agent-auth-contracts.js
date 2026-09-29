@@ -6,11 +6,8 @@ import {
   assertProvider,
   assertSource,
 } from './agent-auth-protocol.js';
-import {
-  KEY_PROVIDERS,
-  AGENT_AUTH_MODES_CATALOG,
-  normalizeConnectionConfiguration,
-} from './agent-auth-providers.js';
+import { KEY_PROVIDERS, authModeDescriptor } from './agent-auth-providers.js';
+import { normalizeKiroConfiguration } from './agent-auth-builtin-modes.js';
 const revision = (value, label) => {
   if (!Number.isSafeInteger(value) || value < 0)
     throw authError('AGENT_AUTH_INVALID', `${label} is invalid`);
@@ -28,9 +25,10 @@ export const normalizeConnection = (connection) => {
     throw authError('AGENT_AUTH_INVALID', 'Connection is required');
   const { backend, mechanism } = connection;
   const mode = connection.mode ?? (backend === 'kiro' ? 'kiro' : null);
-  const descriptor = AGENT_AUTH_MODES_CATALOG.find((candidate) => candidate.id === mode);
+  const kiro = backend === 'kiro' && mode === 'kiro' && mechanism === 'api-key';
+  const descriptor = kiro ? null : authModeDescriptor(mode);
   if (
-    !(backend === 'kiro' && mode === 'kiro' && mechanism === 'api-key') &&
+    !kiro &&
     (!descriptor || descriptor.backend !== backend || !descriptor.mechanisms.includes(mechanism))
   ) {
     throw authError(
@@ -56,7 +54,9 @@ export const normalizeConnection = (connection) => {
       ? { projectId: assertIdentifier(connection.projectId, 'projectId') }
       : {}),
     ...(source === 'user' ? { userId: assertIdentifier(connection.userId, 'userId') } : {}),
-    configuration: normalizeConnectionConfiguration(backend, mechanism, connection.configuration),
+    configuration: kiro
+      ? normalizeKiroConfiguration(connection.configuration)
+      : descriptor.normalizeConfiguration(connection.configuration, { mechanism }),
   };
 };
 export const connectionAudience = (connection) => {

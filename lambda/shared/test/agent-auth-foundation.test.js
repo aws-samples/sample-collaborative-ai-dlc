@@ -6,6 +6,7 @@ import {
   assertMatchingConnection,
   assertRuntimeSupportsBinding,
   AGENT_AUTH_MODES_CATALOG,
+  authModeDescriptor,
   withoutTrailingSlashes,
 } from '../agent-auth-catalog.js';
 import {
@@ -55,10 +56,12 @@ describe('authentication contracts and scope selection', () => {
     expect(withoutTrailingSlashes('/'.repeat(100_000))).toBe('');
     expect(withoutTrailingSlashes('')).toBe('');
   });
-  it('keeps future modes unavailable and interprets every legacy Bedrock binding as a key', () => {
-    expect(
-      AGENT_AUTH_MODES_CATALOG.filter((mode) => mode.available).map((mode) => mode.id),
-    ).toEqual(['keys']);
+  it('derives availability from registration and interprets every legacy Bedrock binding as a key', () => {
+    // Invariants only: a provider PR adds root entries without editing this suite.
+    expect(AGENT_AUTH_MODES_CATALOG.find((mode) => mode.id === 'keys')?.available).toBe(true);
+    for (const mode of AGENT_AUTH_MODES_CATALOG) {
+      expect(mode.available).toBe(!authModeDescriptor(mode.id).planned);
+    }
     expect(normalizeCredentialBinding({ provider: 'bedrock', source: 'space' })).toEqual({
       provider: 'bedrock',
       source: 'space',

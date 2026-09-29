@@ -222,7 +222,7 @@ describe('revision-safe authentication changes with DynamoDB', () => {
     );
     expect((await repository.getPolicy()).mode).toBe('keys');
     await expect(
-      service.preview({ ...policyCandidate, mode: 'iam' }, 'admin'),
+      service.preview({ ...policyCandidate, mode: 'unregistered-test-mode' }, 'admin'),
     ).rejects.toMatchObject({ code: 'AGENT_AUTH_MODE_UNAVAILABLE' });
   });
   it('detects a policy race between inventory recheck and the transaction', async () => {
