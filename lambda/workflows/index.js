@@ -759,25 +759,18 @@ const intentPinFor = async ({ event, releaseId, importerRevision, workflowId }) 
       `workflows: release ${String(releaseId)} is not registered`,
       { details: { releaseId: String(releaseId ?? '') } },
     );
-  if (!intentId || !projectId || !process.env.INTENTS_FUNCTION) throw notFound();
+  if (!intentId || !projectId || !process.env.INTENT_PIN_LOOKUP_FUNCTION) throw notFound();
 
   let invocation;
   try {
     invocation = await lambda.send(
       new InvokeCommand({
-        FunctionName: process.env.INTENTS_FUNCTION,
+        // A dedicated read-only function, not the intents API. `sub` comes from
+        // this request's API Gateway authorizer claims, so the lookup is
+        // answered for the authenticated caller and nobody else.
+        FunctionName: process.env.INTENT_PIN_LOOKUP_FUNCTION,
         InvocationType: 'RequestResponse',
-        Payload: Buffer.from(
-          JSON.stringify({
-            httpMethod: 'GET',
-            resource: '/projects/{projectId}/intents/{intentId}',
-            path: `/projects/${encodeURIComponent(projectId)}/intents/${encodeURIComponent(intentId)}`,
-            pathParameters: { projectId, intentId },
-            requestContext: { authorizer: { claims: getClaims(event) } },
-            queryStringParameters: { view: 'workflow-preview' },
-            headers: {},
-          }),
-        ),
+        Payload: Buffer.from(JSON.stringify({ sub: getClaims(event).sub, projectId, intentId })),
       }),
     );
   } catch (error) {
@@ -796,14 +789,9 @@ const intentPinFor = async ({ event, releaseId, importerRevision, workflowId }) 
   }
   if (response.statusCode !== 200) throw notFound();
 
-  let detail;
-  try {
-    detail = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
-  } catch {
-    throw intentLookupFailed();
-  }
-  const intent = detail?.workflowIntent;
-  const pin = intent?.methodologyRelease;
+  const intent = response.workflowIntent;
+  if (!intent || typeof intent !== 'object') throw intentLookupFailed();
+  const pin = intent.methodologyRelease;
   if (
     intent?.id !== intentId ||
     intent?.projectId !== projectId ||

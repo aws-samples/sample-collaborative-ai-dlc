@@ -14,6 +14,7 @@
     "lambda/environments",
     "lambda/general-info",
     "lambda/github",
+    "lambda/intent-pin-lookup",
     "lambda/intents",
     "lambda/gitlab",
     "lambda/bitbucket",
