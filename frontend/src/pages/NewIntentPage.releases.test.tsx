@@ -121,7 +121,7 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     listChannels.mockReset();
   });
 
-  it('preselects the stable channel release and sends its id', async () => {
+  it('preselects the stable channel release and leaves the pin to the platform default', async () => {
     listReleases.mockResolvedValue({
       releases: [release(), release({ releaseId: 'aidlc:ccc333', sourceSha: 'ccc333ddd444' })],
     });
@@ -142,7 +142,7 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     expect(listReleases).toHaveBeenCalledTimes(1);
 
     await submitPrompt(user);
-    expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:aaa111bbb222');
+    expect(create.mock.calls[0][1].methodologyReleaseId).toBeUndefined();
   });
 
   it('lets the user pick a non-default release', async () => {
@@ -215,7 +215,12 @@ describe('NewIntentPage — AI-DLC release selection', () => {
   });
 
   it('retries once without the pin when create 400s with release_selection_disabled', async () => {
-    listReleases.mockResolvedValue({ releases: [release()] });
+    listReleases.mockResolvedValue({
+      releases: [
+        release(),
+        release({ releaseId: 'aidlc:ccc333', sourceSha: 'ccc333ddd444', upstreamVersion: '1.3.0' }),
+      ],
+    });
     listChannels.mockResolvedValue({
       pinningEnabled: true,
       stable: { channel: 'stable', releaseId: 'aidlc:aaa111bbb222', revision: 1 },
@@ -233,14 +238,15 @@ describe('NewIntentPage — AI-DLC release selection', () => {
       .mockResolvedValueOnce({ id: 'i1' });
     const user = userEvent.setup();
     renderPage();
-    await screen.findByLabelText('AI-DLC version');
+    await user.click(await screen.findByLabelText('AI-DLC version'));
+    await user.click(await screen.findByRole('option', { name: /1\.3\.0/ }));
 
     await submitPrompt(user);
     await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     expect(
       await screen.findByText(/AI-DLC version selection was disabled while this page was open/i),
     ).toBeInTheDocument();
-    expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:aaa111bbb222');
+    expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:ccc333');
     expect(create.mock.calls[1][1].methodologyReleaseId).toBeUndefined();
     expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
   });
@@ -290,7 +296,12 @@ describe('NewIntentPage — reduced (non-admin) release projection', () => {
   });
 
   it('offers reduced records and sends the picked id', async () => {
-    listReleases.mockResolvedValue({ releases: [reducedRelease()] });
+    listReleases.mockResolvedValue({
+      releases: [
+        reducedRelease(),
+        reducedRelease({ releaseId: 'aidlc:ccc333', upstreamVersion: '1.3.0' }),
+      ],
+    });
     listChannels.mockResolvedValue({
       pinningEnabled: true,
       stable: { channel: 'stable', releaseId: 'aidlc:aaa111bbb222', revision: 1 },
@@ -301,9 +312,11 @@ describe('NewIntentPage — reduced (non-admin) release projection', () => {
     renderPage();
     expect(await screen.findByLabelText('AI-DLC version')).toBeInTheDocument();
     expect(screen.getAllByText('1.2.0 (stable, default)').length).toBeGreaterThan(0);
+    await user.click(screen.getByLabelText('AI-DLC version'));
+    await user.click(await screen.findByRole('option', { name: /1\.3\.0/ }));
 
     await submitPrompt(user);
-    expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:aaa111bbb222');
+    expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:ccc333');
   });
 
   it('falls back to the release id when the reduced record has no version label', async () => {
@@ -362,7 +375,7 @@ describe('NewIntentPage — start from an existing intent (?fromIntent)', () => 
     expect(screen.getByText(/recomputes its plan/)).toBeInTheDocument();
   });
 
-  it('creates the new intent with the selected release while the source stays untouched', async () => {
+  it('creates the new intent on the stable default while the source stays untouched', async () => {
     getIntent.mockResolvedValue(sourceDetail);
     const user = userEvent.setup();
     renderPage('/space/p1/intent/new?fromIntent=i0');
@@ -373,8 +386,8 @@ describe('NewIntentPage — start from an existing intent (?fromIntent)', () => 
     expect(create.mock.calls[0][1]).toMatchObject({
       title: 'Ship search (AI-DLC 1.2.0)',
       prompt: 'Original prompt body',
-      methodologyReleaseId: 'aidlc:aaa111bbb222',
     });
+    expect(create.mock.calls[0][1].methodologyReleaseId).toBeUndefined();
   });
 
   it('degrades to a blank form with a notice when the source intent cannot be loaded', async () => {
