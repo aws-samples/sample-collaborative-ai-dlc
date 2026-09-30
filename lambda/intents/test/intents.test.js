@@ -8319,6 +8319,74 @@ describe('AI-DLC per-intent release selection', () => {
     expect(warned).toMatchObject({ releaseId: pinA.releaseId });
   });
 
+  // After an importer-revision bump the runtime addresses closures at the new
+  // revision, but an eligible row still points at the previous one until the
+  // release is re-imported. Without s3:ListBucket the missing new-revision
+  // manifest reads as 403, so the row's own revision must be compared first.
+  it.each([
+    ['a row at the previous importer revision stays unpinned without reading the manifest', 1],
+    ['a row at the current importer revision pins as before', 2],
+  ])('%s', async (_label, rowRevision) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable', { importerRevision: rowRevision });
+    if (rowRevision !== 2) {
+      s3Mock.on(GetObjectCommand, { Bucket: 'artifacts-test', Key: pinA.manifestKey }).rejects(
+        Object.assign(new Error('Access Denied'), {
+          name: 'AccessDenied',
+          $metadata: { httpStatusCode: 403 },
+        }),
+      );
+    }
+    const logs = [];
+    const capture = (chunk) => {
+      logs.push(String(chunk));
+      return true;
+    };
+    const spies = [
+      vi.spyOn(process.stdout, 'write').mockImplementation(capture),
+      vi.spyOn(process.stderr, 'write').mockImplementation(capture),
+    ];
+
+    let res;
+    try {
+      res = await createIntent(sub, projectId, { title: 'I', prompt: 'Build X', scope: 'feature' });
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+
+    expect(res.statusCode).toBe(201);
+    const pin = metaFor(JSON.parse(res.body).id).methodologyRelease ?? null;
+    const manifestReads = s3Mock
+      .commandCalls(GetObjectCommand)
+      .filter((call) => call.args[0].input.Key === pinA.manifestKey);
+    const warned = logs
+      .flatMap((line) => line.split('\n'))
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .find((entry) => entry?.level === 'WARN' && entry.code === 'release_registry_skew');
+    if (rowRevision === 2) {
+      expect(pin).toMatchObject({ releaseId: pinA.releaseId, importerRevision: 2 });
+      expect(manifestReads.length).toBeGreaterThan(0);
+      expect(warned).toBeUndefined();
+    } else {
+      expect(pin).toBeNull();
+      expect(manifestReads).toHaveLength(0);
+      expect(warned).toMatchObject({
+        releaseId: pinA.releaseId,
+        fields: ['importerRevision'],
+        registeredImporterRevision: 1,
+        currentImporterRevision: 2,
+      });
+    }
+  });
+
   it('refuses the create when an eligible release closure is unreadable', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
