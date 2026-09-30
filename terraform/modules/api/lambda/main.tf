@@ -79,6 +79,7 @@ module "dynamodb_kms_runtime_access" {
     neptune_artifacts    = aws_iam_role.neptune_artifacts.name
     neptune_questions    = aws_iam_role.neptune_questions.name
     neptune_reader       = aws_iam_role.neptune_reader.name
+    seed_blocks          = aws_iam_role.seed_blocks.name
     source_control       = aws_iam_role.source_control.name
     trackers             = aws_iam_role.trackers.name
     users                = aws_iam_role.users.name
@@ -857,7 +858,8 @@ resource "aws_iam_role_policy" "blocks" {
 # (only Role 7b may write there). Its own principal for two reasons: workflows is
 # the only Lambda allowed to invoke the intent pin lookup (issue #482), and the
 # user-facing building-blocks API must inherit neither that grant nor the release
-# read. No Neptune, no VPC — workflows carries no block bodies.
+# read. No Neptune — workflows carries no block bodies. It is placed in the VPC
+# only when lambda_vpc_scope is "all", like every other Lambda.
 #
 # No s3:ListBucket is granted: without it S3 answers a GET for an absent key with
 # 403 AccessDenied instead of 404 NoSuchKey, and the "is this profile published
@@ -874,6 +876,13 @@ resource "aws_iam_role" "workflows" {
 resource "aws_iam_role_policy_attachment" "workflows_basic" {
   role       = aws_iam_role.workflows.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "workflows_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.workflows.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "workflows" {
@@ -2598,8 +2607,9 @@ module "seed_blocks_lambda" {
 # Workflows Lambda — composition over the block library: a workflow references
 # and arranges library blocks (grouping tree + skill placements + scope/
 # guardrail refs). Workflows share the blocks table (WF#… partitions) and the
-# workflows IAM role (Role 7a). Workflows carry no block bodies, so no VPC
-# config; their only S3 access is a read of published release content, and the
+# workflows IAM role (Role 7a). Workflows carry no block bodies and need no
+# Neptune, so they join the VPC only when lambda_vpc_scope is "all"; their only
+# S3 access is a read of published release content, and the
 # separate principal is what keeps the intent pin lookup out of reach of the
 # building-blocks API (issue #482).
 module "workflows_lambda" {
@@ -2636,7 +2646,7 @@ module "workflows_lambda" {
     BLOCKS_TABLE                = var.blocks_table_name
     ENVIRONMENT                 = var.environment
     CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
-    # Existing-intent release reads ask the intents Lambda to authorize the
+    # Existing-intent release reads ask the intent pin lookup to authorize the
     # project member and return that intent's stored immutable pin.
     INTENT_PIN_LOOKUP_FUNCTION = module.intent_pin_lookup_lambda.lambda_function_name
     # Issue #482 Phase 4: read a published release manifest when registering it
@@ -2648,7 +2658,10 @@ module "workflows_lambda" {
     AIDLC_RELEASE_PINNING = var.aidlc_release_pinning
   }
 
-  depends_on = [aws_iam_role_policy_attachment.blocks_vpc]
+  depends_on = [
+    aws_iam_role_policy_attachment.workflows_vpc,
+    aws_iam_role_policy.workflows_intent_lookup,
+  ]
 }
 
 # -----------------------------------------------------------------------------
@@ -2990,7 +3003,7 @@ module "intents_lambda" {
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
-# Workflows is intentionally outside the VPC, so it cannot query Neptune to check
+# Workflows holds no Neptune permission, so it cannot query Neptune to check
 # that the caller is a member of an existing intent's project. This function is
 # VPC-attached, has no API Gateway route, and returns only the intent's
 # methodology coordinates (issue #482).

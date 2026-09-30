@@ -41,7 +41,7 @@ vi.mock('@/services/workflows', () => ({
 }));
 vi.mock('@/services/aidlcReleases', () => ({
   aidlcReleasesService: {
-    channels: (...a: unknown[]) => listChannels(...a),
+    sharedChannels: (...a: unknown[]) => listChannels(...a),
   },
 }));
 

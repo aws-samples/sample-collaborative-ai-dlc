@@ -91,7 +91,7 @@ export default function NewIntentPage() {
   useEffect(() => {
     let cancelled = false;
     aidlcReleasesService
-      .channels()
+      .sharedChannels()
       .then((channels) => {
         if (cancelled) return;
         const enabled = channels.pinningEnabled === true;
@@ -221,8 +221,13 @@ export default function NewIntentPage() {
         title: title.trim(),
         prompt: prompt.trim(),
         baseBranches: Object.keys(baseBranches).length ? baseBranches : undefined,
+        // The stable release is the platform default, so it is left implicit:
+        // only a create without an explicit release lets the server fall back
+        // past an incompatible workflow override on the stable channel.
         methodologyReleaseId:
-          showReleaseSelector && selectedReleaseId ? selectedReleaseId : undefined,
+          showReleaseSelector && selectedReleaseId && selectedReleaseId !== stableReleaseId
+            ? selectedReleaseId
+            : undefined,
         source: source
           ? {
               bindingId: source.binding.id,

@@ -72,6 +72,15 @@ vi.mock('../../shared/artifact-versioning.js', async (importOriginal) => {
     readCheckpointArtifactVersions: readCheckpointArtifactVersionsSpy,
   };
 });
+// Passthrough by default; a test may narrow one resolution to a canned result
+// to reach a branch real fixtures cannot produce on their own.
+const planSpy = vi.hoisted(() => ({ loadExecutionPlan: vi.fn(), actual: null }));
+vi.mock('../../shared/v2-workflow-plan.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  planSpy.actual = actual.loadExecutionPlan;
+  planSpy.loadExecutionPlan.mockImplementation(actual.loadExecutionPlan);
+  return { ...actual, loadExecutionPlan: planSpy.loadExecutionPlan };
+});
 vi.mock('../native-export.js', () => ({
   createNativeExport: createNativeExportSpy,
   EXPORT_SOURCE_UNAVAILABLE: 'export_source_unavailable',
@@ -471,6 +480,7 @@ beforeEach(() => {
   attachmentUpdateConflict = null;
   archiveArtifactsSpy.mockClear();
   readCheckpointArtifactVersionsSpy.mockClear();
+  planSpy.loadExecutionPlan.mockImplementation(planSpy.actual);
   createNativeExportSpy.mockReset();
   createNativeExportSpy.mockResolvedValue({
     downloadUrl: 'https://example.test/export.zip',
@@ -7433,8 +7443,8 @@ describe('AI-DLC release pinning', () => {
     expect(res.statusCode).toBe(201);
     const intent = JSON.parse(res.body);
     const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
-    expect(meta.methodologyRelease).toBeNull();
-    expect(getObjectKeys()).toContain(releasePin.manifestKey);
+    expect(meta.methodologyRelease ?? null).toBeNull();
+    expect(getObjectKeys()).not.toContain(releasePin.manifestKey);
   });
 
   it('forwards the pin so a start resolves its plan from the release closure', async () => {
@@ -8231,6 +8241,84 @@ describe('AI-DLC per-intent release selection', () => {
     },
   );
 
+  // Without s3:ListBucket, S3 answers a GET for an absent key with 403
+  // AccessDenied, so an unimported deployment ref looks exactly like a denied
+  // read. Only the registry can tell the two apart.
+  it.each([
+    ['no registry row stays unpinned without reading the manifest', false],
+    ['a registry row refuses the create', true],
+  ])('a masked 403 on the deployment-ref manifest with %s', async (_label, registered) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    if (registered) seedRegistryRecord(bundleA, 'current-stable');
+    s3Mock.on(GetObjectCommand, { Bucket: 'artifacts-test', Key: pinA.manifestKey }).rejects(
+      Object.assign(new Error('Access Denied'), {
+        name: 'AccessDenied',
+        $metadata: { httpStatusCode: 403 },
+      }),
+    );
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    const manifestReads = s3Mock
+      .commandCalls(GetObjectCommand)
+      .filter((call) => call.args[0].input.Key === pinA.manifestKey);
+    if (registered) {
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+      expect([...procStore]).toEqual(before);
+    } else {
+      expect(res.statusCode).toBe(201);
+      expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+      expect(manifestReads).toHaveLength(0);
+    }
+  });
+
+  it('stays unpinned when the published closure no longer matches its registry row', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    // A re-import is mid-flight: the registry row still describes the closure
+    // the previous importer revision produced.
+    seedRegistryRecord(bundleA, 'current-stable', { closureDigest: `sha256:${'0'.repeat(64)}` });
+    const logs = [];
+    const capture = (chunk) => {
+      logs.push(String(chunk));
+      return true;
+    };
+    const spies = [
+      vi.spyOn(process.stdout, 'write').mockImplementation(capture),
+      vi.spyOn(process.stderr, 'write').mockImplementation(capture),
+    ];
+
+    let res;
+    try {
+      res = await createIntent(sub, projectId, { title: 'I', prompt: 'Build X', scope: 'feature' });
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+
+    expect(res.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+    const warned = logs
+      .flatMap((line) => line.split('\n'))
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .find((entry) => entry?.level === 'WARN' && entry.code === 'release_registry_skew');
+    expect(warned).toMatchObject({ releaseId: pinA.releaseId });
+  });
+
   it('refuses the create when an eligible release closure is unreadable', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -8284,6 +8372,170 @@ describe('AI-DLC per-intent release selection', () => {
       }
     },
   );
+
+  it('reports a stable-channel overlay fallback that auto-pins the deployment-ref release', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    seedRegistryRecord(bundleB, 'v2.9.0');
+    seedStableChannel(pinB.releaseId);
+    seedDefaultAgentOverride(bundleA);
+    planSpy.loadExecutionPlan.mockImplementation(async (args) =>
+      args.methodologyRelease?.releaseId === pinB.releaseId && args.methodologyPins
+        ? { valid: false, errors: [{ code: 'user_block_missing' }] }
+        : planSpy.actual(args),
+    );
+    const lines = [];
+    const capture = (chunk) => {
+      lines.push(...String(chunk).split('\n'));
+      return true;
+    };
+    const spies = [
+      vi.spyOn(process.stdout, 'write').mockImplementation(capture),
+      vi.spyOn(process.stderr, 'write').mockImplementation(capture),
+    ];
+
+    let res;
+    try {
+      res = await createIntent(sub, projectId, { title: 'I', prompt: 'Build X', scope: 'feature' });
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+
+    expect(res.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toEqual(pinA);
+    const logged = lines
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    expect(logged.map((entry) => entry.message).join('\n')).not.toMatch(/stays unpinned/);
+    expect(logged).toContainEqual(
+      expect.objectContaining({
+        level: 'INFO',
+        releaseId: pinA.releaseId,
+        skippedReleaseId: pinB.releaseId,
+      }),
+    );
+  });
+
+  it('refuses the create when the deployment-ref release capabilities cannot be verified', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    // No recorded gaps, so the capability check has to read the closure.
+    seedRegistryRecord(bundleA, 'current-stable', { fidelityGaps: undefined });
+    s3Mock
+      .on(GetObjectCommand, { Bucket: 'artifacts-test', Key: pinA.manifestKey })
+      .rejects(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+    expect([...procStore]).toEqual(before);
+  });
+
+  it('refuses the create when the deployment-ref release plan fails with a release error', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    planSpy.loadExecutionPlan.mockImplementation(async (args) =>
+      args.methodologyRelease
+        ? { valid: false, errors: [{ code: 'release_closure_mismatch' }] }
+        : planSpy.actual(args),
+    );
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+    expect([...procStore]).toEqual(before);
+  });
+
+  it('keeps the overlay error when the stable release is invalid without the overlay too', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    seedStableChannel(pinA.releaseId);
+    seedDefaultAgentOverride(bundleA);
+    planSpy.loadExecutionPlan.mockImplementation(async (args) => {
+      if (!args.methodologyRelease) return planSpy.actual(args);
+      return args.methodologyPins
+        ? { valid: false, errors: [{ code: 'user_block_missing' }] }
+        : { valid: false, errors: [{ code: 'stage_not_found' }] };
+    });
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).errors).toEqual([{ code: 'user_block_missing' }]);
+    expect([...procStore]).toEqual(before);
+  });
+
+  it('hands the compose pre-pass to the composer agent when the pinned closure is unreadable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    const created = await createIntent(sub, projectId, {
+      title: 'feature',
+      prompt: 'Add a new feature',
+      scope: 'feature',
+      methodologyReleaseId: pinA.releaseId,
+    });
+    expect(created.statusCode).toBe(201);
+    const intentId = JSON.parse(created.body).id;
+    releaseStore.delete(pinA.catalogKey);
+    releaseResolverTest.releaseClosureCache.clear();
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+
+    let res;
+    try {
+      res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intentId}/compose`,
+        pathParameters: { projectId, intentId },
+        body: JSON.stringify({ mode: 'front', agentCli: 'kiro' }),
+        ...claims(sub),
+      });
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).source).toBe('llm');
+    const composeRows = [...procStore.values()].filter(
+      (row) => row.pk === `EXEC#${intentId}` && String(row.sk).startsWith('COMPOSE#'),
+    );
+    expect(composeRows.map((row) => row.source)).not.toContain('match');
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand).length).toBeGreaterThan(0);
+  });
 
   it('never auto-pins while the flag is off', async () => {
     vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');

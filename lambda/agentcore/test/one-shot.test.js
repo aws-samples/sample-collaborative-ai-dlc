@@ -2,9 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { runOneShotPrompt, parseClaudeOneShot, extractJsonObject } from '../cli/one-shot.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Fake child factory for captureChild: emits the given stdout/stderr then closes.
 // `stdin.end` records the piped prompt so tests can assert it goes on stdin (not
@@ -22,27 +23,17 @@ const fakeChild = ({ exitCode = 0, stdout = '', stderr = '' } = {}) => {
   return child;
 };
 
+// The CLI stand-in and its grandchild are checked-in modules; only the temp
+// directory for the ready and sentinel files is created per test.
+const processTreeCliPath = fileURLToPath(
+  new URL('./fixtures/process-tree-cli.mjs', import.meta.url),
+);
+
 const makeProcessTreeFixture = async () => {
   const directory = await mkdtemp(join(tmpdir(), 'agentcore-process-tree-'));
-  const fixturePath = join(directory, 'fixture.mjs');
   const readyPath = join(directory, 'ready');
   const sentinelPath = join(directory, 'sentinel');
-  const delayedWrite = `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 1800);`;
-  await writeFile(
-    fixturePath,
-    [
-      "import { spawn } from 'node:child_process';",
-      "import { writeFileSync } from 'node:fs';",
-      'const [mode, sentinelPath, readyPath] = process.argv.slice(2);',
-      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(delayedWrite)}, sentinelPath], {`,
-      "  stdio: 'ignore',",
-      '});',
-      'child.unref();',
-      "writeFileSync(readyPath, 'ready');",
-      "if (mode === 'hang') setInterval(() => {}, 1000);",
-    ].join('\n'),
-  );
-  return { directory, fixturePath, readyPath, sentinelPath };
+  return { directory, fixturePath: processTreeCliPath, readyPath, sentinelPath };
 };
 
 const waitForFile = async (path, timeoutMs = 1500) => {
