@@ -65,9 +65,10 @@ resource "aws_ssm_parameter" "github_app_config" {
 # fall back to this table on a miss and lazily move each row into the new table
 # (migrate-on-read). Retire in a separate, deliberate step once it has drained.
 resource "aws_dynamodb_table" "git_connections" {
-  name         = "${var.project_name}-${var.environment}-git-connections"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "userId"
+  name                        = "${var.project_name}-${var.environment}-git-connections"
+  billing_mode                = "PAY_PER_REQUEST"
+  hash_key                    = "userId"
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "userId"
@@ -77,6 +78,15 @@ resource "aws_dynamodb_table" "git_connections" {
   ttl {
     attribute_name = "expiresAt"
     enabled        = true
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags
@@ -94,10 +104,11 @@ resource "aws_dynamodb_table" "git_connections" {
 # today; the composite value is stored now so future self-hosted/enterprise
 # instances (e.g. 'gitlab#self-hosted') slot in with no data migration.
 resource "aws_dynamodb_table" "git_provider_connections" {
-  name         = "${var.project_name}-${var.environment}-git-provider-connections"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "userId"
-  range_key    = "providerInstance"
+  name                        = "${var.project_name}-${var.environment}-git-provider-connections"
+  billing_mode                = "PAY_PER_REQUEST"
+  hash_key                    = "userId"
+  range_key                   = "providerInstance"
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "userId"
@@ -114,6 +125,15 @@ resource "aws_dynamodb_table" "git_provider_connections" {
     enabled        = true
   }
 
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
   tags = var.tags
 }
 
@@ -122,10 +142,11 @@ resource "aws_dynamodb_table" "git_provider_connections" {
 # opaque reference. Provider credentials and SSM parameter names never live in
 # this table.
 resource "aws_dynamodb_table" "source_control_bindings" {
-  name         = "${var.project_name}-${var.environment}-source-control-bindings"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "projectId"
-  range_key    = "bindingKey"
+  name                        = "${var.project_name}-${var.environment}-source-control-bindings"
+  billing_mode                = "PAY_PER_REQUEST"
+  hash_key                    = "projectId"
+  range_key                   = "bindingKey"
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "projectId"
@@ -154,6 +175,11 @@ resource "aws_dynamodb_table" "source_control_bindings" {
     range_key       = "credentialBindingKey"
   }
 
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
   point_in_time_recovery {
     enabled = true
   }
@@ -167,10 +193,11 @@ resource "aws_dynamodb_table" "source_control_bindings" {
 # connect multiple provider instances (e.g. one Jira Cloud site + GitHub
 # Issues at the same time).
 resource "aws_dynamodb_table" "tracker_connections" {
-  name         = "${var.project_name}-${var.environment}-tracker-connections"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "userId"
-  range_key    = "providerInstance"
+  name                        = "${var.project_name}-${var.environment}-tracker-connections"
+  billing_mode                = "PAY_PER_REQUEST"
+  hash_key                    = "userId"
+  range_key                   = "providerInstance"
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "userId"
@@ -185,6 +212,15 @@ resource "aws_dynamodb_table" "tracker_connections" {
   ttl {
     attribute_name = "expiresAt"
     enabled        = true
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags

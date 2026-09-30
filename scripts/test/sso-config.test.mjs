@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { normalizeSsoConfig } from '../sso-config.mjs';
 
 const secretArn =
@@ -74,6 +75,56 @@ test('loads SAML metadata files relative to the provider configuration', () => {
   assert.equal(normalized.CorporateSAML.type, 'saml');
   assert.equal(normalized.CorporateSAML.metadata_xml, metadata);
   assert.equal(normalized.CorporateSAML.metadata_url, '');
+});
+
+test('demo SSO_CONFIG rejects companion metadata files before trying to read them', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-saml-demo-'));
+  const config = {
+    providers: [
+      {
+        name: 'CorporateSAML',
+        displayName: 'Corporate SAML',
+        type: 'saml',
+        metadata: { file: 'unavailable.xml' },
+        claims: { email: 'email' },
+      },
+    ],
+  };
+  const path = join(dir, 'config.json');
+  writeFileSync(path, JSON.stringify(config));
+  const result = spawnSync(
+    process.execPath,
+    [new URL('../sso-config.mjs', import.meta.url).pathname, path, 'hybrid', '--no-metadata-files'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /SSO_CONFIG cannot use metadata\.file/);
+  assert.match(result.stderr, /Use metadata\.url or inline metadata\.xml/);
+  assert.equal(result.stdout, '');
+});
+
+test('demo SAML configuration supports URLs and inline XML', () => {
+  for (const metadata of [
+    { url: 'https://idp.example.com/metadata.xml' },
+    { xml: '<EntityDescriptor entityID="urn:test:idp"></EntityDescriptor>' },
+  ]) {
+    const normalized = normalizeSsoConfig(
+      {
+        providers: [
+          {
+            name: 'CorporateSAML',
+            displayName: 'Corporate SAML',
+            type: 'saml',
+            metadata,
+            claims: { email: 'email' },
+          },
+        ],
+      },
+      { allowMetadataFiles: false },
+    );
+    assert.equal(normalized.CorporateSAML.metadata_url, metadata.url ?? '');
+    assert.equal(normalized.CorporateSAML.metadata_xml, metadata.xml ?? '');
+  }
 });
 
 test('requires an admin mapping for SSO-only and rejects unknown platform roles', () => {

@@ -796,4 +796,46 @@ X. Other (please specify)
       },
     ]);
   });
+
+  it('resolves reverse-engineering attribution to CodeCommit repositories like any other', () => {
+    const west1 = 'arn:aws:codecommit:eu-west-1:123456789012:api';
+    const west2 = 'arn:aws:codecommit:eu-west-2:123456789012:api';
+    const other = 'arn:aws:codecommit:eu-west-1:123456789012:web';
+    const repository = (id, directory) => ({
+      id,
+      directory,
+      url: `https://git-codecommit.example.test/v1/repos/${directory}`,
+      branch: 'aidlc/intent-1',
+    });
+    const project = (ref) => {
+      const value = input();
+      value.repositories = [
+        repository(west1, 'codecommit_aws_eu-west-1_123456789012_api'),
+        repository(west2, 'codecommit_aws_eu-west-2_123456789012_api'),
+        repository(other, 'web'),
+      ];
+      value.artifacts.push({
+        id: 'architecture',
+        artifactType: 'architecture',
+        stageId: 'reverse-engineering',
+        phase: 'inception',
+        repository: ref,
+        content: '# Architecture',
+      });
+      return projectNativeWorkspace(value);
+    };
+    const codekb = (result) => [...result.files.keys()].filter((key) => key.includes('/codekb/'));
+
+    // By name, as for owner/repo ids.
+    expect(codekb(project('web'))).toEqual(['aidlc/spaces/default/codekb/web/architecture.md']);
+    // By ARN, and by the checkout directory the agent works in.
+    expect(codekb(project(west2))).toEqual([
+      'aidlc/spaces/default/codekb/codecommit_aws_eu-west-2_123456789012_api/architecture.md',
+    ]);
+    expect(codekb(project('codecommit/aws/eu-west-2/123456789012/api'))).toEqual([
+      'aidlc/spaces/default/codekb/codecommit_aws_eu-west-2_123456789012_api/architecture.md',
+    ]);
+    // A name two regions share stays ambiguous rather than guessed.
+    expect(() => project('api')).toThrow(/ambiguous repository/);
+  });
 });
