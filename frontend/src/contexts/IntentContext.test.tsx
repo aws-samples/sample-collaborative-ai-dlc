@@ -88,9 +88,9 @@ const renderProvider = () =>
   );
 
 function CompiledProbe() {
-  const { compiled } = useIntent();
-  const id = (compiled as { id?: string } | null)?.id;
-  return <div data-testid="compiled">{compiled ? (id ?? 'set') : 'null'}</div>;
+  const { compiled: current } = useIntent();
+  const id = (current as { id?: string } | null)?.id;
+  return <div data-testid="compiled">{current ? (id ?? 'set') : 'null'}</div>;
 }
 
 const renderCompiledProbe = () =>
