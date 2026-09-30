@@ -136,6 +136,34 @@ describe('createIntentMethodologyLoader', () => {
       workflowVersion: 2,
     });
   });
+
+  it('ignores methodology overrides for an unpinned intent', async () => {
+    const loadPlan = vi.fn(async () => ({ valid: true }));
+    const loadScopes = vi.fn(async () => []);
+    const loader = createIntentMethodologyLoader({
+      ddb: {},
+      tableName: 'blocks',
+      s3: {},
+      bucket: 'artifacts',
+      loadPlan,
+      loadScopes,
+    });
+    const meta = { workflowId: 'workflow', workflowVersion: 2 };
+
+    await loader.loadPlan(meta, {
+      methodologyRelease: { releaseId: 'release-a', sourceSha: 'a'.repeat(40) },
+      methodologyPins: { AGENT: { agent: { tenantId: 'tenant-a', version: 3 } } },
+      s3: {},
+      bucket: 'other-bucket',
+    });
+
+    expect(loadPlan).toHaveBeenLastCalledWith({
+      ddb: {},
+      tableName: 'blocks',
+      workflowId: 'workflow',
+      workflowVersion: 2,
+    });
+  });
 });
 
 describe('intentMethodologyOptions', () => {

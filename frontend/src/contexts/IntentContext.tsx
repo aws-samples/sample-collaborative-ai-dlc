@@ -353,23 +353,35 @@ export function IntentProvider({
             importerRevision,
           )
         : null;
-      const cachedCompiled =
-        releasePinned && compiledKey && prevEntry?.compiledKey === compiledKey
-          ? prevEntry.compiled
-          : null;
-      const sameCompileIdentity = Boolean(compiledKey && prevEntry?.compiledKey === compiledKey);
-      deleteCompiledForIntent(cacheKey, releasePinned ? (compiledKey ?? undefined) : undefined);
+      // Only pinned intents carry a compile identity. Unpinned entries keep a
+      // null key so their reloads behave as before: the previous compiled
+      // workflow stays visible until the refetch replaces it.
+      const pinnedCompiledKey = releasePinned ? compiledKey : null;
+      deleteCompiledForIntent(cacheKey, pinnedCompiledKey ?? undefined);
 
-      intentCache.set(cacheKey, {
-        detail: dto,
-        compiled: cachedCompiled,
-        compiledKey,
-        workflowPhases: sameCompileIdentity ? (prevEntry?.workflowPhases ?? null) : null,
-      });
+      if (releasePinned) {
+        const sameCompileIdentity = Boolean(
+          pinnedCompiledKey && prevEntry?.compiledKey === pinnedCompiledKey,
+        );
+        const cachedCompiled = sameCompileIdentity ? (prevEntry?.compiled ?? null) : null;
+        intentCache.set(cacheKey, {
+          detail: dto,
+          compiled: cachedCompiled,
+          compiledKey: pinnedCompiledKey,
+          workflowPhases: sameCompileIdentity ? (prevEntry?.workflowPhases ?? null) : null,
+        });
+        setCompiled(cachedCompiled);
+        if (!sameCompileIdentity) setWorkflowPhases(null);
+        else if (cachedCompiled) setWorkflowPhases(cachedCompiled.phases ?? []);
+      } else {
+        intentCache.set(cacheKey, {
+          detail: dto,
+          compiled: prevEntry?.compiled ?? null,
+          compiledKey: null,
+          workflowPhases: prevEntry?.workflowPhases ?? null,
+        });
+      }
       trimIntentCache();
-      setCompiled(cachedCompiled);
-      if (!sameCompileIdentity) setWorkflowPhases(null);
-      else if (releasePinned && cachedCompiled) setWorkflowPhases(cachedCompiled.phases ?? []);
 
       if (workflowId) {
         const compileRequest =
@@ -393,10 +405,10 @@ export function IntentProvider({
           .then((c) => {
             if (activeIntentRef.current !== intentId) return;
             const entry = intentCache.get(cacheKey);
-            if (!entry || entry.compiledKey !== compiledKey) return;
+            if (!entry || entry.compiledKey !== pinnedCompiledKey) return;
             setCompiled(c);
+            entry.compiled = c;
             if (releasePinned) {
-              entry.compiled = c;
               entry.workflowPhases = c.phases ?? [];
               setWorkflowPhases(c.phases ?? []);
             }

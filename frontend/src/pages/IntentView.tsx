@@ -153,7 +153,7 @@ export default function IntentView() {
   useEffect(() => {
     let cancelled = false;
     aidlcReleasesService
-      .channels()
+      .sharedChannels()
       .then((channels) => {
         if (!cancelled) setPinningEnabled(channels.pinningEnabled === true);
       })
