@@ -3482,7 +3482,9 @@ export const handler = async (event, context) => {
                 ...(frozenGrid && Object.keys(frozenGrid).length ? { frozenGrid } : {}),
                 ...(progressContext ? { progressContext } : {}),
                 ...(meta.methodologyRelease ? { methodologyRelease: meta.methodologyRelease } : {}),
-                ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+                ...(meta.methodologyRelease && meta.methodologyPins
+                  ? { methodologyPins: meta.methodologyPins }
+                  : {}),
               }),
             ),
           }),

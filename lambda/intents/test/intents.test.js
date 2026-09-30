@@ -2600,6 +2600,38 @@ describe('POST /compose — composer sessions', () => {
     }
   });
 
+  it('does not forward methodology pins for an intent with no release pin', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+      });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedComposeFixtures();
+      const intent = JSON.parse(
+        (await createIntent(sub, projectId, { title: 'I', prompt: 'Do something ambiguous' })).body,
+      );
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      procStore.set(metaKey, {
+        ...procStore.get(metaKey),
+        methodologyPins: {
+          AGENT: { 'aidlc-composer-agent': { tenantId: 'default', version: 7 } },
+        },
+      });
+
+      const res = await composeReq(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(202);
+      const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      const payload = JSON.parse(Buffer.from(call.payload).toString());
+      expect(payload).not.toHaveProperty('methodologyRelease');
+      expect(payload).not.toHaveProperty('methodologyPins');
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
   it('the Admin bypass switch forces the LLM path even on a clean match', async () => {
     process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
     vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
