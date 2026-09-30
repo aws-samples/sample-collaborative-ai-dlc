@@ -74,8 +74,10 @@ never-imported ref with 403 rather than 404.
 
 A configured stable channel is an implicit default and degrades the same way. If
 a space has a user block edit the stable release cannot overlay, and the release
-itself resolves cleanly without that overlay, the intent is created unpinned
-instead of failing. An explicitly requested release is strict: it returns the
+itself resolves cleanly without that overlay, the create continues as if no
+channel were set instead of failing: it auto-pins the deployment ref's release
+when that release can apply the overlay, and otherwise creates the intent
+unpinned. An explicitly requested release is strict: it returns the
 resolver errors so the caller sees which override conflicts.
 
 A failure to complete that lookup is treated differently. A throttled registry

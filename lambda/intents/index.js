@@ -5126,9 +5126,12 @@ export const handler = async (event, context) => {
       });
       // A stable channel is an implicit default, so an overlay it cannot apply
       // must degrade the way the no-channel path degrades rather than blocking
-      // every create in the space. An explicitly requested release stays
-      // strict. The base release is verified first, so a corrupt closure is
-      // never mistaken for an incompatible user fork.
+      // every create in the space: the intent continues as if no channel were
+      // set, so it may still auto-pin the deployment-ref release below. An
+      // explicitly requested release stays strict. The base release is
+      // verified first, so a corrupt closure is never mistaken for an
+      // incompatible user fork.
+      let skippedStableReleaseId = null;
       if (
         !planCheck.valid &&
         selectedReleasePin &&
@@ -5148,10 +5151,14 @@ export const handler = async (event, context) => {
           bucket: ARTIFACTS_BUCKET(),
         });
         if (baseReleasePlan.valid) {
-          logger.warn('Stable AI-DLC release is incompatible with the user overlay', {
-            releaseId: selectedReleasePin.releaseId,
-            errors: planCheck.errors ?? [],
-          });
+          logger.warn(
+            'Stable AI-DLC release is incompatible with the user overlay; falling back to the deployment ref',
+            {
+              releaseId: selectedReleasePin.releaseId,
+              errors: planCheck.errors ?? [],
+            },
+          );
+          skippedStableReleaseId = selectedReleasePin.releaseId;
           selectedReleasePin = null;
           selectedReleaseOptions = {};
           planCheck = await loadExecutionPlan({
@@ -5330,6 +5337,12 @@ export const handler = async (event, context) => {
               methodologyRelease = candidatePin;
               methodologyPins = releasePlan.methodologyPins;
               workflowVersion = releasePlan.workflowVersion ?? workflowVersion;
+              if (skippedStableReleaseId) {
+                logger.info(
+                  'Stable AI-DLC release was skipped; intent auto-pinned to the deployment-ref release',
+                  { releaseId: candidatePin.releaseId, skippedReleaseId: skippedStableReleaseId },
+                );
+              }
             } else if (
               (releasePlan.errors ?? []).some((error) =>
                 String(error.code ?? '').startsWith('release_'),

@@ -72,6 +72,15 @@ vi.mock('../../shared/artifact-versioning.js', async (importOriginal) => {
     readCheckpointArtifactVersions: readCheckpointArtifactVersionsSpy,
   };
 });
+// Passthrough by default; a test may narrow one resolution to a canned result
+// to reach a branch real fixtures cannot produce on their own.
+const planSpy = vi.hoisted(() => ({ loadExecutionPlan: vi.fn(), actual: null }));
+vi.mock('../../shared/v2-workflow-plan.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  planSpy.actual = actual.loadExecutionPlan;
+  planSpy.loadExecutionPlan.mockImplementation(actual.loadExecutionPlan);
+  return { ...actual, loadExecutionPlan: planSpy.loadExecutionPlan };
+});
 vi.mock('../native-export.js', () => ({
   createNativeExport: createNativeExportSpy,
   EXPORT_SOURCE_UNAVAILABLE: 'export_source_unavailable',
@@ -455,6 +464,7 @@ beforeEach(() => {
   attachmentUpdateConflict = null;
   archiveArtifactsSpy.mockClear();
   readCheckpointArtifactVersionsSpy.mockClear();
+  planSpy.loadExecutionPlan.mockImplementation(planSpy.actual);
   createNativeExportSpy.mockReset();
   createNativeExportSpy.mockResolvedValue({
     downloadUrl: 'https://example.test/export.zip',
@@ -8360,6 +8370,57 @@ describe('AI-DLC per-intent release selection', () => {
       }
     },
   );
+
+  it('reports a stable-channel overlay fallback that auto-pins the deployment-ref release', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    seedRegistryRecord(bundleB, 'v2.9.0');
+    seedStableChannel(pinB.releaseId);
+    seedDefaultAgentOverride(bundleA);
+    planSpy.loadExecutionPlan.mockImplementation(async (args) =>
+      args.methodologyRelease?.releaseId === pinB.releaseId && args.methodologyPins
+        ? { valid: false, errors: [{ code: 'user_block_missing' }] }
+        : planSpy.actual(args),
+    );
+    const lines = [];
+    const capture = (chunk) => {
+      lines.push(...String(chunk).split('\n'));
+      return true;
+    };
+    const spies = [
+      vi.spyOn(process.stdout, 'write').mockImplementation(capture),
+      vi.spyOn(process.stderr, 'write').mockImplementation(capture),
+    ];
+
+    let res;
+    try {
+      res = await createIntent(sub, projectId, { title: 'I', prompt: 'Build X', scope: 'feature' });
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+
+    expect(res.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toEqual(pinA);
+    const logged = lines
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    expect(logged.map((entry) => entry.message).join('\n')).not.toMatch(/stays unpinned/);
+    expect(logged).toContainEqual(
+      expect.objectContaining({
+        level: 'INFO',
+        releaseId: pinA.releaseId,
+        skippedReleaseId: pinB.releaseId,
+      }),
+    );
+  });
 
   it('never auto-pins while the flag is off', async () => {
     vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');
