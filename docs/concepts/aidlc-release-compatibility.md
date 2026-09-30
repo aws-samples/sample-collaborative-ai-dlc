@@ -63,20 +63,26 @@ open, a rejected pin is retried as an unpinned intent and the UI reports the
 fallback.
 
 When pinning is enabled but no stable channel is configured, intent creation may
-still discover a published closure from the deployment ref. It pins that closure
-only if the matching registry record is registered, visible, selectable or
-certified, and its authored behavior passes the runtime promotion guard. If the
-release is genuinely not published, not eligible, or authors behavior this build
-cannot honour, the intent is created on the existing unpinned path.
+still pin the deployment ref's release. The registry is consulted first: the
+closure is pinned only if the matching registry record is registered, visible,
+selectable or certified, and its authored behavior passes the runtime promotion
+guard. If there is no such record, or it is not eligible, or it authors behavior
+this build cannot honour, the intent is created on the existing unpinned path
+without reading the manifest. The manifest is read only once a record exists,
+because the runtime role has no `s3:ListBucket` and S3 answers a read of a
+never-imported ref with 403 rather than 404.
 
 A configured stable channel is an implicit default and degrades the same way. If
 a space has a user block edit the stable release cannot overlay, and the release
-itself resolves cleanly without that overlay, the intent is created unpinned
-instead of failing. An explicitly requested release is strict: it returns the
+itself resolves cleanly without that overlay, the create continues as if no
+channel were set instead of failing: it auto-pins the deployment ref's release
+when that release can apply the overlay, and otherwise creates the intent
+unpinned. An explicitly requested release is strict: it returns the
 resolver errors so the caller sees which override conflicts.
 
-A failure to complete that lookup is treated differently. A denied or corrupt
-manifest, an unreadable closure, or a throttled registry read means the answer
+A failure to complete that lookup is treated differently. A throttled registry
+read, or a denied, missing or corrupt manifest or closure behind an eligible
+registry record, means the answer
 is unknown rather than "not published", so intent creation returns
 `503 release_resolution_failed` and writes nothing. Downgrading an unreadable
 manifest to "does not exist" would let a permissions regression silently unpin

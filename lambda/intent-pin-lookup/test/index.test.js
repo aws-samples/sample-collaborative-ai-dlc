@@ -5,6 +5,13 @@ import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 
+const membership = vi.hoisted(() => ({ fetchMembershipRole: vi.fn() }));
+vi.mock('../../shared/trackers.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  membership.fetchMembershipRole.mockImplementation(actual.fetchMembershipRole);
+  return { ...actual, fetchMembershipRole: membership.fetchMembershipRole };
+});
+
 const PARTITION = `t-${randomUUID()}`;
 const TABLE = 'process-test';
 
@@ -171,8 +178,23 @@ describe('intent-pin-lookup handler', () => {
     ],
     ['an empty event', {}],
   ])('400s %s without reading anything', async (_label, event) => {
+    membership.fetchMembershipRole.mockClear();
+
     expect(await handler(event)).toEqual({ statusCode: 400 });
     expect(ddbMock.calls()).toHaveLength(0);
+    expect(membership.fetchMembershipRole).not.toHaveBeenCalled();
+  });
+
+  it('checks membership in Neptune for a well-formed request', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = randomUUID();
+    const intentId = randomUUID();
+    await seedMember(projectId, sub);
+    seedIntent(intentId, { projectId, workflowId: 'aidlc-v2', workflowVersion: 4 });
+    membership.fetchMembershipRole.mockClear();
+
+    expect((await handler({ sub, projectId, intentId })).statusCode).toBe(200);
+    expect(membership.fetchMembershipRole).toHaveBeenCalledWith(expect.anything(), projectId, sub);
   });
 
   it('reports a graph failure as a 5xx rather than a 404', async () => {

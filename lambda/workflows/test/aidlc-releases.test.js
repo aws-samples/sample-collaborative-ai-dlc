@@ -1123,6 +1123,26 @@ describe('`?release=` selectability gate for non-admins', () => {
       expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
     });
 
+    it(`${label}: a non-member gets the unknown-release 404 for an intent pin`, async () => {
+      await promote(CANDIDATE_RELEASE_ID, 'existing-only');
+      lambdaMock.on(InvokeCommand).resolves({
+        Payload: Buffer.from(
+          JSON.stringify({ statusCode: 404, body: JSON.stringify({ error: 'Intent not found' }) }),
+        ),
+      });
+
+      const res = parse(
+        await call(
+          { release: CANDIDATE_RELEASE_ID, projectId: 'project-1', intentId: 'intent-1' },
+          memberClaims,
+        ),
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('release_not_found');
+      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(1);
+    });
+
     it(`${label}: an admin may still resolve a demoted release`, async () => {
       await promote(CANDIDATE_RELEASE_ID, 'existing-only');
 
@@ -1191,6 +1211,56 @@ describe('`?release=` selectability gate for non-admins', () => {
     expect(mismatched.status).toBe(404);
     expect(mismatched.body.code).toBe('release_not_found');
   });
+
+  it.each([
+    [
+      'a different release',
+      ({ pin }) => ({ methodologyRelease: { ...pin, releaseId: 'aidlc:other' } }),
+    ],
+    ['a different workflow', () => ({ workflowId: 'another-workflow' })],
+    [
+      'a different importer revision',
+      () => ({}),
+      ({ pin }) => ({ releaseImporterRevision: String(Number(pin.importerRevision) + 1) }),
+    ],
+  ])(
+    'does not expose a demoted pin when the intent is pinned to %s',
+    async (_label, intentOverrides, queryOverrides = () => ({})) => {
+      await promote(CANDIDATE_RELEASE_ID, 'existing-only');
+      const pin = methodologyReleasePinFromManifest(candidateBundle.manifest);
+      lambdaMock.on(InvokeCommand).resolves({
+        Payload: Buffer.from(
+          JSON.stringify({
+            statusCode: 200,
+            workflowIntent: {
+              id: 'intent-1',
+              projectId: 'project-1',
+              workflowId: 'aidlc-v2',
+              workflowVersion: 1,
+              methodologyRelease: pin,
+              ...intentOverrides({ pin }),
+            },
+          }),
+        ),
+      });
+
+      const res = parse(
+        await compiledFor(
+          'aidlc-v2',
+          {
+            release: CANDIDATE_RELEASE_ID,
+            projectId: 'project-1',
+            intentId: 'intent-1',
+            ...queryOverrides({ pin }),
+          },
+          memberClaims,
+        ),
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('release_not_found');
+    },
+  );
 
   it('maps intent lookup outages to a dependency error without exposing hidden pins', async () => {
     await promote(CANDIDATE_RELEASE_ID, 'existing-only');

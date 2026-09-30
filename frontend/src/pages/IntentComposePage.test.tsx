@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
+import { act } from 'react';
 import { Link, MemoryRouter, Routes, Route } from 'react-router';
 
 beforeEach(() => {
@@ -148,18 +149,6 @@ const renderPage = (controls?: ReactNode) =>
     </MemoryRouter>,
   );
 
-const composeTree = () => (
-  <MemoryRouter initialEntries={['/space/p1/intent/i1/compose']}>
-    <Routes>
-      <Route path="/space/:projectId/intent/:intentId/compose" element={<IntentComposePage />} />
-      <Route
-        path="/space/:projectId/intent/:intentId"
-        element={<div data-testid="intent-view" />}
-      />
-    </Routes>
-  </MemoryRouter>
-);
-
 const summaryPlan = (summary: Record<string, number>, stages: unknown[] = []) => ({
   valid: true,
   errors: [],
@@ -270,13 +259,26 @@ describe('IntentComposePage', () => {
     expect(summary.textContent).toContain('5 stages fan out per unit of work');
   });
 
-  it('keeps workflow reads stable when the compose consumer rerenders', async () => {
-    const view = render(composeTree());
+  it('keeps workflow reads stable when the intent reloads as an equivalent new object', async () => {
+    // A trailing-slash link keeps the same route and params mounted but gives
+    // useNavigate a new identity, which re-runs the page's intent load and
+    // replaces `intent` with a new object carrying the same data.
+    get.mockImplementation(() => Promise.resolve(draftIntent()));
+    const user = userEvent.setup();
+    renderPage(
+      <Link to="/space/p1/intent/i1/compose/" data-testid="reload-intent">
+        Reload
+      </Link>,
+    );
 
     await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(executionPreview).toHaveBeenCalledTimes(1));
 
-    view.rerender(composeTree());
+    await user.click(screen.getByTestId('reload-intent'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     expect(compiled).toHaveBeenCalledTimes(1);
     expect(executionPreview).toHaveBeenCalledTimes(1);

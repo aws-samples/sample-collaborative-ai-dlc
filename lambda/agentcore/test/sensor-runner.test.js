@@ -330,6 +330,78 @@ describe('runStageSensors — script kind', () => {
     });
   });
 
+  const advisoryScriptSensor = {
+    sensorId: 'linter',
+    severity: 'advisory',
+    runtime: 'bun',
+    command: 'bun x.ts',
+    matches: '**/*.ts',
+    timeoutSeconds: 5,
+    scriptRef: { s3Key: 'blocks/scripts/sha256/abc123' },
+  };
+
+  const runWithLoaderError = async (error) => {
+    await writeFile(path.join(ws, 'a.ts'), 'x');
+    const runner = createSensorRunner({
+      graph: null,
+      loadBlockScript: async () => {
+        throw error;
+      },
+      workspaceDir: ws,
+      spawnFn: fakeSpawn('{}'),
+    });
+    const [verdict] = await runner.runStageSensors({
+      sensors: [advisoryScriptSensor],
+      stageId: 's',
+    });
+    return verdict;
+  };
+
+  it('keeps an advisory sensor non-blocking when the legacy loader rejects', async () => {
+    const verdict = await runWithLoaderError(new Error('NoSuchKey: blocks/scripts/sha256/abc123'));
+
+    expect(verdict).toMatchObject({
+      result: 'BLOCKED',
+      held: false,
+      detail: { error: 'NoSuchKey: blocks/scripts/sha256/abc123' },
+    });
+    expect(verdict.detail).not.toHaveProperty('releaseIntegrityFailure');
+  });
+
+  // A release-pinned sensor whose user-tenant overlay cannot be resolved runs a
+  // different check than the one the intent pinned, which is exactly the drift
+  // a pin exists to prevent, so it holds like a digest mismatch.
+  it.each(['user_block_missing', 'unpinned_user_block'])(
+    'holds an advisory release sensor whose user overlay fails with %s',
+    async (code) => {
+      const verdict = await runWithLoaderError(
+        Object.assign(new Error(`release overlay failed: ${code}`), {
+          name: 'ReleaseResolverError',
+          code,
+        }),
+      );
+
+      expect(verdict).toMatchObject({
+        result: 'BLOCKED',
+        held: true,
+        detail: { code, releaseIntegrityFailure: true },
+      });
+    },
+  );
+
+  it('does not hold an advisory sensor on an overlay code raised outside release resolution', async () => {
+    const verdict = await runWithLoaderError(
+      Object.assign(new Error('user block missing'), { code: 'user_block_missing' }),
+    );
+
+    expect(verdict).toMatchObject({
+      result: 'BLOCKED',
+      held: false,
+      detail: { error: 'user block missing', code: 'user_block_missing' },
+    });
+    expect(verdict.detail).not.toHaveProperty('releaseIntegrityFailure');
+  });
+
   // Regression for the plan→runner scriptRef contract. The PROD loadBlockScript
   // reads sensor.scriptRef.s3Key from S3; here we mimic that (return bytes if
   // the sensor carries a scriptRef) instead of the argument-ignoring stub the

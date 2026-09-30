@@ -184,6 +184,33 @@ export const isReleaseSelectable = (release: AidlcRelease): boolean =>
   release.visible &&
   SELECTABLE_SUPPORT_STATES.includes(release.supportState);
 
+// The intent pages only need the channels read to learn the pinning flag and
+// the stable default, so they share one short-lived lookup instead of calling
+// GET /aidlc-release-channels on every mount. Failures are never cached, and a
+// channel move or clear drops the cached value.
+export const SHARED_CHANNELS_TTL_MS = 30_000;
+
+let sharedChannelsEntry: { request: Promise<ReleaseChannels>; expiresAt: number } | null = null;
+
+const invalidateSharedChannels = () => {
+  sharedChannelsEntry = null;
+};
+
+const sharedChannels = (): Promise<ReleaseChannels> => {
+  if (sharedChannelsEntry && sharedChannelsEntry.expiresAt > Date.now()) {
+    return sharedChannelsEntry.request;
+  }
+  const entry = {
+    request: api.get<ReleaseChannels>('/aidlc-release-channels'),
+    expiresAt: Date.now() + SHARED_CHANNELS_TTL_MS,
+  };
+  entry.request.catch(() => {
+    if (sharedChannelsEntry === entry) sharedChannelsEntry = null;
+  });
+  sharedChannelsEntry = entry;
+  return entry.request;
+};
+
 export const aidlcReleasesService = {
   // Non-admins only receive visible + selectable/certified records.
   // `currentImporterRevision` is returned to platform admins only.
@@ -207,19 +234,26 @@ export const aidlcReleasesService = {
       input,
     ),
   channels: () => api.get<ReleaseChannels>('/aidlc-release-channels'),
+  // Cached channels read for the intent pages (see sharedChannels above).
+  sharedChannels,
+  invalidateSharedChannels,
   // Move a channel pointer (platform-admin, CAS). `expectedRevision: null` is
   // the explicit "the pointer does not exist yet" assertion.
   setChannel: (channel: ReleaseChannelName, releaseId: string, expectedRevision: number | null) =>
-    api.put<{ channel: ReleaseChannelPointer }>(
-      `/aidlc-release-channels/${encodeURIComponent(channel)}`,
-      {
-        releaseId,
-        expectedRevision,
-      },
-    ),
+    api
+      .put<{ channel: ReleaseChannelPointer }>(
+        `/aidlc-release-channels/${encodeURIComponent(channel)}`,
+        {
+          releaseId,
+          expectedRevision,
+        },
+      )
+      .finally(invalidateSharedChannels),
   // Clear a channel pointer entirely (platform-admin, CAS on the pointer's
   // current revision; a stale value 409s).
   clearChannel: (channel: ReleaseChannelName, expectedRevision: number) =>
-    api.delete(`/aidlc-release-channels/${encodeURIComponent(channel)}`, { expectedRevision }),
+    api
+      .delete(`/aidlc-release-channels/${encodeURIComponent(channel)}`, { expectedRevision })
+      .finally(invalidateSharedChannels),
   profiles: () => api.get<{ profiles: RegistrableProfile[] }>('/aidlc-release-profiles'),
 };

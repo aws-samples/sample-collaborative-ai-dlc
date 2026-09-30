@@ -15,7 +15,12 @@ vi.mock('./api', () => ({
   },
 }));
 
-import { aidlcReleasesService, isReleaseSelectable, type AidlcRelease } from './aidlcReleases';
+import {
+  aidlcReleasesService,
+  isReleaseSelectable,
+  SHARED_CHANNELS_TTL_MS,
+  type AidlcRelease,
+} from './aidlcReleases';
 
 const release = (over: Partial<AidlcRelease> = {}): AidlcRelease => ({
   releaseId: 'aidlc:abc1234def',
@@ -94,6 +99,60 @@ describe('aidlcReleasesService request paths', () => {
   it('clears a channel pointer via DELETE with the CAS revision body', async () => {
     await aidlcReleasesService.clearChannel('stable', 4);
     expect(del).toHaveBeenCalledWith('/aidlc-release-channels/stable', { expectedRevision: 4 });
+  });
+});
+
+describe('aidlcReleasesService.sharedChannels', () => {
+  const channels = { stable: null, candidate: null, preview: null, pinningEnabled: false };
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    aidlcReleasesService.invalidateSharedChannels();
+    get.mockReset().mockResolvedValue(channels);
+    put.mockReset().mockResolvedValue({});
+    del.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('serves every caller within the TTL from one request', async () => {
+    const [first, second] = await Promise.all([
+      aidlcReleasesService.sharedChannels(),
+      aidlcReleasesService.sharedChannels(),
+    ]);
+    const third = await aidlcReleasesService.sharedChannels();
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith('/aidlc-release-channels');
+    expect(first).toBe(channels);
+    expect(second).toBe(channels);
+    expect(third).toBe(channels);
+  });
+
+  it('does not cache a failed lookup', async () => {
+    get.mockRejectedValueOnce(new Error('offline'));
+    await expect(aidlcReleasesService.sharedChannels()).rejects.toThrow('offline');
+
+    await expect(aidlcReleasesService.sharedChannels()).resolves.toBe(channels);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('refetches once the TTL has passed', async () => {
+    vi.useFakeTimers();
+    await aidlcReleasesService.sharedChannels();
+    vi.advanceTimersByTime(SHARED_CHANNELS_TTL_MS + 1);
+    await aidlcReleasesService.sharedChannels();
+
+    expect(get).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('drops the cached lookup after a channel pointer moves or is cleared', async () => {
+    await aidlcReleasesService.sharedChannels();
+    await aidlcReleasesService.setChannel('stable', 'aidlc:abc1234def', 1);
+    await aidlcReleasesService.sharedChannels();
+    await aidlcReleasesService.clearChannel('stable', 2);
+    await aidlcReleasesService.sharedChannels();
+
+    expect(get).toHaveBeenCalledTimes(3);
   });
 });
 

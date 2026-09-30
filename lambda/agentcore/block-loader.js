@@ -249,7 +249,21 @@ const releaseClosure = (methodologyRelease) =>
 const loadVerifiedReleaseObject = async ({ ref, methodologyRelease, label }) => {
   const s3Key = ref?.s3Key;
   if (!s3Key) return '';
-  const closure = await releaseClosure(methodologyRelease);
+  // The closure read goes through readReleaseManifest / readClosureCatalog,
+  // which rethrow raw S3 errors and JSON SyntaxErrors. Those are just as much
+  // "could not read the release" as a failed object fetch, so they get the same
+  // typed code; typed resolver errors keep their own.
+  let closure;
+  try {
+    closure = await releaseClosure(methodologyRelease);
+  } catch (error) {
+    if (['ReleaseResolverError', 'AidlcReleaseError'].includes(error?.name)) throw error;
+    throw new ReleaseResolverError(
+      'release_object_unreadable',
+      `block-loader: the closure for release ${methodologyRelease?.releaseId ?? 'unknown'} could not be read while loading ${label} object ${s3Key}`,
+      { cause: error, details: { s3Key, label } },
+    );
+  }
   const expected = closure.objectDigests?.get?.(s3Key) ?? ref.sha256 ?? null;
   if (!expected) {
     throw new ReleaseResolverError(

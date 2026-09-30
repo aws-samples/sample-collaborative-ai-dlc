@@ -2,9 +2,8 @@
 //
 // The workflows Lambda serves the compiled/preview views for an existing
 // intent, which means it has to know which AI-DLC release that intent is
-// pinned to. It cannot answer that itself: it is deliberately outside the VPC,
-// so it cannot query Neptune to check that the caller is a member of the
-// intent's project.
+// pinned to. It cannot answer that itself: its role has no Neptune access, so
+// it cannot check that the caller is a member of the intent's project.
 //
 // This function is that one read, and nothing else. It takes an already
 // authenticated subject, verifies project membership in Neptune, verifies the

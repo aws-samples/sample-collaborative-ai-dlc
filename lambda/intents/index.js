@@ -101,6 +101,7 @@ import {
   resolveMethodologyLibrary,
 } from '../shared/release-resolver.js';
 import {
+  ReleaseRegistryError,
   assertReleaseCapabilitiesHonoured,
   isReleaseRegistryError,
   releasePinFromRecord,
@@ -145,6 +146,16 @@ const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
 const logger = new Logger({ persistentKeys: { component: 'intents' } });
 const GATE_OVERRIDE_REASON_MAX = 2000;
+
+// The only registry answers that mean "this deployment ref has no release a new
+// intent may auto-pin". A capability record that could not be verified is not
+// one of them: it is a failed lookup, not a negative answer.
+const isAutoPinIneligible = (error) =>
+  isReleaseRegistryError(error) &&
+  error.details?.verificationError !== true &&
+  ['release_not_found', 'release_not_selectable', 'release_capability_unhandled'].includes(
+    error.code,
+  );
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
@@ -5276,9 +5287,12 @@ export const handler = async (event, context) => {
       });
       // A stable channel is an implicit default, so an overlay it cannot apply
       // must degrade the way the no-channel path degrades rather than blocking
-      // every create in the space. An explicitly requested release stays
-      // strict. The base release is verified first, so a corrupt closure is
-      // never mistaken for an incompatible user fork.
+      // every create in the space: the intent continues as if no channel were
+      // set, so it may still auto-pin the deployment-ref release below. An
+      // explicitly requested release stays strict. The base release is
+      // verified first, so a corrupt closure is never mistaken for an
+      // incompatible user fork.
+      let skippedStableReleaseId = null;
       if (
         !planCheck.valid &&
         selectedReleasePin &&
@@ -5298,10 +5312,14 @@ export const handler = async (event, context) => {
           bucket: ARTIFACTS_BUCKET(),
         });
         if (baseReleasePlan.valid) {
-          logger.warn('Stable AI-DLC release is incompatible with the user overlay', {
-            releaseId: selectedReleasePin.releaseId,
-            errors: planCheck.errors ?? [],
-          });
+          logger.warn(
+            'Stable AI-DLC release is incompatible with the user overlay; falling back to the deployment ref',
+            {
+              releaseId: selectedReleasePin.releaseId,
+              errors: planCheck.errors ?? [],
+            },
+          );
+          skippedStableReleaseId = selectedReleasePin.releaseId;
           selectedReleasePin = null;
           selectedReleaseOptions = {};
           planCheck = await loadExecutionPlan({
@@ -5364,28 +5382,59 @@ export const handler = async (event, context) => {
         methodologyRelease = selectedReleasePin;
         aidlcRepoRef = selectedRelease.sourceSha;
       } else if (AIDLC_RELEASE_PINNING() === 'on' && aidlcRepoRef && ARTIFACTS_BUCKET()) {
+        // The registry decides eligibility, so it is asked first. The manifest is
+        // read only once a row exists: the role has no s3:ListBucket, so a GET
+        // for a ref that was never imported answers 403 AccessDenied, which is
+        // indistinguishable from a real permissions failure.
+        let eligibleRelease = null;
+        let ineligibleCode = null;
         try {
-          const manifest = await readReleaseManifest({
-            s3,
-            bucket: ARTIFACTS_BUCKET(),
-            sha: aidlcRepoRef,
-            importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-          });
-          if (manifest) {
+          const deploymentProfile = profileFor(aidlcRepoRef);
+          if (deploymentProfile?.upstreamRef === aidlcRepoRef) {
             // A published closure is evidence, not authorization. Only pin it
             // when the registry has explicitly made this exact closure visible
             // and selectable and its recorded authored behavior is still
             // honoured by this runtime.
-            const eligibleRelease = await resolveSelectableRelease({
+            eligibleRelease = await resolveSelectableRelease({
               ddb,
               tableName: BLOCKS_TABLE(),
-              releaseId: manifest.releaseId,
+              releaseId: deploymentProfile.releaseId,
             });
             await assertReleaseCapabilitiesHonoured({
               release: eligibleRelease,
               s3,
               bucket: ARTIFACTS_BUCKET(),
             });
+          }
+        } catch (error) {
+          // Only a genuine "not registered / not eligible" answer may fall back
+          // to an unpinned intent. A throttled registry read or an unverifiable
+          // capability record means the lookup could not be completed, and
+          // downgrading that to "does not exist" would silently unpin intents.
+          if (!isAutoPinIneligible(error)) {
+            logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
+            return response(503, {
+              error: 'The published AI-DLC release could not be resolved',
+              code: 'release_resolution_failed',
+            });
+          }
+          ineligibleCode = error.code;
+          eligibleRelease = null;
+        }
+        if (eligibleRelease) {
+          try {
+            const manifest = await readReleaseManifest({
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+              sha: aidlcRepoRef,
+              importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+            });
+            if (!manifest) {
+              throw new ReleaseRegistryError(
+                'release_not_published',
+                `The registered release ${eligibleRelease.releaseId} has no published manifest`,
+              );
+            }
             // AUTO-PIN. Everything above was validated against the SYSTEM
             // DynamoDB library, which is NOT what a pinned intent will run.
             // Re-resolve the scope vocabulary and the plan against the closure
@@ -5396,9 +5445,14 @@ export const handler = async (event, context) => {
             // this path must never produce.
             const candidatePin = methodologyReleasePinFromManifest(manifest);
             const registeredPin = releasePinFromRecord(eligibleRelease);
-            if (Object.keys(candidatePin).some((key) => candidatePin[key] !== registeredPin[key])) {
-              throw new Error(
+            const skewedFields = Object.keys(candidatePin).filter(
+              (key) => candidatePin[key] !== registeredPin[key],
+            );
+            if (skewedFields.length > 0) {
+              throw new ReleaseRegistryError(
+                'release_registry_skew',
                 'The deployment-ref closure does not match its eligible registry row',
+                { details: { releaseId: eligibleRelease.releaseId, fields: skewedFields } },
               );
             }
             // Scope discovery maps a permanent resolution failure to an empty
@@ -5444,6 +5498,12 @@ export const handler = async (event, context) => {
               methodologyRelease = candidatePin;
               methodologyPins = releasePlan.methodologyPins;
               workflowVersion = releasePlan.workflowVersion ?? workflowVersion;
+              if (skippedStableReleaseId) {
+                logger.info(
+                  'Stable AI-DLC release was skipped; intent auto-pinned to the deployment-ref release',
+                  { releaseId: candidatePin.releaseId, skippedReleaseId: skippedStableReleaseId },
+                );
+              }
             } else if (
               (releasePlan.errors ?? []).some((error) =>
                 String(error.code ?? '').startsWith('release_'),
@@ -5464,38 +5524,34 @@ export const handler = async (event, context) => {
                 },
               );
             }
-          } else {
-            logger.warn('No published AI-DLC release for the resolved ref; intent stays unpinned', {
-              aidlcRepoRef,
-              importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-            });
+          } catch (error) {
+            // A row and a manifest that describe different closures of the same
+            // release mean a re-import under a new importer revision is only
+            // half done. Both closures are readable, so this is not an integrity
+            // failure: the intent stays unpinned until the registry catches up.
+            if (isReleaseRegistryError(error) && error.code === 'release_registry_skew') {
+              logger.warn(
+                'Deployment-ref AI-DLC release does not match its registry row; intent stays unpinned',
+                { aidlcRepoRef, code: error.code, ...error.details },
+              );
+            } else {
+              // Otherwise the registry says this closure is eligible, so any
+              // failure to read or verify it (a denied or corrupt manifest, a
+              // missing catalog) is an integrity problem, never a reason to
+              // quietly unpin the intent.
+              logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
+              return response(503, {
+                error: 'The published AI-DLC release could not be resolved',
+                code: 'release_resolution_failed',
+              });
+            }
           }
-        } catch (error) {
-          // Only a genuine "not published / not eligible" answer may fall back
-          // to an unpinned intent. Everything else (a denied or corrupt
-          // manifest, a throttled registry read) means the lookup could not be
-          // completed, and downgrading that to "does not exist" would silently
-          // unpin intents on a permissions regression.
-          if (
-            isReleaseRegistryError(error) &&
-            error.details?.verificationError !== true &&
-            [
-              'release_not_found',
-              'release_not_selectable',
-              'release_capability_unhandled',
-            ].includes(error.code)
-          ) {
-            logger.warn('Deployment-ref AI-DLC release is not eligible; intent stays unpinned', {
-              aidlcRepoRef,
-              code: error.code,
-            });
-          } else {
-            logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
-            return response(503, {
-              error: 'The published AI-DLC release could not be resolved',
-              code: 'release_resolution_failed',
-            });
-          }
+        } else {
+          logger.warn('No eligible AI-DLC release for the resolved ref; intent stays unpinned', {
+            aidlcRepoRef,
+            importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+            code: ineligibleCode,
+          });
         }
       }
       // Optional per-repo base-branch override (see validateBaseBranches) —
