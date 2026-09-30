@@ -8301,6 +8301,40 @@ describe('AI-DLC per-intent release selection', () => {
     expect(orchestratorInvokes()).toHaveLength(0);
   });
 
+  it.each([false, true])(
+    'an overlay the stable release cannot apply: explicit selection=%s stays strict',
+    async (explicit) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1('feature');
+      seedRegistryRecord(bundleA, 'current-stable');
+      seedStableChannel(pinA.releaseId);
+      seedDefaultAgentOverride(bundleA);
+      // The live user row still resolves on the legacy path, but the immutable
+      // snapshot the release overlay needs is gone.
+      procStore.delete(keyOf('BLOCK#default#AGENT#aidlc-architect-agent', 'V#7'));
+      const before = structuredClone([...procStore]);
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+        ...(explicit ? { methodologyReleaseId: pinA.releaseId } : {}),
+      });
+
+      if (explicit) {
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).errors).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'user_block_missing' })]),
+        );
+        expect([...procStore]).toEqual(before);
+      } else {
+        expect(res.statusCode).toBe(201);
+        expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+      }
+    },
+  );
+
   it('never auto-pins while the flag is off', async () => {
     vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');
     const sub = `u-${randomUUID()}`;

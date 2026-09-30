@@ -69,6 +69,12 @@ certified, and its authored behavior passes the runtime promotion guard. If the
 release is genuinely not published, not eligible, or authors behavior this build
 cannot honour, the intent is created on the existing unpinned path.
 
+A configured stable channel is an implicit default and degrades the same way. If
+a space has a user block edit the stable release cannot overlay, and the release
+itself resolves cleanly without that overlay, the intent is created unpinned
+instead of failing. An explicitly requested release is strict: it returns the
+resolver errors so the caller sees which override conflicts.
+
 A failure to complete that lookup is treated differently. A denied or corrupt
 manifest, an unreadable closure, or a throttled registry read means the answer
 is unknown rather than "not published", so intent creation returns

@@ -5026,7 +5026,7 @@ export const handler = async (event, context) => {
           throw error;
         }
       }
-      const selectedReleasePin = selectedRelease ? releasePinFromRecord(selectedRelease) : null;
+      let selectedReleasePin = selectedRelease ? releasePinFromRecord(selectedRelease) : null;
       // Allowed, but loud: the intent pins a closure an older importer produced,
       // so it misses every field later mappers learned until an admin upgrades
       // the record (PATCH /aidlc-releases/{releaseId} {importerRevision}).
@@ -5115,7 +5115,7 @@ export const handler = async (event, context) => {
       // Non-fatal `warnings` (scope-shortcut degradations: inputs whose
       // producer is out of scope, sections downgraded to once-per-workflow)
       // are persisted on the intent so the UI can surface the degraded run.
-      const planCheck = await loadExecutionPlan({
+      let planCheck = await loadExecutionPlan({
         ddb,
         tableName: BLOCKS_TABLE(),
         workflowId,
@@ -5125,6 +5125,47 @@ export const handler = async (event, context) => {
         ...(composedGrid ? { composedGrid } : {}),
         ...selectedReleaseOptions,
       });
+      // A stable channel is an implicit default, so an overlay it cannot apply
+      // must degrade the way the no-channel path degrades rather than blocking
+      // every create in the space. An explicitly requested release stays
+      // strict. The base release is verified first, so a corrupt closure is
+      // never mistaken for an incompatible user fork.
+      if (
+        !planCheck.valid &&
+        selectedReleasePin &&
+        !requestedReleaseId &&
+        selectedReleaseOptions.methodologyPins
+      ) {
+        const baseReleasePlan = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId,
+          workflowVersion,
+          scope,
+          ...(skipStageIds ? { skipStageIds } : {}),
+          ...(composedGrid ? { composedGrid } : {}),
+          methodologyRelease: selectedReleasePin,
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+        });
+        if (baseReleasePlan.valid) {
+          logger.warn('Stable AI-DLC release is incompatible with the user overlay', {
+            releaseId: selectedReleasePin.releaseId,
+            errors: planCheck.errors ?? [],
+          });
+          selectedReleasePin = null;
+          selectedReleaseOptions = {};
+          planCheck = await loadExecutionPlan({
+            ddb,
+            tableName: BLOCKS_TABLE(),
+            workflowId,
+            workflowVersion,
+            scope,
+            ...(skipStageIds ? { skipStageIds } : {}),
+            ...(composedGrid ? { composedGrid } : {}),
+          });
+        }
+      }
       if (!planCheck.valid) {
         return response(400, {
           error: composedGrid
