@@ -91,7 +91,7 @@ export default function NewIntentPage() {
   useEffect(() => {
     let cancelled = false;
     aidlcReleasesService
-      .channels()
+      .sharedChannels()
       .then((channels) => {
         if (cancelled) return;
         const enabled = channels.pinningEnabled === true;

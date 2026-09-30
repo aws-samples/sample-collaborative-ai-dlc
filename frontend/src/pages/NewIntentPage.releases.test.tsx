@@ -35,7 +35,7 @@ const listChannels = vi.fn();
 vi.mock('@/services/aidlcReleases', () => ({
   aidlcReleasesService: {
     list: (...a: unknown[]) => listReleases(...a),
-    channels: (...a: unknown[]) => listChannels(...a),
+    sharedChannels: (...a: unknown[]) => listChannels(...a),
   },
 }));
 
