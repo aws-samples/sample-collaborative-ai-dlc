@@ -209,8 +209,9 @@ const resultFromScript = ({ exitCode, stdout }) => {
 
 // A pinned sensor whose script could not be verified or read has not produced a
 // verdict at all, so its severity does not apply — the check is missing, which is
-// the drift the release pin exists to prevent.
-const isReleaseDependencyError = (error) =>
+// the drift the release pin exists to prevent. run-stage applies the same test to
+// the persona and knowledge bodies its ensemble sessions read.
+export const isReleaseDependencyError = (error) =>
   ['ReleaseResolverError', 'AidlcReleaseError'].includes(error?.name) &&
   (String(error.code ?? '').startsWith('release_') ||
     ['unpinned_user_block', 'user_block_missing'].includes(error.code));
