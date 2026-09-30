@@ -98,6 +98,7 @@ import { profileFor } from '../shared/aidlc-compatibility-profiles.js';
 import {
   loadReleaseClosure,
   methodologyReleasePinFromManifest,
+  resolveMethodologyLibrary,
 } from '../shared/release-resolver.js';
 import {
   assertReleaseCapabilitiesHonoured,
@@ -3313,7 +3314,17 @@ export const handler = async (event, context) => {
               bucket: ARTIFACTS_BUCKET(),
               methodologyRelease: meta.methodologyRelease,
             })
-              .then((closure) => closure.blocksByType.SCOPE ?? [])
+              .then((closure) =>
+                resolveMethodologyLibrary({
+                  closure,
+                  ddb,
+                  tableName: BLOCKS_TABLE(),
+                  workflowId: meta.workflowId,
+                  workflowVersion: meta.workflowVersion,
+                  methodologyPins: meta.methodologyPins,
+                }),
+              )
+              .then((resolved) => resolved.blocksByType.SCOPE ?? [])
               .catch(() => [])
           : await listMergedBlocks(ddb, BLOCKS_TABLE(), 'SCOPE').catch(() => []);
         const match = matchScopeByKeywords({ text: intentText, scopes: scopeBlocks });

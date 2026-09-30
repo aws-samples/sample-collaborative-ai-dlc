@@ -8163,6 +8163,56 @@ describe('AI-DLC per-intent release selection', () => {
     expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
   });
 
+  it("matches the intent's own SCOPE keywords in the deterministic compose pre-pass", async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    const pk = 'BLOCK#default#SCOPE#feature';
+    const scope = {
+      ...bundleA.catalog.blocks.SCOPE.find((block) => block.id === 'feature'),
+      pk,
+      sk: 'V#7',
+      id: 'feature',
+      blockId: 'feature',
+      tenantId: 'default',
+      version: 7,
+      keywords: ['isolated-fork-keyword'],
+    };
+    procStore.set(keyOf(pk, 'V#7'), scope);
+    procStore.set(keyOf(pk, 'V#latest'), {
+      ...scope,
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#default#SCOPE',
+      GSI1SK: 'feature',
+    });
+    const created = await createIntent(sub, projectId, {
+      title: 'isolated-fork-keyword',
+      prompt: 'An isolated keyword',
+      scope: 'feature',
+      methodologyReleaseId: pinA.releaseId,
+    });
+    expect(created.statusCode).toBe(201);
+    const intentId = JSON.parse(created.body).id;
+    // A later edit to the live row must not reach this already-created intent.
+    procStore.set(keyOf(pk, 'V#latest'), { ...scope, keywords: ['later-keyword'] });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/compose`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify({ mode: 'front', agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body)).toMatchObject({
+      source: 'match',
+      proposal: { scope: 'feature' },
+    });
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+  });
+
   it('never auto-pins while the flag is off', async () => {
     vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');
     const sub = `u-${randomUUID()}`;
