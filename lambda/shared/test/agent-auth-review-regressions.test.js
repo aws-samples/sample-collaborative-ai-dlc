@@ -185,6 +185,35 @@ describe('provider and scope isolation', () => {
     expect(tableName).toBeTruthy();
   });
 
+  it('reports re-creating an existing execution as ConditionalCheckFailedException', async () => {
+    const tableName = await createAuthTable('auth-review');
+    const store = createProcessStore({ ddb, tableName });
+    // The intents Lambda writes the DRAFT row; init-ws seeds it again and relies on this name.
+    await store.createExecution({ executionId: 'e1', projectId: 'p1', status: 'DRAFT' });
+    await expect(
+      store.createExecution({ executionId: 'e1', projectId: 'p1', status: 'CREATED' }),
+    ).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+    expect(await store.getExecution('e1', { consistentRead: true })).toMatchObject({
+      status: 'DRAFT',
+    });
+  });
+
+  it('reports a stale binding update as ConditionalCheckFailedException', async () => {
+    const tableName = await createAuthTable('auth-review');
+    const store = createProcessStore({ ddb, tableName });
+    await store.createExecution({ executionId: 'e1', projectId: 'p1', status: 'CREATED' });
+    // The start route maps this name to a 409 when a concurrent start won the race.
+    await expect(
+      store.updateExecution({
+        executionId: 'e1',
+        projectId: 'p1',
+        status: 'CREATED',
+        fromStatus: 'DRAFT',
+        credentialBinding: { provider: 'bedrock', source: 'platform' },
+      }),
+    ).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+  });
+
   it('scopes space queries at their partition and atomically indexes new and newly bound executions', async () => {
     const { repository, service, recordingDdb, tableName, calls } = await setup();
     const store = createProcessStore({ ddb: recordingDdb, tableName });

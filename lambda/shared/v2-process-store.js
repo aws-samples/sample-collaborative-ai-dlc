@@ -93,6 +93,19 @@ const queryAll = async (ddb, input) => {
   return items;
 };
 
+// META writes that also index the credential binding run as a transaction,
+// so a failed META condition arrives as TransactionCanceledException. Callers
+// expect the single-item ConditionalCheckFailedException, so translate it
+// when the META write (always the first item) was the one that failed.
+const metaConditionFailure = (error, message) =>
+  error?.name === 'TransactionCanceledException' &&
+  error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed'
+    ? Object.assign(new Error(message), {
+        name: 'ConditionalCheckFailedException',
+        cause: error,
+      })
+    : error;
+
 const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   if (!ddb) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
   const table = () => tableName ?? process.env.V2_PROCESS_TABLE;
@@ -100,25 +113,30 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   const nextId = () => (ids ? ids() : randomUUID());
 
   // Create the execution META row. Conditional so a re-invoke (same session)
-  // never clobbers an in-flight execution. `init-ws` calls this once.
+  // never clobbers an in-flight execution. `init-ws` calls this once and
+  // treats an existing row (ConditionalCheckFailedException) as idempotent.
   const createExecution = async (input) => {
     const startedAt = input.startedAt ?? now();
     const item = buildExecutionMeta({ ...input, startedAt });
-    await ddb.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Put: {
-              TableName: table(),
-              Item: item,
-              ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: table(),
+                Item: item,
+                ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+              },
             },
-          },
-          ...inventoryReferenceWrites(table(), item),
-          ...scopeActivityWrites(table(), [item], { includePlatform: true }),
-        ],
-      }),
-    );
+            ...inventoryReferenceWrites(table(), item),
+            ...scopeActivityWrites(table(), [item], { includePlatform: true }),
+          ],
+        }),
+      );
+    } catch (error) {
+      throw metaConditionFailure(error, `Execution ${item.executionId} already exists`);
+    }
     return item;
   };
 
@@ -537,15 +555,19 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (credentialBinding !== undefined) {
       const row = { ...executionMetaKey(executionId), projectId, credentialBinding };
       const { ReturnValues: _returnValues, ...write } = params;
-      await ddb.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            { Update: write },
-            ...inventoryReferenceWrites(table(), row),
-            ...scopeActivityWrites(table(), [row], { includePlatform: true }),
-          ],
-        }),
-      );
+      try {
+        await ddb.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              { Update: write },
+              ...inventoryReferenceWrites(table(), row),
+              ...scopeActivityWrites(table(), [row], { includePlatform: true }),
+            ],
+          }),
+        );
+      } catch (error) {
+        throw metaConditionFailure(error, `Execution ${executionId} changed`);
+      }
       return getExecution(executionId, { consistentRead: true });
     }
     const { Attributes } = await ddb.send(new UpdateCommand(params));

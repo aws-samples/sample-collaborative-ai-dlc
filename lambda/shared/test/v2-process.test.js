@@ -212,6 +212,41 @@ describe('createProcessStore', () => {
     expect(call.ConditionExpression).toContain('attribute_not_exists(pk)');
   });
 
+  it('createExecution reports an existing META row as ConditionalCheckFailedException', async () => {
+    ddb.on(TransactWriteCommand).rejects(
+      Object.assign(new Error('Transaction cancelled'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [
+          { Code: 'ConditionalCheckFailed' },
+          { Code: 'None' },
+          { Code: 'None' },
+        ],
+      }),
+    );
+    const input = {
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      status: 'CREATED',
+      workflowId: 'w',
+      workflowVersion: 1,
+    };
+    await expect(store.createExecution(input)).rejects.toMatchObject({
+      name: 'ConditionalCheckFailedException',
+    });
+
+    ddb.reset();
+    ddb.on(TransactWriteCommand).rejects(
+      Object.assign(new Error('Transaction cancelled'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'None' }, { Code: 'ConditionalCheckFailed' }],
+      }),
+    );
+    await expect(store.createExecution(input)).rejects.toMatchObject({
+      name: 'TransactionCanceledException',
+    });
+  });
+
   it('opts into strongly consistent META reads only when requested', async () => {
     ddb.on(GetCommand).resolves({ Item: { executionId: 'e1' } });
 
