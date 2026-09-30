@@ -4284,6 +4284,7 @@ describe('POST /gates/{humanTaskId}/answer', () => {
       'Gate answer was recorded, but the durable callback could not be completed. Retry after refreshing the intent.',
     );
     expect(procStore.get(metaKey).resumeRequired).toBeUndefined();
+    expect(JSON.parse(res.body)).not.toHaveProperty('resumeRequired');
 
     const detail = await handler({
       httpMethod: 'GET',
@@ -8420,6 +8421,119 @@ describe('AI-DLC per-intent release selection', () => {
         skippedReleaseId: pinB.releaseId,
       }),
     );
+  });
+
+  it('refuses the create when the deployment-ref release capabilities cannot be verified', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    // No recorded gaps, so the capability check has to read the closure.
+    seedRegistryRecord(bundleA, 'current-stable', { fidelityGaps: undefined });
+    s3Mock
+      .on(GetObjectCommand, { Bucket: 'artifacts-test', Key: pinA.manifestKey })
+      .rejects(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+    expect([...procStore]).toEqual(before);
+  });
+
+  it('refuses the create when the deployment-ref release plan fails with a release error', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    planSpy.loadExecutionPlan.mockImplementation(async (args) =>
+      args.methodologyRelease
+        ? { valid: false, errors: [{ code: 'release_closure_mismatch' }] }
+        : planSpy.actual(args),
+    );
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+    expect([...procStore]).toEqual(before);
+  });
+
+  it('keeps the overlay error when the stable release is invalid without the overlay too', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    seedStableChannel(pinA.releaseId);
+    seedDefaultAgentOverride(bundleA);
+    planSpy.loadExecutionPlan.mockImplementation(async (args) => {
+      if (!args.methodologyRelease) return planSpy.actual(args);
+      return args.methodologyPins
+        ? { valid: false, errors: [{ code: 'user_block_missing' }] }
+        : { valid: false, errors: [{ code: 'stage_not_found' }] };
+    });
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).errors).toEqual([{ code: 'user_block_missing' }]);
+    expect([...procStore]).toEqual(before);
+  });
+
+  it('hands the compose pre-pass to the composer agent when the pinned closure is unreadable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    const created = await createIntent(sub, projectId, {
+      title: 'feature',
+      prompt: 'Add a new feature',
+      scope: 'feature',
+      methodologyReleaseId: pinA.releaseId,
+    });
+    expect(created.statusCode).toBe(201);
+    const intentId = JSON.parse(created.body).id;
+    releaseStore.delete(pinA.catalogKey);
+    releaseResolverTest.releaseClosureCache.clear();
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+
+    let res;
+    try {
+      res = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intentId}/compose`,
+        pathParameters: { projectId, intentId },
+        body: JSON.stringify({ mode: 'front', agentCli: 'kiro' }),
+        ...claims(sub),
+      });
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).source).toBe('llm');
+    const composeRows = [...procStore.values()].filter(
+      (row) => row.pk === `EXEC#${intentId}` && String(row.sk).startsWith('COMPOSE#'),
+    );
+    expect(composeRows.map((row) => row.source)).not.toContain('match');
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand).length).toBeGreaterThan(0);
   });
 
   it('never auto-pins while the flag is off', async () => {
