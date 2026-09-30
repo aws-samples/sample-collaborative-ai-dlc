@@ -5,6 +5,7 @@
 // DynamoDB rows and the mutable aidlc-runtime/ prefix both hold release B.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import {
   listReleaseBlocks,
   loadBlockBody,
@@ -337,6 +338,18 @@ describe('loadBlockBody / loadBlockScript — release-mode integrity', () => {
     fixtures.store.delete(stage.bodyRef.s3Key);
 
     await expect(loadBlockBody(stage, { methodologyRelease: pinA })).rejects.toThrow();
+  });
+
+  it('reports an unreadable release object as a typed release failure', async () => {
+    const sensor = sensorBlock();
+    fixtures.s3Mock
+      .on(GetObjectCommand, { Bucket: BUCKET, Key: sensor.scriptRef.s3Key })
+      .rejects(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+
+    await expect(loadBlockScript(sensor, { methodologyRelease: pinA })).rejects.toMatchObject({
+      name: 'ReleaseResolverError',
+      code: 'release_object_unreadable',
+    });
   });
 
   it('refuses a block whose ref carries no digest and which the closure does not list', async () => {

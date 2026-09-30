@@ -65,8 +65,22 @@ fallback.
 When pinning is enabled but no stable channel is configured, intent creation may
 still discover a published closure from the deployment ref. It pins that closure
 only if the matching registry record is registered, visible, selectable or
-certified, and its authored behavior passes the runtime promotion guard. If any
-check fails, the intent is created on the existing unpinned path.
+certified, and its authored behavior passes the runtime promotion guard. If the
+release is genuinely not published, not eligible, or authors behavior this build
+cannot honour, the intent is created on the existing unpinned path.
+
+A configured stable channel is an implicit default and degrades the same way. If
+a space has a user block edit the stable release cannot overlay, and the release
+itself resolves cleanly without that overlay, the intent is created unpinned
+instead of failing. An explicitly requested release is strict: it returns the
+resolver errors so the caller sees which override conflicts.
+
+A failure to complete that lookup is treated differently. A denied or corrupt
+manifest, an unreadable closure, or a throttled registry read means the answer
+is unknown rather than "not published", so intent creation returns
+`503 release_resolution_failed` and writes nothing. Downgrading an unreadable
+manifest to "does not exist" would let a permissions regression silently unpin
+every new intent.
 
 Existing intents are not migrated or repinned. Release-aware compose reads use
 the intent's stored pin, so reopening an intent does not silently change its

@@ -855,6 +855,41 @@ describe('POST /projects/{id}/intents', () => {
     }
   });
 
+  it('refuses PR per unit for a CodeCommit space before creating the intent', async () => {
+    vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/pr-strategy' })
+      .resolves({ Parameter: { Value: 'pr-per-unit' } });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      // Inherit the platform strategy, with a CodeCommit repository.
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'default')
+        .out('HAS_REPO')
+        .property(gremlin.process.cardinality.single, 'provider', 'codecommit')
+        .next();
+      const refused = await createIntent(sub, projectId);
+      expect(refused.statusCode).toBe(409);
+      expect(JSON.parse(refused.body)).toMatchObject({ code: 'PR_STRATEGY_UNSUPPORTED' });
+      const executionsOf = () =>
+        [...procStore.values()].filter((row) => row?.sk === 'META' && row.projectId === projectId);
+      expect(executionsOf()).toHaveLength(0);
+
+      // One PR per intent stays available for the same space.
+      await g
+        .V()
+        .has('Project', 'id', projectId)
+        .property(gremlin.process.cardinality.single, 'pr_strategy', 'intent-pr')
+        .next();
+      expect((await createIntent(sub, projectId)).statusCode).toBe(201);
+    } finally {
+      vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', undefined);
+    }
+  });
+
   it('falls back to the prompt slug when there is no title', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -1890,6 +1925,33 @@ describe('unit PR review feedback', () => {
     return { projectId, intent };
   };
 
+  it('refuses a feedback revision on a provider without drafts before any provider call', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { projectId, intent } = await seedActiveReview(sub);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      repoProviders: { 'owner/repo': 'codecommit' },
+    });
+    lambdaMock.resetHistory();
+    const path = `/projects/${projectId}/intents/${intent.id}/units/1/auth/feedback`;
+    for (const httpMethod of ['GET', 'POST']) {
+      const res = await handler({
+        httpMethod,
+        path,
+        pathParameters: { projectId, intentId: intent.id, sectionIndex: '1', unitSlug: 'auth' },
+        ...(httpMethod === 'POST' ? { body: JSON.stringify({ commentIds: ['101'] }) } : {}),
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toMatchObject({ code: 'PR_STRATEGY_UNSUPPORTED' });
+    }
+    const sourceControlCalls = lambdaMock
+      .commandCalls(InvokeCommand)
+      .filter((call) => call.args[0].input.FunctionName === 'source-control-test');
+    expect(sourceControlCalls).toHaveLength(0);
+  });
+
   it('refetches selectable comments and queues an idempotent versioned batch', async () => {
     sourceControlReviewComments = [
       {
@@ -2549,6 +2611,38 @@ describe('POST /compose — composer sessions', () => {
       });
       expect(typeof payload.agentCredentialGrant).toBe('string');
       expect(payload.prompt).toContain('Do something ambiguous');
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
+  it('does not forward methodology pins for an intent with no release pin', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+      });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedComposeFixtures();
+      const intent = JSON.parse(
+        (await createIntent(sub, projectId, { title: 'I', prompt: 'Do something ambiguous' })).body,
+      );
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      procStore.set(metaKey, {
+        ...procStore.get(metaKey),
+        methodologyPins: {
+          AGENT: { 'aidlc-composer-agent': { tenantId: 'default', version: 7 } },
+        },
+      });
+
+      const res = await composeReq(sub, projectId, intent.id);
+
+      expect(res.statusCode).toBe(202);
+      const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      const payload = JSON.parse(Buffer.from(call.payload).toString());
+      expect(payload).not.toHaveProperty('methodologyRelease');
+      expect(payload).not.toHaveProperty('methodologyPins');
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;
     }
@@ -3438,58 +3532,6 @@ describe('GET list + detail', () => {
     expect(dto.intent.id).toBe(intent.id);
     expect(dto.stages).toEqual([]);
     expect(dto.artifacts).toEqual([]);
-  });
-
-  it('returns a minimal release-preview pin only to project members', async () => {
-    const sub = `u-${randomUUID()}`;
-    const projectId = await seedV2Project(sub);
-    const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    const methodologyRelease = {
-      releaseId: 'aidlc:release-sha',
-      sourceSha: 'release-sha',
-      importerRevision: 2,
-      closureDigest: 'closure-digest',
-      catalogKey: 'catalog.json',
-      manifestKey: 'manifest.json',
-    };
-    const methodologyPins = {
-      AGENT: { 'aidlc-architect-agent': { tenantId: 'default', version: 7 } },
-    };
-    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
-    procStore.set(metaKey, {
-      ...procStore.get(metaKey),
-      methodologyRelease,
-      methodologyPins,
-    });
-
-    const detail = await handler({
-      httpMethod: 'GET',
-      path: `/projects/${projectId}/intents/${intent.id}`,
-      pathParameters: { projectId, intentId: intent.id },
-      queryStringParameters: { view: 'workflow-preview' },
-      ...claims(sub),
-    });
-
-    expect(detail.statusCode).toBe(200);
-    expect(JSON.parse(detail.body)).toEqual({
-      workflowIntent: {
-        id: intent.id,
-        projectId,
-        workflowId: intent.workflowId,
-        workflowVersion: intent.workflowVersion,
-        methodologyRelease,
-        methodologyPins,
-      },
-    });
-
-    const denied = await handler({
-      httpMethod: 'GET',
-      path: `/projects/${projectId}/intents/${intent.id}`,
-      pathParameters: { projectId, intentId: intent.id },
-      queryStringParameters: { view: 'workflow-preview' },
-      ...claims(`nonmember-${randomUUID()}`),
-    });
-    expect(denied.statusCode).toBe(403);
   });
 
   it('returns the full assembled DTO shape with cliModels/parkReleaseSeconds', async () => {
@@ -8102,6 +8144,146 @@ describe('AI-DLC per-intent release selection', () => {
     expect(res.statusCode).toBe(201);
     expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toBeNull();
   });
+
+  it("matches the intent's own SCOPE keywords in the deterministic compose pre-pass", async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    const pk = 'BLOCK#default#SCOPE#feature';
+    const scope = {
+      ...bundleA.catalog.blocks.SCOPE.find((block) => block.id === 'feature'),
+      pk,
+      sk: 'V#7',
+      id: 'feature',
+      blockId: 'feature',
+      tenantId: 'default',
+      version: 7,
+      keywords: ['isolated-fork-keyword'],
+    };
+    procStore.set(keyOf(pk, 'V#7'), scope);
+    procStore.set(keyOf(pk, 'V#latest'), {
+      ...scope,
+      sk: 'V#latest',
+      GSI1PK: 'TENANT#default#SCOPE',
+      GSI1SK: 'feature',
+    });
+    const created = await createIntent(sub, projectId, {
+      title: 'isolated-fork-keyword',
+      prompt: 'An isolated keyword',
+      scope: 'feature',
+      methodologyReleaseId: pinA.releaseId,
+    });
+    expect(created.statusCode).toBe(201);
+    const intentId = JSON.parse(created.body).id;
+    // A later edit to the live row must not reach this already-created intent.
+    procStore.set(keyOf(pk, 'V#latest'), { ...scope, keywords: ['later-keyword'] });
+
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/compose`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify({ mode: 'front', agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body)).toMatchObject({
+      source: 'match',
+      proposal: { scope: 'feature' },
+    });
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+  });
+
+  it.each(['manifest access denied', 'corrupt manifest', 'registry throttled'])(
+    'refuses the create when the auto-pin lookup cannot complete: %s',
+    async (failure) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1('feature');
+      seedRegistryRecord(bundleA, 'current-stable');
+      const before = structuredClone([...procStore]);
+      if (failure === 'manifest access denied') {
+        s3Mock
+          .on(GetObjectCommand, { Bucket: 'artifacts-test', Key: pinA.manifestKey })
+          .rejects(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+      } else if (failure === 'corrupt manifest') {
+        releaseStore.set(pinA.manifestKey, '{');
+      } else {
+        ddbMock
+          .on(GetCommand, {
+            TableName: 'blocks-test',
+            Key: { pk: `AIDLC_RELEASE#${pinA.releaseId}`, sk: 'META' },
+          })
+          .rejects(Object.assign(new Error('throttled'), { name: 'ThrottlingException' }));
+      }
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+      });
+
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+      expect([...procStore]).toEqual(before);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
+
+  it('refuses the create when an eligible release closure is unreadable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    const before = structuredClone([...procStore]);
+    releaseStore.delete(pinA.catalogKey);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+    expect([...procStore]).toEqual(before);
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
+  it.each([false, true])(
+    'an overlay the stable release cannot apply: explicit selection=%s stays strict',
+    async (explicit) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1('feature');
+      seedRegistryRecord(bundleA, 'current-stable');
+      seedStableChannel(pinA.releaseId);
+      seedDefaultAgentOverride(bundleA);
+      // The live user row still resolves on the legacy path, but the immutable
+      // snapshot the release overlay needs is gone.
+      procStore.delete(keyOf('BLOCK#default#AGENT#aidlc-architect-agent', 'V#7'));
+      const before = structuredClone([...procStore]);
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+        ...(explicit ? { methodologyReleaseId: pinA.releaseId } : {}),
+      });
+
+      if (explicit) {
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).errors).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'user_block_missing' })]),
+        );
+        expect([...procStore]).toEqual(before);
+      } else {
+        expect(res.statusCode).toBe(201);
+        expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+      }
+    },
+  );
 
   it('never auto-pins while the flag is off', async () => {
     vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');

@@ -90,16 +90,26 @@ export default function NewIntentPage() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([aidlcReleasesService.list(), aidlcReleasesService.channels()])
-      .then(([{ releases: list }, channels]) => {
+    aidlcReleasesService
+      .channels()
+      .then((channels) => {
         if (cancelled) return;
-        setReleases(list);
         const enabled = channels.pinningEnabled === true;
         setPinningEnabled(enabled);
-        const stable = enabled ? (channels.stable?.releaseId ?? null) : null;
-        const stableOffered = stable && list.some((r) => r.releaseId === stable) ? stable : null;
-        setStableReleaseId(stableOffered);
-        setSelectedReleaseId(stableOffered);
+        if (!enabled) {
+          setReleases([]);
+          setStableReleaseId(null);
+          setSelectedReleaseId(null);
+          return null;
+        }
+        return aidlcReleasesService.list().then(({ releases: list }) => {
+          if (cancelled) return;
+          setReleases(list);
+          const stable = channels.stable?.releaseId ?? null;
+          const stableOffered = stable && list.some((r) => r.releaseId === stable) ? stable : null;
+          setStableReleaseId(stableOffered);
+          setSelectedReleaseId(stableOffered);
+        });
       })
       .catch(() => {
         // Registry unreachable (or pre-#482 backend) — omit the field.

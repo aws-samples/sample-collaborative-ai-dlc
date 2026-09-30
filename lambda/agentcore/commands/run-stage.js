@@ -619,8 +619,8 @@ const summarizeSensorDetail = (detail) => {
 // Run the stage's deterministic sensors. Records a SensorRun verdict +
 // broadcasts an `agent.note` per sensor, and returns
 // `{ held, verdicts }` — `held` is a human-readable reason string when a
-// BLOCKING sensor held the stage (else null), `verdicts` is the raw list the
-// gate plane turns into findings.
+// blocking verdict or a release integrity failure held the stage (else null),
+// `verdicts` is the raw list the gate plane turns into findings.
 // `graph` sensors need a graph-writer; we open the same private graph the rest
 // of run-stage uses (best-effort — an unreachable graph yields INCONCLUSIVE
 // graph verdicts, never a crash).
@@ -3907,8 +3907,9 @@ export const runStage = async (
   // 6. Deterministic sensors, WRITE plane — the verification axis that runs
   // AFTER the agent and BEFORE the reviewer. Graph sensors evaluate the produced
   // artifacts' content in-process; script sensors spawn against the workspace
-  // checkout. Advisory verdicts record a note and never hold; a BLOCKING sensor
-  // that did not PASS fails the stage. `fire_on: gate` sensors are NOT run here
+  // checkout. Advisory verdicts normally record a note without holding;
+  // release-pinned script integrity failures hold regardless of severity, as
+  // does any non-PASS blocking sensor. `fire_on: gate` sensors are NOT run here
   // — the adversarial repair loop below can still rewrite artifacts, so a gate
   // verdict taken now would not be on the bytes the human approves.
   // Best-effort wiring: a sensor subsystem error never masks a successful run.

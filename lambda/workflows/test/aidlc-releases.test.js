@@ -193,7 +193,7 @@ const parse = (res) => ({ status: res.statusCode, body: res.body ? JSON.parse(re
 beforeAll(async () => {
   process.env.BLOCKS_TABLE = BLOCKS_TABLE;
   process.env.ARTIFACTS_BUCKET = ARTIFACTS_BUCKET;
-  process.env.INTENTS_FUNCTION = 'intents-test';
+  process.env.INTENT_PIN_LOOKUP_FUNCTION = 'intent-pin-lookup-test';
   ({ handler } = await import('../index.js'));
 });
 
@@ -1084,28 +1084,25 @@ describe('`?release=` selectability gate for non-admins', () => {
         version: 7,
       });
       lambdaMock.on(InvokeCommand).callsFake((input) => {
-        expect(input.FunctionName).toBe('intents-test');
+        expect(input.FunctionName).toBe('intent-pin-lookup-test');
         const request = JSON.parse(Buffer.from(input.Payload).toString());
-        expect(request).toMatchObject({
-          httpMethod: 'GET',
-          pathParameters: { projectId: 'project-1', intentId: 'intent-1' },
-          queryStringParameters: { view: 'workflow-preview' },
-          requestContext: { authorizer: { claims: { sub: memberClaims.sub } } },
+        expect(request).toEqual({
+          sub: memberClaims.sub,
+          projectId: 'project-1',
+          intentId: 'intent-1',
         });
         return {
           Payload: Buffer.from(
             JSON.stringify({
               statusCode: 200,
-              body: JSON.stringify({
-                workflowIntent: {
-                  id: 'intent-1',
-                  projectId: 'project-1',
-                  workflowId: 'aidlc-v2',
-                  workflowVersion: 1,
-                  methodologyRelease,
-                  methodologyPins,
-                },
-              }),
+              workflowIntent: {
+                id: 'intent-1',
+                projectId: 'project-1',
+                workflowId: 'aidlc-v2',
+                workflowVersion: 1,
+                methodologyRelease,
+                methodologyPins,
+              },
             }),
           ),
         };
@@ -1169,15 +1166,13 @@ describe('`?release=` selectability gate for non-admins', () => {
       Payload: Buffer.from(
         JSON.stringify({
           statusCode: 200,
-          body: JSON.stringify({
-            workflowIntent: {
-              id: 'intent-1',
-              projectId: 'another-project',
-              workflowId: 'aidlc-v2',
-              workflowVersion: 1,
-              methodologyRelease,
-            },
-          }),
+          workflowIntent: {
+            id: 'intent-1',
+            projectId: 'another-project',
+            workflowId: 'aidlc-v2',
+            workflowVersion: 1,
+            methodologyRelease,
+          },
         }),
       ),
     });
@@ -1232,7 +1227,7 @@ describe('`?release=` selectability gate for non-admins', () => {
     ['an invoke rejection', (mock) => mock.rejects(new Error('throttled'))],
     ['an unparseable payload', (mock) => mock.resolves({ Payload: Buffer.from('not json') })],
     [
-      'an unparseable detail body',
+      'a response with no pin projection',
       (mock) =>
         mock.resolves({ Payload: Buffer.from(JSON.stringify({ statusCode: 200, body: '{' })) }),
     ],

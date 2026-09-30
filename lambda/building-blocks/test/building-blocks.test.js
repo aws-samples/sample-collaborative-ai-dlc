@@ -306,6 +306,30 @@ describe('building-blocks handler', () => {
     expect(ok.body.producesKinds).toEqual({ model: ['service'], 'ui-notes': ['ui'] });
   });
 
+  it('accepts every runnable stage mode on user stage create and update', async () => {
+    const post = (body) =>
+      handler(event({ method: 'POST', type: 'stage', body })).then((r) => parse(r));
+    const put = (id, body) =>
+      handler(event({ method: 'PUT', type: 'stage', id, body })).then((r) => parse(r));
+
+    for (const mode of ['inline', 'subagent', 'pipeline', 'mob', 'agent-team']) {
+      const created = await post({ id: `stage-${mode}`, name: mode, mode });
+      expect(created.status).toBe(201);
+      expect(created.body.mode).toBe(mode);
+    }
+
+    await post({ id: 'stage-mode-update', name: 'Mode update', mode: 'inline' });
+    for (const mode of ['pipeline', 'mob']) {
+      const updated = await put('stage-mode-update', { name: 'Mode update', mode });
+      expect(updated.status).toBe(200);
+      expect(updated.body.mode).toBe(mode);
+    }
+
+    const rejected = await post({ id: 'stage-unknown-mode', name: 'Unknown', mode: 'swarm' });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toContain('stage mode must be one of');
+  });
+
   it('validates the agent tier against the tier enum', async () => {
     const bad = parse(
       await handler(

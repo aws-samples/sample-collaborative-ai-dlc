@@ -26,6 +26,7 @@ vi.mock('@/hooks/useProjectsCache', () => ({
 
 const get = vi.fn();
 const graph = vi.fn();
+const listChannels = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -36,6 +37,11 @@ vi.mock('@/services/workflows', () => ({
   workflowsService: {
     compiled: vi.fn().mockResolvedValue({ graph: { nodes: [], edges: [] } }),
     get: vi.fn().mockResolvedValue({ phases: [] }),
+  },
+}));
+vi.mock('@/services/aidlcReleases', () => ({
+  aidlcReleasesService: {
+    channels: (...a: unknown[]) => listChannels(...a),
   },
 }));
 
@@ -81,9 +87,15 @@ describe('IntentView — start a new intent on another AI-DLC version', () => {
     clearIntentCache();
     get.mockReset().mockResolvedValue(detail);
     graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    listChannels.mockReset().mockResolvedValue({
+      pinningEnabled: true,
+      stable: null,
+      candidate: null,
+      preview: null,
+    });
   });
 
-  it('navigates to the create page carrying the source intent id', async () => {
+  it('shows the migration action and navigates when pinning is enabled', async () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
@@ -111,5 +123,60 @@ describe('IntentView — start a new intent on another AI-DLC version', () => {
       }),
     );
     expect(await screen.findByTestId('new-intent-page')).toBeInTheDocument();
+  });
+
+  it('hides the migration action when pinning is disabled', async () => {
+    listChannels.mockResolvedValue({
+      pinningEnabled: false,
+      stable: null,
+      candidate: null,
+      preview: null,
+    });
+    render(
+      <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+        <Routes>
+          <Route
+            path="/space/:projectId/intent/:intentId"
+            element={
+              <IntentProvider>
+                <IntentView />
+              </IntentProvider>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    expect(
+      screen.queryByRole('menuitem', {
+        name: 'Start a new intent on another AI-DLC version',
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('hides the migration action when the channels read is unavailable', async () => {
+    listChannels.mockRejectedValue(new Error('unavailable'));
+    render(
+      <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+        <Routes>
+          <Route
+            path="/space/:projectId/intent/:intentId"
+            element={
+              <IntentProvider>
+                <IntentView />
+              </IntentProvider>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Intent actions' }));
+    expect(
+      screen.queryByRole('menuitem', {
+        name: 'Start a new intent on another AI-DLC version',
+      }),
+    ).not.toBeInTheDocument();
   });
 });

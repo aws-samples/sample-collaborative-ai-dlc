@@ -284,6 +284,33 @@ describe('compose-plan-start', () => {
     );
   });
 
+  it('ignores historical methodology pins when no release is pinned', async () => {
+    const deps = makeDeps({
+      oneShotText: '{"mode":"matched","scope":"feature"}',
+    });
+    const methodologyPins = {
+      AGENT: { 'aidlc-composer-agent': { tenantId: 'default', version: 7 } },
+    };
+
+    await createComposePlanStart(deps)({ ...basePayload, methodologyPins });
+    await waitForFinish(deps.store);
+
+    expect(deps.loadLibraryFn).toHaveBeenCalledWith({
+      workflowId: basePayload.workflowId,
+      workflowVersion: basePayload.workflowVersion,
+    });
+    expect(deps.listMergedBlocksFn).toHaveBeenCalledWith('SCOPE');
+    expect(deps.listReleaseBlocksFn).not.toHaveBeenCalled();
+    expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: 'aidlc-composer-agent' }),
+    );
+    expect(deps.loadBlockBodyFn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: 'composer-agent-composing' }),
+    );
+  });
+
   it('completes a valid custom grid proposal', async () => {
     const deps = makeDeps({
       oneShotText:

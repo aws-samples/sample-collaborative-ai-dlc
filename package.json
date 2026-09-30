@@ -1,6 +1,6 @@
 {
   "name": "sample-collaborative-ai-dlc",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "private": true,
   "workspaces": [
     "lambda/agentcore",
@@ -14,9 +14,11 @@
     "lambda/environments",
     "lambda/general-info",
     "lambda/github",
+    "lambda/intent-pin-lookup",
     "lambda/intents",
     "lambda/gitlab",
     "lambda/bitbucket",
+    "lambda/codecommit",
     "lambda/migrate-tracker-fields",
     "lambda/seed-blocks",
     "lambda/sso-token",

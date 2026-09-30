@@ -288,6 +288,85 @@ describe('collectCodeTraceabilityBatches — multi-repo layout', () => {
   });
 });
 
+describe('collectCodeTraceabilityBatches — CodeCommit multi-repo layout', () => {
+  // Same layout as the checkout (repo-paths.js#repoTargetDir): a CodeCommit
+  // ARN is not a path, so joining it onto the workspace resolved nothing.
+  it('collects changed files and their evidence for same-name CodeCommit repositories in two regions', async () => {
+    const west1 = 'arn:aws:codecommit:eu-west-1:123456789012:app';
+    const west2 = 'arn:aws:codecommit:eu-west-2:123456789012:app';
+    const root = await workspace();
+    const doc = (target, id) =>
+      JSON.stringify({
+        stage: 'code-generation',
+        unit: 'u1',
+        coverage: [{ id, status: 'OK', target }],
+      });
+    await put(root, 'codecommit/aws/eu-west-1/123456789012/app/src/one.js', 'export {};\n');
+    await put(
+      root,
+      'codecommit/aws/eu-west-1/123456789012/app/traceability.json',
+      doc('src/one.js', 'AC1.1'),
+    );
+    await put(root, 'codecommit/aws/eu-west-2/123456789012/app/src/two.js', 'export {};\n');
+    await put(
+      root,
+      'codecommit/aws/eu-west-2/123456789012/app/traceability.json',
+      doc('src/two.js', 'AC2.1'),
+    );
+    const batches = await collectCodeTraceabilityBatches({
+      gitResult: {
+        ok: true,
+        committed: true,
+        results: [
+          {
+            repo: west1,
+            committed: true,
+            sha: 'a'.repeat(40),
+            files: ['src/one.js', 'traceability.json'],
+          },
+          {
+            repo: west2,
+            committed: true,
+            sha: 'b'.repeat(40),
+            files: ['src/two.js', 'traceability.json'],
+          },
+        ],
+      },
+      repos: [west1, west2],
+      workspaceDir: root,
+      stageId: 'code-generation',
+      stageInstanceId: 'si-code',
+      unitSlug: 'u1',
+    });
+    // The batch keeps the ARN as repository identity; only the disk path
+    // changed. Each repository's evidence comes from its own checkout.
+    expect(
+      batches.map((b) => [
+        b.repository,
+        b.traceabilityStatus,
+        b.files.map((f) => [f.filePath, f.evidenceIds]),
+      ]),
+    ).toEqual([
+      [
+        west1,
+        'valid',
+        [
+          ['src/one.js', ['AC1.1']],
+          ['traceability.json', []],
+        ],
+      ],
+      [
+        west2,
+        'valid',
+        [
+          ['src/two.js', ['AC2.1']],
+          ['traceability.json', []],
+        ],
+      ],
+    ]);
+  });
+});
+
 describe('loadProducedTraceability — size cap', () => {
   it('treats an oversized traceability.json as degraded (no OOM, no throw)', async () => {
     const root = await workspace();
