@@ -87,6 +87,28 @@ const renderProvider = () =>
     </MemoryRouter>,
   );
 
+function CompiledProbe() {
+  const { compiled } = useIntent();
+  const id = (compiled as { id?: string } | null)?.id;
+  return <div data-testid="compiled">{compiled ? (id ?? 'set') : 'null'}</div>;
+}
+
+const renderCompiledProbe = () =>
+  render(
+    <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+      <Routes>
+        <Route
+          path="/space/:projectId/intent/:intentId"
+          element={
+            <IntentProvider>
+              <CompiledProbe />
+            </IntentProvider>
+          }
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
 const detail = (over: Record<string, unknown> = {}) => ({
   intent: {
     id: 'i1',
@@ -260,6 +282,32 @@ describe('IntentContext', () => {
     });
     await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
     expect(compiled).toHaveBeenLastCalledWith('wf', 1, undefined, undefined);
+  });
+
+  it('keeps the previous compiled workflow while an unpinned reload recompiles', async () => {
+    get.mockResolvedValueOnce(detail()).mockResolvedValueOnce(detail({ updatedAt: 'later' }));
+    let resolveSecond: (value: unknown) => void = () => {};
+    compiled
+      .mockResolvedValueOnce({ id: 'first', graph: { nodes: [], edges: [] } })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+    renderCompiledProbe();
+
+    await waitFor(() => expect(screen.getByTestId('compiled')).toHaveTextContent('first'));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('compiled')).toHaveTextContent('first');
+
+    await act(async () => {
+      resolveSecond({ id: 'second', graph: { nodes: [], edges: [] } });
+    });
+    expect(screen.getByTestId('compiled')).toHaveTextContent('second');
   });
 
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {
