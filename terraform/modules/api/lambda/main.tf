@@ -79,6 +79,7 @@ module "dynamodb_kms_runtime_access" {
     neptune_artifacts    = aws_iam_role.neptune_artifacts.name
     neptune_questions    = aws_iam_role.neptune_questions.name
     neptune_reader       = aws_iam_role.neptune_reader.name
+    seed_blocks          = aws_iam_role.seed_blocks.name
     source_control       = aws_iam_role.source_control.name
     trackers             = aws_iam_role.trackers.name
     users                = aws_iam_role.users.name
