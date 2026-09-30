@@ -101,6 +101,7 @@ import {
   resolveMethodologyLibrary,
 } from '../shared/release-resolver.js';
 import {
+  ReleaseRegistryError,
   assertReleaseCapabilitiesHonoured,
   isReleaseRegistryError,
   releasePinFromRecord,
@@ -144,6 +145,16 @@ const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
 const logger = new Logger({ persistentKeys: { component: 'intents' } });
+
+// The only registry answers that mean "this deployment ref has no release a new
+// intent may auto-pin". A capability record that could not be verified is not
+// one of them: it is a failed lookup, not a negative answer.
+const isAutoPinIneligible = (error) =>
+  isReleaseRegistryError(error) &&
+  error.details?.verificationError !== true &&
+  ['release_not_found', 'release_not_selectable', 'release_capability_unhandled'].includes(
+    error.code,
+  );
 
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ORCHESTRATOR_FN = () => process.env.V2_ORCHESTRATOR_FUNCTION;
@@ -5203,28 +5214,59 @@ export const handler = async (event, context) => {
         methodologyRelease = selectedReleasePin;
         aidlcRepoRef = selectedRelease.sourceSha;
       } else if (AIDLC_RELEASE_PINNING() === 'on' && aidlcRepoRef && ARTIFACTS_BUCKET()) {
+        // The registry decides eligibility, so it is asked first. The manifest is
+        // read only once a row exists: the role has no s3:ListBucket, so a GET
+        // for a ref that was never imported answers 403 AccessDenied, which is
+        // indistinguishable from a real permissions failure.
+        let eligibleRelease = null;
+        let ineligibleCode = null;
         try {
-          const manifest = await readReleaseManifest({
-            s3,
-            bucket: ARTIFACTS_BUCKET(),
-            sha: aidlcRepoRef,
-            importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-          });
-          if (manifest) {
+          const deploymentProfile = profileFor(aidlcRepoRef);
+          if (deploymentProfile?.upstreamRef === aidlcRepoRef) {
             // A published closure is evidence, not authorization. Only pin it
             // when the registry has explicitly made this exact closure visible
             // and selectable and its recorded authored behavior is still
             // honoured by this runtime.
-            const eligibleRelease = await resolveSelectableRelease({
+            eligibleRelease = await resolveSelectableRelease({
               ddb,
               tableName: BLOCKS_TABLE(),
-              releaseId: manifest.releaseId,
+              releaseId: deploymentProfile.releaseId,
             });
             await assertReleaseCapabilitiesHonoured({
               release: eligibleRelease,
               s3,
               bucket: ARTIFACTS_BUCKET(),
             });
+          }
+        } catch (error) {
+          // Only a genuine "not registered / not eligible" answer may fall back
+          // to an unpinned intent. A throttled registry read or an unverifiable
+          // capability record means the lookup could not be completed, and
+          // downgrading that to "does not exist" would silently unpin intents.
+          if (!isAutoPinIneligible(error)) {
+            logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
+            return response(503, {
+              error: 'The published AI-DLC release could not be resolved',
+              code: 'release_resolution_failed',
+            });
+          }
+          ineligibleCode = error.code;
+          eligibleRelease = null;
+        }
+        if (eligibleRelease) {
+          try {
+            const manifest = await readReleaseManifest({
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+              sha: aidlcRepoRef,
+              importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+            });
+            if (!manifest) {
+              throw new ReleaseRegistryError(
+                'release_not_published',
+                `The registered release ${eligibleRelease.releaseId} has no published manifest`,
+              );
+            }
             // AUTO-PIN. Everything above was validated against the SYSTEM
             // DynamoDB library, which is NOT what a pinned intent will run.
             // Re-resolve the scope vocabulary and the plan against the closure
@@ -5303,38 +5345,22 @@ export const handler = async (event, context) => {
                 },
               );
             }
-          } else {
-            logger.warn('No published AI-DLC release for the resolved ref; intent stays unpinned', {
-              aidlcRepoRef,
-              importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-            });
-          }
-        } catch (error) {
-          // Only a genuine "not published / not eligible" answer may fall back
-          // to an unpinned intent. Everything else (a denied or corrupt
-          // manifest, a throttled registry read) means the lookup could not be
-          // completed, and downgrading that to "does not exist" would silently
-          // unpin intents on a permissions regression.
-          if (
-            isReleaseRegistryError(error) &&
-            error.details?.verificationError !== true &&
-            [
-              'release_not_found',
-              'release_not_selectable',
-              'release_capability_unhandled',
-            ].includes(error.code)
-          ) {
-            logger.warn('Deployment-ref AI-DLC release is not eligible; intent stays unpinned', {
-              aidlcRepoRef,
-              code: error.code,
-            });
-          } else {
+          } catch (error) {
+            // The registry says this closure is eligible, so any failure to read
+            // or verify it (a denied or corrupt manifest, a missing catalog) is
+            // an integrity problem, never a reason to quietly unpin the intent.
             logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
             return response(503, {
               error: 'The published AI-DLC release could not be resolved',
               code: 'release_resolution_failed',
             });
           }
+        } else {
+          logger.warn('No eligible AI-DLC release for the resolved ref; intent stays unpinned', {
+            aidlcRepoRef,
+            importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+            code: ineligibleCode,
+          });
         }
       }
       // Optional per-repo base-branch override (see validateBaseBranches) —

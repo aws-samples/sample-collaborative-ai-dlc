@@ -7432,7 +7432,7 @@ describe('AI-DLC release pinning', () => {
     const intent = JSON.parse(res.body);
     const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
     expect(meta.methodologyRelease ?? null).toBeNull();
-    expect(getObjectKeys()).toContain(releasePin.manifestKey);
+    expect(getObjectKeys()).not.toContain(releasePin.manifestKey);
   });
 
   it('forwards the pin so a start resolves its plan from the release closure', async () => {
@@ -8228,6 +8228,45 @@ describe('AI-DLC per-intent release selection', () => {
       expect(orchestratorInvokes()).toHaveLength(0);
     },
   );
+
+  // Without s3:ListBucket, S3 answers a GET for an absent key with 403
+  // AccessDenied, so an unimported deployment ref looks exactly like a denied
+  // read. Only the registry can tell the two apart.
+  it.each([
+    ['no registry row stays unpinned without reading the manifest', false],
+    ['a registry row refuses the create', true],
+  ])('a masked 403 on the deployment-ref manifest with %s', async (_label, registered) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    if (registered) seedRegistryRecord(bundleA, 'current-stable');
+    s3Mock.on(GetObjectCommand, { Bucket: 'artifacts-test', Key: pinA.manifestKey }).rejects(
+      Object.assign(new Error('Access Denied'), {
+        name: 'AccessDenied',
+        $metadata: { httpStatusCode: 403 },
+      }),
+    );
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    const manifestReads = s3Mock
+      .commandCalls(GetObjectCommand)
+      .filter((call) => call.args[0].input.Key === pinA.manifestKey);
+    if (registered) {
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+      expect([...procStore]).toEqual(before);
+    } else {
+      expect(res.statusCode).toBe(201);
+      expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+      expect(manifestReads).toHaveLength(0);
+    }
+  });
 
   it('refuses the create when an eligible release closure is unreadable', async () => {
     const sub = `u-${randomUUID()}`;
