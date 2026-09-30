@@ -8245,6 +8245,62 @@ describe('AI-DLC per-intent release selection', () => {
     expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
   });
 
+  it.each(['manifest access denied', 'corrupt manifest', 'registry throttled'])(
+    'refuses the create when the auto-pin lookup cannot complete: %s',
+    async (failure) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1('feature');
+      seedRegistryRecord(bundleA, 'current-stable');
+      const before = structuredClone([...procStore]);
+      if (failure === 'manifest access denied') {
+        s3Mock
+          .on(GetObjectCommand, { Bucket: 'artifacts-test', Key: pinA.manifestKey })
+          .rejects(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+      } else if (failure === 'corrupt manifest') {
+        releaseStore.set(pinA.manifestKey, '{');
+      } else {
+        ddbMock
+          .on(GetCommand, {
+            TableName: 'blocks-test',
+            Key: { pk: `AIDLC_RELEASE#${pinA.releaseId}`, sk: 'META' },
+          })
+          .rejects(Object.assign(new Error('throttled'), { name: 'ThrottlingException' }));
+      }
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+      });
+
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+      expect([...procStore]).toEqual(before);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
+
+  it('refuses the create when an eligible release closure is unreadable', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    seedRegistryRecord(bundleA, 'current-stable');
+    const before = structuredClone([...procStore]);
+    releaseStore.delete(pinA.catalogKey);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('release_resolution_failed');
+    expect([...procStore]).toEqual(before);
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
   it('never auto-pins while the flag is off', async () => {
     vi.stubEnv('AIDLC_RELEASE_PINNING', 'off');
     const sub = `u-${randomUUID()}`;

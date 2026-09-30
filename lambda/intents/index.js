@@ -5211,6 +5211,14 @@ export const handler = async (event, context) => {
                 'The deployment-ref closure does not match its eligible registry row',
               );
             }
+            // Scope discovery maps a permanent resolution failure to an empty
+            // vocabulary, so read the closure first: without this an unreadable
+            // closure is indistinguishable from an incompatible scope.
+            await loadReleaseClosure({
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+              methodologyRelease: candidatePin,
+            });
             const candidateMethodologyPins = await snapshotUserMethodologyPins(
               planCheck.methodologyPins,
             );
@@ -5246,6 +5254,15 @@ export const handler = async (event, context) => {
               methodologyRelease = candidatePin;
               methodologyPins = releasePlan.methodologyPins;
               workflowVersion = releasePlan.workflowVersion ?? workflowVersion;
+            } else if (
+              (releasePlan.errors ?? []).some((error) =>
+                String(error.code ?? '').startsWith('release_'),
+              )
+            ) {
+              return response(503, {
+                error: 'The published AI-DLC release could not be verified',
+                code: 'release_resolution_failed',
+              });
             } else {
               logger.warn(
                 'The published AI-DLC release cannot reproduce this plan; intent stays unpinned',
@@ -5264,9 +5281,31 @@ export const handler = async (event, context) => {
             });
           }
         } catch (error) {
-          logger.warn('AI-DLC release manifest lookup failed; intent stays unpinned', error, {
-            aidlcRepoRef,
-          });
+          // Only a genuine "not published / not eligible" answer may fall back
+          // to an unpinned intent. Everything else (a denied or corrupt
+          // manifest, a throttled registry read) means the lookup could not be
+          // completed, and downgrading that to "does not exist" would silently
+          // unpin intents on a permissions regression.
+          if (
+            isReleaseRegistryError(error) &&
+            error.details?.verificationError !== true &&
+            [
+              'release_not_found',
+              'release_not_selectable',
+              'release_capability_unhandled',
+            ].includes(error.code)
+          ) {
+            logger.warn('Deployment-ref AI-DLC release is not eligible; intent stays unpinned', {
+              aidlcRepoRef,
+              code: error.code,
+            });
+          } else {
+            logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
+            return response(503, {
+              error: 'The published AI-DLC release could not be resolved',
+              code: 'release_resolution_failed',
+            });
+          }
         }
       }
       // Optional per-repo base-branch override (see validateBaseBranches) —
