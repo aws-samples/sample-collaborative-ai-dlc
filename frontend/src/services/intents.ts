@@ -68,12 +68,6 @@ export interface MethodologyReleasePin {
   upstreamVersion?: string | null;
 }
 
-export interface IntentResumeRequired {
-  humanTaskId: string;
-  callbackId: string;
-  answeredAt: string | null;
-}
-
 export interface Intent {
   id: string;
   executionId: string;
@@ -107,10 +101,6 @@ export interface Intent {
   failure?: IntentFailure | null;
   // Set when the run was relaunched from a mid-plan stage (steering rewind).
   rewindFromStageId?: string | null;
-  // Set when a gate answer is recorded but its durable callback could not be
-  // completed: the run is parked with nothing able to wake it until someone
-  // resumes it. Drives the Resume run action.
-  resumeRequired?: IntentResumeRequired | null;
   agentCli?: AgentCli | null;
   credentialSource?: AgentCredentialSource | null;
   cliModels: Record<string, string> | null;
@@ -273,23 +263,6 @@ export interface IntentStage {
   pendingHumanTaskId?: string | null;
 }
 
-// One gate-precondition finding. `overridable` is what puts
-// `override-and-approve` in `options`; a blocking finding that is NOT overridable
-// leaves `request-changes` as the only answer, which re-runs the stage.
-export interface GateFinding {
-  code: string;
-  severity: 'blocking' | 'advisory';
-  title: string;
-  detail?: unknown;
-  overridable: boolean;
-  receiptKind?: string | null;
-  remediation?: string | null;
-  // Verbatim text the finding is ABOUT — today a maintained dissent's position.
-  // Rendered as a quote, never folded into `title`: a paraphrase of an objection
-  // is a different objection. Absent on every finding that quotes nothing.
-  quote?: string | null;
-}
-
 // A human gate (HUMAN# row). `questions` is the v1-shaped structured-questions
 // JSON string when kind === 'question' — parsed into the QuestionEditor shape
 // by the IntentView.
@@ -314,13 +287,6 @@ export interface IntentGate {
   // contiguous jump. Null when stage skipping is disabled or nothing
   // qualifies. Advisory; the engine re-validates every entry.
   recomposeTargets?: string[] | null;
-  // Gate preconditions the human must decide with. Absent on every gate without
-  // a resolved release policy.
-  findings?: GateFinding[] | null;
-  // The learnings ritual rides this gate: when set, the review panel offers an
-  // optional "anything to add for next time?" field whose text rides the approve
-  // answer as `learnings`. Absent on every gate that does not run the ritual.
-  learningsRitual?: boolean | null;
   // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
   // string = its stageId, null = approving completes the workflow. Absent on
   // legacy gates / gates where it was never computed — fall back to generic
@@ -629,11 +595,6 @@ export interface IntentActivityEvent {
   answeredBy?: string | null;
   answeredByName?: string | null;
   artifacts?: { id: string; title: string }[];
-  // A bounded slice of the durable event's `detail`, forwarded only for the
-  // fields the timeline renders. Kept to a whitelist rather than the whole
-  // object: `detail` carries agent text and ids the feed has no business
-  // shipping to the browser.
-  detail?: { round?: number | null; maxRounds?: number | null } | null;
 }
 
 // Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN scheduling
@@ -1149,14 +1110,6 @@ export const intentsService = {
     ),
   repair: (projectId: string, intentId: string) =>
     api.post<IntentRepairResult>(`/projects/${projectId}/intents/${intentId}/repair`, {}),
-  // Re-attempt the durable callback for an already-recorded gate answer
-  // (`intent.resumeRequired`). Idempotent: `resumed: false` means there was
-  // nothing left to resume, which is a success, not an error.
-  resume: (projectId: string, intentId: string) =>
-    api.post<{ intent: Intent; resumed: boolean }>(
-      `/projects/${projectId}/intents/${intentId}/resume`,
-      {},
-    ),
   answerGate: (projectId: string, intentId: string, humanTaskId: string, input: GateAnswer) =>
     api.post<IntentGate>(
       `/projects/${projectId}/intents/${intentId}/gates/${humanTaskId}/answer`,

@@ -4272,6 +4272,47 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     ).toBe(true);
   });
 
+  it('does not advertise a resume action the API cannot serve', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+    });
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+
+    const res = await answerGate(sub, projectId, intent.id, 'h1');
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).error).toBe(
+      'Gate answer was recorded, but the durable callback could not be completed. Retry after refreshing the intent.',
+    );
+    expect(procStore.get(metaKey).resumeRequired).toBeUndefined();
+
+    const detail = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(detail.body).intent).not.toHaveProperty('resumeRequired');
+
+    const resume = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/resume`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(resume.body)).not.toHaveProperty('resumed');
+    expect(resume.statusCode).not.toBe(200);
+  });
+
   it('404s an unknown gate', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
