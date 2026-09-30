@@ -5423,6 +5423,26 @@ export const handler = async (event, context) => {
         }
         if (eligibleRelease) {
           try {
+            // The manifest is addressed by this runtime's importer revision. After
+            // a revision bump the eligible row still describes the previous
+            // revision until the release is re-imported, and the new-revision
+            // manifest does not exist yet (a 403 without s3:ListBucket). That is
+            // the same half-finished re-import as a closure mismatch below, so it
+            // is detected from the row alone, before S3 is touched.
+            if (Number(eligibleRelease.importerRevision) !== AIDLC_RELEASE_IMPORTER_REVISION) {
+              throw new ReleaseRegistryError(
+                'release_registry_skew',
+                'The eligible registry row was imported under a different importer revision',
+                {
+                  details: {
+                    releaseId: eligibleRelease.releaseId,
+                    fields: ['importerRevision'],
+                    registeredImporterRevision: eligibleRelease.importerRevision,
+                    currentImporterRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+                  },
+                },
+              );
+            }
             const manifest = await readReleaseManifest({
               s3,
               bucket: ARTIFACTS_BUCKET(),
@@ -5526,8 +5546,8 @@ export const handler = async (event, context) => {
             }
           } catch (error) {
             // A row and a manifest that describe different closures of the same
-            // release mean a re-import under a new importer revision is only
-            // half done. Both closures are readable, so this is not an integrity
+            // release, or a row at another importer revision, mean a re-import
+            // under a new importer revision is only half done. Both closures are readable, so this is not an integrity
             // failure: the intent stays unpinned until the registry catches up.
             if (isReleaseRegistryError(error) && error.code === 'release_registry_skew') {
               logger.warn(

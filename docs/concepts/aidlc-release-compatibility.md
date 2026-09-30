@@ -72,6 +72,16 @@ without reading the manifest. The manifest is read only once a record exists,
 because the runtime role has no `s3:ListBucket` and S3 answers a read of a
 never-imported ref with 403 rather than 404.
 
+The deployment ref's manifest is addressed by the running build's importer
+revision. After an importer revision bump, an eligible record still describes
+the previous revision until the release is re-imported and the record upgraded,
+and a record whose closure does not match the published manifest is in the same
+half-finished state. Both keep the intent unpinned with a
+`release_registry_skew` warning instead of failing the create; the revision
+check uses the record alone, so the missing new-revision manifest is never
+read. An explicitly selected or stable-channel release is pinned by the
+record's own importer revision and is not affected.
+
 A configured stable channel is an implicit default and degrades the same way. If
 a space has a user block edit the stable release cannot overlay, and the release
 itself resolves cleanly without that overlay, the create continues as if no
