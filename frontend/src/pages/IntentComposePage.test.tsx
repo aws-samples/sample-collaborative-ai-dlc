@@ -148,6 +148,18 @@ const renderPage = (controls?: ReactNode) =>
     </MemoryRouter>,
   );
 
+const composeTree = () => (
+  <MemoryRouter initialEntries={['/space/p1/intent/i1/compose']}>
+    <Routes>
+      <Route path="/space/:projectId/intent/:intentId/compose" element={<IntentComposePage />} />
+      <Route
+        path="/space/:projectId/intent/:intentId"
+        element={<div data-testid="intent-view" />}
+      />
+    </Routes>
+  </MemoryRouter>
+);
+
 const summaryPlan = (summary: Record<string, number>, stages: unknown[] = []) => ({
   valid: true,
   errors: [],
@@ -256,6 +268,18 @@ describe('IntentComposePage', () => {
     expect(summary.textContent).toContain('Runs 24 of 32 stages');
     expect(summary.textContent).toContain('18 approval gates');
     expect(summary.textContent).toContain('5 stages fan out per unit of work');
+  });
+
+  it('keeps workflow reads stable when the compose consumer rerenders', async () => {
+    const view = render(composeTree());
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(executionPreview).toHaveBeenCalledTimes(1));
+
+    view.rerender(composeTree());
+
+    expect(compiled).toHaveBeenCalledTimes(1);
+    expect(executionPreview).toHaveBeenCalledTimes(1);
   });
 
   it('previews a composed grid through validate-grid instead of the scope preview', async () => {

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
@@ -26,20 +27,26 @@ describe('CLI child process shutdown', () => {
     const directory = await mkdtemp(join(tmpdir(), 'agentcore-spawn-shutdown-'));
     const readyFile = join(directory, 'ready');
     const sentinelFile = join(directory, 'sentinel');
-    const spawnModule = new URL('../cli/spawn.js', import.meta.url).href;
-    const childScript = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(sentinelFile)}, 'orphan'), 500)`;
-    const runnerScript = `
-      import { writeFileSync } from 'node:fs';
-      import { runChild } from ${JSON.stringify(spawnModule)};
-      const child = runChild({ command: process.execPath, args: ['-e', ${JSON.stringify(childScript)}] });
-      writeFileSync(${JSON.stringify(readyFile)}, 'ready');
-      await child;
-    `;
+    // The runner and the orphan probe are checked-in fixture modules, and every
+    // path they need travels in the environment. Building either script from a
+    // value would make the test itself a code-construction sink.
+    const runnerModule = fileURLToPath(
+      new URL('./fixtures/spawn-shutdown-runner.mjs', import.meta.url),
+    );
+    const orphanModule = fileURLToPath(
+      new URL('./fixtures/spawn-shutdown-orphan.mjs', import.meta.url),
+    );
     let runner;
     try {
-      runner = spawn(process.execPath, ['--input-type=module', '-e', runnerScript], {
+      runner = spawn(process.execPath, [runnerModule], {
         cwd: directory,
         stdio: 'ignore',
+        env: {
+          ...process.env,
+          SPAWN_SHUTDOWN_READY: readyFile,
+          SPAWN_SHUTDOWN_SENTINEL: sentinelFile,
+          SPAWN_SHUTDOWN_ORPHAN: orphanModule,
+        },
       });
       const closed = new Promise((resolve, reject) => {
         runner.once('error', reject);

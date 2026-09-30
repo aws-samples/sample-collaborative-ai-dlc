@@ -115,8 +115,22 @@ releases, apart from the current platform baseline, can be assigned to `stable`.
 When pinning is enabled but no stable channel is configured, intent creation may
 still discover a published closure from the deployment ref. It pins that closure
 only if the matching registry record is registered, visible, selectable or
-certified, and its authored behavior passes the runtime promotion guard. If any
-check fails, the intent is created on the existing unpinned path.
+certified, and its authored behavior passes the runtime promotion guard. If the
+release is genuinely not published, not eligible, or authors behavior this build
+cannot honour, the intent is created on the existing unpinned path.
+
+A configured stable channel is an implicit default and degrades the same way. If
+a space has a user block edit the stable release cannot overlay, and the release
+itself resolves cleanly without that overlay, the intent is created unpinned
+instead of failing. An explicitly requested release is strict: it returns the
+resolver errors so the caller sees which override conflicts.
+
+A failure to complete that lookup is a different case. A denied or corrupt
+manifest, an unreadable closure, or a throttled registry read means the answer is
+unknown rather than "not published", so intent creation returns
+`503 release_resolution_failed` and writes nothing. Downgrading an unreadable
+manifest to "does not exist" would let a permissions regression silently unpin
+every new intent.
 
 ### Before runtime
 
@@ -389,7 +403,10 @@ same conductor bytes even when `AIDLC_REPO_REF` names B's snapshot.
 Stamping the pin is gated by `AIDLC_RELEASE_PINNING`, default `off`. When it is
 `on`, intent create looks for a published manifest for the ref it already
 resolved and stamps the pin if one exists. A ref with no published release is
-not an error — the intent is created unpinned and a warning is logged. Reading
+not an error — the intent is created unpinned and a warning is logged. A ref
+whose release cannot be READ is an error: the create returns
+`503 release_resolution_failed` rather than treating an unreadable manifest as an
+absent one. Reading
 an existing pin is never gated: turning the flag back off must not silently move
 a pinned intent back onto the reseedable rows.
 
@@ -1666,11 +1683,19 @@ With the flag on, an intent created without an explicit version first uses the
 stable channel when one is set. Otherwise, it can derive a candidate pin from
 the configured deployment ref. Degradations are deliberate and non-fatal:
 
-- No stable channel and no published closure for the deployment ref, or a
-  candidate closure that cannot reproduce the plan → the intent is created
-  **unpinned** (legacy behavior) with a warning in the lambda logs. An invalid
-  stable target resolves to no release; creation does not substitute a different
-  registry release.
+- No stable channel and no published closure for the deployment ref, a release
+  that is not eligible, or a candidate closure that cannot reproduce the plan →
+  the intent is created **unpinned** (legacy behavior) with a warning in the
+  lambda logs. An invalid stable target resolves to no release; creation does not
+  substitute a different registry release.
+- A stable channel whose release cannot apply a space's user block edit → the
+  intent is created **unpinned**, the same as the no-channel path, so one
+  incompatible fork cannot block every create in the space. An explicitly
+  requested release still returns 400 with the conflicting override.
+- A lookup that cannot COMPLETE (denied or corrupt manifest, unreadable closure,
+  throttled registry read) is **not** a degradation: creation returns
+  `503 release_resolution_failed` and writes nothing, so a permissions
+  regression cannot silently unpin new intents.
 - The registry being unreachable from the frontend hides the version selector
   entirely — creation falls back to the legacy path.
 - If the flag flips off between page load and submit, the create retries once

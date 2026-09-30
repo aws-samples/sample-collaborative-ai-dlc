@@ -162,7 +162,10 @@ const validateBlockInput = (type, input) => {
 const DEPTHS = ['Minimal', 'Standard', 'Comprehensive'];
 
 // Stage modes accepted by block authoring and plan validation. This module checks
-// only the known values; AgentCore selects release-mode behavior from capabilities.
+// only the known values; AgentCore selects release-mode behavior from
+// capabilities. `pipeline` and `mob` are schedulable from this layer on
+// (v2-execution-plan.js RUNNABLE_MODES / ENSEMBLE_MODES); `agent-team` stays
+// reserved and unrunnable, but must round-trip as a known value.
 const STAGE_MODES = ['inline', 'subagent', 'pipeline', 'mob', 'agent-team'];
 
 // Per-type required/shape checks. Kept small and explicit — only the fields

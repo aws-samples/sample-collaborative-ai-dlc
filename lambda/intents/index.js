@@ -51,8 +51,15 @@ import {
   listMergedBlocks,
 } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
+import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
-import { effectivePrStrategy, normalizePlatformPrStrategy } from '../shared/pr-strategy.js';
+import {
+  assertPrStrategySupported,
+  draftlessProviders,
+  effectivePrStrategy,
+  normalizePlatformPrStrategy,
+} from '../shared/pr-strategy.js';
+import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
@@ -76,7 +83,11 @@ import {
 import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
-import { assignNativeRepositoryDirectories, repositoryId } from '../shared/native-repositories.js';
+import {
+  assignNativeRepositoryDirectories,
+  repositoryCloneUrl,
+  repositoryId,
+} from '../shared/native-repositories.js';
 import {
   executionPlanFromMethodologyCatalog,
   loadOrCreateMethodologyCatalog,
@@ -87,6 +98,7 @@ import { profileFor } from '../shared/aidlc-compatibility-profiles.js';
 import {
   loadReleaseClosure,
   methodologyReleasePinFromManifest,
+  resolveMethodologyLibrary,
 } from '../shared/release-resolver.js';
 import {
   assertReleaseCapabilitiesHonoured,
@@ -1370,14 +1382,6 @@ const isGloballyParkedForExport = (records) => {
     );
 };
 
-const repositoryCloneUrl = (repository, provider) => {
-  const value = String(repository ?? '');
-  if (/^(?:https?|ssh):\/\//.test(value) || value.startsWith('git@')) return value;
-  if (provider === 'gitlab') return `git@gitlab.com:${value}.git`;
-  if (provider === 'bitbucket') return `git@bitbucket.org:${value}.git`;
-  return `git@github.com:${value}.git`;
-};
-
 const exportRepositories = (meta) =>
   assignNativeRepositoryDirectories(
     (meta.repos ?? []).map((repository) => {
@@ -1563,13 +1567,13 @@ const snapshotUserMethodologyPins = async (methodologyPins) => {
   return Object.keys(pins).length ? pins : null;
 };
 
-// Release-mode plumbing for every plan/scope resolution of one intent. Absent a
-// pin this contributes nothing, so unpinned intents keep the exact DynamoDB
-// behaviour they had before issue #482.
-const releasePlanOptions = (meta) =>
-  meta?.methodologyRelease
-    ? { methodologyRelease: meta.methodologyRelease, s3, bucket: ARTIFACTS_BUCKET() }
-    : {};
+// All reads for a created intent derive methodology from its stored snapshot.
+const intentMethodology = createIntentMethodologyLoader({
+  ddb,
+  tableName: BLOCKS_TABLE,
+  s3,
+  bucket: ARTIFACTS_BUCKET,
+});
 
 const methodologyRefsMatch = (planResult, expectedRef) => {
   const refs = planResult?.methodologySourceRefs ?? [];
@@ -1597,12 +1601,7 @@ const loadNativeExportPlan = async (meta) => {
   // so export resolves it directly and never touches the reseedable SYSTEM rows
   // or the legacy catalog rebuild below.
   if (meta.methodologyRelease) {
-    return loadExecutionPlan({
-      ddb,
-      tableName: BLOCKS_TABLE(),
-      ...options,
-      ...releasePlanOptions(meta),
-    });
+    return intentMethodology.loadPlan(meta);
   }
   try {
     currentResult = await loadExecutionPlan({
@@ -1744,6 +1743,20 @@ export const handler = async (event, context) => {
       }
       if (meta.prStrategy !== 'pr-per-unit') {
         return response(409, { error: 'This intent does not use PR per unit' });
+      }
+      // A feedback revision rewrites the unit branch under a PR that must stay
+      // unmergeable meanwhile (a draft). Refused durably, before any provider
+      // call, for providers that have no drafts.
+      const draftless = draftlessProviders(
+        (meta.repos ?? []).map((repo) =>
+          sharedRepoProvider(repo, meta.gitProvider, meta.repoProviders),
+        ),
+      );
+      if (draftless.length) {
+        return response(409, {
+          error: `Feedback revisions need draft pull requests, which ${draftless.join(', ')} does not support`,
+          code: 'PR_STRATEGY_UNSUPPORTED',
+        });
       }
       const unit = await store.getUnit(intentId, sectionIndex, unitSlug);
       const activeUnitStates = new Set([
@@ -2245,21 +2258,7 @@ export const handler = async (event, context) => {
       // read evidence when it cannot be resolved (never block the warning).
       let plan = null;
       try {
-        const planResult = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId: records.meta.workflowId,
-          workflowVersion: records.meta.workflowVersion,
-          scope: records.meta.scope,
-          ...(Array.isArray(records.meta.skipStageIds) && records.meta.skipStageIds.length
-            ? { skipStageIds: records.meta.skipStageIds }
-            : {}),
-          ...(records.meta.composedGrid ? { composedGrid: records.meta.composedGrid } : {}),
-          ...(records.meta.methodologyPins
-            ? { methodologyPins: records.meta.methodologyPins }
-            : {}),
-          ...releasePlanOptions(records.meta),
-        });
+        const planResult = await intentMethodology.loadPlan(records.meta);
         plan = planResult.valid ? planResult.plan : null;
       } catch {
         plan = null;
@@ -3065,16 +3064,9 @@ export const handler = async (event, context) => {
           effectiveGrid,
         );
         if (effectiveGrid) skipOverride = effectiveSkips;
-        const planCheck = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId: meta.workflowId,
-          workflowVersion: meta.workflowVersion,
-          scope: meta.scope,
-          ...(effectiveSkips?.length ? { skipStageIds: effectiveSkips } : {}),
-          ...(effectiveGrid ? { composedGrid: effectiveGrid } : {}),
-          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-          ...releasePlanOptions(meta),
+        const planCheck = await intentMethodology.loadPlan(meta, {
+          skipStageIds: effectiveSkips ?? null,
+          composedGrid: effectiveGrid ?? null,
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -3478,19 +3470,25 @@ export const handler = async (event, context) => {
               bucket: ARTIFACTS_BUCKET(),
               methodologyRelease: meta.methodologyRelease,
             })
-              .then((closure) => closure.blocksByType.SCOPE ?? [])
+              .then((closure) =>
+                resolveMethodologyLibrary({
+                  closure,
+                  ddb,
+                  tableName: BLOCKS_TABLE(),
+                  workflowId: meta.workflowId,
+                  workflowVersion: meta.workflowVersion,
+                  methodologyPins: meta.methodologyPins,
+                }),
+              )
+              .then((resolved) => resolved.blocksByType.SCOPE ?? [])
               .catch(() => [])
           : await listMergedBlocks(ddb, BLOCKS_TABLE(), 'SCOPE').catch(() => []);
         const match = matchScopeByKeywords({ text: intentText, scopes: scopeBlocks });
         if (match) {
-          const planCheck = await loadExecutionPlan({
-            ddb,
-            tableName: BLOCKS_TABLE(),
-            workflowId: meta.workflowId,
-            workflowVersion: meta.workflowVersion,
+          const planCheck = await intentMethodology.loadPlan(meta, {
             scope: match.scopeId,
-            ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-            ...releasePlanOptions(meta),
+            skipStageIds: null,
+            composedGrid: null,
           });
           if (planCheck.valid) {
             const row = await store.createCompose({
@@ -3640,7 +3638,9 @@ export const handler = async (event, context) => {
                 ...(frozenGrid && Object.keys(frozenGrid).length ? { frozenGrid } : {}),
                 ...(progressContext ? { progressContext } : {}),
                 ...(meta.methodologyRelease ? { methodologyRelease: meta.methodologyRelease } : {}),
-                ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+                ...(meta.methodologyRelease && meta.methodologyPins
+                  ? { methodologyPins: meta.methodologyPins }
+                  : {}),
               }),
             ),
           }),
@@ -3758,13 +3758,7 @@ export const handler = async (event, context) => {
           patch.skipStageIds = effSkips;
         }
         if (!effGrid) {
-          const scopes = await loadWorkflowScopes({
-            ddb,
-            tableName: BLOCKS_TABLE(),
-            workflowId: meta.workflowId,
-            workflowVersion: meta.workflowVersion,
-            ...releasePlanOptions(meta),
-          });
+          const scopes = await intentMethodology.loadScopes(meta);
           if (!scopes.includes(effScope)) {
             return response(400, {
               error: `Unknown scope "${effScope}" for workflow "${meta.workflowId}"`,
@@ -3772,16 +3766,10 @@ export const handler = async (event, context) => {
             });
           }
         }
-        const planCheck = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId: meta.workflowId,
-          workflowVersion: meta.workflowVersion,
+        const planCheck = await intentMethodology.loadPlan(meta, {
           scope: effScope,
-          ...(effSkips?.length ? { skipStageIds: effSkips } : {}),
-          ...(effGrid ? { composedGrid: effGrid } : {}),
-          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-          ...releasePlanOptions(meta),
+          skipStageIds: effSkips ?? null,
+          composedGrid: effGrid ?? null,
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -4022,19 +4010,7 @@ export const handler = async (event, context) => {
         return response(409, { error: 'No active lanes are available to repair' });
       }
 
-      const planResult = await loadExecutionPlan({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId: meta.workflowId,
-        workflowVersion: meta.workflowVersion,
-        scope: meta.scope,
-        ...(Array.isArray(meta.skipStageIds) && meta.skipStageIds.length
-          ? { skipStageIds: meta.skipStageIds }
-          : {}),
-        ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-        ...releasePlanOptions(meta),
-      });
+      const planResult = await intentMethodology.loadPlan(meta);
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
           error: 'Execution plan cannot be resolved for repair',
@@ -4406,17 +4382,7 @@ export const handler = async (event, context) => {
       const priorSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
       const unskipping = priorSkipIds.includes(requestedFromStageId);
       const rewindSkipIds = priorSkipIds.filter((id) => id !== requestedFromStageId);
-      const planResult = await loadExecutionPlan({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId: meta.workflowId,
-        workflowVersion: meta.workflowVersion,
-        scope: meta.scope,
-        ...(rewindSkipIds.length ? { skipStageIds: rewindSkipIds } : {}),
-        ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-        ...releasePlanOptions(meta),
-      });
+      const planResult = await intentMethodology.loadPlan(meta, { skipStageIds: rewindSkipIds });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
           error: 'Execution plan cannot be resolved',
@@ -4793,16 +4759,8 @@ export const handler = async (event, context) => {
       // scheduled state — their membership can only change via rewind.
       const unitPlan = await store.getUnitPlan(intentId).catch(() => null);
       if (unitPlan) {
-        const currentPlanResult = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId: meta.workflowId,
-          workflowVersion: meta.workflowVersion,
-          scope: meta.scope,
-          ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
-          ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
-          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-          ...releasePlanOptions(meta),
+        const currentPlanResult = await intentMethodology.loadPlan(meta, {
+          skipStageIds: priorSkipIds,
         });
         const currentSectionIds = new Set(
           (currentPlanResult.plan?.stages ?? [])
@@ -4827,16 +4785,10 @@ export const handler = async (event, context) => {
       // Strict resolution of the NEW projection (starved required inputs are
       // hard errors mid-run — a stage must never park waiting for an input
       // nothing will write).
-      const planResult = await loadExecutionPlan({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId: meta.workflowId,
-        workflowVersion: meta.workflowVersion,
+      const planResult = await intentMethodology.loadPlan(meta, {
         scope: newScope,
         composedGrid: newGrid,
-        ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-        ...releasePlanOptions(meta),
+        skipStageIds: priorSkipIds,
         strict: true,
       });
       if (!planResult.valid || !planResult.plan) {
@@ -5025,18 +4977,6 @@ export const handler = async (event, context) => {
       const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
       if (!records.meta || records.meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
-      }
-      if (event.queryStringParameters?.view === 'workflow-preview') {
-        return response(200, {
-          workflowIntent: {
-            id: records.meta.intentId,
-            projectId: records.meta.projectId,
-            workflowId: records.meta.workflowId,
-            workflowVersion: records.meta.workflowVersion,
-            methodologyRelease: records.meta.methodologyRelease ?? null,
-            methodologyPins: records.meta.methodologyPins ?? null,
-          },
-        });
       }
       const artifacts = await fetchArtifacts(g, intentId);
       const pullRequests = await fetchPullRequests(g, intentId);
@@ -5235,7 +5175,7 @@ export const handler = async (event, context) => {
           throw error;
         }
       }
-      const selectedReleasePin = selectedRelease ? releasePinFromRecord(selectedRelease) : null;
+      let selectedReleasePin = selectedRelease ? releasePinFromRecord(selectedRelease) : null;
       // Allowed, but loud: the intent pins a closure an older importer produced,
       // so it misses every field later mappers learned until an admin upgrades
       // the record (PATCH /aidlc-releases/{releaseId} {importerRevision}).
@@ -5324,7 +5264,7 @@ export const handler = async (event, context) => {
       // Non-fatal `warnings` (scope-shortcut degradations: inputs whose
       // producer is out of scope, sections downgraded to once-per-workflow)
       // are persisted on the intent so the UI can surface the degraded run.
-      const planCheck = await loadExecutionPlan({
+      let planCheck = await loadExecutionPlan({
         ddb,
         tableName: BLOCKS_TABLE(),
         workflowId,
@@ -5334,6 +5274,47 @@ export const handler = async (event, context) => {
         ...(composedGrid ? { composedGrid } : {}),
         ...selectedReleaseOptions,
       });
+      // A stable channel is an implicit default, so an overlay it cannot apply
+      // must degrade the way the no-channel path degrades rather than blocking
+      // every create in the space. An explicitly requested release stays
+      // strict. The base release is verified first, so a corrupt closure is
+      // never mistaken for an incompatible user fork.
+      if (
+        !planCheck.valid &&
+        selectedReleasePin &&
+        !requestedReleaseId &&
+        selectedReleaseOptions.methodologyPins
+      ) {
+        const baseReleasePlan = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId,
+          workflowVersion,
+          scope,
+          ...(skipStageIds ? { skipStageIds } : {}),
+          ...(composedGrid ? { composedGrid } : {}),
+          methodologyRelease: selectedReleasePin,
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+        });
+        if (baseReleasePlan.valid) {
+          logger.warn('Stable AI-DLC release is incompatible with the user overlay', {
+            releaseId: selectedReleasePin.releaseId,
+            errors: planCheck.errors ?? [],
+          });
+          selectedReleasePin = null;
+          selectedReleaseOptions = {};
+          planCheck = await loadExecutionPlan({
+            ddb,
+            tableName: BLOCKS_TABLE(),
+            workflowId,
+            workflowVersion,
+            scope,
+            ...(skipStageIds ? { skipStageIds } : {}),
+            ...(composedGrid ? { composedGrid } : {}),
+          });
+        }
+      }
       if (!planCheck.valid) {
         return response(400, {
           error: composedGrid
@@ -5420,6 +5401,14 @@ export const handler = async (event, context) => {
                 'The deployment-ref closure does not match its eligible registry row',
               );
             }
+            // Scope discovery maps a permanent resolution failure to an empty
+            // vocabulary, so read the closure first: without this an unreadable
+            // closure is indistinguishable from an incompatible scope.
+            await loadReleaseClosure({
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+              methodologyRelease: candidatePin,
+            });
             const candidateMethodologyPins = await snapshotUserMethodologyPins(
               planCheck.methodologyPins,
             );
@@ -5455,6 +5444,15 @@ export const handler = async (event, context) => {
               methodologyRelease = candidatePin;
               methodologyPins = releasePlan.methodologyPins;
               workflowVersion = releasePlan.workflowVersion ?? workflowVersion;
+            } else if (
+              (releasePlan.errors ?? []).some((error) =>
+                String(error.code ?? '').startsWith('release_'),
+              )
+            ) {
+              return response(503, {
+                error: 'The published AI-DLC release could not be verified',
+                code: 'release_resolution_failed',
+              });
             } else {
               logger.warn(
                 'The published AI-DLC release cannot reproduce this plan; intent stays unpinned',
@@ -5473,9 +5471,31 @@ export const handler = async (event, context) => {
             });
           }
         } catch (error) {
-          logger.warn('AI-DLC release manifest lookup failed; intent stays unpinned', error, {
-            aidlcRepoRef,
-          });
+          // Only a genuine "not published / not eligible" answer may fall back
+          // to an unpinned intent. Everything else (a denied or corrupt
+          // manifest, a throttled registry read) means the lookup could not be
+          // completed, and downgrading that to "does not exist" would silently
+          // unpin intents on a permissions regression.
+          if (
+            isReleaseRegistryError(error) &&
+            error.details?.verificationError !== true &&
+            [
+              'release_not_found',
+              'release_not_selectable',
+              'release_capability_unhandled',
+            ].includes(error.code)
+          ) {
+            logger.warn('Deployment-ref AI-DLC release is not eligible; intent stays unpinned', {
+              aidlcRepoRef,
+              code: error.code,
+            });
+          } else {
+            logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
+            return response(503, {
+              error: 'The published AI-DLC release could not be resolved',
+              code: 'release_resolution_failed',
+            });
+          }
         }
       }
       // Optional per-repo base-branch override (see validateBaseBranches) —
@@ -5527,6 +5547,20 @@ export const handler = async (event, context) => {
         }
         throw error;
       }
+      // Refuse a strategy the space's providers cannot honour now, before the
+      // execution exists, rather than failing its first unit lane later.
+      const prStrategy = effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy);
+      try {
+        assertPrStrategySupported(
+          prStrategy,
+          (cfg.repos ?? []).map((repo) =>
+            sharedRepoProvider(repo, cfg.gitProvider, cfg.repoProviders),
+          ),
+        );
+      } catch (error) {
+        if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
+        return response(409, { error: error.message, code: error.code });
+      }
       const meta = await store.createExecution({
         executionId: newIntentId,
         projectId,
@@ -5555,7 +5589,7 @@ export const handler = async (event, context) => {
         deriveEnrichment: await fetchDeriveEnrichment(),
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,
-        prStrategy: effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy),
+        prStrategy,
         stageSkipping,
         skipStageIds,
         composedGrid,

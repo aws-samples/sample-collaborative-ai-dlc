@@ -261,6 +261,75 @@ describe('runStageSensors — script kind', () => {
     expect(verdicts[0]).toMatchObject({ result: 'BLOCKED', held: true });
   });
 
+  it('holds an advisory sensor on a typed release-integrity failure', async () => {
+    await writeFile(path.join(ws, 'a.ts'), 'x');
+    const error = Object.assign(new Error('release script digest mismatch'), {
+      name: 'ReleaseResolverError',
+      code: 'release_closure_mismatch',
+    });
+    const runner = createSensorRunner({
+      graph: null,
+      loadBlockScript: async () => {
+        throw error;
+      },
+      workspaceDir: ws,
+      spawnFn: fakeSpawn('{}'),
+    });
+    const verdicts = await runner.runStageSensors({
+      sensors: [
+        {
+          sensorId: 'linter',
+          severity: 'advisory',
+          runtime: 'bun',
+          command: 'bun x.ts',
+          matches: '**/*.ts',
+          timeoutSeconds: 5,
+          scriptRef: { s3Key: 'blocks/scripts/sha256/abc123' },
+        },
+      ],
+      stageId: 's',
+    });
+
+    expect(verdicts[0]).toMatchObject({
+      result: 'BLOCKED',
+      severity: 'advisory',
+      held: true,
+      detail: {
+        code: 'release_closure_mismatch',
+        releaseIntegrityFailure: true,
+      },
+    });
+  });
+
+  it('keeps an advisory sensor non-blocking when its legacy script is absent', async () => {
+    await writeFile(path.join(ws, 'a.ts'), 'x');
+    const runner = createSensorRunner({
+      graph: null,
+      loadBlockScript: async () => '',
+      workspaceDir: ws,
+      spawnFn: fakeSpawn('{}'),
+    });
+    const verdicts = await runner.runStageSensors({
+      sensors: [
+        {
+          sensorId: 'linter',
+          severity: 'advisory',
+          runtime: 'bun',
+          command: 'bun x.ts',
+          matches: '**/*.ts',
+          timeoutSeconds: 5,
+        },
+      ],
+      stageId: 's',
+    });
+
+    expect(verdicts[0]).toMatchObject({
+      result: 'BLOCKED',
+      held: false,
+      detail: { error: 'sensor has no script' },
+    });
+  });
+
   // Regression for the plan→runner scriptRef contract. The PROD loadBlockScript
   // reads sensor.scriptRef.s3Key from S3; here we mimic that (return bytes if
   // the sensor carries a scriptRef) instead of the argument-ignoring stub the

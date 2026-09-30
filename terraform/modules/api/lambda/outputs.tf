@@ -173,6 +173,26 @@ output "bitbucket_lambda_name" {
   value       = module.bitbucket_lambda.lambda_function_name
 }
 
+output "codecommit_lambda_arn" {
+  description = "ARN of the codecommit Lambda function"
+  value       = module.codecommit_lambda.lambda_function_arn
+}
+
+output "codecommit_lambda_invoke_arn" {
+  description = "Invoke ARN of the codecommit Lambda function"
+  value       = module.codecommit_lambda.lambda_function_invoke_arn
+}
+
+output "codecommit_lambda_name" {
+  description = "Name of the codecommit Lambda function"
+  value       = module.codecommit_lambda.lambda_function_name
+}
+
+output "codecommit_platform_principals" {
+  description = "Execution role ARNs a tenant CodeCommit access role must trust (comma-separated)"
+  value       = local.codecommit_platform_principals
+}
+
 output "source_control_lambda_arn" {
   description = "ARN of the project source-control Lambda"
   value       = module.source_control_lambda.lambda_function_arn

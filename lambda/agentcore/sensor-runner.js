@@ -16,9 +16,11 @@
 //     (one run per matching file). `linter`, `type-check`. Inert until a stage
 //     actually writes code to the workspace; an empty match → INCONCLUSIVE.
 //
-// Severity governs the consequence: an `advisory` sensor NEVER holds a stage
-// (it records a note + broadcasts); a `blocking` sensor that does not PASS marks
-// the stage held. `run-stage` decides what to do with a held verdict.
+// Severity governs the consequence for a verdict the sensor actually produced:
+// an `advisory` sensor NEVER holds a stage (it records a note + broadcasts); a
+// `blocking` sensor that does not PASS marks the stage held. A release integrity
+// or dependency failure holds either severity, because the pinned check could
+// not be executed at all. `run-stage` decides what to do with a held verdict.
 
 import { spawn } from 'node:child_process';
 import { writeFile, mkdir, readdir } from 'node:fs/promises';
@@ -205,6 +207,14 @@ const resultFromScript = ({ exitCode, stdout }) => {
   return { result: resultFromExit(exitCode), detail: null };
 };
 
+// A pinned sensor whose script could not be verified or read has not produced a
+// verdict at all, so its severity does not apply — the check is missing, which is
+// the drift the release pin exists to prevent.
+const isReleaseDependencyError = (error) =>
+  ['ReleaseResolverError', 'AidlcReleaseError'].includes(error?.name) &&
+  (String(error.code ?? '').startsWith('release_') ||
+    ['unpinned_user_block', 'user_block_missing'].includes(error.code));
+
 // Create the sensor runner. `graph` is the graph-writer (for reading produced
 // artifact content); `loadBlockScript` fetches a sensor's `.ts` from S3;
 // `workspaceDir` is the session checkout root; `substitutions` is the
@@ -332,12 +342,28 @@ export const createSensorRunner = ({
     // the spawned interpreter can load it. The block carries the scriptRef.
     // A release-mode integrity failure surfaces as BLOCKED with the reason
     // attached rather than a bare "no script": the verdict must not read as if
-    // the sensor simply had nothing to run.
+    // the sensor simply had nothing to run. It also holds regardless of
+    // severity, because the pinned check could not be executed at all.
     let script = '';
     let scriptError = null;
     try {
       script = await loadBlockScript(sensor);
     } catch (error) {
+      if (isReleaseDependencyError(error)) {
+        return {
+          result: SENSOR_RESULT.BLOCKED,
+          fatal: true,
+          detail: {
+            error: error.message,
+            name: error.name,
+            code: error.code,
+            releaseIntegrityFailure: true,
+            ...(error.details ? { details: error.details } : {}),
+          },
+        };
+      }
+      // Legacy and user-block loader errors stay best-effort: a missing script
+      // has always produced an advisory note rather than holding the stage.
       scriptError = error;
     }
     if (!script) {
@@ -422,7 +448,8 @@ export const createSensorRunner = ({
       } catch (e) {
         outcome = { result: SENSOR_RESULT.BLOCKED, detail: { error: e.message } };
       }
-      const { held } = severityGate(outcome.result, sensor.severity);
+      const { held: severityHeld } = severityGate(outcome.result, sensor.severity);
+      const held = outcome.fatal === true || severityHeld;
       verdicts.push({
         sensorId: sensor.sensorId,
         kind,

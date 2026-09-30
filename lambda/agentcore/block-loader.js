@@ -267,7 +267,20 @@ const loadVerifiedReleaseObject = async ({ ref, methodologyRelease, label }) => 
       { details: { s3Key, label } },
     );
   }
-  const content = await getObjectText(s3Key);
+  // A raw S3 failure (AccessDenied, NoSuchKey, a transport error) must surface
+  // as a release dependency failure, not as an untyped error a caller might
+  // degrade to an empty body: for a pinned block "could not read" is as fatal
+  // as "does not match".
+  let content;
+  try {
+    content = await getObjectText(s3Key);
+  } catch (error) {
+    throw new ReleaseResolverError(
+      'release_object_unreadable',
+      `block-loader: ${label} object ${s3Key} could not be read for release ${closure.releaseId}`,
+      { cause: error, details: { s3Key, label } },
+    );
+  }
   if (sha256(content) !== expected) {
     throw new ReleaseResolverError(
       'release_closure_mismatch',

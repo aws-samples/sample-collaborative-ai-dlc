@@ -931,6 +931,9 @@ const mergeBranch = async (ctx, repoId, { base, head, message }) => {
 };
 
 const apiBase = API_BASE;
+// No `capabilities` export: GitHub supports the full contract, which is exactly
+// git-providers.js DEFAULT_CAPABILITIES (getCapabilities merges it in).
+
 export {
   id,
   displayName,
