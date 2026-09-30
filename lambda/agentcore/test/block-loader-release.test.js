@@ -352,6 +352,34 @@ describe('loadBlockBody / loadBlockScript — release-mode integrity', () => {
     });
   });
 
+  it.each([
+    ['access denied', () => Object.assign(new Error('denied'), { name: 'AccessDenied' })],
+    ['throttled', () => Object.assign(new Error('slow down'), { name: 'SlowDown' })],
+  ])(
+    'reports an unreadable release manifest as a typed release failure: %s',
+    async (_label, failure) => {
+      const sensor = sensorBlock();
+      fixtures.s3Mock
+        .on(GetObjectCommand, { Bucket: BUCKET, Key: pinA.manifestKey })
+        .rejects(failure());
+
+      await expect(loadBlockScript(sensor, { methodologyRelease: pinA })).rejects.toMatchObject({
+        name: 'ReleaseResolverError',
+        code: 'release_object_unreadable',
+      });
+    },
+  );
+
+  it('reports a corrupt release manifest as a typed release failure', async () => {
+    const sensor = sensorBlock();
+    fixtures.store.set(pinA.manifestKey, '{');
+
+    await expect(loadBlockScript(sensor, { methodologyRelease: pinA })).rejects.toMatchObject({
+      name: 'ReleaseResolverError',
+      code: 'release_object_unreadable',
+    });
+  });
+
   it('refuses a block whose ref carries no digest and which the closure does not list', async () => {
     await expect(
       loadBlockBody(
