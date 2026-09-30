@@ -514,9 +514,12 @@ const outputsFingerprint = (rows = []) =>
       .toSorted(),
   );
 
-// Run the authored topology. NEVER throws and NEVER fails the stage: the return is
+// Run the authored topology. NEVER fails the stage by itself: the return is
 // always `{ ensembleEvidence, findings }`, and an unexpected error becomes a gap
-// the human reads at the gate.
+// the human reads at the gate. The one exception is an error `isFatalLoadError`
+// accepts (run-stage passes typed release failures for a pinned intent): a
+// persona's pinned knowledge that cannot be verified is rethrown before that
+// persona is dispatched, so the caller can fail the stage closed.
 export const runEnsembleSessions = async ({
   topology,
   stage,
@@ -531,6 +534,7 @@ export const runEnsembleSessions = async ({
   dispatchContext = {},
   dispatch = dispatchPersona,
   knowledgeFor = async () => '',
+  isFatalLoadError = () => false,
   readContributions = async () => [],
   // The current rows of this stage's DECLARED OUTPUT artifacts. Injected like
   // readContributions, because "did this session write?" is a graph question and
@@ -688,7 +692,12 @@ export const runEnsembleSessions = async ({
         agentBlock,
         persona,
         // The reduced retry drops the knowledge block too.
-        knowledge: reduced ? '' : await knowledgeFor(agentRef).catch(() => ''),
+        knowledge: reduced
+          ? ''
+          : await knowledgeFor(agentRef).catch((error) => {
+              if (isFatalLoadError(error)) throw error;
+              return '';
+            }),
         brief: brief(reduced),
         personaScope: { ...personaScope, agentRef, canAsk },
         ...dispatchContext,
@@ -789,6 +798,7 @@ export const runEnsembleSessions = async ({
       });
     }
   } catch (error) {
+    if (isFatalLoadError(error)) throw error;
     // The conservative floor: an orchestration surprise degrades to a gap the
     // human sees, never to a failed stage.
     logger?.error?.('ensemble orchestration degraded', {

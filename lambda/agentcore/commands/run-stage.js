@@ -97,7 +97,7 @@ import { workspaceRelativePath } from '../repo-paths.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
-import { createSensorRunner } from '../sensor-runner.js';
+import { createSensorRunner, isReleaseDependencyError } from '../sensor-runner.js';
 import {
   evaluateGatePreconditions,
   mergeFindings,
@@ -3312,6 +3312,10 @@ export const runStage = async (
   // aggregate deadline (`stageDeadlineMs`): a persona past it becomes a GAP.
   let ensembleEvidence = null;
   let stageFindings = [];
+  // A typed release failure on a persona or knowledge body read during the
+  // ensemble sessions below. It fails the stage, but only after the engine
+  // commit, so the lead's work is still made durable.
+  let releaseBodyFailure = null;
   if (ensemble) {
     const leadParked = await pendingGate({
       store,
@@ -3346,8 +3350,19 @@ export const runStage = async (
     } else {
       const stageRow = await store.getStage?.(executionId, stageInstanceId).catch(() => null);
       const attempt = Number(stageRow?.attempt ?? 0);
-      const leadPersona =
-        leadPersonaBody ?? (agentBlock ? await loadBody(agentBlock).catch(() => '') : '');
+      // A resume leg never materialized a prompt, so the lead persona is re-read
+      // here. For a pinned intent a typed release failure (digest mismatch,
+      // unreadable object, unresolvable overlay) must not seat the integration
+      // session on an empty persona: the sessions are skipped and the stage fails
+      // after the commit below. Any other error keeps the lenient fallback.
+      let leadPersona = leadPersonaBody ?? '';
+      if (leadPersonaBody == null && agentBlock) {
+        try {
+          leadPersona = await loadBody(agentBlock);
+        } catch (error) {
+          if (methodologyRelease && isReleaseDependencyError(error)) releaseBodyFailure = error;
+        }
+      }
       const dispatchContext = {
         stageId,
         stageAttempt: attempt,
@@ -3405,8 +3420,30 @@ export const runStage = async (
       // these stages already run under the single-session approximation and a
       // regression here must not block a real intent.
       let ensembleResult = null;
+      if (releaseBodyFailure) {
+        await store
+          .appendEvent({
+            executionId,
+            type: 'v2.persona.gap',
+            stageInstanceId,
+            unitSlug,
+            sectionIndex,
+            actor: 'agentcore',
+            summary: `Ensemble sessions skipped for ${stageId}: the pinned lead persona could not be verified (${releaseBodyFailure.message})`,
+            detail: {
+              mode: ensemble.mode,
+              role: 'ensemble',
+              reason: 'lead_persona_unavailable',
+              code: releaseBodyFailure.code ?? null,
+              attempt,
+            },
+          })
+          .catch(() => {});
+      }
+      // Skipping keeps ensembleResult null, so no receipts or evidence are recorded.
+      const runSessions = releaseBodyFailure ? async () => null : runEnsembleSessions;
       try {
-        ensembleResult = await runEnsembleSessions({
+        ensembleResult = await runSessions({
           topology: ensemble,
           stage,
           unit,
@@ -3423,6 +3460,8 @@ export const runStage = async (
               loadBlockBody: loadBody,
               methodologyRelease,
             }),
+          isFatalLoadError: (error) =>
+            Boolean(methodologyRelease) && isReleaseDependencyError(error),
           readContributions: () =>
             withGraph(
               (writer) =>
@@ -3468,6 +3507,10 @@ export const runStage = async (
           logger,
         });
       } catch (error) {
+        // A typed release failure the runner rethrew (pinned persona knowledge
+        // that could not be verified) is recorded like any other ensemble error,
+        // and then fails the stage after the commit below.
+        if (methodologyRelease && isReleaseDependencyError(error)) releaseBodyFailure = error;
         logger.error('ensemble sessions degraded', {
           stage: stageId,
           mode: ensemble.mode,
@@ -3485,7 +3528,8 @@ export const runStage = async (
             detail: {
               mode: ensemble.mode,
               role: 'ensemble',
-              reason: 'ensemble_error',
+              reason: releaseBodyFailure ? 'persona_knowledge_unavailable' : 'ensemble_error',
+              ...(releaseBodyFailure ? { code: releaseBodyFailure.code ?? null } : {}),
               attempt,
             },
           })
@@ -3792,6 +3836,13 @@ export const runStage = async (
     // 'git_commit_failed' is the new durability failure (work never became a
     // commit at all — the loss mode the engine exists to close).
     return fail(stageInstanceId, uncommitted ? 'git_commit_failed' : 'push_failed', detail);
+  }
+  if (releaseBodyFailure) {
+    return fail(
+      stageInstanceId,
+      'methodology_body_unavailable',
+      releaseBodyFailure.message ?? String(releaseBodyFailure),
+    );
   }
 
   // The lead repair turn: re-enter the SAME conversation with one deterministic

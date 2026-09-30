@@ -558,3 +558,145 @@ describe('runStage — the lead session carries its own trusted identity', () =>
     expect(materialized[0].scope).not.toHaveProperty('agentRef');
   });
 });
+
+// A resume leg never materializes a prompt, so the lead's persona body for its
+// integration session is re-read after the lead has run. For a pinned intent that
+// read is release-backed and must fail closed like the fresh leg does; anything
+// else keeps the lenient empty-persona fallback.
+describe('runStage — native ensemble sessions: the lead persona on a resume leg', () => {
+  const resumeHarness = (bodyError) => {
+    const { deps, store } = harness({ mode: 'mob' });
+    const humanTaskId = 'gate-resume-2';
+    const spawned = [];
+    const commits = [];
+    store.getStage = async () => ({
+      stageInstanceId: STAGE_INSTANCE_ID,
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: humanTaskId,
+      cli: 'claude',
+      cliSessionId: 'session-1',
+      attempt: 0,
+    });
+    store.getHumanTask = async () => ({
+      humanTaskId,
+      status: 'answered',
+      answer: 'Continue with the approved scope.',
+      createdAt: 'T',
+    });
+    const loadBody = deps.loadBlockBody;
+    deps.loadBlockBody = async (block, options) => {
+      if (block?.bodyRef?.s3Key === 'blocks/bodies/sha256/agent') throw bodyError;
+      return loadBody(block, options);
+    };
+    deps.spawnFn = () => {
+      spawned.push('spawn');
+      return okSpawn();
+    };
+    deps.commitAndPushAll = async (args) => {
+      commits.push(args);
+      return { ok: true, committed: false, results: [] };
+    };
+    const run = () =>
+      runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN, resumeFrom: humanTaskId }, deps);
+    return { run, store, spawned, commits };
+  };
+
+  it.each([
+    ['a digest mismatch', 'ReleaseResolverError', 'release_digest_mismatch'],
+    ['an unreadable release object', 'ReleaseResolverError', 'release_object_unreadable'],
+  ])(
+    'fails a pinned stage after committing when the lead persona has %s',
+    async (_label, name, code) => {
+      const { run, store, spawned, commits } = resumeHarness(
+        Object.assign(new Error(`release body failed: ${code}`), { name, code }),
+      );
+
+      const result = await run();
+
+      expect(result).toMatchObject({ ok: false, reason: 'methodology_body_unavailable' });
+      // Only the lead's own resumed session ran; no persona was seated without
+      // its pinned persona, and the lead's work was still made durable.
+      expect(spawned).toHaveLength(1);
+      expect(commits.length).toBeGreaterThan(0);
+      expect(store.receipts).toEqual([]);
+      expect(
+        store.calls.some(
+          ([name, event]) =>
+            name === 'appendEvent' && event.detail?.reason === 'lead_persona_unavailable',
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it('keeps the empty-persona fallback for a lead persona error outside release resolution', async () => {
+    const { run } = resumeHarness(new Error('transient read failure'));
+
+    const result = await run();
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+  });
+});
+
+// A support persona's methodology knowledge is read inside the ensemble runner,
+// which degrades every surprise to a gap. For a pinned intent a typed release
+// failure on that read is a tampered or missing pinned body, so the persona must
+// not be dispatched without it and the stage fails once the lead's work is durable.
+describe('runStage — native ensemble sessions: support knowledge on a pinned run', () => {
+  const knowledgeHarness = (bodyError) => {
+    const { deps, store } = harness({ mode: 'mob' });
+    const base = library('mob');
+    deps.loadLibrary = async () => ({
+      workflow: workflow(),
+      library: {
+        ...base,
+        knowledgeById: {
+          'architect-notes': {
+            id: 'architect-notes',
+            agentRef: 'aidlc-architect-agent',
+            bodyRef: { s3Key: 'blocks/bodies/sha256/architect-notes' },
+          },
+        },
+      },
+    });
+    const loadBody = deps.loadBlockBody;
+    deps.loadBlockBody = async (block, options) => {
+      if (block?.bodyRef?.s3Key === 'blocks/bodies/sha256/architect-notes') throw bodyError;
+      return loadBody(block, options);
+    };
+    const spawned = [];
+    deps.spawnFn = () => {
+      spawned.push('spawn');
+      return okSpawn();
+    };
+    const commits = [];
+    deps.commitAndPushAll = async (args) => {
+      commits.push(args);
+      return { ok: true, committed: false, results: [] };
+    };
+    return { deps, store, spawned, commits };
+  };
+
+  it('fails the stage after committing instead of dispatching the support without its knowledge', async () => {
+    const { deps, spawned, commits } = knowledgeHarness(
+      Object.assign(new Error('release body failed: release_digest_mismatch'), {
+        name: 'ReleaseResolverError',
+        code: 'release_digest_mismatch',
+      }),
+    );
+
+    const result = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+
+    expect(result).toMatchObject({ ok: false, reason: 'methodology_body_unavailable' });
+    expect(spawned).toHaveLength(1);
+    expect(commits.length).toBeGreaterThan(0);
+  });
+
+  it('still dispatches the support on a knowledge error outside release resolution', async () => {
+    const { deps, spawned } = knowledgeHarness(new Error('transient read failure'));
+
+    const result = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(spawned.length).toBeGreaterThan(1);
+  });
+});
