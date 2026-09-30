@@ -40,6 +40,7 @@ import { commandDefinition } from '../shared/agent-command-registry.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
+import { intentMethodologyOptions } from '../shared/intent-methodology.js';
 import {
   planSegments,
   stageInstanceId as planStageInstanceId,
@@ -175,11 +176,6 @@ const defaultSourceControlOperation = async ({
 
 const repoProvider = (meta, repoId) =>
   sharedRepoProvider(repoId, meta.gitProvider, meta.repoProviders);
-
-const releasePlanOptions = (meta) =>
-  meta?.methodologyRelease
-    ? { methodologyRelease: meta.methodologyRelease, s3, bucket: ARTIFACTS_BUCKET() }
-    : {};
 
 // Map a timeline event type to the live broadcast payload the UI routes on
 // (useIntentEvents → refetch on agent.workspace / agent.execution). The
@@ -626,8 +622,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         scope,
         ...(intentSkipIds.length ? { skipStageIds: intentSkipIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-        ...releasePlanOptions(meta),
+        ...intentMethodologyOptions(meta, { s3, bucket: ARTIFACTS_BUCKET }),
       }),
     );
     if (!planResult.valid || !planResult.plan) {

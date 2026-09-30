@@ -51,6 +51,7 @@ import {
   listMergedBlocks,
 } from '../shared/v2-workflow-plan.js';
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
+import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
 import {
   assertPrStrategySupported,
@@ -1546,13 +1547,13 @@ const snapshotUserMethodologyPins = async (methodologyPins) => {
   return Object.keys(pins).length ? pins : null;
 };
 
-// Release-mode plumbing for every plan/scope resolution of one intent. Absent a
-// pin this contributes nothing, so unpinned intents keep the exact DynamoDB
-// behaviour they had before issue #482.
-const releasePlanOptions = (meta) =>
-  meta?.methodologyRelease
-    ? { methodologyRelease: meta.methodologyRelease, s3, bucket: ARTIFACTS_BUCKET() }
-    : {};
+// All reads for a created intent derive methodology from its stored snapshot.
+const intentMethodology = createIntentMethodologyLoader({
+  ddb,
+  tableName: BLOCKS_TABLE,
+  s3,
+  bucket: ARTIFACTS_BUCKET,
+});
 
 const methodologyRefsMatch = (planResult, expectedRef) => {
   const refs = planResult?.methodologySourceRefs ?? [];
@@ -1580,12 +1581,7 @@ const loadNativeExportPlan = async (meta) => {
   // so export resolves it directly and never touches the reseedable SYSTEM rows
   // or the legacy catalog rebuild below.
   if (meta.methodologyRelease) {
-    return loadExecutionPlan({
-      ddb,
-      tableName: BLOCKS_TABLE(),
-      ...options,
-      ...releasePlanOptions(meta),
-    });
+    return intentMethodology.loadPlan(meta);
   }
   try {
     currentResult = await loadExecutionPlan({
@@ -2242,21 +2238,7 @@ export const handler = async (event, context) => {
       // read evidence when it cannot be resolved (never block the warning).
       let plan = null;
       try {
-        const planResult = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId: records.meta.workflowId,
-          workflowVersion: records.meta.workflowVersion,
-          scope: records.meta.scope,
-          ...(Array.isArray(records.meta.skipStageIds) && records.meta.skipStageIds.length
-            ? { skipStageIds: records.meta.skipStageIds }
-            : {}),
-          ...(records.meta.composedGrid ? { composedGrid: records.meta.composedGrid } : {}),
-          ...(records.meta.methodologyPins
-            ? { methodologyPins: records.meta.methodologyPins }
-            : {}),
-          ...releasePlanOptions(records.meta),
-        });
+        const planResult = await intentMethodology.loadPlan(records.meta);
         plan = planResult.valid ? planResult.plan : null;
       } catch {
         plan = null;
@@ -2925,16 +2907,9 @@ export const handler = async (event, context) => {
           effectiveGrid,
         );
         if (effectiveGrid) skipOverride = effectiveSkips;
-        const planCheck = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId: meta.workflowId,
-          workflowVersion: meta.workflowVersion,
-          scope: meta.scope,
-          ...(effectiveSkips?.length ? { skipStageIds: effectiveSkips } : {}),
-          ...(effectiveGrid ? { composedGrid: effectiveGrid } : {}),
-          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-          ...releasePlanOptions(meta),
+        const planCheck = await intentMethodology.loadPlan(meta, {
+          skipStageIds: effectiveSkips ?? null,
+          composedGrid: effectiveGrid ?? null,
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -3343,14 +3318,10 @@ export const handler = async (event, context) => {
           : await listMergedBlocks(ddb, BLOCKS_TABLE(), 'SCOPE').catch(() => []);
         const match = matchScopeByKeywords({ text: intentText, scopes: scopeBlocks });
         if (match) {
-          const planCheck = await loadExecutionPlan({
-            ddb,
-            tableName: BLOCKS_TABLE(),
-            workflowId: meta.workflowId,
-            workflowVersion: meta.workflowVersion,
+          const planCheck = await intentMethodology.loadPlan(meta, {
             scope: match.scopeId,
-            ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-            ...releasePlanOptions(meta),
+            skipStageIds: null,
+            composedGrid: null,
           });
           if (planCheck.valid) {
             const row = await store.createCompose({
@@ -3618,13 +3589,7 @@ export const handler = async (event, context) => {
           patch.skipStageIds = effSkips;
         }
         if (!effGrid) {
-          const scopes = await loadWorkflowScopes({
-            ddb,
-            tableName: BLOCKS_TABLE(),
-            workflowId: meta.workflowId,
-            workflowVersion: meta.workflowVersion,
-            ...releasePlanOptions(meta),
-          });
+          const scopes = await intentMethodology.loadScopes(meta);
           if (!scopes.includes(effScope)) {
             return response(400, {
               error: `Unknown scope "${effScope}" for workflow "${meta.workflowId}"`,
@@ -3632,16 +3597,10 @@ export const handler = async (event, context) => {
             });
           }
         }
-        const planCheck = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId: meta.workflowId,
-          workflowVersion: meta.workflowVersion,
+        const planCheck = await intentMethodology.loadPlan(meta, {
           scope: effScope,
-          ...(effSkips?.length ? { skipStageIds: effSkips } : {}),
-          ...(effGrid ? { composedGrid: effGrid } : {}),
-          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-          ...releasePlanOptions(meta),
+          skipStageIds: effSkips ?? null,
+          composedGrid: effGrid ?? null,
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -3882,19 +3841,7 @@ export const handler = async (event, context) => {
         return response(409, { error: 'No active lanes are available to repair' });
       }
 
-      const planResult = await loadExecutionPlan({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId: meta.workflowId,
-        workflowVersion: meta.workflowVersion,
-        scope: meta.scope,
-        ...(Array.isArray(meta.skipStageIds) && meta.skipStageIds.length
-          ? { skipStageIds: meta.skipStageIds }
-          : {}),
-        ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-        ...releasePlanOptions(meta),
-      });
+      const planResult = await intentMethodology.loadPlan(meta);
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
           error: 'Execution plan cannot be resolved for repair',
@@ -4266,17 +4213,7 @@ export const handler = async (event, context) => {
       const priorSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
       const unskipping = priorSkipIds.includes(requestedFromStageId);
       const rewindSkipIds = priorSkipIds.filter((id) => id !== requestedFromStageId);
-      const planResult = await loadExecutionPlan({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId: meta.workflowId,
-        workflowVersion: meta.workflowVersion,
-        scope: meta.scope,
-        ...(rewindSkipIds.length ? { skipStageIds: rewindSkipIds } : {}),
-        ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-        ...releasePlanOptions(meta),
-      });
+      const planResult = await intentMethodology.loadPlan(meta, { skipStageIds: rewindSkipIds });
       if (!planResult.valid || !planResult.plan) {
         return response(409, {
           error: 'Execution plan cannot be resolved',
@@ -4653,16 +4590,8 @@ export const handler = async (event, context) => {
       // scheduled state — their membership can only change via rewind.
       const unitPlan = await store.getUnitPlan(intentId).catch(() => null);
       if (unitPlan) {
-        const currentPlanResult = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId: meta.workflowId,
-          workflowVersion: meta.workflowVersion,
-          scope: meta.scope,
-          ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
-          ...(meta.composedGrid ? { composedGrid: meta.composedGrid } : {}),
-          ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-          ...releasePlanOptions(meta),
+        const currentPlanResult = await intentMethodology.loadPlan(meta, {
+          skipStageIds: priorSkipIds,
         });
         const currentSectionIds = new Set(
           (currentPlanResult.plan?.stages ?? [])
@@ -4687,16 +4616,10 @@ export const handler = async (event, context) => {
       // Strict resolution of the NEW projection (starved required inputs are
       // hard errors mid-run — a stage must never park waiting for an input
       // nothing will write).
-      const planResult = await loadExecutionPlan({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId: meta.workflowId,
-        workflowVersion: meta.workflowVersion,
+      const planResult = await intentMethodology.loadPlan(meta, {
         scope: newScope,
         composedGrid: newGrid,
-        ...(priorSkipIds.length ? { skipStageIds: priorSkipIds } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
-        ...releasePlanOptions(meta),
+        skipStageIds: priorSkipIds,
         strict: true,
       });
       if (!planResult.valid || !planResult.plan) {
