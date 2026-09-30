@@ -27,7 +27,24 @@ variable "instance_class" {
 variable "skip_final_snapshot" {
   description = "Skip final snapshot when destroying cluster"
   type        = bool
+  default     = false
+}
+
+variable "deletion_protection" {
+  description = "Protect the Neptune cluster from deletion"
+  type        = bool
   default     = true
+}
+
+variable "backup_retention_period" {
+  description = "Number of days to retain automated Neptune backups"
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.backup_retention_period >= 7 && var.backup_retention_period <= 35
+    error_message = "backup_retention_period must be between 7 and 35 days."
+  }
 }
 
 variable "tags" {

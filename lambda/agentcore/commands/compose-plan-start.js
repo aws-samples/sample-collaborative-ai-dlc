@@ -236,8 +236,12 @@ export const createComposePlanStart = ({
         const { workflow, library } = await loadLibraryFn({
           workflowId,
           workflowVersion,
-          ...(methodologyRelease ? { methodologyRelease } : {}),
-          ...(methodologyPins ? { methodologyPins } : {}),
+          ...(methodologyRelease
+            ? {
+                methodologyRelease,
+                ...(methodologyPins ? { methodologyPins } : {}),
+              }
+            : {}),
         });
         if (!workflow || !library) {
           await finish({

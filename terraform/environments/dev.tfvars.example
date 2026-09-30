@@ -1,9 +1,20 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
-# Keep only Lambdas already requiring private resources in the VPC. Set to
-# "public-egress" to also route OAuth connectors, credential resolution, and
-# seed-blocks through NAT.
+# Protect durable DynamoDB tables and Neptune against accidental deletion, and
+# retain at least seven days of automated Neptune backups.
+deletion_protection     = true
+backup_retention_period = 7
+skip_final_snapshot     = false
+
+# Optional existing customer-managed key. Leave empty to use service-owned
+# encryption. See docs/getting-started/prerequisites.md before supplying an ARN.
+kms_key_arn = ""
+
+# Controls which Lambda functions run in the VPC:
+# "required"      - only Lambdas that access private resources (default)
+# "public-egress" - required Lambdas plus integrations needing static NAT IPs
+# "all"           - every Lambda function
 lambda_vpc_scope = "required"
 
 # Bedrock model pinning (for claude and opencode drivers)
@@ -43,6 +54,19 @@ app_domain          = ""
 app_domain_aliases  = []
 acm_certificate_arn = ""
 route53_zone_id     = ""
+
+# Enterprise SSO redirects through a Cognito managed-login domain, by default a
+# generated *.amazoncognito.com hostname. Set auth_domain to provision a custom
+# login domain. The certificate must be in us-east-1; auth_certificate_arn defaults
+# to acm_certificate_arn. Set auth_route53_zone_id to manage its DNS, independently
+# of the application's zone. Activate only after DNS and IdP callbacks are ready.
+#
+#   auth_domain          = "auth.aidlc.example.com"
+#   auth_certificate_arn = ""
+auth_domain          = ""
+auth_certificate_arn = ""
+auth_route53_zone_id = ""
+auth_domain_active   = false
 
 # Authentication defaults to the existing Cognito email/password flow.
 # For enterprise federation set auth_mode to "hybrid" or "sso-only" and add

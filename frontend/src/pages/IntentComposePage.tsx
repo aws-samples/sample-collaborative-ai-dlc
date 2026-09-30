@@ -299,6 +299,7 @@ function IntentComposePageContent() {
   // The pin's own importer revision: after an admin upgrades the release's
   // closure, this intent still runs the closure it was created on.
   const releaseImporterRevision = intent?.methodologyRelease?.importerRevision ?? null;
+  const intentReady = intent !== null;
 
   // Compiled views: the scope grid (options + per-scope projections for the
   // grid editor's baseline) and the stage-node list (phase grouping); the
@@ -315,7 +316,7 @@ function IntentComposePageContent() {
     // Wait for the intent before compiling: loading the live workflow first and
     // correcting it afterwards would let a user pick a scope the release does
     // not offer.
-    if (!intent) return;
+    if (!intentReady) return;
     let cancelled = false;
     setReleaseViewUnavailable(false);
     workflowsService
@@ -361,7 +362,7 @@ function IntentComposePageContent() {
     releaseImporterRevision,
     projectId,
     intentId,
-    intent,
+    intentReady,
   ]);
   const scopeOptions = useMemo(() => Object.keys(compiled?.scopeGrid ?? {}), [compiled]);
 
@@ -464,7 +465,7 @@ function IntentComposePageContent() {
   const gridKey = JSON.stringify(draft.composedGrid ?? null);
   const skipsKey = JSON.stringify([...skipSelections].toSorted());
   useEffect(() => {
-    if (!workflowId || !scope || !intent) return;
+    if (!workflowId || !scope || !intentReady) return;
     let cancelled = false;
     const skips = [...skipSelections];
     const request = draft.composedGrid
@@ -520,7 +521,7 @@ function IntentComposePageContent() {
     skipsKey,
     releaseId,
     releaseImporterRevision,
-    intent,
+    intentReady,
     projectId,
     intentId,
   ]);

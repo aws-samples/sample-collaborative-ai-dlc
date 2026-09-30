@@ -114,6 +114,21 @@ const detail = (over: Record<string, unknown> = {}) => ({
   artifacts: [],
 });
 
+const pinnedDetail = (
+  releaseId = 'aidlc:release-a',
+  importerRevision = 3,
+  intentOver: Record<string, unknown> = {},
+) =>
+  detail({
+    ...intentOver,
+    methodologyRelease: {
+      releaseId,
+      sourceSha: 'a'.repeat(40),
+      closureDigest: 'd'.repeat(64),
+      importerRevision,
+    },
+  });
+
 describe('IntentContext', () => {
   beforeEach(() => {
     capturedOnEvent = null;
@@ -185,6 +200,66 @@ describe('IntentContext', () => {
     );
     await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('release-02'));
     expect(workflowGet).not.toHaveBeenCalled();
+  });
+
+  it('dedupes pinned compilation when a realtime reload returns a new intent object', async () => {
+    get
+      .mockResolvedValueOnce(pinnedDetail())
+      .mockResolvedValueOnce(pinnedDetail('aidlc:release-a', 3, { updatedAt: 'later' }));
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note', noteType: 'v2.artifact.created' });
+    });
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    expect(compiled).toHaveBeenCalledTimes(1);
+  });
+
+  it('recompiles a pinned intent when its release identity changes', async () => {
+    get
+      .mockResolvedValueOnce(pinnedDetail())
+      .mockResolvedValueOnce(pinnedDetail('aidlc:release-b', 4));
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+
+    expect(compiled).toHaveBeenLastCalledWith('wf', 1, 'aidlc:release-b', 4, {
+      projectId: 'p1',
+      intentId: 'i1',
+    });
+  });
+
+  it('evicts a failed pinned compilation so a realtime reload can retry', async () => {
+    get.mockResolvedValue(pinnedDetail());
+    compiled
+      .mockRejectedValueOnce(new Error('temporary compile failure'))
+      .mockResolvedValueOnce({ graph: { nodes: [], edges: [] } });
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes compilation on realtime reload for an unpinned intent', async () => {
+    get.mockResolvedValueOnce(detail()).mockResolvedValueOnce(detail({ updatedAt: 'later' }));
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+    expect(compiled).toHaveBeenLastCalledWith('wf', 1, undefined, undefined);
   });
 
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {

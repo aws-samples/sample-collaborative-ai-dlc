@@ -306,6 +306,31 @@ describe('building-blocks handler', () => {
     expect(ok.body.producesKinds).toEqual({ model: ['service'], 'ui-notes': ['ui'] });
   });
 
+  it('rejects unsupported pipeline and mob modes on user stage create and update', async () => {
+    const post = (body) =>
+      handler(event({ method: 'POST', type: 'stage', body })).then((r) => parse(r));
+    const put = (id, body) =>
+      handler(event({ method: 'PUT', type: 'stage', id, body })).then((r) => parse(r));
+
+    for (const mode of ['pipeline', 'mob']) {
+      const created = await post({ id: `stage-${mode}`, name: mode, mode });
+      expect(created.status).toBe(400);
+      expect(created.body.error).toContain('not supported');
+    }
+
+    await post({ id: 'stage-mode-update', name: 'Mode update', mode: 'inline' });
+    for (const mode of ['pipeline', 'mob']) {
+      const updated = await put('stage-mode-update', { name: 'Mode update', mode });
+      expect(updated.status).toBe(400);
+      expect(updated.body.error).toContain('not supported');
+    }
+
+    for (const mode of ['inline', 'subagent', 'agent-team']) {
+      const accepted = await post({ id: `stage-supported-${mode}`, name: mode, mode });
+      expect(accepted.status).toBe(201);
+    }
+  });
+
   it('validates the agent tier against the tier enum', async () => {
     const bad = parse(
       await handler(

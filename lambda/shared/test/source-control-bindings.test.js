@@ -14,10 +14,40 @@ import {
   canonicalRepo,
   getBinding,
   invalidateBindingsByCredentialRef,
+  invalidateBindingsForError,
+  invalidationReasonForError,
+  loggableErrorCode,
   oauthCredentialRef,
+  roleCredentialRef,
   replaceProjectBindings,
   sanitizeBinding,
 } from '../source-control-bindings.js';
+import { ProviderError } from '../git-providers/errors.js';
+
+describe('typed provider error codes', () => {
+  // A provider error's code must survive the source-control boundary, which
+  // reports only allowlisted `error.code` values.
+  it.each([
+    'PULL_REQUEST_REPLAYED',
+    'DRAFT_UNSUPPORTED',
+    'PR_LOOKUP_TRUNCATED',
+    'MERGE_STATUS_UNKNOWN',
+  ])('%s reaches callers instead of the generic fallback', (code) => {
+    const error = new ProviderError(409, 'typed failure', { code });
+    expect(error.code).toBe(code);
+    expect(loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED')).toBe(code);
+    // A 409 conflict never invalidates a binding.
+    expect(invalidationReasonForError(error)).toBeNull();
+  });
+
+  it('leaves untyped provider errors without a code', () => {
+    const error = new ProviderError(502, 'upstream failure', { action: 'GetBranch' });
+    expect(error.code).toBeUndefined();
+    expect(loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED')).toBe(
+      'SOURCE_CONTROL_OPERATION_FAILED',
+    );
+  });
+});
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -128,5 +158,103 @@ describe('source-control bindings', () => {
     expect(JSON.stringify(member)).not.toContain('secret-user-id');
     expect(member).not.toHaveProperty('credentialRef');
     expect(sanitizeBinding(binding, { privileged: true }).delegatedBy).toBe('Owner');
+  });
+
+  it('never exposes the CodeCommit external ID, even to privileged callers', () => {
+    const binding = {
+      provider: 'codecommit',
+      repo: 'arn:aws:codecommit:eu-west-1:123456789012:demo',
+      authType: 'codecommit-role',
+      credentialRef:
+        'codecommit-role#arn:aws:iam::123456789012:role/r#aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
+      roleArn: 'arn:aws:iam::123456789012:role/r',
+      externalId: 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
+      region: 'eu-west-1',
+      status: 'active',
+    };
+    for (const view of [sanitizeBinding(binding), sanitizeBinding(binding, { privileged: true })]) {
+      expect(view).not.toHaveProperty('externalId');
+      expect(view).not.toHaveProperty('credentialRef');
+      expect(JSON.stringify(view)).not.toContain('0f8fad5b');
+    }
+    expect(sanitizeBinding(binding, { privileged: true }).roleArn).toBe(binding.roleArn);
+  });
+
+  describe('error-scoped invalidation', () => {
+    const ROLE = 'arn:aws:iam::123456789012:role/aidlc-codecommit-access';
+    const EXT_A = 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e';
+    const EXT_B = 'aidlc:7c9e6679-7425-40de-944b-e07fc1f90ae7';
+    const binding = {
+      projectId: 'p1',
+      bindingKey: 'codecommit#arn:aws:codecommit:eu-west-1:123456789012:a',
+      credentialRef: roleCredentialRef(ROLE, EXT_A),
+      authType: 'codecommit-role',
+    };
+
+    it('keys the credential on the role and the external ID', () => {
+      expect(roleCredentialRef(ROLE, EXT_A)).toBe(`codecommit-role#${ROLE}#${EXT_A}`);
+      // Two users trusting the same role are two credentials.
+      expect(roleCredentialRef(ROLE, EXT_A)).not.toBe(roleCredentialRef(ROLE, EXT_B));
+      expect(() => roleCredentialRef(ROLE)).toThrow();
+      expect(() => roleCredentialRef(undefined, EXT_A)).toThrow();
+    });
+    const denied = (code) => Object.assign(new Error('x'), { code });
+
+    it('maps each error to the invalidation it calls for', () => {
+      expect(invalidationReasonForError(denied('ROLE_ASSUMPTION_DENIED'))).toBe(
+        'codecommit_role_denied',
+      );
+      expect(invalidationReasonForError(denied('ROLE_ASSUMPTION_FAILED'))).toBeNull();
+      expect(invalidationReasonForError(denied('SESSION_POLICY_INVALID'))).toBeNull();
+      expect(invalidationReasonForError({ status: 403, extra: { scope: 'operation' } })).toBeNull();
+      expect(invalidationReasonForError({ status: 403, extra: {} })).toBe('provider_forbidden');
+      expect(invalidationReasonForError({ status: 401 })).toBe('provider_unauthorized');
+    });
+
+    it('invalidates every binding on a refused role', async () => {
+      ddbMock.on(QueryCommand).resolves({
+        Items: [
+          { projectId: 'p1', bindingKey: binding.bindingKey },
+          { projectId: 'p2', bindingKey: 'codecommit#arn:aws:codecommit:eu-west-2:123456789012:b' },
+        ],
+      });
+      ddbMock.on(UpdateCommand).resolves({});
+      expect(await invalidateBindingsForError(ddb, binding, denied('ROLE_ASSUMPTION_DENIED'))).toBe(
+        2,
+      );
+      const query = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+      // Only the refused pair is looked up: another user's binding on the same
+      // role (external ID B) is never part of the fan-out.
+      expect(query.ExpressionAttributeValues[':credentialRef']).toBe(
+        roleCredentialRef(ROLE, EXT_A),
+      );
+      expect(query.ExpressionAttributeValues[':credentialRef']).not.toBe(
+        roleCredentialRef(ROLE, EXT_B),
+      );
+      const reasons = ddbMock
+        .commandCalls(UpdateCommand)
+        .map((call) => call.args[0].input.ExpressionAttributeValues[':reason']);
+      expect(reasons).toEqual(['codecommit_role_denied', 'codecommit_role_denied']);
+    });
+
+    it('leaves the binding active for a PR-scoped denial or a transient STS failure', async () => {
+      ddbMock.on(UpdateCommand).resolves({});
+      for (const error of [
+        { status: 403, extra: { scope: 'operation' } },
+        denied('ROLE_ASSUMPTION_FAILED'),
+        denied('SESSION_POLICY_INVALID'),
+      ]) {
+        expect(await invalidateBindingsForError(ddb, binding, error)).toBe(0);
+      }
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+      expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+    });
+
+    it('invalidates only the failing binding for a repository-level denial', async () => {
+      ddbMock.on(UpdateCommand).resolves({});
+      expect(await invalidateBindingsForError(ddb, binding, { status: 403, extra: {} })).toBe(1);
+      expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+      expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1);
+    });
   });
 });

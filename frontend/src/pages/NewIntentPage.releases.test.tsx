@@ -138,6 +138,8 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     expect(
       screen.getByText('This intent stays on this version; it is never migrated automatically.'),
     ).toBeInTheDocument();
+    expect(listChannels).toHaveBeenCalledTimes(1);
+    expect(listReleases).toHaveBeenCalledTimes(1);
 
     await submitPrompt(user);
     expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:aaa111bbb222');
@@ -180,6 +182,8 @@ describe('NewIntentPage — AI-DLC release selection', () => {
 
     await submitPrompt(user);
     expect(create.mock.calls[0][1].methodologyReleaseId).toBeUndefined();
+    expect(listChannels).toHaveBeenCalledTimes(1);
+    expect(listReleases).not.toHaveBeenCalled();
   });
 
   it('hides the selector and omits the field when the registry is unreachable', async () => {
@@ -256,6 +260,8 @@ describe('NewIntentPage — AI-DLC release selection', () => {
 
     await submitPrompt(user);
     expect(create.mock.calls[0][1].methodologyReleaseId).toBeUndefined();
+    expect(listChannels).toHaveBeenCalledTimes(1);
+    expect(listReleases).not.toHaveBeenCalled();
   });
 });
 

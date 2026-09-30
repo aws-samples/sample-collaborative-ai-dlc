@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { parseBoltDag } from './v2-sensor-contract.js';
+import { repoCheckoutPath } from './repo-validation.js';
 
 const PHASES = ['initialization', 'ideation', 'inception', 'construction', 'operation'];
 const ACTIVE_STAGE_MARKERS = new Set(['-', '?', 'R']);
@@ -805,12 +806,19 @@ const artifactPath = ({
     }
     const repositoryRef =
       artifact.repository || (repositories.length === 1 ? repositories[0].id : null);
-    const matches = repositories.filter(
-      (repository) =>
+    const matches = repositories.filter((repository) => {
+      // Workspace-relative form of the id: `owner/repo` as is, a CodeCommit
+      // ARN as its checkout path (codecommit/<partition>/<region>/<account>/
+      // <name>), so a reference by name or by checkout directory resolves the
+      // same way for every provider.
+      const checkout = repoCheckoutPath(repository.id) ?? repository.id;
+      return (
         repository.id === repositoryRef ||
         repository.directory === repositoryRef ||
-        repository.id.split('/').at(-1) === repositoryRef,
-    );
+        checkout === repositoryRef ||
+        checkout.split('/').at(-1) === repositoryRef
+      );
+    });
     if (matches.length === 0) {
       throw new Error(`native-export: reverse-engineering artifact ${type} has no repository`);
     }
