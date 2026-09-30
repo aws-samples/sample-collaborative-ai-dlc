@@ -5277,9 +5277,14 @@ export const handler = async (event, context) => {
             // this path must never produce.
             const candidatePin = methodologyReleasePinFromManifest(manifest);
             const registeredPin = releasePinFromRecord(eligibleRelease);
-            if (Object.keys(candidatePin).some((key) => candidatePin[key] !== registeredPin[key])) {
-              throw new Error(
+            const skewedFields = Object.keys(candidatePin).filter(
+              (key) => candidatePin[key] !== registeredPin[key],
+            );
+            if (skewedFields.length > 0) {
+              throw new ReleaseRegistryError(
+                'release_registry_skew',
                 'The deployment-ref closure does not match its eligible registry row',
+                { details: { releaseId: eligibleRelease.releaseId, fields: skewedFields } },
               );
             }
             // Scope discovery maps a permanent resolution failure to an empty
@@ -5346,14 +5351,26 @@ export const handler = async (event, context) => {
               );
             }
           } catch (error) {
-            // The registry says this closure is eligible, so any failure to read
-            // or verify it (a denied or corrupt manifest, a missing catalog) is
-            // an integrity problem, never a reason to quietly unpin the intent.
-            logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
-            return response(503, {
-              error: 'The published AI-DLC release could not be resolved',
-              code: 'release_resolution_failed',
-            });
+            // A row and a manifest that describe different closures of the same
+            // release mean a re-import under a new importer revision is only
+            // half done. Both closures are readable, so this is not an integrity
+            // failure: the intent stays unpinned until the registry catches up.
+            if (isReleaseRegistryError(error) && error.code === 'release_registry_skew') {
+              logger.warn(
+                'Deployment-ref AI-DLC release does not match its registry row; intent stays unpinned',
+                { aidlcRepoRef, code: error.code, ...error.details },
+              );
+            } else {
+              // Otherwise the registry says this closure is eligible, so any
+              // failure to read or verify it (a denied or corrupt manifest, a
+              // missing catalog) is an integrity problem, never a reason to
+              // quietly unpin the intent.
+              logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
+              return response(503, {
+                error: 'The published AI-DLC release could not be resolved',
+                code: 'release_resolution_failed',
+              });
+            }
           }
         } else {
           logger.warn('No eligible AI-DLC release for the resolved ref; intent stays unpinned', {

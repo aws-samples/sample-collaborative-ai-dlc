@@ -8268,6 +8268,45 @@ describe('AI-DLC per-intent release selection', () => {
     }
   });
 
+  it('stays unpinned when the published closure no longer matches its registry row', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1('feature');
+    // A re-import is mid-flight: the registry row still describes the closure
+    // the previous importer revision produced.
+    seedRegistryRecord(bundleA, 'current-stable', { closureDigest: `sha256:${'0'.repeat(64)}` });
+    const logs = [];
+    const capture = (chunk) => {
+      logs.push(String(chunk));
+      return true;
+    };
+    const spies = [
+      vi.spyOn(process.stdout, 'write').mockImplementation(capture),
+      vi.spyOn(process.stderr, 'write').mockImplementation(capture),
+    ];
+
+    let res;
+    try {
+      res = await createIntent(sub, projectId, { title: 'I', prompt: 'Build X', scope: 'feature' });
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+
+    expect(res.statusCode).toBe(201);
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
+    const warned = logs
+      .flatMap((line) => line.split('\n'))
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .find((entry) => entry?.level === 'WARN' && entry.code === 'release_registry_skew');
+    expect(warned).toMatchObject({ releaseId: pinA.releaseId });
+  });
+
   it('refuses the create when an eligible release closure is unreadable', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
