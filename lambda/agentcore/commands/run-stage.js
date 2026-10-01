@@ -2038,7 +2038,10 @@ export const runStage = async (
     // and continue" as an answer to a question it never asked would be noise. The
     // change-control block renders the decision into the prompt instead.
     resumeAnswer = preAgentGate ? null : reviewFeedbackPrompt || formatResumeAnswer(resumeGate);
-    if (!cli || !priorSessionId) {
+    // A pre-agent gate re-enters as a fresh run even when the row names a
+    // session: the conversation was never started, and resuming it would send
+    // the CLI neither the stage prompt nor the change-control decision.
+    if (!cli || !priorSessionId || preAgentGate) {
       demotedResume = true;
       cli = selectCli({ requested: requestedCli, availableClis });
       if (!cli) {
@@ -2192,129 +2195,11 @@ export const runStage = async (
     }
   }
 
-  // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
-  const freshRun = (!resumeFrom && !reviewFeedback) || demotedResume;
-
-  // Mark RUNNING + advance the execution pointer + persist the conversation
-  // handle. A true resume PATCHES the parked row (WAITING_FOR_HUMAN) back to
-  // RUNNING: startedAt, attempt and the waitMs accumulator survive, and the
-  // open park window is folded into waitMs — rebuilding the row here was the
-  // "stage duration resets when a question is answered" bug. A fresh run (or a
-  // demoted resume, which genuinely re-runs the stage from scratch) rebuilds
-  // the row, carrying forward the attempt counter a rewind reset may have set.
-  if ((resumeFrom || reviewFeedback) && !demotedResume) {
-    await store.resumeStageRow({
-      executionId,
-      stageInstanceId,
-      cli,
-      cliSessionId,
-      resolvedModel: model,
-      stageCallbackId,
-      aidlcRepoRef,
-    });
-  } else {
-    await store.putStage({
-      executionId,
-      stageInstanceId,
-      stageId,
-      unitSlug,
-      sectionIndex,
-      phase: stage.phase,
-      state: 'RUNNING',
-      attempt: priorStageRow?.attempt ?? 0,
-      cli,
-      cliSessionId,
-      resolvedModel: model,
-      stageCallbackId,
-      aidlcRepoRef,
-      pendingCodeCommitRefs: retainedCodeCommitRefs,
-    });
-  }
-  await store.updateExecution({
-    executionId,
-    status: 'RUNNING',
-    currentPhase: stage.phase,
-    currentStage: stageId,
-  });
-  await store.appendEvent({
-    executionId,
-    type:
-      reviewFeedback && !demotedResume
-        ? 'v2.feedback.stage_resumed'
-        : resumeFrom && !demotedResume
-          ? 'v2.stage.resumed'
-          : 'v2.stage.running',
-    stageInstanceId,
-    unitSlug,
-    sectionIndex,
-    actor: 'agentcore',
-    summary: reviewFeedback
-      ? `Stage ${stageLabel} addressing selected review feedback`
-      : resumeFrom && !demotedResume
-        ? `Stage ${stageLabel} resumed`
-        : `Stage ${stageLabel} running`,
-  });
-  // Broadcast the stage start + the execution's new phase/stage pointer so the
-  // UI reflects the advance in real time.
-  await publish({
-    action: 'agent.stage',
-    stageInstanceId,
-    stageId,
-    unitSlug,
-    sectionIndex,
-    phase: stage.phase,
-    state: 'RUNNING',
-  });
-  await publish({
-    action: 'agent.execution',
-    status: 'RUNNING',
-    currentPhase: stage.phase,
-    currentStage: stageId,
-  });
-
-  // Record the agent launching time (cold start): dispatch → job accept,
-  // measured by run-stage-start and recorded here where the stage identity
-  // exists. One sample per dispatch leg (fresh AND resume — a resume after a
-  // park release hits a fresh microVM, exactly the cold start worth seeing).
-  // Classified gauge:max, so aggregation shows the worst leg. Best-effort.
-  if (typeof agentLaunchMs === 'number' && Number.isFinite(agentLaunchMs) && agentLaunchMs >= 0) {
-    try {
-      const row = await store.recordMetric({
-        executionId,
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-        metrics: { agentLaunchMs },
-      });
-      await publish({
-        action: 'agent.metric',
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-        metricId: row.metricId,
-        metrics: { agentLaunchMs },
-      });
-    } catch (e) {
-      logger.error('agentLaunchMs not recorded', e, { stageInstanceId });
-    }
-  }
-
-  // Steering (docs/v2-steering.md): every run-stage entry — fresh, resume, or
-  // demoted resume — is a deterministic injection point for pending human course
-  // corrections (gate-steer riding an answer, a revision of a past answer, or
-  // rewind guidance). Consume them NOW (CAS) and render them into whatever
-  // enters the conversation below.
-  const consumedSteering = await consumePendingSteering({
-    store,
-    executionId,
-    stageInstanceId,
-    publish,
-  });
-  const steeringMessage = renderSteering(consumedSteering);
-
-  // 2c. Change control — BEFORE the agent runs, because the point
-  // is to decide whether this stage should run at all against inputs that moved
-  // since they were approved. Gated on release mode via `stage.policy` (the plan
+  // 2c. Change control — BEFORE the stage is marked RUNNING and before pending
+  // course corrections are consumed, because the point is to decide whether this
+  // stage should run at all against inputs that moved since they were approved.
+  // A park or a halt here therefore leaves the steering rows pending for the run
+  // that does go ahead, and never records a conversation that was not started. Gated on release mode via `stage.policy` (the plan
   // resolves it only from a verified closure) AND on the field being effective:
   // `policy.changeControl == null` means neither the scope authored it nor did
   // the catalog prove it has change control, so nothing here runs and the prompt
@@ -2341,9 +2226,16 @@ export const runStage = async (
     } finally {
       await closeGraphSource(gCc);
     }
+    // An unreadable approval history is not "nothing changed": like an
+    // unreadable artifact history it is treated as unknown, which strict mode
+    // asks about before the agent runs.
+    let approvalHistoryReadFailed = false;
     const approvals = await (
       store.listReceipts?.(executionId, { kind: 'stage-approval' }) ?? Promise.resolve([])
-    ).catch(() => []);
+    ).catch(() => {
+      approvalHistoryReadFailed = true;
+      return [];
+    });
     const requiredInputs = (stage.inputArtifacts ?? [])
       .filter((input) => input?.required !== false && !input?.expectedAbsent)
       .map((input) => input.artifact ?? input)
@@ -2353,7 +2245,7 @@ export const runStage = async (
       heads,
       approvals,
     });
-    if (artifactHistoryReadFailed) {
+    if (artifactHistoryReadFailed || approvalHistoryReadFailed) {
       changedInputs = [...new Set(requiredInputs)].map((artifactType) => ({
         artifactId: null,
         artifactType,
@@ -2362,7 +2254,9 @@ export const runStage = async (
         toHash: null,
         approvedAt: null,
         approvalHistoryUnknown: true,
-        artifactHistoryReadFailed: true,
+        ...(artifactHistoryReadFailed
+          ? { artifactHistoryReadFailed: true }
+          : { approvalHistoryReadFailed: true }),
       }));
     }
     if (changedInputs.length > 0) {
@@ -2371,13 +2265,16 @@ export const runStage = async (
         severity: 'advisory',
         title: changed.artifactHistoryReadFailed
           ? `Artifact history for ${changed.artifactType} could not be read`
-          : `Approved input ${changed.artifactType ?? changed.artifactId} changed since it was approved`,
+          : changed.approvalHistoryReadFailed
+            ? `Approval history for ${changed.artifactType} could not be read`
+            : `Approved input ${changed.artifactType ?? changed.artifactId} changed since it was approved`,
         detail: changed,
         overridable: false,
         receiptKind: null,
-        remediation: changed.artifactHistoryReadFailed
-          ? 'Confirm the stage against the current artifact state.'
-          : 'Confirm the stage still holds against the changed input.',
+        remediation:
+          changed.artifactHistoryReadFailed || changed.approvalHistoryReadFailed
+            ? 'Confirm the stage against the current artifact state.'
+            : 'Confirm the stage still holds against the changed input.',
       }));
     }
     const approvalHistoryUnknown = changedInputs.some((changed) => changed.approvalHistoryUnknown);
@@ -2397,7 +2294,9 @@ export const runStage = async (
             actor: 'agentcore',
             summary: changed.artifactHistoryReadFailed
               ? `Artifact history for ${changed.artifactType} could not be read; continuing under change_control: relaxed`
-              : `Approval history for ${changed.artifactType} is incomplete; continuing under change_control: relaxed`,
+              : changed.approvalHistoryReadFailed
+                ? `Approval history for ${changed.artifactType} could not be read; continuing under change_control: relaxed`
+                : `Approval history for ${changed.artifactType} is incomplete; continuing under change_control: relaxed`,
             detail: changed,
           })
           .catch(() => {});
@@ -2539,8 +2438,8 @@ export const runStage = async (
           changeControlMessage = renderChangedInputs(changedInputs, { reconfirmed: true });
         } else {
           if (!ccGate) {
-            await store
-              .createHumanTask({
+            try {
+              await store.createHumanTask({
                 executionId,
                 humanTaskId: ccGateId,
                 stageInstanceId,
@@ -2555,23 +2454,44 @@ export const runStage = async (
                           .join(
                             ', ',
                           )} could not be read. Reconfirm before ${stage.stageId} runs against the current artifacts?`
-                      : approvalHistoryUnknown
+                      : approvalHistoryReadFailed
                         ? `Approval history for ${changedInputs
                             .map((changed) => changed.artifactType ?? changed.artifactId)
                             .join(
                               ', ',
-                            )} is incomplete because the approval receipt exceeded its size limit. Reconfirm before ${stage.stageId} runs against the current artifacts?`
-                        : `${changedInputs
-                            .map((changed) => changed.artifactType ?? changed.artifactId)
-                            .join(
-                              ', ',
-                            )} changed since ${changedInputs.length === 1 ? 'it was' : 'they were'} approved. Reconfirm before ${stage.stageId} runs against ${changedInputs.length === 1 ? 'it' : 'them'}?`,
+                            )} could not be read. Reconfirm before ${stage.stageId} runs against the current artifacts?`
+                        : approvalHistoryUnknown
+                          ? `Approval history for ${changedInputs
+                              .map((changed) => changed.artifactType ?? changed.artifactId)
+                              .join(
+                                ', ',
+                              )} is incomplete because the approval receipt exceeded its size limit. Reconfirm before ${stage.stageId} runs against the current artifacts?`
+                          : `${changedInputs
+                              .map((changed) => changed.artifactType ?? changed.artifactId)
+                              .join(
+                                ', ',
+                              )} changed since ${changedInputs.length === 1 ? 'it was' : 'they were'} approved. Reconfirm before ${stage.stageId} runs against ${changedInputs.length === 1 ? 'it' : 'them'}?`,
                     type: 'single',
                     options: CHANGE_CONTROL_OPTIONS.map((label) => ({ label })),
                   },
                 ]),
-              })
-              .catch(() => {});
+              });
+            } catch (error) {
+              // Parking on a gate that does not exist would leave the stage
+              // waiting for an answer nobody can give.
+              logger.error('change-control gate could not be created', {
+                error,
+                executionId,
+                stageInstanceId,
+                attempt: ccAttempt,
+              });
+              return fail(
+                stageInstanceId,
+                'change_control_gate_failed',
+                'could not open the strict change-control question; retry the stage',
+                { clearPending: true },
+              );
+            }
             // Deliberately NOT `v2.question.asked`: that event is the data
             // `summary_confirmation: if-present` reads as "a conditional question
             // flow ran", and an engine-opened gate is not the agent asking.
@@ -2593,6 +2513,25 @@ export const runStage = async (
               .updateExecution({ executionId, status: 'WAITING', pendingHumanTaskId: ccGateId })
               .catch(() => {});
           }
+          // No conversation exists yet, so the parked row records none: the
+          // answer re-enters as a fresh run (see `preAgentGate` above).
+          await store.putStage({
+            executionId,
+            stageInstanceId,
+            stageId,
+            unitSlug,
+            sectionIndex,
+            phase: stage.phase,
+            state: 'WAITING_FOR_HUMAN',
+            attempt: priorStageRow?.attempt ?? 0,
+            cli,
+            cliSessionId: null,
+            resolvedModel: model,
+            stageCallbackId,
+            aidlcRepoRef,
+            pendingCodeCommitRefs: retainedCodeCommitRefs,
+            pendingHumanTaskId: ccGateId,
+          });
           await store
             .updateStageState({
               executionId,
@@ -2631,6 +2570,126 @@ export const runStage = async (
       }
     }
   }
+
+  // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
+  const freshRun = (!resumeFrom && !reviewFeedback) || demotedResume;
+
+  // Mark RUNNING + advance the execution pointer + persist the conversation
+  // handle. A true resume PATCHES the parked row (WAITING_FOR_HUMAN) back to
+  // RUNNING: startedAt, attempt and the waitMs accumulator survive, and the
+  // open park window is folded into waitMs — rebuilding the row here was the
+  // "stage duration resets when a question is answered" bug. A fresh run (or a
+  // demoted resume, which genuinely re-runs the stage from scratch) rebuilds
+  // the row, carrying forward the attempt counter a rewind reset may have set.
+  if ((resumeFrom || reviewFeedback) && !demotedResume) {
+    await store.resumeStageRow({
+      executionId,
+      stageInstanceId,
+      cli,
+      cliSessionId,
+      resolvedModel: model,
+      stageCallbackId,
+      aidlcRepoRef,
+    });
+  } else {
+    await store.putStage({
+      executionId,
+      stageInstanceId,
+      stageId,
+      unitSlug,
+      sectionIndex,
+      phase: stage.phase,
+      state: 'RUNNING',
+      attempt: priorStageRow?.attempt ?? 0,
+      cli,
+      cliSessionId,
+      resolvedModel: model,
+      stageCallbackId,
+      aidlcRepoRef,
+      pendingCodeCommitRefs: retainedCodeCommitRefs,
+    });
+  }
+  await store.updateExecution({
+    executionId,
+    status: 'RUNNING',
+    currentPhase: stage.phase,
+    currentStage: stageId,
+  });
+  await store.appendEvent({
+    executionId,
+    type:
+      reviewFeedback && !demotedResume
+        ? 'v2.feedback.stage_resumed'
+        : resumeFrom && !demotedResume
+          ? 'v2.stage.resumed'
+          : 'v2.stage.running',
+    stageInstanceId,
+    unitSlug,
+    sectionIndex,
+    actor: 'agentcore',
+    summary: reviewFeedback
+      ? `Stage ${stageLabel} addressing selected review feedback`
+      : resumeFrom && !demotedResume
+        ? `Stage ${stageLabel} resumed`
+        : `Stage ${stageLabel} running`,
+  });
+  // Broadcast the stage start + the execution's new phase/stage pointer so the
+  // UI reflects the advance in real time.
+  await publish({
+    action: 'agent.stage',
+    stageInstanceId,
+    stageId,
+    unitSlug,
+    sectionIndex,
+    phase: stage.phase,
+    state: 'RUNNING',
+  });
+  await publish({
+    action: 'agent.execution',
+    status: 'RUNNING',
+    currentPhase: stage.phase,
+    currentStage: stageId,
+  });
+
+  // Record the agent launching time (cold start): dispatch → job accept,
+  // measured by run-stage-start and recorded here where the stage identity
+  // exists. One sample per dispatch leg (fresh AND resume — a resume after a
+  // park release hits a fresh microVM, exactly the cold start worth seeing).
+  // Classified gauge:max, so aggregation shows the worst leg. Best-effort.
+  if (typeof agentLaunchMs === 'number' && Number.isFinite(agentLaunchMs) && agentLaunchMs >= 0) {
+    try {
+      const row = await store.recordMetric({
+        executionId,
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        metrics: { agentLaunchMs },
+      });
+      await publish({
+        action: 'agent.metric',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        metricId: row.metricId,
+        metrics: { agentLaunchMs },
+      });
+    } catch (e) {
+      logger.error('agentLaunchMs not recorded', e, { stageInstanceId });
+    }
+  }
+
+  // Steering (docs/v2-steering.md): every run-stage entry — fresh, resume, or
+  // demoted resume — is a deterministic injection point for pending human course
+  // corrections (gate-steer riding an answer, a revision of a past answer, or
+  // rewind guidance). Consume them NOW (CAS) and render them into whatever
+  // enters the conversation below.
+  const consumedSteering = await consumePendingSteering({
+    store,
+    executionId,
+    stageInstanceId,
+    publish,
+  });
+  const steeringMessage = renderSteering(consumedSteering);
 
   // 3. Build the invocation. A fresh run materializes the full workspace (prompt +
   // rules + knowledge); a resume only re-attaches the MCP config (the parked

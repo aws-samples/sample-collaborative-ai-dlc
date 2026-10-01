@@ -661,3 +661,126 @@ describe('runStage — change_control: strict', () => {
     );
   });
 });
+
+describe('runStage — change control decides before the stage starts', () => {
+  const recordingSpawn = () => {
+    const spawns = [];
+    return {
+      spawns,
+      spawnFn: (command, argv) => {
+        const spawn = { command, argv, stdin: '' };
+        spawns.push(spawn);
+        return {
+          on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+          stdin: {
+            end(chunk) {
+              if (chunk) spawn.stdin += String(chunk);
+            },
+          },
+        };
+      },
+    };
+  };
+  const answeredGate = Object.freeze({
+    humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+    stageInstanceId: CONSUMER_INSTANCE,
+    status: 'answered',
+    answeredBy: 'u1',
+    answeredByName: 'Ada',
+    answer: { perQuestion: [{ answer: 'Reconfirm and continue' }] },
+  });
+
+  it('re-runs fresh with the stage prompt when resumed from the change-control gate', async () => {
+    const store = harnessStore({ receipts: [APPROVAL], humanTask: answeredGate });
+    // A row written by an earlier entry may still name a Claude session; the
+    // conversation behind it never ran, so it must not be resumed.
+    let row = {
+      stageInstanceId: CONSUMER_INSTANCE,
+      attempt: 0,
+      state: 'WAITING_FOR_HUMAN',
+      cli: 'claude',
+      cliSessionId: 'session-that-never-ran',
+      pendingHumanTaskId: answeredGate.humanTaskId,
+    };
+    store.getStage = async () => row;
+    store.putStage = async (put) => {
+      store.calls.push(['putStage', put]);
+      row = { pendingHumanTaskId: null, ...put };
+      return row;
+    };
+    const capture = recordingSpawn();
+
+    const res = await runStage(
+      { ...args, resumeFrom: answeredGate.humanTaskId },
+      deps(store, { scopeFm: { changeControl: 'strict' }, deps: { spawnFn: capture.spawnFn } }),
+    );
+
+    expect(res.state).toBe('SUCCEEDED');
+    const [spawn] = capture.spawns;
+    expect(spawn.argv.join(' ')).not.toContain('session-that-never-ran');
+    expect(spawn.argv).not.toContain('--resume');
+    expect(spawn.stdin).toContain(`PROMPT ${CONSUMER}`);
+    expect(spawn.stdin).toContain('reconfirmed');
+    expect(store.of('resumeStageRow')).toEqual([]);
+    expect(store.of('putStage')[0]).toMatchObject({ state: 'RUNNING' });
+  });
+
+  it('parks without marking the stage running or consuming course corrections', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    let steeringReads = 0;
+    store.listPendingSteering = async () => {
+      steeringReads += 1;
+      return [];
+    };
+
+    const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'strict' } }));
+
+    expect(res.state).toBe('WAITING_FOR_HUMAN');
+    expect(steeringReads).toBe(0);
+    expect(store.of('putStage').map((row) => row.state)).toEqual(['WAITING_FOR_HUMAN']);
+    expect(store.of('putStage')[0].cliSessionId).toBeNull();
+    const types = store.of('appendEvent').map((event) => event.type);
+    expect(types).not.toContain('v2.stage.running');
+    expect(types).toContain('v2.change.review_requested');
+  });
+
+  it('asks before running when the approval receipts cannot be read', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    store.listReceipts = async () => {
+      throw new Error('receipt store unavailable');
+    };
+    const capture = recordingSpawn();
+
+    const res = await runStage(
+      args,
+      deps(store, { scopeFm: { changeControl: 'strict' }, deps: { spawnFn: capture.spawnFn } }),
+    );
+
+    expect(res).toMatchObject({
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+    });
+    expect(capture.spawns).toEqual([]);
+    const [question] = JSON.parse(store.of('createHumanTask')[0].questions);
+    expect(question.text).toContain('Approval history');
+  });
+
+  it('fails retryably instead of parking on a gate that could not be written', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    store.createHumanTask = async () => {
+      throw new Error('gate store unavailable');
+    };
+    const capture = recordingSpawn();
+
+    const res = await runStage(
+      args,
+      deps(store, { scopeFm: { changeControl: 'strict' }, deps: { spawnFn: capture.spawnFn } }),
+    );
+
+    expect(res).toMatchObject({ ok: false, reason: 'change_control_gate_failed' });
+    expect(capture.spawns).toEqual([]);
+    expect(store.of('updateStageState').map((patch) => patch.state)).not.toContain(
+      'WAITING_FOR_HUMAN',
+    );
+  });
+});
