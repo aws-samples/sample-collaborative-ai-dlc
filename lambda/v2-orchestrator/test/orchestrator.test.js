@@ -1193,6 +1193,45 @@ describe('retired-run ownership', () => {
     expect(statuses).not.toContain('CANCELLED');
   });
 
+  it('returns retired when a gate is superseded after callback bind and delivery never resolves', async () => {
+    const meta = { ...META, parkReleaseSeconds: null };
+    deps.store.getExecution.mockResolvedValue(meta);
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
+    });
+    let superseded = false;
+    deps.store.setGateCallbackId = vi.fn(async () => {
+      superseded = true;
+      return {};
+    });
+    deps.store.getHumanTask = vi.fn(async () => (superseded ? { status: 'superseded' } : null));
+
+    const unresolvedGateCtx = makeCtx();
+    const createStageCallback = unresolvedGateCtx.createCallback;
+    unresolvedGateCtx.createCallback = async (name) =>
+      String(name).startsWith('await-')
+        ? [new Promise(() => {}), `cb-${name}`]
+        : createStageCallback(name);
+    deps.invokeRuntime = makeRuntime(unresolvedGateCtx, (payload, n) => {
+      if (n === 1) return { ok: true }; // init-ws
+      return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+    });
+
+    const result = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      unresolvedGateCtx,
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'retired', humanTaskId: 'h1' });
+    expect(deps.store.setGateCallbackId).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: 'i1', humanTaskId: 'h1' }),
+    );
+    expect(stageStarts()).toHaveLength(1);
+    expect(stageStarts().some((start) => start.resumeFrom)).toBe(false);
+  });
+
   it('claims the run with an ownership token and CASes terminal writes on it', async () => {
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
     const calls = deps.store.updateExecution.mock.calls.map((c) => c[0]);
