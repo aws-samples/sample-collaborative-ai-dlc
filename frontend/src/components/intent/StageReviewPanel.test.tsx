@@ -1,10 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { orderReviewerRuns, reviewerRunVerdict } from './StageReviewPanel';
-import type { IntentSensorRun } from '@/services/intents';
-import { vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StageReviewPanel, orderReviewerRuns, reviewerRunVerdict } from './StageReviewPanel';
+import type { GateAnswer, IntentDetail, IntentGate, IntentSensorRun } from '@/services/intents';
 
 // The panel pulls the intent context, the graph and a Yjs-backed textarea. None
 // of that is under test here — the learnings ritual is — so each is stubbed to
@@ -62,9 +61,6 @@ vi.mock('@/components/CollaborativeTextarea', () => ({
 vi.mock('@/components/discussion/DiscussButton', () => ({ DiscussButton: () => null }));
 vi.mock('@/components/intent/ArtifactViewer', () => ({ ArtifactViewer: () => null }));
 
-import { StageReviewPanel } from './StageReviewPanel';
-import type { IntentDetail, IntentGate } from '@/services/intents';
-
 const gate = (over: Partial<IntentGate> = {}): IntentGate =>
   ({
     humanTaskId: 'h1',
@@ -87,8 +83,6 @@ const detail = (): IntentDetail =>
     artifacts: [],
     sensorRuns: [],
   }) as unknown as IntentDetail;
-
-import type { GateAnswer } from '@/services/intents';
 
 let onAnswer: Mock<(gate: IntentGate, input: GateAnswer) => Promise<void>>;
 

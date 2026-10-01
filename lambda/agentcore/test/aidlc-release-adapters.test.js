@@ -1,5 +1,20 @@
-import { describe, expect, it } from 'vitest';
-import { INVOKE_DIALECT_ANNEX, buildStagePrompt, neutralizeInvoke } from '../stage-materializer.js';
+// Per-release adapters at the RUNTIME seams: the stage
+// prompt (scope policy + {{INVOKE}} dialect), the OpenCode turn cap, and the
+// sensor `fire_on` planes. Each case also pins the legacy shape, because a
+// catalog without the new fields must produce byte-identical output.
+
+import { describe, expect, it, vi } from 'vitest';
+import { createSensorRunner } from '../sensor-runner.js';
+import {
+  INVOKE_DIALECT_ANNEX,
+  OPENCODE_DEFAULT_AGENT,
+  buildOpenCodeConfig,
+  buildStagePrompt,
+  neutralizeInvoke,
+  renderEnsembleProtocol,
+  renderScopePolicy,
+} from '../stage-materializer.js';
+import { workspaceRelativePath } from '../repo-paths.js';
 
 const STAGE = Object.freeze({
   stageId: 'functional-design',
@@ -7,6 +22,18 @@ const STAGE = Object.freeze({
   agentRef: 'aidlc-architect-agent',
   inputArtifacts: [{ artifact: 'requirements', required: true }],
   outputArtifacts: [{ artifact: 'business-logic-model' }],
+});
+
+const SCOPE = Object.freeze({ executionId: 'e1', intentId: 'i1' });
+
+const POLICY = Object.freeze({
+  sensorsEnabled: true,
+  reviewClass: 'adversarial',
+  reviewArtifact: null,
+  summaryConfirmation: 'none',
+  changeControl: 'strict',
+  learnings: 'on',
+  skeleton: null,
 });
 
 describe('{{INVOKE}} dialect', () => {
@@ -93,5 +120,327 @@ describe('{{INVOKE}} dialect', () => {
     expect(INVOKE_DIALECT_ANNEX).toContain('record_learning_rule');
     expect(INVOKE_DIALECT_ANNEX).toContain('emit_stage_note');
     expect(INVOKE_DIALECT_ANNEX).toContain('send_output');
+  });
+});
+
+describe('scope policy in the stage prompt', () => {
+  it('renders nothing for a legacy plan or an all-default policy', () => {
+    expect(renderScopePolicy(null)).toBe('');
+    expect(renderScopePolicy({ ...POLICY, changeControl: null })).toBe('');
+    expect(buildStagePrompt({ stage: STAGE, stageBody: 'x' })).not.toContain('## Scope policy');
+  });
+
+  it('points at the confirm_summary checkpoint when confirmation is required', () => {
+    const rendered = renderScopePolicy({ ...POLICY, summaryConfirmation: 'required' });
+    expect(rendered).toContain('Summary confirmation is REQUIRED');
+    // The checkpoint is a dedicated tool, not an ask_question the agent shapes:
+    // the platform owns the two labels and the receipt they write.
+    expect(rendered).toContain('confirm_summary');
+    expect(rendered).not.toContain('ask_question');
+  });
+
+  it('points at the request_plan_approval checkpoint when plan approval applies', () => {
+    const rendered = renderScopePolicy({ ...POLICY, planApproval: 'required' });
+    expect(rendered).toContain('Plan approval is REQUIRED');
+    expect(rendered).toContain('request_plan_approval');
+  });
+
+  it('says nothing about learnings when the scope turns them off', () => {
+    // `learnings: off` is enforced by WITHDRAWING the two tools in mcp/server.js,
+    // so the prompt must not describe tools the agent cannot see.
+    const rendered = renderScopePolicy({ ...POLICY, learnings: 'off' });
+    expect(rendered).not.toContain('Learnings capture is OFF');
+    expect(rendered).not.toContain('record_learning_rule');
+    expect(rendered).not.toContain('record_team_knowledge');
+  });
+
+  it('explains both change-control modes', () => {
+    expect(renderScopePolicy({ ...POLICY, changeControl: 'relaxed' })).toContain('CHANGE_ACCEPTED');
+    expect(renderScopePolicy({ ...POLICY, changeControl: 'strict' })).toContain(
+      'Change control is STRICT',
+    );
+  });
+
+  it('states the skeleton ceremony and the advisory review class', () => {
+    expect(renderScopePolicy({ ...POLICY, skeleton: 'on' })).toContain('Walking skeleton is ON');
+    expect(renderScopePolicy({ ...POLICY, reviewClass: 'advisory' })).toContain(
+      'Review is ADVISORY',
+    );
+    expect(renderScopePolicy({ ...POLICY, reviewClass: 'none' })).toContain(
+      'No independent reviewer runs',
+    );
+  });
+
+  it('injects the block into the prompt when the plan resolved a policy', () => {
+    const prompt = buildStagePrompt({
+      stage: { ...STAGE, policy: { ...POLICY, summaryConfirmation: 'required' } },
+      stageBody: 'x',
+    });
+    expect(prompt).toContain('## Scope policy (authoritative for these rituals)');
+    expect(prompt).toContain('Summary confirmation is REQUIRED');
+  });
+});
+
+// Pipeline and mob run in one session with an ensemble section; the prompt
+// states this approximation explicitly.
+describe('ensemble stage modes (pipeline / mob)', () => {
+  const support = [
+    { ref: 'aidlc-architect-agent', displayName: 'Architect', persona: '# Architect persona' },
+    { ref: 'aidlc-aws-platform-agent', displayName: 'Platform', persona: '# Platform persona' },
+  ];
+
+  it('renders nothing for a legacy mode, so inline/subagent prompts are unchanged', () => {
+    for (const mode of [undefined, 'inline', 'subagent', 'agent-team']) {
+      expect(renderEnsembleProtocol({ mode, leadAgentRef: 'lead', supportAgents: support })).toBe(
+        '',
+      );
+    }
+    const legacy = buildStagePrompt({ stage: { ...STAGE, mode: 'inline' }, stageBody: 'x' });
+    expect(buildStagePrompt({ stage: STAGE, stageBody: 'x' })).toBe(legacy);
+    expect(legacy).not.toContain('## Ensemble protocol');
+  });
+
+  it('renders nothing for an ensemble mode with no resolved support agent', () => {
+    expect(renderEnsembleProtocol({ mode: 'pipeline', leadAgentRef: 'lead' })).toBe('');
+    expect(
+      buildStagePrompt({ stage: { ...STAGE, mode: 'mob' }, stageBody: 'x', supportAgents: [] }),
+    ).toBe(buildStagePrompt({ stage: STAGE, stageBody: 'x' }));
+  });
+
+  it('states the pipeline topology in declared order with every persona body', () => {
+    const rendered = renderEnsembleProtocol({
+      mode: 'pipeline',
+      leadAgentRef: 'aidlc-architect-agent',
+      supportAgents: support,
+    });
+
+    expect(rendered).toContain('stage mode: pipeline');
+    expect(rendered).toContain('The lead drafts');
+    expect(rendered).toContain('ENRICH');
+    expect(rendered).toContain('Support persona 1: Architect');
+    expect(rendered).toContain('Support persona 2: Platform');
+    expect(rendered).toContain('# Platform persona');
+    expect(rendered.indexOf('Support persona 1')).toBeLessThan(
+      rendered.indexOf('Support persona 2'),
+    );
+  });
+
+  it('asks the mob topology to record dissent instead of silently picking a winner', () => {
+    const rendered = renderEnsembleProtocol({
+      mode: 'mob',
+      leadAgentRef: 'lead',
+      supportAgents: support,
+    });
+
+    expect(rendered).toContain('stage mode: mob');
+    expect(rendered).toContain('one room');
+    expect(rendered).toContain('record the dissent');
+    expect(rendered).not.toContain('The lead drafts');
+  });
+
+  it('is honest that one session plays every persona', () => {
+    const rendered = renderEnsembleProtocol({
+      mode: 'pipeline',
+      leadAgentRef: 'lead',
+      supportAgents: support,
+    });
+
+    expect(rendered).toContain('ONE session');
+    expect(rendered).toMatch(/no separate context per/i);
+    expect(rendered).toMatch(/never claim a persona/i);
+  });
+
+  it('neutralizes engine tokens inside a support persona body', () => {
+    const rendered = renderEnsembleProtocol({
+      mode: 'mob',
+      leadAgentRef: 'lead',
+      supportAgents: [
+        { ref: 'x', persona: 'Run {{INVOKE}} engine gen stage-table in {{HARNESS_DIR}}' },
+      ],
+    });
+
+    expect(rendered).not.toContain('{{INVOKE}}');
+    expect(rendered).not.toContain('{{HARNESS_DIR}}');
+  });
+
+  it('injects the section into the prompt right after the lead persona', () => {
+    const prompt = buildStagePrompt({
+      stage: { ...STAGE, mode: 'pipeline' },
+      stageBody: 'Do the design.',
+      agentPersona: '# Lead persona',
+      supportAgents: support,
+      methodologyRelease: { releaseId: 'aidlc:abc' },
+    });
+
+    expect(prompt).toContain('## Ensemble protocol (stage mode: pipeline)');
+    expect(prompt.indexOf('## Your role')).toBeLessThan(prompt.indexOf('## Ensemble protocol'));
+    expect(prompt.indexOf('## Ensemble protocol')).toBeLessThan(
+      prompt.indexOf('## Stage instructions'),
+    );
+  });
+});
+
+// A `fire_on: write` sweep reads workspace-relative paths, but
+// git reports repo-relative ones. In multi-repo mode the two spaces differ.
+describe('write-plane path space (multi-repo)', () => {
+  it('leaves a single-repo path untouched', () => {
+    expect(workspaceRelativePath({ repo: 'acme/api', file: 'src/a.ts', multi: false })).toBe(
+      'src/a.ts',
+    );
+  });
+
+  it('projects a repo-relative path into the workspace layout when multi-repo', () => {
+    expect(workspaceRelativePath({ repo: 'acme/api', file: 'src/a.ts', multi: true })).toBe(
+      'acme/api/src/a.ts',
+    );
+  });
+
+  it('drops a path it cannot project rather than emitting a traversal', () => {
+    expect(workspaceRelativePath({ repo: '../escape', file: 'src/a.ts', multi: true })).toBeNull();
+    expect(workspaceRelativePath({ repo: 'acme/api', file: '', multi: true })).toBeNull();
+    expect(workspaceRelativePath({ repo: 'acme/api', file: undefined, multi: true })).toBeNull();
+  });
+});
+
+describe('AGENT.maxTurns on the OpenCode driver', () => {
+  const base = { mcpEntry: '/srv/mcp.js', scope: SCOPE };
+
+  it('emits no agent block when the block declares no cap', () => {
+    expect(buildOpenCodeConfig(base).agent).toBeUndefined();
+    expect(buildOpenCodeConfig({ ...base, maxTurns: null }).agent).toBeUndefined();
+  });
+
+  it('maps a declared cap onto the run agent step limit', () => {
+    expect(buildOpenCodeConfig({ ...base, maxTurns: 60 }).agent).toEqual({
+      [OPENCODE_DEFAULT_AGENT]: { steps: 60 },
+    });
+  });
+
+  it('ignores a value that is not a positive integer rather than emitting junk', () => {
+    for (const maxTurns of [0, -1, 12.5, '60', 'lots']) {
+      expect(buildOpenCodeConfig({ ...base, maxTurns }).agent).toBeUndefined();
+    }
+  });
+
+  it('keeps the reserved aidlc MCP entry last so a cap cannot reorder it', () => {
+    const config = buildOpenCodeConfig({ ...base, maxTurns: 60 });
+    expect(Object.keys(config.mcp).at(-1)).toBe('aidlc');
+  });
+});
+
+describe('sensor fire_on planes', () => {
+  const graph = {
+    lookupArtifacts: vi.fn(async () => []),
+  };
+  const runner = () =>
+    createSensorRunner({
+      graph,
+      loadBlockScript: async () => '',
+      workspaceDir: null,
+      spawnFn: vi.fn(),
+    });
+
+  const scriptSensor = (extra = {}) => ({
+    sensorId: 'linter',
+    runtime: 'bun',
+    command: 'bun run linter',
+    matches: '**/*.ts',
+    severity: 'advisory',
+    ...extra,
+  });
+
+  it('records not-applicable for a gate sensor with no matching deliverable', async () => {
+    const created = createSensorRunner({
+      graph,
+      loadBlockScript: async () => 'export default 1;',
+      workspaceDir: '/nonexistent-workspace',
+      spawnFn: vi.fn(),
+    });
+    const [verdict] = await created.runStageSensors({
+      sensors: [scriptSensor({ fireOn: 'gate' })],
+      stageId: 'code-generation',
+    });
+    expect(verdict.result).toBe('INCONCLUSIVE');
+    expect(verdict.detail).toMatchObject({ notApplicable: true, fireOn: 'gate' });
+    expect(verdict.held).toBe(false);
+  });
+
+  it('narrows a write-plane sensor to this attempt\u2019s changed files', async () => {
+    const spawnFn = vi.fn(() => {
+      throw new Error('should not spawn: no changed file matches');
+    });
+    const created = createSensorRunner({
+      graph,
+      loadBlockScript: async () => 'export default 1;',
+      workspaceDir: '/nonexistent-workspace',
+      spawnFn,
+    });
+    const [verdict] = await created.runStageSensors({
+      sensors: [scriptSensor({ fireOn: 'write' })],
+      stageId: 'code-generation',
+      changedFiles: ['README.md', 'docs/guide.md'],
+    });
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(verdict.result).toBe('INCONCLUSIVE');
+    expect(verdict.detail).toMatchObject({
+      reason: 'no files match',
+      fireOn: 'write',
+      changedFiles: 2,
+    });
+    expect(verdict.detail.notApplicable).toBeUndefined();
+  });
+
+  it('keeps a sensor without fire_on on the workspace-wide sweep', async () => {
+    const [verdict] = await runner().runStageSensors({
+      sensors: [scriptSensor()],
+      stageId: 'code-generation',
+    });
+    expect(verdict.result).toBe('INCONCLUSIVE');
+    expect(verdict.detail).toEqual({ reason: 'no workspace' });
+  });
+
+  // A gate-plane sensor may only report not-applicable when
+  // it found NOTHING to say. A missing REQUIRED deliverable is a finding, and
+  // suppressing it behind `notApplicable` was hiding exactly the failure the
+  // gate plane exists to catch.
+  it('keeps a missing required deliverable as a finding even on the gate plane', async () => {
+    const [verdict] = await runner().runStageSensors({
+      sensors: [
+        { sensorId: 'required-sections', severity: 'advisory', fireOn: 'gate', category: 'docs' },
+      ],
+      outputArtifacts: [{ artifact: 'business-logic-model' }],
+      stageId: 'functional-design',
+    });
+    expect(verdict.kind).toBe('graph');
+    expect(verdict.detail.notApplicable).toBeUndefined();
+    expect(verdict.detail.artifacts).toEqual([
+      { artifact: 'business-logic-model', reason: 'not found in graph' },
+    ]);
+  });
+
+  it('reports a gate graph sensor as not-applicable when nothing was applicable', async () => {
+    const [verdict] = await runner().runStageSensors({
+      sensors: [
+        { sensorId: 'required-sections', severity: 'advisory', fireOn: 'gate', category: 'docs' },
+      ],
+      // Only an OPTIONAL output: its absence is by design, so the sensor records
+      // no finding and the gate plane genuinely has no deliverable to inspect.
+      outputArtifacts: [{ artifact: 'frontend-components', optional: true }],
+      stageId: 'functional-design',
+    });
+    expect(verdict.kind).toBe('graph');
+    expect(verdict.detail).toMatchObject({ notApplicable: true, fireOn: 'gate' });
+  });
+
+  it('still reports a missing required deliverable when fire_on is absent', async () => {
+    const [verdict] = await runner().runStageSensors({
+      sensors: [{ sensorId: 'required-sections', severity: 'advisory', category: 'docs' }],
+      outputArtifacts: [{ artifact: 'business-logic-model' }],
+      stageId: 'functional-design',
+    });
+    expect(verdict.detail.notApplicable).toBeUndefined();
+    expect(verdict.detail.artifacts).toEqual([
+      { artifact: 'business-logic-model', reason: 'not found in graph' },
+    ]);
   });
 });
