@@ -31,6 +31,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import type {
+  ComputeCapability,
   EnvironmentRevision,
   ManagedEnvironment,
   ManagedTool,
@@ -40,12 +41,16 @@ import { cn } from '@/lib/utils';
 import {
   RUNTIME_IMAGE_LIMIT_BYTES,
   environmentIdPreview,
+  formArchitecture,
+  isDefaultCompute,
   protectedRuntimeVersions,
+  toolsForArchitecture,
   resolvedTools,
   validateEnvironmentForm,
   type EnvironmentForm,
   type KeyValueEntry,
 } from './model';
+import { ComputeBadge, ComputeSelector } from './ComputeSelector';
 import { ProcessOverview, Section } from './ui';
 
 interface Props {
@@ -58,6 +63,10 @@ interface Props {
   tools: ManagedTool[];
   disabled: boolean;
   showId: boolean;
+  // The (compute type × architecture) cells this deployment can build and
+  // run — from GET /environments/capabilities. The selector renders exactly
+  // these, so a draft can never be created against an unconfigured cell.
+  computeOptions: ComputeCapability[];
   actionLabel: string;
   actionBusy: boolean;
   actionDisabled: boolean;
@@ -250,14 +259,22 @@ export function EnvironmentBuilder({
   baseEnvironment,
   baseRevision,
   baseLoading,
-  tools,
+  tools: catalogTools,
   disabled,
   showId,
+  computeOptions,
   actionLabel,
   actionBusy,
   actionDisabled,
   onAction,
 }: Props) {
+  // Only builds for the environment's architecture are selectable; an x86_64
+  // environment sees each tool's x86_64 versions and x86_64 recommendation.
+  const architecture = formArchitecture(form);
+  const tools = useMemo(
+    () => toolsForArchitecture(catalogTools, architecture),
+    [catalogTools, architecture],
+  );
   const [toolSearch, setToolSearch] = useState('');
   const [toolFilter, setToolFilter] = useState<'all' | 'included'>('all');
   const [advancedOpen, setAdvancedOpen] = useState(
@@ -459,6 +476,34 @@ export function EnvironmentBuilder({
                   </SelectContent>
                 </Select>
               </div>
+              {showId &&
+                (computeOptions.some((cell) => cell.available && !isDefaultCompute(cell)) ||
+                  !isDefaultCompute(form.compute)) && (
+                  <div className="max-w-md">
+                    <ComputeSelector
+                      value={form.compute}
+                      cells={computeOptions}
+                      disabled={disabled}
+                      onChange={(compute) =>
+                        onChange({
+                          ...form,
+                          compute,
+                          // Tool versions and bases are per-architecture builds,
+                          // so neither carries across an architecture change.
+                          ...(compute.architecture !== form.compute.architecture
+                            ? { toolVersionIds: [], baseEnvironmentId: 'standard' }
+                            : {}),
+                        })
+                      }
+                    />
+                  </div>
+                )}
+              {!showId && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>Compute</span>
+                  <ComputeBadge compute={form.compute} />
+                </div>
+              )}
               {baseLoading ? (
                 <Skeleton className="h-20" />
               ) : baseRevision ? (

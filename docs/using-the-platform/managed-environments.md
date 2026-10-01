@@ -495,6 +495,128 @@ Environment variables and build commands cannot replace protected runtime
 behavior, inject secrets, change the runtime user, entrypoint, command, port,
 or health contract, or overwrite protected platform variables.
 
+### Compute types: microVMs and Instances
+
+The **compute type** decides where and how an environment's agent sessions
+run:
+
+- **microVMs** (default) — serverless AgentCore microVMs with managed session
+  storage (1 GiB at `/mnt/workspace`), billed per session.
+- **Instances** — EC2 managed instances in the platform account, provisioned
+  through AgentCore capacity providers, with a persistent EBS workspace volume
+  per session, account-level controls (Savings Plans, ODCRs, data stays
+  in-account) and sessions of up to 14 days.
+
+The **architecture** (`arm64` or `x86_64`) is a separate choice: it decides
+which image is built and which catalog tool builds apply, independently of
+where the image runs.
+
+An environment's compute is the pair `{ type, architecture }` — the compute
+type (`microvms` | `instances`) and the CPU architecture (`arm64` | `x86_64`)
+are independent axes. Which combinations a deployment can build and run is
+exposed by `GET /environments/capabilities` as a matrix
+(`combinations[].{type, architecture, available, reason?, allowedInstanceTypes?}`),
+and the **Compute** selector renders exactly the available cells. Today the
+matrix is:
+
+| type \ architecture | arm64                           | x86_64                                                 |
+| ------------------- | ------------------------------- | ------------------------------------------------------ |
+| `microvms`          | default                         | not offered by the service yet                         |
+| `instances`         | with `enable_instances_compute` | with `enable_instances_compute` + the amd64 core image |
+
+#### Enable it on the deployment
+
+The compute type is opt-in per deployment:
+
+```hcl
+enable_instances_compute = true
+
+# Optional overrides
+instances_allowed_instance_types       = ["m6i.large"] # x86_64; burstable (t-family) is not supported
+instances_allowed_instance_types_arm64 = ["m7g.large"] # arm64 (Graviton)
+instances_workspace_gib          = 50
+```
+
+Enabling the flag provisions the x86_64 (amd64) build of the platform core
+image and the VPC wiring the instances attach to, and grants the status lambda
+the capacity-provider permissions. When the flag is off (the default), the
+Instances cells are unavailable in the capability matrix, the compute selector
+only offers microVMs, and the API rejects Instances drafts with
+`INSTANCES_COMPUTE_NOT_CONFIGURED`.
+
+Turning the flag **off again** after Instances environments have been used
+does not destroy anything that live runtimes depend on: the capacity-provider
+operator role is created unconditionally (capacity providers are retained and
+keep referencing it), and existing capacity providers, runtimes, and published
+revisions are left in place. New Instances drafts are refused and existing
+Instances revisions stop being rebuilt/validated until the flag is re-enabled.
+An instance family is built for one architecture only, so each architecture
+has its own allowlist; the capability matrix reports the list per cell.
+Changing an allowlist or `instances_workspace_gib`
+produces a new capacity provider on the next runtime creation; runtimes
+created earlier keep the provider they were built with.
+
+#### Create an Instances environment
+
+With the flag enabled, **New environment** shows a **Compute** selector:
+
+- one entry per available cell of the capability matrix, for example
+  **Serverless microVMs (arm64)**, **EC2 Instances (arm64)** and
+  **EC2 Instances (x86_64)**. Instances entries list the instance types the
+  deployment allows for that architecture.
+
+Both the compute type and the architecture are fixed at creation and cannot
+be changed afterwards. The architecture — not the compute type — decides
+which catalog tools and bases apply: an **x86_64** environment lists only
+tool versions with an x86_64 build and derives from **Standard** (the build
+swaps in the published core revision's x86_64 image variant) or from another
+x86_64 environment; an arm64 environment — on either compute type — uses the
+arm64 builds.
+
+The build, security review, and publish flows are the same on both compute
+types, with one difference on Instances: runtime validation first has to
+provision an EC2 instance, so a cold start can take several minutes. The revision stays
+`VERIFYING` while the poller re-attaches to the same validation session until
+the instance is up (bounded by `MANAGED_INSTANCES_VALIDATION_MAX_POLLS`,
+30 polls by default).
+
+#### Persistent workspaces and cost
+
+Each Instances session attaches a dedicated EBS workspace volume (gp3,
+`instances_workspace_gib`, 50 GiB by default) mounted at `/mnt/workspace`. The
+volume survives session stops, idle timeouts, and instance lifetimes — an
+intent can resume exactly where it left off, including across parallel unit
+lanes, which each get their own session and volume.
+
+Because the volume persists, it also keeps billing until its session is
+explicitly deleted. The platform distinguishes **stopping** a session (the
+compute ends, the workspace is retained and re-attached by the next invocation
+of the same session id) from **releasing** it (the workspace is deleted). The
+volume retention policy is explicit and bound to the intent's lifetime:
+
+| Event                                    | Operation   | Workspace volume                                     |
+| ---------------------------------------- | ----------- | ---------------------------------------------------- |
+| A stage is parked / a unit lane finishes | stop        | retained — resume re-attaches it                     |
+| A run ends (`SUCCEEDED` / `CANCELLED`)   | stop        | retained — rewind relaunches into the same workspace |
+| Rewind / relaunch                        | stop        | retained — re-attached by session id                 |
+| The intent is permanently deleted        | **release** | deleted with the intent                              |
+| Environment runtime validation ends      | **release** | deleted (disposable session)                         |
+
+A workspace is part of the intent's state for as long as the intent exists:
+a finished run can be rewound and a parked stage resumed, and both rely on
+the checkout and conversation state on the volume. On deletion, every
+persisted session of the intent (the main session and all unit-lane sessions,
+including lanes from earlier plans) is stopped and released. A release that
+fails for any reason other than the session already being gone is queued as
+durable cleanup work (`SESSION_CLEANUP#` records on the environment registry
+table) and retried by the environments status poller until the volume is gone
+— the same mechanism covers validation sessions, so no path can leak a volume
+on a transient error.
+
+EC2 instances themselves start on demand and are reclaimed by the capacity
+provider; you pay for instance time while sessions are active plus EBS storage
+for volumes of intents that still exist.
+
 ### What an environment build verifies
 
 The generated Dockerfile:
@@ -509,7 +631,8 @@ The generated Dockerfile:
 
 The build then checks:
 
-- ARM64 architecture and the pinned base digest.
+- The target architecture (arm64, or x86_64 for Instances environments) and
+  the pinned base digest.
 - Protected runtime files against the base.
 - Non-root execution and writable workspace behavior.
 - The generated SPDX SBOM.
