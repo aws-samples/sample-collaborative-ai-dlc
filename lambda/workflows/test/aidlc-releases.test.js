@@ -1328,7 +1328,7 @@ describe('`?release=` selectability gate for non-admins', () => {
 });
 
 describe('GET /aidlc-releases — gap lists stored before protocol evidence', () => {
-  it('shows an admin the gaps promotion would refuse', async () => {
+  it('shows an admin no gap once the loop-back is handled', async () => {
     await register(CANDIDATE_PROFILE);
     const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
     const row = { ...rows.get(key), fidelityGaps: [] };
@@ -1338,10 +1338,6 @@ describe('GET /aidlc-releases — gap lists stored before protocol evidence', ()
     const res = parse(await listReleases());
 
     const listed = res.body.releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(listed.unhonouredValues).toEqual(
-      expect.arrayContaining([
-        { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
-      ]),
-    );
+    expect(listed.unhonouredValues).toEqual([]);
   });
 });
