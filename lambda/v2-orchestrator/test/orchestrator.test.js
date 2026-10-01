@@ -85,6 +85,7 @@ const okScript = (payload) =>
 const MANAGED_RUNTIME_TARGET = {
   agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
   qualifier: 'revision_r_1',
+  capacityProviderArn: null,
 };
 
 const META = {

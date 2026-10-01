@@ -99,6 +99,55 @@ describe('managed environment handler', () => {
     });
   });
 
+  it('reports deployment capabilities so the UI can hide unconfigured compute types', async () => {
+    const handler = createHandler({ store: storeBase() });
+
+    // Default deployment: enable_instances_compute is off.
+    const disabled = await handler({
+      httpMethod: 'GET',
+      path: '/environments/capabilities',
+      ...claims(),
+    });
+    expect(disabled.statusCode).toBe(200);
+    const disabledBody = JSON.parse(disabled.body);
+    expect(disabledBody).toMatchObject({
+      instancesCompute: false,
+      amd64CoreImage: false,
+      default: { type: 'microvms', architecture: 'arm64' },
+    });
+    // The matrix is the contract the UI renders from: only microVMs/arm64
+    // is selectable, and every unavailable cell carries its reason.
+    expect(
+      disabledBody.combinations.map((c) => [c.type, c.architecture, c.available, c.reason ?? null]),
+    ).toEqual([
+      ['microvms', 'arm64', true, null],
+      ['microvms', 'x86_64', false, 'MICROVMS_ARCHITECTURE_UNSUPPORTED'],
+      ['instances', 'arm64', false, 'INSTANCES_COMPUTE_NOT_CONFIGURED'],
+      ['instances', 'x86_64', false, 'INSTANCES_COMPUTE_NOT_CONFIGURED'],
+    ]);
+
+    // Instances-enabled deployment.
+    vi.stubEnv('MANAGED_INSTANCES_OPERATOR_ROLE_ARN', 'arn:aws:iam::1:role/operator');
+    vi.stubEnv('MANAGED_INSTANCES_SUBNETS', '["subnet-1"]');
+    vi.stubEnv('MANAGED_INSTANCES_SECURITY_GROUPS', '["sg-1"]');
+    vi.stubEnv('CORE_IMAGE_URI_AMD64', '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core');
+    vi.stubEnv('CORE_IMAGE_DIGEST_AMD64', `sha256:${'d'.repeat(64)}`);
+    const enabled = await handler({
+      httpMethod: 'GET',
+      path: '/environments/capabilities',
+      ...claims(),
+    });
+    const enabledBody = JSON.parse(enabled.body);
+    expect(enabledBody).toMatchObject({ instancesCompute: true, amd64CoreImage: true });
+    expect(
+      enabledBody.combinations.filter((c) => c.available).map((c) => c.type + '/' + c.architecture),
+    ).toEqual(['microvms/arm64', 'instances/arm64', 'instances/x86_64']);
+    expect(
+      enabledBody.combinations.find((c) => c.type === 'instances' && c.architecture === 'x86_64'),
+    ).toMatchObject({ allowedInstanceTypes: ['m6i.large'] });
+    vi.unstubAllEnvs();
+  });
+
   it('requires fixed-tool environments to be recreated with catalog tools', async () => {
     const environment = {
       environmentId: 'go',
@@ -201,6 +250,53 @@ describe('managed environment handler', () => {
     });
     expect(store.createRevision).not.toHaveBeenCalled();
     expect(codebuildClient.send).not.toHaveBeenCalled();
+  });
+
+  it('rejects a default microVM environment derived from a published x86_64 base', async () => {
+    const x86Parent = {
+      environmentId: 'x86-parent',
+      status: 'PUBLISHED',
+      baseEnvironmentId: 'standard',
+      publishedRevisionId: 'r-x86',
+      currentRevisionId: 'r-x86',
+    };
+    const x86Revision = {
+      environmentId: 'x86-parent',
+      revisionId: 'r-x86',
+      status: 'PUBLISHED',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/environments',
+      imageDigest: `sha256:${'d'.repeat(64)}`,
+      recipe: { ...CATALOG_RECIPE, architecture: 'x86_64' },
+      flattenedRecipe: { ...CATALOG_RECIPE, architecture: 'x86_64' },
+    };
+    const store = {
+      ...storeBase(),
+      getEnvironment: vi
+        .fn()
+        .mockImplementation(async (environmentId) =>
+          environmentId === 'x86-parent' ? x86Parent : null,
+        ),
+      getRevision: vi.fn().mockResolvedValue(x86Revision),
+      createEnvironment: vi.fn(),
+    };
+    const handler = createHandler({ store });
+
+    const response = await handler({
+      httpMethod: 'POST',
+      path: '/environments',
+      body: JSON.stringify({
+        name: 'Derived',
+        baseEnvironmentId: 'x86-parent',
+        recipe: CATALOG_RECIPE,
+      }),
+      ...claims('platform-admin'),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({
+      code: 'BASE_ARCHITECTURE_MISMATCH',
+    });
+    expect(store.createEnvironment).not.toHaveBeenCalled();
   });
 
   it('rejects retrying a failed revision pinned to an outdated base', async () => {

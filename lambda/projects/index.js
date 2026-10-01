@@ -42,6 +42,7 @@ import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
+import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
 import {
   findCheckoutPathCollision,
   isSafeRepo,
@@ -61,6 +62,10 @@ const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
 const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
+const sessionCleanupStore = createSessionCleanupStore({
+  ddb,
+  tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+});
 const store = createProcessStore({ ddb });
 
 // Structured logger (Powertools). serviceName defaults to 'projects' and is
@@ -1908,6 +1913,7 @@ export const handler = async (event, context) => {
                   execMeta,
                   process.env.AGENTCORE_RUNTIME_ARN || '',
                 ),
+                sessionCleanupStore,
                 artifactsBucket: process.env.ARTIFACTS_BUCKET || '',
                 actor,
                 force: true,
