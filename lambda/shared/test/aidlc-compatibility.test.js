@@ -298,9 +298,9 @@ describe('offline exact-source fixtures', () => {
     expect(reports['v2.7.0'].fidelity.native).toContain('SENSOR:fire_on');
     expect(reports['v2.7.0'].fidelity.unsupported).not.toContain('SENSOR:fire_on');
     expect(reports['v2.7.0'].fidelity.native).toContain('STAGE:review_artifact');
-    // The scope switches are enforced by the platform now, not just explained in
-    // the prompt: a fingerprint comparison for change control, and a real
-    // skip of the skeleton ceremony.
+    // The scope switches are enforced by the platform, not just explained in the
+    // prompt: a fingerprint comparison for change control, and a real skip of the
+    // skeleton ceremony.
     expect(reports['v2.8.2'].fidelity.approximated).toContain('SCOPE:change_control');
     expect(reports['v2.8.2'].fidelity.native).not.toContain('SCOPE:change_control');
     expect(reports['v2.9.0'].fidelity.native).toEqual(
@@ -312,8 +312,7 @@ describe('offline exact-source fixtures', () => {
     // `skeleton` is only approximated for its `on` value — `off` is native
     // (`SCOPE.skeleton`).
     // 2.6.18+ author pipeline/mob alongside inline/subagent, so the STAGE:mode
-    // row's worst-case rollup is `approximated` — it moved out
-    // of the native array above into this one.
+    // row's worst-case rollup is `approximated`.
     expect(reports['v2.9.0'].fidelity.approximated).toEqual(
       expect.arrayContaining([
         'SCOPE:learnings',
