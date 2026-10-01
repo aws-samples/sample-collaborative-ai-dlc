@@ -1634,6 +1634,7 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
   it.each([
     ['this run', { orchestratorRunId: 'run1' }, 'stage_attempt_conflict'],
     ['a replacement run', { orchestratorRunId: 'run2' }, 'retired'],
+    ['a cancel of this run', { orchestratorRunId: 'run1', status: 'CANCELLED' }, 'retired'],
   ])('does not retry a park write that lost ownership to %s', async (_label, meta, reason) => {
     const seed = pendingGateSeed('q-1');
     const store = spyStore(seed);
@@ -3082,6 +3083,12 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     ['this run', { orchestratorRunId: 'run1' }, 'stage_attempt_conflict'],
     ['a replacement run', { orchestratorRunId: 'run2' }, 'retired'],
     ['a deleted intent', null, 'retired'],
+    ['a cancel of this run', { orchestratorRunId: 'run1', status: 'CANCELLED' }, 'retired'],
+    [
+      'a parked wait of this run',
+      { orchestratorRunId: 'run1', status: 'WAITING' },
+      'stage_attempt_conflict',
+    ],
     ['an unreadable META', new Error('storage down'), 'stage_attempt_conflict'],
   ])('reports a stale stage claim under %s as %s', async (_label, meta, reason) => {
     const store = {

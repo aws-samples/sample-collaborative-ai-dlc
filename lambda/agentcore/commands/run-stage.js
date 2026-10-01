@@ -3003,11 +3003,12 @@ const runStageAttempt = async (
   };
 };
 
-// A failed ownership condition retires this attempt only when META names
-// another run (or the intent is gone). A stale STAGE callback, left by an
-// earlier attempt that crashed or was refused, leaves this run the owner: the
-// orchestrator exits without a terminal write on `retired`, so report a stage
-// failure it can retry instead.
+// A failed ownership condition retires this attempt when META names another
+// run, the intent is gone, or the run was already settled (a cancel lands on
+// the same run ID while a parked worker is still shutting down). A stale STAGE
+// callback, left by an earlier attempt that crashed or was refused, leaves this
+// run the owner: the orchestrator exits without a terminal write on `retired`,
+// so report a stage failure it can retry instead.
 const ownershipConflict = async (store, { executionId, orchestratorRunId }) => {
   let meta;
   try {
@@ -3017,7 +3018,10 @@ const ownershipConflict = async (store, { executionId, orchestratorRunId }) => {
   }
   if (
     meta === null ||
-    (meta?.orchestratorRunId && orchestratorRunId && meta.orchestratorRunId !== orchestratorRunId)
+    (meta?.orchestratorRunId &&
+      orchestratorRunId &&
+      meta.orchestratorRunId !== orchestratorRunId) ||
+    (meta?.status && !['RUNNING', 'WAITING'].includes(meta.status))
   ) {
     return { ok: false, reason: 'retired' };
   }
