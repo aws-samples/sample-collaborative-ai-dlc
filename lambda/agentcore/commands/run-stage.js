@@ -1657,12 +1657,11 @@ export const runStage = async (
     // fail-closed). Injected for tests.
     resolveMcpSecrets = defaultResolveMcpSecrets,
     verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
-    // The aggregate stage wall clock (ensemble-runner STAGE_BUDGET_MS), read
-    // against `nowMs` (epoch ms) and anchored on THIS stage attempt's start. It
-    // is deliberately NOT anchored on the container's age: a reused container can
-    // be older than the whole budget, which dispatched zero personas. The
-    // container's own lifetime is enforced by AgentCore, not here. Injected for
-    // tests.
+    // The stage wall-clock budget (ensemble-runner STAGE_BUDGET_MS), read against
+    // `nowMs` (epoch ms) and anchored on the start of THIS leg: each runStage call
+    // (a fresh run or a resume) gets its own budget. It is deliberately NOT
+    // anchored on the container's age, so it bounds the sessions one leg starts,
+    // not the container's lifetime, which AgentCore enforces. Injected for tests.
     nowMs = Date.now,
     stageBudgetMs = STAGE_BUDGET_MS,
   } = deps;
@@ -2905,12 +2904,9 @@ export const runStage = async (
   // legs, because a resume after a mid-ensemble park has to know the topology to
   // skip the personas that already produced their evidence. Null => the stage
   // keeps today's single-session behaviour, byte for byte (non-release mode, or
-  // a mode that resolves no support persona).
-  //
-  // Release mode normally fails closed on a body read, but a support persona is
-  // ADDITIVE steering rather than the stage's own instructions: degrading to the
-  // single-session path preserves the behavior of existing stage execution,
-  // which is the conservative choice this whole block is written for.
+  // a mode that resolves no support persona). Resolution only reads anything in
+  // release mode, so a failure (an unverifiable support persona body) fails the
+  // stage closed, like any other pinned body.
   let ensemble = null;
   // The lead's persona body, reused verbatim for its integration session. Set on
   // the fresh leg where the prompt is materialized; re-read on a resume leg,
@@ -2924,24 +2920,12 @@ export const runStage = async (
       methodologyRelease,
     });
   } catch (error) {
-    const detail = `Ensemble topology could not be resolved for ${stageId}: ${
-      error?.message ?? String(error)
-    }`;
-    if (methodologyRelease) {
-      return fail(stageInstanceId, 'ensemble_topology_unresolved', detail, { clearPending: true });
-    }
-    await store
-      .appendEvent({
-        executionId,
-        type: 'v2.persona.gap',
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-        actor: 'agentcore',
-        summary: `${detail}; continuing with the single-session ensemble prompt`,
-        detail: { mode: stage.mode, role: 'ensemble', reason: 'topology_unresolved' },
-      })
-      .catch(() => {});
+    return fail(
+      stageInstanceId,
+      'ensemble_topology_unresolved',
+      `Ensemble topology could not be resolved for ${stageId}: ${error?.message ?? String(error)}`,
+      { clearPending: true },
+    );
   }
 
   let invocation;

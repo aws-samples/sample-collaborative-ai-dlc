@@ -87,9 +87,10 @@ export const MAX_PERSONA_SESSION_MS = 45 * 60 * 1000;
 // runtime's max_lifetime (28800 s, terraform/modules/compute/agentcore), which
 // kills the container and loses every persona after the kill. 6.5 h leaves the
 // last 1.5 h for the engine commit, sensors and the gate hand-off. Measured from
-// the stage attempt's start in this invocation (run-stage computes the deadline);
-// every dispatch past it degrades to a GAP the human reads, and a budget that cut
-// every collaborator blocks the gate overridably.
+// the start of the current leg (run-stage computes the deadline; a resume starts
+// a new budget); a session that would not finish before it degrades to a GAP the
+// human reads, and a budget that cut every collaborator blocks the gate
+// overridably.
 export const STAGE_BUDGET_MS = 6.5 * 60 * 60 * 1000;
 const BUDGET_GAP_REASON = 'stage wall-clock budget exhausted before this session could run';
 
