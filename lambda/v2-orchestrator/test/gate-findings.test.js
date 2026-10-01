@@ -3,8 +3,8 @@
 // receipt + audit event an override writes.
 //
 // The first test is the byte-identity guarantee: a stage with no resolved release
-// policy must open exactly the gate it opened before this stream existed — same
-// prompt text, same two options.
+// policy opens the plain validation gate — the same prompt text and the same two
+// options as a gate without findings.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Logger } from '@aws-lambda-powertools/logger';

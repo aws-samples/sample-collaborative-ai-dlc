@@ -1285,8 +1285,8 @@ describe('steering store methods', () => {
   });
 
   // A row can be otherwise "clean" PENDING (the interrupted-rewind replay guard
-  // above) yet still carry a stale non-zero repair counter from before this fix;
-  // that must NOT be treated as already reset, or the counter would never clear.
+  // above) yet still carry a non-zero repair counter; that must NOT be treated as
+  // already reset, or the counter would never clear.
   it('resetStageRow does not short-circuit a PENDING row that still carries a stale repair counter', async () => {
     ddb.on(GetCommand).resolves({
       Item: {

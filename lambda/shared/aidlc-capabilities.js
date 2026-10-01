@@ -3,13 +3,10 @@
 // each value is honoured, which runtime seam honours it, and
 // what the platform does when a release-mode catalog OMITS the field.
 //
-// It exists because the same three facts were previously stated in three files:
-// the enum vocabulary in `aidlc-compatibility.js` (FRONTMATTER_ENUMS), the same
-// vocabulary again in `v2-execution-plan.js` (POLICY_ENUMS), and the fidelity
-// classification in `aidlc-compatibility.js` (FIELD_FIDELITY). Three copies of
-// one vocabulary drift silently; a release can then import cleanly and plan with
-// a value the runtime never modelled. Both consumers now DERIVE their tables
-// from the entries below.
+// The analyzer's enum vocabulary (FRONTMATTER_ENUMS) and fidelity classification
+// (FIELD_FIDELITY) and the plan resolver's policy enums (POLICY_ENUMS) are all
+// DERIVED from the entries below, so they cannot drift apart: a release can never
+// import cleanly and then plan with a value the runtime does not model.
 //
 // Entry shape:
 //   key                 `<BLOCK_TYPE>:<authored field>` — the registry identity.
