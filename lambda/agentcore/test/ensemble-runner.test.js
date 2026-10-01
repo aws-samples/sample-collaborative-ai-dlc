@@ -595,11 +595,17 @@ describe('mob dissent triage', () => {
       },
     });
 
-    // Round two gets both normal and reduced-brief tries, but contributes no new receipt.
+    // Round two gets both normal and reduced-brief tries, and is receipted as a gap,
+    // not as a contribution.
     expect(briefs.filter((entry) => entry.role === 'support')).toHaveLength(3);
     expect(
-      store.receipts.filter((row) => row.kind === 'persona-contribution').map((row) => row.ordinal),
-    ).toEqual([1]);
+      store.receipts
+        .filter((row) => row.kind === 'persona-contribution')
+        .map((row) => [row.ordinal, row.choice]),
+    ).toEqual([
+      [1, 'contributed'],
+      [1001, 'gap'],
+    ]);
     // The earlier real objection remains available to the gate; a gap stub must
     // not overwrite that artifact when the round-two dispatch is silent.
     expect(rows).toHaveLength(1);
@@ -877,6 +883,43 @@ describe('failure never blocks', () => {
     expect(findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
     expect(findings[0].severity).toBe('advisory');
     expect(findings[0].detail).toEqual({ agentRef: 'design-agent' });
+  });
+
+  // The gap is receipted (choice: 'gap') like a gapped pipeline link, so a resume
+  // in the same attempt does not spend two more sessions on it.
+  it('does not re-dispatch a gapped support on a resume of the same attempt', async () => {
+    const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent', 'quality-agent'] });
+    const topology = await topologyFor(stageRow);
+    const store = spyStore();
+    const sessions = { 'design-agent': { kind: 'crashes' } };
+    await run({ stageRow, topology, store, sessions });
+    expect(store.receipts.map((row) => [row.kind, row.choice, row.detail.agentRef])).toEqual([
+      ['persona-contribution', 'gap', 'design-agent'],
+      ['persona-contribution', 'contributed', 'quality-agent'],
+    ]);
+
+    const resumed = await run({ stageRow, topology, store, sessions });
+    expect(resumed.briefs.map((entry) => entry.role)).toEqual(['integrator']);
+    expect(resumed.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+  });
+
+  // Without the receipts, a resume cannot tell which personas already ran, nor how
+  // many dissent rounds were spent: nothing is dispatched, and the gate hears it.
+  it('dispatches nothing when the prior receipts cannot be read', async () => {
+    const stageRow = stage({ mode: 'mob' });
+    const store = spyStore();
+    store.listReceipts = async () => {
+      throw new Error('ThrottlingException');
+    };
+    const { briefs, ensembleEvidence } = await run({
+      stageRow,
+      topology: await topologyFor(stageRow),
+      store,
+    });
+    expect(briefs).toEqual([]);
+    expect(ensembleEvidence.gaps).toEqual([
+      expect.objectContaining({ role: 'ensemble', reason: expect.stringContaining('Throttling') }),
+    ]);
   });
 
   it('accepts a support that produces its contribution only on the reduced retry', async () => {

@@ -698,7 +698,9 @@ export const runEnsembleSessions = async ({
     }
     priorReceipts =
       typeof store?.listReceipts === 'function'
-        ? await store.listReceipts(executionId, { stageInstanceId, attempt }).catch(() => [])
+        ? // No catch: without them a resume would re-run settled personas and
+          // reset the dissent budget. The floor below turns the error into a gap.
+          await store.listReceipts(executionId, { stageInstanceId, attempt })
         : [];
     const ordinalsOf = (kind) =>
       new Set(
@@ -1110,8 +1112,16 @@ const dispatchSupports = async ({
         },
       });
     } else {
-      // Deliberately NO receipt: the missing contribution must stay missing so
-      // `evaluateGatePreconditions` names this persona at the gate.
+      // A gap receipt, like a gapped pipeline link's: a resume skips this persona
+      // instead of spending two more sessions on it. The gate counts only
+      // `contributed`, so it still names the persona as missing.
+      completed.add(ordinal);
+      await receipt({
+        kind: 'persona-contribution',
+        ordinal,
+        choice: 'gap',
+        detail: { mode: topology.mode, agentRef: support.ref, round, attempt },
+      });
       await gap({
         agentRef: support.ref,
         role: 'support',
