@@ -58,9 +58,10 @@ const fakeStore = ({
     this.events.push({ ...event, eventType: event.type, timestamp: '2026-09-24T12:00:00.000Z' });
     return { ...event, eventId: `e${this.appended.length}` };
   },
-  async bumpStageCounter({ field }) {
-    this.counters[field] = Number(this.counters[field] ?? 0) + 1;
-    return this.counters[field];
+  async raiseStageCounter({ field, to }) {
+    if (Number(this.counters[field] ?? 0) >= to) return false;
+    this.counters[field] = to;
+    return true;
   },
 });
 
@@ -256,6 +257,23 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
     expect(result.findings.map((finding) => finding.code)).toEqual([
       'summary_confirmation_missing',
     ]);
+  });
+
+  it('spends at most one repair turn per validation revision, even when re-invoked', async () => {
+    const store = fakeStore();
+    let repairs = 0;
+    const once = () =>
+      ladder(store, {
+        validationRound: 1,
+        runRepairTurn: async () => {
+          repairs += 1;
+        },
+      });
+
+    await once();
+    await once();
+
+    expect(repairs).toBe(1);
   });
 
   it('still reaches the gate when the repair turn itself throws', async () => {

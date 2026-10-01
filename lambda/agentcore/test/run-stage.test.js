@@ -4841,9 +4841,10 @@ const checkpointRunStore = ({ stageInstanceId, unitSlug = null }) => {
     receipts.set(sk, row);
     return row;
   };
-  store.bumpStageCounter = async ({ field }) => {
-    stageRow[field] = Number(stageRow[field] ?? 0) + 1;
-    return stageRow[field];
+  store.raiseStageCounter = async ({ field, to }) => {
+    if (Number(stageRow[field] ?? 0) >= to) return false;
+    stageRow[field] = to;
+    return true;
   };
   store.listSensorRuns = async () => [];
   store.getUnitPlan = async () => ({ units: [{ slug: unitSlug, kind: 'backend' }] });
@@ -5040,7 +5041,7 @@ describe('runStage — checkpoint park races', () => {
 
   it('does not run a checkpoint repair when its attempt counter cannot be persisted', async () => {
     const run = checkpointRun({ repairCheckpoint: true });
-    run.deps.store.bumpStageCounter = async () => {
+    run.deps.store.raiseStageCounter = async () => {
       throw new Error('counter store unavailable');
     };
 

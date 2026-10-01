@@ -1121,29 +1121,34 @@ const runCheckpointLadder = async ({
   let findings = await read();
   if (findings.length === 0) return { findings: [] };
 
-  // One bounded repair turn per counter per validation revision. The counter is
-  // read from the STAGE# row and bumped atomically, so a re-invoked runner cannot
-  // grant a second. A rewind resets it; within one attempt each revision may
-  // spend one more, so the counter is compared with the revision number rather
-  // than with zero.
+  // One bounded repair turn per counter per validation revision. The counter on
+  // the STAGE# row is raised to revision + 1 by a conditional write, so a
+  // re-invoked runner (or a concurrent one) cannot claim a second turn in the
+  // same revision, and a rewind (which resets the counters) starts over.
   const counters = [
     ...new Set(findings.map((finding) => CHECKPOINT_LADDER[finding.code]?.counter).filter(Boolean)),
   ];
-  const alreadyRepaired = counters.some(
-    (counter) => Number(stageRow?.[counter] ?? 0) > Number(validationRound ?? 0),
+  const repairBudget = Number(validationRound ?? 0) + 1;
+  let alreadyRepaired = counters.some(
+    (counter) => Number(stageRow?.[counter] ?? 0) >= repairBudget,
   );
-  const budgetAllowsRepair = runRepairTurn && !alreadyRepaired;
-  if (runRepairTurn && !alreadyRepaired && budgetAllowsRepair) {
+  if (runRepairTurn && !alreadyRepaired) {
     const parkedBeforeRepair = await pendingGate?.();
     if (parkedBeforeRepair) return { findings, parked: parkedBeforeRepair };
     let counterPersistenceFailed = false;
     for (const counter of counters) {
-      await Promise.resolve(
-        store.bumpStageCounter?.({ executionId, stageInstanceId, field: counter }),
+      const raised = await Promise.resolve(
+        store.raiseStageCounter?.({
+          executionId,
+          stageInstanceId,
+          field: counter,
+          to: repairBudget,
+        }),
       ).catch((error) => {
         counterPersistenceFailed = true;
         log.error('checkpoint repair counter not persisted', { error, counter });
       });
+      if (raised === false) alreadyRepaired = true;
     }
     if (counterPersistenceFailed) {
       return {
@@ -1153,7 +1158,7 @@ const runCheckpointLadder = async ({
         },
       };
     }
-    if (!counterPersistenceFailed) {
+    if (!alreadyRepaired) {
       await store
         .appendEvent({
           executionId,
