@@ -3489,8 +3489,8 @@ export const runStage = async (
         })
         .catch(() => {});
     } else {
-      const stageRow = await store.getStage?.(executionId, stageInstanceId).catch(() => null);
-      const attempt = Number(stageRow?.attempt ?? 0);
+      // The attempt this leg wrote on the stage row (putStage above).
+      const attempt = Number(priorStageRow?.attempt ?? 0);
       // A resume leg never materialized a prompt, so the lead persona is re-read
       // here. For a pinned intent a typed release failure (digest mismatch,
       // unreadable object, unresolvable overlay) must not seat the integration

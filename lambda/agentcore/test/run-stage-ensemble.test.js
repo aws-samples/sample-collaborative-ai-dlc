@@ -398,6 +398,24 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
     expect(res.findings).toBeUndefined();
   });
 
+  // The ensemble files its receipts under the attempt this leg wrote on the stage
+  // row, without a second read that could fail and fall back to attempt 0.
+  it('files the ensemble receipts under the attempt of this leg', async () => {
+    const { deps, store } = harness({ mode: 'pipeline', ...withGraph() });
+    deps.spawnFn = outputWritingSpawn;
+    let reads = 0;
+    store.getStage = async () => {
+      reads += 1;
+      if (reads > 1) throw new Error('ThrottlingException');
+      return { stageInstanceId: STAGE_INSTANCE_ID, attempt: 2 };
+    };
+    await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+    expect(store.receipts.map((row) => [row.kind, row.attempt])).toEqual([
+      ['pipeline-link', 2],
+      ['pipeline-link', 2],
+    ]);
+  });
+
   // The same pipeline whose link sessions write NOTHING: a clean exit is not
   // evidence, so the link GAPs and the incomplete chain reaches the human.
   it('gaps a pipeline link whose session never touched the stage outputs', async () => {
