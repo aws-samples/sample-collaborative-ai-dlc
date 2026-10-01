@@ -284,7 +284,6 @@ export interface GateFinding {
   overridable: boolean;
   receiptKind?: string | null;
   remediation?: string | null;
-  // Verbatim text the finding is ABOUT — today a maintained dissent's position.
 }
 
 // A human gate (HUMAN# row). `questions` is the v1-shaped structured-questions
