@@ -219,7 +219,7 @@ describe('runStage — native ensemble sessions: the release gate', () => {
       const { deps, materialized, store } = harness({ mode, release: null });
       const res = await runStage(baseArgs, deps);
       expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-      expect(materialized[0].supportAgents).toEqual([]);
+      expect(materialized[0]).not.toHaveProperty('supportAgents');
       expect(res.ensembleEvidence).toBeUndefined();
       expect(res.findings).toBeUndefined();
       expect(eventTypes(store).some((type) => type.startsWith('v2.persona.'))).toBe(false);
@@ -227,33 +227,11 @@ describe('runStage — native ensemble sessions: the release gate', () => {
     },
   );
 
-  it('keeps the single-session ensemble prompt under V2_ENSEMBLE_SESSIONS=off', async () => {
-    const { deps, materialized, store } = harness({
-      mode: 'pipeline',
-      env: { V2_ENSEMBLE_SESSIONS: 'off' },
-    });
-    const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
-    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-    expect(materialized[0].supportAgents).toHaveLength(1);
-    expect(res.ensembleEvidence).toBeUndefined();
-    expect(eventTypes(store).some((type) => type.startsWith('v2.persona.'))).toBe(false);
-  });
-
-  it('loads support personas only for a pinned plan when native sessions are disabled', async () => {
-    const pinned = harness({ mode: 'mob', env: { V2_ENSEMBLE_SESSIONS: 'off' } });
-    await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, pinned.deps);
-    const unpinned = harness({ mode: 'mob', release: null });
-    await runStage(baseArgs, unpinned.deps);
-    expect(pinned.materialized[0].supportAgents).toHaveLength(1);
-    expect(unpinned.materialized[0].supportAgents).toEqual([]);
-    expect(pinned.materialized[0].stage.mode).toBe(unpinned.materialized[0].stage.mode);
-  });
-
   it('leaves an ensemble stage with no resolvable support on the inline path', async () => {
     const { deps, materialized, store } = harness({ mode: 'pipeline', supportRefs: [] });
     const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-    expect(materialized[0].supportAgents).toEqual([]);
+    expect(materialized[0]).not.toHaveProperty('supportAgents');
     expect(res.ensembleEvidence).toBeUndefined();
     expect(store.receipts).toEqual([]);
   });
@@ -300,7 +278,7 @@ describe('runStage — native ensemble sessions: the release gate', () => {
     const { deps, materialized, store } = harness({ mode: 'subagent', supportRefs: [] });
     const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-    expect(materialized[0].supportAgents).toEqual([]);
+    expect(materialized[0]).not.toHaveProperty('supportAgents');
     expect(res.ensembleEvidence).toBeUndefined();
     expect(eventTypes(store).some((type) => type.startsWith('v2.persona.'))).toBe(false);
   });
@@ -319,12 +297,10 @@ const promptCapturingSpawn = (prompts) => () => ({
 });
 
 describe('runStage — native ensemble sessions: the lead prompt hand-off', () => {
-  it('withholds the support personas from the single-session ensemble block', async () => {
+  it('never hands the support personas to the lead prompt', async () => {
     const { deps, materialized } = harness({ mode: 'pipeline' });
     await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
-    // `renderEnsembleProtocol` is driven off `supportAgents`; empty means the
-    // "you play every persona yourself" block renders nothing at all.
-    expect(materialized[0].supportAgents).toEqual([]);
+    expect(materialized[0]).not.toHaveProperty('supportAgents');
   });
 
   it('tells the lead it is link 1 of a real pipeline, not the whole ensemble', async () => {
@@ -346,15 +322,6 @@ describe('runStage — native ensemble sessions: the lead prompt hand-off', () =
     await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
     expect(prompts[0]).toContain('Ensemble topology (stage mode: mob, separate sessions)');
     expect(prompts[0]).toContain('re-invoked in a separate integration session');
-  });
-
-  it('leaves the lead prompt free of any topology block on the off path', async () => {
-    const prompts = [];
-    const { deps } = harness({ mode: 'mob', env: { V2_ENSEMBLE_SESSIONS: 'off' } });
-    deps.spawnFn = promptCapturingSpawn(prompts);
-    await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toBe('PROMPT requirements-analysis');
   });
 
   it('gives each support its own brief, naming no sibling', async () => {

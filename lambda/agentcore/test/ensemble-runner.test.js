@@ -237,7 +237,7 @@ describe('resolveEnsembleTopology — the gate on native sessions', () => {
     expect(resolved).toBeNull();
   });
 
-  it('is inert under the V2_ENSEMBLE_SESSIONS=off escape hatch', async () => {
+  it('has no runtime switch: V2_ENSEMBLE_SESSIONS is not read', async () => {
     for (const value of ['off', 'OFF']) {
       const resolved = await resolveEnsembleTopology({
         stage: stage(),
@@ -246,7 +246,7 @@ describe('resolveEnsembleTopology — the gate on native sessions', () => {
         methodologyRelease: RELEASE,
         env: { V2_ENSEMBLE_SESSIONS: value },
       });
-      expect(resolved).toBeNull();
+      expect(resolved).not.toBeNull();
     }
   });
 

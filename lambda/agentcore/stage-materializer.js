@@ -256,73 +256,11 @@ export const renderScopePolicy = (policy) => {
   return ['## Scope policy (authoritative for these rituals)', '', ...lines].join('\n');
 };
 
-// Render the ensemble protocol for an APPROXIMATED multi-persona stage mode
-// (upstream `mode: pipeline` / `mode: mob`, ≥2.6.18). PURE, and '' unless the
-// stage actually declares one of those modes AND resolves at least one support
-// agent — a lead-only `pipeline` stage is indistinguishable from `inline`, so it
-// renders nothing and stays byte-identical.
-//
-// The approximation: upstream runs one session per persona and wires them by
-// topology; we run ONE session and ask the single agent to adopt each persona in
-// turn under the declared protocol. That is a real deviation (no independent
-// context per persona, no genuine disagreement between separate models), stated
-// in the prompt itself so the agent does not pretend otherwise, and classified
-// `approximated` by the compatibility analyzer.
-const ENSEMBLE_PROTOCOLS = Object.freeze({
-  pipeline: [
-    'Work the personas in the declared order as a PIPELINE. The lead drafts',
-    'first. Then adopt each support persona in turn, giving it the full text of',
-    'all upstream work, and let it ENRICH — correct, deepen, or extend — what it',
-    'received rather than restate it. Later personas see every earlier',
-    'contribution; earlier personas never see later ones.',
-  ],
-  mob: [
-    'Work the personas as a MOB in one room: they examine the same material',
-    'together and may cross-talk freely, in any order, revisiting earlier points.',
-    'Where personas DISAGREE, do not silently pick a winner — record the dissent',
-    'in the output, attributed to the persona that raised it, alongside the',
-    'position you carried forward and why.',
-  ],
-});
-
-export const renderEnsembleProtocol = ({ mode, leadAgentRef, supportAgents = [] } = {}) => {
-  const protocol = ENSEMBLE_PROTOCOLS[mode];
-  const resolved = supportAgents.filter((agent) => agent?.ref);
-  if (!protocol || resolved.length === 0) return '';
-  return [
-    `## Ensemble protocol (stage mode: ${mode})`,
-    '',
-    `This stage is authored for **${mode}** execution across several personas.`,
-    'This runtime gives you ONE session, so you play every persona yourself,',
-    'sequentially, under the protocol below. You have no separate context per',
-    'persona and no second model to genuinely disagree with you: keep each',
-    "persona's contribution distinct and labelled, and never claim a persona",
-    'reviewed something it did not.',
-    '',
-    ...protocol,
-    '',
-    `Lead persona: **${leadAgentRef ?? 'the assigned agent'}** (your role above).`,
-    '',
-    `Support personas, in declared order (${resolved.length}):`,
-    '',
-    ...resolved.flatMap((agent, index) => [
-      `### Support persona ${index + 1}: ${agent.displayName || agent.ref}`,
-      '',
-      neutralizeTokens(agent.persona || '').trim() || '(no persona body supplied)',
-      '',
-    ]),
-    'Produce ONE consolidated set of outputs for the stage, not one per persona.',
-    'Attribute distinctive contributions and any recorded dissent to the persona',
-    'that made them.',
-  ].join('\n');
-};
-
 // Assemble the full stage prompt. PURE. `ctx`:
 //   stage           — the resolved plan stage (stageId, phase, agentRef, in/out,
 //                      rules refs, humanValidation)
 //   stageBody       — the STAGE block's markdown instructions
 //   agentPersona    — the lead AGENT block's body (the persona)
-//   supportAgents   — [{ ref, displayName, persona }] for an ensemble mode
 //   knowledge       — concatenated methodology knowledge for the agent (optional)
 export const buildStagePrompt = ({
   stage = {},
@@ -330,8 +268,6 @@ export const buildStagePrompt = ({
   intent = null, // { title, prompt, scope } — the originating request
   stageBody = '',
   agentPersona = '',
-  supportAgents = [],
-  methodologyRelease = null,
   knowledge = '',
   conductor = '',
   compiledContext = '',
@@ -359,14 +295,6 @@ export const buildStagePrompt = ({
   // not a hand-distilled paraphrase. Neutralized for the {{HARNESS_DIR}} token.
   if (conductor) sections.push('', '## Execution quality (conductor)', neutralizeTokens(conductor));
   if (agentPersona) sections.push('', '## Your role', neutralizeTokens(agentPersona));
-  const ensemble = methodologyRelease
-    ? renderEnsembleProtocol({
-        mode: stage.mode,
-        leadAgentRef: stage.agentRef,
-        supportAgents,
-      })
-    : '';
-  if (ensemble) sections.push('', ensemble);
   if (compiledContext) sections.push('', neutralizeTokens(compiledContext));
   const attachmentManifest = attachmentPromptManifest(attachments);
   if (attachmentManifest) sections.push('', attachmentManifest);
@@ -1024,8 +952,6 @@ export const materializeStage = async ({
   intent = null,
   stageBody,
   agentPersona,
-  supportAgents = [],
-  methodologyRelease = null,
   knowledge,
   conductor = '',
   compiledContext = '',
@@ -1064,8 +990,6 @@ export const materializeStage = async ({
     intent,
     stageBody,
     agentPersona,
-    supportAgents,
-    methodologyRelease,
     knowledge,
     conductor,
     compiledContext,

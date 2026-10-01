@@ -269,9 +269,9 @@ knowledge namespace for each persona. Identity checks apply through supported
 tool calls; they are workflow controls, not an isolation boundary against a
 compromised AgentCore runtime identity, which remains trusted.
 
-`V2_ENSEMBLE_SESSIONS` defaults to `on` and affects release-pinned intents only;
-release pinning itself defaults to `off`. Setting the ensemble switch to `off`
-selects the legacy single-session fallback for pinned ensemble stages.
+Persona sessions apply to release-pinned intents only; release pinning itself
+defaults to `off`. There is no separate switch for them: to stop running
+persona sessions, do not pin intents to a release that declares these modes.
 
 `agent-team` remains explicitly unimplemented. Build-and-Test loop-back is a
 separate runtime behavior; persona sessions do not add a loop-back gate option.

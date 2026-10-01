@@ -109,7 +109,6 @@ import { compileContextPack as defaultCompileContextPack } from '../context-comp
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
 import {
   buildExecutionPlan,
-  ENSEMBLE_MODES,
   stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
@@ -253,33 +252,6 @@ const resolveStage = ({
       detail: `stage "${stageId}" not in scope "${scope.scope}"`,
     };
   return { plan, stage };
-};
-
-// Load the support-agent personas an ensemble stage mode needs (`pipeline` /
-// `mob`). Resolved from the SAME library the stage came from — the release
-// closure when the intent is pinned, the DDB catalog otherwise — so a pinned
-// intent can never pull a reseeded persona into its prompt. Order is the
-// authored `support_agents` order, which the pipeline topology depends on.
-// Returns [] for every non-ensemble mode, so the legacy prompt is unchanged.
-// `modes` is the set of stage modes that get the single-session ensemble PROMPT.
-// The call site passes an EMPTY set when native persona sessions
-// (ensemble-runner.js) own the supports instead: the lead then drafts only its
-// own part, so no support persona belongs in its prompt at all.
-const loadSupportAgents = async ({ stage, library, loadBlockBody, modes = ENSEMBLE_MODES }) => {
-  if (!modes.includes(stage.mode)) return [];
-  const refs = (stage.supportAgentRefs ?? []).filter(
-    (ref) => ref && ref !== stage.agentRef && library.agentsById?.[ref],
-  );
-  return Promise.all(
-    refs.map(async (ref) => {
-      const block = library.agentsById[ref];
-      return {
-        ref,
-        displayName: block.displayName ?? block.name ?? ref,
-        persona: await loadBlockBody(block),
-      };
-    }),
-  );
 };
 
 // Concatenate the methodology knowledge bodies for an agent. Release mode does
@@ -2932,8 +2904,8 @@ export const runStage = async (
   // of one agent role-playing everybody. Resolved on BOTH the fresh and resume
   // legs, because a resume after a mid-ensemble park has to know the topology to
   // skip the personas that already produced their evidence. Null => the stage
-  // keeps today's single-session behaviour, byte for byte (non-release mode,
-  // `V2_ENSEMBLE_SESSIONS=off`, or a mode that resolves no support persona).
+  // keeps today's single-session behaviour, byte for byte (non-release mode, or
+  // a mode that resolves no support persona).
   //
   // Release mode normally fails closed on a body read, but a support persona is
   // ADDITIVE steering rather than the stage's own instructions: degrading to the
@@ -2950,7 +2922,6 @@ export const runStage = async (
       library,
       loadBlockBody: loadBody,
       methodologyRelease,
-      env,
     });
   } catch (error) {
     const detail = `Ensemble topology could not be resolved for ${stageId}: ${
@@ -3009,17 +2980,11 @@ export const runStage = async (
         loadPromptBody(stageBlock),
         agentBlock ? loadPromptBody(agentBlock) : Promise.resolve(''),
         conductorLoad,
-        loadSupportAgents({
-          stage,
-          library,
-          loadBlockBody: loadPromptBody,
-          modes: ensemble || !methodologyRelease ? [] : ENSEMBLE_MODES,
-        }),
       ]);
     } catch (error) {
       return fail(stageInstanceId, 'methodology_body_unavailable', error?.message ?? String(error));
     }
-    const [stageBody, agentPersona, conductorResult, supportAgents] = bodies;
+    const [stageBody, agentPersona, conductorResult] = bodies;
     leadPersonaBody = agentPersona;
     if (conductorResult.error) {
       return fail(stageInstanceId, 'conductor_unavailable', conductorResult.error.message);
@@ -3095,8 +3060,6 @@ export const runStage = async (
         : { scope },
       stageBody,
       agentPersona,
-      supportAgents,
-      methodologyRelease,
       knowledge,
       conductor,
       compiledContext,
@@ -3116,10 +3079,8 @@ export const runStage = async (
       maxTurns: methodologyRelease ? (agentBlock?.maxTurns ?? null) : null,
     });
     prompt = materialized.prompt;
-    // Native ensemble sessions: the lead's own role in the topology, appended
-    // where the single-session ensemble protocol would otherwise have rendered
-    // (`supportAgents` was passed empty above, so that block rendered nothing).
-    // Appended rather than woven in so the off-path prompt is untouched.
+    // Native ensemble sessions: the lead's own role in the topology, appended so
+    // a stage without one keeps its prompt untouched.
     if (ensemble) {
       prompt = `${prompt}\n\n${renderLeadTopologyBrief(ensemble)}`;
     }

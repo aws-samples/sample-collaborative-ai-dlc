@@ -4406,7 +4406,6 @@ describe('runStage — release-mode fidelity', () => {
       let seen = null;
       const deps = baseDeps({
         spawnFn: okSpawn,
-        env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', V2_ENSEMBLE_SESSIONS: 'off' },
         loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
         materializeStage: async (args) => {
           seen = args;
@@ -4418,13 +4417,8 @@ describe('runStage — release-mode fidelity', () => {
 
       expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
       expect(seen.stage.mode).toBe(mode);
-      expect(seen.supportAgents).toEqual([
-        {
-          ref: 'aidlc-architect-agent',
-          displayName: 'Architect',
-          persona: 'body:blocks/bodies/sha256/architect',
-        },
-      ]);
+      // The supports run as their own sessions; the lead prompt never carries them.
+      expect(seen).not.toHaveProperty('supportAgents');
     },
   );
 
@@ -4443,7 +4437,7 @@ describe('runStage — release-mode fidelity', () => {
 
       await runStage(baseArgs, deps);
 
-      expect(seen.supportAgents).toEqual([]);
+      expect(seen).not.toHaveProperty('supportAgents');
     },
   );
 
@@ -4461,7 +4455,7 @@ describe('runStage — release-mode fidelity', () => {
 
     await runStage(baseArgs, deps);
 
-    expect(seen.supportAgents).toEqual([]);
+    expect(seen).not.toHaveProperty('supportAgents');
   });
 
   it('still refuses agent-team, which needs real concurrent sessions', async () => {

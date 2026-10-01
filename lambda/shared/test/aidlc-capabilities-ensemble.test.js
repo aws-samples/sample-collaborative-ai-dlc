@@ -69,7 +69,7 @@ describe('aidlc-capabilities — the ensemble-sessions seam', () => {
     const note = capabilityFor('STAGE:mode').note;
     expect(note).toContain('REAL separate sessions per persona');
     expect(note).toContain('serially');
-    expect(note).toContain('V2_ENSEMBLE_SESSIONS=off');
+    expect(note).not.toContain('V2_ENSEMBLE_SESSIONS');
   });
 
   it('still refuses agent-team outright', () => {

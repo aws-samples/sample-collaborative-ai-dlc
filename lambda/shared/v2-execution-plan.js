@@ -48,11 +48,6 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
 // requires real concurrent sessions.
 const RUNNABLE_MODES = ['inline', 'subagent', 'pipeline', 'mob'];
 
-// The approximated multi-persona topologies. Kept separate from RUNNABLE_MODES
-// so a consumer can tell "runs natively" from "runs as one session with an
-// ensemble prompt", and so the compatibility analyzer can classify them.
-const ENSEMBLE_MODES = ['pipeline', 'mob'];
-
 // Reserved lead-agent refs that are NOT domain AGENT blocks and therefore have no
 // library entry to resolve against. Upstream's initialization stages declare
 // `lead_agent: orchestrator`, where "orchestrator" is the conductor / forwarding
@@ -1046,7 +1041,6 @@ export {
   workflowScopes,
   resolveStagePolicy,
   RUNNABLE_MODES,
-  ENSEMBLE_MODES,
   REVIEW_CLASS_RANK,
   UNIT_FOR_EACH,
   UNIT_DAG_ARTIFACT,
@@ -1058,7 +1052,6 @@ export default {
   workflowScopes,
   resolveStagePolicy,
   RUNNABLE_MODES,
-  ENSEMBLE_MODES,
   REVIEW_CLASS_RANK,
   UNIT_FOR_EACH,
   UNIT_DAG_ARTIFACT,

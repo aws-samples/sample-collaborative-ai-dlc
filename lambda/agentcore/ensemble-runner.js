@@ -381,9 +381,8 @@ export const buildIntegratorBrief = ({
       : []),
   ].join('\n');
 
-// The lead's own prompt tail when native sessions are active. It REPLACES the
-// single-session ensemble protocol (`renderEnsembleProtocol`), which instructs one
-// agent to play every persona — exactly what real sessions exist to stop.
+// The lead's own prompt tail when native sessions are active: the lead drafts its
+// own part and never plays the other personas.
 export const renderLeadTopologyBrief = ({ mode, leadAgentRef, supports = [] }) => {
   const refs = supports.map((support) => support.ref).filter(Boolean);
   if (refs.length === 0) return '';
@@ -416,18 +415,15 @@ export const renderLeadTopologyBrief = ({ mode, leadAgentRef, supports = [] }) =
 
 // The native topology for a stage, or null when the stage keeps today's
 // single-session behaviour. Gated on release mode (the existing authored
-// provenance gate — an unpinned or 2.3.3-era intent is untouched), on the
-// `V2_ENSEMBLE_SESSIONS=off` escape hatch, and on at least one support persona
-// resolving from the SAME library the stage came from.
+// provenance gate — an unpinned or 2.3.3-era intent is untouched) and on at least
+// one support persona resolving from the SAME library the stage came from.
 export const resolveEnsembleTopology = async ({
   stage,
   library,
   loadBlockBody,
   methodologyRelease = null,
-  env = {},
 }) => {
   if (!methodologyRelease) return null;
-  if (String(env.V2_ENSEMBLE_SESSIONS ?? '').toLowerCase() === 'off') return null;
   if (!SESSION_ENSEMBLE_MODES.includes(stage?.mode)) return null;
   if (stage.mode === 'subagent' && !subagentIsHubAndSpoke(library)) return null;
   const refs = (stage.supportAgentRefs ?? []).filter(
