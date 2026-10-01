@@ -202,12 +202,23 @@ const HUMAN_TASK_KINDS = ['approval', 'question', 'review-verdict', 'validation'
 const HUMAN_TASK_ANSWER_STATUSES = ['answered', 'approved', 'rejected'];
 const HUMAN_TASK_STATUSES = ['pending', ...HUMAN_TASK_ANSWER_STATUSES, 'superseded'];
 const isHumanTaskAnswerStatus = (status) => HUMAN_TASK_ANSWER_STATUSES.includes(status);
-// Stage + lane ownership for a human gate. sectionIndex is legacy-compatible:
-// older rows can omit it, so either side being null falls back to the exact
-// stageInstanceId + unitSlug match.
-const humanTaskMatchesOwner = ({ task, stageInstanceId, unitSlug = null, sectionIndex = null }) => {
-  if (!task || task.stageInstanceId !== stageInstanceId) return false;
-  if ((task.unitSlug ?? null) !== (unitSlug ?? null)) return false;
+// Stage + lane ownership for a human gate — the one rule for binding, park
+// exit and resume. The stage instance must match exactly (it already encodes
+// the unit and section). The gate's unitSlug and sectionIndex constrain only
+// when recorded: older bridges omitted them. `engineGates` also accepts a gate
+// that names no stage (batch/skeleton request-changes), which a resume
+// injects into every matching lane stage.
+const humanTaskMatchesOwner = ({
+  task,
+  stageInstanceId,
+  unitSlug = null,
+  sectionIndex = null,
+  engineGates = false,
+}) => {
+  if (!task) return false;
+  const taskStage = task.stageInstanceId ?? null;
+  if (taskStage !== (stageInstanceId ?? null) && !(engineGates && taskStage === null)) return false;
+  if (task.unitSlug != null && task.unitSlug !== (unitSlug ?? null)) return false;
   return (
     task.sectionIndex == null ||
     sectionIndex == null ||

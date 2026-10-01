@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,8 @@ import {
 } from '../git-engine.js';
 import { collectCodeTraceabilityBatches } from '../code-traceability.js';
 import { renderRulesDoc } from '../stage-materializer.js';
+import { awaitEngineGate } from '../../v2-orchestrator/section.js';
+import { createProcessStore } from '../../shared/v2-process-store.js';
 import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
@@ -111,10 +114,17 @@ const unitWorkflow = () => ({
 
 // A spy process store recording the calls run-stage makes. `seed` pre-loads the
 // gate / stage / execution rows the resume + park paths read back.
-const spyStore = (seed = {}) => {
+const spyStore = (seed = {}, { persistStageWrites = false } = {}) => {
   const calls = [];
   const rec = (name) => async (args) => {
     calls.push([name, args]);
+    if (persistStageWrites && name === 'putStage') seed.stage = { ...args };
+    if (persistStageWrites && name === 'resumeStageRow') {
+      seed.stage = { ...seed.stage, ...args, state: 'RUNNING', pendingHumanTaskId: null };
+    }
+    if (persistStageWrites && name === 'updateStageState') {
+      seed.stage = { ...seed.stage, state: args.state, runtimeError: args.runtimeError };
+    }
     return {};
   };
   return {
@@ -1665,6 +1675,97 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
     ).toBe(true);
   });
 
+  it.each(['retry', 'already-saved'])(
+    'preserves a resumable Claude gate after a failed park write: %s',
+    async (mode) => {
+      const seed = pendingGateSeed('q-1');
+      Object.assign(seed.stage, {
+        state: 'WAITING_FOR_HUMAN',
+        cli: 'claude',
+        cliSessionId: 'forced-uuid',
+        parkedAt: '2026-07-16T12:00:00.000Z',
+      });
+      const store = spyStore(seed);
+      let attempts = 0;
+      store.updateStageState = vi.fn(async (row) => {
+        if (row.state === 'WAITING_FOR_HUMAN') {
+          attempts++;
+          if (mode === 'already-saved' || attempts === 1) throw new Error('lost acknowledgment');
+        }
+        return row;
+      });
+      expect(
+        await runStage(
+          baseArgs,
+          baseDeps({
+            store,
+            spawnFn: okSpawn,
+            ids: () => 'forced-uuid',
+          }),
+        ),
+      ).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'q-1' });
+      expect(attempts).toBe(2);
+      expect(store.calls.some(([op]) => op === 'supersedeHumanTask')).toBe(false);
+      expect(store.updateStageState.mock.calls.some(([row]) => row.state === 'FAILED')).toBe(false);
+    },
+  );
+
+  it.each([
+    ['this run', { orchestratorRunId: 'run1' }, 'stage_attempt_conflict'],
+    ['a replacement run', { orchestratorRunId: 'run2' }, 'retired'],
+    ['a cancel of this run', { orchestratorRunId: 'run1', status: 'CANCELLED' }, 'retired'],
+  ])('does not retry a park write that lost ownership to %s', async (_label, meta, reason) => {
+    const seed = pendingGateSeed('q-1');
+    const store = spyStore(seed);
+    let attempts = 0;
+    store.updateStageState = vi.fn(async (row) => {
+      if (row.state === 'WAITING_FOR_HUMAN') {
+        attempts++;
+        throw Object.assign(new Error('replaced'), { name: 'ConditionalCheckFailedException' });
+      }
+      return row;
+    });
+    const getExecution = store.getExecution;
+    store.getExecution = async (executionId, options) =>
+      options?.consistentRead && attempts > 0 ? meta : getExecution(executionId, options);
+    const res = await runStage(
+      { ...baseArgs, orchestratorRunId: 'run1' },
+      baseDeps({ store, spawnFn: okSpawn, ids: () => 'forced-uuid' }),
+    );
+    expect(res).toMatchObject({ ok: false, reason });
+    expect(attempts).toBe(1);
+  });
+
+  it('fails a park whose saved row lacks this attempt commit refs', async () => {
+    const seed = pendingGateSeed('q-1');
+    Object.assign(seed.stage, {
+      state: 'WAITING_FOR_HUMAN',
+      cli: 'claude',
+      cliSessionId: 'forced-uuid',
+      parkedAt: '2026-07-16T12:00:00.000Z',
+      pendingCodeCommitRefs: null,
+    });
+    const store = spyStore(seed);
+    store.updateStageState = vi.fn(async (row) => {
+      if (row.state === 'WAITING_FOR_HUMAN') throw new Error('lost acknowledgment');
+      return row;
+    });
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        store,
+        spawnFn: okSpawn,
+        ids: () => 'forced-uuid',
+        commitAndPushAll: async () => ({
+          ok: true,
+          committed: true,
+          results: [{ repo: 'owner/repo', sha: 'abc123', committed: true, pushed: true }],
+        }),
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'stage_park_persist_failed' });
+  });
+
   it('parks and resumes when the gate is answered after grace but before CLI exit', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,
@@ -1826,6 +1927,81 @@ describe('runStage — fresh run persists the CLI session + parks on a pending g
       ([operation, input]) => operation === 'appendEvent' && input.type === 'v2.stage.failed',
     );
     expect(failedEvent?.[1].summary).not.toContain('secret');
+  });
+
+  it.each([
+    '403: insufficient credits',
+    'Your credit balance is too low to access the Anthropic API',
+    'You exceeded your current quota usage limit reached',
+  ])('shows scoped recovery guidance for provider exhaustion: %s', async (message) => {
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      credentialBindings: [{ provider: 'kiro', source: 'space' }],
+      spawnFn: (_command, args) => ({
+        on: (event, cb) => event === 'close' && setImmediate(() => cb(1)),
+        stdin: { end() {} },
+        stderr: {
+          on: (event, cb) =>
+            event === 'data' &&
+            !args.includes('--list-sessions') &&
+            cb(Buffer.from(`${message} (fixture-secret)`)),
+        },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'credential_quota_exhausted' });
+    expect(res.detail).toContain('Space Kiro credential');
+    expect(res.detail).toContain('then retry the failed stage');
+    expect(res.detail).not.toContain('fixture-secret');
+  });
+
+  it.each([
+    [
+      'claude',
+      { type: 'result', subtype: 'success', is_error: true, result: 'Credit balance is too low' },
+      'credential_quota_exhausted',
+    ],
+    [
+      'codex',
+      { type: 'turn.failed', error: { message: 'You exceeded your current quota' } },
+      'credential_quota_exhausted',
+    ],
+    [
+      'opencode',
+      { type: 'error', error: { message: 'insufficient_quota: billing hard limit' } },
+      'credential_quota_exhausted',
+    ],
+    [
+      'claude',
+      { type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key' },
+      'credential_invalid',
+    ],
+    [
+      'claude',
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Handle insufficient credits in billing' }] },
+      },
+      'cli_nonzero_exit',
+    ],
+  ])('classifies a %s failure reported only on stdout: %j', async (cli, event, reason) => {
+    const deps = baseDeps({
+      availableClis: [cli],
+      credentialBindings: [{ provider: cli, source: 'space' }],
+      spawnFn: (_command, args) => ({
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(1)),
+        stdin: { end() {} },
+        stdout: {
+          on: (ev, cb) =>
+            ev === 'data' &&
+            !args.includes('--list-sessions') &&
+            cb(Buffer.from(`${JSON.stringify(event)}\n`)),
+        },
+        stderr: { on: () => {} },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: cli }, deps);
+    expect(res).toMatchObject({ ok: false, reason });
   });
 
   it('treats a Kiro empty-final-completion crash as success (work already done)', async () => {
@@ -1999,6 +2175,50 @@ describe('runStage — resume mode', () => {
     expect(put).toMatchObject({ state: 'RUNNING', attempt: 2 });
   });
 
+  it.each([
+    ['RUNNING', 'cb-resume', 'SUCCEEDED'],
+    ['SUCCEEDED', 'cb-previous', 'SUCCEEDED'],
+    ['RUNNING', 'cb-other', 'resume_state_conflict'],
+  ])(
+    'resumes %s with callback %s and stale gate bookkeeping',
+    async (state, rowCallback, expected) => {
+      const store = spyStore(
+        {
+          humanTask: {
+            humanTaskId: 'feedback',
+            status: 'answered',
+            stageInstanceId: BASE_STAGE_INSTANCE_ID,
+            answer: { decision: 'request-changes', feedback: 'Add validation' },
+          },
+          stage: {
+            state,
+            stageCallbackId: rowCallback,
+            pendingHumanTaskId: 'old-question',
+            cli: 'claude',
+            cliSessionId: 'session-1',
+          },
+        },
+        { persistStageWrites: true },
+      );
+      const spawnFn = vi.fn(okSpawn);
+      const result = await runStage(
+        {
+          ...baseArgs,
+          resumeFrom: 'feedback',
+          stageCallbackId: 'cb-resume',
+        },
+        baseDeps({ store, spawnFn }),
+      );
+      if (expected === 'SUCCEEDED') {
+        expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+        expect(spawnFn).toHaveBeenCalled();
+      } else {
+        expect(result).toMatchObject({ ok: false, reason: expected });
+        expect(spawnFn).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('fails gate_not_answered when the gate is still pending', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,
@@ -2022,6 +2242,80 @@ describe('runStage — resume mode', () => {
     const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, deps);
     expect(res).toMatchObject({ ok: false, reason: 'resume_no_session' });
   });
+
+  it.each(['getHumanTask', 'getStage'])('preserves state when %s fails on resume', async (read) => {
+    const store = spyStore({
+      humanTask: { humanTaskId: 'q-1', status: 'answered' },
+      stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
+    });
+    store[read] = vi.fn(async () => {
+      throw new Error('Storage unavailable');
+    });
+    const spawnFn = vi.fn();
+    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, baseDeps({ store, spawnFn }));
+    expect(res).toMatchObject({ ok: false, reason: 'resume_state_unavailable' });
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(store.calls.some(([op]) => op === 'updateStageState' || op === 'putStage')).toBe(false);
+  });
+
+  it.each(['getHumanTask', 'getStage', 'conflict'])(
+    'leaves an owned recovery retryable after %s',
+    async (failure) => {
+      const seed = {
+        stage: {
+          state: 'WAITING_FOR_HUMAN',
+          cli: 'kiro',
+          cliSessionId: 'saved-session',
+          pendingHumanTaskId: 'q1',
+          stageCallbackId: 'cb1',
+        },
+        humanTask: {
+          humanTaskId: 'q1',
+          status: 'answered',
+          stageInstanceId: failure === 'conflict' ? 'sibling' : BASE_STAGE_INSTANCE_ID,
+        },
+      };
+      const store = spyStore(seed);
+      store.claimStageAttempt = vi.fn(async () => {});
+      const write = store.updateStageState;
+      store.updateStageState = vi.fn(async (input) => {
+        Object.assign(seed.stage, { state: input.state, runtimeError: input.runtimeError });
+        return write(input);
+      });
+      if (failure !== 'conflict')
+        store[failure] = vi.fn(async () => {
+          throw new Error('unavailable');
+        });
+      const spawnFn = vi.fn();
+      const result = await runStage(
+        {
+          ...baseArgs,
+          resumeFrom: 'q1',
+          stageCallbackId: 'cb1',
+          orchestratorRunId: 'run1',
+        },
+        baseDeps({ store, spawnFn }),
+      );
+      const reason = failure === 'conflict' ? 'resume_state_conflict' : 'resume_state_unavailable';
+      expect(result).toMatchObject({ ok: false, reason });
+      expect(seed.stage).toMatchObject({
+        state: 'FAILED',
+        runtimeError: reason,
+        cliSessionId: 'saved-session',
+      });
+      expect(store.updateStageState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stageInstanceId: BASE_STAGE_INSTANCE_ID,
+          ownership: {
+            stageInstanceId: BASE_STAGE_INSTANCE_ID,
+            orchestratorRunId: 'run1',
+            stageCallbackId: 'cb1',
+          },
+        }),
+      );
+      expect(spawnFn).not.toHaveBeenCalled();
+    },
+  );
 
   it('explains a removed pinned credential when resuming a parked stage', async () => {
     const deps = baseDeps({
@@ -2368,46 +2662,46 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     ).toBe(true);
   });
 
-  it('keeps a parked Codex gate retryable when retirement fails', async () => {
+  it('preserves the Codex persist failure when gate retirement fails', async () => {
     const store = spyStore(
       pendingGateSeed('q-codex', {
         createdAt: '2026-08-01T00:00:00Z',
       }),
     );
-    const retirementError = new Error('gate retirement unavailable');
     store.supersedeHumanTask = vi.fn(async () => {
-      throw retirementError;
+      throw new Error('gate retirement unavailable');
     });
 
-    await expect(
-      runStage(
-        { ...baseArgs, requestedCli: 'codex' },
-        baseDeps({
-          store,
-          env: codexStoreEnv,
-          availableClis: ['codex'],
-          spawnFn: codexSpawn(),
-          persistCodexRollout: async () => ({
-            ok: false,
-            status: 'persist_failed',
-            attempts: 5,
-            error: { code: 'ENOSPC', message: 'waiting to be backed up' },
-          }),
-          cleanupCodexHome: async () => true,
+    const result = await runStage(
+      { ...baseArgs, requestedCli: 'codex', orchestratorRunId: 'run1', stageCallbackId: 'cb1' },
+      baseDeps({
+        store: { ...store, claimStageAttempt: async () => {} },
+        env: codexStoreEnv,
+        availableClis: ['codex'],
+        spawnFn: codexSpawn(),
+        persistCodexRollout: async () => ({
+          ok: false,
+          status: 'persist_failed',
+          attempts: 5,
+          error: { code: 'ENOSPC', message: 'waiting to be backed up' },
         }),
-      ),
-    ).rejects.toBe(retirementError);
+        cleanupCodexHome: async () => true,
+      }),
+    );
 
-    expect(store.supersedeHumanTask).toHaveBeenCalledWith({
-      executionId: 'e1',
-      humanTaskId: 'q-codex',
-      supersededBy: 'codex_store_persist_failed',
-    });
+    expect(result).toMatchObject({ ok: false, reason: 'codex_store_persist_failed' });
+    expect(store.supersedeHumanTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        humanTaskId: 'q-codex',
+        supersededBy: 'codex_store_persist_failed',
+      }),
+    );
+    // The META pointer is cleared only while it still names this gate.
     expect(
-      store.calls.some(
+      store.calls.find(
         (call) => call[0] === 'updateExecution' && call[1].pendingHumanTaskId === null,
-      ),
-    ).toBe(false);
+      )?.[1],
+    ).toMatchObject({ ifOrchestratorRunId: 'run1', ifPendingHumanTaskId: 'q-codex' });
     expect(
       store.calls.some(
         (call) =>
@@ -2415,7 +2709,7 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
           call[1].state === 'FAILED' &&
           call[1].pendingHumanTaskId === null,
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('warns but allows a successful non-parked Codex run when persistence fails', async () => {
@@ -2597,6 +2891,492 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     XDG_DATA_HOME: '/home/node/.kiro-data',
     V2_KIRO_STORE_DIR: '/mnt/workspace/.kiro-data',
   };
+
+  const sessionSpawn =
+    (capture = true, prompts = []) =>
+    (_command, args) => {
+      if (args.includes('--list-sessions')) {
+        return {
+          ...okSpawn(),
+          stdout: {
+            on: (event, cb) =>
+              event === 'data' &&
+              cb(
+                Buffer.from(
+                  JSON.stringify(
+                    capture
+                      ? [{ cwd: '/ws', sessions: [{ sessionId: 'kiro-new', updatedAt: 'T' }] }]
+                      : [],
+                  ),
+                ),
+              ),
+          },
+        };
+      }
+      prompts.push(args.join(' '));
+      return {
+        ...okSpawn(),
+        stdin: {
+          end: (text) => {
+            if (text) prompts.push(String(text));
+          },
+        },
+      };
+    };
+  const ownedMissingSession = () => ({
+    humanTask: {
+      humanTaskId: 'q-1',
+      status: 'answered',
+      stageInstanceId: BASE_STAGE_INSTANCE_ID,
+      answer: { freeText: 'Keep the existing compliance requirements' },
+    },
+    stage: {
+      state: 'WAITING_FOR_HUMAN',
+      cli: 'kiro',
+      cliSessionId: null,
+      pendingHumanTaskId: 'q-1',
+      stageInstanceId: BASE_STAGE_INSTANCE_ID,
+    },
+  });
+
+  it.each(['new-run', 'new-callback'])(
+    'leaves a replacement gate untouched when an old Kiro worker exits: %s',
+    async (replacement) => {
+      const seed = pendingGateSeed('q-new');
+      const rows = new Map([
+        [
+          'META',
+          { projectId: 'p1', startedAt: 'T', status: 'RUNNING', orchestratorRunId: 'old-run' },
+        ],
+        [
+          `STAGE#${BASE_STAGE_INSTANCE_ID}`,
+          { ...seed.stage, state: 'PENDING', stageCallbackId: 'old-cb' },
+        ],
+        ['HUMAN#q-new', { ...seed.humanTask, stageCallbackId: 'new-cb' }],
+      ]);
+      const ddb = {
+        send: async ({ input }) => {
+          if (!input.TransactItems) return { Item: rows.get(input.Key.sk) };
+          for (const item of input.TransactItems) {
+            const op = item.ConditionCheck ?? item.Update ?? item.Put;
+            const row = rows.get((op.Key ?? op.Item).sk) ?? {};
+            const values = op.ExpressionAttributeValues ?? {};
+            const condition = op.ConditionExpression ?? '';
+            const mismatch = [
+              [':ownedRun', 'orchestratorRunId'],
+              [':ownedCallback', 'stageCallbackId'],
+              [':ownedStage', 'stageInstanceId'],
+              [':ifPendingHumanTaskId', 'pendingHumanTaskId'],
+            ].some(([token, key]) => condition.includes(token) && row[key] !== values[token]);
+            if (mismatch)
+              throw Object.assign(new Error('ownership lost'), {
+                name: 'TransactionCanceledException',
+                CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+              });
+          }
+          for (const item of input.TransactItems) {
+            if (item.Put) rows.set(item.Put.Item.sk, { ...item.Put.Item });
+            if (item.Update) {
+              const op = item.Update;
+              const row = rows.get(op.Key.sk) ?? {};
+              for (const assignment of op.UpdateExpression.replace(/^SET /, '').split(', ')) {
+                const [name, token] = assignment.split(' = ');
+                row[op.ExpressionAttributeNames?.[name] ?? name] =
+                  op.ExpressionAttributeValues[token];
+              }
+              rows.set(op.Key.sk, row);
+            }
+          }
+          return {};
+        },
+      };
+      const process = createProcessStore({ ddb, tableName: 'test', clock: () => 'T' });
+      const store = {
+        ...spyStore(),
+        ...Object.fromEntries(
+          [
+            'claimStageAttempt',
+            'getStage',
+            'getExecution',
+            'getHumanTask',
+            'putStage',
+            'updateStageState',
+            'updateExecution',
+            'supersedeHumanTask',
+          ].map((method) => [method, process[method]]),
+        ),
+      };
+      const spawn = sessionSpawn(false);
+      let replaced = false;
+      const broadcast = vi.fn(async () => {});
+      const result = await runStage(
+        {
+          ...baseArgs,
+          requestedCli: 'kiro',
+          stageCallbackId: 'old-cb',
+          orchestratorRunId: 'old-run',
+        },
+        baseDeps({
+          store,
+          availableClis: ['kiro'],
+          broadcast,
+          spawnFn: (command, args) => {
+            if (!replaced) {
+              replaced = true;
+              Object.assign(rows.get('META'), {
+                orchestratorRunId: replacement === 'new-run' ? 'new-run' : 'old-run',
+                status: 'WAITING',
+                pendingHumanTaskId: 'q-new',
+              });
+              Object.assign(rows.get(`STAGE#${BASE_STAGE_INSTANCE_ID}`), {
+                state: 'WAITING_FOR_HUMAN',
+                stageCallbackId: 'new-cb',
+                pendingHumanTaskId: 'q-new',
+              });
+            }
+            return spawn(command, args);
+          },
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        reason: replacement === 'new-run' ? 'retired' : 'stage_attempt_conflict',
+      });
+      expect(rows.get('META')).toMatchObject({ status: 'WAITING', pendingHumanTaskId: 'q-new' });
+      expect(rows.get(`STAGE#${BASE_STAGE_INSTANCE_ID}`)).toMatchObject({
+        state: 'WAITING_FOR_HUMAN',
+        stageCallbackId: 'new-cb',
+        pendingHumanTaskId: 'q-new',
+      });
+      expect(rows.get('HUMAN#q-new').status).toBe('pending');
+      expect(broadcast.mock.calls.some(([event]) => event.state === 'FAILED')).toBe(false);
+    },
+  );
+
+  it('recovers an owned legacy Kiro wait with no session ID and injects its saved answer', async () => {
+    const prompts = [];
+    const store = spyStore(ownedMissingSession(), { persistStageWrites: true });
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
+      baseDeps({
+        availableClis: ['kiro'],
+        store,
+        spawnFn: sessionSpawn(true, prompts),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
+    expect(prompts.join('\n')).toContain('Keep the existing compliance requirements');
+    expect(prompts.join('\n')).not.toContain('--resume');
+    expect(
+      store.calls.some(([op, row]) => op === 'appendEvent' && row.type === 'v2.stage.recovered'),
+    ).toBe(true);
+    expect(
+      store.calls.some(([op, row]) => op === 'updateStageState' && row.cliSessionId === 'kiro-new'),
+    ).toBe(true);
+  });
+
+  it('preserves sibling Kiro sessions when recovering a wait with no session ID after a restart', async () => {
+    let durableSessions = ['kiro-sibling'];
+    let localSessions = [];
+    const spawn = sessionSpawn();
+    const restoreKiroStore = vi.fn(async () => {
+      localSessions = [...durableSessions];
+      return true;
+    });
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
+      baseDeps({
+        availableClis: ['kiro'],
+        env: kiroStoreEnv,
+        store: spyStore(ownedMissingSession(), { persistStageWrites: true }),
+        restoreKiroStore,
+        spawnFn: (command, args) => {
+          if (!args.includes('--list-sessions') && !args.includes('/usage')) {
+            localSessions.push('kiro-new');
+          }
+          return spawn(command, args);
+        },
+        persistKiroStore: async () => {
+          // The real sync replaces the entire durable store with the local copy.
+          durableSessions = [...localSessions];
+          return true;
+        },
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
+    expect(durableSessions).toEqual(['kiro-sibling', 'kiro-new']);
+    expect(restoreKiroStore).toHaveBeenCalledExactlyOnceWith({ env: kiroStoreEnv });
+  });
+
+  it.each([
+    [
+      'reset stage',
+      (seed) => {
+        seed.stage.state = 'PENDING';
+      },
+    ],
+    [
+      'different answer',
+      (seed) => {
+        seed.stage.pendingHumanTaskId = 'other';
+      },
+    ],
+    [
+      'sibling stage',
+      (seed) => {
+        seed.humanTask.stageInstanceId = 'sibling';
+      },
+    ],
+    [
+      'sibling lane',
+      (seed) => {
+        seed.humanTask.unitSlug = 'sibling';
+      },
+    ],
+    [
+      'different section',
+      (seed) => {
+        seed.humanTask.sectionIndex = 3;
+      },
+      { sectionIndex: 1 },
+    ],
+  ])('does not recover or overwrite a %s', async (_label, change, args = {}) => {
+    const seed = ownedMissingSession();
+    change(seed);
+    const store = spyStore(seed);
+    const spawnFn = vi.fn();
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1', ...args },
+      baseDeps({
+        availableClis: ['kiro'],
+        store,
+        spawnFn,
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'resume_state_conflict' });
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(store.calls.some(([op]) => op === 'putStage' || op === 'updateStageState')).toBe(false);
+  });
+
+  it.each([
+    ['this run', { orchestratorRunId: 'run1' }, 'stage_attempt_conflict'],
+    ['a replacement run', { orchestratorRunId: 'run2' }, 'retired'],
+    ['a deleted intent', null, 'retired'],
+    ['a cancel of this run', { orchestratorRunId: 'run1', status: 'CANCELLED' }, 'retired'],
+    [
+      'a parked wait of this run',
+      { orchestratorRunId: 'run1', status: 'WAITING' },
+      'stage_attempt_conflict',
+    ],
+    ['an unreadable META', new Error('storage down'), 'stage_attempt_conflict'],
+  ])('reports a stale stage claim under %s as %s', async (_label, meta, reason) => {
+    const store = {
+      ...spyStore(),
+      claimStageAttempt: async () => {
+        throw Object.assign(new Error('RUNNING under cb-old'), {
+          name: 'ConditionalCheckFailedException',
+        });
+      },
+      getExecution: async () => {
+        if (meta instanceof Error) throw meta;
+        return meta;
+      },
+    };
+    const spawnFn = vi.fn(okSpawn);
+    const res = await runStage(
+      { ...baseArgs, orchestratorRunId: 'run1', stageCallbackId: 'cb-new' },
+      baseDeps({ store, spawnFn }),
+    );
+    expect(res).toMatchObject({ ok: false, reason });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('retires a superseded Kiro answer without changing stage state', async () => {
+    const seed = ownedMissingSession();
+    seed.humanTask.status = 'superseded';
+    const store = spyStore(seed);
+    const res = await runStage({ ...baseArgs, resumeFrom: 'q-1' }, baseDeps({ store }));
+    expect(res).toEqual({ ok: false, reason: 'retired' });
+    expect(store.calls.some(([op]) => op === 'putStage' || op === 'updateStageState')).toBe(false);
+  });
+
+  it('keeps the expiry guard for a missing Kiro session ID', async () => {
+    const seed = ownedMissingSession();
+    seed.humanTask.createdAt = '2026-06-01T00:00:00Z';
+    const store = spyStore(seed);
+    const spawnFn = vi.fn();
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' },
+      baseDeps({
+        availableClis: ['kiro'],
+        store,
+        spawnFn,
+        clock: () => '2026-07-01T00:00:00Z',
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'resume_store_expired' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [false, true, 'kiro_session_missing'],
+    [true, false, 'kiro_store_persist_failed'],
+  ])(
+    'retires an unresumable Kiro gate (capture=%s, persist=%s)',
+    async (capture, persisted, reason) => {
+      const store = spyStore(pendingGateSeed('q-1'));
+      const res = await runStage(
+        { ...baseArgs, requestedCli: 'kiro' },
+        baseDeps({
+          availableClis: ['kiro'],
+          env: kiroStoreEnv,
+          store,
+          spawnFn: sessionSpawn(capture),
+          persistKiroStore: async () => persisted,
+        }),
+      );
+      expect(res).toMatchObject({ ok: false, reason });
+      expect(store.calls).toContainEqual([
+        'supersedeHumanTask',
+        {
+          executionId: 'e1',
+          humanTaskId: 'q-1',
+          supersededBy: reason,
+        },
+      ]);
+      expect(
+        store.calls.some(
+          ([op, row]) => op === 'updateStageState' && row.state === 'WAITING_FOR_HUMAN',
+        ),
+      ).toBe(false);
+      expect(store.calls).toContainEqual([
+        'updateStageState',
+        expect.objectContaining({
+          state: 'FAILED',
+          pendingHumanTaskId: null,
+        }),
+      ]);
+    },
+  );
+
+  it('parks Kiro when both its session ID and durable store are saved', async () => {
+    const store = spyStore(pendingGateSeed('q-1'));
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro' },
+      baseDeps({
+        availableClis: ['kiro'],
+        env: kiroStoreEnv,
+        store,
+        spawnFn: sessionSpawn(),
+        persistKiroStore: async () => true,
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN', cliSessionId: 'kiro-new' });
+    expect(store.calls.some(([op]) => op === 'supersedeHumanTask')).toBe(false);
+  });
+
+  it('does not report a Kiro park when the session metadata write fails', async () => {
+    const store = spyStore(pendingGateSeed('q-1'));
+    const update = store.updateStageState;
+    store.updateStageState = async (row) => {
+      if (row.state === 'WAITING_FOR_HUMAN') throw new Error('Storage unavailable');
+      return update(row);
+    };
+    const res = await runStage(
+      { ...baseArgs, requestedCli: 'kiro' },
+      baseDeps({
+        availableClis: ['kiro'],
+        env: kiroStoreEnv,
+        store,
+        spawnFn: sessionSpawn(),
+        persistKiroStore: async () => true,
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'stage_park_persist_failed' });
+    expect(store.calls).toContainEqual([
+      'supersedeHumanTask',
+      {
+        executionId: 'e1',
+        humanTaskId: 'q-1',
+        supersededBy: 'stage_park_persist_failed',
+      },
+    ]);
+    expect(
+      store.calls.some(([op, row]) => op === 'appendEvent' && row.type === 'v2.stage.parked'),
+    ).toBe(false);
+  });
+
+  it('returns the original park failure when the park and all cleanup writes reject', async () => {
+    const store = spyStore(pendingGateSeed('q-1'));
+    const storageError = new Error('Storage unavailable');
+    store.updateStageState = vi.fn().mockRejectedValue(storageError);
+    store.supersedeHumanTask = vi.fn().mockRejectedValue(storageError);
+    const updateExecution = store.updateExecution;
+    store.updateExecution = vi.fn(async (row) => {
+      if (row.pendingHumanTaskId === null) throw storageError;
+      return updateExecution(row);
+    });
+    const broadcast = vi.fn().mockResolvedValue(undefined);
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      const res = await runStage(
+        { ...baseArgs, requestedCli: 'kiro' },
+        baseDeps({
+          availableClis: ['kiro'],
+          env: kiroStoreEnv,
+          store,
+          broadcast,
+          spawnFn: sessionSpawn(),
+          persistKiroStore: async () => true,
+        }),
+      );
+      expect(res).toEqual({
+        ok: false,
+        reason: 'stage_park_persist_failed',
+        detail:
+          'The conversation metadata could not be saved. Retry the stage when storage is available; the unresumable question has been retired.',
+      });
+      expect(store.updateStageState).toHaveBeenCalledWith(
+        expect.objectContaining({ state: 'WAITING_FOR_HUMAN' }),
+      );
+      expect(store.supersedeHumanTask).toHaveBeenCalledExactlyOnceWith({
+        executionId: 'e1',
+        humanTaskId: 'q-1',
+        supersededBy: 'stage_park_persist_failed',
+      });
+      expect(store.updateExecution).toHaveBeenCalledWith({
+        executionId: 'e1',
+        pendingHumanTaskId: null,
+      });
+      expect(store.updateStageState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          state: 'FAILED',
+          runtimeError: 'stage_park_persist_failed',
+          pendingHumanTaskId: null,
+        }),
+      );
+      expect(log).toHaveBeenCalledWith(
+        'failed to supersede unresumable gate',
+        expect.objectContaining({ humanTaskId: 'q-1', error: storageError }),
+      );
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining('failed to clear pending gate'),
+        expect.objectContaining({ error: storageError }),
+      );
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'agent.stage',
+          state: 'FAILED',
+          reason: 'stage_park_persist_failed',
+        }),
+      );
+      expect(
+        store.calls.some(([op, row]) => op === 'appendEvent' && row.type === 'v2.stage.parked'),
+      ).toBe(false);
+    } finally {
+      log.mockRestore();
+    }
+  });
 
   it('recovers a resume with a lost Kiro store by re-running fresh (recent gate)', async () => {
     // D2 recoverable path: mount wiped (restore fails, mount configured) but the
@@ -3580,6 +4360,168 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     });
   const unitArgs = { ...baseArgs, stageId: 'code-generation', unitSlug: 'billing' };
 
+  it('passes a batch request-changes gate through real resume validation for every lane', async () => {
+    let gate;
+    const store = {
+      getExecution: async () => ({ orchestratorRunId: 'run1' }),
+      getHumanTask: async () => gate,
+      createHumanTask: async (row) => {
+        gate = { ...row, status: 'pending' };
+      },
+      updateExecution: async () => ({}),
+      setGateCallbackId: async () => null,
+    };
+    const result = await awaitEngineGate(
+      { step: async (_name, fn) => fn(), createCallback: async () => [Promise.resolve(), 'cb1'] },
+      {
+        store,
+        runId: 'run1',
+        ids: baseArgs,
+        broadcast: async () => {
+          gate.status = 'answered';
+          gate.answer = { decision: 'request-changes', feedback: 'Handle refunds in both lanes' };
+        },
+      },
+      { name: 'batch-s1-w1', prompt: 'Approve batch?', sectionIndex: 1 },
+    );
+    expect(result.gate).toMatchObject({ unitSlug: null, stageInstanceId: null });
+    for (const unitSlug of ['auth', 'billing']) {
+      const prompts = [];
+      const deps = unitDeps({
+        store: spyStore({
+          unitPlan: UNIT_PLAN,
+          humanTask: gate,
+          stage: { state: 'SUCCEEDED', cli: 'claude', cliSessionId: `session-${unitSlug}` },
+        }),
+        spawnFn: () => ({ ...okSpawn(), stdin: { end: (text) => prompts.push(text) } }),
+      });
+      const resumed = await runStage(
+        {
+          ...unitArgs,
+          unitSlug,
+          sectionIndex: 1,
+          resumeFrom: gate.humanTaskId,
+        },
+        deps,
+      );
+      expect(resumed).toMatchObject({ ok: true, state: 'SUCCEEDED', unitSlug });
+      expect(prompts.join('\n')).toContain('Handle refunds in both lanes');
+    }
+  });
+
+  it('retries a lane stage that failed while revising a batch request-changes gate', async () => {
+    const gate = {
+      humanTaskId: 'eg-batch-s1-w1-run1',
+      status: 'answered',
+      stageInstanceId: null,
+      unitSlug: null,
+      sectionIndex: 1,
+      answer: { decision: 'request-changes', feedback: 'Handle refunds' },
+    };
+    const store = spyStore(
+      {
+        unitPlan: UNIT_PLAN,
+        humanTask: gate,
+        stage: { state: 'SUCCEEDED', cli: 'kiro', cliSessionId: 'session-billing' },
+      },
+      { persistStageWrites: true },
+    );
+    const args = {
+      ...unitArgs,
+      sectionIndex: 1,
+      resumeFrom: gate.humanTaskId,
+      requestedCli: 'kiro',
+    };
+    const exhausted = unitDeps({
+      store,
+      availableClis: ['kiro'],
+      spawnFn: (_command, argv) => ({
+        on: (event, cb) => event === 'close' && setImmediate(() => cb(1)),
+        stdin: { end() {} },
+        stderr: {
+          on: (event, cb) =>
+            event === 'data' &&
+            !argv.includes('--list-sessions') &&
+            cb(Buffer.from('403: insufficient credits')),
+        },
+      }),
+    });
+    const failed = await runStage(args, exhausted);
+    expect(failed).toMatchObject({ ok: false, reason: 'credential_quota_exhausted' });
+    expect(store.calls.find(([op]) => op === 'updateStageState')?.[1]).toMatchObject({
+      state: 'FAILED',
+    });
+
+    const prompts = [];
+    const retried = await runStage(
+      args,
+      unitDeps({
+        store,
+        availableClis: ['kiro'],
+        spawnFn: () => ({ ...okSpawn(), stdin: { end: (text) => prompts.push(text) } }),
+      }),
+    );
+    expect(retried).toMatchObject({ ok: true, state: 'SUCCEEDED', unitSlug: 'billing' });
+    expect(store.calls.filter(([op]) => op === 'resumeStageRow')).toHaveLength(2);
+    expect(prompts.join('\n')).toContain('Handle refunds');
+  });
+
+  it('resumes a lane gate an older bridge saved without a sectionIndex', async () => {
+    const stageInstanceId = planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing', 1);
+    const prompts = [];
+    const store = spyStore(
+      {
+        unitPlan: UNIT_PLAN,
+        humanTask: {
+          humanTaskId: 'q-1',
+          status: 'answered',
+          stageInstanceId,
+          unitSlug: 'billing',
+          sectionIndex: null,
+          answer: { freeText: 'Use the ledger API' },
+        },
+        stage: {
+          state: 'WAITING_FOR_HUMAN',
+          pendingHumanTaskId: 'q-1',
+          cli: 'claude',
+          cliSessionId: 'session-billing',
+        },
+      },
+      { persistStageWrites: true },
+    );
+    const res = await runStage(
+      { ...unitArgs, sectionIndex: 1, resumeFrom: 'q-1' },
+      unitDeps({
+        store,
+        spawnFn: () => ({ ...okSpawn(), stdin: { end: (text) => prompts.push(text) } }),
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', unitSlug: 'billing' });
+    expect(prompts.join('\n')).toContain('Use the ledger API');
+  });
+
+  it('keeps rejecting a stage-owned answer on a FAILED row', async () => {
+    const store = spyStore({
+      unitPlan: UNIT_PLAN,
+      humanTask: {
+        humanTaskId: 'q-1',
+        status: 'answered',
+        stageInstanceId: planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing', 1),
+        unitSlug: 'billing',
+        sectionIndex: 1,
+        answer: { freeText: 'go' },
+      },
+      stage: { state: 'FAILED', cli: 'claude', cliSessionId: 'session-billing' },
+    });
+    const spawnFn = vi.fn(okSpawn);
+    const res = await runStage(
+      { ...unitArgs, sectionIndex: 1, resumeFrom: 'q-1' },
+      unitDeps({ store, spawnFn }),
+    );
+    expect(res).toMatchObject({ ok: false, reason: 'resume_state_conflict' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
   it('runs a per-unit stage under its unit-dimension instance id and stamps unitSlug on every write', async () => {
     const deps = unitDeps();
     const sent = [];
@@ -4045,6 +4987,16 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'unit_not_found' });
   });
 
+  it('distinguishes a unit-plan storage failure from an absent unit', async () => {
+    const store = spyStore({ unitPlan: UNIT_PLAN });
+    store.getUnitPlan = async () => {
+      throw new Error('ThrottlingException');
+    };
+    const spawnFn = vi.fn();
+    const res = await runStage(unitArgs, unitDeps({ store, spawnFn }));
+    expect(res).toMatchObject({ ok: false, reason: 'unit_plan_unavailable' });
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
   it('a non-forEach stage without a unit still runs with the plain instance id and null unitSlug', async () => {
     const deps = unitDeps();
     const res = await runStage({ ...baseArgs, stageId: 'units-generation' }, deps);

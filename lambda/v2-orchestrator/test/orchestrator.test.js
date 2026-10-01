@@ -278,6 +278,26 @@ describe('orchestrator durable handler', () => {
     expect(stageStarts()).toHaveLength(1);
   });
 
+  it('resumes when the human answers before the stage callback can bind', async () => {
+    deps.store.setGateCallbackId.mockResolvedValue(null);
+    deps.store.getHumanTask.mockResolvedValue({ status: 'answered' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = makeRuntime(ctx, (_payload, n) =>
+      n === 1
+        ? { ok: true }
+        : n === 2
+          ? { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' }
+          : { ok: true, state: 'SUCCEEDED' },
+    );
+    const res = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(stageStarts().filter((row) => row.resumeFrom === 'h1')).toHaveLength(1);
+    expect(deps.stopSession).not.toHaveBeenCalled();
+  });
   it.each(['answered', 'approved', 'rejected'])(
     'resumes when a %s decision wins before the gate callback can be bound',
     async (status) => {
@@ -446,7 +466,7 @@ describe('orchestrator durable handler', () => {
     deps.store.getHumanTask = vi
       .fn()
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
+      .mockResolvedValue({
         humanTaskId: 'eg-validation-si-a-0',
         status: 'approved',
         answer: { decision: 'approve' },
@@ -496,8 +516,13 @@ describe('orchestrator durable handler', () => {
         status: 'rejected',
         answer: { decision: 'request-changes', feedback: 'tighten scope' },
       })
-      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
+        humanTaskId: 'eg-validation-si-a-0',
+        status: 'rejected',
+        answer: { decision: 'request-changes', feedback: 'tighten scope' },
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({
         humanTaskId: 'eg-validation-si-a-1',
         status: 'approved',
         answer: { decision: 'approve' },
@@ -2073,6 +2098,48 @@ describe('PR per unit delivery', () => {
     expect(metrics).toContainEqual({ feedbackCycles: 1 });
   });
 
+  it('leaves the feedback batch to the replacement run when the revision retires', async () => {
+    configure({
+      statusFor: async ({ number }) => ({
+        providerId: `provider-${number}`,
+        number,
+        url: `https://example.test/pr/${number}`,
+        sourceBranch: 'aidlc/i1--s1-unit-auth',
+        targetBranch: 'aidlc/i1',
+        headSha: `head-${number}`,
+        targetSha: 'intent-before',
+        state: 'open',
+        draft: true,
+        mergeable: true,
+      }),
+    });
+    const batch = { batchId: 'batch-1', state: 'QUEUED', comments: [] };
+    deps.store.listFeedbackBatches = vi.fn(async (_executionId, { state }) =>
+      batch.state === state ? [batch] : [],
+    );
+    deps.store.updateFeedbackBatch = vi.fn(async (args) => {
+      batch.state = args.state;
+      return { ...batch };
+    });
+    deps.invokeRuntime = makeRuntime(ctx, (payload) =>
+      payload.reviewFeedback
+        ? { ok: false, state: 'FAILED', reason: 'retired' }
+        : sectionScript(payload),
+    );
+
+    const result = await start();
+    expect(result).toMatchObject({ ok: false, reason: 'retired' });
+    expect(deps.store.updateFeedbackBatch.mock.calls.map(([args]) => args.state)).toEqual([
+      'RUNNING',
+    ]);
+    expect(
+      deps.store.appendEvent.mock.calls.some(([event]) => event.type === 'v2.feedback.failed'),
+    ).toBe(false);
+    expect(deps.store.updateExecution.mock.calls.some(([args]) => args.status === 'FAILED')).toBe(
+      false,
+    );
+  });
+
   it('preserves a partial multi-repository merge, records outcomes, and halts', async () => {
     const calls = new Map();
     configure({
@@ -2261,6 +2328,57 @@ describe('WP5 — engine-gate decisions', () => {
     const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
     expect(eventCalls.find((e) => e.type === 'v2.units.halt_decision')?.summary).toContain('retry');
   });
+
+  it.each([
+    [{ stopped: true }, true],
+    [{ stopped: false, notFound: true }, true],
+    [{ stopped: false, error: 'throttled' }, false],
+  ])(
+    'halt-and-ask RETRY releases a dead lane attempt after stopping %o',
+    async (stopResult, released) => {
+      deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'retry' } } });
+      // Round 0 left billing's cg RUNNING under a callback the lane no longer
+      // waits on (lane crash / refused duplicate start).
+      let staleRow = true;
+      const billingCg = planStageInstanceId('aidlc-v2@1', 'cg', 'billing', 1);
+      deps.store.getStage = vi.fn(async (_e, stageInstanceId) =>
+        staleRow && stageInstanceId === billingCg
+          ? { state: 'RUNNING', stageCallbackId: 'cb-stale' }
+          : null,
+      );
+      deps.store.failRunningStageAttempt = vi.fn(async (args) => {
+        if (args.stageCallbackId === 'cb-stale') staleRow = false;
+        return null;
+      });
+      deps.stopSession = vi.fn(async () => stopResult);
+      let cgBillingAttempts = 0;
+      deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+        if (payload.command === 'init-ws') return { ok: true };
+        if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
+        if (payload.stageId === 'cg' && payload.unitSlug === 'billing') {
+          cgBillingAttempts += 1;
+          // The worker cannot claim a row RUNNING under another callback.
+          if (cgBillingAttempts === 1 || (staleRow && cgBillingAttempts === 2))
+            return { ok: false, state: 'FAILED', reason: 'stage_attempt_conflict' };
+        }
+        return { ok: true, state: 'SUCCEEDED' };
+      });
+      await start();
+      const releases = deps.store.failRunningStageAttempt.mock.calls
+        .map(([args]) => args)
+        .filter((args) => args.stageCallbackId === 'cb-stale');
+      if (released) {
+        expect(releases).toEqual([
+          expect.objectContaining({ stageInstanceId: billingCg, runtimeError: 'lane_released' }),
+        ]);
+        expect(cgBillingAttempts).toBe(2);
+      } else {
+        // A session that may still run the old job is never released.
+        expect(releases).toEqual([]);
+        expect(cgBillingAttempts).toBe(3);
+      }
+    },
+  );
 
   it('halt-and-ask SKIP preserves merged lanes and lets the run continue without the failed unit', async () => {
     deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'skip' } } });

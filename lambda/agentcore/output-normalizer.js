@@ -693,6 +693,14 @@ export const createCliOutputSink = ({
       if (text) {
         emitEvent(emit, text, displayForMessage(text));
       }
+      // Provider failures (credit, auth) end the stream as an error result on
+      // stdout; stderr stays empty.
+      if (event.type === 'result' && event.is_error === true) {
+        handleError(
+          String(event.result ?? event.error?.message ?? event.subtype ?? 'error'),
+          event,
+        );
+      }
       const parts = Array.isArray(event?.message?.content) ? event.message.content : [];
       if (event.type === 'assistant') {
         for (const part of parts) {
