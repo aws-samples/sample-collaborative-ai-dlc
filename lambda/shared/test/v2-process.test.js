@@ -2171,3 +2171,46 @@ describe('createProcessStore — resume marker', () => {
     expect(input.ExpressionAttributeValues[':rsr']).toEqual(marker);
   });
 });
+
+describe('createProcessStore — repair counter per validation revision', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    store = createProcessStore({ ddb, tableName: 'v2-proc', clock: () => 'T' });
+  });
+
+  it('raises the counter only while it is below the target', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+
+    await expect(
+      store.raiseStageCounter({
+        executionId: 'e1',
+        stageInstanceId: 'si-1',
+        field: 'summaryRepairAttempts',
+        to: 2,
+      }),
+    ).resolves.toBe(true);
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('#f = :to');
+    expect(input.ConditionExpression).toBe('attribute_not_exists(#f) OR #f < :to');
+    expect(input.ExpressionAttributeValues[':to']).toBe(2);
+  });
+
+  it('reports a counter already at the target instead of raising it', async () => {
+    ddb
+      .on(UpdateCommand)
+      .rejects(
+        Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' }),
+      );
+
+    await expect(
+      store.raiseStageCounter({
+        executionId: 'e1',
+        stageInstanceId: 'si-1',
+        field: 'summaryRepairAttempts',
+        to: 2,
+      }),
+    ).resolves.toBe(false);
+  });
+});

@@ -1665,6 +1665,33 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     expect(eventCalls.some((e) => e.type === 'v2.units.halt_decision')).toBe(true);
   });
 
+  it('treats a lane stage failed for a missing checkpoint like any lane failure', async () => {
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'promote-units')
+        return { ok: true, unitCount: 2, batchCount: 2, walkingSkeleton: 'auth' };
+      if (payload.stageId === 'cg' && payload.unitSlug === 'auth')
+        return {
+          ok: false,
+          state: 'FAILED',
+          reason: 'plan_approval_missing',
+          detail: 'The implementation plan was never approved',
+        };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+
+    const res = await start();
+
+    expect(res).toMatchObject({ ok: false, reason: 'section_aborted' });
+    expect(unitStates.map((u) => `${u.slug}:${u.state}`)).toEqual(['auth:RUNNING', 'auth:FAILED']);
+    expect(unitStates[1].fields.failureReason).toContain('plan_approval_missing');
+    expect(stageStarts().some((p) => p.command === 'merge-lane' && p.unitSlug === 'auth')).toBe(
+      false,
+    );
+    const eventCalls = deps.store.appendEvent.mock.calls.map((c) => c[0]);
+    expect(eventCalls.some((e) => e.type === 'v2.unit.failed' && e.unitSlug === 'auth')).toBe(true);
+  });
+
   it('fails deterministically (unit_plan_missing) when a section starts without a promoted plan', async () => {
     deps.store.getUnitPlan = vi.fn(async () => null);
     // Drop the promote hook trigger so the missing plan is what's under test.

@@ -9053,6 +9053,115 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
     );
     expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
   });
+
+  // A unit-lane question parks only its STAGE row: META stays RUNNING because
+  // sibling lanes keep going, and the single META pointer is not the lane's.
+  const laneParkedOnGate = async (sub, projectId) => {
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'RUNNING',
+      pendingHumanTaskId: null,
+      orchestratorRunId: 'run-old',
+    });
+    seedGate(intent.id, 'h-lane', {
+      status: 'pending',
+      callbackId: 'cb-lane',
+      stageInstanceId: 'si-lane',
+    });
+    const stageKey = keyOf(`EXEC#${intent.id}`, 'STAGE#si-lane');
+    procStore.set(stageKey, {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-lane',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-lane',
+      stageId: 'code-generation',
+      unitSlug: 'billing',
+      sectionIndex: 1,
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: 'h-lane',
+    });
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    const answered = await answerGate(sub, projectId, intent.id, 'h-lane');
+    expect(answered.statusCode).toBe(503);
+    expect(procStore.get(metaKey).resumeRequired).toMatchObject({ callbackId: 'cb-lane' });
+    return { intent, metaKey, stageKey };
+  };
+
+  it('resumes an answered lane question while the intent keeps running', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await laneParkedOnGate(sub, projectId);
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    const sent = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).at(-1);
+    expect(sent.args[0].input.CallbackId).toBe('cb-lane');
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('offers the resume on the parked lane gate in the intent detail', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent } = await laneParkedOnGate(sub, projectId);
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const gate = JSON.parse(res.body).gates.find((row) => row.humanTaskId === 'h-lane');
+    expect(gate.resumeAvailable).toBe(true);
+  });
+
+  it('clears the marker once the stage resumed on that gate', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey, stageKey } = await laneParkedOnGate(sub, projectId);
+    procStore.set(stageKey, {
+      ...procStore.get(stageKey),
+      state: 'RUNNING',
+      pendingHumanTaskId: null,
+    });
+    const sendsBefore = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: false });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(
+      sendsBefore,
+    );
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('does not offer the resume of a lane gate whose stage already resumed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, stageKey } = await laneParkedOnGate(sub, projectId);
+    procStore.set(stageKey, {
+      ...procStore.get(stageKey),
+      state: 'RUNNING',
+      pendingHumanTaskId: null,
+    });
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const gate = JSON.parse(res.body).gates.find((row) => row.humanTaskId === 'h-lane');
+    expect(gate.resumeAvailable).toBe(false);
+  });
 });
 
 describe('GET intent — timeline event fields', () => {

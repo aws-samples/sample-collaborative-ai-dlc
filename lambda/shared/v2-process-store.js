@@ -1167,7 +1167,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
 
   // Bounded-repair counters (checkpoint-ladder.md): a per-STAGE# ADD accumulator
   // per checkpoint, enforcing at most one repair turn per checkpoint per attempt.
-  // Declared here (rather than beside `bumpStageCounter`, its other consumer) so
+  // Declared here (rather than beside `raiseStageCounter`, its other consumer) so
   // `resetStageRow` can zero every counter this platform names without either
   // function reaching past the other's definition. Adding a new bounded-repair
   // counter (a new checkpoint stream) means adding its field name HERE — both
@@ -1479,28 +1479,34 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       .toSorted(bySk);
   };
 
-  // Atomically bump a bounded-repair counter on the STAGE# row and return its new
-  // value. The cap a checkpoint ladder enforces MUST be persisted, not held in
-  // process memory: the stage runner can be re-invoked (resume, redrive) and an
-  // in-memory counter would reset to zero each time, turning "one bounded repair
-  // turn" into an unbounded loop. ADD is used so two concurrent bumps cannot both
-  // read 0. The field is allowlisted (STAGE_COUNTER_FIELDS, declared beside
-  // resetStageRow above) because it is interpolated into the update expression.
-  const bumpStageCounter = async ({ executionId, stageInstanceId, field, by = 1 }) => {
+  // Raise a bounded-repair counter on the STAGE# row to `to`, but only while it
+  // is below it, and say whether this call raised it. The checkpoint ladder
+  // passes the validation revision + 1, so each revision of an attempt can claim
+  // exactly one repair turn: the cap must be persisted, not held in process
+  // memory, because the stage runner can be re-invoked (resume, redrive), and the
+  // conditional write means two concurrent claims cannot both succeed. The field
+  // is allowlisted (STAGE_COUNTER_FIELDS, declared beside resetStageRow above)
+  // because it is interpolated into the update expression.
+  const raiseStageCounter = async ({ executionId, stageInstanceId, field, to }) => {
     if (!STAGE_COUNTER_FIELDS.includes(field)) {
-      throw new Error(`bumpStageCounter: unknown counter field "${field}"`);
+      throw new Error(`raiseStageCounter: unknown counter field "${field}"`);
     }
-    const { Attributes } = await ddb.send(
-      new UpdateCommand({
-        TableName: table(),
-        Key: stageKey(executionId, stageInstanceId),
-        UpdateExpression: 'ADD #f :by SET updatedAt = :ts',
-        ExpressionAttributeNames: { '#f': field },
-        ExpressionAttributeValues: { ':by': by, ':ts': now() },
-        ReturnValues: 'ALL_NEW',
-      }),
-    );
-    return Number(Attributes?.[field] ?? by);
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          UpdateExpression: 'SET #f = :to, updatedAt = :ts',
+          ConditionExpression: 'attribute_not_exists(#f) OR #f < :to',
+          ExpressionAttributeNames: { '#f': field },
+          ExpressionAttributeValues: { ':to': to, ':ts': now() },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
   };
 
   // Append an agent output chunk for restore-on-reload. The sequence is an atomic
@@ -2797,7 +2803,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     putReceipt,
     getReceipt,
     listReceipts,
-    bumpStageCounter,
+    raiseStageCounter,
     appendOutput,
     getOutputs,
     listProjectExecutions,

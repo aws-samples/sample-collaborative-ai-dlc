@@ -1634,3 +1634,54 @@ describe('a cancelled transaction reports the channel guard over the revision ch
     ).rejects.toMatchObject({ code: 'release_revision_conflict' });
   });
 });
+
+describe('promotion of a record registered before protocol evidence existed', () => {
+  // A record imported by an earlier build stored only its frontmatter gaps; the
+  // build-and-test loop-back is a protocol the closure ships, not an authored
+  // value, so that list says nothing about it.
+  const registeredEarlier = async () => {
+    await registerRelease(registerArgs(CANDIDATE_PROFILE));
+    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
+    const row = {
+      ...rows.get(key),
+      fidelityGaps: [
+        { blockType: 'STAGE', field: 'mode', value: 'mob' },
+        { blockType: 'STAGE', field: 'mode', value: 'pipeline' },
+      ],
+    };
+    delete row.fidelityEvidenceRevision;
+    rows.set(key, row);
+    return row;
+  };
+
+  it('re-evaluates the closure, so the loop-back protocol is judged too', async () => {
+    const row = await registeredEarlier();
+
+    await expect(
+      updateRelease({
+        ...registryArgs(),
+        s3,
+        bucket: BUCKET,
+        releaseId: CANDIDATE_RELEASE_ID,
+        expectedRevision: row.revision,
+        patch: { supportState: 'selectable' },
+        actor: 'admin-1',
+      }),
+    ).rejects.toMatchObject({
+      code: 'release_capability_unhandled',
+      details: {
+        gaps: expect.arrayContaining([
+          { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
+        ]),
+      },
+    });
+  });
+
+  it('marks a record registered by this build as carrying complete evidence', async () => {
+    await registerRelease(registerArgs(CANDIDATE_PROFILE));
+
+    expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
+      fidelityEvidenceRevision: 2,
+    });
+  });
+});
