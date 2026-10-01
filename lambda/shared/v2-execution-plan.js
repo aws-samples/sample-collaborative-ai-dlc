@@ -194,7 +194,7 @@ const stageInputs = (stage) =>
 
 // Resolve + validate the deterministic sensors a stage runs. The reviewer is a
 // SEPARATE axis (stage.reviewer), handled below — it is NOT a sensor here.
-const resolveSensors = (stage, stageId, sensorsById, errors) =>
+const resolveSensors = (stage, stageId, sensorsById, errors, { policyEnabled = false } = {}) =>
   (stage?.sensors ?? [])
     .map((sid) => {
       const sensor = sensorsById[sid];
@@ -225,9 +225,10 @@ const resolveSensors = (stage, stageId, sensorsById, errors) =>
         scriptRef: sensor.scriptRef ?? null,
         // `fire_on` (≥2.7.0) decides which candidate set the runner sweeps, so it
         // has to reach the runtime on the plan — without it the whole plane was
-        // inert. Emitted ONLY when authored, so a sensor without it produces a
-        // byte-identical plan.
-        ...(sensor.fireOn ? { fireOn: sensor.fireOn } : {}),
+        // inert. Emitted ONLY when authored AND in release mode: an unpinned run
+        // has no gate plane and runs every sensor in its one pass, so a SYSTEM
+        // seed or a user block that authors the field must not change its plan.
+        ...(policyEnabled && sensor.fireOn ? { fireOn: sensor.fireOn } : {}),
       };
     })
     .filter(Boolean);
@@ -731,7 +732,7 @@ const buildExecutionPlan = ({
         }
       }
 
-      const sensors = resolveSensors(stage, stageId, sensorsById, errors);
+      const sensors = resolveSensors(stage, stageId, sensorsById, errors, { policyEnabled });
       const reviewer = resolveReviewer(stage, stageId, agentsById, errors);
 
       // Dependencies: every in-scope stage that must run before this one — the

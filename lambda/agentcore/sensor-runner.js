@@ -23,6 +23,7 @@
 // not be executed at all. `run-stage` decides what to do with a held verdict.
 
 import { spawn } from 'node:child_process';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -36,6 +37,8 @@ import {
   evalUpstreamCoverage,
   evalGraphCoverage,
 } from '../shared/v2-sensor-contract.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'sensor-runner' } });
 
 // `fire_on` (upstream ≥2.7.0) declares WHEN a sensor fires:
 //   `write` — when a matching file is written, and
@@ -367,17 +370,17 @@ export const createSensorRunner = ({
       scriptError = error;
     }
     if (!script) {
-      return {
-        result: SENSOR_RESULT.BLOCKED,
-        detail: scriptError
-          ? {
-              error: scriptError?.message ?? String(scriptError),
-              ...(scriptError?.name ? { name: scriptError.name } : {}),
-              ...(scriptError?.code ? { code: scriptError.code } : {}),
-              ...(scriptError?.details ? { details: scriptError.details } : {}),
-            }
-          : { error: 'sensor has no script' },
-      };
+      // The verdict is shown to users, so it keeps the generic text; the loader's
+      // own message (which can name storage keys) goes to the operator log only.
+      if (scriptError) {
+        logger.warn('sensor script could not be loaded', {
+          sensorId: spec.sensorId ?? null,
+          name: scriptError?.name ?? null,
+          code: scriptError?.code ?? null,
+          msg: scriptError?.message ?? String(scriptError),
+        });
+      }
+      return { result: SENSOR_RESULT.BLOCKED, detail: { error: 'sensor has no script' } };
     }
     const scriptDir = path.join(workspaceDir, '.aidlc', 'sensors');
     await mkdir(scriptDir, { recursive: true });

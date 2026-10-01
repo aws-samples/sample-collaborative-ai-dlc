@@ -363,7 +363,7 @@ describe('runStageSensors — script kind', () => {
     expect(verdict).toMatchObject({
       result: 'BLOCKED',
       held: false,
-      detail: { error: 'NoSuchKey: blocks/scripts/sha256/abc123' },
+      detail: { error: 'sensor has no script' },
     });
     expect(verdict.detail).not.toHaveProperty('releaseIntegrityFailure');
   });
@@ -397,7 +397,7 @@ describe('runStageSensors — script kind', () => {
     expect(verdict).toMatchObject({
       result: 'BLOCKED',
       held: false,
-      detail: { error: 'user block missing', code: 'user_block_missing' },
+      detail: { error: 'sensor has no script' },
     });
     expect(verdict.detail).not.toHaveProperty('releaseIntegrityFailure');
   });

@@ -1329,60 +1329,63 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // the gate opens. Inert without a resolved release policy, which is
           // what keeps the prompt and the option list byte-identical for an
           // unpinned or 2.3.3-era run.
-          const gateFindings = await ctx.step(
-            `gate-preconditions-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-            async () => {
-              if (!stage.policy) return [];
-              const row = await store.getStage(executionId, stage.stageInstanceId, {
-                consistentRead: true,
-              });
-              const attempt = Number(row?.attempt ?? 0);
-              const [receipts, events] = await Promise.all([
-                store.listReceipts(executionId, {
-                  stageInstanceId: stage.stageInstanceId,
-                  attempt,
-                  consistentRead: true,
-                }),
-                store.listEvents(executionId, { consistentRead: true }),
-              ]);
-              const reread = evaluateGatePreconditions({
-                stage,
-                policy: stage.policy,
-                attempt,
-                validationRound,
-                receipts,
-                events: events.filter((e) => e.stageInstanceId === stage.stageInstanceId),
-                sensorVerdicts: outcome.result?.gateSensorVerdicts ?? [],
-                reviewVerdict: outcome.result?.reviewAdvisory ?? null,
-                changedInputs: outcome.result?.changedInputs ?? [],
-                // `required_artifact_missing` is the one check the orchestrator
-                // cannot derive from receipts: it needs what the stage actually
-                // LEFT BEHIND. `producedHeads` is that observation (the container's
-                // graph read of the artifact heads), and its artifact types are the
-                // produced set. Absent — an unreachable graph, or an unpinned run —
-                // leaves `producedArtifacts` null, which the evaluator treats as
-                // "not observed" and never reports as missing.
-                producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads),
-              });
-              const merged = mergeFindings(outcome.result?.findings ?? [], reread.findings);
-              // Logged inside the step so a durable replay does not repeat it: an
-              // operator reading the logs can see why a gate withheld `approve`
-              // without opening the intent.
-              if (merged.length > 0) {
-                logger.info('gate opened with findings', {
-                  executionId,
-                  stageId: stage.stageId,
-                  stageInstanceId: stage.stageInstanceId ?? null,
-                  findings: merged.map((item) => ({
-                    code: item.code,
-                    severity: item.severity,
-                    overridable: item.overridable,
-                  })),
-                });
-              }
-              return merged;
-            },
-          );
+          // Guarded outside the step so an unpinned gate records no extra
+          // durable operation and its history stays unchanged.
+          const gateFindings = stage.policy
+            ? await ctx.step(
+                `gate-preconditions-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                async () => {
+                  const row = await store.getStage(executionId, stage.stageInstanceId, {
+                    consistentRead: true,
+                  });
+                  const attempt = Number(row?.attempt ?? 0);
+                  const [receipts, events] = await Promise.all([
+                    store.listReceipts(executionId, {
+                      stageInstanceId: stage.stageInstanceId,
+                      attempt,
+                      consistentRead: true,
+                    }),
+                    store.listEvents(executionId, { consistentRead: true }),
+                  ]);
+                  const reread = evaluateGatePreconditions({
+                    stage,
+                    policy: stage.policy,
+                    attempt,
+                    validationRound,
+                    receipts,
+                    events: events.filter((e) => e.stageInstanceId === stage.stageInstanceId),
+                    sensorVerdicts: outcome.result?.gateSensorVerdicts ?? [],
+                    reviewVerdict: outcome.result?.reviewAdvisory ?? null,
+                    changedInputs: outcome.result?.changedInputs ?? [],
+                    // `required_artifact_missing` is the one check the orchestrator
+                    // cannot derive from receipts: it needs what the stage actually
+                    // LEFT BEHIND. `producedHeads` is that observation (the container's
+                    // graph read of the artifact heads), and its artifact types are the
+                    // produced set. Absent — an unreachable graph, or an unpinned run —
+                    // leaves `producedArtifacts` null, which the evaluator treats as
+                    // "not observed" and never reports as missing.
+                    producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads),
+                  });
+                  const merged = mergeFindings(outcome.result?.findings ?? [], reread.findings);
+                  // Logged inside the step so a durable replay does not repeat it: an
+                  // operator reading the logs can see why a gate withheld `approve`
+                  // without opening the intent.
+                  if (merged.length > 0) {
+                    logger.info('gate opened with findings', {
+                      executionId,
+                      stageId: stage.stageId,
+                      stageInstanceId: stage.stageInstanceId ?? null,
+                      findings: merged.map((item) => ({
+                        code: item.code,
+                        severity: item.severity,
+                        overridable: item.overridable,
+                      })),
+                    });
+                  }
+                  return merged;
+                },
+              )
+            : [];
           // Learnings ritual. Upstream asks "anything to add for
           // next time?" at every real human gate; we ask it INSIDE this gate
           // rather than adding a second mandatory turn per stage across 18-33

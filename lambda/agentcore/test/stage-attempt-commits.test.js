@@ -243,7 +243,7 @@ describe('write-plane sweep over the whole attempt', () => {
     }));
 
     await runStage(
-      args(),
+      { ...args(), methodologyRelease: { releaseId: 'release-a' } },
       deps(store, {
         lib: library({ sensors: [lint] }),
         commitAndPushAll: async () => clean,

@@ -229,8 +229,9 @@ export const createProcessBridge = ({
       summary: `Agent asked ${questions.length} question(s)`,
       // Attempt-scoped like every receipt in this phase: `summaryConfirmation:
       // if-present` fires only when THIS attempt asked a question, so a rewind must
-      // stop the previous attempt's question from obliging the new one.
-      detail: { attempt },
+      // stop the previous attempt's question from obliging the new one. Only a
+      // release policy reads it, so an unpinned event keeps its old shape.
+      ...(policy ? { detail: { attempt } } : {}),
     });
     await broadcast({
       action: 'agent.question',

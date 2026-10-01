@@ -3768,8 +3768,11 @@ export const runStage = async (
       spawnFn,
       store,
       publish,
-      changedFiles: attemptChangedFiles,
-      planes: ['write'],
+      // Release mode splits the sensors into a write pass here and a gate pass
+      // after the reviewer. An unpinned run has no gate pass, so it keeps the
+      // single pass over every sensor on the whole workspace.
+      changedFiles: methodologyRelease ? attemptChangedFiles : null,
+      planes: methodologyRelease ? ['write'] : null,
     }).catch(() => null);
     if (writePlane?.held) {
       return fail(stageInstanceId, 'sensor_blocked', writePlane.held);
@@ -3859,13 +3862,11 @@ export const runStage = async (
           .catch(() => {});
         return null;
       });
-      const reviewerParked = await pendingGate({
-        store,
-        executionId,
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-      });
+      // Only a release-mode stage can open a gate between reviewer rounds (the
+      // repair turn below); an unpinned reviewer loop has nothing to re-check.
+      const reviewerParked = stage.policy
+        ? await pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex })
+        : null;
       if (reviewerParked) return parkStage(reviewerParked);
       const ready = verdict?.result === 'PASS' || verdict?.detail?.verdict === 'READY';
       const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';

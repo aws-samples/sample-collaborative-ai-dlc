@@ -718,3 +718,18 @@ describe('checkpoint receipts across validation revisions', () => {
     ]);
   });
 });
+
+describe('validation gate durable history without a resolved release policy', () => {
+  it('records no gate-precondition step', async () => {
+    const names = [];
+    const step = ctx.step;
+    ctx.step = async (name, fn) => {
+      names.push(name);
+      return step(name, fn);
+    };
+
+    await run();
+
+    expect(names.some((name) => name.startsWith('gate-preconditions-'))).toBe(false);
+  });
+});

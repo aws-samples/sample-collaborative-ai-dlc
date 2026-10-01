@@ -972,7 +972,7 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
     expect(pinned.methodologyPins).toEqual({
       AGENT: { 'agent-x': { tenantId: 'SYSTEM', version: 1 } },
     });
-    expect(unpinned.methodologyRelease).toBeNull();
+    expect(unpinned).not.toHaveProperty('methodologyRelease');
   });
 
   it('carries prompt/branch/baseBranch/repos and supports DRAFT status', () => {
@@ -2061,5 +2061,21 @@ describe('quorum edit rows', () => {
     });
     const records = await store.getExecutionRecords('e1', { includeOutputs: false });
     expect(records.quorumEdits.map((q) => q.editId)).toEqual(['qe-1']);
+  });
+});
+
+describe('buildExecutionMeta — unpinned row shape', () => {
+  it('writes no release or resume fields for an unpinned intent', () => {
+    const meta = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      status: 'RUNNING',
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      startedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(meta).not.toHaveProperty('methodologyRelease');
+    expect(meta).not.toHaveProperty('resumeRequired');
   });
 });

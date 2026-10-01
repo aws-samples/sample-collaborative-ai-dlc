@@ -7427,7 +7427,7 @@ describe('AI-DLC release pinning', () => {
 
     const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
     expect(meta.aidlcRepoRef).toBe(releaseSha);
-    expect(meta.methodologyRelease).toBeNull();
+    expect(meta.methodologyRelease ?? null).toBeNull();
     expect(getObjectKeys()).not.toContain(releasePin.manifestKey);
   });
 
@@ -7876,7 +7876,7 @@ describe('AI-DLC per-intent release selection', () => {
     // The auto-pin candidate is release A, whose closure does not offer this
     // scope. Stamping it anyway would 201 here and then fail every run with a
     // permanent plan_invalid, so the intent stays on the legacy DynamoDB path.
-    expect(meta.methodologyRelease).toBeNull();
+    expect(meta.methodologyRelease ?? null).toBeNull();
     expect(meta.scope).toBe(SCOPE_ONLY_IN_DEPLOYMENT);
   });
 
@@ -7971,9 +7971,9 @@ describe('AI-DLC per-intent release selection', () => {
     const meta = metaFor(JSON.parse(res.body).id);
     // Derived from the resolved deployment ref when no release is selected.
     expect(meta.aidlcRepoRef).toBe(shaA);
-    // The baseline release does not offer this deployment-only scope, so the auto-pin is
+    // A1: release A does not offer this deployment-only scope, so the auto-pin is
     // abandoned rather than stamped onto an intent that could never run it.
-    expect(meta.methodologyRelease).toBeNull();
+    expect(meta.methodologyRelease ?? null).toBeNull();
   });
 
   it.each([
@@ -8041,7 +8041,7 @@ describe('AI-DLC per-intent release selection', () => {
     });
   });
 
-  // ── Attachment metadata and version handling ──
+  // ── Review round 1, findings A1/A2/A10 ──
 
   it.each([
     ['a number', 7],
@@ -8107,7 +8107,7 @@ describe('AI-DLC per-intent release selection', () => {
       tenantId: 'default',
       version: 7,
     });
-    // Every closure block is (SYSTEM, V#1) — exactly the coordinates a reseed
+    // A2: every closure block is (SYSTEM, V#1) — exactly the coordinates a reseed
     // rewrites — so none of them may be persisted as a pin.
     for (const pins of Object.values(meta.methodologyPins ?? {})) {
       for (const pin of Object.values(pins ?? {})) {
@@ -8152,7 +8152,7 @@ describe('AI-DLC per-intent release selection', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toBeNull();
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
   });
 
   it("matches the intent's own SCOPE keywords in the deterministic compose pre-pass", async () => {
@@ -8618,7 +8618,7 @@ describe('AI-DLC per-intent release selection', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toBeNull();
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
   });
 
   it('degrades to unpinned when the stable channel names a demoted release', async () => {
@@ -8628,7 +8628,7 @@ describe('AI-DLC per-intent release selection', () => {
     seedRegistryRecord(bundleB, 'v2.9.0', { supportState: 'existing-only' });
     seedStableChannel(pinB.releaseId);
 
-    // A stranded stable pointer must not block intent creation platform-wide.
+    // A3: a stranded stable pointer must not block intent creation platform-wide.
     const res = await createIntent(sub, projectId, {
       title: 'I',
       prompt: 'Build X',
@@ -8636,7 +8636,7 @@ describe('AI-DLC per-intent release selection', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toBeNull();
+    expect(metaFor(JSON.parse(res.body).id).methodologyRelease ?? null).toBeNull();
   });
 
   // Closure upgrade (issue #482): the registry record moves from the i1 closure
@@ -8783,7 +8783,7 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
       status: 'answered',
       callbackId: 'cb-h1',
     });
-    expect(procStore.get(metaKey).resumeRequired).toBeNull();
+    expect(procStore.get(metaKey).resumeRequired ?? null).toBeNull();
 
     const resumed = await resume(sub, projectId, intent.id);
     expect(resumed.statusCode).toBe(200);
