@@ -16,9 +16,8 @@
 //
 // MCP role: 'reviewer' gets the read-only reviewer role plus the trusted
 // `reviewerAgent` identity the MCP bridge validates `submit_review` against
-// (mcp/process-bridge.js). Every other role (support/lead/link/integrator, …)
-// gets 'author' — the same MCP role the single-session ensemble prompt
-// already grants today.
+// (mcp/process-bridge.js). Every other role (support/link/integrator) gets
+// 'author' — the same MCP role as the lead session.
 
 import { getDriver } from './cli/drivers.js';
 import { runChild } from './cli/spawn.js';
@@ -38,10 +37,8 @@ export const OFF_MOUNT_CACHE_ENV = {
 };
 
 // The MCP role a dispatched persona session runs under. Only 'reviewer' is
-// read-only (submit_review, no artifact writes); every other persona role —
-// today just 'support', later 'lead' | 'integrator' | 'link' — is an author
-// session with the same write surface the single-session ensemble prompt
-// already grants.
+// read-only (submit_review, no artifact writes); every other persona role
+// (support, link, integrator) is an author session with the lead's write surface.
 const mcpRoleFor = (role) => (role === 'reviewer' ? 'reviewer' : 'author');
 
 const roleLabel = (role) => role.charAt(0).toUpperCase() + role.slice(1);
@@ -101,6 +98,9 @@ export const dispatchPersona = async ({
   sectionIndex,
   ids,
   timeoutMs = 0,
+  // Ensemble persona sessions run as their own process group (see runChild); the
+  // reviewer keeps the plain spawn it always had.
+  processGroup = false,
   // AGENT.maxTurns for this session. Defaults to the block's own value (persona
   // sessions only run for release catalogs); the reviewer passes it explicitly
   // so an unpinned review runs uncapped.
@@ -176,6 +176,7 @@ export const dispatchPersona = async ({
         prompt,
         promptViaStdin: invocation.promptViaStdin,
         timeoutMs,
+        processGroup,
         spawnFn,
       });
     let childResult;

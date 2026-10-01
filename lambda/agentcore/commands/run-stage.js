@@ -110,7 +110,6 @@ import { compileContextPack as defaultCompileContextPack } from '../context-comp
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
 import {
   buildExecutionPlan,
-  ENSEMBLE_MODES,
   stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
@@ -254,33 +253,6 @@ const resolveStage = ({
       detail: `stage "${stageId}" not in scope "${scope.scope}"`,
     };
   return { plan, stage };
-};
-
-// Load the support-agent personas an ensemble stage mode needs (`pipeline` /
-// `mob`). Resolved from the SAME library the stage came from — the release
-// closure when the intent is pinned, the DDB catalog otherwise — so a pinned
-// intent can never pull a reseeded persona into its prompt. Order is the
-// authored `support_agents` order, which the pipeline topology depends on.
-// Returns [] for every non-ensemble mode, so the legacy prompt is unchanged.
-// `modes` is the set of stage modes that get the single-session ensemble PROMPT.
-// The call site passes an EMPTY set when native persona sessions
-// (ensemble-runner.js) own the supports instead: the lead then drafts only its
-// own part, so no support persona belongs in its prompt at all.
-const loadSupportAgents = async ({ stage, library, loadBlockBody, modes = ENSEMBLE_MODES }) => {
-  if (!modes.includes(stage.mode)) return [];
-  const refs = (stage.supportAgentRefs ?? []).filter(
-    (ref) => ref && ref !== stage.agentRef && library.agentsById?.[ref],
-  );
-  return Promise.all(
-    refs.map(async (ref) => {
-      const block = library.agentsById[ref];
-      return {
-        ref,
-        displayName: block.displayName ?? block.name ?? ref,
-        persona: await loadBlockBody(block),
-      };
-    }),
-  );
 };
 
 // Concatenate the methodology knowledge bodies for an agent. Release mode does
@@ -577,11 +549,10 @@ const runReviewer = async ({
     ids,
     maxTurns,
   });
-  // Preserve the pre-extraction contract: a dispatch failure (spawn/materialize
-  // throwing) propagates out of runReviewer exactly as it did before, so the
-  // existing per-round `.catch` at the call site (records `v2.review.failed`)
-  // keeps working unchanged.
-  if (!dispatch.ok) throw dispatch.detail;
+  // Only a thrown dispatch (materialize/spawn) propagates, to the per-round
+  // `.catch` that records `v2.review.failed`. A non-zero CLI exit does not: the
+  // reviewer may have submitted its verdict before exiting, so it is read below.
+  if (!dispatch.ok && dispatch.detail instanceof Error) throw dispatch.detail;
   const verdict = await latestReviewerVerdict({
     store,
     executionId,
@@ -1700,12 +1671,11 @@ export const runStage = async (
     // fail-closed). Injected for tests.
     resolveMcpSecrets = defaultResolveMcpSecrets,
     verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
-    // The aggregate stage wall clock (ensemble-runner STAGE_BUDGET_MS), read
-    // against `nowMs` (epoch ms) and anchored on THIS stage attempt's start. It
-    // is deliberately NOT anchored on the container's age: a reused container can
-    // be older than the whole budget, which dispatched zero personas. The
-    // container's own lifetime is enforced by AgentCore, not here. Injected for
-    // tests.
+    // The stage wall-clock budget (ensemble-runner STAGE_BUDGET_MS), read against
+    // `nowMs` (epoch ms) and anchored on the start of THIS leg: each runStage call
+    // (a fresh run or a resume) gets its own budget. It is deliberately NOT
+    // anchored on the container's age, so it bounds the sessions one leg starts,
+    // not the container's lifetime, which AgentCore enforces. Injected for tests.
     nowMs = Date.now,
     stageBudgetMs = STAGE_BUDGET_MS,
   } = deps;
@@ -2948,13 +2918,10 @@ export const runStage = async (
   // of one agent role-playing everybody. Resolved on BOTH the fresh and resume
   // legs, because a resume after a mid-ensemble park has to know the topology to
   // skip the personas that already produced their evidence. Null => the stage
-  // keeps today's single-session behaviour, byte for byte (non-release mode,
-  // `V2_ENSEMBLE_SESSIONS=off`, or a mode that resolves no support persona).
-  //
-  // Release mode normally fails closed on a body read, but a support persona is
-  // ADDITIVE steering rather than the stage's own instructions: degrading to the
-  // single-session path preserves the behavior of existing stage execution,
-  // which is the conservative choice this whole block is written for.
+  // keeps today's single-session behaviour, byte for byte (non-release mode, or
+  // a mode that resolves no support persona). Resolution only reads anything in
+  // release mode, so a failure (an unverifiable support persona body) fails the
+  // stage closed, like any other pinned body.
   let ensemble = null;
   // The lead's persona body, reused verbatim for its integration session. Set on
   // the fresh leg where the prompt is materialized; re-read on a resume leg,
@@ -2966,27 +2933,14 @@ export const runStage = async (
       library,
       loadBlockBody: loadBody,
       methodologyRelease,
-      env,
     });
   } catch (error) {
-    const detail = `Ensemble topology could not be resolved for ${stageId}: ${
-      error?.message ?? String(error)
-    }`;
-    if (methodologyRelease) {
-      return fail(stageInstanceId, 'ensemble_topology_unresolved', detail, { clearPending: true });
-    }
-    await store
-      .appendEvent({
-        executionId,
-        type: 'v2.persona.gap',
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-        actor: 'agentcore',
-        summary: `${detail}; continuing with the single-session ensemble prompt`,
-        detail: { mode: stage.mode, role: 'ensemble', reason: 'topology_unresolved' },
-      })
-      .catch(() => {});
+    return fail(
+      stageInstanceId,
+      'ensemble_topology_unresolved',
+      `Ensemble topology could not be resolved for ${stageId}: ${error?.message ?? String(error)}`,
+      { clearPending: true },
+    );
   }
 
   let invocation;
@@ -3025,17 +2979,11 @@ export const runStage = async (
         loadPromptBody(stageBlock),
         agentBlock ? loadPromptBody(agentBlock) : Promise.resolve(''),
         conductorLoad,
-        loadSupportAgents({
-          stage,
-          library,
-          loadBlockBody: loadPromptBody,
-          modes: ensemble || !methodologyRelease ? [] : ENSEMBLE_MODES,
-        }),
       ]);
     } catch (error) {
       return fail(stageInstanceId, 'methodology_body_unavailable', error?.message ?? String(error));
     }
-    const [stageBody, agentPersona, conductorResult, supportAgents] = bodies;
+    const [stageBody, agentPersona, conductorResult] = bodies;
     leadPersonaBody = agentPersona;
     if (conductorResult.error) {
       return fail(stageInstanceId, 'conductor_unavailable', conductorResult.error.message);
@@ -3111,8 +3059,6 @@ export const runStage = async (
         : { scope },
       stageBody,
       agentPersona,
-      supportAgents,
-      methodologyRelease,
       knowledge,
       conductor,
       compiledContext,
@@ -3132,10 +3078,8 @@ export const runStage = async (
       maxTurns: methodologyRelease ? (agentBlock?.maxTurns ?? null) : null,
     });
     prompt = materialized.prompt;
-    // Native ensemble sessions: the lead's own role in the topology, appended
-    // where the single-session ensemble protocol would otherwise have rendered
-    // (`supportAgents` was passed empty above, so that block rendered nothing).
-    // Appended rather than woven in so the off-path prompt is untouched.
+    // Native ensemble sessions: the lead's own role in the topology, appended so
+    // a stage without one keeps its prompt untouched.
     if (ensemble) {
       prompt = `${prompt}\n\n${renderLeadTopologyBrief(ensemble)}`;
     }
@@ -3544,8 +3488,8 @@ export const runStage = async (
         })
         .catch(() => {});
     } else {
-      const stageRow = await store.getStage?.(executionId, stageInstanceId).catch(() => null);
-      const attempt = Number(stageRow?.attempt ?? 0);
+      // The attempt this leg wrote on the stage row (putStage above).
+      const attempt = Number(priorStageRow?.attempt ?? 0);
       // A resume leg never materialized a prompt, so the lead persona is re-read
       // here. For a pinned intent a typed release failure (digest mismatch,
       // unreadable object, unresolvable overlay) must not seat the integration
@@ -3646,7 +3590,6 @@ export const runStage = async (
           policy: stage.policy ?? null,
           personaScope,
           attempt,
-          resumeAnswer,
           lead: { persona: leadPersona, block: agentBlock },
           dispatchContext,
           knowledgeFor: (agentRef) =>

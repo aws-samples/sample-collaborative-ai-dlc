@@ -370,18 +370,15 @@ const PERSONA_EVENT_LABELS: Record<string, string> = {
 };
 
 const PERSONA_EXCERPT_LIMIT = 240;
-const DEFAULT_MAX_DISSENT_ROUNDS = 2;
 
 function dissentRoundSuffix(event: IntentActivityEvent): string {
   if (event.type !== 'v2.persona.dissent') return '';
   const round = event.detail?.round;
   if (typeof round !== 'number' || !Number.isFinite(round) || round < 1) return '';
   const max = event.detail?.maxRounds;
-  const total =
-    typeof max === 'number' && Number.isFinite(max) && max >= round
-      ? max
-      : Math.max(DEFAULT_MAX_DISSENT_ROUNDS, round);
-  return ` (round ${round}/${total})`;
+  return typeof max === 'number' && Number.isFinite(max) && max >= round
+    ? ` (round ${round}/${max})`
+    : ` (round ${round})`;
 }
 
 // Gate-plane sensor families. `v2.sensor.gate` is the per-gate summary ("Gate

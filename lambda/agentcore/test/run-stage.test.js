@@ -1487,6 +1487,52 @@ describe('runStage — LLM reviewer axis', () => {
     expect(res).toMatchObject({ ok: false, reason: 'reviewer_not_ready' });
   });
 
+  it('reads the reviewer verdict even when the reviewer CLI exits non-zero', async () => {
+    let spawned = 0;
+    const spawnFn = vi.fn(() => {
+      // The lead exits 0; the reviewer records NOT-READY, then exits 1.
+      const code = spawned++ === 0 ? 0 : 1;
+      return {
+        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(code)),
+        stdin: { end() {} },
+      };
+    });
+    const store = storeWithVerdict('NOT-READY', 'missing acceptance criteria');
+    const deps = baseDeps({
+      store,
+      spawnFn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithReviewer({ humanValidation: 'none' }),
+      }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'reviewer_not_ready' });
+    const types = store.calls.filter(([n]) => n === 'appendEvent').map(([, e]) => e.type);
+    expect(types).not.toContain('v2.review.failed');
+  });
+
+  it('records a reviewer dispatch error with its message', async () => {
+    const store = storeWithVerdict('READY');
+    const deps = baseDeps({
+      store,
+      spawnFn: okSpawn,
+      materializeMcpConfig: async ({ scope }) => {
+        if (scope.role === 'reviewer') throw new Error('mcp config unwritable');
+        return '/tmp/mcp.json';
+      },
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithReviewer({ humanValidation: 'none' }),
+      }),
+    });
+    await runStage(baseArgs, deps);
+    const failed = store.calls
+      .filter(([n, e]) => n === 'appendEvent' && e.type === 'v2.review.failed')
+      .map(([, e]) => e.summary);
+    expect(failed).toEqual(['Reviewer aidlc-reviewer-agent failed: mcp config unwritable']);
+  });
+
   it('lets a NOT-READY reviewer verdict proceed when human validation follows', async () => {
     const deps = baseDeps({
       store: storeWithVerdict('NOT-READY', 'human should decide'),
@@ -4394,8 +4440,10 @@ describe('runStage — release-mode fidelity', () => {
       let seen = null;
       const deps = baseDeps({
         spawnFn: okSpawn,
-        env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', V2_ENSEMBLE_SESSIONS: 'off' },
-        loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
+        loadLibrary: async () => ({
+          workflow: workflow(),
+          library: { ...ensembleLibrary(mode), fromRelease: true },
+        }),
         materializeStage: async (args) => {
           seen = args;
           return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
@@ -4406,34 +4454,24 @@ describe('runStage — release-mode fidelity', () => {
 
       expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
       expect(seen.stage.mode).toBe(mode);
-      expect(seen.supportAgents).toEqual([
-        {
-          ref: 'aidlc-architect-agent',
-          displayName: 'Architect',
-          persona: 'body:blocks/bodies/sha256/architect',
-        },
-      ]);
+      // The supports run as their own sessions; the lead prompt never carries them.
+      expect(seen).not.toHaveProperty('supportAgents');
     },
   );
 
-  it.each(['pipeline', 'mob'])(
-    'does not load %s support personas for an unpinned intent',
-    async (mode) => {
-      let seen = null;
-      const deps = baseDeps({
-        spawnFn: okSpawn,
-        loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
-        materializeStage: async (args) => {
-          seen = args;
-          return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
-        },
-      });
+  // Persona sessions exist only for a pinned release: an unpinned plan fails these
+  // modes fast, as it did before they could run.
+  it.each(['pipeline', 'mob'])('still fails a %s stage for an unpinned intent', async (mode) => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
+    });
 
-      await runStage(baseArgs, deps);
-
-      expect(seen.supportAgents).toEqual([]);
-    },
-  );
+    await expect(runStage(baseArgs, deps)).resolves.toMatchObject({
+      ok: false,
+      reason: 'not_implemented',
+    });
+  });
 
   it('loads no support persona for a legacy mode', async () => {
     let seen = null;
@@ -4449,13 +4487,15 @@ describe('runStage — release-mode fidelity', () => {
 
     await runStage(baseArgs, deps);
 
-    expect(seen.supportAgents).toEqual([]);
+    expect(seen).not.toHaveProperty('supportAgents');
   });
 
   it('still refuses agent-team, which needs real concurrent sessions', async () => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].mode = 'agent-team';
     const deps = baseDeps({
       spawnFn: okSpawn,
-      loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary('agent-team') }),
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
     });
 
     await expect(runStage(baseArgs, deps)).resolves.toMatchObject({

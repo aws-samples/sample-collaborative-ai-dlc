@@ -1,4 +1,4 @@
-// Stand-in CLI for the one-shot process-tree tests. It starts a grandchild that
+// Stand-in CLI for the process-tree tests. It starts a grandchild that
 // writes the sentinel file only if it is still alive after the CLI is gone,
 // signals readiness, then either exits or hangs depending on the mode.
 //

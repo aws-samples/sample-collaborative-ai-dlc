@@ -237,7 +237,7 @@ describe('resolveEnsembleTopology — the gate on native sessions', () => {
     expect(resolved).toBeNull();
   });
 
-  it('is inert under the V2_ENSEMBLE_SESSIONS=off escape hatch', async () => {
+  it('has no runtime switch: V2_ENSEMBLE_SESSIONS is not read', async () => {
     for (const value of ['off', 'OFF']) {
       const resolved = await resolveEnsembleTopology({
         stage: stage(),
@@ -246,7 +246,7 @@ describe('resolveEnsembleTopology — the gate on native sessions', () => {
         methodologyRelease: RELEASE,
         env: { V2_ENSEMBLE_SESSIONS: value },
       });
-      expect(resolved).toBeNull();
+      expect(resolved).not.toBeNull();
     }
   });
 
@@ -386,7 +386,7 @@ describe('briefs — the blindness seam', () => {
     expect(renderLeadTopologyBrief({ mode: 'mob', leadAgentRef: 'x', supports: [] })).toBe('');
   });
 
-  it('hands the integrator the contributions and the human answer on a resume', () => {
+  it('hands the integrator the contributions and leaves judgment calls to the gate', () => {
     const brief = buildIntegratorBrief({
       stage: stage(),
       agentRef: 'product-agent',
@@ -398,25 +398,11 @@ describe('briefs — the blindness seam', () => {
         },
       ],
       judgmentDissent: [{ agentRef: 'quality-agent', position: 'scope is too wide' }],
-      resumeAnswer: 'Narrow the scope to checkout only.',
     });
     expect(brief).toContain('contribution-user-stories-quality-agent');
     expect(brief).toContain('- OBJECT (judgment): scope is too wide');
-    expect(brief).toContain('Narrow the scope to checkout only.');
-    expect(brief).toContain('Do NOT ask it again.');
-    // Answered: the brief no longer tells the session to ask.
-    expect(brief).not.toContain('`ask_question`');
-  });
-
-  it('tells an integrator whose question is spent to record dissent, never to ask', () => {
-    const brief = buildIntegratorBrief({
-      stage: stage(),
-      agentRef: 'product-agent',
-      judgmentDissent: [{ agentRef: 'quality-agent', position: 'scope is too wide' }],
-      mayAsk: false,
-    });
-    expect(brief).toContain('scope is too wide');
-    expect(brief).toContain('do NOT ask');
+    expect(brief).toContain('validation gate');
+    expect(brief).toContain('Do NOT');
     expect(brief).not.toContain('`ask_question`');
   });
 });
@@ -593,6 +579,8 @@ describe('mob dissent triage', () => {
     expect(dissent).toHaveLength(1);
     expect(dissent[0].summary).toContain('no NFRs');
     expect(dissent[0].actor).toBe('quality-agent');
+    // The timeline renders "round N/M" from these two counters.
+    expect(dissent[0].detail).toMatchObject({ round: 2, maxRounds: MAX_DISSENT_ROUNDS });
   });
 
   it('does not count an unchanged round-one contribution as a round-two write', async () => {
@@ -609,11 +597,17 @@ describe('mob dissent triage', () => {
       },
     });
 
-    // Round two gets both normal and reduced-brief tries, but contributes no new receipt.
+    // Round two gets both normal and reduced-brief tries, and is receipted as a gap,
+    // not as a contribution.
     expect(briefs.filter((entry) => entry.role === 'support')).toHaveLength(3);
     expect(
-      store.receipts.filter((row) => row.kind === 'persona-contribution').map((row) => row.ordinal),
-    ).toEqual([1]);
+      store.receipts
+        .filter((row) => row.kind === 'persona-contribution')
+        .map((row) => [row.ordinal, row.choice]),
+    ).toEqual([
+      [1, 'contributed'],
+      [1001, 'gap'],
+    ]);
     // The earlier real objection remains available to the gate; a gap stub must
     // not overwrite that artifact when the round-two dispatch is silent.
     expect(rows).toHaveLength(1);
@@ -647,10 +641,15 @@ describe('mob dissent triage', () => {
     const integrator = briefs.find((entry) => entry.role === 'integrator');
     expect(integrator.brief).toContain('Judgment calls for the human');
     expect(integrator.brief).toContain('which market first?');
-    expect(integrator.brief).toContain('`ask_question`');
-    // A judgment call is not a knowledge dispute, so no second round is spent.
+    expect(integrator.brief).not.toContain('`ask_question`');
+    expect(integrator.canAsk).toBe(false);
+    // A judgment call is not a knowledge dispute, so no second round is spent; it
+    // reaches the validation gate verbatim as maintained dissent.
     expect(briefs.filter((entry) => entry.role === 'support')).toHaveLength(1);
     expect(ensembleEvidence.dissentRounds).toBe(1);
+    expect(ensembleEvidence.dissent).toEqual([
+      expect.objectContaining({ agentRef: 'quality-agent', position: 'which market first?' }),
+    ]);
   });
 
   it('cannot hand a resumed run a fresh dissent budget', async () => {
@@ -685,10 +684,9 @@ describe('mob dissent triage', () => {
 });
 
 describe('park and resume mid-ensemble', () => {
-  // Nothing threads an answer back into a support or a pipeline link, so neither
-  // is given ask_question; only the integrator (the lead's role, resumed with the
-  // answer) may ask, and only when it has a judgment call to raise.
-  it('gives ask_question only to an integrator that has a judgment call', async () => {
+  // Nothing threads an answer back into a persona session, so none is given
+  // ask_question; judgment calls reach the validation gate as dissent instead.
+  it('gives ask_question to no persona session, even with a judgment call', async () => {
     const stageRow = stage({ mode: 'mob' });
     const topology = await topologyFor(stageRow);
     const plain = await run({ stageRow, topology });
@@ -705,7 +703,7 @@ describe('park and resume mid-ensemble', () => {
         'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
       },
     });
-    expect(judged.briefs.find((entry) => entry.role === 'integrator').canAsk).toBe(true);
+    expect(judged.briefs.find((entry) => entry.role === 'integrator').canAsk).toBe(false);
 
     const pipelineRow = stage({ mode: 'pipeline', supportAgentRefs: ['architect-agent'] });
     const pipeline = await run({ stageRow: pipelineRow, topology: await topologyFor(pipelineRow) });
@@ -752,92 +750,27 @@ describe('park and resume mid-ensemble', () => {
     ]);
   });
 
-  // A park during the integrator session resumes without re-running any completed
-  // persona session.
-  it('re-runs only the integrator after an integrator park', async () => {
+  // Defence in depth: a gate the integrator leaves anyway is withdrawn, not
+  // waited on, so the stage never parks on a persona session.
+  it('withdraws a gate the integrator left instead of parking on it', async () => {
     const stageRow = stage({ mode: 'mob' });
     const topology = await topologyFor(stageRow);
-    const store = spyStore();
-    const first = await run({
+    const { store } = await run({
       stageRow,
       topology,
-      store,
       sessions: {
         'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
       },
       parkAfter: { role: 'integrator', agentRef: 'product-agent' },
     });
-    expect(first.briefs.filter((entry) => entry.role === 'support')).toHaveLength(3);
-    // Three contributions plus the integrator's ONE question for this attempt.
+    expect(store.superseded.map((row) => row.supersededBy)).toEqual([
+      'persona-integrator:product-agent',
+    ]);
     expect(store.receipts.map((row) => row.kind)).toEqual([
       'persona-contribution',
       'persona-contribution',
       'persona-contribution',
-      'integrator-question',
     ]);
-    expect(store.receipts[3]).toMatchObject({ humanTaskId: 'ht-1', ordinal: 1 });
-
-    const resumed = await run({
-      stageRow,
-      topology,
-      store,
-      attempt: 0,
-      resumeAnswer: 'Start with the EU market.',
-      sessions: {
-        'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
-      },
-    });
-    expect(resumed.briefs.filter((entry) => entry.role === 'support')).toHaveLength(0);
-    const integrator = resumed.briefs.find((entry) => entry.role === 'integrator');
-    expect(integrator.brief).toContain('Start with the EU market.');
-    // Answered once: the resumed integration can no longer ask, so it cannot loop.
-    expect(integrator.canAsk).toBe(false);
-    expect(integrator.brief).not.toContain('`ask_question`');
-    // Idempotent receipts: the resume added none.
-    expect(store.receipts).toHaveLength(4);
-  });
-
-  // The answer a resumed leg carries is the integrator's ONLY if the integrator
-  // asked. Otherwise it answered the LEAD's question (the ensemble was deferred
-  // behind it) and the lead's own conversation already applied it.
-  it('does not hand the integrator an answer to a question it never asked', async () => {
-    const stageRow = stage({ mode: 'mob' });
-    const topology = await topologyFor(stageRow);
-    const { briefs } = await run({
-      stageRow,
-      topology,
-      resumeAnswer: 'Answer to the lead question.',
-      sessions: {
-        'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
-      },
-    });
-    const integrator = briefs.find((entry) => entry.role === 'integrator');
-    expect(integrator.brief).not.toContain('Answer to the lead question.');
-    expect(integrator.canAsk).toBe(true);
-  });
-
-  // Defence in depth: an integrator whose question is spent cannot park the stage
-  // a second time — a gate it leaves anyway is withdrawn, not waited on.
-  it('withdraws a second integrator question in the same attempt', async () => {
-    const stageRow = stage({ mode: 'mob' });
-    const topology = await topologyFor(stageRow);
-    const store = spyStore([
-      { kind: 'integrator-question', attempt: 0, ordinal: 1, humanTaskId: 'ht-0', detail: {} },
-    ]);
-    const { store: after } = await run({
-      stageRow,
-      topology,
-      store,
-      resumeAnswer: 'EU first.',
-      sessions: {
-        'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
-      },
-      parkAfter: { role: 'integrator', agentRef: 'product-agent' },
-    });
-    expect(after.superseded.map((row) => row.supersededBy)).toEqual([
-      'persona-integrator:product-agent',
-    ]);
-    expect(after.receipts.filter((row) => row.kind === 'integrator-question')).toHaveLength(1);
   });
 });
 
@@ -952,6 +885,43 @@ describe('failure never blocks', () => {
     expect(findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
     expect(findings[0].severity).toBe('advisory');
     expect(findings[0].detail).toEqual({ agentRef: 'design-agent' });
+  });
+
+  // The gap is receipted (choice: 'gap') like a gapped pipeline link, so a resume
+  // in the same attempt does not spend two more sessions on it.
+  it('does not re-dispatch a gapped support on a resume of the same attempt', async () => {
+    const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent', 'quality-agent'] });
+    const topology = await topologyFor(stageRow);
+    const store = spyStore();
+    const sessions = { 'design-agent': { kind: 'crashes' } };
+    await run({ stageRow, topology, store, sessions });
+    expect(store.receipts.map((row) => [row.kind, row.choice, row.detail.agentRef])).toEqual([
+      ['persona-contribution', 'gap', 'design-agent'],
+      ['persona-contribution', 'contributed', 'quality-agent'],
+    ]);
+
+    const resumed = await run({ stageRow, topology, store, sessions });
+    expect(resumed.briefs.map((entry) => entry.role)).toEqual(['integrator']);
+    expect(resumed.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+  });
+
+  // Without the receipts, a resume cannot tell which personas already ran, nor how
+  // many dissent rounds were spent: nothing is dispatched, and the gate hears it.
+  it('dispatches nothing when the prior receipts cannot be read', async () => {
+    const stageRow = stage({ mode: 'mob' });
+    const store = spyStore();
+    store.listReceipts = async () => {
+      throw new Error('ThrottlingException');
+    };
+    const { briefs, ensembleEvidence } = await run({
+      stageRow,
+      topology: await topologyFor(stageRow),
+      store,
+    });
+    expect(briefs).toEqual([]);
+    expect(ensembleEvidence.gaps).toEqual([
+      expect.objectContaining({ role: 'ensemble', reason: expect.stringContaining('Throttling') }),
+    ]);
   });
 
   it('accepts a support that produces its contribution only on the reduced retry', async () => {
@@ -1222,10 +1192,12 @@ describe('bounded fan-out', () => {
       stageRow,
       topology,
       sessionTimeoutMs: 5,
-      // Never resolves: the session hangs, exactly like a wedged CLI child.
-      dispatchOverride: () => {
+      // A wedged CLI child: runChild kills it at `timeoutMs` and reports a timeout.
+      dispatchOverride: ({ timeoutMs }) => {
         dispatches += 1;
-        return new Promise(() => {});
+        return new Promise((resolve) => {
+          setTimeout(() => resolve({ ok: false, detail: { timedOut: true } }), timeoutMs);
+        });
       },
     });
     expect(dispatches).toBe(2 * MAX_PERSONA_ATTEMPTS);
@@ -1255,19 +1227,27 @@ describe('the aggregate stage wall-clock budget', () => {
       nowMs: () => now,
       deadlineMs: T0 + 2.5 * HOUR,
     });
-    // Three supports start (the third with 30 min left); the integrator does not.
-    expect(briefs.map((entry) => entry.role)).toEqual(['support', 'support', 'support']);
+    // Two supports start; the third (30 min left, less than a 45 min session) and
+    // the integrator do not.
+    expect(briefs.map((entry) => entry.role)).toEqual(['support', 'support']);
     expect(ensembleEvidence.budgetExhausted).toEqual([
+      { agentRef: 'quality-agent', role: 'support' },
       { agentRef: 'product-agent', role: 'integrator' },
     ]);
     const gaps = eventsOfType(store, 'v2.persona.gap');
     expect(gaps.map((row) => row.detail.reason)).toEqual([
       'stage wall-clock budget exhausted before this session could run',
+      'stage wall-clock budget exhausted before this session could run',
     ]);
     expect(findings.map((item) => item.code)).toContain('stage_budget_exhausted');
     expect(findings.find((item) => item.code === 'stage_budget_exhausted')).toMatchObject({
       severity: 'advisory',
-      detail: { sessions: [{ agentRef: 'product-agent', role: 'integrator' }] },
+      detail: {
+        sessions: [
+          { agentRef: 'quality-agent', role: 'support' },
+          { agentRef: 'product-agent', role: 'integrator' },
+        ],
+      },
     });
   });
 
@@ -1309,26 +1289,32 @@ describe('the aggregate stage wall-clock budget', () => {
     });
   });
 
-  it('clamps a running session to what is left of the budget', async () => {
+  // A session starts only while a full session still fits before the deadline,
+  // the same floor a lead repair turn uses. Read off an injected clock, so the
+  // decision does not depend on how fast the test machine runs.
+  it('starts no session, retry included, that could not finish before the deadline', async () => {
     const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent', 'quality-agent'] });
     const topology = await topologyFor(stageRow);
+    const SESSION = 45 * 60 * 1000;
+    let now = T0;
     const dispatched = [];
-    const started = Date.now();
     const { ensembleEvidence } = await run({
       stageRow,
       topology,
-      sessionTimeoutMs: 60 * 60 * 1000,
-      deadlineMs: started + 40,
-      nowMs: Date.now,
-      // A hung CLI child: without the clamp this would hold for the full hour.
-      dispatchOverride: ({ personaScope }) => {
-        const { agentRef } = personaScope;
-        dispatched.push(agentRef);
-        return new Promise(() => {});
+      sessionTimeoutMs: SESSION,
+      nowMs: () => now,
+      // Room for exactly one session.
+      deadlineMs: T0 + SESSION + 1000,
+      // The session runs 2 s and leaves no evidence, so a retry would be due.
+      dispatchOverride: async ({ personaScope, timeoutMs, processGroup }) => {
+        dispatched.push({ agentRef: personaScope.agentRef, timeoutMs, processGroup });
+        now += 2000;
+        return { ok: false, detail: 'no evidence' };
       },
     });
-    expect(Date.now() - started).toBeLessThan(5000);
-    expect(dispatched).toEqual(['design-agent']);
+    expect(dispatched).toEqual([
+      { agentRef: 'design-agent', timeoutMs: SESSION, processGroup: true },
+    ]);
     expect(ensembleEvidence.budgetExhausted.map((row) => row.agentRef)).toEqual([
       'design-agent',
       'quality-agent',

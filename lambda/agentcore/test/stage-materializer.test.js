@@ -64,7 +64,7 @@ describe('buildStagePrompt', () => {
     },
   );
 
-  it.each(['pipeline', 'mob'])('renders the %s fallback for a pinned plan', (mode) => {
+  it.each(['pipeline', 'mob'])('renders no role-play section for a pinned %s plan', (mode) => {
     const prompt = buildStagePrompt({
       stage: stage({ mode }),
       stageBody: 'Follow the stage instructions.',
@@ -75,8 +75,9 @@ describe('buildStagePrompt', () => {
       methodologyRelease: { releaseId: 'aidlc:abc' },
     });
 
-    expect(prompt).toContain(`## Ensemble protocol (stage mode: ${mode})`);
-    expect(prompt).toContain('### Support persona 1: Support');
+    // Support personas run as their own sessions; the lead never plays them.
+    expect(prompt).not.toContain('Ensemble protocol');
+    expect(prompt).not.toContain('Review the work.');
   });
 
   it('includes role, instructions, inputs, outputs, and the output contract', () => {

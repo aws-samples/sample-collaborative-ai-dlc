@@ -288,31 +288,6 @@ describe('evaluateGatePreconditions: summary confirmation', () => {
     expect(result).toEqual({ ok: true, findings: [] });
   });
 
-  // A dispatched persona (the ensemble integrator) does not own the checkpoint;
-  // its question is not the stage's conditional question flow and must not arm
-  // if-present after the owner already settled.
-  it('under if-present, ignores a question raised by a non-owner session', () => {
-    const ifPresent = { ...POLICY, summaryConfirmation: 'if-present' };
-    const result = evaluateGatePreconditions({
-      stage: STAGE,
-      policy: ifPresent,
-      attempt: 0,
-      events: [
-        buildEventRow({
-          executionId: 'e1',
-          type: 'v2.question.asked',
-          actor: 'si-1',
-          summary: 'Agent asked 1 question(s)',
-          detail: { attempt: 0, checkpointOwner: false },
-          now: '2026-01-01T00:00:00.000Z',
-          eventId: 'ev-1',
-        }),
-      ],
-      producedArtifacts: ['requirements'],
-    });
-    expect(result).toEqual({ ok: true, findings: [] });
-  });
-
   it('under if-present, counts the persisted row shape of an owner question', () => {
     const ifPresent = { ...POLICY, summaryConfirmation: 'if-present' };
     const result = evaluateGatePreconditions({
@@ -740,6 +715,42 @@ describe('evaluateGatePreconditions: stage wall-clock budget', () => {
     expect(result.findings.find((item) => item.code === 'stage_budget_exhausted').severity).toBe(
       'blocking',
     );
+  });
+
+  // runPipeline writes a receipt for a gapped link too (`choice: 'gap'`), so a
+  // resume advances past it. The orchestrator re-reads those durable rows, and
+  // must reach the same findings as the runner: a gap is not a completed link.
+  it('does not count a gapped pipeline-link receipt as a completed link', () => {
+    const link = (ordinal, agentRef, choice) => ({
+      kind: 'pipeline-link',
+      attempt: 0,
+      ordinal,
+      choice,
+      detail: { agentRef, ordinal },
+    });
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        link(1, 'lead', 'completed'),
+        link(2, 'design-agent', 'gap'),
+        link(3, 'quality-agent', 'gap'),
+      ],
+      ensembleEvidence: {
+        supports: [],
+        links: ['lead', 'design-agent', 'quality-agent'],
+        dissent: [],
+        budgetExhausted: [
+          { agentRef: 'design-agent', role: 'link' },
+          { agentRef: 'quality-agent', role: 'link' },
+        ],
+      },
+    });
+    expect(result.findings.map((item) => [item.code, item.severity])).toEqual([
+      ['pipeline_link_incomplete', 'advisory'],
+      ['stage_budget_exhausted', 'blocking'],
+    ]);
   });
 
   it('says nothing when no session was cut', () => {

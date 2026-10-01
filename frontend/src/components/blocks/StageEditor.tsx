@@ -254,7 +254,7 @@ export function StageEditor({ value, onChange, disabled, referenceOptions = {} }
             <SelectField
               label="Run mode"
               value={runMode}
-              values={['inline', 'subagent', 'pipeline', 'mob', 'agent-team']}
+              values={['inline', 'subagent', 'agent-team']}
               onChange={(mode) => set({ mode })}
               disabled={disabled}
             />

@@ -11,8 +11,8 @@
 //                        a 2.3.3-era or unpinned run
 //   V2_CHECKPOINT_OWNER  '0' on a dispatched persona session (the lead owns the
 //                        checkpoint); absent otherwise
-//   V2_ASK_QUESTION      '0' on a persona session with no answer path back into
-//                        it (support, pipeline link); absent otherwise
+//   V2_ASK_QUESTION      '0' on a dispatched persona session, which has no answer
+//                        path back into it; absent otherwise
 //   V2_AGENT_REF         trusted agent identity of a dispatched persona session
 //   V2_VALIDATION_ROUND  the validation revision checkpoint receipts are scoped
 //                        to; absent for the first run and without a policy

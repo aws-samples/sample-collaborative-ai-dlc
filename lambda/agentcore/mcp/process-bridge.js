@@ -114,7 +114,6 @@ export const createProcessBridge = ({
     // is what turns artifact stamping on; the checkpoint tools are registered (or
     // withheld) from the same value in mcp/server.js.
     policy = null,
-    checkpointOwner = true,
     // The validation revision of this attempt ("Request changes" at the stage's
     // validation gate re-runs it without a new attempt). Checkpoint gates and
     // receipts are scoped to it so a decision about one revision never
@@ -237,12 +236,7 @@ export const createProcessBridge = ({
       // if-present` fires only when THIS attempt asked a question, so a rewind must
       // stop the previous attempt's question from obliging the new one. Only a
       // release policy reads it, so an unpinned event keeps its old shape.
-      // A non-owner session (the ensemble's integrator) is marked so the
-      // evaluator does not read its question as the stage's conditional question
-      // flow: the owner's confirmation was already settled before it ran.
-      ...(policy
-        ? { detail: checkpointOwner ? { attempt } : { attempt, checkpointOwner: false } }
-        : {}),
+      ...(policy ? { detail: { attempt } } : {}),
     });
     await broadcast({
       action: 'agent.question',

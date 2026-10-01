@@ -87,9 +87,10 @@ export const MAX_PERSONA_SESSION_MS = 45 * 60 * 1000;
 // runtime's max_lifetime (28800 s, terraform/modules/compute/agentcore), which
 // kills the container and loses every persona after the kill. 6.5 h leaves the
 // last 1.5 h for the engine commit, sensors and the gate hand-off. Measured from
-// the stage attempt's start in this invocation (run-stage computes the deadline);
-// every dispatch past it degrades to a GAP the human reads, and a budget that cut
-// every collaborator blocks the gate overridably.
+// the start of the current leg (run-stage computes the deadline; a resume starts
+// a new budget); a session that would not finish before it degrades to a GAP the
+// human reads, and a budget that cut every collaborator blocks the gate
+// overridably.
 export const STAGE_BUDGET_MS = 6.5 * 60 * 60 * 1000;
 const BUDGET_GAP_REASON = 'stage wall-clock budget exhausted before this session could run';
 
@@ -300,11 +301,6 @@ export const buildIntegratorBrief = ({
   agentRef,
   contributions = [],
   judgmentDissent = [],
-  resumeAnswer = null,
-  // Whether this integration session is given ask_question. False once the
-  // integrator's one question for the attempt is spent (answered or not), so the
-  // brief must not tell it to ask: judgment calls are then recorded as dissent.
-  mayAsk = true,
   reduced = false,
 }) =>
   [
@@ -348,42 +344,19 @@ export const buildIntegratorBrief = ({
           '',
           '## Judgment calls for the human',
           '',
-          ...(resumeAnswer
-            ? ['These trade-offs were put to the human; the answer follows below.']
-            : mayAsk
-              ? [
-                  'These objections are trade-offs only a human stakeholder can settle. Raise',
-                  'ONE consolidated `ask_question` covering them, with concrete options, then',
-                  'stop: the platform parks the stage and resumes this integration with the',
-                  'answer.',
-                ]
-              : [
-                  'These objections are trade-offs only a human stakeholder can settle. The',
-                  "stage's one question to the human is already spent, so do NOT ask: record",
-                  'each one as attributed dissent in the output for the human to settle at',
-                  'the validation gate.',
-                ]),
+          'These objections are trade-offs only a human stakeholder can settle. Do NOT',
+          'ask: record each one as attributed dissent in the output; the human settles',
+          'them at the validation gate, where they are quoted verbatim.',
           '',
           ...judgmentDissent.map(
             (item) => `- **${item.agentRef}**: ${neutralizeTokens(item.position)}`,
           ),
         ]
       : []),
-    ...(resumeAnswer
-      ? [
-          '',
-          '## The human has already answered',
-          '',
-          neutralizeTokens(resumeAnswer),
-          '',
-          'Apply this answer. Do NOT ask it again.',
-        ]
-      : []),
   ].join('\n');
 
-// The lead's own prompt tail when native sessions are active. It REPLACES the
-// single-session ensemble protocol (`renderEnsembleProtocol`), which instructs one
-// agent to play every persona — exactly what real sessions exist to stop.
+// The lead's own prompt tail when native sessions are active: the lead drafts its
+// own part and never plays the other personas.
 export const renderLeadTopologyBrief = ({ mode, leadAgentRef, supports = [] }) => {
   const refs = supports.map((support) => support.ref).filter(Boolean);
   if (refs.length === 0) return '';
@@ -416,18 +389,15 @@ export const renderLeadTopologyBrief = ({ mode, leadAgentRef, supports = [] }) =
 
 // The native topology for a stage, or null when the stage keeps today's
 // single-session behaviour. Gated on release mode (the existing authored
-// provenance gate — an unpinned or 2.3.3-era intent is untouched), on the
-// `V2_ENSEMBLE_SESSIONS=off` escape hatch, and on at least one support persona
-// resolving from the SAME library the stage came from.
+// provenance gate — an unpinned or 2.3.3-era intent is untouched) and on at least
+// one support persona resolving from the SAME library the stage came from.
 export const resolveEnsembleTopology = async ({
   stage,
   library,
   loadBlockBody,
   methodologyRelease = null,
-  env = {},
 }) => {
   if (!methodologyRelease) return null;
-  if (String(env.V2_ENSEMBLE_SESSIONS ?? '').toLowerCase() === 'off') return null;
   if (!SESSION_ENSEMBLE_MODES.includes(stage?.mode)) return null;
   if (stage.mode === 'subagent' && !subagentIsHubAndSpoke(library)) return null;
   const refs = (stage.supportAgentRefs ?? []).filter(
@@ -479,21 +449,6 @@ const emptyEvidence = (topology) => {
   };
 };
 
-// Bound one dispatch. The loser of the race is abandoned, never awaited again, and
-// the timer is always cleared so a finished session cannot hold the event loop.
-const withSessionTimeout = (pending, timeoutMs) => {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return pending;
-  let timer = null;
-  const expiry = new Promise((resolve) => {
-    timer = setTimeout(
-      () => resolve({ ok: false, detail: `session exceeded ${timeoutMs}ms` }),
-      timeoutMs,
-    );
-    timer?.unref?.();
-  });
-  return Promise.race([pending, expiry]).finally(() => clearTimeout(timer));
-};
-
 // A link's / integrator's evidence is that the DECLARED STAGE OUTPUTS moved. There
 // is no contribution file to inspect there, and a session that
 // exited 0 having written nothing produced nothing — `true` would have recorded a
@@ -532,7 +487,6 @@ export const runEnsembleSessions = async ({
   policy = null,
   personaScope = {},
   attempt = 0,
-  resumeAnswer = null,
   lead = { persona: '', block: null },
   // Everything dispatchPersona needs that is identical for every persona in this
   // stage (cli, models, env, workspaceDir, spawnFn, mcpEntry, materializers, ids).
@@ -619,11 +573,20 @@ export const runEnsembleSessions = async ({
     });
   };
 
+  // The receipts this run wrote, so the runner's findings are evaluated over the
+  // same rows the orchestrator re-reads before the gate opens.
+  const written = [];
   const receipt = async (row) => {
     if (typeof store?.putReceipt !== 'function') return null;
     return store
       .putReceipt({ executionId, stageInstanceId, attempt, unitSlug, sectionIndex, ...row })
-      .catch(() => null);
+      .then(
+        (stored) => {
+          written.push({ attempt, ...row });
+          return stored;
+        },
+        () => null,
+      );
   };
 
   // Defence in depth for a session that was never given ask_question (a support or
@@ -677,21 +640,17 @@ export const runEnsembleSessions = async ({
     brief,
     verify,
     snapshot = null,
-    // Only a session whose answer is threaded back into it may ask the human.
-    canAsk = false,
   }) => {
     for (let tryIndex = 1; tryIndex <= MAX_PERSONA_ATTEMPTS; tryIndex += 1) {
-      // Checked before EVERY dispatch, retries included: a session is never
-      // started past the stage deadline, and one that starts is clamped to what is
-      // left of it, so the ensemble as a whole cannot outlive the container.
-      const left = remainingMs();
-      if (left <= 0) {
+      // Checked before EVERY dispatch, retries included: a session starts only
+      // while a full session still fits before the stage deadline (the floor lead
+      // repair turns use), so the ensemble as a whole cannot outlive it.
+      if (remainingMs() < sessionTimeoutMs) {
         recordBudgetCut({ agentRef, role });
         return { ok: false, verified: null, reason: BUDGET_GAP_REASON };
       }
       const reduced = tryIndex > 1;
       const baseline = snapshot ? await snapshot().catch(() => null) : null;
-      const dispatchTimeoutMs = Math.min(sessionTimeoutMs, left);
       const dispatchArgs = {
         role,
         agentBlock,
@@ -704,7 +663,8 @@ export const runEnsembleSessions = async ({
               return '';
             }),
         brief: brief(reduced),
-        personaScope: { ...personaScope, agentRef, canAsk },
+        // Nothing threads an answer back into a persona session, so none may ask.
+        personaScope: { ...personaScope, agentRef, canAsk: false },
         ...dispatchContext,
         executionId,
         projectId,
@@ -712,12 +672,10 @@ export const runEnsembleSessions = async ({
         stageInstanceId,
         unitSlug,
         sectionIndex,
-        ...(dispatch === dispatchPersona ? { timeoutMs: dispatchTimeoutMs } : {}),
+        timeoutMs: sessionTimeoutMs,
+        processGroup: true,
       };
-      const pending = dispatch(dispatchArgs);
-      const result = await (
-        dispatch === dispatchPersona ? pending : withSessionTimeout(pending, dispatchTimeoutMs)
-      ).catch((error) => ({ ok: false, detail: error }));
+      const result = await dispatch(dispatchArgs).catch((error) => ({ ok: false, detail: error }));
       const verified = result.ok ? await verify(baseline).catch(() => null) : null;
       if (verified) return { ok: true, verified };
       logger?.error?.('persona session produced no evidence', {
@@ -728,13 +686,10 @@ export const runEnsembleSessions = async ({
         msg: result.ok ? 'session exited cleanly without evidence' : String(result.detail ?? ''),
       });
     }
-    if (remainingMs() <= 0) {
-      recordBudgetCut({ agentRef, role });
-      return { ok: false, verified: null, reason: BUDGET_GAP_REASON };
-    }
     return { ok: false, verified: null };
   };
 
+  let priorReceipts = [];
   try {
     for (const agentRef of topology.dropped ?? []) {
       await gap({
@@ -743,9 +698,11 @@ export const runEnsembleSessions = async ({
         reason: `topology declares more than ${MAX_SUPPORT_PERSONAS} support personas; this one was not dispatched`,
       });
     }
-    const priorReceipts =
+    priorReceipts =
       typeof store?.listReceipts === 'function'
-        ? await store.listReceipts(executionId, { stageInstanceId, attempt }).catch(() => [])
+        ? // No catch: without them a resume would re-run settled personas and
+          // reset the dissent budget. The floor below turns the error into a gap.
+          await store.listReceipts(executionId, { stageInstanceId, attempt })
         : [];
     const ordinalsOf = (kind) =>
       new Set(
@@ -785,7 +742,6 @@ export const runEnsembleSessions = async ({
       receipt,
       emit,
       gap,
-      pendingGate,
       withdrawOrphanGate,
       stageOutputsFingerprint,
       wroteStageOutput,
@@ -798,7 +754,6 @@ export const runEnsembleSessions = async ({
         completed: ordinalsOf('persona-contribution'),
         priorReceipts,
         readContributions,
-        resumeAnswer,
         lead,
       });
     }
@@ -820,7 +775,16 @@ export const runEnsembleSessions = async ({
 
   return {
     ensembleEvidence: evidence,
-    findings: findingsFor({ stage, policy, attempt, evidence }),
+    findings: findingsFor({
+      stage,
+      policy,
+      attempt,
+      evidence,
+      receipts: latestReceipts([
+        ...(Array.isArray(priorReceipts) ? [...priorReceipts] : []),
+        ...written,
+      ]),
+    }),
   };
 };
 
@@ -927,10 +891,8 @@ const runHubAndSpoke = async ({
   receipt,
   emit,
   gap,
-  pendingGate,
   withdrawOrphanGate,
   readContributions,
-  resumeAnswer,
   lead,
   stageOutputsFingerprint,
   wroteStageOutput,
@@ -944,13 +906,6 @@ const runHubAndSpoke = async ({
       .map((row) => roundOfOrdinal(row.ordinal)),
   );
   evidence.dissentRounds = round;
-  // The integrator gets ONE question per attempt, read off the persisted receipt
-  // so a resume cannot re-arm it. Its presence is also what makes `resumeAnswer`
-  // the integrator's answer: without it, the answer a resumed leg carries was the
-  // LEAD's (the lead parked, the ensemble was deferred), which the lead's own
-  // resumed conversation already applied.
-  let integratorAsked = priorReceipts.some((row) => row?.kind === 'integrator-question');
-  const integratorAnswer = integratorAsked ? resumeAnswer : null;
 
   const collect = async () => {
     const rows = await readContributions().catch(() => []);
@@ -977,9 +932,9 @@ const runHubAndSpoke = async ({
         })),
     );
 
-  // Returns true when the integrator raised its question and the stage must park.
+  // The integrator never asks the human: nothing threads an answer back into its
+  // session, and the judgment calls reach the validation gate verbatim as dissent.
   const integrate = async (judgmentDissent) => {
-    const mayAsk = !integratorAsked && judgmentDissent.length > 0;
     const outcome = await runPersona({
       role: 'integrator',
       agentRef: topology.leadAgentRef,
@@ -992,15 +947,12 @@ const runHubAndSpoke = async ({
           agentRef: topology.leadAgentRef,
           contributions: evidence.contributions,
           judgmentDissent,
-          resumeAnswer: integratorAnswer,
-          mayAsk,
           reduced,
         }),
       // The integration IS a rewrite of the stage outputs, so nothing moving means
       // nothing was integrated — the contributions would silently go nowhere.
       snapshot: stageOutputsFingerprint,
       verify: wroteStageOutput,
-      canAsk: mayAsk,
     });
     if (!outcome.ok) {
       await gap({
@@ -1009,21 +961,7 @@ const runHubAndSpoke = async ({
         reason: outcome.reason ?? 'integration session produced no evidence',
       });
     }
-    if (!mayAsk) {
-      await withdrawOrphanGate({ agentRef: topology.leadAgentRef, role: 'integrator' });
-      return false;
-    }
-    const gate = await pendingGate().catch(() => null);
-    if (!gate) return false;
-    integratorAsked = true;
-    await receipt({
-      kind: 'integrator-question',
-      ordinal: 1,
-      choice: 'asked',
-      humanTaskId: gate.humanTaskId ?? null,
-      detail: { mode: topology.mode, round, agentRef: topology.leadAgentRef, attempt },
-    });
-    return true;
+    await withdrawOrphanGate({ agentRef: topology.leadAgentRef, role: 'integrator' });
   };
 
   await dispatchSupports({
@@ -1044,16 +982,7 @@ const runHubAndSpoke = async ({
   evidence.contributions = await collect();
 
   for (;;) {
-    const open = objections();
-    if (await integrate(open.filter((item) => item.class === 'judgment'))) {
-      // The integrator raised the judgment calls as one question and the stage is
-      // about to park. Maintained objections are recorded anyway so the human
-      // reading the gate sees them verbatim; the resumed leg re-integrates with
-      // the answer and skips every support that already contributed.
-      evidence.dissent = open;
-      await recordDissent({ evidence, emit, stage, attempt, mode: topology.mode, round });
-      return;
-    }
+    await integrate(objections().filter((item) => item.class === 'judgment'));
     evidence.contributions = await collect();
     // Only `mob` triages dissent; `subagent` integrates once and stops.
     if (topology.mode !== 'mob') break;
@@ -1185,8 +1114,16 @@ const dispatchSupports = async ({
         },
       });
     } else {
-      // Deliberately NO receipt: the missing contribution must stay missing so
-      // `evaluateGatePreconditions` names this persona at the gate.
+      // A gap receipt, like a gapped pipeline link's: a resume skips this persona
+      // instead of spending two more sessions on it. The gate counts only
+      // `contributed`, so it still names the persona as missing.
+      completed.add(ordinal);
+      await receipt({
+        kind: 'persona-contribution',
+        ordinal,
+        choice: 'gap',
+        detail: { mode: topology.mode, agentRef: support.ref, round, attempt },
+      });
       await gap({
         agentRef: support.ref,
         role: 'support',
@@ -1212,6 +1149,7 @@ const recordDissent = async ({ evidence, emit, stage, attempt, mode, round }) =>
       detail: {
         mode,
         round,
+        maxRounds: MAX_DISSENT_ROUNDS,
         agentRef: item.agentRef,
         positions: [{ stance: item.stance, class: item.class, text: item.position }],
         attempt,
@@ -1234,21 +1172,14 @@ const ENSEMBLE_FINDING_CODES = new Set([
 // severities and remediation text cannot drift from the ones the orchestrator
 // produces when it re-reads the receipts before the gate opens (`mergeFindings`
 // then dedupes the overlap on (code, detail)).
-export const findingsFor = ({ stage, policy, attempt, evidence }) => {
+// One row per receipt key (kind + ordinal), the newest winning, as the store
+// keeps them.
+const latestReceipts = (rows) => [
+  ...new Map(rows.map((row) => [`${row?.kind}#${row?.ordinal ?? ''}`, row])).values(),
+];
+
+export const findingsFor = ({ stage, policy, attempt, evidence, receipts = [] }) => {
   if (!policy) return [];
-  const gapped = new Set(evidence.gaps.map((row) => row.agentRef));
-  const receipts = [
-    ...evidence.contributions.map((row) => ({
-      kind: 'persona-contribution',
-      attempt,
-      detail: { agentRef: row.agentRef },
-    })),
-    // A gapped link holds a receipt so a resume advances past it, but it is NOT a
-    // completed link — the gate must still hear that the chain broke.
-    ...evidence.links
-      .filter((agentRef) => !gapped.has(agentRef))
-      .map((agentRef) => ({ kind: 'pipeline-link', attempt, detail: { agentRef } })),
-  ];
   const { findings } = evaluateGatePreconditions({
     stage,
     policy,
