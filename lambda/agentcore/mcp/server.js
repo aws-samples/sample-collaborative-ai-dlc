@@ -17,7 +17,6 @@
 // MCP SDK. `startMcpServer()` (only at container entry) wires the real SDK +
 // stdio transport over the same handlers.
 
-import { createHash } from 'node:crypto';
 import { GraphWriteError } from './graph-writer.js';
 
 export const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
@@ -53,20 +52,16 @@ const notifyArtifact = async (bridge, { id, title, action }) => {
   }
 };
 
-// The write stamp that makes output lineage checkable: which artifact was written,
-// with what bytes, under which recorded authorization (null when none was held).
-// The bridge no-ops without a resolved release policy, so an unpinned run emits
-// nothing. Best-effort for the same reason as notifyArtifact — the artifact is
-// already written and a retried create would collide with it.
-const stampArtifact = async (bridge, { id, artifactType, content }) => {
+// The write stamp that makes output lineage checkable: which artifact was written
+// and under which recorded authorization (null when none was held). Skipped
+// entirely when the bridge has no resolved release policy, so an unpinned run
+// does no extra work per write. Best-effort for the same reason as
+// notifyArtifact — the artifact is already written and a retried create would
+// collide with it.
+const stampArtifact = async (bridge, { id, artifactType }) => {
+  if (!bridge?.stampsArtifacts?.()) return;
   try {
-    await bridge?.stampArtifact?.({
-      artifactId: id,
-      artifactType,
-      contentHash: createHash('sha256')
-        .update(typeof content === 'string' ? content : JSON.stringify(content ?? null))
-        .digest('hex'),
-    });
+    await bridge.stampArtifact({ artifactId: id, artifactType: artifactType ?? null });
   } catch {
     /* the absence of a stamp is itself evidence; never fail the write */
   }
@@ -170,18 +165,14 @@ export const buildToolHandlers = ({ writer, graph, bridge }) => {
           }),
         );
         await notifyArtifact(bridge, { id: res.id, title, action: 'created' });
-        await stampArtifact(bridge, { id: res.id, artifactType: res.artifactType, content });
+        await stampArtifact(bridge, { id: res.id, artifactType: res.artifactType });
         return res;
       }),
     update_artifact: ({ id, props }) =>
       guard(async () => {
         const res = await withWriter((w) => w.updateArtifact({ id, props: props ?? {} }));
         await notifyArtifact(bridge, { id: res.id, title: props?.title, action: 'updated' });
-        await stampArtifact(bridge, {
-          id: res.id,
-          artifactType: res.artifactType,
-          content: props ?? {},
-        });
+        await stampArtifact(bridge, { id: res.id, artifactType: res.artifactType });
         return res;
       }),
     link_artifacts: ({ fromId, toId, edge }) =>

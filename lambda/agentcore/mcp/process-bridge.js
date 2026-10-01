@@ -560,7 +560,7 @@ export const createProcessBridge = ({
   // with NO stamp is treated by the completion ladder exactly like an unauthorized
   // one, so this is evidence, not decoration — but it must never fail the tool
   // call, because the artifact IS already written.
-  const stampArtifact = async ({ artifactId, artifactType, contentHash }) => {
+  const stampArtifact = async ({ artifactId, artifactType }) => {
     if (!policy) return null;
     await rehydrated;
     const row = await store
@@ -577,7 +577,6 @@ export const createProcessBridge = ({
         detail: {
           artifactId,
           artifactType: artifactType ?? null,
-          contentHash,
           authorizationId: activeAuthorizationId ?? null,
         },
       })
@@ -766,6 +765,7 @@ export const createProcessBridge = ({
     confirmSummary,
     requestPlanApproval,
     stampArtifact,
+    stampsArtifacts: () => Boolean(policy),
     rehydrateAuthorizations,
     activeAuthorizationId: () => activeAuthorizationId,
     sendOutput,

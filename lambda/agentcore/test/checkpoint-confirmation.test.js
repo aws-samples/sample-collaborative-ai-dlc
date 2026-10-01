@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { createProcessBridge } from '../mcp/process-bridge.js';
+import { evaluateGatePreconditions } from '../../shared/gate-preconditions.js';
 import {
   AUTHOR_TOOLS,
   buildToolHandlers,
@@ -551,7 +552,7 @@ describe('request_plan_approval', () => {
 });
 
 describe('write stamps', () => {
-  it('records the artifact, its bytes and the held authorization', async () => {
+  it('records the artifact and the held authorization', async () => {
     const store = fakeStore();
     const bridge = inlineBridge(store, { answer: { perQuestion: [{ answer: 'Looks correct' }] } });
     const { authorizationId } = await bridge.confirmSummary({ summary: 's' });
@@ -559,7 +560,6 @@ describe('write stamps', () => {
     await bridge.stampArtifact({
       artifactId: 'blm-1',
       artifactType: 'business-logic-model',
-      contentHash: 'abc123',
     });
 
     expect(store.events.at(-1)).toMatchObject({
@@ -567,7 +567,6 @@ describe('write stamps', () => {
       detail: {
         artifactId: 'blm-1',
         artifactType: 'business-logic-model',
-        contentHash: 'abc123',
         authorizationId,
       },
     });
@@ -664,5 +663,67 @@ describe('the tool surface the policy decides', () => {
       expect(typeof handlers[name]).toBe('function');
       expect(toolSchemas(zod)[name].description).toMatch(/STOP IMMEDIATELY/);
     }
+  });
+});
+
+describe('write stamps through the tool handlers', () => {
+  // The writer acks the way graph-writer does: create and update both name the
+  // artifact type, which is what the gate matches stamps against.
+  const writer = {
+    createArtifact: async ({ id, artifactType }) => ({ id, artifactType, links: 0 }),
+    updateArtifact: async ({ id, props }) => ({
+      id,
+      artifactType: 'design',
+      updated: Object.keys(props),
+    }),
+  };
+
+  it('counts a re-save with update_artifact after the confirmation', async () => {
+    const store = fakeStore();
+    const bridge = inlineBridge(store, { answer: { perQuestion: [{ answer: 'Looks correct' }] } });
+    const handlers = buildToolHandlers({ writer, bridge });
+    await handlers.create_artifact({ artifactType: 'design', id: 'd1', title: 'D' });
+    await bridge.confirmSummary({ summary: 's' });
+
+    await handlers.update_artifact({ id: 'd1', props: { content: 'revised' } });
+
+    const [receipt] = [...store.receipts.values()];
+    const { findings } = evaluateGatePreconditions({
+      stage: { stageInstanceId: SCOPE.stageInstanceId, outputArtifacts: [{ artifact: 'design' }] },
+      policy: SCOPE.policy,
+      attempt: 0,
+      receipts: [receipt],
+      events: store.events,
+    });
+    expect(findings.map((finding) => finding.code)).toEqual([]);
+  });
+
+  it('records which artifact was written, not a hash of the tool arguments', async () => {
+    const store = fakeStore();
+    const bridge = inlineBridge(store);
+    await buildToolHandlers({ writer, bridge }).update_artifact({ id: 'd1', props: { a: 1 } });
+
+    const stamp = store.events.find((event) => event.type === 'v2.artifact.stamped');
+    expect(stamp.detail).toEqual({
+      artifactId: 'd1',
+      artifactType: 'design',
+      authorizationId: null,
+    });
+  });
+
+  it('does no stamping work when the session has no release policy', async () => {
+    const calls = [];
+    const bridge = {
+      stampsArtifacts: () => false,
+      stampArtifact: async (args) => calls.push(args),
+      emitStageNote: async () => {},
+    };
+    await buildToolHandlers({ writer, bridge }).create_artifact({
+      artifactType: 'design',
+      id: 'd1',
+      content: 'x'.repeat(1024),
+    });
+
+    expect(calls).toEqual([]);
   });
 });
