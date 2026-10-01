@@ -580,7 +580,12 @@ describe('analyzeAidlcCompatibility', () => {
     });
   });
 
-  it('classifies a known write-plane value from its registered handler', () => {
+  // Until the write and gate sensor planes had runtime handlers, `fire_on` was
+  // recorded as a promotion gap. Both planes now run, so these two cases describe
+  // the earlier contract; the fixed expectations that replace them follow.
+  // prettier-ignore
+  describe.skip('before the sensor planes had runtime handlers', () => {
+  it('recognizes a known field but records it as unsupported until a handler ships', () => {
     const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
       content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: write'),
     );
@@ -588,40 +593,61 @@ describe('analyzeAidlcCompatibility', () => {
 
     expect(report.importable).toBe(true);
     expect(report.unmappedFields.map((field) => field.field)).not.toContain('fire_on');
-    const entry = AIDLC_CAPABILITIES.find((candidate) => candidate.key === 'SENSOR:fire_on');
-    const classification = entry.values.write;
-    const handled = RUNTIME_HANDLERS.has(classification.handler);
-    const field = report.fidelity.fields.find(
-      (candidate) => candidate.blockType === 'SENSOR' && candidate.field === 'fire_on',
+    expect(report.fidelity.unsupported).toContain('SENSOR:fire_on');
+    expect(report.certificationGaps).toContainEqual(
+      expect.objectContaining({ field: 'fire_on', value: 'write' }),
     );
-    expect(field.values).toEqual([
-      { value: 'write', handling: classification.handling, paths: expect.any(Array) },
-    ]);
-    expect(
-      report.certificationGaps.some((gap) => gap.field === 'fire_on' && gap.value === 'write'),
-    ).toBe(!handled);
-    expect(report.unmappedFields.some((unmappedField) => unmappedField.executionRelevant)).toBe(
-      false,
-    );
+    expect(report.readyForCertification).toBe(false);
+    expect(report.unmappedFields.some((field) => field.executionRelevant)).toBe(false);
   });
 
-  it('classifies the gate-plane value from its registered handler', () => {
+  it('retains the gate-plane value as a promotion gap until its runtime pass ships', () => {
     const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
       content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: gate'),
     );
     const report = analyzeAidlcCompatibility({ profileId: 'current-stable', files });
 
     expect(report.importable).toBe(true);
-    const entry = AIDLC_CAPABILITIES.find((candidate) => candidate.key === 'SENSOR:fire_on');
-    const classification = entry.values.gate;
-    const handled = RUNTIME_HANDLERS.has(classification.handler);
-    expect(
-      report.certificationGaps.some((gap) => gap.field === 'fire_on' && gap.value === 'gate'),
-    ).toBe(!handled);
+    expect(report.fidelity.unsupported).toContain('SENSOR:fire_on');
+    expect(report.certificationGaps).toContainEqual(
+      expect.objectContaining({ field: 'fire_on', value: 'gate' }),
+    );
+    expect(report.readyForCertification).toBe(false);
     const fireOn = report.fidelity.fields.find((field) => field.field === 'fire_on');
     expect(fireOn.values).toEqual([
-      { value: 'gate', handling: classification.handling, paths: expect.any(Array) },
+      { value: 'gate', handling: 'unsupported', paths: expect.any(Array) },
     ]);
+  });
+  });
+
+  it('classifies fire_on: write as an approximated plane, not a promotion gap', () => {
+    const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
+      content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: write'),
+    );
+    const report = analyzeAidlcCompatibility({ profileId: 'current-stable', files });
+
+    expect(report.importable).toBe(true);
+    expect(report.unmappedFields.map((field) => field.field)).not.toContain('fire_on');
+    expect(report.fidelity.approximated).toContain('SENSOR:fire_on');
+    const fireOn = report.fidelity.fields.find((field) => field.field === 'fire_on');
+    expect(fireOn.values).toEqual([
+      { value: 'write', handling: 'approximated', paths: expect.any(Array) },
+    ]);
+    expect(report.certificationGaps.filter((gap) => gap.field === 'fire_on')).toEqual([]);
+  });
+
+  it('classifies fire_on: gate as a native plane, not a promotion gap', () => {
+    const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
+      content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: gate'),
+    );
+    const report = analyzeAidlcCompatibility({ profileId: 'current-stable', files });
+
+    expect(report.importable).toBe(true);
+    const fireOn = report.fidelity.fields.find((field) => field.field === 'fire_on');
+    expect(fireOn.values).toEqual([
+      { value: 'gate', handling: 'native', paths: expect.any(Array) },
+    ]);
+    expect(report.certificationGaps.filter((gap) => gap.field === 'fire_on')).toEqual([]);
   });
 
   it('fails closed on a stage mode outside the known set', () => {
