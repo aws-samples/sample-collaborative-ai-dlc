@@ -325,11 +325,9 @@ export interface IntentGate {
   learningsRitual?: boolean | null;
   // The stage a `loop-back` answer sends the run back to. Present only when the
   // gate actually offers the option: the pinned release has a construction
-  // loop-back, the agent recommended one for this attempt, and the per-intent cap
+  // loop-back, the agent recommended one in this run of the stage, and the cap
   // is not spent. Absent on every other gate.
   loopBackTarget?: string | null;
-  // The stages that loop-back re-runs, target first. Present with the target.
-  loopBackStages?: string[] | null;
   // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
   // string = its stageId, null = approving completes the workflow. Absent on
   // legacy gates / gates where it was never computed — fall back to generic

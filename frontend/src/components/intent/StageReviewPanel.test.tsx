@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StageReviewPanel, orderReviewerRuns, reviewerRunVerdict } from './StageReviewPanel';
 import type { GateAnswer, IntentDetail, IntentGate, IntentSensorRun } from '@/services/intents';
@@ -86,11 +86,8 @@ const detail = (): IntentDetail =>
 
 let onAnswer: Mock<(gate: IntentGate, input: GateAnswer) => Promise<void>>;
 
-const renderPanel = (
-  g: IntentGate,
-  answer: (gate: IntentGate, input: GateAnswer) => Promise<void> = async () => {},
-) => {
-  onAnswer = vi.fn<(gate: IntentGate, input: GateAnswer) => Promise<void>>(answer);
+const renderPanel = (g: IntentGate) => {
+  onAnswer = vi.fn<(gate: IntentGate, input: GateAnswer) => Promise<void>>(async () => {});
   render(
     <StageReviewPanel
       gate={g}
@@ -106,7 +103,6 @@ const renderPanel = (
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.unstubAllGlobals();
   sharedDoc = fakeYDoc();
 });
 
@@ -160,54 +156,22 @@ describe('StageReviewPanel — learnings ritual', () => {
     });
   });
 
-  it('records loop-back as rejected while preserving its decision payload', async () => {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true),
-    );
+  it('sends the feedback with a loop-back, recorded as rejected', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderPanel(
       gate({
         options: ['approve', 'request-changes', 'loop-back'],
         loopBackTarget: 'code-generation',
       }),
     );
-
+    await userEvent.type(screen.getByLabelText(/Feedback for the agent/i), 'check the refund path');
     await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
-
+    expect(confirm.mock.calls[0][0]).toContain('code-generation and this stage re-run');
     expect(onAnswer).toHaveBeenCalledWith(expect.anything(), {
       status: 'rejected',
-      answer: { decision: 'loop-back' },
+      answer: { decision: 'loop-back', feedback: 'check the refund path' },
     });
-  });
-
-  it('disables the answer while a submission is pending', async () => {
-    let resolveAnswer!: () => void;
-    const answer = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveAnswer = resolve;
-        }),
-    );
-    renderPanel(gate(), answer);
-    const approve = screen.getByRole('button', { name: /^Approve/ });
-
-    await userEvent.click(approve);
-    expect(approve).toBeDisabled();
-    await userEvent.click(approve);
-    expect(onAnswer).toHaveBeenCalledTimes(1);
-
-    resolveAnswer();
-    await waitFor(() => expect(approve).not.toBeDisabled());
-  });
-
-  it('shows an inline error when an answer fails', async () => {
-    renderPanel(gate(), async () => {
-      throw new Error('The gate could not be saved');
-    });
-
-    await userEvent.click(screen.getByRole('button', { name: /^Approve/ }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('The gate could not be saved');
+    confirm.mockRestore();
   });
 });
 

@@ -193,7 +193,7 @@ describe('the loop-back option on a stage review gate', () => {
     expect(screen.getByRole('button', { name: /Request changes/i })).toBeInTheDocument();
   });
 
-  it('records the loop-back with rejected status and its decision payload', async () => {
+  it('records the loop-back with rejected status, its decision and the feedback', async () => {
     get.mockResolvedValue(
       reviewDetail({
         options: ['approve', 'request-changes', 'loop-back'],
@@ -204,13 +204,13 @@ describe('the loop-back option on a stage review gate', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
     expect(answerGate).toHaveBeenCalledWith('p1', 'i1', GATE_ID, {
-      answer: { decision: 'loop-back' },
+      answer: { decision: 'loop-back', feedback: '' },
       status: 'rejected',
     });
     confirmSpy.mockRestore();
   });
 
-  it('confirms the target, fallback re-run scope, and lost approvals', async () => {
+  it('confirms the target, the stages that re-run, and lost approvals', async () => {
     get.mockResolvedValue(
       reviewDetail({
         options: ['approve', 'request-changes', 'loop-back'],
@@ -222,7 +222,7 @@ describe('the loop-back option on a stage review gate', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
     const [message] = confirmSpy.mock.calls[0];
     expect(message).toContain('Send this work back to code-generation?');
-    expect(message).toContain('Every stage from code-generation onwards re-runs from scratch.');
+    expect(message).toContain('code-generation and this stage re-run from scratch');
     expect(message).toContain('approvals and reviews will be invalidated');
     // Declining sends nothing.
     expect(answerGate).not.toHaveBeenCalled();
