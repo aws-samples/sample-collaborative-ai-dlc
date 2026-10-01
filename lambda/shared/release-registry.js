@@ -401,6 +401,7 @@ const persistReleaseRecord = async ({
     supportState: structurallyValid ? 'structurally-valid' : 'importable',
     structurallyValid,
     fidelityGaps,
+    fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION,
     visible: false,
     runnable: profileIsRunnable(profile),
     notes: null,
@@ -555,8 +556,27 @@ const registerCustomRelease = async ({
   return persistReleaseRecord({ ddb, tableName, manifest, profile, s3, bucket, actor });
 };
 
-const fidelityGapsForRecord = async ({ release, s3, bucket }) => {
-  if (Array.isArray(release.fidelityGaps)) return release.fidelityGaps;
+// The revision of the evidence a record's stored `fidelityGaps` was computed
+// with. Revision 2 includes the protocol capabilities the closure ships (the
+// build-and-test loop-back), which a gap list stored by an earlier build never
+// judged. Promotion therefore re-evaluates such a list from the immutable
+// closure, exactly like a record with no list at all. Other readers (the
+// intent-creation eligibility check) keep using the stored list: a record can
+// only be selected after a promotion has written current evidence.
+const FIDELITY_EVIDENCE_REVISION = 2;
+
+const hasCurrentFidelityEvidence = (release) =>
+  Array.isArray(release.fidelityGaps) &&
+  Number(release.fidelityEvidenceRevision) >= FIDELITY_EVIDENCE_REVISION;
+
+const fidelityGapsForRecord = async ({ release, s3, bucket, requireCurrentEvidence = false }) => {
+  if (
+    requireCurrentEvidence
+      ? hasCurrentFidelityEvidence(release)
+      : Array.isArray(release.fidelityGaps)
+  ) {
+    return release.fidelityGaps;
+  }
 
   try {
     assertRegistryStorage(s3, bucket);
@@ -611,10 +631,15 @@ const assertFidelityGapsHonoured = ({ release, fidelityGaps }) => {
   return fidelityGaps;
 };
 
-const assertReleaseCapabilitiesHonoured = async ({ release, s3, bucket }) =>
+const assertReleaseCapabilitiesHonoured = async ({
+  release,
+  s3,
+  bucket,
+  requireCurrentEvidence = false,
+}) =>
   assertFidelityGapsHonoured({
     release,
-    fidelityGaps: await fidelityGapsForRecord({ release, s3, bucket }),
+    fidelityGaps: await fidelityGapsForRecord({ release, s3, bucket, requireCurrentEvidence }),
   });
 
 const isSelectableRecord = (release) =>
@@ -768,7 +793,13 @@ const updateRelease = async ({
         },
       );
     }
-    next.fidelityGaps = await assertReleaseCapabilitiesHonoured({ release: current, s3, bucket });
+    next.fidelityGaps = await assertReleaseCapabilitiesHonoured({
+      release: current,
+      s3,
+      bucket,
+      requireCurrentEvidence: true,
+    });
+    next.fidelityEvidenceRevision = FIDELITY_EVIDENCE_REVISION;
   }
 
   const channelsByName = await getChannels({ ddb, tableName });
@@ -1026,6 +1057,7 @@ const upgradeReleaseClosure = async ({
     catalogKey: releaseCatalogKey(keyArgs),
     structurallyValid,
     fidelityGaps,
+    fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION,
     importerHistory: [
       ...(current.importerHistory ?? []),
       {
