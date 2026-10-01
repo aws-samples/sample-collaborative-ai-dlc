@@ -1069,6 +1069,15 @@ const gitReportsAllFiles = (gitResult) =>
     (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
   );
 
+// The post-agent sensor pass. Release mode splits the sensors into a write pass
+// here (narrowed to the attempt's changed files) and a gate pass after the
+// reviewer. An unpinned run has no gate pass, so it keeps the single pass over
+// every sensor on the whole workspace.
+const postAgentSensorPass = ({ methodologyRelease, attemptChangedFiles }) =>
+  methodologyRelease
+    ? { planes: ['write'], changedFiles: attemptChangedFiles }
+    : { planes: null, changedFiles: null };
+
 // Whether this dispatch ends at a validation gate that shows the stage's
 // findings. Unit-lane stages do not: the lane merges on its own outcome and the
 // batch gate after it carries no per-stage findings, so a blocking finding on a
@@ -3803,11 +3812,7 @@ export const runStage = async (
       spawnFn,
       store,
       publish,
-      // Release mode splits the sensors into a write pass here and a gate pass
-      // after the reviewer. An unpinned run has no gate pass, so it keeps the
-      // single pass over every sensor on the whole workspace.
-      changedFiles: methodologyRelease ? attemptChangedFiles : null,
-      planes: methodologyRelease ? ['write'] : null,
+      ...postAgentSensorPass({ methodologyRelease, attemptChangedFiles }),
     }).catch(() => null);
     if (writePlane?.held) {
       return fail(stageInstanceId, 'sensor_blocked', writePlane.held);
@@ -4279,6 +4284,7 @@ export const runStage = async (
 
 // Exposed for unit tests (pure helpers; the runStage flow is integration-tested).
 export const __test = {
+  postAgentSensorPass,
   mergeLearningRules,
   composeKnowledge,
   renderTeamKnowledge,

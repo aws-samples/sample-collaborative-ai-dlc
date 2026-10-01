@@ -5272,3 +5272,22 @@ describe('runStage — resume marker of the resumed gate', () => {
     ).toEqual([]);
   });
 });
+
+describe('postAgentSensorPass', () => {
+  const { postAgentSensorPass } = __test;
+
+  it('keeps the single pass over every sensor on the whole workspace for an unpinned run', () => {
+    expect(
+      postAgentSensorPass({ methodologyRelease: null, attemptChangedFiles: ['src/a.ts'] }),
+    ).toEqual({ planes: null, changedFiles: null });
+  });
+
+  it('runs only the write plane, narrowed to the attempt, for a release-pinned run', () => {
+    expect(
+      postAgentSensorPass({
+        methodologyRelease: { releaseId: 'release-a' },
+        attemptChangedFiles: ['src/a.ts'],
+      }),
+    ).toEqual({ planes: ['write'], changedFiles: ['src/a.ts'] });
+  });
+});
