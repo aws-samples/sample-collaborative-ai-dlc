@@ -5237,3 +5237,37 @@ describe('runStage — AGENT.maxTurns on the reviewer run', () => {
     expect(materializeStage.mock.calls[0][0].maxTurns ?? null).toBeNull();
   });
 });
+
+describe('runStage — resume marker of the resumed gate', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  const resumedStore = (execution) =>
+    spyStore({
+      humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'MVP' } },
+      stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      execution,
+    });
+
+  it('clears the marker once the stage resumes on the gate it names', async () => {
+    const store = resumedStore({ resumeRequired: { humanTaskId: 'q-1', callbackId: 'cb-1' } });
+
+    await runStage({ ...baseArgs, resumeFrom: 'q-1' }, baseDeps({ store, spawnFn: okSpawn }));
+
+    expect(store.calls).toContainEqual([
+      'updateExecution',
+      { executionId: 'e1', resumeRequired: null },
+    ]);
+  });
+
+  it('leaves a marker for another gate alone', async () => {
+    const store = resumedStore({ resumeRequired: { humanTaskId: 'q-2', callbackId: 'cb-2' } });
+
+    await runStage({ ...baseArgs, resumeFrom: 'q-1' }, baseDeps({ store, spawnFn: okSpawn }));
+
+    expect(
+      store.calls.filter(([name, args]) => name === 'updateExecution' && 'resumeRequired' in args),
+    ).toEqual([]);
+  });
+});

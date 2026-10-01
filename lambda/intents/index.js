@@ -2848,17 +2848,15 @@ export const handler = async (event, context) => {
       const marker = meta.resumeRequired ?? null;
       const resumeGateId = marker?.humanTaskId ?? meta.pendingHumanTaskId ?? null;
       const gate = resumeGateId ? await store.getHumanTask(intentId, resumeGateId) : null;
-      // The marker is a hint, not the authority: a resume is owed only while the
-      // intent waits on that gate, the gate holds an answer, and its callback
-      // has not been consumed. A marker left behind by a cancel, a rewind or a
-      // callback that did complete is cleared instead of re-sent.
-      const pending =
-        meta.status === 'WAITING' &&
-        isHumanTaskAnswerStatus(gate?.status) &&
-        gate.callbackId &&
-        !gate.callbackConsumedAt
-          ? { humanTaskId: resumeGateId, callbackId: gate.callbackId }
-          : null;
+      const gateStage = gate?.stageInstanceId
+        ? await store.getStage(intentId, gate.stageInstanceId).catch(() => null)
+        : null;
+      // The marker is a hint, not the authority (see resumeOwed). A marker left
+      // behind by a cancel, a rewind or a callback that did complete is cleared
+      // instead of re-sent.
+      const pending = resumeOwed({ meta, gate, stageRow: gateStage })
+        ? { humanTaskId: resumeGateId, callbackId: gate.callbackId }
+        : null;
       const clearMarker = async () => {
         if (!marker) return meta;
         return store
@@ -5023,7 +5021,17 @@ export const handler = async (event, context) => {
       }
       const artifacts = await fetchArtifacts(g, intentId);
       const pullRequests = await fetchPullRequests(g, intentId);
-      const gates = records.humanTasks.map(mapHumanTask);
+      const stagesByInstance = new Map(
+        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+      );
+      const gates = records.humanTasks.map((task) => ({
+        ...mapHumanTask(task),
+        resumeAvailable: resumeOwed({
+          meta: records.meta,
+          gate: task,
+          stageRow: stagesByInstance.get(task.stageInstanceId) ?? null,
+        }),
+      }));
       const answerEvents = await buildGateAnswerEvents(g, gates);
       const priceFor = await getPriceResolver();
       return response(200, {
@@ -6263,6 +6271,25 @@ const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
     cost: { totalCost, currency: 'USD', priced, estimated, hasCostedSamples: costed.length > 0 },
   };
 };
+
+// Whether a recorded answer still needs its durable callback re-sent. The gate
+// must hold an answer whose callback was never consumed, the run must be live
+// (RUNNING or WAITING: not finished, cancelled, failed, or relaunching after a
+// rewind), and the run must still be parked on that gate: either META points
+// at it (an engine gate or a once-per-workflow question) or the stage that
+// asked it is WAITING_FOR_HUMAN on it (a unit-lane question parks only its own
+// stage, while META stays RUNNING for the sibling lanes).
+const resumeOwed = ({ meta, gate, stageRow = null }) =>
+  Boolean(
+    gate &&
+    isHumanTaskAnswerStatus(gate.status) &&
+    gate.callbackId &&
+    !gate.callbackConsumedAt &&
+    ['RUNNING', 'WAITING'].includes(meta?.status) &&
+    (meta.pendingHumanTaskId === gate.humanTaskId ||
+      (stageRow?.state === 'WAITING_FOR_HUMAN' &&
+        stageRow.pendingHumanTaskId === gate.humanTaskId)),
+  );
 
 const mapHumanTask = (h) => ({
   humanTaskId: h.humanTaskId,

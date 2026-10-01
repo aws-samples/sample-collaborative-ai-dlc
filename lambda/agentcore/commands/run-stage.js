@@ -2098,6 +2098,16 @@ export const runStage = async (
     if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
     if (resumeFrom && resumeGate.status === 'pending')
       return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
+    // The answer reached this stage, so a resume marker the answer path left for
+    // this gate (its first callback send failed) is resolved.
+    if (resumeFrom) {
+      const resumeMeta = await store.getExecution(executionId).catch(() => null);
+      if (resumeMeta?.resumeRequired?.humanTaskId === resumeFrom) {
+        await store
+          .updateExecution({ executionId, resumeRequired: null })
+          .catch((error) => logger.error('resume marker not cleared', { error, stageInstanceId }));
+      }
+    }
     const row = await store
       .getStage(executionId, stageInstanceId, { consistentRead: true })
       .catch(() => null);
