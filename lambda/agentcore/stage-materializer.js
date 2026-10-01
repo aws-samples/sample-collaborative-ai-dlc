@@ -415,9 +415,8 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         // checkpoint tools there. Absent everywhere else, which keeps the lead's and
         // every unpinned run's config byte-identical.
         ...(scope.policy && scope.checkpointOwner === false ? { V2_CHECKPOINT_OWNER: '0' } : {}),
-        // Written ONLY for a dispatched persona session that may not ask the human
-        // (a support or a pipeline link): nothing threads an answer back into such
-        // a session, so the MCP server withholds ask_question there. Absent
+        // Written ONLY for a dispatched persona session: nothing threads an answer
+        // back into one, so the MCP server withholds ask_question there. Absent
         // everywhere else — independent of the policy, because the absence of an
         // answer path does not depend on what the release enables.
         ...(scope.canAsk === false ? { V2_ASK_QUESTION: '0' } : {}),

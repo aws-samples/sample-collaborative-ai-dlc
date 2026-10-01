@@ -16,9 +16,8 @@
 //
 // MCP role: 'reviewer' gets the read-only reviewer role plus the trusted
 // `reviewerAgent` identity the MCP bridge validates `submit_review` against
-// (mcp/process-bridge.js). Every other role (support/lead/link/integrator, …)
-// gets 'author' — the same MCP role the single-session ensemble prompt
-// already grants today.
+// (mcp/process-bridge.js). Every other role (support/link/integrator) gets
+// 'author' — the same MCP role as the lead session.
 
 import { getDriver } from './cli/drivers.js';
 import { runChild } from './cli/spawn.js';
@@ -38,10 +37,8 @@ export const OFF_MOUNT_CACHE_ENV = {
 };
 
 // The MCP role a dispatched persona session runs under. Only 'reviewer' is
-// read-only (submit_review, no artifact writes); every other persona role —
-// today just 'support', later 'lead' | 'integrator' | 'link' — is an author
-// session with the same write surface the single-session ensemble prompt
-// already grants.
+// read-only (submit_review, no artifact writes); every other persona role
+// (support, link, integrator) is an author session with the lead's write surface.
 const mcpRoleFor = (role) => (role === 'reviewer' ? 'reviewer' : 'author');
 
 const roleLabel = (role) => role.charAt(0).toUpperCase() + role.slice(1);

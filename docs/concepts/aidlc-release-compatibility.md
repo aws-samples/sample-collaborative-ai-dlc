@@ -259,9 +259,14 @@ platform stamps the contributor identity from the trusted session scope, so one
 persona cannot create or overwrite another persona's evidence. A failed support
 session is retried once with a reduced brief; if it still produces no evidence,
 the run records a gap and continues. A timed-out CLI child is killed and its exit
-awaited before retry or gap handling. Mob dissent is triaged for at most two
+awaited before retry or gap handling. A persona session, retry included, starts
+only if a full 45-minute session still fits the stage budget of 6.5 hours; the
+budget restarts with each run of the stage, including a resume. A session that
+does not fit is recorded as a gap. Mob dissent is triaged for at most two
 rounds and any maintained objection is shown verbatim at the existing validation
-gate. Only the lead can ask the human.
+gate. Only the lead session can ask the human: no persona session, the
+integrator included, is given `ask_question`, and judgment-class objections are
+quoted at the validation gate instead.
 
 `get_team_knowledge` and `record_team_knowledge` use the project's shared
 knowledge. Persona identity scopes authorship; it does not create a private
