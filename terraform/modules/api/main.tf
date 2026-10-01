@@ -207,6 +207,12 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.migrate_tracker_post,
     aws_api_gateway_integration.project_agents_get,
     aws_api_gateway_integration.workflow,
+    aws_api_gateway_integration.aidlc_release,
+    module.cors_aidlc_releases,
+    module.cors_aidlc_release,
+    module.cors_aidlc_release_channels,
+    module.cors_aidlc_release_channel,
+    module.cors_aidlc_release_profiles,
     module.cors_block_item,
     module.cors_block_item_body,
     module.cors_block_item_script,
@@ -416,6 +422,16 @@ resource "aws_api_gateway_deployment" "main" {
       # redeployed, so OPTIONS/GET 403'd (surfacing as a CORS preflight error).
       jsonencode({ for k, v in aws_api_gateway_method.workflow : k => v.id }),
       jsonencode({ for k, v in aws_api_gateway_integration.workflow : k => v.id }),
+      # AI-DLC release registry (issue #482 Phase 4/5) — same rule as the
+      # workflow map above: hash the whole route map so any future addition
+      # forces a stage redeployment instead of silently 403'ing OPTIONS/GET.
+      aws_api_gateway_resource.aidlc_releases.id,
+      aws_api_gateway_resource.aidlc_release.id,
+      aws_api_gateway_resource.aidlc_release_channels.id,
+      aws_api_gateway_resource.aidlc_release_channel.id,
+      aws_api_gateway_resource.aidlc_release_profiles.id,
+      jsonencode({ for k, v in aws_api_gateway_method.aidlc_release : k => v.id }),
+      jsonencode({ for k, v in aws_api_gateway_integration.aidlc_release : k => v.id }),
       aws_api_gateway_resource.intents.id,
       aws_api_gateway_resource.intents_metrics.id,
       aws_api_gateway_resource.intent.id,

@@ -14,6 +14,7 @@
     "lambda/environments",
     "lambda/general-info",
     "lambda/github",
+    "lambda/intent-pin-lookup",
     "lambda/intents",
     "lambda/gitlab",
     "lambda/bitbucket",
@@ -43,6 +44,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
+    "test:aidlc-compatibility": "vitest run --config vitest.aidlc-compatibility.config.js",
+    "aidlc:compatibility:snapshot": "node scripts/snapshot-aidlc-compatibility.mjs",
     "dev:agent-output": "npm --prefix frontend run dev:agent-output",
     "test:coverage": "vitest run --coverage",
     "lint": "oxlint",

@@ -106,4 +106,5 @@ Read about how it works in detail:
 - [Architecture](architecture.md) — system-level component overview
 - [Data model](data-model.md) — knowledge graph, execution state, and workflow library
 - [Workflows and building blocks](workflows-and-blocks.md) — how the methodology is composed
+- [AI-DLC release compatibility](aidlc-release-compatibility.md) — release identity, support and trust tiers, release-pinned execution, and the operator runbook for enabling, rolling back and verifying release coexistence
 - [Execution model](execution.md) — how an intent runs, from orchestration to pull request
