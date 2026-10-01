@@ -2117,9 +2117,15 @@ export const runStage = async (
     if (resumeFrom) {
       const resumeMeta = await store.getExecution(executionId).catch(() => null);
       if (resumeMeta?.resumeRequired?.humanTaskId === resumeFrom) {
+        // Conditional: a marker another gate's failed callback wrote in the
+        // meantime is not this stage's to clear.
         await store
-          .updateExecution({ executionId, resumeRequired: null })
-          .catch((error) => logger.error('resume marker not cleared', { error, stageInstanceId }));
+          .updateExecution({ executionId, resumeRequired: null, ifResumeRequiredFor: resumeFrom })
+          .catch((error) => {
+            if (error?.name !== 'ConditionalCheckFailedException') {
+              logger.error('resume marker not cleared', { error, stageInstanceId });
+            }
+          });
       }
     }
     const row = await store

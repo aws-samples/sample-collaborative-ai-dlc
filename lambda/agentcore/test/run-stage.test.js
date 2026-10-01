@@ -5258,7 +5258,7 @@ describe('runStage — resume marker of the resumed gate', () => {
 
     expect(store.calls).toContainEqual([
       'updateExecution',
-      { executionId: 'e1', resumeRequired: null },
+      { executionId: 'e1', resumeRequired: null, ifResumeRequiredFor: 'q-1' },
     ]);
   });
 

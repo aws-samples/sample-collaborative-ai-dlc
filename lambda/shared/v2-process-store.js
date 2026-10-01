@@ -228,6 +228,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     pendingAttachmentUploads,
     pendingAttachmentDeletions,
     ifAttachmentRevision = null,
+    // Apply the write only while META's resume marker names this gate, so
+    // clearing a resolved marker never drops a newer one for another gate.
+    ifResumeRequiredFor = null,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -479,6 +482,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (ifOrchestratorRunId) {
       conditions.push('orchestratorRunId = :ifOrid');
       params.ExpressionAttributeValues[':ifOrid'] = ifOrchestratorRunId;
+    }
+    if (ifResumeRequiredFor !== null) {
+      conditions.push('resumeRequired.humanTaskId = :ifRrh');
+      params.ExpressionAttributeValues[':ifRrh'] = ifResumeRequiredFor;
     }
     if (ifAttachmentRevision !== null) {
       conditions.push(

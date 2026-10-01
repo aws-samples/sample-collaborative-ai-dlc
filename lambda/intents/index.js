@@ -2845,100 +2845,110 @@ export const handler = async (event, context) => {
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
-      const marker = meta.resumeRequired ?? null;
-      const resumeGateId = marker?.humanTaskId ?? meta.pendingHumanTaskId ?? null;
-      const gate = resumeGateId ? await store.getHumanTask(intentId, resumeGateId) : null;
-      const gateStage = gate?.stageInstanceId
-        ? await store.getStage(intentId, gate.stageInstanceId).catch(() => null)
-        : null;
-      // The marker is a hint, not the authority (see resumeOwed). A marker left
-      // behind by a cancel, a rewind or a callback that did complete is cleared
-      // instead of re-sent.
-      const pending = resumeOwed({ meta, gate, stageRow: gateStage })
-        ? { humanTaskId: resumeGateId, callbackId: gate.callbackId }
-        : null;
-      const clearMarker = async () => {
-        if (!marker) return meta;
-        return store
-          .updateExecution({ executionId: intentId, resumeRequired: null })
-          .catch((metaErr) => {
-            logger.error('Resume marker clear failed', metaErr);
-            return meta;
-          });
-      };
-      if (!pending?.callbackId) {
-        const current = await clearMarker();
-        return response(200, { intent: mapIntent(current ?? meta), resumed: false });
-      }
-      const responder = getResponder(event);
-      try {
-        await resumeDurableCallback(pending.callbackId, gate?.answer ?? null);
-      } catch (err) {
-        if (isCallbackTimeoutError(err)) {
-          const failed = await repairExpiredDurableExecution({
-            executionId: intentId,
-            projectId,
+      // Every gate is judged with the rule the intent detail uses for the banner
+      // (resumeOwed), so the button and this route always agree: concurrent
+      // lanes can each owe a resume, and the marker only records the latest one
+      // (or none, when its own write failed).
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const stagesByInstance = new Map(
+        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+      );
+      const owed = (records.humanTasks ?? [])
+        .filter((gate) =>
+          resumeOwed({
             meta,
-            actor: responder.displayName || responder.sub,
-            summary: `${responder.displayName || 'Someone'} retried the resume after the durable execution expired; the run was marked failed and can be rewound`,
-          }).catch((repairErr) => {
-            logger.error('Durable callback expiry repair failed', repairErr);
-            return null;
-          });
-          // The marker is cleared either way: the resume can never succeed now,
-          // and leaving it set would offer the human a button that cannot work.
-          await store
-            .updateExecution({ executionId: intentId, resumeRequired: null })
-            .catch((metaErr) => logger.error('Resume marker clear failed', metaErr));
-          return response(409, {
-            error: 'Durable execution expired before this answer could resume the run',
-            code: 'durable_execution_expired',
-            intent: mapIntent(failed ?? { ...meta, status: 'FAILED' }),
-          });
-        }
-        // The callback is gone or already completed: the first send was
-        // delivered even though it reported an error. Nothing is owed.
-        if (isMissingDurableCallbackError(err)) {
-          await (
-            store.markGateCallbackConsumed?.({
+            gate,
+            stageRow: stagesByInstance.get(gate.stageInstanceId) ?? null,
+          }),
+        )
+        .toSorted((a, b) => String(a.answeredAt ?? '').localeCompare(String(b.answeredAt ?? '')));
+      const marker = meta.resumeRequired ?? null;
+      const responder = getResponder(event);
+      const markConsumed = (gate) =>
+        (
+          store.markGateCallbackConsumed?.({
+            executionId: intentId,
+            humanTaskId: gate.humanTaskId,
+            callbackId: gate.callbackId,
+          }) ?? Promise.resolve()
+        ).catch((markErr) =>
+          logger.error('Gate callback consumption marker write failed', markErr),
+        );
+      let resumed = 0;
+      let retryable = null;
+      for (const gate of owed) {
+        try {
+          await resumeDurableCallback(gate.callbackId, gate.answer ?? null);
+        } catch (err) {
+          if (isCallbackTimeoutError(err)) {
+            const failed = await repairExpiredDurableExecution({
               executionId: intentId,
-              humanTaskId: pending.humanTaskId,
-              callbackId: pending.callbackId,
-            }) ?? Promise.resolve()
-          ).catch((markErr) =>
-            logger.error('Gate callback consumption marker write failed', markErr),
-          );
-          const current = await clearMarker();
-          return response(200, { intent: mapIntent(current ?? meta), resumed: false });
+              projectId,
+              meta,
+              actor: responder.displayName || responder.sub,
+              summary: `${responder.displayName || 'Someone'} retried the resume after the durable execution expired; the run was marked failed and can be rewound`,
+            }).catch((repairErr) => {
+              logger.error('Durable callback expiry repair failed', repairErr);
+              return null;
+            });
+            // The marker is cleared either way: the resume can never succeed now,
+            // and leaving it set would offer the human a button that cannot work.
+            await store
+              .updateExecution({ executionId: intentId, resumeRequired: null })
+              .catch((metaErr) => logger.error('Resume marker clear failed', metaErr));
+            return response(409, {
+              error: 'Durable execution expired before this answer could resume the run',
+              code: 'durable_execution_expired',
+              intent: mapIntent(failed ?? { ...meta, status: 'FAILED' }),
+            });
+          }
+          // The callback is gone or already completed: the first send was
+          // delivered even though it reported an error. Nothing is owed.
+          if (isMissingDurableCallbackError(err)) {
+            await markConsumed(gate);
+            continue;
+          }
+          logger.error('Gate resume retry failed', err);
+          retryable ??= gate;
+          continue;
         }
-        logger.error('Gate resume retry failed', err);
+        await markConsumed(gate);
+        resumed += 1;
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.gate.resumed',
+            stageInstanceId: gate.stageInstanceId ?? null,
+            actor: responder.displayName || responder.sub,
+            summary: `${responder.displayName || 'Someone'} resumed the run after a failed gate callback`,
+          })
+          .catch((eventErr) => logger.error('Gate resumed event append failed', eventErr));
+      }
+      // The marker is cleared once nothing it could stand for is still owed;
+      // the conditional write keeps a marker a concurrent answer just set.
+      const current =
+        marker && !retryable
+          ? await store
+              .updateExecution({
+                executionId: intentId,
+                resumeRequired: null,
+                ifResumeRequiredFor: marker.humanTaskId,
+              })
+              .catch((metaErr) => {
+                if (metaErr?.name !== 'ConditionalCheckFailedException') {
+                  logger.error('Resume marker clear failed', metaErr);
+                }
+                return meta;
+              })
+          : meta;
+      if (retryable) {
         return response(503, {
           error: 'The durable callback could not be completed. Try again in a moment.',
           code: 'durable_callback_resume_failed',
           retryable: true,
         });
       }
-      await (
-        store.markGateCallbackConsumed?.({
-          executionId: intentId,
-          humanTaskId: pending.humanTaskId,
-          callbackId: pending.callbackId,
-        }) ?? Promise.resolve()
-      ).catch((markErr) => logger.error('Gate callback consumption marker write failed', markErr));
-      const updated = await store.updateExecution({
-        executionId: intentId,
-        resumeRequired: null,
-      });
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.gate.resumed',
-          stageInstanceId: gate?.stageInstanceId ?? null,
-          actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} resumed the run after a failed gate callback`,
-        })
-        .catch((eventErr) => logger.error('Gate resumed event append failed', eventErr));
-      return response(200, { intent: mapIntent(updated ?? meta), resumed: true });
+      return response(200, { intent: mapIntent(current ?? meta), resumed: resumed > 0 });
     }
 
     // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise
