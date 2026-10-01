@@ -69,21 +69,39 @@ export function RecomposePanel({
     if (!open || compiled) return;
     let cancelled = false;
     workflowsService
-      .compiled(intent.workflowId, workflowVersion)
+      .compiled(
+        intent.workflowId,
+        workflowVersion,
+        intent.methodologyRelease?.releaseId,
+        intent.methodologyRelease?.importerRevision,
+        { projectId, intentId },
+      )
       .then((c) => {
-        if (!cancelled) setCompiled(c);
+        if (!cancelled) {
+          setCompiled(c);
+          if (intent.methodologyRelease) setPhases(c.phases ?? []);
+        }
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load the workflow'));
-    workflowsService
-      .get(intent.workflowId, workflowVersion)
-      .then((wf) => {
-        if (!cancelled) setPhases(wf.phases ?? []);
-      })
-      .catch(() => {});
+    if (!intent.methodologyRelease) {
+      workflowsService
+        .get(intent.workflowId, workflowVersion)
+        .then((wf) => {
+          if (!cancelled) setPhases(wf.phases ?? []);
+        })
+        .catch(() => {});
+    }
     return () => {
       cancelled = true;
     };
-  }, [open, compiled, intent.workflowId, workflowVersion]);
+  }, [
+    open,
+    compiled,
+    intent.workflowId,
+    intent.methodologyRelease?.releaseId,
+    intent.methodologyRelease?.importerRevision,
+    workflowVersion,
+  ]);
 
   useEffect(() => {
     if (!pending) return;

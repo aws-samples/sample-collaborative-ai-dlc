@@ -150,6 +150,67 @@ describe('RecomposePanel', () => {
     expect(await screen.findByTestId('stage-grid-editor')).toBeInTheDocument();
   });
 
+  it('compiles the reshaped workflow with the intent release pin', async () => {
+    renderPanel({
+      intent: intent({
+        methodologyRelease: {
+          releaseId: 'aidlc:release-a',
+          sourceSha: 'a'.repeat(40),
+          closureDigest: 'd'.repeat(64),
+          importerRevision: 3,
+        },
+      }),
+    });
+
+    // Previous assertion: expect(compiled).toHaveBeenCalledWith('aidlc-v2', 4, 'aidlc:release-a', 3)
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('aidlc-v2', 4, 'aidlc:release-a', 3, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
+    );
+  });
+
+  it('uses compiled release phases without fetching the mutable workflow', async () => {
+    compiled.mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'inception',
+          name: 'Pinned Inception',
+          kind: 'phase',
+          path: '03',
+          parentPath: null,
+          order: 2,
+        },
+      ],
+      scopeGrid: { feature: { analyze: 'EXECUTE' } },
+      autonomy: { perStage: {}, rollup: { selfHalting: 0, mixed: 0, humanGated: 0, total: 0 } },
+      graph: {
+        nodes: [{ stageId: 'analyze', phasePath: '03', order: 0 }],
+        edges: [],
+        cycles: [],
+        danglingConsumes: [],
+        orphanProduces: [],
+        unknownArtifacts: [],
+        acyclic: true,
+      },
+      rules: { universal: [], phaseRules: {}, pairings: [], perStage: {}, unresolved: [] },
+    });
+    renderPanel({
+      intent: intent({
+        methodologyRelease: {
+          releaseId: 'aidlc:release-a',
+          sourceSha: 'a'.repeat(40),
+          closureDigest: 'd'.repeat(64),
+          importerRevision: 3,
+        },
+      }),
+    });
+
+    expect(await screen.findByText('Pinned Inception')).toBeInTheDocument();
+    expect(getWorkflow).not.toHaveBeenCalled();
+  });
+
   it('locks frozen (ran) stages and initialization; a manual flip applies via /recompose', async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();

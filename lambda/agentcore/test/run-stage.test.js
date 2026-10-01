@@ -1153,6 +1153,22 @@ describe('runStage — deterministic sensors', () => {
     return lib;
   };
 
+  const libWithScriptSensor = (severity) => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].sensors = ['type-check'];
+    lib.sensorsById = {
+      'type-check': {
+        id: 'type-check',
+        command: 'bun <runtime-managed>/tools/aidlc-sensor-type-check.ts',
+        runtime: 'bun',
+        severity,
+        matches: '**/*.ts',
+        scriptRef: { s3Key: 'blocks/scripts/sha256/type-check' },
+      },
+    };
+    return lib;
+  };
+
   // A graph whose lookupArtifacts traversal returns one row with the given
   // content. A chainable proxy absorbs any gremlin step and yields the row at
   // toList()/next() — robust to the exact traversal shape.
@@ -1234,6 +1250,69 @@ describe('runStage — deterministic sensors', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+  });
+
+  it('fails a release-pinned stage when an advisory sensor script fails verification', async () => {
+    const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-release-sensor-'));
+    await writeFile(nodePath.join(workspaceDir, 'a.ts'), 'export const value = 1;');
+    const releaseError = Object.assign(new Error('release script digest mismatch'), {
+      name: 'ReleaseResolverError',
+      code: 'release_closure_mismatch',
+    });
+    const loadBlockScript = vi.fn(async () => {
+      throw releaseError;
+    });
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithScriptSensor('advisory'),
+      }),
+      loadBlockScript,
+    });
+    try {
+      const res = await runStage(
+        { ...baseArgs, workspaceDir, methodologyRelease: { releaseId: 'release-a' } },
+        deps,
+      );
+
+      expect(res).toMatchObject({ ok: false, reason: 'sensor_blocked' });
+      expect(loadBlockScript).toHaveBeenCalledWith(
+        expect.objectContaining({ sensorId: 'type-check' }),
+        { methodologyRelease: { releaseId: 'release-a' } },
+      );
+      expect(deps.store.calls.some((c) => c[0] === 'recordSensorRun' && c[1].held === true)).toBe(
+        true,
+      );
+      expect(
+        deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+      ).toBe(true);
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an advisory stage successful when its legacy sensor script is absent', async () => {
+    const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-legacy-sensor-'));
+    await writeFile(nodePath.join(workspaceDir, 'a.ts'), 'export const value = 1;');
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithScriptSensor('advisory'),
+      }),
+      loadBlockScript: async () => '',
+    });
+    try {
+      const res = await runStage({ ...baseArgs, workspaceDir }, deps);
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(deps.store.calls.some((c) => c[0] === 'recordSensorRun' && c[1].held === false)).toBe(
+        true,
+      );
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
   });
 
   // Regression: the session process is long-lived and reused across every stage.

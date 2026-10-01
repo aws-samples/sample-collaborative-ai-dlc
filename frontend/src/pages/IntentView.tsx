@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
 import {
   intentsService,
@@ -18,6 +18,8 @@ import { IntentPhaseBreadcrumb } from '@/components/layout/IntentPipelineBar';
 import { QuorumEditPanel } from '@/components/intent/QuorumEditPanel';
 import { UnitLaneBoard, isFanoutActive } from '@/components/intent/UnitLaneBoard';
 import { AgentProgressCard } from '@/components/intent/AgentProgressCard';
+import { MethodologyReleaseBadge } from '@/components/intent/MethodologyReleaseBadge';
+import { aidlcReleasesService } from '@/services/aidlcReleases';
 import { GateCard } from '@/components/intent/GateCard';
 import { StageReviewPanel } from '@/components/intent/StageReviewPanel';
 import { WorkProductsSection } from '@/components/intent/WorkProductsSection';
@@ -51,6 +53,7 @@ import {
   GitBranch,
   KeyRound,
   Loader2,
+  Milestone,
   MoreHorizontal,
   Play,
   RotateCcw,
@@ -142,6 +145,22 @@ export default function IntentView() {
   const [constructionExport, setConstructionExport] = useState<NativeWorkflowExport | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const [pinningEnabled, setPinningEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    aidlcReleasesService
+      .sharedChannels()
+      .then((channels) => {
+        if (!cancelled) setPinningEnabled(channels.pinningEnabled === true);
+      })
+      .catch(() => {
+        if (!cancelled) setPinningEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // A stage failure retries from the earliest failed stage, preserving all
   // completed upstream work. Failures before any stage row exists (init-ws,
@@ -350,6 +369,7 @@ export default function IntentView() {
               {intent.status}
             </Badge>
           )}
+          <MethodologyReleaseBadge release={intent.methodologyRelease ?? null} />
           {isActive && (
             <span
               className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse shrink-0"
@@ -446,6 +466,21 @@ export default function IntentView() {
                 <DropdownMenuItem onSelect={() => setReshapeOpen(true)}>
                   <GitBranch className="mr-2 h-4 w-4" />
                   Reshape remaining stages
+                </DropdownMenuItem>
+              )}
+              {/* Opt-in migration (issue #482): never migrates this intent —
+                  it opens the create page prefilled from it, and the new
+                  intent recomputes its plan on the version chosen there. */}
+              {pinningEnabled && (
+                <DropdownMenuItem
+                  onSelect={() =>
+                    navigate(
+                      `/space/${projectId}/intent/new?fromIntent=${encodeURIComponent(intentId)}`,
+                    )
+                  }
+                >
+                  <Milestone className="mr-2 h-4 w-4" />
+                  Start a new intent on another AI-DLC version
                 </DropdownMenuItem>
               )}
               {(isCancellable || isDeletable) && <DropdownMenuSeparator />}

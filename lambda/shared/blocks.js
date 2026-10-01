@@ -161,10 +161,18 @@ const validateBlockInput = (type, input) => {
 
 const DEPTHS = ['Minimal', 'Standard', 'Comprehensive'];
 
-// V2's stage execution modes. `inline` and `subagent` are active; `agent-team`
-// is reserved (no stage declares it yet, but the value must round-trip as known
-// so a future consumer isn't surprised by an "unknown mode").
-const STAGE_MODES = ['inline', 'subagent', 'agent-team'];
+// V2's stage execution modes — the authored vocabulary a release description
+// must be able to round-trip. `inline` and `subagent` run natively; `pipeline`
+// and `mob` (≥2.6.18) and the reserved `agent-team` have no runtime handler yet
+// (see aidlc-capabilities.js, which classifies them as unsupported), so they are
+// recorded rather than executed.
+const STAGE_MODES = ['inline', 'subagent', 'pipeline', 'mob', 'agent-team'];
+
+// Stage modes a user-authored block may declare. An imported release may carry
+// any authored mode (the promotion guard reports the unsupported ones); a user
+// block has no such guard, so it is held to the modes the runtime can schedule
+// plus the reserved `agent-team`, which is what the API accepted before.
+const USER_STAGE_MODES = STAGE_MODES.filter((mode) => mode !== 'pipeline' && mode !== 'mob');
 
 // Per-type required/shape checks. Kept small and explicit — only the fields
 // whose absence would make a block unusable are enforced.
@@ -172,9 +180,11 @@ const validateTypeFields = (type, input) => {
   const errors = [];
   if (type === 'STAGE') {
     // mode is optional on input (the editor may omit it), but if present it
-    // must be one of V2's three values — guards the reserved `agent-team`.
+    // must be one of V2's known values — guards the reserved `agent-team`.
     if (input.mode != null && !STAGE_MODES.includes(input.mode)) {
       errors.push(`stage mode must be one of ${STAGE_MODES.join(', ')}`);
+    } else if (input.mode != null && !USER_STAGE_MODES.includes(input.mode)) {
+      errors.push(`stage mode "${input.mode}" is not supported for user-authored stages`);
     }
     // The reviewer is V2's LLM-judged verification: a clean-room sub-agent
     // (a reviewer AGENT id) that returns a READY/NOT-READY verdict, looping up
