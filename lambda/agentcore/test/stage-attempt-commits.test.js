@@ -63,8 +63,8 @@ const recordingStore = ({ stageRow = { attempt: 0 } } = {}) => {
     resumeStageRow: rec('resumeStageRow'),
     appendEvent: rec('appendEvent'),
     recordSensorRun: rec('recordSensorRun'),
-    async bumpStageCounter() {
-      return 1;
+    async raiseStageCounter() {
+      return true;
     },
     async appendOutput() {
       return { seq: 1, timestamp: 'T' };

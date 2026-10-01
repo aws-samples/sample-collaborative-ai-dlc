@@ -90,10 +90,10 @@ const fakeStore = ({ receipts = new Map(), humanTasks = new Map() } = {}) => {
     async getStage() {
       return { ...stageRow, ...Object.fromEntries(counters) };
     },
-    async bumpStageCounter({ field }) {
-      const next = Number(counters.get(field) ?? 0) + 1;
-      counters.set(field, next);
-      return next;
+    async raiseStageCounter({ field, to }) {
+      if (Number(counters.get(field) ?? 0) >= to) return false;
+      counters.set(field, to);
+      return true;
     },
     async appendOutput() {
       return { seq: 1, timestamp: 'now' };

@@ -4917,9 +4917,10 @@ const checkpointRunStore = ({ stageInstanceId, unitSlug = null }) => {
     receipts.set(sk, row);
     return row;
   };
-  store.bumpStageCounter = async ({ field }) => {
-    stageRow[field] = Number(stageRow[field] ?? 0) + 1;
-    return stageRow[field];
+  store.raiseStageCounter = async ({ field, to }) => {
+    if (Number(stageRow[field] ?? 0) >= to) return false;
+    stageRow[field] = to;
+    return true;
   };
   store.listSensorRuns = async () => [];
   store.getUnitPlan = async () => ({ units: [{ slug: unitSlug, kind: 'backend' }] });
@@ -5116,7 +5117,7 @@ describe('runStage — checkpoint park races', () => {
 
   it('does not run a checkpoint repair when its attempt counter cannot be persisted', async () => {
     const run = checkpointRun({ repairCheckpoint: true });
-    run.deps.store.bumpStageCounter = async () => {
+    run.deps.store.raiseStageCounter = async () => {
       throw new Error('counter store unavailable');
     };
 
@@ -5311,5 +5312,58 @@ describe('runStage — AGENT.maxTurns on the reviewer run', () => {
     await runStage(baseArgs, deps);
 
     expect(materializeStage.mock.calls[0][0].maxTurns ?? null).toBeNull();
+  });
+});
+
+describe('runStage — resume marker of the resumed gate', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  const resumedStore = (execution) =>
+    spyStore({
+      humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'MVP' } },
+      stage: { cli: 'claude', cliSessionId: 'sess-7' },
+      execution,
+    });
+
+  it('clears the marker once the stage resumes on the gate it names', async () => {
+    const store = resumedStore({ resumeRequired: { humanTaskId: 'q-1', callbackId: 'cb-1' } });
+
+    await runStage({ ...baseArgs, resumeFrom: 'q-1' }, baseDeps({ store, spawnFn: okSpawn }));
+
+    expect(store.calls).toContainEqual([
+      'updateExecution',
+      { executionId: 'e1', resumeRequired: null },
+    ]);
+  });
+
+  it('leaves a marker for another gate alone', async () => {
+    const store = resumedStore({ resumeRequired: { humanTaskId: 'q-2', callbackId: 'cb-2' } });
+
+    await runStage({ ...baseArgs, resumeFrom: 'q-1' }, baseDeps({ store, spawnFn: okSpawn }));
+
+    expect(
+      store.calls.filter(([name, args]) => name === 'updateExecution' && 'resumeRequired' in args),
+    ).toEqual([]);
+  });
+});
+
+describe('postAgentSensorPass', () => {
+  const { postAgentSensorPass } = __test;
+
+  it('keeps the single pass over every sensor on the whole workspace for an unpinned run', () => {
+    expect(
+      postAgentSensorPass({ methodologyRelease: null, attemptChangedFiles: ['src/a.ts'] }),
+    ).toEqual({ planes: null, changedFiles: null });
+  });
+
+  it('runs only the write plane, narrowed to the attempt, for a release-pinned run', () => {
+    expect(
+      postAgentSensorPass({
+        methodologyRelease: { releaseId: 'release-a' },
+        attemptChangedFiles: ['src/a.ts'],
+      }),
+    ).toEqual({ planes: ['write'], changedFiles: ['src/a.ts'] });
   });
 });

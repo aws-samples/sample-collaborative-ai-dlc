@@ -352,17 +352,11 @@ export default function IntentView() {
   }
   const isActive = intent.status === 'RUNNING' || intent.status === 'WAITING';
   const isFailed = intent.status === 'FAILED';
-  const answeredPendingGate =
-    intent.status === 'WAITING'
-      ? gates.find(
-          (gate) => gate.humanTaskId === intent.pendingHumanTaskId && gate.resumeAvailable === true,
-        )
-      : null;
-  // Only a waiting intent can owe a resume; a marker left on a cancelled,
-  // failed or rewound intent must not offer to re-send its answer.
-  const resumeRequired =
-    intent.status === 'WAITING' &&
-    Boolean(intent.resumeRequired?.callbackId || answeredPendingGate);
+  // The server decides whether a recorded answer still needs its callback
+  // re-sent (`resumeAvailable`): the run is live and still parked on that gate,
+  // through META for an engine gate or through the asking stage for a question,
+  // which covers a unit lane while the intent keeps running.
+  const resumeRequired = gates.some((gate) => gate.resumeAvailable === true);
   const canReshape =
     (intent.status === 'WAITING' || isFailed) && intent.constructionAutonomyMode !== 'autonomous';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.

@@ -1080,6 +1080,15 @@ const gitReportsAllFiles = (gitResult) =>
     (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
   );
 
+// The post-agent sensor pass. Release mode splits the sensors into a write pass
+// here (narrowed to the attempt's changed files) and a gate pass after the
+// reviewer. An unpinned run has no gate pass, so it keeps the single pass over
+// every sensor on the whole workspace.
+const postAgentSensorPass = ({ methodologyRelease, attemptChangedFiles }) =>
+  methodologyRelease
+    ? { planes: ['write'], changedFiles: attemptChangedFiles }
+    : { planes: null, changedFiles: null };
+
 // Whether this dispatch ends at a validation gate that shows the stage's
 // findings. Unit-lane stages do not: the lane merges on its own outcome and the
 // batch gate after it carries no per-stage findings, so a blocking finding on a
@@ -1137,16 +1146,16 @@ const runCheckpointLadder = async ({
   let findings = await read();
   if (findings.length === 0) return { findings: [] };
 
-  // One bounded repair turn per counter per validation revision. The counter is
-  // read from the STAGE# row and bumped atomically, so a re-invoked runner cannot
-  // grant a second. A rewind resets it; within one attempt each revision may
-  // spend one more, so the counter is compared with the revision number rather
-  // than with zero.
+  // One bounded repair turn per counter per validation revision. The counter on
+  // the STAGE# row is raised to revision + 1 by a conditional write, so a
+  // re-invoked runner (or a concurrent one) cannot claim a second turn in the
+  // same revision, and a rewind (which resets the counters) starts over.
   const counters = [
     ...new Set(findings.map((finding) => CHECKPOINT_LADDER[finding.code]?.counter).filter(Boolean)),
   ];
-  const alreadyRepaired = counters.some(
-    (counter) => Number(stageRow?.[counter] ?? 0) > Number(validationRound ?? 0),
+  const repairBudget = Number(validationRound ?? 0) + 1;
+  let alreadyRepaired = counters.some(
+    (counter) => Number(stageRow?.[counter] ?? 0) >= repairBudget,
   );
   const budgetAllowsRepair = runRepairTurn && !alreadyRepaired ? repairAllowed() : true;
   if (!budgetAllowsRepair) await onRepairSkipped();
@@ -1155,12 +1164,18 @@ const runCheckpointLadder = async ({
     if (parkedBeforeRepair) return { findings, parked: parkedBeforeRepair };
     let counterPersistenceFailed = false;
     for (const counter of counters) {
-      await Promise.resolve(
-        store.bumpStageCounter?.({ executionId, stageInstanceId, field: counter }),
+      const raised = await Promise.resolve(
+        store.raiseStageCounter?.({
+          executionId,
+          stageInstanceId,
+          field: counter,
+          to: repairBudget,
+        }),
       ).catch((error) => {
         counterPersistenceFailed = true;
         log.error('checkpoint repair counter not persisted', { error, counter });
       });
+      if (raised === false) alreadyRepaired = true;
     }
     if (counterPersistenceFailed) {
       return {
@@ -1170,7 +1185,7 @@ const runCheckpointLadder = async ({
         },
       };
     }
-    if (!counterPersistenceFailed) {
+    if (!alreadyRepaired) {
       await store
         .appendEvent({
           executionId,
@@ -2130,6 +2145,16 @@ export const runStage = async (
     if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
     if (resumeFrom && resumeGate.status === 'pending')
       return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
+    // The answer reached this stage, so a resume marker the answer path left for
+    // this gate (its first callback send failed) is resolved.
+    if (resumeFrom) {
+      const resumeMeta = await store.getExecution(executionId).catch(() => null);
+      if (resumeMeta?.resumeRequired?.humanTaskId === resumeFrom) {
+        await store
+          .updateExecution({ executionId, resumeRequired: null })
+          .catch((error) => logger.error('resume marker not cleared', { error, stageInstanceId }));
+      }
+    }
     const row = await store
       .getStage(executionId, stageInstanceId, { consistentRead: true })
       .catch(() => null);
@@ -4164,11 +4189,7 @@ export const runStage = async (
       spawnFn,
       store,
       publish,
-      // Release mode splits the sensors into a write pass here and a gate pass
-      // after the reviewer. An unpinned run has no gate pass, so it keeps the
-      // single pass over every sensor on the whole workspace.
-      changedFiles: methodologyRelease ? attemptChangedFiles : null,
-      planes: methodologyRelease ? ['write'] : null,
+      ...postAgentSensorPass({ methodologyRelease, attemptChangedFiles }),
     }).catch(() => null);
     if (writePlane?.held) {
       return fail(stageInstanceId, 'sensor_blocked', writePlane.held);
@@ -4653,6 +4674,7 @@ export const runStage = async (
 
 // Exposed for unit tests (pure helpers; the runStage flow is integration-tested).
 export const __test = {
+  postAgentSensorPass,
   mergeLearningRules,
   composeKnowledge,
   renderTeamKnowledge,
