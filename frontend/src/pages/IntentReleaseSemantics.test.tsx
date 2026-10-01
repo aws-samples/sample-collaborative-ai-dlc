@@ -133,6 +133,28 @@ const RESUME_REQUIRED = {
   answeredAt: '2026-01-01T00:00:00Z',
 };
 
+// An answered gate whose callback the server reports as still owed.
+const ANSWERED_GATE = {
+  humanTaskId: 'h1',
+  stageInstanceId: 'si-a',
+  kind: 'question',
+  status: 'answered',
+  resumeAvailable: true,
+  prompt: 'Choose a direction.',
+  options: null,
+  questions: null,
+  answer: { choice: 'continue' },
+  answeredBy: 'u1',
+  answeredAt: '2026-01-01T00:00:00Z',
+  createdAt: null,
+};
+
+// A run whose answer was recorded but whose callback still needs completing.
+const stuckDetail = () => ({
+  ...baseDetail({ pendingHumanTaskId: 'h1', resumeRequired: RESUME_REQUIRED }),
+  gates: [ANSWERED_GATE],
+});
+
 beforeEach(() => {
   clearIntentCache();
   get.mockReset();
@@ -143,7 +165,7 @@ beforeEach(() => {
 
 describe('Resume run', () => {
   it('offers the action when an answered gate still needs its callback completed', async () => {
-    get.mockResolvedValue(baseDetail({ resumeRequired: RESUME_REQUIRED }));
+    get.mockResolvedValue(stuckDetail());
     resume.mockResolvedValue({ resumed: true });
     renderAt();
 
@@ -159,22 +181,7 @@ describe('Resume run', () => {
   it('offers the action when the pending gate is answered but the marker is missing', async () => {
     get.mockResolvedValue({
       ...baseDetail({ pendingHumanTaskId: 'h1' }),
-      gates: [
-        {
-          humanTaskId: 'h1',
-          stageInstanceId: 'si-a',
-          kind: 'question',
-          status: 'answered',
-          resumeAvailable: true,
-          prompt: 'Choose a direction.',
-          options: null,
-          questions: null,
-          answer: { choice: 'continue' },
-          answeredBy: 'u1',
-          answeredAt: '2026-01-01T00:00:00Z',
-          createdAt: null,
-        },
-      ],
+      gates: [ANSWERED_GATE],
     });
     resume.mockResolvedValue({ resumed: true });
     renderAt();
@@ -195,7 +202,7 @@ describe('Resume run', () => {
   });
 
   it('surfaces a failed resume instead of silently leaving the run parked', async () => {
-    get.mockResolvedValue(baseDetail({ resumeRequired: RESUME_REQUIRED }));
+    get.mockResolvedValue(stuckDetail());
     resume.mockRejectedValue(new Error('The durable callback could not be completed.'));
     renderAt();
 
@@ -211,7 +218,7 @@ describe('Resume run', () => {
     // 409 is TERMINAL: the API already failed the run and cleared the marker, so
     // the reload must remove the button rather than leave a dead affordance.
     get
-      .mockResolvedValueOnce(baseDetail({ resumeRequired: RESUME_REQUIRED }))
+      .mockResolvedValueOnce(stuckDetail())
       .mockResolvedValue(baseDetail({ status: 'FAILED', resumeRequired: null }));
     resume.mockRejectedValue(
       new ApiError(409, 'Durable execution expired before this answer could resume the run', {
@@ -227,7 +234,7 @@ describe('Resume run', () => {
   });
 
   it('keeps the resume affordance for a retryable 503', async () => {
-    get.mockResolvedValue(baseDetail({ resumeRequired: RESUME_REQUIRED }));
+    get.mockResolvedValue(stuckDetail());
     resume.mockRejectedValue(
       new ApiError(503, 'The durable callback could not be completed. Try again in a moment.', {
         code: 'durable_callback_resume_failed',
