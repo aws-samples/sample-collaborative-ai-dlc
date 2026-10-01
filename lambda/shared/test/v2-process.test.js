@@ -605,6 +605,14 @@ describe('createProcessStore', () => {
     expect(ddb.commandCalls(QueryCommand)).toHaveLength(2);
   });
 
+  it('listEvents requests a consistent read when requested', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+
+    await store.listEvents('e1', { consistentRead: true });
+
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.ConsistentRead).toBe(true);
+  });
+
   it('getExecutionRecords groups rows by SK prefix', async () => {
     ddb.on(QueryCommand).resolves({
       Items: [
@@ -930,6 +938,43 @@ describe('createProcessStore', () => {
 });
 
 describe('buildExecutionMeta intent-config + DRAFT', () => {
+  it('pins the immutable AI-DLC release alongside the ref and the block pins', () => {
+    const methodologyRelease = {
+      releaseId: 'aidlc:83ed7a812c4024904f2c5e4d744e28077e0a5acd',
+      sourceSha: '83ed7a812c4024904f2c5e4d744e28077e0a5acd',
+      importerRevision: 1,
+      closureDigest: 'b'.repeat(64),
+      catalogKey: 'aidlc-releases/v1/83ed7a812c4024904f2c5e4d744e28077e0a5acd/i1/catalog.json',
+      manifestKey: 'aidlc-releases/v1/83ed7a812c4024904f2c5e4d744e28077e0a5acd/i1/manifest.json',
+    };
+    const pinned = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      startedAt: 'T',
+      aidlcRepoRef: '83ed7a812c4024904f2c5e4d744e28077e0a5acd',
+      methodologyPins: { AGENT: { 'agent-x': { tenantId: 'SYSTEM', version: 1 } } },
+      methodologyRelease,
+    });
+    const unpinned = buildExecutionMeta({
+      executionId: 'e2',
+      projectId: 'p1',
+      intentId: 'i2',
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      startedAt: 'T',
+    });
+
+    expect(pinned.methodologyRelease).toEqual(methodologyRelease);
+    expect(pinned.aidlcRepoRef).toBe('83ed7a812c4024904f2c5e4d744e28077e0a5acd');
+    expect(pinned.methodologyPins).toEqual({
+      AGENT: { 'agent-x': { tenantId: 'SYSTEM', version: 1 } },
+    });
+    expect(unpinned).not.toHaveProperty('methodologyRelease');
+  });
+
   it('carries prompt/branch/baseBranch/repos and supports DRAFT status', () => {
     const meta = buildExecutionMeta({
       executionId: 'e1',
@@ -1170,6 +1215,13 @@ describe('steering store methods', () => {
     expect(input.UpdateExpression).toContain('revisedAt = :ts');
   });
 
+  it('getStage strongly reads a row when requested', async () => {
+    ddb.on(GetCommand).resolves({ Item: { stageInstanceId: 'si-1', attempt: 2 } });
+    const row = await store.getStage('e1', 'si-1', { consistentRead: true });
+    expect(row).toMatchObject({ stageInstanceId: 'si-1', attempt: 2 });
+    expect(ddb.commandCalls(GetCommand)[0].args[0].input.ConsistentRead).toBe(true);
+  });
+
   it('resetStageRow flips a stage back to PENDING with attempt+1 and a cleared session', async () => {
     ddb.on(GetCommand).resolves({ Item: { stageInstanceId: 'si-1', attempt: 1, cli: 'claude' } });
     ddb.on(UpdateCommand).resolves({ Attributes: { state: 'PENDING', attempt: 2 } });
@@ -1203,6 +1255,54 @@ describe('steering store methods', () => {
     const reset = await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
     expect(reset).toBeNull();
     expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+  });
+
+  // A rewind/retry must start the checkpoint ladder's bounded
+  // repair budget fresh, not arrive already "used up" from the prior attempt.
+  it('resetStageRow zeroes summaryRepairAttempts and planApprovalRepairAttempts on a rewind/retry', async () => {
+    ddb.on(GetCommand).resolves({
+      Item: {
+        stageInstanceId: 'si-1',
+        attempt: 1,
+        summaryRepairAttempts: 1,
+        planApprovalRepairAttempts: 1,
+      },
+    });
+    ddb.on(UpdateCommand).resolves({
+      Attributes: {
+        state: 'PENDING',
+        attempt: 2,
+        summaryRepairAttempts: 0,
+        planApprovalRepairAttempts: 0,
+      },
+    });
+    const reset = await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
+    expect(reset).toMatchObject({ summaryRepairAttempts: 0, planApprovalRepairAttempts: 0 });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('summaryRepairAttempts = :zero');
+    expect(input.UpdateExpression).toContain('planApprovalRepairAttempts = :zero');
+    expect(input.ExpressionAttributeValues[':zero']).toBe(0);
+  });
+
+  // A row can be otherwise "clean" PENDING (the interrupted-rewind replay guard
+  // above) yet still carry a non-zero repair counter; that must NOT be treated as
+  // already reset, or the counter would never clear.
+  it('resetStageRow does not short-circuit a PENDING row that still carries a stale repair counter', async () => {
+    ddb.on(GetCommand).resolves({
+      Item: {
+        stageInstanceId: 'si-1',
+        state: 'PENDING',
+        attempt: 2,
+        startedAt: null,
+        cliSessionId: null,
+        runtimeError: null,
+        summaryRepairAttempts: 1,
+      },
+    });
+    ddb.on(UpdateCommand).resolves({ Attributes: { state: 'PENDING', attempt: 3 } });
+    const reset = await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
+    expect(reset).not.toBeNull();
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(1);
   });
 
   it('updateExecution supports the orchestrator ownership CAS (ifOrchestratorRunId)', async () => {
@@ -1961,5 +2061,110 @@ describe('quorum edit rows', () => {
     });
     const records = await store.getExecutionRecords('e1', { includeOutputs: false });
     expect(records.quorumEdits.map((q) => q.editId)).toEqual(['qe-1']);
+  });
+});
+
+describe('buildExecutionMeta — unpinned row shape', () => {
+  it('writes no release or resume fields for an unpinned intent', () => {
+    const meta = buildExecutionMeta({
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      status: 'RUNNING',
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      startedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(meta).not.toHaveProperty('methodologyRelease');
+    expect(meta).not.toHaveProperty('resumeRequired');
+  });
+});
+
+describe('createProcessStore — resume marker', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    store = createProcessStore({ ddb, tableName: 'v2-proc', clock: () => 'T' });
+  });
+
+  it('removes the marker instead of writing a null attribute', async () => {
+    await store.updateExecution({ executionId: 'e1', resumeRequired: null });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toMatch(/ REMOVE (.*, )?resumeRequired\b/);
+    expect(input.UpdateExpression).not.toMatch(/SET .*resumeRequired =/);
+  });
+
+  it('sets the marker when one is given', async () => {
+    const marker = { humanTaskId: 'h1', callbackId: 'cb-1', answeredAt: 'T' };
+    await store.updateExecution({ executionId: 'e1', resumeRequired: marker });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('resumeRequired = :rsr');
+    expect(input.ExpressionAttributeValues[':rsr']).toEqual(marker);
+  });
+});
+
+describe('createProcessStore — repair counter per validation revision', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    store = createProcessStore({ ddb, tableName: 'v2-proc', clock: () => 'T' });
+  });
+
+  it('raises the counter only while it is below the target', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+
+    await expect(
+      store.raiseStageCounter({
+        executionId: 'e1',
+        stageInstanceId: 'si-1',
+        field: 'summaryRepairAttempts',
+        to: 2,
+      }),
+    ).resolves.toBe(true);
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('#f = :to');
+    expect(input.ConditionExpression).toBe('attribute_not_exists(#f) OR #f < :to');
+    expect(input.ExpressionAttributeValues[':to']).toBe(2);
+  });
+
+  it('reports a counter already at the target instead of raising it', async () => {
+    ddb
+      .on(UpdateCommand)
+      .rejects(
+        Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' }),
+      );
+
+    await expect(
+      store.raiseStageCounter({
+        executionId: 'e1',
+        stageInstanceId: 'si-1',
+        field: 'summaryRepairAttempts',
+        to: 2,
+      }),
+    ).resolves.toBe(false);
+  });
+});
+
+describe('createProcessStore — clearing the resume marker of one gate', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    store = createProcessStore({ ddb, tableName: 'v2-proc', clock: () => 'T' });
+  });
+
+  it('clears the marker only while it still names that gate', async () => {
+    await store.updateExecution({
+      executionId: 'e1',
+      resumeRequired: null,
+      ifResumeRequiredFor: 'h1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toContain('resumeRequired.humanTaskId = :ifRrh');
+    expect(input.ExpressionAttributeValues[':ifRrh']).toBe('h1');
   });
 });

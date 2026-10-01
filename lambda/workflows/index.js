@@ -1270,7 +1270,11 @@ const listReleasesRoute = async (event, res) => {
   // Reads are open, but a non-admin only sees what they could actually select:
   // exposing importable or hidden records would imply they are runnable.
   const isAdmin = isPlatformAdmin(event);
-  const releases = await listReleases({ ...registryArgs(), visibleOnly: !isAdmin });
+  const releases = await listReleases({
+    ...registryArgs(),
+    visibleOnly: !isAdmin,
+    ...(isAdmin ? { s3, bucket: artifactsBucket() } : {}),
+  });
   // The importer revision a record must reach to stop being `importerStale` —
   // operator data, so only an admin is told.
   return res(

@@ -89,6 +89,26 @@ const UNIT_FIELDS = [
   'completedAt',
   'updatedAt',
 ];
+// Gate-precondition receipts. A rewind/repair/recompose of a
+// pinned intent must resolve the SAME receipt space it started on, or a restored
+// run would re-ask for authorizations the human already gave (or, worse, treat an
+// invalidated one as live). Projected ONLY when the execution has receipts, so a
+// legacy checkpoint's contents — and therefore its content-derived checkpointId —
+// are unchanged.
+const RECEIPT_FIELDS = [
+  'executionId',
+  'kind',
+  'stageInstanceId',
+  'attempt',
+  'unitSlug',
+  'sectionIndex',
+  'ordinal',
+  'boundDigest',
+  'choice',
+  'decidedBy',
+  'decidedAt',
+  'humanTaskId',
+];
 
 const snapshotRecord = (record, fields = null) =>
   record
@@ -128,6 +148,7 @@ const buildWorkflowCheckpoint = ({
   artifactRefs = [],
   customRuleRefs = [],
 }) => {
+  const receipts = (records.receipts ?? []).map((record) => snapshotRecord(record, RECEIPT_FIELDS));
   const process = {
     meta: snapshotRecord(records.meta, META_FIELDS),
     stages: (records.stages ?? []).map((record) => snapshotRecord(record, STAGE_FIELDS)),
@@ -136,6 +157,7 @@ const buildWorkflowCheckpoint = ({
     ),
     unitPlan: snapshotRecord(records.unitPlan, UNIT_PLAN_FIELDS),
     units: (records.units ?? []).map((record) => snapshotRecord(record, UNIT_FIELDS)),
+    ...(receipts.length > 0 ? { receipts } : {}),
   };
   const checkpoint = {
     type: 'WorkflowCheckpoint',
@@ -167,6 +189,9 @@ const checkpointProjection = (checkpoint) => {
     humanTasks: checkpoint.process.humanTasks ?? [],
     unitPlan: checkpoint.process.unitPlan ?? null,
     units: checkpoint.process.units ?? [],
+    // Omitted rather than empty when the execution has no receipts, so a legacy
+    // checkpoint round-trips to exactly the record shape it always did.
+    ...(checkpoint.process.receipts?.length ? { receipts: checkpoint.process.receipts } : {}),
   };
 };
 

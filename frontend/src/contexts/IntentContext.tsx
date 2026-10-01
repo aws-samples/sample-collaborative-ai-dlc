@@ -165,6 +165,9 @@ interface IntentContextValue {
   /** Steering: restart the run from an earlier stage. Guidance optional — with
    *  it a corrective rewind, without it a plain retry of the stage + rest. */
   rewindIntent: (fromStageId: string, guidance?: string) => Promise<void>;
+  /** Recovery: re-attempt the durable callback for an already-recorded gate
+   *  answer (`intent.resumeRequired`). Idempotent. */
+  resumeIntent: () => Promise<void>;
 }
 
 // ── Module-level stale-while-revalidate cache ───────────────────────────────
@@ -624,6 +627,10 @@ export function IntentProvider({
             status: 'pending',
             prompt: evt.prompt ?? null,
             options: evt.options ?? null,
+            findings: evt.findings ?? null,
+            // The validation gate asks the learnings question only when the
+            // engine says so; keep the flag the API copy may already carry.
+            learningsRitual: evt.learningsRitual ?? existing?.learningsRitual ?? null,
             questions:
               typeof evt.questions === 'string'
                 ? evt.questions
@@ -752,6 +759,12 @@ export function IntentProvider({
     },
     [projectId, intentId, load],
   );
+
+  const resumeIntent = useCallback(async () => {
+    if (!projectId || !intentId) return;
+    await intentsService.resume(projectId, intentId);
+    await load();
+  }, [projectId, intentId, load]);
 
   const focusOutput = useCallback(
     (stageInstanceId: string | null) => {
@@ -1013,6 +1026,7 @@ export function IntentProvider({
         cancelIntent,
         deleteIntent,
         rewindIntent,
+        resumeIntent,
       }}
     >
       {children}

@@ -132,6 +132,7 @@ import {
   pendingAttachmentDeletions,
   validateAttachmentDescriptor,
 } from '../shared/intent-attachments.js';
+import { GATE_CHOICES, OVERRIDE_REASON_MAX, parseChoice } from '../shared/gate-answer.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -1307,6 +1308,9 @@ const mapIntent = (meta) => ({
   failureReason: meta.failureReason ?? null,
   failure: mapExecutionFailure(meta),
   rewindFromStageId: meta.rewindFromStageId ?? null,
+  // Set only while a recorded gate answer still needs its durable callback
+  // completed — the frontend renders the Resume run action off this.
+  resumeRequired: meta.resumeRequired ?? null,
   agentCli: meta.agentCli ?? null,
   credentialSource: meta.credentialBinding?.source ?? null,
   cliModels: meta.cliModels ?? null,
@@ -2640,6 +2644,49 @@ export const handler = async (event, context) => {
           code: 'invalid_gate_status',
         });
       }
+      // A validation gate that withheld an option (a blocking finding withholds
+      // `approve`) must not record that option: the engine would re-run the
+      // stage while the gate row and its badge said "approved".
+      const offered =
+        gate.kind === 'validation' && Array.isArray(gate.options) && gate.options.length > 0
+          ? gate.options
+          : null;
+      if (offered) {
+        const choice = parseChoice(data.answer, GATE_CHOICES);
+        const chosen = choice ?? (answerStatus === 'approved' ? 'approve' : null);
+        if (chosen && !offered.includes(chosen)) {
+          return response(400, {
+            error: `This gate offers ${offered.join(', ')}; "${chosen}" is not one of them`,
+            code: 'gate_choice_not_offered',
+          });
+        }
+      }
+      // The same parser the orchestrator reads the answer with, so an answer the
+      // engine treats as an override is held to the override's requirements here.
+      const overrideChosen =
+        parseChoice(data.answer, ['override-and-approve']) === 'override-and-approve' ||
+        (Array.isArray(data.answer?.perQuestion) &&
+          data.answer.perQuestion.some(
+            (entry) =>
+              typeof entry?.answer === 'string' &&
+              entry.answer.trim().toLowerCase() === 'override-and-approve',
+          ));
+      if (overrideChosen) {
+        const reason = typeof data.answer?.reason === 'string' ? data.answer.reason.trim() : '';
+        if (!reason) {
+          return response(400, {
+            error: 'A non-blank reason is required to override blocking findings',
+            code: 'override_reason_required',
+          });
+        }
+        if (reason.length > OVERRIDE_REASON_MAX) {
+          return response(400, {
+            error: `Override reason must be at most ${OVERRIDE_REASON_MAX} characters`,
+            code: 'override_reason_too_long',
+          });
+        }
+        data.answer = { ...data.answer, reason };
+      }
       // A live Quorum edit is mutating this intent's artifacts; answering the
       // gate would resume the parked stage RIGHT INTO those writes. The run is
       // already parked — waiting for the edit to finish costs nothing (mirror
@@ -2722,6 +2769,15 @@ export const handler = async (event, context) => {
       if (gate.callbackId) {
         try {
           await resumeDurableCallback(gate.callbackId, answered.answer);
+          await (
+            store.markGateCallbackConsumed?.({
+              executionId: intentId,
+              humanTaskId,
+              callbackId: gate.callbackId,
+            }) ?? Promise.resolve()
+          ).catch((markErr) =>
+            logger.error('Gate callback consumption marker write failed', markErr),
+          );
         } catch (err) {
           if (isCallbackTimeoutError(err)) {
             await repairExpiredDurableExecution({
@@ -2747,9 +2803,22 @@ export const handler = async (event, context) => {
               summary: `Gate answer was recorded, but the durable callback could not be completed: ${err?.message ?? 'unknown error'}`,
             })
             .catch((eventErr) => logger.error('Gate resume failure event append failed', eventErr));
+          // The answer is already durable; this makes the NEED TO RESUME durable
+          // too. Without it the run sits WAITING with no pending gate and no
+          // action able to wake it — the one known indefinite-wait path.
+          await store
+            .updateExecution({
+              executionId: intentId,
+              resumeRequired: {
+                humanTaskId,
+                callbackId: gate.callbackId,
+                answeredAt: answered.answeredAt ?? null,
+              },
+            })
+            .catch((metaErr) => logger.error('Gate resume marker write failed', metaErr));
           return response(503, {
             error:
-              'Gate answer was recorded, but the durable callback could not be completed. Retry after refreshing the intent.',
+              'Gate answer was recorded, but the durable callback could not be completed. Use Resume run to retry.',
             code: 'durable_callback_resume_failed',
             retryable: true,
           });
@@ -2759,6 +2828,127 @@ export const handler = async (event, context) => {
         ...mapHumanTask(answered),
         steering: steer ? mapSteering(steer) : null,
       });
+    }
+
+    // POST /projects/{projectId}/intents/{intentId}/resume
+    // Re-attempt the durable callback for an answer that was recorded but whose
+    // resume failed (META.resumeRequired, set by the answer path above). This is
+    // the one-click recovery for the only known indefinite-WAITING path: the
+    // answer is already durable, so resuming never needs new human input.
+    //
+    // IDEMPOTENT: nothing to resume is a 200, not an error, so a double click or
+    // a retried request is harmless. An expired callback runs the same repair the
+    // answer path runs, which lands the intent in FAILED — recoverable by the
+    // existing rewind API — instead of leaving it parked forever.
+    if (intentId && !humanTaskId && httpMethod === 'POST' && path?.endsWith('/resume')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId) {
+        return response(404, { error: 'Intent not found' });
+      }
+      // Every gate is judged with the rule the intent detail uses for the banner
+      // (resumeOwed), so the button and this route always agree: concurrent
+      // lanes can each owe a resume, and the marker only records the latest one
+      // (or none, when its own write failed).
+      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+      const stagesByInstance = new Map(
+        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+      );
+      const owed = (records.humanTasks ?? [])
+        .filter((gate) =>
+          resumeOwed({
+            meta,
+            gate,
+            stageRow: stagesByInstance.get(gate.stageInstanceId) ?? null,
+          }),
+        )
+        .toSorted((a, b) => String(a.answeredAt ?? '').localeCompare(String(b.answeredAt ?? '')));
+      const marker = meta.resumeRequired ?? null;
+      const responder = getResponder(event);
+      const markConsumed = (gate) =>
+        (
+          store.markGateCallbackConsumed?.({
+            executionId: intentId,
+            humanTaskId: gate.humanTaskId,
+            callbackId: gate.callbackId,
+          }) ?? Promise.resolve()
+        ).catch((markErr) =>
+          logger.error('Gate callback consumption marker write failed', markErr),
+        );
+      let resumed = 0;
+      let retryable = null;
+      for (const gate of owed) {
+        try {
+          await resumeDurableCallback(gate.callbackId, gate.answer ?? null);
+        } catch (err) {
+          if (isCallbackTimeoutError(err)) {
+            const failed = await repairExpiredDurableExecution({
+              executionId: intentId,
+              projectId,
+              meta,
+              actor: responder.displayName || responder.sub,
+              summary: `${responder.displayName || 'Someone'} retried the resume after the durable execution expired; the run was marked failed and can be rewound`,
+            }).catch((repairErr) => {
+              logger.error('Durable callback expiry repair failed', repairErr);
+              return null;
+            });
+            // The marker is cleared either way: the resume can never succeed now,
+            // and leaving it set would offer the human a button that cannot work.
+            await store
+              .updateExecution({ executionId: intentId, resumeRequired: null })
+              .catch((metaErr) => logger.error('Resume marker clear failed', metaErr));
+            return response(409, {
+              error: 'Durable execution expired before this answer could resume the run',
+              code: 'durable_execution_expired',
+              intent: mapIntent(failed ?? { ...meta, status: 'FAILED' }),
+            });
+          }
+          // The callback is gone or already completed: the first send was
+          // delivered even though it reported an error. Nothing is owed.
+          if (isMissingDurableCallbackError(err)) {
+            await markConsumed(gate);
+            continue;
+          }
+          logger.error('Gate resume retry failed', err);
+          retryable ??= gate;
+          continue;
+        }
+        await markConsumed(gate);
+        resumed += 1;
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.gate.resumed',
+            stageInstanceId: gate.stageInstanceId ?? null,
+            actor: responder.displayName || responder.sub,
+            summary: `${responder.displayName || 'Someone'} resumed the run after a failed gate callback`,
+          })
+          .catch((eventErr) => logger.error('Gate resumed event append failed', eventErr));
+      }
+      // The marker is cleared once nothing it could stand for is still owed;
+      // the conditional write keeps a marker a concurrent answer just set.
+      const current =
+        marker && !retryable
+          ? await store
+              .updateExecution({
+                executionId: intentId,
+                resumeRequired: null,
+                ifResumeRequiredFor: marker.humanTaskId,
+              })
+              .catch((metaErr) => {
+                if (metaErr?.name !== 'ConditionalCheckFailedException') {
+                  logger.error('Resume marker clear failed', metaErr);
+                }
+                return meta;
+              })
+          : meta;
+      if (retryable) {
+        return response(503, {
+          error: 'The durable callback could not be completed. Try again in a moment.',
+          code: 'durable_callback_resume_failed',
+          retryable: true,
+        });
+      }
+      return response(200, { intent: mapIntent(current ?? meta), resumed: resumed > 0 });
     }
 
     // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise
@@ -3037,6 +3227,8 @@ export const handler = async (event, context) => {
         fromStatus: meta.status,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        // A recorded answer whose callback failed is moot once the run ends.
+        resumeRequired: null,
         completedAt: new Date().toISOString(),
       });
       await store
@@ -3970,6 +4162,7 @@ export const handler = async (event, context) => {
         fromStatus: meta.status,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: 'lane_repair_in_progress',
         completedAt: null,
         orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
@@ -4152,6 +4345,7 @@ export const handler = async (event, context) => {
         orchestratorStartedAt: null,
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: null,
         failure: null,
         completedAt: null,
@@ -4376,6 +4570,7 @@ export const handler = async (event, context) => {
         fromStatus: priorStatus,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: 'rewind_in_progress',
         completedAt: null,
         orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
@@ -4479,6 +4674,7 @@ export const handler = async (event, context) => {
         orchestratorStartedAt: null,
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: null,
         failure: null,
         completedAt: null,
@@ -4835,7 +5031,17 @@ export const handler = async (event, context) => {
       }
       const artifacts = await fetchArtifacts(g, intentId);
       const pullRequests = await fetchPullRequests(g, intentId);
-      const gates = records.humanTasks.map(mapHumanTask);
+      const stagesByInstance = new Map(
+        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+      );
+      const gates = records.humanTasks.map((task) => ({
+        ...mapHumanTask(task),
+        resumeAvailable: resumeOwed({
+          meta: records.meta,
+          gate: task,
+          stageRow: stagesByInstance.get(task.stageInstanceId) ?? null,
+        }),
+      }));
       const answerEvents = await buildGateAnswerEvents(g, gates);
       const priceFor = await getPriceResolver();
       return response(200, {
@@ -5694,6 +5900,7 @@ const repairExpiredDurableExecution = async ({
     completedAt: new Date().toISOString(),
     failureReason,
     pendingHumanTaskId: null,
+    resumeRequired: null,
     ...(meta?.orchestratorRunId ? { ifOrchestratorRunId: meta.orchestratorRunId } : {}),
   });
   await store
@@ -6075,6 +6282,25 @@ const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
   };
 };
 
+// Whether a recorded answer still needs its durable callback re-sent. The gate
+// must hold an answer whose callback was never consumed, the run must be live
+// (RUNNING or WAITING: not finished, cancelled, failed, or relaunching after a
+// rewind), and the run must still be parked on that gate: either META points
+// at it (an engine gate or a once-per-workflow question) or the stage that
+// asked it is WAITING_FOR_HUMAN on it (a unit-lane question parks only its own
+// stage, while META stays RUNNING for the sibling lanes).
+const resumeOwed = ({ meta, gate, stageRow = null }) =>
+  Boolean(
+    gate &&
+    isHumanTaskAnswerStatus(gate.status) &&
+    gate.callbackId &&
+    !gate.callbackConsumedAt &&
+    ['RUNNING', 'WAITING'].includes(meta?.status) &&
+    (meta.pendingHumanTaskId === gate.humanTaskId ||
+      (stageRow?.state === 'WAITING_FOR_HUMAN' &&
+        stageRow.pendingHumanTaskId === gate.humanTaskId)),
+  );
+
 const mapHumanTask = (h) => ({
   humanTaskId: h.humanTaskId,
   stageInstanceId: h.stageInstanceId ?? null,
@@ -6082,10 +6308,18 @@ const mapHumanTask = (h) => ({
   sectionIndex: h.sectionIndex ?? null,
   kind: h.kind,
   status: h.status,
+  resumeAvailable:
+    isHumanTaskAnswerStatus(h.status) && Boolean(h.callbackId) && !h.callbackConsumedAt,
   prompt: h.prompt ?? null,
   options: h.options ?? null,
   skipTargets: h.skipTargets ?? null,
   recomposeTargets: h.recomposeTargets ?? null,
+  findings: h.findings ?? null,
+  // The learnings ritual rides this gate: the review UI offers the
+  // optional "anything to add for next time?" field only when the flag is set.
+  // Absent (not false) on every gate that does not run it, so the UI's own
+  // default decides rather than a value the backend never computed.
+  ...('learningsRitual' in h ? { learningsRitual: h.learningsRitual ?? false } : {}),
   // The computed next stage a plain approve continues to (upstream 2.2.6):
   // string = stageId, null = approving completes the workflow. Omitted (not
   // null) on legacy rows / gates where it was never computed, so the UI can

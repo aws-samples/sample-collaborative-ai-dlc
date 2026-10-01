@@ -33,6 +33,7 @@ import {
   quorumEditKey,
   composeKey,
   trackerSyncKey,
+  receiptKey,
   executionPk,
   projectPk,
   projectStatusIndex,
@@ -60,6 +61,7 @@ import {
   buildQuorumEditRow,
   buildComposeRow,
   buildTrackerSyncRow,
+  buildReceiptRow,
   UNIT_STATES,
   UNIT_PR_STATES,
   FEEDBACK_STATES,
@@ -67,6 +69,7 @@ import {
   COMPOSE_STATES,
   TRACKER_SYNC_STATES,
   TRACKER_SYNC_TERMINAL_STATES,
+  RECEIPT_KINDS,
   CONSTRUCTION_AUTONOMY_MODES,
   ACTIVE_EXECUTION_STATUSES,
 } from './v2-process-keys.js';
@@ -192,6 +195,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     orchestratorStartedAt,
     orchestratorExpiresAt,
     rewindFromStageId,
+    resumeRequired,
     currentPhase,
     currentStage,
     pendingHumanTaskId,
@@ -224,6 +228,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     pendingAttachmentUploads,
     pendingAttachmentDeletions,
     ifAttachmentRevision = null,
+    // Apply the write only while META's resume marker names this gate, so
+    // clearing a resolved marker never drops a newer one for another gate.
+    ifResumeRequiredFor = null,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -359,6 +366,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('rewindFromStageId = :rwf');
       values[':rwf'] = rewindFromStageId;
     }
+    // Clearing REMOVEs the marker rather than writing null, so a run that never
+    // needed a resume keeps the row shape it always had.
+    if (resumeRequired === null) {
+      removes.push('resumeRequired');
+    } else if (resumeRequired !== undefined) {
+      sets.push('resumeRequired = :rsr');
+      values[':rsr'] = resumeRequired;
+    }
     // The autonomy-ladder decision (docs/v2-parallel.md A2 rule 9), stamped by
     // the orchestrator when the human answers the ladder prompt. Validated at
     // the write so a malformed answer can never poison the scheduling mode.
@@ -467,6 +482,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     if (ifOrchestratorRunId) {
       conditions.push('orchestratorRunId = :ifOrid');
       params.ExpressionAttributeValues[':ifOrid'] = ifOrchestratorRunId;
+    }
+    if (ifResumeRequiredFor !== null) {
+      conditions.push('resumeRequired.humanTaskId = :ifRrh');
+      params.ExpressionAttributeValues[':ifRrh'] = ifResumeRequiredFor;
     }
     if (ifAttachmentRevision !== null) {
       conditions.push(
@@ -702,6 +721,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     actor,
     summary,
     payloadRef,
+    detail,
   }) => {
     const item = buildEventRow({
       executionId,
@@ -712,6 +732,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       actor,
       summary,
       payloadRef,
+      detail,
       now: now(),
       eventId: nextId(),
     });
@@ -739,6 +760,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     skipTargets,
     recomposeTargets,
     nextStageId,
+    findings,
+    detail,
+    learningsRitual,
     humanTaskId,
   }) => {
     const id = humanTaskId ?? nextId();
@@ -755,6 +779,9 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       skipTargets,
       recomposeTargets,
       nextStageId,
+      findings,
+      detail,
+      learningsRitual,
       now: now(),
     });
     await ddb.send(
@@ -828,6 +855,26 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }),
     );
     return Item ?? null;
+  };
+
+  const markGateCallbackConsumed = async ({ executionId, humanTaskId, callbackId }) => {
+    if (!callbackId) return null;
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: humanTaskKey(executionId, humanTaskId),
+          ConditionExpression: 'callbackId = :cb AND attribute_not_exists(callbackConsumedAt)',
+          UpdateExpression: 'SET callbackConsumedAt = :ts',
+          ExpressionAttributeValues: { ':cb': callbackId, ':ts': now() },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes ?? null;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
   };
 
   const humanTaskAnswerUpdate = ({
@@ -1121,12 +1168,26 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
+  // Bounded-repair counters (checkpoint-ladder.md): a per-STAGE# ADD accumulator
+  // per checkpoint, enforcing at most one repair turn per checkpoint per attempt.
+  // Declared here (rather than beside `raiseStageCounter`, its other consumer) so
+  // `resetStageRow` can zero every counter this platform names without either
+  // function reaching past the other's definition. Adding a new bounded-repair
+  // counter (a new checkpoint stream) means adding its field name HERE — both
+  // the bump allowlist and the rewind/retry reset then cover it automatically.
+  const STAGE_COUNTER_FIELDS = ['summaryRepairAttempts', 'planApprovalRepairAttempts'];
+
   // Reset a stage row for a rewind/retry: back to PENDING with attempt+1,
   // conversation handle + terminal fields cleared. Plain retries preserve compact
   // commit refs until successful CodeFile projection; corrective rewinds clear
   // them because the prior implementation is intentionally being replaced.
   // A stage that never ran (no row yet) needs no reset — returns null. The prior
   // attempt's history stays in EVENT#/OUTPUT#.
+  //
+  // Every bounded-repair counter (STAGE_COUNTER_FIELDS) is zeroed here too: the
+  // repair ladder's cap is per ATTEMPT, and a stale non-zero counter surviving a
+  // rewind/retry would arrive at the new attempt already "used up", silently
+  // withholding the one repair turn the fresh attempt is entitled to.
   const resetStageRow = async ({
     executionId,
     stageInstanceId,
@@ -1142,11 +1203,29 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       existing.startedAt == null &&
       existing.cliSessionId == null &&
       existing.runtimeError == null &&
-      (preservePendingCodeCommitRefs || existing.pendingCodeCommitRefs == null)
+      (preservePendingCodeCommitRefs || existing.pendingCodeCommitRefs == null) &&
+      STAGE_COUNTER_FIELDS.every((field) => Number(existing[field] ?? 0) === 0)
     ) {
       return null;
     }
     const ts = now();
+    const counterResets = STAGE_COUNTER_FIELDS.map((field) => `${field} = :zero`).join(', ');
+    const values = {
+      ':state': 'PENDING',
+      ':attempt': Number(existing.attempt ?? 0) + 1,
+      ':null': null,
+      ':zero': 0,
+      ':pendingCodeCommitRefs': preservePendingCodeCommitRefs
+        ? (existing.pendingCodeCommitRefs ?? null)
+        : null,
+      ':ts': ts,
+      ':g2sk': executionTypeStateIndex({
+        executionId,
+        type: 'STAGE',
+        state: 'PENDING',
+        id: stageInstanceId,
+      }).GSI2SK,
+    };
     const { Attributes } = await ddb.send(
       new UpdateCommand({
         TableName: table(),
@@ -1156,24 +1235,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           'runtimeError = :null, startedAt = :null, completedAt = :null, ' +
           'parkedAt = :null, pendingHumanTaskId = :null, waitMs = :zero, ' +
           'pendingCodeCommitRefs = :pendingCodeCommitRefs, ' +
+          `${counterResets}, ` +
           'updatedAt = :ts, GSI2SK = :g2sk',
         ExpressionAttributeNames: { '#state': 'state' },
-        ExpressionAttributeValues: {
-          ':state': 'PENDING',
-          ':attempt': Number(existing.attempt ?? 0) + 1,
-          ':null': null,
-          ':zero': 0,
-          ':pendingCodeCommitRefs': preservePendingCodeCommitRefs
-            ? (existing.pendingCodeCommitRefs ?? null)
-            : null,
-          ':ts': ts,
-          ':g2sk': executionTypeStateIndex({
-            executionId,
-            type: 'STAGE',
-            state: 'PENDING',
-            id: stageInstanceId,
-          }).GSI2SK,
-        },
+        ExpressionAttributeValues: values,
         ReturnValues: 'ALL_NEW',
       }),
     );
@@ -1271,6 +1336,119 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return rows
       .filter((r) => !stageInstanceId || r.stageInstanceId === stageInstanceId)
       .toSorted(bySk);
+  };
+
+  // Write one gate-precondition receipt. IDEMPOTENT by construction: the SK is
+  // deterministic and the write is conditional, so a replay (a retried gate
+  // answer, a re-driven durable step) returns the EXISTING row rather than
+  // failing or double-counting. Callers therefore never need to check first.
+  const putReceipt = async ({
+    executionId,
+    kind,
+    stageInstanceId,
+    attempt,
+    unitSlug = null,
+    sectionIndex = null,
+    ordinal = null,
+    boundDigest = null,
+    choice = null,
+    decidedBy = null,
+    decidedByName = null,
+    humanTaskId = null,
+    detail = null,
+  }) => {
+    if (!RECEIPT_KINDS.includes(kind)) {
+      throw new Error(`putReceipt: unknown receipt kind "${kind}"`);
+    }
+    const item = buildReceiptRow({
+      executionId,
+      kind,
+      stageInstanceId,
+      attempt,
+      unitSlug,
+      sectionIndex,
+      ordinal,
+      boundDigest,
+      choice,
+      decidedBy,
+      decidedByName,
+      humanTaskId,
+      detail,
+      now: now(),
+    });
+    try {
+      await ddb.send(
+        new PutCommand({
+          TableName: table(),
+          Item: item,
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        }),
+      );
+      return item;
+    } catch (e) {
+      if (e?.name !== 'ConditionalCheckFailedException') throw e;
+      const { Item } = await ddb.send(
+        new GetCommand({ TableName: table(), Key: { pk: item.pk, sk: item.sk } }),
+      );
+      return Item ?? item;
+    }
+  };
+
+  const getReceipt = async (executionId, selector) => {
+    const { Item } = await ddb.send(
+      new GetCommand({ TableName: table(), Key: receiptKey(executionId, selector) }),
+    );
+    return Item ?? null;
+  };
+
+  // Every receipt for an execution, narrowed in memory. `attempt` is the
+  // invalidation filter: passing the STAGE# row's current attempt is what makes
+  // a prior attempt's receipts invisible after a rewind.
+  const listReceipts = async (
+    executionId,
+    { kind, stageInstanceId, attempt, consistentRead = false } = {},
+  ) => {
+    const rows = await queryAll(ddb, {
+      TableName: table(),
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'RECEIPT#' },
+      ...(consistentRead ? { ConsistentRead: true } : {}),
+    });
+    return rows
+      .filter((r) => kind == null || r.kind === kind)
+      .filter((r) => stageInstanceId == null || r.stageInstanceId === stageInstanceId)
+      .filter((r) => attempt == null || Number(r.attempt) === Number(attempt))
+      .toSorted(bySk);
+  };
+
+  // Raise a bounded-repair counter on the STAGE# row to `to`, but only while it
+  // is below it, and say whether this call raised it. The checkpoint ladder
+  // passes the validation revision + 1, so each revision of an attempt can claim
+  // exactly one repair turn: the cap must be persisted, not held in process
+  // memory, because the stage runner can be re-invoked (resume, redrive), and the
+  // conditional write means two concurrent claims cannot both succeed. The field
+  // is allowlisted (STAGE_COUNTER_FIELDS, declared beside resetStageRow above)
+  // because it is interpolated into the update expression.
+  const raiseStageCounter = async ({ executionId, stageInstanceId, field, to }) => {
+    if (!STAGE_COUNTER_FIELDS.includes(field)) {
+      throw new Error(`raiseStageCounter: unknown counter field "${field}"`);
+    }
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          UpdateExpression: 'SET #f = :to, updatedAt = :ts',
+          ConditionExpression: 'attribute_not_exists(#f) OR #f < :to',
+          ExpressionAttributeNames: { '#f': field },
+          ExpressionAttributeValues: { ':to': to, ':ts': now() },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
   };
 
   // Append an agent output chunk for restore-on-reload. The sequence is an atomic
@@ -1505,11 +1683,12 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // fan-in reads this to decide whether repo work happened during the run
   // (v2.git.pushed / v2.git.push_failed) before trusting a "no changes"
   // comparison. Paginated — a dropped page could hide a push failure.
-  const listEvents = async (executionId) => {
+  const listEvents = async (executionId, { consistentRead = false } = {}) => {
     const items = await queryAll(ddb, {
       TableName: table(),
       KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
       ExpressionAttributeValues: { ':pk': executionPk(executionId), ':p': 'EVENT#' },
+      ...(consistentRead ? { ConsistentRead: true } : {}),
     });
     return items.toSorted(bySk);
   };
@@ -2476,6 +2655,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       metrics: records.filter((r) => r.sk.startsWith('METRIC#')),
       graphReads: records.filter((r) => r.sk.startsWith('READ#')),
       sensorRuns: records.filter((r) => r.sk.startsWith('SENSOR#')),
+      receipts: records.filter((r) => r.sk.startsWith('RECEIPT#')),
       steering: records.filter((r) => r.sk.startsWith('STEER#')),
       outputs: records.filter((r) => r.sk.startsWith('OUTPUT#')),
       unitPlan: records.find((r) => r.sk === 'UNITPLAN') ?? null,
@@ -2490,7 +2670,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
 
   // Delete EVERY record for an execution — the whole EXEC#<id> partition
   // (META, STAGE#, EVENT#, HUMAN#, METRIC#, OUTPUT#, SENSOR#, STEER#,
-  // QEDIT#, UNITPLAN, UNIT#). Keys-only projection: OUTPUT# rows can be megabytes and
+  // RECEIPT#, QEDIT#, UNITPLAN, UNIT#). The query is prefix-free (pk only), so
+  // a new item family is covered the moment it is written — RECEIPT# included. Keys-only projection: OUTPUT# rows can be megabytes and
   // we only need pk/sk to delete them. BatchWrite in chunks of 25 (the API
   // maximum), retrying UnprocessedItems with backoff so a throttled batch
   // never silently leaves rows behind. Idempotent — deleting a missing key is
@@ -2545,6 +2726,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     listEvents,
     createHumanTask,
     getHumanTask,
+    markGateCallbackConsumed,
     setGateCallbackId,
     answerHumanTask,
     answerHumanTaskWithSteering,
@@ -2560,6 +2742,10 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     recordGraphRead,
     recordSensorRun,
     listSensorRuns,
+    putReceipt,
+    getReceipt,
+    listReceipts,
+    raiseStageCounter,
     appendOutput,
     getOutputs,
     listProjectExecutions,

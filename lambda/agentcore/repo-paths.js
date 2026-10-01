@@ -27,3 +27,15 @@ export const repoTargetDirs = ({ repos, workspaceDir }) => {
     targetDir: repoTargetDir({ url: urls[index], workspaceDir, multi }),
   }));
 };
+
+// Git reports changed paths RELATIVE TO THE REPO it ran in, but the sensor
+// runner globs paths relative to the WORKSPACE root. In multi-repo mode those
+// two spaces differ by the repo directory, so a `fire_on: write` sensor matching
+// `**/*.ts` would silently match nothing. Project a repo-relative path into the
+// workspace space using the same layout `repoTargetDir` produces.
+export const workspaceRelativePath = ({ repo, file, multi }) => {
+  if (typeof file !== 'string' || file === '') return null;
+  if (!multi) return file;
+  if (!isValidRepoPath(repo)) return null;
+  return `${repo}/${file}`;
+};

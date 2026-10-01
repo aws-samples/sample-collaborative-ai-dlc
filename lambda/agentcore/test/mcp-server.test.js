@@ -6,6 +6,7 @@ import {
   READ_TOOLS,
   REVIEWER_TOOLS,
   AUTHOR_TOOLS,
+  toolsForRole,
   ok,
 } from '../mcp/server.js';
 import { GraphWriteError } from '../mcp/graph-writer.js';
@@ -439,5 +440,19 @@ describe('registerTools', () => {
       errSpy.mockRestore();
       outSpy.mockRestore();
     }
+  });
+});
+
+describe('toolsForRole — release policy', () => {
+  const POLICY = Object.freeze({
+    summaryConfirmation: 'required',
+    planApproval: 'required',
+    learnings: 'off',
+  });
+
+  it('gives the checkpoint tools to the owning session', () => {
+    const tools = toolsForRole('author', 'requirements-analysis', POLICY);
+    expect(tools).toContain('confirm_summary');
+    expect(tools).toContain('request_plan_approval');
   });
 });
