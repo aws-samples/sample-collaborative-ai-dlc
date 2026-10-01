@@ -1012,6 +1012,46 @@ const reviewerRepairMessage = ({ reviewerAgent, round, reviewerFindings }) =>
     'say plainly in the output what you did not change and why.',
   ].join('\n');
 
+// The WP2 durability rule as data: the failure a git result must turn into when
+// new work is at risk, or null. Shared by the stage commit and the repair-turn
+// commits so a repair cannot finish the stage with unpushed work.
+const workAtRiskFailure = (gitResult) => {
+  const atRiskRepos = gitResult?.ok
+    ? []
+    : (gitResult?.results ?? []).filter(
+        (r) =>
+          (r.committed === true &&
+            r.pushed !== true &&
+            r.pushed !== 'empty' &&
+            r.pushed !== 'up_to_date') ||
+          (r.committed !== true && (r.dirty === true || r.reason === 'engine_crashed')),
+      );
+  if (atRiskRepos.length === 0) return null;
+  const detail = atRiskRepos
+    .map(
+      (r) =>
+        `${r.repo}: ${r.reason ?? 'push_failed'}${r.detail ? ` — ${String(r.detail).slice(0, 300)}` : ''}`,
+    )
+    .join('; ');
+  const uncommitted = atRiskRepos.some((r) => r.committed !== true);
+  // 'push_failed' keeps its v1 meaning (commit exists, push did not land);
+  // 'git_commit_failed' is the new durability failure (work never became a
+  // commit at all — the loss mode the engine exists to close).
+  return { code: uncommitted ? 'git_commit_failed' : 'push_failed', detail };
+};
+
+// Whether a git result names every file it changed. A partial list is worse
+// than none: a consumer of `changedFiles: []` cannot tell "nothing changed" from
+// "the engine could not say". True only when the engine succeeded, reported at
+// least one repo, and every repo reported an explicit `files` array or a clean
+// commit.
+const gitReportsAllFiles = (gitResult) =>
+  Boolean(gitResult?.ok) &&
+  (gitResult?.results ?? []).length > 0 &&
+  gitResult.results.every(
+    (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
+  );
+
 // Whether this dispatch ends at a validation gate that shows the stage's
 // findings. Unit-lane stages do not: the lane merges on its own outcome and the
 // batch gate after it carries no per-stage findings, so a blocking finding on a
@@ -3367,7 +3407,9 @@ export const runStage = async (
       ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
       : `aidlc(${stageId}): ${executionId}`,
   });
-  const stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
+  // Every commit of this attempt: carried from a parked leg, this leg's, and the
+  // repair turns' (added by runRepairTurn below).
+  let stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
   retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
@@ -3554,29 +3596,8 @@ export const runStage = async (
   // v2.git.push_failed event above but does not change stage behavior.
   // A parked stage (above) parks regardless — the human loop must not be
   // blocked by a push outage; the resume leg retries the push.
-  const atRiskRepos = gitResult.ok
-    ? []
-    : gitResult.results.filter(
-        (r) =>
-          (r.committed === true &&
-            r.pushed !== true &&
-            r.pushed !== 'empty' &&
-            r.pushed !== 'up_to_date') ||
-          (r.committed !== true && (r.dirty === true || r.reason === 'engine_crashed')),
-      );
-  if (atRiskRepos.length > 0) {
-    const detail = atRiskRepos
-      .map(
-        (r) =>
-          `${r.repo}: ${r.reason ?? 'push_failed'}${r.detail ? ` — ${String(r.detail).slice(0, 300)}` : ''}`,
-      )
-      .join('; ');
-    const uncommitted = atRiskRepos.some((r) => r.committed !== true);
-    // 'push_failed' keeps its v1 meaning (commit exists, push did not land);
-    // 'git_commit_failed' is the new durability failure (work never became a
-    // commit at all — the loss mode the engine exists to close).
-    return fail(stageInstanceId, uncommitted ? 'git_commit_failed' : 'push_failed', detail);
-  }
+  const gitFailure = workAtRiskFailure(gitResult);
+  if (gitFailure) return fail(stageInstanceId, gitFailure.code, gitFailure.detail);
 
   // The lead repair turn: re-enter the SAME conversation with one deterministic
   // message and commit whatever it rewrote. Hoisted out of the checkpoint ladder
@@ -3585,6 +3606,11 @@ export const runStage = async (
   // already cleaned up above and restoring a rollout is the resume path's job. With
   // no resumable session the callers simply skip the repair rung.
   const canRepair = Boolean(cliSessionId) && cli !== 'codex';
+  // A repair commit goes through the same rule as the stage commit: its refs join
+  // the attempt's, and new work it could not push fails the stage (checked after
+  // the ladder and after the reviewer loop, once no park is pending).
+  let repairCommitted = false;
+  let repairGitFailure = null;
   const runRepairTurn = canRepair
     ? async (message, { label = 'checkpoint repair' } = {}) => {
         const mcpKwargs = await materializeCliMcp();
@@ -3626,7 +3652,7 @@ export const runStage = async (
         // The repair turn re-saves artifacts, so the tree moved: commit it, or
         // the lineage check (and the next reviewer round) would judge the stage on
         // the pre-repair commit.
-        await commitAndPushAll({
+        const repairGit = await commitAndPushAll({
           repos,
           workspaceDir,
           branch,
@@ -3636,9 +3662,18 @@ export const runStage = async (
           executionId,
           author: gitAuthor,
           message: unitSlug
-            ? `aidlc(${stageId}): ${unitSlug} \u2014 ${executionId} (${label})`
+            ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (${label})`
             : `aidlc(${stageId}): ${executionId} (${label})`,
-        }).catch(() => null);
+        }).catch((error) => ({
+          ok: false,
+          committed: false,
+          results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
+        }));
+        const refsBefore = stageCodeCommitRefs.length;
+        stageCodeCommitRefs = mergeCodeCommitRefs(stageCodeCommitRefs, repairGit);
+        if (stageCodeCommitRefs.length > refsBefore) repairCommitted = true;
+        retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
+        repairGitFailure ??= workAtRiskFailure(repairGit);
       }
     : null;
 
@@ -3663,6 +3698,9 @@ export const runStage = async (
       validationRound,
     });
     if (ladder.parked) return parkStage(ladder.parked);
+    if (repairGitFailure) {
+      return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail);
+    }
     if (ladder.failure) {
       return fail(stageInstanceId, ladder.failure.code, ladder.failure.detail);
     }
@@ -3688,17 +3726,24 @@ export const runStage = async (
     // unless the git engine succeeded, reported at least one repo, and every repo
     // reported an explicit `files` array (a clean commit counts as none). Paths are projected from repo-relative
     // (git's space) into workspace-relative (the sensor glob's space).
-    const gitReportedFiles =
-      gitResult.ok &&
-      gitResult.results.length > 0 &&
-      gitResult.results.every(
-        (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
-      );
+    // The attempt's files, not only this leg's: a stage that parked on a
+    // checkpoint committed its first leg already, and checkpoint repair turns
+    // commit on their own. When either happened, the list is rebuilt from the
+    // attempt's commit references.
+    const sweepsWrites = withPlatformSensors(stage).some((sensor) => sensor.fireOn === 'write');
+    const attemptGitResult =
+      sweepsWrites && (carriedCodeCommitRefs.length > 0 || repairCommitted)
+        ? await gitResultForCommitRefs({
+            commitRefs: stageCodeCommitRefs,
+            repos,
+            workspaceDir,
+          }).catch(() => null)
+        : gitResult;
     const multiRepo = repos.length > 1;
-    const attemptChangedFiles = gitReportedFiles
+    const attemptChangedFiles = gitReportsAllFiles(attemptGitResult)
       ? [
           ...new Set(
-            gitResult.results.flatMap((gitChange) =>
+            attemptGitResult.results.flatMap((gitChange) =>
               (gitChange.files ?? [])
                 .map((file) =>
                   workspaceRelativePath({ repo: gitChange.repo, file, multi: multiRepo }),
@@ -3862,6 +3907,9 @@ export const runStage = async (
       });
       if (repairParked) return parkStage(repairParked);
     }
+    if (repairGitFailure) {
+      return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail);
+    }
     const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';
     if (advisory) {
       reviewAdvisory = {
@@ -4020,7 +4068,7 @@ export const runStage = async (
   // implementation work into an execution failure.
   let completedGitResult = gitResult;
   try {
-    if (carriedCodeCommitRefs.length > 0) {
+    if (carriedCodeCommitRefs.length > 0 || repairCommitted) {
       completedGitResult = await gitResultForCommitRefs({
         commitRefs: stageCodeCommitRefs,
         repos,
@@ -4138,13 +4186,7 @@ export const runStage = async (
   // `changedFiles: []` cannot tell "this stage changed nothing" from "the git
   // engine could not say". Null unless the engine succeeded, reported at least
   // one repo, and every repo reported an explicit `files` array or a clean commit.
-  const completedReportedFiles =
-    completedGitResult.ok &&
-    completedGitResult.results.length > 0 &&
-    completedGitResult.results.every(
-      (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
-    );
-  const changedFiles = completedReportedFiles
+  const changedFiles = gitReportsAllFiles(completedGitResult)
     ? [
         ...new Set(completedGitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
       ].toSorted()
