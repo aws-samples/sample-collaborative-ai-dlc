@@ -436,7 +436,7 @@ describe('updateRelease', () => {
       actor: 'admin-1',
     });
 
-    expect(promoted).toMatchObject({ supportState: 'selectable', fidelityGaps: [] });
+    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
   });
 
   it('refuses visibility-only activation when it would expose unsupported behavior', async () => {
@@ -1654,26 +1654,22 @@ describe('promotion of a record registered before protocol evidence existed', ()
     return row;
   };
 
-  it('re-evaluates the closure, so the loop-back protocol is judged too', async () => {
+  it('re-evaluates the closure, and promotes it once the loop-back is handled', async () => {
     const row = await registeredEarlier();
 
-    await expect(
-      updateRelease({
-        ...registryArgs(),
-        s3,
-        bucket: BUCKET,
-        releaseId: CANDIDATE_RELEASE_ID,
-        expectedRevision: row.revision,
-        patch: { supportState: 'selectable' },
-        actor: 'admin-1',
-      }),
-    ).rejects.toMatchObject({
-      code: 'release_capability_unhandled',
-      details: {
-        gaps: expect.arrayContaining([
-          { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
-        ]),
-      },
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: CANDIDATE_RELEASE_ID,
+      expectedRevision: row.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
+    expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
+      fidelityEvidenceRevision: 2,
     });
   });
 
