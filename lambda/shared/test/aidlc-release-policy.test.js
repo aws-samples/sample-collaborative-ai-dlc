@@ -186,6 +186,18 @@ describe('Per-release adapters: mapper keys', () => {
     });
   });
 
+  // Persona sessions exist only for a pinned release; an unpinned plan keeps
+  // failing these modes fast, exactly as before they could run.
+  it('keeps pipeline and mob not implemented outside release mode', () => {
+    for (const mode of ['pipeline', 'mob']) {
+      const { plan } = planFor({ stageFm: { ...STAGE_FM, mode }, releaseMode: false });
+      expect(plan.stages[0]).toMatchObject({
+        notImplemented: true,
+        runtimeError: 'not_implemented',
+      });
+    }
+  });
+
   it('maps maxTurns as an integer and leaves a non-integer verbatim for the analyzer', () => {
     expect(mapAgent({ name: 'r', maxTurns: 60 }, '', 'r').maxTurns).toBe(60);
     expect(mapAgent({ name: 'r', maxTurns: '60' }, '', 'r').maxTurns).toBe(60);

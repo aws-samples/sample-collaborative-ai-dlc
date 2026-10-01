@@ -515,10 +515,10 @@ describe('runStage — the lead session carries its own trusted identity', () =>
   });
 
   it('leaves the lead scope without an identity on an unpinned run', async () => {
-    const { deps, materialized } = harness({ mode: 'mob', release: null });
+    const { deps, materialized } = harness({ mode: 'inline', release: null });
     deps.loadLibrary = async () => ({
       workflow: workflow(),
-      library: { ...library('mob'), fromRelease: false },
+      library: { ...library('inline'), fromRelease: false },
     });
     await runStage(baseArgs, deps);
     expect(materialized[0].stage.policy ?? null).toBeNull();

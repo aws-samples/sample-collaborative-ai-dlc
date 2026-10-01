@@ -4406,7 +4406,10 @@ describe('runStage — release-mode fidelity', () => {
       let seen = null;
       const deps = baseDeps({
         spawnFn: okSpawn,
-        loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
+        loadLibrary: async () => ({
+          workflow: workflow(),
+          library: { ...ensembleLibrary(mode), fromRelease: true },
+        }),
         materializeStage: async (args) => {
           seen = args;
           return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
@@ -4422,24 +4425,19 @@ describe('runStage — release-mode fidelity', () => {
     },
   );
 
-  it.each(['pipeline', 'mob'])(
-    'does not load %s support personas for an unpinned intent',
-    async (mode) => {
-      let seen = null;
-      const deps = baseDeps({
-        spawnFn: okSpawn,
-        loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
-        materializeStage: async (args) => {
-          seen = args;
-          return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
-        },
-      });
+  // Persona sessions exist only for a pinned release: an unpinned plan fails these
+  // modes fast, as it did before they could run.
+  it.each(['pipeline', 'mob'])('still fails a %s stage for an unpinned intent', async (mode) => {
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary(mode) }),
+    });
 
-      await runStage(baseArgs, deps);
-
-      expect(seen).not.toHaveProperty('supportAgents');
-    },
-  );
+    await expect(runStage(baseArgs, deps)).resolves.toMatchObject({
+      ok: false,
+      reason: 'not_implemented',
+    });
+  });
 
   it('loads no support persona for a legacy mode', async () => {
     let seen = null;

@@ -43,10 +43,12 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
   'review.artifact-focus@v1',
 ]);
 
-// Stage modes the runtime can execute. Pipeline, mob, and subagent supports use
-// serial, persona-scoped sessions; agent-team remains unrunnable because it
-// requires real concurrent sessions.
-const RUNNABLE_MODES = ['inline', 'subagent', 'pipeline', 'mob'];
+// Stage modes the runtime can execute. Pipeline and mob run as serial,
+// persona-scoped sessions, which exist only for a release-pinned plan; an
+// unpinned plan fails them fast as before. agent-team remains unrunnable because
+// it requires real concurrent sessions.
+const RUNNABLE_MODES = ['inline', 'subagent'];
+const RELEASE_RUNNABLE_MODES = [...RUNNABLE_MODES, 'pipeline', 'mob'];
 
 // Reserved lead-agent refs that are NOT domain AGENT blocks and therefore have no
 // library entry to resolve against. Upstream's initialization stages declare
@@ -826,7 +828,7 @@ const buildExecutionPlan = ({
       };
 
       // `agent-team` is the one known-but-unrunnable mode. Flag, don't crash.
-      if (!RUNNABLE_MODES.includes(instance.mode)) {
+      if (!(policyEnabled ? RELEASE_RUNNABLE_MODES : RUNNABLE_MODES).includes(instance.mode)) {
         instance.notImplemented = true;
         instance.runtimeError = 'not_implemented';
       }
