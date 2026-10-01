@@ -386,7 +386,7 @@ describe('briefs — the blindness seam', () => {
     expect(renderLeadTopologyBrief({ mode: 'mob', leadAgentRef: 'x', supports: [] })).toBe('');
   });
 
-  it('hands the integrator the contributions and the human answer on a resume', () => {
+  it('hands the integrator the contributions and leaves judgment calls to the gate', () => {
     const brief = buildIntegratorBrief({
       stage: stage(),
       agentRef: 'product-agent',
@@ -398,25 +398,11 @@ describe('briefs — the blindness seam', () => {
         },
       ],
       judgmentDissent: [{ agentRef: 'quality-agent', position: 'scope is too wide' }],
-      resumeAnswer: 'Narrow the scope to checkout only.',
     });
     expect(brief).toContain('contribution-user-stories-quality-agent');
     expect(brief).toContain('- OBJECT (judgment): scope is too wide');
-    expect(brief).toContain('Narrow the scope to checkout only.');
-    expect(brief).toContain('Do NOT ask it again.');
-    // Answered: the brief no longer tells the session to ask.
-    expect(brief).not.toContain('`ask_question`');
-  });
-
-  it('tells an integrator whose question is spent to record dissent, never to ask', () => {
-    const brief = buildIntegratorBrief({
-      stage: stage(),
-      agentRef: 'product-agent',
-      judgmentDissent: [{ agentRef: 'quality-agent', position: 'scope is too wide' }],
-      mayAsk: false,
-    });
-    expect(brief).toContain('scope is too wide');
-    expect(brief).toContain('do NOT ask');
+    expect(brief).toContain('validation gate');
+    expect(brief).toContain('Do NOT');
     expect(brief).not.toContain('`ask_question`');
   });
 });
@@ -647,10 +633,15 @@ describe('mob dissent triage', () => {
     const integrator = briefs.find((entry) => entry.role === 'integrator');
     expect(integrator.brief).toContain('Judgment calls for the human');
     expect(integrator.brief).toContain('which market first?');
-    expect(integrator.brief).toContain('`ask_question`');
-    // A judgment call is not a knowledge dispute, so no second round is spent.
+    expect(integrator.brief).not.toContain('`ask_question`');
+    expect(integrator.canAsk).toBe(false);
+    // A judgment call is not a knowledge dispute, so no second round is spent; it
+    // reaches the validation gate verbatim as maintained dissent.
     expect(briefs.filter((entry) => entry.role === 'support')).toHaveLength(1);
     expect(ensembleEvidence.dissentRounds).toBe(1);
+    expect(ensembleEvidence.dissent).toEqual([
+      expect.objectContaining({ agentRef: 'quality-agent', position: 'which market first?' }),
+    ]);
   });
 
   it('cannot hand a resumed run a fresh dissent budget', async () => {
@@ -685,10 +676,9 @@ describe('mob dissent triage', () => {
 });
 
 describe('park and resume mid-ensemble', () => {
-  // Nothing threads an answer back into a support or a pipeline link, so neither
-  // is given ask_question; only the integrator (the lead's role, resumed with the
-  // answer) may ask, and only when it has a judgment call to raise.
-  it('gives ask_question only to an integrator that has a judgment call', async () => {
+  // Nothing threads an answer back into a persona session, so none is given
+  // ask_question; judgment calls reach the validation gate as dissent instead.
+  it('gives ask_question to no persona session, even with a judgment call', async () => {
     const stageRow = stage({ mode: 'mob' });
     const topology = await topologyFor(stageRow);
     const plain = await run({ stageRow, topology });
@@ -705,7 +695,7 @@ describe('park and resume mid-ensemble', () => {
         'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
       },
     });
-    expect(judged.briefs.find((entry) => entry.role === 'integrator').canAsk).toBe(true);
+    expect(judged.briefs.find((entry) => entry.role === 'integrator').canAsk).toBe(false);
 
     const pipelineRow = stage({ mode: 'pipeline', supportAgentRefs: ['architect-agent'] });
     const pipeline = await run({ stageRow: pipelineRow, topology: await topologyFor(pipelineRow) });
@@ -752,92 +742,27 @@ describe('park and resume mid-ensemble', () => {
     ]);
   });
 
-  // A park during the integrator session resumes without re-running any completed
-  // persona session.
-  it('re-runs only the integrator after an integrator park', async () => {
+  // Defence in depth: a gate the integrator leaves anyway is withdrawn, not
+  // waited on, so the stage never parks on a persona session.
+  it('withdraws a gate the integrator left instead of parking on it', async () => {
     const stageRow = stage({ mode: 'mob' });
     const topology = await topologyFor(stageRow);
-    const store = spyStore();
-    const first = await run({
+    const { store } = await run({
       stageRow,
       topology,
-      store,
       sessions: {
         'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
       },
       parkAfter: { role: 'integrator', agentRef: 'product-agent' },
     });
-    expect(first.briefs.filter((entry) => entry.role === 'support')).toHaveLength(3);
-    // Three contributions plus the integrator's ONE question for this attempt.
+    expect(store.superseded.map((row) => row.supersededBy)).toEqual([
+      'persona-integrator:product-agent',
+    ]);
     expect(store.receipts.map((row) => row.kind)).toEqual([
       'persona-contribution',
       'persona-contribution',
       'persona-contribution',
-      'integrator-question',
     ]);
-    expect(store.receipts[3]).toMatchObject({ humanTaskId: 'ht-1', ordinal: 1 });
-
-    const resumed = await run({
-      stageRow,
-      topology,
-      store,
-      attempt: 0,
-      resumeAnswer: 'Start with the EU market.',
-      sessions: {
-        'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
-      },
-    });
-    expect(resumed.briefs.filter((entry) => entry.role === 'support')).toHaveLength(0);
-    const integrator = resumed.briefs.find((entry) => entry.role === 'integrator');
-    expect(integrator.brief).toContain('Start with the EU market.');
-    // Answered once: the resumed integration can no longer ask, so it cannot loop.
-    expect(integrator.canAsk).toBe(false);
-    expect(integrator.brief).not.toContain('`ask_question`');
-    // Idempotent receipts: the resume added none.
-    expect(store.receipts).toHaveLength(4);
-  });
-
-  // The answer a resumed leg carries is the integrator's ONLY if the integrator
-  // asked. Otherwise it answered the LEAD's question (the ensemble was deferred
-  // behind it) and the lead's own conversation already applied it.
-  it('does not hand the integrator an answer to a question it never asked', async () => {
-    const stageRow = stage({ mode: 'mob' });
-    const topology = await topologyFor(stageRow);
-    const { briefs } = await run({
-      stageRow,
-      topology,
-      resumeAnswer: 'Answer to the lead question.',
-      sessions: {
-        'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
-      },
-    });
-    const integrator = briefs.find((entry) => entry.role === 'integrator');
-    expect(integrator.brief).not.toContain('Answer to the lead question.');
-    expect(integrator.canAsk).toBe(true);
-  });
-
-  // Defence in depth: an integrator whose question is spent cannot park the stage
-  // a second time — a gate it leaves anyway is withdrawn, not waited on.
-  it('withdraws a second integrator question in the same attempt', async () => {
-    const stageRow = stage({ mode: 'mob' });
-    const topology = await topologyFor(stageRow);
-    const store = spyStore([
-      { kind: 'integrator-question', attempt: 0, ordinal: 1, humanTaskId: 'ht-0', detail: {} },
-    ]);
-    const { store: after } = await run({
-      stageRow,
-      topology,
-      store,
-      resumeAnswer: 'EU first.',
-      sessions: {
-        'quality-agent': { kind: 'writes', positions: '- OBJECT (judgment): which market?' },
-      },
-      parkAfter: { role: 'integrator', agentRef: 'product-agent' },
-    });
-    expect(after.superseded.map((row) => row.supersededBy)).toEqual([
-      'persona-integrator:product-agent',
-    ]);
-    expect(after.receipts.filter((row) => row.kind === 'integrator-question')).toHaveLength(1);
   });
 });
 

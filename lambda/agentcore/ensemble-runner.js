@@ -300,11 +300,6 @@ export const buildIntegratorBrief = ({
   agentRef,
   contributions = [],
   judgmentDissent = [],
-  resumeAnswer = null,
-  // Whether this integration session is given ask_question. False once the
-  // integrator's one question for the attempt is spent (answered or not), so the
-  // brief must not tell it to ask: judgment calls are then recorded as dissent.
-  mayAsk = true,
   reduced = false,
 }) =>
   [
@@ -348,35 +343,13 @@ export const buildIntegratorBrief = ({
           '',
           '## Judgment calls for the human',
           '',
-          ...(resumeAnswer
-            ? ['These trade-offs were put to the human; the answer follows below.']
-            : mayAsk
-              ? [
-                  'These objections are trade-offs only a human stakeholder can settle. Raise',
-                  'ONE consolidated `ask_question` covering them, with concrete options, then',
-                  'stop: the platform parks the stage and resumes this integration with the',
-                  'answer.',
-                ]
-              : [
-                  'These objections are trade-offs only a human stakeholder can settle. The',
-                  "stage's one question to the human is already spent, so do NOT ask: record",
-                  'each one as attributed dissent in the output for the human to settle at',
-                  'the validation gate.',
-                ]),
+          'These objections are trade-offs only a human stakeholder can settle. Do NOT',
+          'ask: record each one as attributed dissent in the output; the human settles',
+          'them at the validation gate, where they are quoted verbatim.',
           '',
           ...judgmentDissent.map(
             (item) => `- **${item.agentRef}**: ${neutralizeTokens(item.position)}`,
           ),
-        ]
-      : []),
-    ...(resumeAnswer
-      ? [
-          '',
-          '## The human has already answered',
-          '',
-          neutralizeTokens(resumeAnswer),
-          '',
-          'Apply this answer. Do NOT ask it again.',
         ]
       : []),
   ].join('\n');
@@ -513,7 +486,6 @@ export const runEnsembleSessions = async ({
   policy = null,
   personaScope = {},
   attempt = 0,
-  resumeAnswer = null,
   lead = { persona: '', block: null },
   // Everything dispatchPersona needs that is identical for every persona in this
   // stage (cli, models, env, workspaceDir, spawnFn, mcpEntry, materializers, ids).
@@ -658,8 +630,6 @@ export const runEnsembleSessions = async ({
     brief,
     verify,
     snapshot = null,
-    // Only a session whose answer is threaded back into it may ask the human.
-    canAsk = false,
   }) => {
     for (let tryIndex = 1; tryIndex <= MAX_PERSONA_ATTEMPTS; tryIndex += 1) {
       // Checked before EVERY dispatch, retries included: a session starts only
@@ -683,7 +653,8 @@ export const runEnsembleSessions = async ({
               return '';
             }),
         brief: brief(reduced),
-        personaScope: { ...personaScope, agentRef, canAsk },
+        // Nothing threads an answer back into a persona session, so none may ask.
+        personaScope: { ...personaScope, agentRef, canAsk: false },
         ...dispatchContext,
         executionId,
         projectId,
@@ -757,7 +728,6 @@ export const runEnsembleSessions = async ({
       receipt,
       emit,
       gap,
-      pendingGate,
       withdrawOrphanGate,
       stageOutputsFingerprint,
       wroteStageOutput,
@@ -770,7 +740,6 @@ export const runEnsembleSessions = async ({
         completed: ordinalsOf('persona-contribution'),
         priorReceipts,
         readContributions,
-        resumeAnswer,
         lead,
       });
     }
@@ -899,10 +868,8 @@ const runHubAndSpoke = async ({
   receipt,
   emit,
   gap,
-  pendingGate,
   withdrawOrphanGate,
   readContributions,
-  resumeAnswer,
   lead,
   stageOutputsFingerprint,
   wroteStageOutput,
@@ -916,13 +883,6 @@ const runHubAndSpoke = async ({
       .map((row) => roundOfOrdinal(row.ordinal)),
   );
   evidence.dissentRounds = round;
-  // The integrator gets ONE question per attempt, read off the persisted receipt
-  // so a resume cannot re-arm it. Its presence is also what makes `resumeAnswer`
-  // the integrator's answer: without it, the answer a resumed leg carries was the
-  // LEAD's (the lead parked, the ensemble was deferred), which the lead's own
-  // resumed conversation already applied.
-  let integratorAsked = priorReceipts.some((row) => row?.kind === 'integrator-question');
-  const integratorAnswer = integratorAsked ? resumeAnswer : null;
 
   const collect = async () => {
     const rows = await readContributions().catch(() => []);
@@ -949,9 +909,9 @@ const runHubAndSpoke = async ({
         })),
     );
 
-  // Returns true when the integrator raised its question and the stage must park.
+  // The integrator never asks the human: nothing threads an answer back into its
+  // session, and the judgment calls reach the validation gate verbatim as dissent.
   const integrate = async (judgmentDissent) => {
-    const mayAsk = !integratorAsked && judgmentDissent.length > 0;
     const outcome = await runPersona({
       role: 'integrator',
       agentRef: topology.leadAgentRef,
@@ -964,15 +924,12 @@ const runHubAndSpoke = async ({
           agentRef: topology.leadAgentRef,
           contributions: evidence.contributions,
           judgmentDissent,
-          resumeAnswer: integratorAnswer,
-          mayAsk,
           reduced,
         }),
       // The integration IS a rewrite of the stage outputs, so nothing moving means
       // nothing was integrated — the contributions would silently go nowhere.
       snapshot: stageOutputsFingerprint,
       verify: wroteStageOutput,
-      canAsk: mayAsk,
     });
     if (!outcome.ok) {
       await gap({
@@ -981,21 +938,7 @@ const runHubAndSpoke = async ({
         reason: outcome.reason ?? 'integration session produced no evidence',
       });
     }
-    if (!mayAsk) {
-      await withdrawOrphanGate({ agentRef: topology.leadAgentRef, role: 'integrator' });
-      return false;
-    }
-    const gate = await pendingGate().catch(() => null);
-    if (!gate) return false;
-    integratorAsked = true;
-    await receipt({
-      kind: 'integrator-question',
-      ordinal: 1,
-      choice: 'asked',
-      humanTaskId: gate.humanTaskId ?? null,
-      detail: { mode: topology.mode, round, agentRef: topology.leadAgentRef, attempt },
-    });
-    return true;
+    await withdrawOrphanGate({ agentRef: topology.leadAgentRef, role: 'integrator' });
   };
 
   await dispatchSupports({
@@ -1016,16 +959,7 @@ const runHubAndSpoke = async ({
   evidence.contributions = await collect();
 
   for (;;) {
-    const open = objections();
-    if (await integrate(open.filter((item) => item.class === 'judgment'))) {
-      // The integrator raised the judgment calls as one question and the stage is
-      // about to park. Maintained objections are recorded anyway so the human
-      // reading the gate sees them verbatim; the resumed leg re-integrates with
-      // the answer and skips every support that already contributed.
-      evidence.dissent = open;
-      await recordDissent({ evidence, emit, stage, attempt, mode: topology.mode, round });
-      return;
-    }
+    await integrate(objections().filter((item) => item.class === 'judgment'));
     evidence.contributions = await collect();
     // Only `mob` triages dissent; `subagent` integrates once and stops.
     if (topology.mode !== 'mob') break;

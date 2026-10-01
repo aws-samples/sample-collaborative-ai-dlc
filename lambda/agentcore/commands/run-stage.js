@@ -3591,7 +3591,6 @@ export const runStage = async (
           policy: stage.policy ?? null,
           personaScope,
           attempt,
-          resumeAnswer,
           lead: { persona: leadPersona, block: agentBlock },
           dispatchContext,
           knowledgeFor: (agentRef) =>

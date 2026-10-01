@@ -428,9 +428,9 @@ describe('ask_question — attempt provenance', () => {
     });
   });
 
-  // The ensemble integrator is not the checkpoint owner: its question must not
-  // read as the stage's conditional question flow (summaryConfirmation: if-present).
-  it('marks a question raised by a non-owner session', async () => {
+  // No persona session is given ask_question, so a question event carries the
+  // same shape whoever raised it.
+  it('records the same question detail for a non-owner session', async () => {
     const store = fakeStore();
     const bridge = createProcessBridge({
       store,
@@ -445,7 +445,6 @@ describe('ask_question — attempt provenance', () => {
     await bridge.askQuestion({ questions: [{ text: 'q', type: 'single', options: [] }] });
     expect(store.events.find((row) => row.type === 'v2.question.asked').detail).toEqual({
       attempt: 1,
-      checkpointOwner: false,
     });
   });
 

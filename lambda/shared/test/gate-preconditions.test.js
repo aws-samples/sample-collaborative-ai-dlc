@@ -288,31 +288,6 @@ describe('evaluateGatePreconditions: summary confirmation', () => {
     expect(result).toEqual({ ok: true, findings: [] });
   });
 
-  // A dispatched persona (the ensemble integrator) does not own the checkpoint;
-  // its question is not the stage's conditional question flow and must not arm
-  // if-present after the owner already settled.
-  it('under if-present, ignores a question raised by a non-owner session', () => {
-    const ifPresent = { ...POLICY, summaryConfirmation: 'if-present' };
-    const result = evaluateGatePreconditions({
-      stage: STAGE,
-      policy: ifPresent,
-      attempt: 0,
-      events: [
-        buildEventRow({
-          executionId: 'e1',
-          type: 'v2.question.asked',
-          actor: 'si-1',
-          summary: 'Agent asked 1 question(s)',
-          detail: { attempt: 0, checkpointOwner: false },
-          now: '2026-01-01T00:00:00.000Z',
-          eventId: 'ev-1',
-        }),
-      ],
-      producedArtifacts: ['requirements'],
-    });
-    expect(result).toEqual({ ok: true, findings: [] });
-  });
-
   it('under if-present, counts the persisted row shape of an owner question', () => {
     const ifPresent = { ...POLICY, summaryConfirmation: 'if-present' };
     const result = evaluateGatePreconditions({

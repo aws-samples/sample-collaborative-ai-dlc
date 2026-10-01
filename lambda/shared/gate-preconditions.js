@@ -119,10 +119,6 @@ const askedAQuestion = (events, attempt) =>
   (events ?? []).some(
     (event) =>
       eventTypeOf(event) === 'v2.question.asked' &&
-      // A question raised by a session that does not own the checkpoint (the
-      // ensemble integrator, dispatched after the owner settled its
-      // confirmation) is not the stage's conditional question flow.
-      event.detail?.checkpointOwner !== false &&
       // `appendEvent` persists the attempt under `detail`; events written before
       // it did carry none and still count, as they always have.
       (event.detail?.attempt == null || sameAttempt(event.detail, attempt)),
