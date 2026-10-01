@@ -86,6 +86,7 @@ import {
 import { workspaceRelativePath } from '../repo-paths.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { CHECKPOINTS, chosenLabel } from '../mcp/process-bridge.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner } from '../sensor-runner.js';
 import {
@@ -952,6 +953,7 @@ const readCheckpointFindings = async ({
   stage,
   policy,
   attempt,
+  validationRound = 0,
 }) => {
   // Tolerant of a store without the receipt family (older injected test doubles,
   // and any deployment mid-rollout): no evidence store means no evidence to judge,
@@ -967,6 +969,7 @@ const readCheckpointFindings = async ({
     stage,
     policy,
     attempt,
+    validationRound,
     receipts: withPlanApprovalLineage(receipts, events),
     events,
   });
@@ -1038,6 +1041,7 @@ const runCheckpointLadder = async ({
   stageLabel,
   runRepairTurn = null,
   pendingGate = null,
+  validationRound = 0,
   logger: log = logger,
 }) => {
   if (!policy) return { findings: [] };
@@ -1047,17 +1051,30 @@ const runCheckpointLadder = async ({
   const stageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
   const attempt = Number(stageRow?.attempt ?? 0);
   const read = () =>
-    readCheckpointFindings({ store, executionId, stageInstanceId, stage, policy, attempt });
+    readCheckpointFindings({
+      store,
+      executionId,
+      stageInstanceId,
+      stage,
+      policy,
+      attempt,
+      validationRound,
+    });
 
   let findings = await read();
   if (findings.length === 0) return { findings: [] };
 
-  // One bounded repair turn per counter per attempt. The counter is read from the
-  // STAGE# row and bumped atomically, so a re-invoked runner cannot grant a second.
+  // One bounded repair turn per counter per validation revision. The counter is
+  // read from the STAGE# row and bumped atomically, so a re-invoked runner cannot
+  // grant a second. A rewind resets it; within one attempt each revision may
+  // spend one more, so the counter is compared with the revision number rather
+  // than with zero.
   const counters = [
     ...new Set(findings.map((finding) => CHECKPOINT_LADDER[finding.code]?.counter).filter(Boolean)),
   ];
-  const alreadyRepaired = counters.some((counter) => Number(stageRow?.[counter] ?? 0) > 0);
+  const alreadyRepaired = counters.some(
+    (counter) => Number(stageRow?.[counter] ?? 0) > Number(validationRound ?? 0),
+  );
   const budgetAllowsRepair = runRepairTurn && !alreadyRepaired;
   if (runRepairTurn && !alreadyRepaired && budgetAllowsRepair) {
     const parkedBeforeRepair = await pendingGate?.();
@@ -1146,8 +1163,10 @@ const formatResumeAnswer = (gate) => {
   // and what that obliges it to do next, not just "the human answered".
   const checkpoint = gate?.detail?.checkpoint ?? null;
   if (checkpoint) {
-    const label = typeof a === 'string' ? a : (a?.perQuestion?.[0]?.answer ?? a?.freeText ?? '');
-    const approved = label === 'Looks correct' || label === 'Approve plan';
+    // The same label parser and labels the bridge uses to decide whether a
+    // receipt is written, so this message never contradicts the receipt.
+    const label = chosenLabel(a);
+    const approved = label === CHECKPOINTS[checkpoint]?.approve;
     const free = typeof a === 'string' ? '' : (a?.freeText ?? a?.feedback ?? '');
     if (approved) {
       return (
@@ -1440,6 +1459,11 @@ export const runStage = async (
     // release closure alone, never from the reseedable SYSTEM rows or the
     // mutable aidlc-runtime/ prefix. Absent => unchanged legacy resolution.
     methodologyRelease = null,
+    // Which validation revision of this attempt the dispatch runs (0 first,
+    // +1 per "Request changes" at the stage's validation gate). Sent only for a
+    // stage with a resolved release policy, where the checkpoint receipts are
+    // scoped by it.
+    validationRound = 0,
     scope,
     // Per-run skip overlay (shared/stage-skip.js): intent-level deselections +
     // accumulated gate-time skips, forwarded by the orchestrator on EVERY
@@ -2145,6 +2169,7 @@ export const runStage = async (
     // checkpoint tools it requires and withholds the ones it turns off. Null on
     // an unpinned/2.3.3 run, which registers exactly today's tool list.
     policy: stage.policy ?? null,
+    ...(stage.policy && validationRound ? { validationRound } : {}),
     // The lead's trusted identity under a resolved policy, so graph-writer lets
     // it write only its OWN contribution — never forge a support's evidence.
     // Absent on an unpinned/2.3.3 run, whose MCP config stays byte-identical.
@@ -3635,6 +3660,7 @@ export const runStage = async (
       runRepairTurn,
       pendingGate: () =>
         pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex }),
+      validationRound,
     });
     if (ladder.parked) return parkStage(ladder.parked);
     if (ladder.failure) {

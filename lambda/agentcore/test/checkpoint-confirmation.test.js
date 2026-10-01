@@ -28,8 +28,10 @@ const fakeStore = ({ receipts = new Map(), humanTasks = new Map() } = {}) => {
   const counters = new Map();
   const stageRow = { attempt: 0 };
   let receiptSeq = 0;
-  const receiptSk = ({ kind, stageInstanceId, attempt, unitSlug }) =>
-    `RECEIPT#${kind}#${stageInstanceId}#${attempt}#${unitSlug ?? '-'}`;
+  const receiptSk = ({ kind, stageInstanceId, attempt, unitSlug, ordinal }) =>
+    `RECEIPT#${kind}#${stageInstanceId}#${attempt}#${unitSlug ?? '-'}${
+      ordinal == null ? '' : `#${ordinal}`
+    }`;
   return {
     events,
     humanTasks,
@@ -725,5 +727,80 @@ describe('write stamps through the tool handlers', () => {
     });
 
     expect(calls).toEqual([]);
+  });
+});
+
+describe('checkpoint authority per validation revision', () => {
+  const REVISION = Object.freeze({ ...SCOPE, validationRound: 1 });
+
+  it("does not carry an earlier revision's confirmation into the next one", async () => {
+    const store = fakeStore();
+    await inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    }).confirmSummary({ summary: 's' });
+
+    const revised = inlineBridge(store, { scope: REVISION });
+    await revised.stampArtifact({ artifactId: 'a1', artifactType: 'design' });
+
+    expect(store.events.at(-1).detail.authorizationId).toBeNull();
+  });
+
+  it('records a fresh receipt for the confirmation given in the next revision', async () => {
+    const store = fakeStore();
+    const first = await inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    }).confirmSummary({ summary: 's' });
+
+    const second = await inlineBridge(store, {
+      scope: REVISION,
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    }).confirmSummary({ summary: 's, revised' });
+
+    expect(second.decision).toBe('approved');
+    expect(second.authorizationId).not.toBe(first.authorizationId);
+    expect(store.receipts.get(second.authorizationId)).toMatchObject({ ordinal: 1 });
+  });
+
+  it('withdraws the held authorization when a later confirmation asks for changes', async () => {
+    const store = fakeStore();
+    const answers = ['Looks correct', 'Request changes'];
+    const bridge = createProcessBridge({
+      store,
+      scope: SCOPE,
+      pollIntervalMs: 1,
+      parkGraceMs: 10,
+      sleep: async () => {
+        if ([...store.humanTasks.values()].some((task) => task.status === 'pending')) {
+          answerLatestGate(store, { perQuestion: [{ answer: answers.shift() }] });
+        }
+      },
+    });
+    await bridge.confirmSummary({ summary: 'first' });
+    await bridge.confirmSummary({ summary: 'second' });
+
+    await bridge.stampArtifact({ artifactId: 'a1', artifactType: 'design' });
+
+    expect(store.events.at(-1).detail.authorizationId).toBeNull();
+  });
+
+  it('refuses an inline answer that records no human before writing a receipt', async () => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({
+      store,
+      scope: SCOPE,
+      pollIntervalMs: 1,
+      parkGraceMs: 10,
+      sleep: async () => {
+        if ([...store.humanTasks.values()].some((task) => task.status === 'pending')) {
+          answerLatestGate(store, { perQuestion: [{ answer: 'Looks correct' }] }, { by: null });
+        }
+      },
+    });
+
+    const result = await bridge.confirmSummary({ summary: 's' });
+
+    expect(result.authorizationId).toBeNull();
+    expect(store.receipts.size).toBe(0);
+    expect(eventTypes(store)).toContain('v2.checkpoint.authorization_refused');
   });
 });

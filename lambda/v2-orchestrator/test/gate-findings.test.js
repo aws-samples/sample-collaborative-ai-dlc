@@ -658,3 +658,63 @@ describe('operator logging at the gate', () => {
     info.mockRestore();
   });
 });
+
+describe('checkpoint receipts across validation revisions', () => {
+  it('asks for a new confirmation after the human requests changes', async () => {
+    const stage = {
+      ...GATED_STAGE,
+      policy: { ...POLICY, summaryConfirmation: 'required' },
+    };
+    deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages: [stage] } }));
+    deps.store.listReceipts = vi.fn(async () => [
+      {
+        sk: 'RECEIPT#summary-confirmation#si-1#0#-',
+        kind: 'summary-confirmation',
+        stageInstanceId: 'si-1',
+        attempt: 0,
+        ordinal: null,
+        decidedAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+    deps.store.listEvents = vi.fn(async () => [
+      {
+        eventType: 'v2.artifact.stamped',
+        stageInstanceId: 'si-1',
+        timestamp: '2026-01-01T00:00:05.000Z',
+        detail: {
+          artifactType: 'requirements',
+          authorizationId: 'RECEIPT#summary-confirmation#si-1#0#-',
+        },
+      },
+    ]);
+    const seen = new Map();
+    deps.store.getHumanTask = vi.fn(async (_executionId, humanTaskId) => {
+      const calls = (seen.get(humanTaskId) ?? 0) + 1;
+      seen.set(humanTaskId, calls);
+      if (calls === 1) return null;
+      const revision = humanTaskId.includes('-si-1-0-') ? 0 : 1;
+      return {
+        humanTaskId,
+        status: revision === 0 ? 'rejected' : 'answered',
+        answer:
+          revision === 0
+            ? { decision: 'request-changes', feedback: 'tighten the scope' }
+            : { decision: 'override-and-approve', reason: 'Accepted for this test.' },
+        answeredBy: 'u1',
+        answeredByName: 'Ada',
+        stageInstanceId: 'si-1',
+      };
+    });
+
+    await run();
+
+    const dispatches = invokes.filter((payload) => payload.command === 'run-stage-start');
+    expect(dispatches[0]).not.toHaveProperty('validationRound');
+    expect(dispatches[1]).toMatchObject({ validationRound: 1 });
+    const gates = deps.store.createHumanTask.mock.calls.map(([gate]) => gate);
+    expect(gates[0].findings ?? []).toEqual([]);
+    expect(gates[1].findings.map((finding) => finding.code)).toEqual([
+      'summary_confirmation_missing',
+    ]);
+  });
+});

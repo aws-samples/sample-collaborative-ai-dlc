@@ -33,7 +33,7 @@ const DEFAULT_PARK_GRACE_MS = 12000;
 // Owning the labels server-side is what lets the completion ladder tell "this was
 // THE confirmation" from "this was an ordinary question" without matching prose,
 // and lets it refuse authority to any other answer shape (upstream §1.4).
-const CHECKPOINTS = Object.freeze({
+export const CHECKPOINTS = Object.freeze({
   'summary-confirmation': Object.freeze({
     receiptKind: 'summary-confirmation',
     approve: 'Looks correct',
@@ -77,7 +77,7 @@ const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
 // The human's chosen label, across every answer shape the answer endpoints write
 // (`perQuestion[]`, `freeText`, or a bare string — see run-stage formatResumeAnswer).
-const chosenLabel = (answer) => {
+export const chosenLabel = (answer) => {
   if (typeof answer === 'string') return answer.trim();
   const perQuestion = Array.isArray(answer?.perQuestion) ? answer.perQuestion[0]?.answer : null;
   return String(perQuestion ?? answer?.freeText ?? answer?.decision ?? '').trim();
@@ -109,8 +109,16 @@ export const createProcessBridge = ({
     // is what turns artifact stamping on; the checkpoint tools are registered (or
     // withheld) from the same value in mcp/server.js.
     policy = null,
+    // The validation revision of this attempt ("Request changes" at the stage's
+    // validation gate re-runs it without a new attempt). Checkpoint gates and
+    // receipts are scoped to it so a decision about one revision never
+    // authorizes the next.
+    validationRound: revisionArg = 0,
   } = scope;
   const attempt = Number(stageAttempt) || 0;
+  const revision = Number(revisionArg) || 0;
+  // Revision 0 keeps the attempt-scoped ids and receipt keys unchanged.
+  const revisionOrdinal = revision > 0 ? revision : null;
 
   // The authorization the NEXT artifact write is stamped with — the receipt SK of
   // the confirmation the human actually gave for this (stage, attempt). Process
@@ -248,7 +256,9 @@ export const createProcessBridge = ({
   // MCP child which has no memory of a uuid. `round` distinguishes the re-asks a
   // "Request changes" loop produces.
   const checkpointTaskId = (checkpoint, round) =>
-    `chk-${checkpoint}-${stageInstanceId ?? 'stage'}-${attempt}-${unitSlug ?? '-'}-${round}`;
+    `chk-${checkpoint}-${stageInstanceId ?? 'stage'}-${attempt}${
+      revision > 0 ? `v${revision}` : ''
+    }-${unitSlug ?? '-'}-${round}`;
 
   // The newest checkpoint gate for this (stage, attempt) and the first free round
   // after it, bounded so a pathological loop cannot scan forever.
@@ -275,6 +285,7 @@ export const createProcessBridge = ({
       attempt,
       unitSlug,
       sectionIndex,
+      ordinal: revisionOrdinal,
       boundDigest: task.detail?.boundDigest ?? null,
       choice: label,
       decidedBy: task.answeredBy ?? null,
@@ -309,6 +320,22 @@ export const createProcessBridge = ({
         ? task.answer
         : (task.answer?.freeText ?? task.answer?.feedback ?? label);
     if (label === spec.approve) {
+      // The same provenance rule the resume leg applies: an answer that records
+      // no human, or no digest of what was shown, authorizes nothing.
+      const refusal = authorizationRefusal(task);
+      if (refusal) {
+        await refuseAuthorization({ checkpoint, reason: refusal, humanTaskId: task.humanTaskId });
+        return {
+          checkpoint,
+          decision: 're-ask',
+          choice: label,
+          authorizationId: null,
+          humanTaskId: task.humanTaskId,
+          message:
+            'The answer could not be attributed to a person, so nothing was authorized. ' +
+            'Raise the checkpoint again.',
+        };
+      }
       const receipt = await recordCheckpointReceipt({ spec, checkpoint, task, label });
       return {
         checkpoint,
@@ -319,6 +346,9 @@ export const createProcessBridge = ({
       };
     }
     if (label === spec.reject) {
+      // A later "Request changes" withdraws the confirmation given earlier in
+      // this revision: the outputs written next are not covered by it.
+      if (spec.receiptKind === 'summary-confirmation') activeAuthorizationId = null;
       await store
         .appendEvent({
           executionId,
@@ -388,6 +418,7 @@ export const createProcessBridge = ({
           stageInstanceId,
           attempt,
           unitSlug,
+          ordinal: revisionOrdinal,
         })
         .catch(() => null);
       if (existing) {
@@ -411,6 +442,15 @@ export const createProcessBridge = ({
             reason: refusal,
             humanTaskId: existing.humanTaskId ?? null,
           });
+          continue;
+        }
+        // A "Request changes" answered after this confirmation withdrew it.
+        const { latest } = await latestCheckpointGate(checkpoint);
+        if (
+          latest &&
+          latest.humanTaskId !== existing.humanTaskId &&
+          chosenLabel(latest.answer) === spec.reject
+        ) {
           continue;
         }
         activeAuthorizationId = existing.sk;

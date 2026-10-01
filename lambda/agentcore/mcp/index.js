@@ -9,6 +9,8 @@
 //   V2_MCP_ROLE          author | reviewer | reader
 //   V2_STAGE_POLICY      the resolved release policy as JSON, or absent/empty for
 //                        a 2.3.3-era or unpinned run
+//   V2_VALIDATION_ROUND  the validation revision checkpoint receipts are scoped
+//                        to; absent for the first run and without a policy
 //   V2_PROCESS_TABLE, NEPTUNE_ENDPOINT, CONNECTIONS_TABLE, WEBSOCKET_ENDPOINT
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -47,6 +49,7 @@ const scopeFromEnv = (env = process.env) => ({
       ? null
       : Number(env.V2_SECTION_INDEX),
   stageAttempt: Number(env.V2_STAGE_ATTEMPT) || 0,
+  validationRound: Number(env.V2_VALIDATION_ROUND) || 0,
   // Unit lane attribution (docs/v2-parallel.md WP4): set on `forEach:
   // unit-of-work` stage instances so gates/outputs/metrics/events the bridge
   // writes name their lane (empty string → null).

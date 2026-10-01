@@ -390,6 +390,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         // ONLY when the plan resolved a policy, so an unpinned or 2.3.3-era run
         // produces a byte-identical config.
         ...(scope.policy ? { V2_STAGE_POLICY: JSON.stringify(scope.policy) } : {}),
+        // The validation revision the checkpoint receipts are scoped to. Absent
+        // for the first run and for every run without a policy.
+        ...(scope.policy && scope.validationRound
+          ? { V2_VALIDATION_ROUND: String(scope.validationRound) }
+          : {}),
         // Trusted reviewer identity (reviewer role only): the bridge stamps this
         // on the verdict row instead of trusting the agent's self-reported name
         // (upstream §12a identity marker, enforced server-side). Empty → null.

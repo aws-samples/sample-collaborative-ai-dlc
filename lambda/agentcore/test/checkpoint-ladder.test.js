@@ -233,6 +233,31 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
     expect(result.failure).toMatchObject({ code: 'plan_approval_missing' });
   });
 
+  it('grants a new repair turn for each validation revision of the same attempt', async () => {
+    const store = fakeStore({ counters: { summaryRepairAttempts: 1 } });
+    let repairs = 0;
+
+    await ladder(store, {
+      validationRound: 1,
+      runRepairTurn: async () => {
+        repairs += 1;
+      },
+    });
+
+    expect(repairs).toBe(1);
+    expect(types(store)).toContain('v2.checkpoint.repair_requested');
+  });
+
+  it('reads only the receipts of the current validation revision', async () => {
+    const store = fakeStore({ receipts: [confirmationReceipt()], events: [stamp()] });
+
+    const result = await ladder(store, { validationRound: 1 });
+
+    expect(result.findings.map((finding) => finding.code)).toEqual([
+      'summary_confirmation_missing',
+    ]);
+  });
+
   it('still reaches the gate when the repair turn itself throws', async () => {
     const store = fakeStore();
 
@@ -432,6 +457,17 @@ describe('a parked checkpoint is delivered to the agent as a decision, not a Q&A
     expect(
       formatResumeAnswer(gate('plan-approval', { perQuestion: [{ answer: 'Request changes' }] })),
     ).toContain('`request_plan_approval`');
+  });
+
+  it('reads the decision from every answer shape the checkpoint tools accept', () => {
+    for (const answer of [{ decision: 'Looks correct' }, ' Looks correct ']) {
+      const message = formatResumeAnswer({
+        detail: { checkpoint: 'summary-confirmation' },
+        answer,
+      });
+      expect(message).toContain('authorization is recorded');
+      expect(message).not.toContain('nothing is authorized yet');
+    }
   });
 
   it('leaves an ordinary question and a validation gate exactly as before', () => {

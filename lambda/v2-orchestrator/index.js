@@ -824,6 +824,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         suffix = '',
         initialResumeFrom = null,
         reviewFeedback = null,
+        validationRound = 0,
       } = opts;
       const label = `${unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId}${suffix}`;
       const allSkipIds = [...intentSkipIds, ...dynamicSkipIds];
@@ -855,6 +856,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
         reviewFeedback,
+        validationRound,
       };
       let result = await runStage(ctxArg, invokeIntentRuntime, {
         ...stageOpts,
@@ -1193,6 +1195,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           const outcome = await executeStage(ctx, stage, {
             suffix,
             initialResumeFrom: resumeFromValidation,
+            validationRound,
           });
           if (outcome.state === 'TERMINAL') return outcome.value;
           if (outcome.state === 'FAILED') {
@@ -1346,6 +1349,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                 stage,
                 policy: stage.policy,
                 attempt,
+                validationRound,
                 receipts,
                 events: events.filter((e) => e.stageInstanceId === stage.stageInstanceId),
                 sensorVerdicts: outcome.result?.gateSensorVerdicts ?? [],
@@ -2026,6 +2030,7 @@ const runStage = async (
     cloneInputs,
     resumeFrom,
     reviewFeedback = null,
+    validationRound = 0,
     // Expected process-row identity for this attempt. The orchestrator already
     // has the resolved plan, so it can reconcile a dead worker even when no
     // callback result arrives to report the id.
@@ -2094,6 +2099,10 @@ const runStage = async (
         // resolves a short-lived credential directly from the broker.
         ...cloneInputs,
         resumeFrom: resumeFrom ?? null,
+        // The validation revision the checkpoint receipts are scoped to. Sent
+        // only for a stage with a resolved release policy and only after a
+        // "Request changes", so every other payload is unchanged.
+        ...(stage.policy && validationRound ? { validationRound } : {}),
         reviewFeedback: reviewFeedback
           ? {
               batchId: reviewFeedback.batchId ?? null,

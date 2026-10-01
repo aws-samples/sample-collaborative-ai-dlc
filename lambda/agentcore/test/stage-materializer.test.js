@@ -825,3 +825,22 @@ describe('renderIntentBlock + prompt placement', () => {
     expect(buildStagePrompt({ stage: stage(), stageBody: 'x' })).not.toContain('## The intent');
   });
 });
+
+describe('buildMcpConfig — validation revision', () => {
+  const scope = { executionId: 'e1', intentId: 'i1', stageInstanceId: 'si-1' };
+  const envOf = (s) =>
+    buildMcpConfig({ mcpEntry: '/opt/mcp/index.js', scope: s }).mcpServers.aidlc.env;
+
+  it('passes the revision to the bridge for a stage with a release policy', () => {
+    expect(envOf({ ...scope, policy: { learnings: 'on' }, validationRound: 2 })).toMatchObject({
+      V2_VALIDATION_ROUND: '2',
+    });
+  });
+
+  it('adds nothing for the first run or without a policy', () => {
+    expect(envOf({ ...scope, policy: { learnings: 'on' } })).not.toHaveProperty(
+      'V2_VALIDATION_ROUND',
+    );
+    expect(envOf({ ...scope, validationRound: 2 })).not.toHaveProperty('V2_VALIDATION_ROUND');
+  });
+});
