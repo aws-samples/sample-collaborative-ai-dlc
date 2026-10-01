@@ -70,6 +70,15 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
+import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
+
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'policy.learnings.ritual@v1',
+  'protocol.loopback.gate-offered@v1',
+]);
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -832,6 +841,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         suffix = '',
         initialResumeFrom = null,
         reviewFeedback = null,
+        validationRound = 0,
       } = opts;
       const label = `${unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId}${suffix}`;
       const allSkipIds = [...intentSkipIds, ...dynamicSkipIds];
@@ -863,6 +873,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         sessionId: stageSessionId,
         cloneInputs: stageCloneInputs,
         reviewFeedback,
+        validationRound,
       };
       let result = await runStage(ctxArg, invokeIntentRuntime, {
         ...stageOpts,
@@ -1220,6 +1231,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           const outcome = await executeStage(ctx, stage, {
             suffix,
             initialResumeFrom: resumeFromValidation,
+            validationRound,
           });
           if (outcome.state === 'TERMINAL') return outcome.value;
           if (outcome.state === 'FAILED') {
@@ -1353,60 +1365,64 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // the gate opens. Inert without a resolved release policy, which is
           // what keeps the prompt and the option list byte-identical for an
           // unpinned or 2.3.3-era run.
-          const gateFindings = await ctx.step(
-            `gate-preconditions-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-            async () => {
-              if (!stage.policy) return [];
-              const row = await store.getStage(executionId, stage.stageInstanceId, {
-                consistentRead: true,
-              });
-              const attempt = Number(row?.attempt ?? 0);
-              const [receipts, events] = await Promise.all([
-                store.listReceipts(executionId, {
-                  stageInstanceId: stage.stageInstanceId,
-                  attempt,
-                  consistentRead: true,
-                }),
-                store.listEvents(executionId, { consistentRead: true }),
-              ]);
-              const reread = evaluateGatePreconditions({
-                stage,
-                policy: stage.policy,
-                attempt,
-                receipts,
-                events: events.filter((e) => e.stageInstanceId === stage.stageInstanceId),
-                sensorVerdicts: outcome.result?.gateSensorVerdicts ?? [],
-                reviewVerdict: outcome.result?.reviewAdvisory ?? null,
-                ensembleEvidence: outcome.result?.ensembleEvidence ?? null,
-                changedInputs: outcome.result?.changedInputs ?? [],
-                // `required_artifact_missing` is the one check the orchestrator
-                // cannot derive from receipts: it needs what the stage actually
-                // LEFT BEHIND. `producedHeads` is that observation (the container's
-                // graph read of the artifact heads), and its artifact types are the
-                // produced set. Absent — an unreachable graph, or an unpinned run —
-                // leaves `producedArtifacts` null, which the evaluator treats as
-                // "not observed" and never reports as missing.
-                producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads),
-              });
-              const merged = mergeFindings(outcome.result?.findings ?? [], reread.findings);
-              // Logged inside the step so a durable replay does not repeat it: an
-              // operator reading the logs can see why a gate withheld `approve`
-              // without opening the intent.
-              if (merged.length > 0) {
-                logger.info('gate opened with findings', {
-                  executionId,
-                  stageId: stage.stageId,
-                  stageInstanceId: stage.stageInstanceId ?? null,
-                  findings: merged.map((item) => ({
-                    code: item.code,
-                    severity: item.severity,
-                    overridable: item.overridable,
-                  })),
-                });
-              }
-              return merged;
-            },
-          );
+          // Guarded outside the step so an unpinned gate records no extra
+          // durable operation and its history stays unchanged.
+          const gateFindings = stage.policy
+            ? await ctx.step(
+                `gate-preconditions-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                async () => {
+                  const row = await store.getStage(executionId, stage.stageInstanceId, {
+                    consistentRead: true,
+                  });
+                  const attempt = Number(row?.attempt ?? 0);
+                  const [receipts, events] = await Promise.all([
+                    store.listReceipts(executionId, {
+                      stageInstanceId: stage.stageInstanceId,
+                      attempt,
+                      consistentRead: true,
+                    }),
+                    store.listEvents(executionId, { consistentRead: true }),
+                  ]);
+                  const reread = evaluateGatePreconditions({
+                    stage,
+                    policy: stage.policy,
+                    attempt,
+                    validationRound,
+                    receipts,
+                    events: events.filter((e) => e.stageInstanceId === stage.stageInstanceId),
+                    sensorVerdicts: outcome.result?.gateSensorVerdicts ?? [],
+                    reviewVerdict: outcome.result?.reviewAdvisory ?? null,
+                    ensembleEvidence: outcome.result?.ensembleEvidence ?? null,
+                    changedInputs: outcome.result?.changedInputs ?? [],
+                    // `required_artifact_missing` is the one check the orchestrator
+                    // cannot derive from receipts: it needs what the stage actually
+                    // LEFT BEHIND. `producedHeads` is that observation (the container's
+                    // graph read of the artifact heads), and its artifact types are the
+                    // produced set. Absent — an unreachable graph, or an unpinned run —
+                    // leaves `producedArtifacts` null, which the evaluator treats as
+                    // "not observed" and never reports as missing.
+                    producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads),
+                  });
+                  const merged = mergeFindings(outcome.result?.findings ?? [], reread.findings);
+                  // Logged inside the step so a durable replay does not repeat it: an
+                  // operator reading the logs can see why a gate withheld `approve`
+                  // without opening the intent.
+                  if (merged.length > 0) {
+                    logger.info('gate opened with findings', {
+                      executionId,
+                      stageId: stage.stageId,
+                      stageInstanceId: stage.stageInstanceId ?? null,
+                      findings: merged.map((item) => ({
+                        code: item.code,
+                        severity: item.severity,
+                        overridable: item.overridable,
+                      })),
+                    });
+                  }
+                  return merged;
+                },
+              )
+            : [];
           // Learnings ritual. Upstream asks "anything to add for
           // next time?" at every real human gate; we ask it INSIDE this gate
           // rather than adding a second mandatory turn per stage across 18-33
@@ -1621,9 +1637,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             stageApprovalOverride = await ctx.step(
               `gate-override-${stage.stageInstanceId ?? stage.stageId}-${round}`,
               async () => {
-                const row = await store
-                  .getStage(executionId, stage.stageInstanceId)
-                  .catch(() => null);
+                // No catch on the reads and writes below: a failure retries the
+                // durable step, so the receipt lands under the real attempt and
+                // the stage is never approved without its audit row.
+                const row = await store.getStage(executionId, stage.stageInstanceId, {
+                  consistentRead: true,
+                });
                 const codes = overridable.map((item) => item.code);
                 // The human's stated reason, on the receipt and the audit event.
                 // Tolerant: an answer without one records null rather than
@@ -1666,40 +1685,36 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   : null;
                 for (const [receiptKind, kindCodes] of codesByKind) {
                   if (receiptKind === 'stage-approval') continue;
-                  await store
-                    .putReceipt({
-                      executionId,
-                      kind: receiptKind,
-                      stageInstanceId: stage.stageInstanceId,
-                      attempt: Number(row?.attempt ?? 0),
-                      choice: 'override-and-approve',
-                      decidedBy: validation.gate?.answeredBy ?? null,
-                      decidedByName: validation.gate?.answeredByName ?? null,
-                      humanTaskId: validation.gate?.humanTaskId ?? null,
-                      detail: {
-                        findingCodes: kindCodes,
-                        reason,
-                        ...(receiptKind === 'sensor-override' ? blockingSensorOverride : {}),
-                      },
-                    })
-                    .catch((err) => logger.error('Gate override receipt failed', err));
-                }
-                await store
-                  .appendEvent({
+                  await store.putReceipt({
                     executionId,
-                    type: 'v2.gate.override',
-                    stageInstanceId: stage.stageInstanceId ?? null,
-                    actor: validation.gate?.answeredByName ?? validation.gate?.answeredBy ?? null,
-                    summary: `${validation.gate?.answeredByName || 'Someone'} overrode ${codes.length} blocking finding(s) and approved ${stage.stageId}: ${codes.join(', ')}`,
+                    kind: receiptKind,
+                    stageInstanceId: stage.stageInstanceId,
+                    attempt: Number(row?.attempt ?? 0),
+                    choice: 'override-and-approve',
+                    decidedBy: validation.gate?.answeredBy ?? null,
+                    decidedByName: validation.gate?.answeredByName ?? null,
+                    humanTaskId: validation.gate?.humanTaskId ?? null,
                     detail: {
-                      findingCodes: codes,
+                      findingCodes: kindCodes,
                       reason,
-                      receiptKind: kind,
-                      receiptKinds: [...codesByKind.keys()],
-                      ...blockingSensorOverride,
+                      ...(receiptKind === 'sensor-override' ? blockingSensorOverride : {}),
                     },
-                  })
-                  .catch((err) => logger.error('Gate override event append failed', err));
+                  });
+                }
+                await store.appendEvent({
+                  executionId,
+                  type: 'v2.gate.override',
+                  stageInstanceId: stage.stageInstanceId ?? null,
+                  actor: validation.gate?.answeredByName ?? validation.gate?.answeredBy ?? null,
+                  summary: `${validation.gate?.answeredByName || 'Someone'} overrode ${codes.length} blocking finding(s) and approved ${stage.stageId}: ${codes.join(', ')}`,
+                  detail: {
+                    findingCodes: codes,
+                    reason,
+                    receiptKind: kind,
+                    receiptKinds: [...codesByKind.keys()],
+                    ...blockingSensorOverride,
+                  },
+                });
                 return stageApprovalOverride;
               },
             );
@@ -1726,9 +1741,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               await ctx.step(
                 `stage-approval-receipt-${stage.stageInstanceId ?? stage.stageId}-${round}`,
                 async () => {
-                  const row = await store
-                    .getStage(executionId, stage.stageInstanceId)
-                    .catch(() => null);
+                  const row = await store.getStage(executionId, stage.stageInstanceId, {
+                    consistentRead: true,
+                  });
                   const approvedInputs = (outcome.result?.producedHeads ?? []).map((head) => ({
                     logicalKey: head.logicalKey,
                     snapshotHash: head.snapshotHash,
@@ -2189,6 +2204,7 @@ const runStage = async (
     cloneInputs,
     resumeFrom,
     reviewFeedback = null,
+    validationRound = 0,
     // Expected process-row identity for this attempt. The orchestrator already
     // has the resolved plan, so it can reconcile a dead worker even when no
     // callback result arrives to report the id.
@@ -2257,6 +2273,10 @@ const runStage = async (
         // resolves a short-lived credential directly from the broker.
         ...cloneInputs,
         resumeFrom: resumeFrom ?? null,
+        // The validation revision the checkpoint receipts are scoped to. Sent
+        // only for a stage with a resolved release policy and only after a
+        // "Request changes", so every other payload is unchanged.
+        ...(stage.policy && validationRound ? { validationRound } : {}),
         reviewFeedback: reviewFeedback
           ? {
               batchId: reviewFeedback.batchId ?? null,
@@ -2337,7 +2357,6 @@ const nextStageIdAfter = (runStages = [], stage = {}) => {
 // whitespace is "nothing to add", which is a recorded decision, not a learning.
 // The reason a human gave for `override-and-approve`, bounded like every other
 // free text the engine persists from a gate answer. `null` when absent.
-const OVERRIDE_REASON_MAX = 300;
 const gateOverrideReason = (answer) => {
   const raw = typeof answer === 'string' ? null : (answer?.reason ?? null);
   const text = String(raw ?? '')

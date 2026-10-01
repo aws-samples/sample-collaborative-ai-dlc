@@ -363,7 +363,11 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       sets.push('rewindFromStageId = :rwf');
       values[':rwf'] = rewindFromStageId;
     }
-    if (resumeRequired !== undefined) {
+    // Clearing REMOVEs the marker rather than writing null, so a run that never
+    // needed a resume keeps the row shape it always had.
+    if (resumeRequired === null) {
+      removes.push('resumeRequired');
+    } else if (resumeRequired !== undefined) {
       sets.push('resumeRequired = :rsr');
       values[':rsr'] = resumeRequired;
     }

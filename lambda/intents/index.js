@@ -132,6 +132,7 @@ import {
   pendingAttachmentDeletions,
   validateAttachmentDescriptor,
 } from '../shared/intent-attachments.js';
+import { GATE_CHOICES, OVERRIDE_REASON_MAX, parseChoice } from '../shared/gate-answer.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -145,7 +146,6 @@ const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
 const logger = new Logger({ persistentKeys: { component: 'intents' } });
-const GATE_OVERRIDE_REASON_MAX = 2000;
 
 // The only registry answers that mean "this deployment ref has no release a new
 // intent may auto-pin". A capability record that could not be verified is not
@@ -2659,31 +2659,44 @@ export const handler = async (event, context) => {
           code: 'invalid_gate_status',
         });
       }
-      const overrideChoices = [
-        data.answer?.decision,
-        data.answer?.mode,
-        data.answer?.choice,
-        typeof data.answer === 'string' ? data.answer : null,
-        ...(Array.isArray(data.answer?.perQuestion)
-          ? data.answer.perQuestion.map((entry) => entry?.answer)
-          : []),
-      ];
-      if (
-        overrideChoices.some(
-          (choice) =>
-            typeof choice === 'string' && choice.trim().toLowerCase() === 'override-and-approve',
-        )
-      ) {
-        const reason = typeof data.answer.reason === 'string' ? data.answer.reason.trim() : '';
+      // A validation gate that withheld an option (a blocking finding withholds
+      // `approve`) must not record that option: the engine would re-run the
+      // stage while the gate row and its badge said "approved".
+      const offered =
+        gate.kind === 'validation' && Array.isArray(gate.options) && gate.options.length > 0
+          ? gate.options
+          : null;
+      if (offered) {
+        const choice = parseChoice(data.answer, GATE_CHOICES);
+        const chosen = choice ?? (answerStatus === 'approved' ? 'approve' : null);
+        if (chosen && !offered.includes(chosen)) {
+          return response(400, {
+            error: `This gate offers ${offered.join(', ')}; "${chosen}" is not one of them`,
+            code: 'gate_choice_not_offered',
+          });
+        }
+      }
+      // The same parser the orchestrator reads the answer with, so an answer the
+      // engine treats as an override is held to the override's requirements here.
+      const overrideChosen =
+        parseChoice(data.answer, ['override-and-approve']) === 'override-and-approve' ||
+        (Array.isArray(data.answer?.perQuestion) &&
+          data.answer.perQuestion.some(
+            (entry) =>
+              typeof entry?.answer === 'string' &&
+              entry.answer.trim().toLowerCase() === 'override-and-approve',
+          ));
+      if (overrideChosen) {
+        const reason = typeof data.answer?.reason === 'string' ? data.answer.reason.trim() : '';
         if (!reason) {
           return response(400, {
             error: 'A non-blank reason is required to override blocking findings',
             code: 'override_reason_required',
           });
         }
-        if (reason.length > GATE_OVERRIDE_REASON_MAX) {
+        if (reason.length > OVERRIDE_REASON_MAX) {
           return response(400, {
-            error: `Override reason must be at most ${GATE_OVERRIDE_REASON_MAX} characters`,
+            error: `Override reason must be at most ${OVERRIDE_REASON_MAX} characters`,
             code: 'override_reason_too_long',
           });
         }
@@ -2850,16 +2863,29 @@ export const handler = async (event, context) => {
       const marker = meta.resumeRequired ?? null;
       const resumeGateId = marker?.humanTaskId ?? meta.pendingHumanTaskId ?? null;
       const gate = resumeGateId ? await store.getHumanTask(intentId, resumeGateId) : null;
-      const pending = marker?.callbackId
-        ? marker
-        : meta.status === 'WAITING' &&
-            isHumanTaskAnswerStatus(gate?.status) &&
-            gate.callbackId &&
-            !gate.callbackConsumedAt
+      // The marker is a hint, not the authority: a resume is owed only while the
+      // intent waits on that gate, the gate holds an answer, and its callback
+      // has not been consumed. A marker left behind by a cancel, a rewind or a
+      // callback that did complete is cleared instead of re-sent.
+      const pending =
+        meta.status === 'WAITING' &&
+        isHumanTaskAnswerStatus(gate?.status) &&
+        gate.callbackId &&
+        !gate.callbackConsumedAt
           ? { humanTaskId: resumeGateId, callbackId: gate.callbackId }
           : null;
+      const clearMarker = async () => {
+        if (!marker) return meta;
+        return store
+          .updateExecution({ executionId: intentId, resumeRequired: null })
+          .catch((metaErr) => {
+            logger.error('Resume marker clear failed', metaErr);
+            return meta;
+          });
+      };
       if (!pending?.callbackId) {
-        return response(200, { intent: mapIntent(meta), resumed: false });
+        const current = await clearMarker();
+        return response(200, { intent: mapIntent(current ?? meta), resumed: false });
       }
       const responder = getResponder(event);
       try {
@@ -2886,6 +2912,21 @@ export const handler = async (event, context) => {
             code: 'durable_execution_expired',
             intent: mapIntent(failed ?? { ...meta, status: 'FAILED' }),
           });
+        }
+        // The callback is gone or already completed: the first send was
+        // delivered even though it reported an error. Nothing is owed.
+        if (isMissingDurableCallbackError(err)) {
+          await (
+            store.markGateCallbackConsumed?.({
+              executionId: intentId,
+              humanTaskId: pending.humanTaskId,
+              callbackId: pending.callbackId,
+            }) ?? Promise.resolve()
+          ).catch((markErr) =>
+            logger.error('Gate callback consumption marker write failed', markErr),
+          );
+          const current = await clearMarker();
+          return response(200, { intent: mapIntent(current ?? meta), resumed: false });
         }
         logger.error('Gate resume retry failed', err);
         return response(503, {
@@ -3193,6 +3234,8 @@ export const handler = async (event, context) => {
         fromStatus: meta.status,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        // A recorded answer whose callback failed is moot once the run ends.
+        resumeRequired: null,
         completedAt: new Date().toISOString(),
       });
       await store
@@ -4126,6 +4169,7 @@ export const handler = async (event, context) => {
         fromStatus: meta.status,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: 'lane_repair_in_progress',
         completedAt: null,
         orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
@@ -4308,6 +4352,7 @@ export const handler = async (event, context) => {
         orchestratorStartedAt: null,
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: null,
         failure: null,
         completedAt: null,
@@ -4532,6 +4577,7 @@ export const handler = async (event, context) => {
         fromStatus: priorStatus,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: 'rewind_in_progress',
         completedAt: null,
         orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
@@ -4635,6 +4681,7 @@ export const handler = async (event, context) => {
         orchestratorStartedAt: null,
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: null,
         failure: null,
         completedAt: null,
@@ -5855,6 +5902,7 @@ const repairExpiredDurableExecution = async ({
     completedAt: new Date().toISOString(),
     failureReason,
     pendingHumanTaskId: null,
+    resumeRequired: null,
     ...(meta?.orchestratorRunId ? { ifOrchestratorRunId: meta.orchestratorRunId } : {}),
   });
   await store

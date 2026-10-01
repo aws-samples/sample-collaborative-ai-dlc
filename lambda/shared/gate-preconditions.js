@@ -23,6 +23,11 @@
 import { isQuestionChannelOutput } from './aidlc-capabilities.js';
 import { eventTypeOf } from './v2-process-keys.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['review.advisory-findings@v1']);
+
 // Checked in upstream's own composition order (required outputs → summary
 // lineage → contribution evidence → reviewer → sensors), so a human reading the
 // findings list sees the most fundamental problem first.
@@ -85,6 +90,17 @@ const sameAttempt = (row, attempt) => Number(row?.attempt) === Number(attempt);
 
 const receiptsOfKind = (receipts, kind, attempt) =>
   (receipts ?? []).filter((row) => row?.kind === kind && sameAttempt(row, attempt));
+
+// The checkpoint receipts (summary confirmation, plan approval) are also scoped
+// to the validation revision. "Request changes" at the validation gate re-runs
+// the stage within the same attempt, and a decision the human took about the
+// previous revision must not authorize the new one. Revision 0 writes no
+// ordinal, so its keys are the attempt-scoped keys used before revisions were
+// tracked.
+const checkpointReceipts = (receipts, kind, attempt, validationRound) =>
+  receiptsOfKind(receipts, kind, attempt).filter(
+    (row) => Number(row?.ordinal ?? 0) === Number(validationRound ?? 0),
+  );
 
 // A `<stage>-questions` output is satisfied by the platform question channel
 // (HUMAN# rows + timeline), not by a graph artifact — see
@@ -192,6 +208,9 @@ const evaluateGatePreconditions = ({
   stage = null,
   policy = null,
   attempt = 0,
+  // Which validation revision of this attempt is being judged (0 for the first
+  // run, +1 per "Request changes" at the stage's validation gate).
+  validationRound = 0,
   receipts = [],
   events = [],
   sensorVerdicts = [],
@@ -232,7 +251,12 @@ const evaluateGatePreconditions = ({
   }
 
   if (summaryConfirmationRequired(policy, events, attempt)) {
-    const [receipt] = receiptsOfKind(receipts, 'summary-confirmation', attempt);
+    const [receipt] = checkpointReceipts(
+      receipts,
+      'summary-confirmation',
+      attempt,
+      validationRound,
+    );
     if (!receipt) {
       findings.push(
         finding({
@@ -270,7 +294,7 @@ const evaluateGatePreconditions = ({
   }
 
   if (policy.planApproval === 'required') {
-    if (receiptsOfKind(receipts, 'plan-approval', attempt).length === 0) {
+    if (checkpointReceipts(receipts, 'plan-approval', attempt, validationRound).length === 0) {
       findings.push(
         finding({
           code: 'plan_approval_missing',

@@ -54,6 +54,12 @@ import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from './pr-attribution.js';
 import { assertPrStrategySupported } from '../shared/pr-strategy.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
+import { parseChoice } from '../shared/gate-answer.js';
+
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['policy.skeleton.switch@v1']);
 
 const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 
@@ -264,7 +270,13 @@ export const awaitEngineGate = async (
   if (!gate || gate.status === 'superseded') return { superseded: true };
   await ctxArg.step(`gate-unpark-${name}`, async () => {
     try {
-      await store.updateExecution({ executionId, status: 'RUNNING', pendingHumanTaskId: null });
+      // The answer reached the run, so any resume marker for it is resolved.
+      await store.updateExecution({
+        executionId,
+        status: 'RUNNING',
+        pendingHumanTaskId: null,
+        resumeRequired: null,
+      });
     } catch {
       /* best-effort un-park */
     }
@@ -272,24 +284,8 @@ export const awaitEngineGate = async (
   return { gate };
 };
 
-// Parse a gate answer into one of `allowed`, tolerating the shapes the answer
-// endpoint stores ({ decision }, { mode }, a raw string, { freeText }).
-// Anything unrecognized returns null — the CALLER picks the deterministic
-// fallback and records what was interpreted.
-export const parseChoice = (answer, allowed) => {
-  const candidates = [
-    answer?.decision,
-    answer?.mode,
-    answer?.choice,
-    typeof answer === 'string' ? answer : null,
-    typeof answer?.freeText === 'string' ? answer.freeText : null,
-  ];
-  for (const c of candidates) {
-    const v = typeof c === 'string' ? c.trim().toLowerCase() : null;
-    if (v && allowed.includes(v)) return v;
-  }
-  return null;
-};
+// The gate-answer parser is shared with the intents API (shared/gate-answer.js).
+export { parseChoice };
 
 // Validate fan-out-gate overrides against the plan (A2 rule 7: only
 // CONDITIONAL section stages are skippable, only known units addressable; the

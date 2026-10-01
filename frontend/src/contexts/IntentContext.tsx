@@ -628,6 +628,9 @@ export function IntentProvider({
             prompt: evt.prompt ?? null,
             options: evt.options ?? null,
             findings: evt.findings ?? null,
+            // The validation gate asks the learnings question only when the
+            // engine says so; keep the flag the API copy may already carry.
+            learningsRitual: evt.learningsRitual ?? existing?.learningsRitual ?? null,
             questions:
               typeof evt.questions === 'string'
                 ? evt.questions

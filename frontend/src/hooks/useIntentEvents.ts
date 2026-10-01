@@ -60,6 +60,8 @@ export interface IntentEvent {
   prompt?: string | null;
   options?: unknown;
   findings?: GateFinding[] | null;
+  /** Validation gate: ask "Anything to add for next time?" with the decision. */
+  learningsRitual?: boolean | null;
   // agent.metric
   metricId?: string;
   metrics?: Record<string, number>;

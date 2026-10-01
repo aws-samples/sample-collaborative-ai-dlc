@@ -230,6 +230,58 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
     });
   });
 
+  it('fails a unit-lane stage, whose lane carries no stage gate to hold the finding', async () => {
+    const store = fakeStore();
+
+    const result = await ladder(store, {
+      unitSlug: 'u1',
+      sectionIndex: 1,
+      stage: { ...STAGE, forEach: 'unit-of-work' },
+      runRepairTurn: async () => {},
+    });
+
+    expect(result.findings).toBeUndefined();
+    expect(result.failure).toMatchObject({ code: 'summary_confirmation_missing' });
+  });
+
+  it('fails a lane stage that implemented without an approved plan', async () => {
+    const store = fakeStore();
+
+    const result = await ladder(store, {
+      unitSlug: 'u1',
+      sectionIndex: 1,
+      stage: { ...STAGE, forEach: 'unit-of-work' },
+      policy: { ...POLICY, summaryConfirmation: 'none', planApproval: 'required' },
+    });
+
+    expect(result.failure).toMatchObject({ code: 'plan_approval_missing' });
+  });
+
+  it('grants a new repair turn for each validation revision of the same attempt', async () => {
+    const store = fakeStore({ counters: { summaryRepairAttempts: 1 } });
+    let repairs = 0;
+
+    await ladder(store, {
+      validationRound: 1,
+      runRepairTurn: async () => {
+        repairs += 1;
+      },
+    });
+
+    expect(repairs).toBe(1);
+    expect(types(store)).toContain('v2.checkpoint.repair_requested');
+  });
+
+  it('reads only the receipts of the current validation revision', async () => {
+    const store = fakeStore({ receipts: [confirmationReceipt()], events: [stamp()] });
+
+    const result = await ladder(store, { validationRound: 1 });
+
+    expect(result.findings.map((finding) => finding.code)).toEqual([
+      'summary_confirmation_missing',
+    ]);
+  });
+
   it('still reaches the gate when the repair turn itself throws', async () => {
     const store = fakeStore();
 
@@ -429,6 +481,17 @@ describe('a parked checkpoint is delivered to the agent as a decision, not a Q&A
     expect(
       formatResumeAnswer(gate('plan-approval', { perQuestion: [{ answer: 'Request changes' }] })),
     ).toContain('`request_plan_approval`');
+  });
+
+  it('reads the decision from every answer shape the checkpoint tools accept', () => {
+    for (const answer of [{ decision: 'Looks correct' }, ' Looks correct ']) {
+      const message = formatResumeAnswer({
+        detail: { checkpoint: 'summary-confirmation' },
+        answer,
+      });
+      expect(message).toContain('authorization is recorded');
+      expect(message).not.toContain('nothing is authorized yet');
+    }
   });
 
   it('leaves an ordinary question and a validation gate exactly as before', () => {

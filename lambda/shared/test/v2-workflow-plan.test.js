@@ -379,3 +379,21 @@ describe('loadExecutionPlan', () => {
     expect(result.plan.stages.map((s) => s.stageId)).toEqual(['stage-a', 'stage-b']);
   });
 });
+
+describe('loadExecutionPlan — unpinned catalog reads', () => {
+  it('does not query SCOPE blocks, which only a release-pinned plan reads', async () => {
+    await loadExecutionPlan({
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      scope: 'feature',
+    });
+    const scopeQueries = ddbMock
+      .commandCalls(QueryCommand)
+      .filter((call) =>
+        String(call.args[0].input.ExpressionAttributeValues?.[':pk'] ?? '').endsWith('#SCOPE'),
+      );
+    expect(scopeQueries).toEqual([]);
+  });
+});

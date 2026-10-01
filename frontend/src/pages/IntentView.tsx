@@ -358,7 +358,11 @@ export default function IntentView() {
           (gate) => gate.humanTaskId === intent.pendingHumanTaskId && gate.resumeAvailable === true,
         )
       : null;
-  const resumeRequired = Boolean(intent.resumeRequired?.callbackId || answeredPendingGate);
+  // Only a waiting intent can owe a resume; a marker left on a cancelled,
+  // failed or rewound intent must not offer to re-send its answer.
+  const resumeRequired =
+    intent.status === 'WAITING' &&
+    Boolean(intent.resumeRequired?.callbackId || answeredPendingGate);
   const canReshape =
     (intent.status === 'WAITING' || isFailed) && intent.constructionAutonomyMode !== 'autonomous';
   // Cancellable (steering): parked, stranded, or failed — never mid-RUNNING.

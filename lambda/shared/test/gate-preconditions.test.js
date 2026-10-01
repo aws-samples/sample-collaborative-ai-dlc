@@ -758,3 +758,48 @@ describe('FINDING_CODES is closed', () => {
     expect(FINDING_CODES).toContain('review_dissent_maintained');
   });
 });
+
+describe('evaluateGatePreconditions: checkpoint receipts per validation revision', () => {
+  const REQUIRED = Object.freeze({ ...POLICY, summaryConfirmation: 'required' });
+
+  it('does not let a confirmation from an earlier revision authorize this one', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: REQUIRED,
+      attempt: 0,
+      validationRound: 1,
+      receipts: [receipt()],
+      events: [stamp('requirements')],
+    });
+
+    expect(codesOf(result)).toContain('summary_confirmation_missing');
+  });
+
+  it('accepts the confirmation recorded for this revision', () => {
+    const sk = 'RECEIPT#summary-confirmation#si-1#0#-#1';
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: REQUIRED,
+      attempt: 0,
+      validationRound: 1,
+      receipts: [receipt(), receipt({ sk, ordinal: 1 })],
+      events: [
+        stamp('requirements', { detail: { artifactType: 'requirements', authorizationId: sk } }),
+      ],
+    });
+
+    expect(codesOf(result)).toEqual([]);
+  });
+
+  it('requires a fresh plan approval for each revision', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: { ...POLICY, planApproval: 'required' },
+      attempt: 0,
+      validationRound: 2,
+      receipts: [{ kind: 'plan-approval', attempt: 0, ordinal: 1 }],
+    });
+
+    expect(codesOf(result)).toContain('plan_approval_missing');
+  });
+});

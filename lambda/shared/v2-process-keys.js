@@ -527,7 +527,9 @@ const buildExecutionMeta = ({
   workflowVersion,
   aidlcRepoRef,
   methodologyPins,
-  methodologyRelease,
+  // Only a pinned intent carries a release, and only a failed callback carries a
+  // resume marker: an unpinned row keeps exactly the attributes it always had.
+  ...(methodologyRelease ? { methodologyRelease } : {}),
   scope,
   currentPhase,
   currentStage,
@@ -566,7 +568,7 @@ const buildExecutionMeta = ({
   orchestratorStartedAt,
   orchestratorExpiresAt,
   rewindFromStageId,
-  resumeRequired,
+  ...(resumeRequired ? { resumeRequired } : {}),
   stageSkipping,
   skipStageIds,
   composedGrid,
