@@ -9103,3 +9103,34 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
     expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
   });
 });
+
+describe('GET intent — timeline event fields', () => {
+  it('forwards no event detail to the browser', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'EVENT#T#e1'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'EVENT#T#e1',
+      type: 'Event',
+      executionId: intent.id,
+      eventId: 'e1',
+      eventType: 'v2.review.dissent',
+      actor: 'reviewer',
+      summary: 'Maintained dissent',
+      timestamp: 'T2',
+      detail: { round: 1, maxRounds: 2, findings: 'verbatim agent text' },
+    });
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const event = JSON.parse(res.body).events.find((row) => row.eventId === 'e1');
+    expect(event).toBeDefined();
+    expect(event).not.toHaveProperty('detail');
+  });
+});

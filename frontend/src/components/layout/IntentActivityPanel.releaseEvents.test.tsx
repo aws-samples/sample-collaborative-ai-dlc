@@ -37,6 +37,7 @@ const EVENTS = [
     actor: 'arch-reviewer',
     summary: '## Review\n\n**Verdict:** READY\n\n| ID | Finding |\n|---|---|\n| Finding 1 | ok |',
   },
+  { eventId: 'e25', type: 'v2.stage.note', summary: '' },
 ].map((event, index) => ({
   ...event,
   timestamp: `2026-08-11T10:${String(index).padStart(2, '0')}:00Z`,
@@ -121,5 +122,13 @@ describe('IntentActivityPanel release-semantics event colours', () => {
     expect(screen.getAllByText('Advisory review').length).toBeGreaterThan(0);
     const excerpt = screen.getByText(/Verdict: READY/);
     expect(excerpt.textContent).not.toMatch(/##|\*\*|\|---/);
+  });
+});
+
+describe('IntentActivityPanel headline fallback', () => {
+  it('names the event type when the summary is empty', () => {
+    render(<IntentActivityPanel onClose={() => {}} />);
+
+    expect(screen.getByText('v2.stage.note')).toBeInTheDocument();
   });
 });
