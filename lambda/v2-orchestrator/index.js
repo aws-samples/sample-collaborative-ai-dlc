@@ -65,6 +65,7 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
+import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -1482,9 +1483,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             stageApprovalOverride = await ctx.step(
               `gate-override-${stage.stageInstanceId ?? stage.stageId}-${round}`,
               async () => {
-                const row = await store
-                  .getStage(executionId, stage.stageInstanceId)
-                  .catch(() => null);
+                // No catch on the reads and writes below: a failure retries the
+                // durable step, so the receipt lands under the real attempt and
+                // the stage is never approved without its audit row.
+                const row = await store.getStage(executionId, stage.stageInstanceId, {
+                  consistentRead: true,
+                });
                 const codes = overridable.map((item) => item.code);
                 // The human's stated reason, on the receipt and the audit event.
                 // Tolerant: an answer without one records null rather than
@@ -1527,40 +1531,36 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   : null;
                 for (const [receiptKind, kindCodes] of codesByKind) {
                   if (receiptKind === 'stage-approval') continue;
-                  await store
-                    .putReceipt({
-                      executionId,
-                      kind: receiptKind,
-                      stageInstanceId: stage.stageInstanceId,
-                      attempt: Number(row?.attempt ?? 0),
-                      choice: 'override-and-approve',
-                      decidedBy: validation.gate?.answeredBy ?? null,
-                      decidedByName: validation.gate?.answeredByName ?? null,
-                      humanTaskId: validation.gate?.humanTaskId ?? null,
-                      detail: {
-                        findingCodes: kindCodes,
-                        reason,
-                        ...(receiptKind === 'sensor-override' ? blockingSensorOverride : {}),
-                      },
-                    })
-                    .catch((err) => logger.error('Gate override receipt failed', err));
-                }
-                await store
-                  .appendEvent({
+                  await store.putReceipt({
                     executionId,
-                    type: 'v2.gate.override',
-                    stageInstanceId: stage.stageInstanceId ?? null,
-                    actor: validation.gate?.answeredByName ?? validation.gate?.answeredBy ?? null,
-                    summary: `${validation.gate?.answeredByName || 'Someone'} overrode ${codes.length} blocking finding(s) and approved ${stage.stageId}: ${codes.join(', ')}`,
+                    kind: receiptKind,
+                    stageInstanceId: stage.stageInstanceId,
+                    attempt: Number(row?.attempt ?? 0),
+                    choice: 'override-and-approve',
+                    decidedBy: validation.gate?.answeredBy ?? null,
+                    decidedByName: validation.gate?.answeredByName ?? null,
+                    humanTaskId: validation.gate?.humanTaskId ?? null,
                     detail: {
-                      findingCodes: codes,
+                      findingCodes: kindCodes,
                       reason,
-                      receiptKind: kind,
-                      receiptKinds: [...codesByKind.keys()],
-                      ...blockingSensorOverride,
+                      ...(receiptKind === 'sensor-override' ? blockingSensorOverride : {}),
                     },
-                  })
-                  .catch((err) => logger.error('Gate override event append failed', err));
+                  });
+                }
+                await store.appendEvent({
+                  executionId,
+                  type: 'v2.gate.override',
+                  stageInstanceId: stage.stageInstanceId ?? null,
+                  actor: validation.gate?.answeredByName ?? validation.gate?.answeredBy ?? null,
+                  summary: `${validation.gate?.answeredByName || 'Someone'} overrode ${codes.length} blocking finding(s) and approved ${stage.stageId}: ${codes.join(', ')}`,
+                  detail: {
+                    findingCodes: codes,
+                    reason,
+                    receiptKind: kind,
+                    receiptKinds: [...codesByKind.keys()],
+                    ...blockingSensorOverride,
+                  },
+                });
                 return stageApprovalOverride;
               },
             );
@@ -1587,9 +1587,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               await ctx.step(
                 `stage-approval-receipt-${stage.stageInstanceId ?? stage.stageId}-${round}`,
                 async () => {
-                  const row = await store
-                    .getStage(executionId, stage.stageInstanceId)
-                    .catch(() => null);
+                  const row = await store.getStage(executionId, stage.stageInstanceId, {
+                    consistentRead: true,
+                  });
                   const approvedInputs = (outcome.result?.producedHeads ?? []).map((head) => ({
                     logicalKey: head.logicalKey,
                     snapshotHash: head.snapshotHash,
@@ -2191,7 +2191,6 @@ const nextStageIdAfter = (runStages = [], stage = {}) => {
 // whitespace is "nothing to add", which is a recorded decision, not a learning.
 // The reason a human gave for `override-and-approve`, bounded like every other
 // free text the engine persists from a gate answer. `null` when absent.
-const OVERRIDE_REASON_MAX = 300;
 const gateOverrideReason = (answer) => {
   const raw = typeof answer === 'string' ? null : (answer?.reason ?? null);
   const text = String(raw ?? '')

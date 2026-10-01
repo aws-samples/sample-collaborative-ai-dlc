@@ -132,6 +132,7 @@ import {
   pendingAttachmentDeletions,
   validateAttachmentDescriptor,
 } from '../shared/intent-attachments.js';
+import { GATE_CHOICES, OVERRIDE_REASON_MAX, parseChoice } from '../shared/gate-answer.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -145,7 +146,6 @@ const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
 const logger = new Logger({ persistentKeys: { component: 'intents' } });
-const GATE_OVERRIDE_REASON_MAX = 2000;
 
 // The only registry answers that mean "this deployment ref has no release a new
 // intent may auto-pin". A capability record that could not be verified is not
@@ -2659,31 +2659,44 @@ export const handler = async (event, context) => {
           code: 'invalid_gate_status',
         });
       }
-      const overrideChoices = [
-        data.answer?.decision,
-        data.answer?.mode,
-        data.answer?.choice,
-        typeof data.answer === 'string' ? data.answer : null,
-        ...(Array.isArray(data.answer?.perQuestion)
-          ? data.answer.perQuestion.map((entry) => entry?.answer)
-          : []),
-      ];
-      if (
-        overrideChoices.some(
-          (choice) =>
-            typeof choice === 'string' && choice.trim().toLowerCase() === 'override-and-approve',
-        )
-      ) {
-        const reason = typeof data.answer.reason === 'string' ? data.answer.reason.trim() : '';
+      // A validation gate that withheld an option (a blocking finding withholds
+      // `approve`) must not record that option: the engine would re-run the
+      // stage while the gate row and its badge said "approved".
+      const offered =
+        gate.kind === 'validation' && Array.isArray(gate.options) && gate.options.length > 0
+          ? gate.options
+          : null;
+      if (offered) {
+        const choice = parseChoice(data.answer, GATE_CHOICES);
+        const chosen = choice ?? (answerStatus === 'approved' ? 'approve' : null);
+        if (chosen && !offered.includes(chosen)) {
+          return response(400, {
+            error: `This gate offers ${offered.join(', ')}; "${chosen}" is not one of them`,
+            code: 'gate_choice_not_offered',
+          });
+        }
+      }
+      // The same parser the orchestrator reads the answer with, so an answer the
+      // engine treats as an override is held to the override's requirements here.
+      const overrideChosen =
+        parseChoice(data.answer, ['override-and-approve']) === 'override-and-approve' ||
+        (Array.isArray(data.answer?.perQuestion) &&
+          data.answer.perQuestion.some(
+            (entry) =>
+              typeof entry?.answer === 'string' &&
+              entry.answer.trim().toLowerCase() === 'override-and-approve',
+          ));
+      if (overrideChosen) {
+        const reason = typeof data.answer?.reason === 'string' ? data.answer.reason.trim() : '';
         if (!reason) {
           return response(400, {
             error: 'A non-blank reason is required to override blocking findings',
             code: 'override_reason_required',
           });
         }
-        if (reason.length > GATE_OVERRIDE_REASON_MAX) {
+        if (reason.length > OVERRIDE_REASON_MAX) {
           return response(400, {
-            error: `Override reason must be at most ${GATE_OVERRIDE_REASON_MAX} characters`,
+            error: `Override reason must be at most ${OVERRIDE_REASON_MAX} characters`,
             code: 'override_reason_too_long',
           });
         }

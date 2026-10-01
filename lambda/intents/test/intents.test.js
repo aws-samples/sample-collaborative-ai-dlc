@@ -4148,6 +4148,55 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     expect(procStore.get(humanKey).answer.reason).toBe('Accepted on the record.');
   });
 
+  it('reads the override choice and its reason limit exactly as the orchestrator does', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const humanTaskId = 'h-override-parser';
+    const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+    seedGate(intent.id, humanTaskId);
+
+    for (const answer of [
+      { freeText: 'override-and-approve' },
+      { decision: 'override-and-approve', reason: 'r'.repeat(301) },
+    ]) {
+      const invalid = await answerGate(sub, projectId, intent.id, humanTaskId, { answer });
+      expect(invalid.statusCode).toBe(400);
+      expect(JSON.parse(invalid.body).code).toMatch(/^override_reason_/);
+      expect(procStore.get(humanKey).status).toBe('pending');
+    }
+  });
+
+  it('rejects a validation-gate choice the gate did not offer', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const humanTaskId = 'h-blocked-validation';
+    const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+    seedGate(intent.id, humanTaskId);
+    procStore.set(humanKey, {
+      ...procStore.get(humanKey),
+      kind: 'validation',
+      options: ['request-changes', 'override-and-approve'],
+    });
+
+    for (const body of [
+      { answer: { decision: 'approve' } },
+      { status: 'approved', answer: { ok: 1 } },
+    ]) {
+      const invalid = await answerGate(sub, projectId, intent.id, humanTaskId, body);
+      expect(invalid.statusCode).toBe(400);
+      expect(JSON.parse(invalid.body).code).toBe('gate_choice_not_offered');
+      expect(procStore.get(humanKey).status).toBe('pending');
+    }
+
+    const accepted = await answerGate(sub, projectId, intent.id, humanTaskId, {
+      status: 'rejected',
+      answer: { decision: 'request-changes', feedback: 'fix it' },
+    });
+    expect(accepted.statusCode).toBe(200);
+  });
+
   it('answers a pending gate (CAS) and resumes the durable callback when bound', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

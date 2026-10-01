@@ -745,3 +745,55 @@ describe('gate un-park', () => {
     for (const unpark of unparks) expect(unpark).toHaveProperty('resumeRequired', null);
   });
 });
+
+describe('override audit writes', () => {
+  const overrideAnswered = () => {
+    stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] });
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason: 'Accepted for this test.',
+    });
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [{ ...GATED_STAGE, policy: POLICY }] },
+    }));
+  };
+
+  it('retries the override step instead of filing the receipt under attempt 0', async () => {
+    overrideAnswered();
+    let reads = 0;
+    deps.store.getStage = vi.fn(async () => {
+      reads += 1;
+      if (reads === 2) throw new Error('read failed');
+      return { stageInstanceId: 'si-1', attempt: 2 };
+    });
+    const step = ctx.step;
+    ctx.step = async (name, fn) => {
+      try {
+        return await step(name, fn);
+      } catch (error) {
+        if (!name.startsWith('gate-override-')) throw error;
+        return step(name, fn);
+      }
+    };
+
+    await run();
+
+    const overrides = deps.store.putReceipt.mock.calls
+      .map(([receipt]) => receipt)
+      .filter((receipt) => receipt.kind === 'sensor-override');
+    expect(overrides.map((receipt) => receipt.attempt)).toEqual([2]);
+  });
+
+  it('does not approve the stage when the override audit row cannot be written', async () => {
+    overrideAnswered();
+    deps.store.putReceipt = vi.fn(async (receipt) => {
+      if (receipt.kind === 'sensor-override') throw new Error('receipt store unavailable');
+      return receipt;
+    });
+
+    await run();
+
+    expect(eventTypes()).not.toContain('v2.stage.validated');
+  });
+});
