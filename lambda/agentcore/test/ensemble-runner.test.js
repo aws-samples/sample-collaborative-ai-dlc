@@ -579,6 +579,8 @@ describe('mob dissent triage', () => {
     expect(dissent).toHaveLength(1);
     expect(dissent[0].summary).toContain('no NFRs');
     expect(dissent[0].actor).toBe('quality-agent');
+    // The timeline renders "round N/M" from these two counters.
+    expect(dissent[0].detail).toMatchObject({ round: 2, maxRounds: MAX_DISSENT_ROUNDS });
   });
 
   it('does not count an unchanged round-one contribution as a round-two write', async () => {

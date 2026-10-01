@@ -30,6 +30,14 @@ const EVENTS = [
     type: 'v2.persona.dissent',
     actor: 'aidlc-quality-agent',
     summary: 'Maintained dissent on user-stories (aidlc-quality-agent, knowledge): missing NFRs',
+    detail: { round: 1, maxRounds: 2 },
+  },
+  // A round with no recorded cap: the feed does not guess the cap.
+  {
+    eventId: 'p10',
+    type: 'v2.persona.dissent',
+    actor: 'aidlc-ops-agent',
+    summary: 'Maintained dissent on user-stories (aidlc-ops-agent, knowledge): no runbook',
     detail: { round: 1 },
   },
   // Round 2 of 2: the cap is spent, which is a materially different situation
@@ -151,6 +159,11 @@ describe('IntentActivityPanel dissent rounds and the gate-sensor summary', () =>
     render(<IntentActivityPanel onClose={() => {}} />);
     expect(screen.getByText('Maintained dissent (round 1/2) — aidlc-quality-agent')).toBeTruthy();
     expect(screen.getByText('Maintained dissent (round 2/2) — aidlc-architect-agent')).toBeTruthy();
+  });
+
+  it('shows the round alone when the event recorded no cap', () => {
+    render(<IntentActivityPanel onClose={() => {}} />);
+    expect(screen.getByText('Maintained dissent (round 1) — aidlc-ops-agent')).toBeTruthy();
   });
 
   it('omits the round when the event never stamped one', () => {

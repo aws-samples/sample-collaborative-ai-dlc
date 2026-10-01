@@ -1149,6 +1149,7 @@ const recordDissent = async ({ evidence, emit, stage, attempt, mode, round }) =>
       detail: {
         mode,
         round,
+        maxRounds: MAX_DISSENT_ROUNDS,
         agentRef: item.agentRef,
         positions: [{ stance: item.stance, class: item.class, text: item.position }],
         attempt,
