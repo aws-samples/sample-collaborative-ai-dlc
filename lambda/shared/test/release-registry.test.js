@@ -436,7 +436,7 @@ describe('updateRelease', () => {
       actor: 'admin-1',
     });
 
-    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
+    expect(promoted).toMatchObject({ supportState: 'selectable', fidelityGaps: [] });
   });
 
   it('refuses visibility-only activation when it would expose unsupported behavior', async () => {
