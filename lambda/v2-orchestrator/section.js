@@ -255,7 +255,13 @@ export const awaitEngineGate = async (
   if (!gate || gate.status === 'superseded') return { superseded: true };
   await ctxArg.step(`gate-unpark-${name}`, async () => {
     try {
-      await store.updateExecution({ executionId, status: 'RUNNING', pendingHumanTaskId: null });
+      // The answer reached the run, so any resume marker for it is resolved.
+      await store.updateExecution({
+        executionId,
+        status: 'RUNNING',
+        pendingHumanTaskId: null,
+        resumeRequired: null,
+      });
     } catch {
       /* best-effort un-park */
     }

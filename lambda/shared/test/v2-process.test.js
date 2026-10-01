@@ -2079,3 +2079,28 @@ describe('buildExecutionMeta — unpinned row shape', () => {
     expect(meta).not.toHaveProperty('resumeRequired');
   });
 });
+
+describe('createProcessStore — resume marker', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    store = createProcessStore({ ddb, tableName: 'v2-proc', clock: () => 'T' });
+  });
+
+  it('removes the marker instead of writing a null attribute', async () => {
+    await store.updateExecution({ executionId: 'e1', resumeRequired: null });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toMatch(/ REMOVE (.*, )?resumeRequired\b/);
+    expect(input.UpdateExpression).not.toMatch(/SET .*resumeRequired =/);
+  });
+
+  it('sets the marker when one is given', async () => {
+    const marker = { humanTaskId: 'h1', callbackId: 'cb-1', answeredAt: 'T' };
+    await store.updateExecution({ executionId: 'e1', resumeRequired: marker });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.UpdateExpression).toContain('resumeRequired = :rsr');
+    expect(input.ExpressionAttributeValues[':rsr']).toEqual(marker);
+  });
+});

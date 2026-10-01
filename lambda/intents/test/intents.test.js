@@ -8803,7 +8803,7 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
     const res = await resume(sub, projectId, intent.id);
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
-    expect(procStore.get(metaKey).resumeRequired).toBeNull();
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
     // The recorded answer is re-sent verbatim — the human is not asked again.
     const sent = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).at(-1);
     expect(sent.args[0].input.CallbackId).toBe('cb-h1');
@@ -8945,7 +8945,7 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
       pendingHumanTaskId: null,
     });
     // The marker is cleared: a button that can no longer work is not offered.
-    expect(procStore.get(metaKey).resumeRequired).toBeNull();
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
   });
 
   it('returns 503 and keeps the marker when the retry itself fails transiently', async () => {
@@ -8972,5 +8972,85 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
     const other = await seedV2Project(sub);
     const { intent } = await parkedOnGate(sub, projectId);
     expect((await resume(sub, other, intent.id)).statusCode).toBe(404);
+  });
+
+  const stuckMarker = async (sub, projectId) => {
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    const answered = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(answered.statusCode).toBe(503);
+    expect(procStore.get(metaKey).resumeRequired).toMatchObject({ callbackId: 'cb-h1' });
+    return { intent, metaKey };
+  };
+
+  it('clears the marker when the intent is cancelled instead of resumed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await stuckMarker(sub, projectId);
+
+    const cancelled = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/cancel`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: null,
+      ...claims(sub),
+    });
+
+    expect(cancelled.statusCode).toBe(200);
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('treats a callback that already completed as resumed and clears the marker', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await stuckMarker(sub, projectId);
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).rejects(
+      Object.assign(new Error('callback already completed'), {
+        name: 'InvalidParameterValueException',
+      }),
+    );
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: false });
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).callbackConsumedAt).toBeTruthy();
+  });
+
+  it('does not re-send a stale marker once the intent is no longer waiting', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await stuckMarker(sub, projectId);
+    procStore.set(metaKey, { ...procStore.get(metaKey), status: 'FAILED' });
+    const sendsBefore = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: false });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(
+      sendsBefore,
+    );
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('does not re-send a marker whose gate callback was already consumed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await stuckMarker(sub, projectId);
+    const gateKey = keyOf(`EXEC#${intent.id}`, 'HUMAN#h1');
+    procStore.set(gateKey, { ...procStore.get(gateKey), callbackConsumedAt: 'T' });
+    const sendsBefore = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: false });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(
+      sendsBefore,
+    );
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
   });
 });

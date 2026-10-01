@@ -2850,16 +2850,29 @@ export const handler = async (event, context) => {
       const marker = meta.resumeRequired ?? null;
       const resumeGateId = marker?.humanTaskId ?? meta.pendingHumanTaskId ?? null;
       const gate = resumeGateId ? await store.getHumanTask(intentId, resumeGateId) : null;
-      const pending = marker?.callbackId
-        ? marker
-        : meta.status === 'WAITING' &&
-            isHumanTaskAnswerStatus(gate?.status) &&
-            gate.callbackId &&
-            !gate.callbackConsumedAt
+      // The marker is a hint, not the authority: a resume is owed only while the
+      // intent waits on that gate, the gate holds an answer, and its callback
+      // has not been consumed. A marker left behind by a cancel, a rewind or a
+      // callback that did complete is cleared instead of re-sent.
+      const pending =
+        meta.status === 'WAITING' &&
+        isHumanTaskAnswerStatus(gate?.status) &&
+        gate.callbackId &&
+        !gate.callbackConsumedAt
           ? { humanTaskId: resumeGateId, callbackId: gate.callbackId }
           : null;
+      const clearMarker = async () => {
+        if (!marker) return meta;
+        return store
+          .updateExecution({ executionId: intentId, resumeRequired: null })
+          .catch((metaErr) => {
+            logger.error('Resume marker clear failed', metaErr);
+            return meta;
+          });
+      };
       if (!pending?.callbackId) {
-        return response(200, { intent: mapIntent(meta), resumed: false });
+        const current = await clearMarker();
+        return response(200, { intent: mapIntent(current ?? meta), resumed: false });
       }
       const responder = getResponder(event);
       try {
@@ -2886,6 +2899,21 @@ export const handler = async (event, context) => {
             code: 'durable_execution_expired',
             intent: mapIntent(failed ?? { ...meta, status: 'FAILED' }),
           });
+        }
+        // The callback is gone or already completed: the first send was
+        // delivered even though it reported an error. Nothing is owed.
+        if (isMissingDurableCallbackError(err)) {
+          await (
+            store.markGateCallbackConsumed?.({
+              executionId: intentId,
+              humanTaskId: pending.humanTaskId,
+              callbackId: pending.callbackId,
+            }) ?? Promise.resolve()
+          ).catch((markErr) =>
+            logger.error('Gate callback consumption marker write failed', markErr),
+          );
+          const current = await clearMarker();
+          return response(200, { intent: mapIntent(current ?? meta), resumed: false });
         }
         logger.error('Gate resume retry failed', err);
         return response(503, {
@@ -3193,6 +3221,8 @@ export const handler = async (event, context) => {
         fromStatus: meta.status,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        // A recorded answer whose callback failed is moot once the run ends.
+        resumeRequired: null,
         completedAt: new Date().toISOString(),
       });
       await store
@@ -4126,6 +4156,7 @@ export const handler = async (event, context) => {
         fromStatus: meta.status,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: 'lane_repair_in_progress',
         completedAt: null,
         orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
@@ -4308,6 +4339,7 @@ export const handler = async (event, context) => {
         orchestratorStartedAt: null,
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: null,
         failure: null,
         completedAt: null,
@@ -4532,6 +4564,7 @@ export const handler = async (event, context) => {
         fromStatus: priorStatus,
         startedAt: meta.startedAt,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: 'rewind_in_progress',
         completedAt: null,
         orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
@@ -4635,6 +4668,7 @@ export const handler = async (event, context) => {
         orchestratorStartedAt: null,
         orchestratorExpiresAt: null,
         pendingHumanTaskId: null,
+        resumeRequired: null,
         failureReason: null,
         failure: null,
         completedAt: null,
@@ -5855,6 +5889,7 @@ const repairExpiredDurableExecution = async ({
     completedAt: new Date().toISOString(),
     failureReason,
     pendingHumanTaskId: null,
+    resumeRequired: null,
     ...(meta?.orchestratorRunId ? { ifOrchestratorRunId: meta.orchestratorRunId } : {}),
   });
   await store

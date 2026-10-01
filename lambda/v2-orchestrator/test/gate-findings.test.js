@@ -733,3 +733,15 @@ describe('validation gate durable history without a resolved release policy', ()
     expect(names.some((name) => name.startsWith('gate-preconditions-'))).toBe(false);
   });
 });
+
+describe('gate un-park', () => {
+  it('clears any resume marker once the answer reaches the run', async () => {
+    await run();
+
+    const unparks = deps.store.updateExecution.mock.calls
+      .map(([args]) => args)
+      .filter((args) => args.status === 'RUNNING' && args.pendingHumanTaskId === null);
+    expect(unparks.length).toBeGreaterThan(0);
+    for (const unpark of unparks) expect(unpark).toHaveProperty('resumeRequired', null);
+  });
+});
