@@ -448,7 +448,7 @@ describe('registerTools', () => {
 // there too — but it must never be able to raise the human's checkpoint. Tool
 // availability is the enforcement seam: a tool that is not registered cannot be
 // called by accident or on purpose.
-describe('toolsForRole — checkpoint ownership', () => {
+describe('toolsForRole — release policy', () => {
   const POLICY = Object.freeze({
     summaryConfirmation: 'required',
     planApproval: 'required',

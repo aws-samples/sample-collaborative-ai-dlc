@@ -4457,9 +4457,11 @@ describe('runStage — release-mode fidelity', () => {
   });
 
   it('still refuses agent-team, which needs real concurrent sessions', async () => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].mode = 'agent-team';
     const deps = baseDeps({
       spawnFn: okSpawn,
-      loadLibrary: async () => ({ workflow: workflow(), library: ensembleLibrary('agent-team') }),
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
     });
 
     await expect(runStage(baseArgs, deps)).resolves.toMatchObject({
