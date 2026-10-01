@@ -4625,8 +4625,8 @@ describe('runStage — release-mode fidelity', () => {
     });
   });
 
-  // The advisory reviewer prompt used to promise its findings were shown
-  // verbatim at the approval gate. They are not — they land on the timeline.
+  // Advisory reviewer findings land on the timeline, not verbatim at the approval
+  // gate, so the prompt must not promise otherwise.
   describe('advisory reviewer prompt truthfulness', () => {
     const advisoryStage = {
       stageId: 'requirements-analysis',
