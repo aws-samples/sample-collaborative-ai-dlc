@@ -1681,3 +1681,22 @@ describe('promotion of a record registered before protocol evidence existed', ()
     });
   });
 });
+
+describe('admin listing of a record registered before protocol evidence existed', () => {
+  it('reports what promotion would refuse instead of the stored list', async () => {
+    await registerRelease(registerArgs(CANDIDATE_PROFILE));
+    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
+    const row = { ...rows.get(key), fidelityGaps: [] };
+    delete row.fidelityEvidenceRevision;
+    rows.set(key, row);
+
+    const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+
+    const listed = releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
+    expect(listed.unhonouredValues).toEqual(
+      expect.arrayContaining([
+        { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
+      ]),
+    );
+  });
+});

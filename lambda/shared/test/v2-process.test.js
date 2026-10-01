@@ -2214,3 +2214,24 @@ describe('createProcessStore — repair counter per validation revision', () => 
     ).resolves.toBe(false);
   });
 });
+
+describe('createProcessStore — clearing the resume marker of one gate', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  let store;
+  beforeEach(() => {
+    ddb.reset();
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    store = createProcessStore({ ddb, tableName: 'v2-proc', clock: () => 'T' });
+  });
+
+  it('clears the marker only while it still names that gate', async () => {
+    await store.updateExecution({
+      executionId: 'e1',
+      resumeRequired: null,
+      ifResumeRequiredFor: 'h1',
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toContain('resumeRequired.humanTaskId = :ifRrh');
+    expect(input.ExpressionAttributeValues[':ifRrh']).toBe('h1');
+  });
+});
