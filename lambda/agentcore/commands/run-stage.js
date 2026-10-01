@@ -576,11 +576,10 @@ const runReviewer = async ({
     ids,
     maxTurns,
   });
-  // Preserve the pre-extraction contract: a dispatch failure (spawn/materialize
-  // throwing) propagates out of runReviewer exactly as it did before, so the
-  // existing per-round `.catch` at the call site (records `v2.review.failed`)
-  // keeps working unchanged.
-  if (!dispatch.ok) throw dispatch.detail;
+  // Only a thrown dispatch (materialize/spawn) propagates, to the per-round
+  // `.catch` that records `v2.review.failed`. A non-zero CLI exit does not: the
+  // reviewer may have submitted its verdict before exiting, so it is read below.
+  if (!dispatch.ok && dispatch.detail instanceof Error) throw dispatch.detail;
   const verdict = await latestReviewerVerdict({
     store,
     executionId,
