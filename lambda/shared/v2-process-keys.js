@@ -752,8 +752,8 @@ const buildHumanTaskRow = ({
   // reading it out of the prompt prose. Written only when the option is actually
   // offered, so every other gate row is unchanged.
   loopBackTarget = undefined,
-  // The stages that loop-back re-runs, target first (written with the target).
-  loopBackStages = undefined,
+  // Why the agent recommended the loop-back (written with the target).
+  loopBackReason = undefined,
   status = 'pending',
   now,
 }) => ({
@@ -776,7 +776,7 @@ const buildHumanTaskRow = ({
   ...(detail === undefined ? {} : { detail }),
   ...(learningsRitual === undefined ? {} : { learningsRitual }),
   ...(loopBackTarget === undefined ? {} : { loopBackTarget }),
-  ...(loopBackStages === undefined ? {} : { loopBackStages }),
+  ...(loopBackReason === undefined ? {} : { loopBackReason }),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,
   answer: null,

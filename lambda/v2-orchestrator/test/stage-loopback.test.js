@@ -7,11 +7,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { __durableHandler } from '../index.js';
-import {
-  LOOP_BACK_RECOMMENDED_EVENT,
-  LOOP_BACK_RECORDED_EVENT,
-} from '../../shared/stage-loopback.js';
-import { buildEventRow, buildStageRow } from '../../shared/v2-process-keys.js';
+import { LOOP_BACK_RECORDED_EVENT } from '../../shared/stage-loopback.js';
+import { buildStageRow } from '../../shared/v2-process-keys.js';
 
 const makeCtx = (over = {}) => {
   const stageCallbacks = new Map();
@@ -101,31 +98,14 @@ const BUILD_AND_TEST_2 = {
   stageInstanceId: 'si-bt-2',
 };
 
-// Timeline fixtures go through the SAME row builder the process store persists
-// with, so `listEvents` returns the production shape (`type: 'Event'`, the name
-// in `eventType`) and a reader keyed on the wrong field fails here.
-let eventSeq = 0;
-const persistedEvent = (fields) => {
-  eventSeq += 1;
-  return buildEventRow({
-    executionId: 'exec-1',
-    actor: 'agentcore',
-    summary: '',
-    now: new Date(Date.UTC(2026, 0, 1, 0, 0, eventSeq)).toISOString(),
-    eventId: `ev-${eventSeq}`,
-    ...fields,
-  });
-};
+const REASON = 'integration tests fail against the generated payment code';
 
-const recommendation = (attempt = 0, stageInstanceId = 'si-bt') =>
-  persistedEvent({
-    type: LOOP_BACK_RECOMMENDED_EVENT,
-    stageInstanceId,
-    detail: { attempt, reason: 'integration tests fail against the generated payment code' },
-  });
 let deps;
 let ctx;
 let stageRuns;
+let dispatches;
+let recommending;
+let recommendations;
 
 const makeRuntime = () => {
   return vi.fn(async (payload) => {
@@ -133,6 +113,15 @@ const makeRuntime = () => {
     if (payload.command === 'init-ws') return { ok: true };
     if (payload.command === 'run-stage-start') {
       stageRuns.push(payload.stageId);
+      dispatches.push(payload);
+      // The agent records a recommendation through emit_stage_note on every run.
+      if (recommending.has(payload.stageId)) {
+        await deps.store.setLoopBackRecommendation({
+          executionId: 'i1',
+          stageInstanceId: payload.stageId === 'build-and-test' ? 'si-bt' : 'si-bt-2',
+          reason: REASON,
+        });
+      }
       await deps.store.putStage({
         executionId: 'i1',
         stageInstanceId: payload.stageInstanceId,
@@ -174,6 +163,9 @@ const gateScript = (answers) => {
 beforeEach(() => {
   ctx = makeCtx();
   stageRuns = [];
+  dispatches = [];
+  recommending = new Set();
+  recommendations = new Map();
   const attempts = new Map([
     ['si-cg', 0],
     ['si-bt', 0],
@@ -203,13 +195,18 @@ beforeEach(() => {
       failRunningStageAttempt: vi.fn(async () => null),
       listUnits: vi.fn(async () => []),
       getUnit: vi.fn(async () => null),
-      getStage: vi.fn(async (_e, stageInstanceId) => {
-        return (
-          stageRows.get(stageInstanceId) ?? {
-            stageInstanceId,
-            attempt: attempts.get(stageInstanceId) ?? 0,
-          }
-        );
+      getStage: vi.fn(async (_e, stageInstanceId) => ({
+        ...(stageRows.get(stageInstanceId) ?? {
+          stageInstanceId,
+          attempt: attempts.get(stageInstanceId) ?? 0,
+        }),
+        ...(recommendations.has(stageInstanceId)
+          ? { loopBackRecommendation: recommendations.get(stageInstanceId) }
+          : {}),
+      })),
+      setLoopBackRecommendation: vi.fn(async ({ stageInstanceId, reason }) => {
+        if (reason) recommendations.set(stageInstanceId, reason);
+        else recommendations.delete(stageInstanceId);
       }),
       updateStageState: vi.fn(async (input) => input),
       putStage: vi.fn(async (input) => {
@@ -290,11 +287,34 @@ describe('outside release mode', () => {
         ],
       },
     }));
-    deps.store.listEvents = vi.fn(async () => [recommendation(0)]);
+    recommending.add('build-and-test');
     await run();
     expect(gates()[0].options).toEqual(['approve', 'request-changes']);
     expect(gates()[0]).not.toHaveProperty('loopBackTarget');
     expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+  });
+
+  it('records no loop-back durable step for a stage without a release policy', async () => {
+    const names = [];
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        names.push(name);
+        return fn();
+      },
+    });
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: {
+        stages: [
+          { ...CODE_GENERATION, policy: null },
+          { ...BUILD_AND_TEST, policy: null },
+        ],
+      },
+    }));
+    recommending.add('build-and-test');
+    await run();
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.filter((name) => name.startsWith('loop-back-'))).toEqual([]);
   });
 
   it('withholds the option for a release whose catalog has no construction loop-back', async () => {
@@ -308,7 +328,7 @@ describe('outside release mode', () => {
         ],
       },
     }));
-    deps.store.listEvents = vi.fn(async () => [recommendation(0)]);
+    recommending.add('build-and-test');
     await run();
     expect(gates()[0].options).toEqual(['approve', 'request-changes']);
     expect(deps.store.resetStageRow).not.toHaveBeenCalled();
@@ -317,7 +337,7 @@ describe('outside release mode', () => {
 
 describe('a recommended loop-back the human accepts', () => {
   beforeEach(() => {
-    deps.store.listEvents = vi.fn(async () => [recommendation(0)]);
+    recommending.add('build-and-test');
     deps.store.getHumanTask = gateScript([{ decision: 'loop-back' }, { decision: 'approve' }]);
   });
 
@@ -326,10 +346,9 @@ describe('a recommended loop-back the human accepts', () => {
     const gate = gates()[0];
     expect(gate.options).toEqual(['approve', 'request-changes', 'loop-back']);
     expect(gate.loopBackTarget).toBe('code-generation');
-    // The stages the loop-back re-runs, in run order, for the UI's confirmation.
-    expect(gate.loopBackStages).toEqual(['code-generation', 'build-and-test']);
+    expect(gate.loopBackReason).toBe(REASON);
     expect(gate.prompt).toContain('## The agent recommends going back to the code');
-    expect(gate.prompt).toContain('integration tests fail against the generated payment code');
+    expect(gate.prompt).toContain(REASON);
     expect(gate.prompt).toContain('Choose loop-back to send this work back to code-generation');
     expect(gate.prompt).toContain('3 of 3 loop-backs remain for this intent');
     expect(deps.store.getExecution).toHaveBeenCalledWith('i1', { consistentRead: true });
@@ -381,6 +400,40 @@ describe('a recommended loop-back the human accepts', () => {
     ]);
   });
 
+  it('re-runs code generation with the loop-back answer, so it gets the reason and the feedback', async () => {
+    deps.store.getHumanTask = gateScript([
+      { decision: 'loop-back', feedback: 'check the refund path' },
+      { decision: 'approve' },
+    ]);
+    await run();
+    const [gate] = gates();
+    expect(gate.loopBackReason).toBe(REASON);
+    const resumesOf = (stageId) =>
+      dispatches
+        .filter((payload) => payload.stageId === stageId)
+        .map((payload) => payload.resumeFrom ?? null);
+    expect(resumesOf('code-generation')).toEqual([null, gate.humanTaskId]);
+    expect(resumesOf('build-and-test')).toEqual([null, null]);
+  });
+
+  it('records the loop-back under the gate id, which is unique to this run', async () => {
+    await run();
+    const ids = deps.store.resetStageRow.mock.calls
+      .map(([args]) => args.loopBackId)
+      .filter(Boolean);
+    expect(ids).toEqual([gates()[0].humanTaskId]);
+    expect(ids[0]).toContain('-run-');
+  });
+
+  it('clears the recommendation once the gate has read it', async () => {
+    await run();
+    expect(deps.store.setLoopBackRecommendation).toHaveBeenCalledWith({
+      executionId: 'i1',
+      stageInstanceId: 'si-bt',
+      reason: null,
+    });
+  });
+
   it('fails rewindably without recording or applying a jump when a reset fails', async () => {
     const resetStageRow = deps.store.resetStageRow;
     deps.store.resetStageRow = vi.fn(async (input) => {
@@ -414,7 +467,7 @@ describe('a recommended loop-back the human accepts', () => {
   });
 
   it('keeps the three-loop cap when loop-back timeline writes are lost', async () => {
-    deps.store.listEvents = vi.fn(async () => [recommendation(deps.store.attempts.get('si-bt'))]);
+    recommending.add('build-and-test');
     deps.store.getHumanTask = gateScript([
       { decision: 'loop-back' },
       { decision: 'loop-back' },
@@ -444,7 +497,18 @@ describe('a recommended loop-back the human accepts', () => {
       valid: true,
       plan: { stages: [CODE_GENERATION, BUILD_AND_TEST, CODE_GENERATION_2, BUILD_AND_TEST_2] },
     }));
-    deps.store.listEvents = vi.fn(async () => [recommendation(0), recommendation(0, 'si-bt-2')]);
+    // The agent recommends on the first run of each build-and-test only.
+    const runtime = deps.invokeRuntime;
+    const ran = new Set();
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      if (payload.command === 'run-stage-start' && !ran.has(payload.stageId)) {
+        ran.add(payload.stageId);
+        if (payload.stageId.startsWith('build-and-test')) recommending.add(payload.stageId);
+      }
+      const result = await runtime(payload);
+      recommending.clear();
+      return result;
+    });
     deps.store.getHumanTask = gateScript([
       { decision: 'loop-back' },
       { decision: 'approve' },
@@ -464,24 +528,21 @@ describe('a recommended loop-back the human accepts', () => {
     expect(deps.store.loopBackState.count).toBe(2);
   });
 
-  it.each(['getStage', 'listEvents'])(
+  it.each(['getStage', 'getExecution'])(
     'fails gate setup when the loop-back %s read fails',
     async (method) => {
-      if (method === 'getStage') {
-        let reads = 0;
-        deps.store.getStage = vi.fn(async (executionId, stageInstanceId) => {
-          reads += 1;
-          if (reads === 2) throw new Error('getStage unavailable');
-          return { executionId, stageInstanceId, attempt: 0 };
-        });
-      } else {
-        let reads = 0;
-        deps.store.listEvents = vi.fn(async () => {
-          reads += 1;
-          if (reads === 1) return [];
-          throw new Error('listEvents unavailable');
-        });
-      }
+      let step = null;
+      ctx = makeCtx({
+        step: async (name, fn) => {
+          step = name;
+          return fn();
+        },
+      });
+      const read = deps.store[method];
+      deps.store[method] = vi.fn(async (...args) => {
+        if (String(step).startsWith('loop-back-offer-')) throw new Error(`${method} unavailable`);
+        return read(...args);
+      });
 
       const result = await run();
 
@@ -491,10 +552,48 @@ describe('a recommended loop-back the human accepts', () => {
   );
 });
 
+describe('a recommendation from an earlier validation round', () => {
+  it('is not offered again after request-changes unless the agent repeats it', async () => {
+    const runtime = deps.invokeRuntime;
+    let buildAndTestRuns = 0;
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      if (payload.command === 'run-stage-start' && payload.stageId === 'build-and-test') {
+        buildAndTestRuns += 1;
+        if (buildAndTestRuns === 1) recommendations.set('si-bt', REASON);
+      }
+      return runtime(payload);
+    });
+    deps.store.getHumanTask = gateScript([
+      { decision: 'request-changes', feedback: 'tidy the report' },
+      { decision: 'approve' },
+    ]);
+    await run();
+    expect(gates().map((gate) => gate.options)).toEqual([
+      ['approve', 'request-changes', 'loop-back'],
+      ['approve', 'request-changes'],
+    ]);
+  });
+});
+
+describe('a recommendation the plan cannot offer', () => {
+  it('says so at the gate instead of dropping it', async () => {
+    // Per-unit code generation runs in a parallel section, so build-and-test is
+    // the first stage of its segment and has nothing linear to go back to.
+    deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages: [BUILD_AND_TEST] } }));
+    recommending.add('build-and-test');
+    await run();
+    const [gate] = gates();
+    expect(gate.options).toEqual(['approve', 'request-changes']);
+    expect(gate).not.toHaveProperty('loopBackTarget');
+    expect(gate.prompt).toContain(REASON);
+    expect(gate.prompt).toContain('Loop-back is not offered here');
+  });
+});
+
 describe('loop-back recommendation at the cap', () => {
   beforeEach(() => {
     deps.store.loopBackState.count = 3;
-    deps.store.listEvents = vi.fn(async () => [recommendation(0)]);
+    recommending.add('build-and-test');
   });
 
   it('withholds the option, says why, and leaves the gate answerable', async () => {
@@ -503,7 +602,7 @@ describe('loop-back recommendation at the cap', () => {
     const gate = gates()[0];
     expect(gate.options).toEqual(['approve', 'request-changes']);
     expect(gate).not.toHaveProperty('loopBackTarget');
-    expect(gate).not.toHaveProperty('loopBackStages');
+    expect(gate).not.toHaveProperty('loopBackReason');
     expect(gate.prompt).toContain('the loop-back limit is spent');
     expect(gate.prompt).toContain('already used all 3 loop-backs');
     expect(gate.prompt).toContain('rewind to code-generation yourself');

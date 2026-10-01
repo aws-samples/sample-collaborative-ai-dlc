@@ -7,17 +7,17 @@
 // is where every other backward jump in this system is decided.
 //
 // Everything here is pure: the derivation of the target stage from the resolved
-// plan, the cap, and the two typed event names. The orchestrator owns the walk
-// and the row resets; the MCP bridge owns the recommendation event. Keeping the
-// derivation here is what lets the rule be tested without a durable run and
-// stops it from being restated at each call site.
+// plan, the cap, and the decision event name. The orchestrator owns the walk
+// and the row resets; the MCP bridge records the agent's recommendation on the
+// stage row. Keeping the derivation here is what lets the rule be tested
+// without a durable run and stops it from being restated at each call site.
 //
 // No version string appears in this file. The target is read off the plan the
 // release already resolved, and the capability that enables the offer is a
 // registry entry keyed on the closure's runtime files (aidlc-capabilities.js).
 
 import { PLAN_APPROVAL_ARTIFACT } from './aidlc-capabilities.js';
-import { eventTypeOf } from './v2-process-keys.js';
+import { LOOP_BACK_OPTION } from './gate-answer.js';
 
 // The registry key whose presence turns the offer on. Release mode alone is not
 // enough: a catalog that ships no construction protocol has no loop-back to
@@ -28,17 +28,10 @@ const LOOP_BACK_CAPABILITY = 'PROTOCOL:build-and-test-loopback';
 // and update atomically with the final target-stage reset.
 const LOOP_BACK_LIMIT = 3;
 
-// The agent's recommendation, recorded by the platform (never parsed from prose)
-// — see `emitStageNote`'s `loopBackRecommended` field.
-const LOOP_BACK_RECOMMENDED_EVENT = 'v2.loopback.recommended';
 // The human's decision, recorded when the walk actually jumps back. This is
-// timeline data; the durable stage counter, not this best-effort event, enforces
+// timeline data; the durable META tally, not this best-effort event, enforces
 // the cap.
 const LOOP_BACK_RECORDED_EVENT = 'v2.loopback.recorded';
-
-// The gate option label. `parseChoice` matches it verbatim and the frontend keys
-// its third button off the same string, so it is spelled once.
-const LOOP_BACK_OPTION = 'loop-back';
 
 const outputArtifactTypesOf = (stage) =>
   (stage?.outputArtifacts ?? []).map((output) => output?.artifact ?? output).filter(Boolean);
@@ -67,89 +60,66 @@ const isCodeGenerationStage = (stage) =>
   outputArtifactTypesOf(stage).includes(PLAN_APPROVAL_ARTIFACT);
 
 /**
- * The loop-back target for the stage at `currentIndex`: the NEAREST PRECEDING
- * in-scope stage in the same segment that the release marks as code generation.
+ * The loop-back target for the stage at `currentIndex`: the stage IMMEDIATELY
+ * before it in the same segment (passing over skipped stages), and only when that
+ * stage is code generation. Upstream sends build-and-test back to code generation
+ * and nothing else back, so a later stage (deployment, observability) gets null.
  *
  * Segment-scoped on purpose, exactly like `resolveSkipTo`'s forward jump: the
- * walk index the caller rewinds is a segment index. A target that lives inside a
- * parallel section (the per-unit `code-generation` lane of a scope with a unit
- * DAG) is therefore NOT offered — re-entering a fan-out section would have to
- * re-derive the unit plan and its approved decisions, which is a different
- * operation from rewinding a linear run. Those scopes keep the rewind API.
+ * walk index the caller rewinds is a segment index. When code generation runs
+ * per unit in a parallel section, build-and-test opens the next segment and has
+ * no target — re-entering a fan-out would have to re-derive the approved unit
+ * plan. Those scopes keep the rewind API.
  *
- * Returns `{ index, stageId }`, or `null` when no such stage precedes this one.
+ * Returns `{ index, stageId }`, or `null`.
  */
 const loopBackTarget = ({ segmentStages = [], currentIndex = 0, skippedStageIds = [] } = {}) => {
   for (let i = Number(currentIndex) - 1; i >= 0; i -= 1) {
     const candidate = segmentStages[i];
-    if (!candidate) continue;
-    if (skippedStageIds.includes(candidate.stageId)) continue;
-    if (!isCodeGenerationStage(candidate)) continue;
-    return { index: i, stageId: candidate.stageId };
+    if (!candidate || skippedStageIds.includes(candidate.stageId)) continue;
+    return isCodeGenerationStage(candidate) ? { index: i, stageId: candidate.stageId } : null;
   }
   return null;
 };
 
 /**
- * Did the agent recommend a loop-back for THIS attempt of THIS stage?
- *
- * Attempt-scoped like every receipt in this phase: a rewind bumps the STAGE#
- * attempt, so a recommendation from a previous attempt is invisible rather than
- * deleted. The attempt is read from the event's `detail`, which the MCP bridge
- * stamps from the trusted container ENV — never from the agent's arguments.
- */
-const loopBackRecommendation = ({ events = [], stageInstanceId = null, attempt = 0 } = {}) => {
-  const matches = events.filter(
-    (row) =>
-      eventTypeOf(row) === LOOP_BACK_RECOMMENDED_EVENT &&
-      row.stageInstanceId === stageInstanceId &&
-      Number(row.detail?.attempt ?? 0) === Number(attempt),
-  );
-  const latest = matches.at(-1) ?? null;
-  if (!latest) return null;
-  return { reason: String(latest.detail?.reason ?? latest.summary ?? '').slice(0, 300) };
-};
-
-/**
  * The whole offer decision in one pure call, so the gate site reads as the rule.
  *
- * `offered: false` with a `target` and `atCap: true` is the cap case: the option
- * is withheld but the gate still SAYS so, which is what keeps the human from
- * choosing between "approve" and nothing while wondering where the agent's
- * recommendation went.
+ * `recommendation` is the reason the agent recorded on this stage's row through
+ * `emit_stage_note` (the orchestrator clears it once a gate has read it, so it
+ * always belongs to the run that just finished).
+ *
+ * - `{ offered: true, target, spent, remaining, reason }`: the gate offers it.
+ * - `{ offered: false, atCap: true, target, spent, reason }`: the cap is spent;
+ *   the gate says so instead of silently withholding the option.
+ * - `{ offered: false, unavailable: true, reason }`: the agent recommended it but
+ *   this stage has no linear code-generation stage to go back to; the gate says so.
+ * - `{ offered: false }`: nothing to show.
  */
 const resolveLoopBackOffer = ({
   stage = null,
   segmentStages = [],
   currentIndex = 0,
   skippedStageIds = [],
-  events = [],
-  attempt = 0,
-  loopBackCount = null,
+  recommendation = null,
+  loopBackCount = 0,
 } = {}) => {
-  if (stage?.policy?.loopBack !== 'human-offered') return { offered: false, atCap: false };
-  const recommendation = loopBackRecommendation({
-    events,
-    stageInstanceId: stage.stageInstanceId ?? null,
-    attempt,
+  if (stage?.policy?.loopBack !== 'human-offered' || !recommendation) return { offered: false };
+  const reason = String(recommendation).slice(0, 300);
+  const target = loopBackTarget({
+    segmentStages,
+    currentIndex,
+    skippedStageIds,
   });
-  if (!recommendation) return { offered: false, atCap: false };
-  const target = loopBackTarget({ segmentStages, currentIndex, skippedStageIds });
-  if (!target) return { offered: false, atCap: false };
-  if (!Number.isInteger(loopBackCount) || loopBackCount < 0) {
-    return { offered: false, atCap: false };
-  }
+  if (!target) return { offered: false, unavailable: true, reason };
   const spent = loopBackCount;
-  if (spent >= LOOP_BACK_LIMIT) {
-    return { offered: false, atCap: true, target, spent, reason: recommendation.reason };
-  }
+  if (spent >= LOOP_BACK_LIMIT) return { offered: false, atCap: true, target, spent, reason };
   return {
     offered: true,
-    atCap: false,
     target,
     spent,
     remaining: LOOP_BACK_LIMIT - spent,
-    reason: recommendation.reason,
+    reason,
   };
 };
 
@@ -157,11 +127,9 @@ export {
   LOOP_BACK_CAPABILITY,
   LOOP_BACK_LIMIT,
   LOOP_BACK_OPTION,
-  LOOP_BACK_RECOMMENDED_EVENT,
   LOOP_BACK_RECORDED_EVENT,
   isCodeGenerationStage,
   loopBackApplies,
-  loopBackRecommendation,
   loopBackTarget,
   resolveLoopBackOffer,
 };
@@ -170,11 +138,9 @@ export default {
   LOOP_BACK_CAPABILITY,
   LOOP_BACK_LIMIT,
   LOOP_BACK_OPTION,
-  LOOP_BACK_RECOMMENDED_EVENT,
   LOOP_BACK_RECORDED_EVENT,
   isCodeGenerationStage,
   loopBackApplies,
-  loopBackRecommendation,
   loopBackTarget,
   resolveLoopBackOffer,
 };

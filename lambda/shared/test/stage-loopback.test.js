@@ -9,15 +9,12 @@ import {
   LOOP_BACK_CAPABILITY,
   LOOP_BACK_LIMIT,
   LOOP_BACK_OPTION,
-  LOOP_BACK_RECOMMENDED_EVENT,
   LOOP_BACK_RECORDED_EVENT,
   isCodeGenerationStage,
   loopBackApplies,
-  loopBackRecommendation,
   loopBackTarget,
   resolveLoopBackOffer,
 } from '../stage-loopback.js';
-import { buildEventRow } from '../v2-process-keys.js';
 
 const codeGeneration = {
   stageId: 'code-generation',
@@ -31,34 +28,13 @@ const buildAndTest = {
   outputArtifacts: [{ artifact: 'build-test-results' }],
   policy: { loopBack: 'human-offered' },
 };
-const SEGMENT = [codeGeneration, ciPipeline, buildAndTest];
+const SEGMENT = [codeGeneration, buildAndTest];
+const REASON = 'integration tests fail in the payment lane';
 
-// Fixtures are built through the SAME row builder the process store persists
-// with, so they carry the real shape — `type: 'Event'` plus the name in
-// `eventType` — and cannot drift from what `listEvents` returns in production.
-let eventSeq = 0;
-const persisted = (fields) => {
-  eventSeq += 1;
-  return buildEventRow({
-    executionId: 'exec-1',
-    actor: 'agentcore',
-    summary: '',
-    now: new Date(Date.UTC(2026, 0, 1, 0, 0, eventSeq)).toISOString(),
-    eventId: `ev-${eventSeq}`,
-    ...fields,
-  });
-};
-const recommended = (attempt = 0, reason = 'integration tests fail in the payment lane') =>
-  persisted({
-    type: LOOP_BACK_RECOMMENDED_EVENT,
-    stageInstanceId: 'si-bt',
-    detail: { attempt, reason },
-  });
 describe('the constants the rule is read from', () => {
-  it('names the cap, the option and the two typed events once', () => {
+  it('names the cap, the option and the typed event once', () => {
     expect(LOOP_BACK_LIMIT).toBe(3);
     expect(LOOP_BACK_OPTION).toBe('loop-back');
-    expect(LOOP_BACK_RECOMMENDED_EVENT).toBe('v2.loopback.recommended');
     expect(LOOP_BACK_RECORDED_EVENT).toBe('v2.loopback.recorded');
     expect(LOOP_BACK_CAPABILITY).toBe('PROTOCOL:build-and-test-loopback');
   });
@@ -87,70 +63,43 @@ describe('isCodeGenerationStage', () => {
 });
 
 describe('loopBackTarget', () => {
-  it('finds the nearest preceding code-generation stage in the segment', () => {
-    expect(loopBackTarget({ segmentStages: SEGMENT, currentIndex: 2 })).toEqual({
+  it('is the stage immediately before this one when it is code generation', () => {
+    expect(loopBackTarget({ segmentStages: SEGMENT, currentIndex: 1 })).toEqual({
       index: 0,
       stageId: 'code-generation',
     });
   });
 
-  it('is null when no code-generation stage precedes this one', () => {
+  it('is null when the stage immediately before is not code generation', () => {
+    // A deployment stage after build-and-test, or build-and-test after another
+    // stage, does not loop back: upstream only sends build-and-test back.
     expect(
-      loopBackTarget({ segmentStages: [ciPipeline, buildAndTest], currentIndex: 1 }),
+      loopBackTarget({
+        segmentStages: [codeGeneration, ciPipeline, buildAndTest],
+        currentIndex: 2,
+      }),
     ).toBeNull();
     expect(loopBackTarget({ segmentStages: SEGMENT, currentIndex: 0 })).toBeNull();
   });
 
-  it('skips a target the intent deselected — a SKIPPED stage is not a jump target', () => {
+  it('passes over a skipped stage to the one before it', () => {
+    expect(
+      loopBackTarget({
+        segmentStages: [codeGeneration, ciPipeline, buildAndTest],
+        currentIndex: 2,
+        skippedStageIds: ['ci-pipeline'],
+      }),
+    ).toEqual({ index: 0, stageId: 'code-generation' });
+  });
+
+  it('is null when code generation itself was skipped', () => {
     expect(
       loopBackTarget({
         segmentStages: SEGMENT,
-        currentIndex: 2,
+        currentIndex: 1,
         skippedStageIds: ['code-generation'],
       }),
     ).toBeNull();
-  });
-
-  it('takes the NEAREST of several candidates', () => {
-    const segment = [
-      codeGeneration,
-      { ...codeGeneration, stageId: 'code-generation-2' },
-      buildAndTest,
-    ];
-    expect(loopBackTarget({ segmentStages: segment, currentIndex: 2 })).toEqual({
-      index: 1,
-      stageId: 'code-generation-2',
-    });
-  });
-});
-
-describe('loopBackRecommendation', () => {
-  it('reads the agent recommendation for THIS attempt of THIS stage', () => {
-    expect(
-      loopBackRecommendation({ events: [recommended(0)], stageInstanceId: 'si-bt', attempt: 0 }),
-    ).toEqual({ reason: 'integration tests fail in the payment lane' });
-  });
-
-  it('is invisible after a rewind bumped the attempt', () => {
-    expect(
-      loopBackRecommendation({ events: [recommended(0)], stageInstanceId: 'si-bt', attempt: 1 }),
-    ).toBeNull();
-  });
-
-  it('ignores a recommendation recorded against another stage', () => {
-    expect(
-      loopBackRecommendation({ events: [recommended(0)], stageInstanceId: 'si-other', attempt: 0 }),
-    ).toBeNull();
-  });
-
-  it('takes the latest when the agent recorded several in one attempt', () => {
-    expect(
-      loopBackRecommendation({
-        events: [recommended(0, 'first'), recommended(0, 'second')],
-        stageInstanceId: 'si-bt',
-        attempt: 0,
-      }),
-    ).toEqual({ reason: 'second' });
   });
 });
 
@@ -159,9 +108,8 @@ describe('resolveLoopBackOffer', () => {
     resolveLoopBackOffer({
       stage: buildAndTest,
       segmentStages: SEGMENT,
-      currentIndex: 2,
-      events: [recommended(0)],
-      attempt: 0,
+      currentIndex: 1,
+      recommendation: REASON,
       loopBackCount: 0,
       ...over,
     });
@@ -169,85 +117,49 @@ describe('resolveLoopBackOffer', () => {
   it('offers the loop-back with the computed target and the remaining budget', () => {
     expect(offer()).toEqual({
       offered: true,
-      atCap: false,
       target: { index: 0, stageId: 'code-generation' },
       spent: 0,
       remaining: 3,
-      reason: 'integration tests fail in the payment lane',
+      reason: REASON,
     });
   });
 
-  it('withholds the option at the cap but still reports WHY, so the gate can say so', () => {
-    const atCap = offer({ loopBackCount: LOOP_BACK_LIMIT });
-    expect(atCap.offered).toBe(false);
-    expect(atCap.atCap).toBe(true);
-    expect(atCap.spent).toBe(LOOP_BACK_LIMIT);
-    expect(atCap.target).toEqual({ index: 0, stageId: 'code-generation' });
-    expect(atCap.reason).toBe('integration tests fail in the payment lane');
-  });
-
-  // The execution counter is incremented by each successful target reset, so
-  // the offer stays bounded even if the timeline event is missing.
-  it('enforces the cap at exactly three durable target resets across attempts', () => {
-    let loopBackCount = 0;
-    const offers = [];
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const decision = offer({
-        events: [recommended(attempt, `attempt ${attempt} failed`)],
-        attempt,
-        loopBackCount,
-      });
-      offers.push(decision.offered);
-      if (decision.offered) loopBackCount += 1;
-    }
-    expect(offers).toEqual([true, true, true, false, false]);
-    expect(loopBackCount).toBe(LOOP_BACK_LIMIT);
-    expect(offer({ events: [recommended(4)], attempt: 4, loopBackCount })).toMatchObject({
+  it('withholds the option at the cap but still reports why, so the gate can say so', () => {
+    expect(offer({ loopBackCount: LOOP_BACK_LIMIT })).toEqual({
+      offered: false,
       atCap: true,
-      spent: 3,
+      target: { index: 0, stageId: 'code-generation' },
+      spent: LOOP_BACK_LIMIT,
+      reason: REASON,
     });
-  });
-
-  it('uses the target stage counter when recorded timeline events are absent', () => {
-    expect(offer({ events: [recommended(0)], loopBackCount: 2 })).toMatchObject({
+    expect(offer({ loopBackCount: 2 })).toMatchObject({
       offered: true,
       spent: 2,
       remaining: 1,
     });
-    expect(offer({ events: [recommended(0)], loopBackCount: 3 })).toMatchObject({
-      offered: false,
-      atCap: true,
-      spent: 3,
-    });
   });
 
-  it('withholds the option when the target counter is unavailable', () => {
-    expect(offer({ loopBackCount: null })).toMatchObject({ offered: false, atCap: false });
-  });
-
-  it('does not offer without a resolved release policy', () => {
-    expect(offer({ stage: { ...buildAndTest, policy: null } })).toEqual({
-      offered: false,
-      atCap: false,
-    });
-  });
-
-  it('does not offer when the release has no construction loop-back capability', () => {
-    expect(offer({ stage: { ...buildAndTest, policy: { loopBack: null } } })).toEqual({
-      offered: false,
-      atCap: false,
-    });
-  });
-
-  it('does not offer without an agent recommendation for this attempt', () => {
-    expect(offer({ events: [] })).toEqual({ offered: false, atCap: false });
-    expect(offer({ events: [recommended(1)] })).toEqual({ offered: false, atCap: false });
-  });
-
-  it('does not offer when the segment has no code-generation stage to go back to', () => {
+  it('reports a recommendation it cannot offer, so the gate does not drop it', () => {
+    // Per-unit code generation runs in a parallel section, so build-and-test is
+    // the first stage of its segment and has no linear target.
     expect(offer({ segmentStages: [buildAndTest], currentIndex: 0 })).toEqual({
       offered: false,
-      atCap: false,
+      unavailable: true,
+      reason: REASON,
     });
+  });
+
+  it('does not offer without a resolved release policy or capability', () => {
+    expect(offer({ stage: { ...buildAndTest, policy: null } })).toEqual({
+      offered: false,
+    });
+    expect(offer({ stage: { ...buildAndTest, policy: { loopBack: null } } })).toEqual({
+      offered: false,
+    });
+  });
+
+  it('does not offer without an agent recommendation', () => {
+    expect(offer({ recommendation: null })).toEqual({ offered: false });
+    expect(offer({ recommendation: '' })).toEqual({ offered: false });
   });
 });

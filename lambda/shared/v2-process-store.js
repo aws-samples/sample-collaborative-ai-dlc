@@ -18,6 +18,7 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
+import { LOOP_BACK_LIMIT } from './stage-loopback.js';
 import {
   META,
   executionMetaKey,
@@ -764,7 +765,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     detail,
     learningsRitual,
     loopBackTarget,
-    loopBackStages,
+    loopBackReason,
     humanTaskId,
   }) => {
     const id = humanTaskId ?? nextId();
@@ -785,7 +786,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       detail,
       learningsRitual,
       loopBackTarget,
-      loopBackStages,
+      loopBackReason,
       now: now(),
     });
     await ddb.send(
@@ -1202,12 +1203,6 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       consistentRead: Boolean(loopBackId),
     });
     if (!existing) return null;
-    if (loopBackId) {
-      const meta = await getExecution(executionId, { consistentRead: true });
-      if (meta?.loopBackIds?.includes(loopBackId)) {
-        return { ...existing, loopBackCount: Number(meta.loopBackCount ?? 0) };
-      }
-    }
     // A previous rewind attempt may have reset this row before its caller
     // timed out. Treat a clean PENDING row as already reset so replay does not
     // inflate the attempt counter or duplicate reset events.
@@ -1288,7 +1283,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
                   ':empty': [],
                   ':newLoopBackIds': [loopBackId],
                   ':loopBackId': loopBackId,
-                  ':limit': 3,
+                  ':limit': LOOP_BACK_LIMIT,
                   ':ts': ts,
                 },
               },
@@ -1308,6 +1303,23 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       getExecution(executionId, { consistentRead: true }),
     ]);
     return row ? { ...row, loopBackCount: Number(meta?.loopBackCount ?? 0) } : row;
+  };
+
+  // The build-and-test agent's loop-back recommendation, kept on its STAGE# row
+  // until the validation gate reads it. `reason: null` clears it. A fresh run
+  // rebuilds the row (putStage), which drops it too.
+  const setLoopBackRecommendation = async ({ executionId, stageInstanceId, reason }) => {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: stageKey(executionId, stageInstanceId),
+        UpdateExpression: reason
+          ? 'SET loopBackRecommendation = :reason'
+          : 'REMOVE loopBackRecommendation',
+        ConditionExpression: 'attribute_exists(pk)',
+        ...(reason ? { ExpressionAttributeValues: { ':reason': reason } } : {}),
+      }),
+    );
   };
 
   const recordMetric = async ({
@@ -2803,6 +2815,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     markSteeringConsumed,
     supersedeSteering,
     resetStageRow,
+    setLoopBackRecommendation,
     recordMetric,
     recordGraphRead,
     recordSensorRun,

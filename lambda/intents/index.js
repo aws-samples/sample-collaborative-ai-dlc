@@ -6357,7 +6357,6 @@ const mapHumanTask = (h) => ({
   // (not null) on every gate that does not offer the option, so the review panel
   // renders no third button rather than one with an empty target.
   ...('loopBackTarget' in h ? { loopBackTarget: h.loopBackTarget ?? null } : {}),
-  ...(Array.isArray(h.loopBackStages) ? { loopBackStages: h.loopBackStages } : {}),
   // The computed next stage a plain approve continues to (upstream 2.2.6):
   // string = stageId, null = approving completes the workflow. Omitted (not
   // null) on legacy rows / gates where it was never computed, so the UI can

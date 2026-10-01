@@ -328,6 +328,14 @@ const makeWorld = ({
       world.stageRows.set(input.stageInstanceId, { ...input });
       return input;
     },
+    setLoopBackRecommendation: async ({ stageInstanceId, reason }) => {
+      const { loopBackRecommendation: _cleared, ...row } =
+        world.stageRows.get(stageInstanceId) ?? {};
+      world.stageRows.set(stageInstanceId, {
+        ...row,
+        ...(reason ? { loopBackRecommendation: reason } : {}),
+      });
+    },
     resetStageRow: async ({ stageInstanceId, loopBackId }) => {
       const row = world.stageRows.get(stageInstanceId);
       const next = {
@@ -499,10 +507,9 @@ const makeWorld = ({
             world.loopBackExpected &&
             (world.stageRunCounts.get(key) ?? 0) === 1
           ) {
-            world.events.push({
-              type: 'v2.loopback.recommended',
+            await store.setLoopBackRecommendation({
               stageInstanceId,
-              detail: { attempt: 0, reason: 'synthetic integration test failure' },
+              reason: 'synthetic integration test failure',
             });
           }
         }
@@ -721,8 +728,6 @@ describe('pinned AI-DLC release coexistence through a full v2 run', () => {
                       plan.stages.find((s) => s.stageId === 'build-and-test')?.stageInstanceId,
                   )
                   .map(({ options, findings, answer }) => ({ options, findings, answer })),
-              )}; recommendation: ${JSON.stringify(
-                world.events.filter((event) => event.type === 'v2.loopback.recommended'),
               )}`,
             ).toBe(true);
             const codeGenerationRuns = world.stageRuns.filter(

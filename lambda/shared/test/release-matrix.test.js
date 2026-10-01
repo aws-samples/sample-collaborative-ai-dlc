@@ -21,11 +21,7 @@ import {
   UNIT_FOR_EACH,
 } from '../v2-execution-plan.js';
 import { evaluateGatePreconditions } from '../gate-preconditions.js';
-import {
-  LOOP_BACK_OPTION,
-  LOOP_BACK_RECOMMENDED_EVENT,
-  resolveLoopBackOffer,
-} from '../stage-loopback.js';
+import { LOOP_BACK_OPTION, resolveLoopBackOffer } from '../stage-loopback.js';
 import { resolveMethodologyLibrary } from '../release-resolver.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
 import { buildGateOptions } from '../../v2-orchestrator/index.js';
@@ -56,53 +52,15 @@ const LEGACY_PLAN_DIGESTS = Object.freeze({
   workshop: '3e0ceaab383f51e4b8c0ee6d5013b317321cd818ef7ad3adf2138ab6b1d653e6',
 });
 
+// Loop-back is offered only from build-and-test, back to the code-generation
+// stage immediately before it. Scopes that run code generation per unit (a
+// parallel section) have no linear target and are absent here.
 const EXPECTED_LOOP_BACK_TUPLES = Object.freeze(
-  [
-    ['v2.6.18', 'bugfix', ['build-and-test']],
-    [
-      'v2.6.18',
-      'express',
-      ['build-and-test', 'deployment-pipeline', 'deployment-execution', 'observability-setup'],
-    ],
-    ['v2.6.18', 'poc', ['build-and-test']],
-    ['v2.6.18', 'refactor', ['build-and-test']],
-    [
-      'v2.6.18',
-      'security-patch',
-      ['build-and-test', 'deployment-pipeline', 'deployment-execution'],
-    ],
-    ['v2.7.0', 'bugfix', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-    [
-      'v2.7.0',
-      'express',
-      ['build-and-test', 'deployment-pipeline', 'deployment-execution', 'observability-setup'],
-    ],
-    ['v2.7.0', 'poc', ['build-and-test']],
-    ['v2.7.0', 'refactor', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-    ['v2.7.0', 'security-patch', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-    ['v2.8.2', 'bugfix', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-    [
-      'v2.8.2',
-      'express',
-      ['build-and-test', 'deployment-pipeline', 'deployment-execution', 'observability-setup'],
-    ],
-    ['v2.8.2', 'poc', ['build-and-test']],
-    ['v2.8.2', 'refactor', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-    ['v2.8.2', 'security-patch', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-    ['v2.9.0', 'bugfix', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-    [
-      'v2.9.0',
-      'express',
-      ['build-and-test', 'deployment-pipeline', 'deployment-execution', 'observability-setup'],
-    ],
-    ['v2.9.0', 'poc', ['build-and-test']],
-    ['v2.9.0', 'refactor', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-    ['v2.9.0', 'security-patch', ['build-and-test', 'deployment-pipeline', 'deployment-execution']],
-  ].flatMap(([profileId, scope, recommendingStages]) =>
-    recommendingStages.map((recommendingStageId) => ({
+  ['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'].flatMap((profileId) =>
+    ['bugfix', 'express', 'poc', 'refactor', 'security-patch'].map((scope) => ({
       profileId,
       scope,
-      recommendingStageId,
+      recommendingStageId: 'build-and-test',
       targetStageId: 'code-generation',
     })),
   ),
@@ -284,23 +242,11 @@ const loopBackOfferFor = ({ stage, stages, profileId }) => {
   );
   if (!segment || segment.kind !== 'stages') return { offered: false };
   const currentIndex = segment.stages.findIndex((candidate) => candidate.stageId === stage.stageId);
-  const events =
-    stage.policy?.loopBack === 'human-offered'
-      ? [
-          {
-            eventType: LOOP_BACK_RECOMMENDED_EVENT,
-            stageInstanceId: stage.stageInstanceId,
-            detail: { attempt: ATTEMPT, reason: `synthetic recommendation for ${profileId}` },
-          },
-        ]
-      : [];
   return resolveLoopBackOffer({
     stage,
     segmentStages: segment.stages,
     currentIndex,
-    skippedStageIds: [],
-    events,
-    attempt: ATTEMPT,
+    recommendation: `synthetic recommendation for ${profileId}`,
     loopBackCount: 0,
   });
 };
@@ -320,6 +266,7 @@ describe('release coexistence matrix', () => {
     const rows = [];
     const failures = [];
     const loopBackTuples = [];
+    const loopBackUnavailable = [];
 
     for (const profileId of PROFILE_IDS) {
       const context = await fixtureContext(profileId);
@@ -474,6 +421,9 @@ describe('release coexistence matrix', () => {
                 ...(noEvidenceLoopBack.offered ? [LOOP_BACK_OPTION] : []),
               ]);
             }
+            if (noEvidenceLoopBack.unavailable) {
+              loopBackUnavailable.push(`${profileId}/${scope}/${stage.stageId}`);
+            }
             if (noEvidenceLoopBack.offered) {
               loopBacks.push(`${stage.stageId}→${noEvidenceLoopBack.target.stageId}`);
               loopBackTuples.push({
@@ -556,6 +506,15 @@ describe('release coexistence matrix', () => {
       console.table(rows);
     }
     expect(loopBackTuples).toEqual(EXPECTED_LOOP_BACK_TUPLES);
+    // Every other scope that runs build-and-test runs code generation per unit,
+    // so its gate shows the recommendation as a note instead of the option.
+    expect(loopBackUnavailable.filter((cell) => cell.endsWith('/build-and-test'))).toEqual(
+      ['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'].flatMap((profileId) =>
+        ['classic', 'enterprise', 'feature', 'mvp', 'workshop'].map(
+          (scope) => `${profileId}/${scope}/build-and-test`,
+        ),
+      ),
+    );
     expect(
       failures.map(({ profileId, scope, error }) => `${profileId}/${scope}: ${error.message}`),
     ).toEqual([]);

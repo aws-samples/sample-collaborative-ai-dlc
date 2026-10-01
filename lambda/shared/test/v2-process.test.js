@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { LOOP_BACK_LIMIT } from '../stage-loopback.js';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   BatchWriteCommand,
@@ -1242,6 +1243,10 @@ describe('steering store methods', () => {
       const [stage, meta] = TransactItems.map((item) => item.Update);
       const stageValues = stage.ExpressionAttributeValues;
       const metaValues = meta.ExpressionAttributeValues;
+      // Enforce the META condition the way DynamoDB would.
+      if (metaRow.loopBackIds.includes(metaValues[':loopBackId'])) {
+        throw Object.assign(new Error('cancelled'), { name: 'TransactionCanceledException' });
+      }
       stageRow = {
         ...stageRow,
         state: 'PENDING',
@@ -1258,7 +1263,7 @@ describe('steering store methods', () => {
     const first = await store.resetStageRow({
       executionId: 'e1',
       stageInstanceId: 'si-1',
-      loopBackId: 'build-and-test:lb1-v1',
+      loopBackId: 'eg-validation-si-bt-0-run-1',
     });
     await store.putStage({
       executionId: 'e1',
@@ -1268,16 +1273,17 @@ describe('steering store methods', () => {
     const replay = await store.resetStageRow({
       executionId: 'e1',
       stageInstanceId: 'si-1',
-      loopBackId: 'build-and-test:lb1-v1',
+      loopBackId: 'eg-validation-si-bt-0-run-1',
     });
 
     expect(first).toMatchObject({ loopBackCount: 1, attempt: 2 });
     expect(replay).toMatchObject({ loopBackCount: 1, attempt: 2 });
     expect(metaRow).toMatchObject({
       loopBackCount: 1,
-      loopBackIds: ['build-and-test:lb1-v1'],
+      loopBackIds: ['eg-validation-si-bt-0-run-1'],
     });
-    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(1);
+    // The replay is resolved by the cancelled transaction, not by a META pre-read.
+    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(2);
     const transaction = ddb.commandCalls(TransactWriteCommand)[0].args[0].input.TransactItems;
     expect(transaction[0].Update).toMatchObject({
       ConditionExpression: 'attribute_exists(pk) AND attempt = :oldAttempt',
@@ -1292,13 +1298,36 @@ describe('steering store methods', () => {
     expect(transaction[1].Update.ConditionExpression).toContain(
       'NOT contains(loopBackIds, :loopBackId)',
     );
-    expect(transaction[1].Update.ExpressionAttributeValues[':limit']).toBe(3);
+    expect(transaction[1].Update.ExpressionAttributeValues[':limit']).toBe(LOOP_BACK_LIMIT);
     const replacedStage = ddb.commandCalls(PutCommand)[0].args[0].input.Item;
     expect(replacedStage).not.toHaveProperty('loopBackCount');
     expect(replacedStage).not.toHaveProperty('lastLoopBackId');
     expect(await store.getExecution('e1', { consistentRead: true })).toMatchObject({
       loopBackCount: 1,
     });
+  });
+
+  it('records and clears the loop-back recommendation on the stage row', async () => {
+    ddb.on(UpdateCommand).resolves({});
+    const where = { executionId: 'e1', stageInstanceId: 'si-1' };
+    await store.setLoopBackRecommendation({
+      ...where,
+      reason: 'generated code ignores the contract',
+    });
+    await store.setLoopBackRecommendation({ ...where, reason: null });
+    const [set, clear] = ddb.commandCalls(UpdateCommand).map((call) => call.args[0].input);
+    expect(set).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      UpdateExpression: 'SET loopBackRecommendation = :reason',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: { ':reason': 'generated code ignores the contract' },
+    });
+    expect(clear).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      UpdateExpression: 'REMOVE loopBackRecommendation',
+      ConditionExpression: 'attribute_exists(pk)',
+    });
+    expect(clear).not.toHaveProperty('ExpressionAttributeValues');
   });
 
   it('resetStageRow is a no-op (null) for a stage that never ran', async () => {

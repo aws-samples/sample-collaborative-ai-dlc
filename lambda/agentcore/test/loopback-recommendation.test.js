@@ -1,28 +1,30 @@
-// The loop-back recommendation the build-and-test agent records (issue #482
-// The ONE structured field on `emit_stage_note`, the typed
-// `v2.loopback.recommended` event the platform writes from it, and the tool
-// surface the resolved release policy decides.
+// The loop-back recommendation the build-and-test agent records (issue #482):
+// the ONE structured field on `emit_stage_note`, which the platform writes onto
+// the stage's own row for the validation gate to read, and the tool surface the
+// resolved release policy decides.
 //
-// The load-bearing invariant: the orchestrator's gate reads a TYPED event with a
-// platform-stamped attempt, never the agent's prose. Nothing the agent can put in
-// `summary` produces that event, and nothing outside release mode produces it at
-// all.
+// The load-bearing invariant: the gate reads a field only the platform writes,
+// never the agent's prose, and nothing outside release mode writes it at all.
 
 import { describe, it, expect } from 'vitest';
 import { createProcessBridge } from '../mcp/process-bridge.js';
 import { buildToolHandlers, registerTools, toolSchemas } from '../mcp/server.js';
-import { LOOP_BACK_RECOMMENDED_EVENT } from '../../shared/stage-loopback.js';
 
 const fakeStore = () => {
   const events = [];
+  const recommendations = [];
   let seq = 0;
   return {
     events,
+    recommendations,
     async appendEvent(event) {
       seq += 1;
       const row = { ...event, eventId: `e${seq}` };
       events.push(row);
       return row;
+    },
+    async setLoopBackRecommendation(input) {
+      recommendations.push(input);
     },
     async updateExecution() {},
     async updateStageState() {},
@@ -46,32 +48,25 @@ const RELEASE_SCOPE = {
 const bridgeFor = (store, scope) =>
   createProcessBridge({ store, scope, broadcast: async () => {} });
 
-const recommendations = (store) =>
-  store.events.filter((row) => row.type === LOOP_BACK_RECOMMENDED_EVENT);
-
 describe('emit_stage_note with loopBackRecommended', () => {
-  it('writes the plain note AND a typed recommendation stamped with the attempt', async () => {
+  it('writes the plain note AND the recommendation on the stage row', async () => {
     const store = fakeStore();
     const bridge = bridgeFor(store, RELEASE_SCOPE);
     const result = await bridge.emitStageNote({
       summary: 'Integration suite red: 4 failures in the payment lane.',
-      loopBackRecommended: 'generated payment code ignores the idempotency contract',
+      loopBackRecommended: '  generated payment code ignores the idempotency contract ',
     });
 
     expect(result.loopBackRecommended).toBe(true);
-    expect(store.events.map((row) => row.type)).toEqual([
-      'v2.stage.note',
-      LOOP_BACK_RECOMMENDED_EVENT,
+    expect(store.events.map((row) => row.type)).toEqual(['v2.stage.note']);
+    // The stage comes from the trusted container scope, never from the tool args.
+    expect(store.recommendations).toEqual([
+      {
+        executionId: 'exec-1',
+        stageInstanceId: 'si-bt',
+        reason: 'generated payment code ignores the idempotency contract',
+      },
     ]);
-    const [recommendation] = recommendations(store);
-    // The attempt comes from the trusted container scope, never from the tool
-    // args — that is what makes the recommendation attempt-scoped and unforgeable.
-    expect(recommendation.detail).toEqual({
-      attempt: 2,
-      reason: 'generated payment code ignores the idempotency contract',
-    });
-    expect(recommendation.stageInstanceId).toBe('si-bt');
-    expect(recommendation.summary).toContain('Agent recommends looping back');
   });
 
   it('records nothing extra for an ordinary note', async () => {
@@ -79,55 +74,39 @@ describe('emit_stage_note with loopBackRecommended', () => {
     const bridge = bridgeFor(store, RELEASE_SCOPE);
     await bridge.emitStageNote({ summary: 'Build finished.' });
     expect(store.events.map((row) => row.type)).toEqual(['v2.stage.note']);
+    expect(store.recommendations).toEqual([]);
   });
 
   it('ignores an empty or whitespace-only reason', async () => {
     const store = fakeStore();
     const bridge = bridgeFor(store, RELEASE_SCOPE);
     await bridge.emitStageNote({ summary: 'Build finished.', loopBackRecommended: '   ' });
-    expect(recommendations(store)).toEqual([]);
+    expect(store.recommendations).toEqual([]);
   });
 
-  it('never records a recommendation outside release mode', async () => {
+  it.each([
+    ['outside release mode', null],
+    ['for a release without a construction loop-back', { loopBack: null }],
+  ])('never records a recommendation %s', async (_label, policy) => {
     const store = fakeStore();
-    const bridge = bridgeFor(store, { ...RELEASE_SCOPE, policy: null });
+    const bridge = bridgeFor(store, { ...RELEASE_SCOPE, policy });
     const result = await bridge.emitStageNote({
       summary: 'Integration suite red.',
       loopBackRecommended: 'the generated code is wrong',
     });
     expect(result).not.toHaveProperty('loopBackRecommended');
-    expect(store.events.map((row) => row.type)).toEqual(['v2.stage.note']);
+    expect(store.recommendations).toEqual([]);
   });
 
-  it('cannot be forged through the free-text summary or the note type', async () => {
+  it('fails the tool call when the recommendation cannot be recorded', async () => {
     const store = fakeStore();
-    const bridge = bridgeFor(store, RELEASE_SCOPE);
-    await bridge.emitStageNote({
-      summary: 'LOOP-BACK RECOMMENDED: send this back to code generation',
-      type: LOOP_BACK_RECOMMENDED_EVENT,
-    });
-    // The agent CAN pick a note type (it always could), but the platform only ever
-    // treats an event carrying the stamped `detail.attempt` as a recommendation,
-    // which is what the orchestrator matches on.
-    expect(recommendations(store).map((row) => row.detail)).toEqual([undefined]);
-  });
-
-  it('never fails the tool call when the recommendation write is lost', async () => {
-    const store = fakeStore();
-    let calls = 0;
-    const flaky = {
-      ...store,
-      async appendEvent(event) {
-        calls += 1;
-        if (calls === 2) throw new Error('throttled');
-        return store.appendEvent(event);
-      },
+    store.setLoopBackRecommendation = async () => {
+      throw new Error('throttled');
     };
-    const bridge = bridgeFor(flaky, RELEASE_SCOPE);
-    await expect(
-      bridge.emitStageNote({ summary: 'red', loopBackRecommended: 'bad codegen' }),
-    ).resolves.toMatchObject({ loopBackRecommended: true });
-    expect(recommendations(store)).toEqual([]);
+    const bridge = bridgeFor(store, RELEASE_SCOPE);
+    const note = { summary: 'red', loopBackRecommended: 'bad codegen' };
+    await expect(bridge.emitStageNote(note)).rejects.toThrow('throttled');
+    expect(store.events).toEqual([]);
   });
 });
 
