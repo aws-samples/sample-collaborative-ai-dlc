@@ -37,6 +37,7 @@ const META_FIELDS = [
   'composedGrid',
   'aidlcRepoRef',
   'methodologyPins',
+  'methodologyRelease',
 ];
 const STAGE_FIELDS = [
   'executionId',

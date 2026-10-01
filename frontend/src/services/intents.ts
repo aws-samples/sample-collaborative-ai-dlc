@@ -53,6 +53,21 @@ export interface IntentFailure {
   message: string;
 }
 
+// The AI-DLC release the intent was pinned to at creation.
+// Shape mirrors releasePinFromRecord (lambda/shared/release-registry.js). Null
+// on unpinned intents — those keep the legacy platform-baseline behaviour.
+export interface MethodologyReleasePin {
+  releaseId: string;
+  sourceSha: string;
+  importerRevision: number;
+  closureDigest: string;
+  catalogKey?: string | null;
+  manifestKey?: string | null;
+  // Not part of the execution pin; present only when a richer record was
+  // stamped. The UI falls back to the short source sha without it.
+  upstreamVersion?: string | null;
+}
+
 export interface Intent {
   id: string;
   executionId: string;
@@ -76,6 +91,8 @@ export interface Intent {
   workflowId: string;
   workflowVersion: number | null;
   aidlcRepoRef?: string | null;
+  // Per-intent AI-DLC release pin; null/absent on unpinned (legacy) intents.
+  methodologyRelease?: MethodologyReleasePin | null;
   scope: string | null;
   currentPhase: string | null;
   currentStage: string | null;
@@ -743,6 +760,10 @@ export interface CreateIntentInput {
   // Per-intent composed EXECUTE/SKIP grid — replaces the scope projection
   // (scope becomes a label). Validated server-side by the plan resolver.
   composedGrid?: Record<string, 'EXECUTE' | 'SKIP'>;
+  // Pin this intent to a registered AI-DLC release. Only
+  // selectable releases are accepted; 400 codes: release_not_selectable,
+  // release_not_found, release_selection_disabled. Omit for legacy behaviour.
+  methodologyReleaseId?: string;
   // Optional tracker provenance when seeded from a GitHub issue / Jira artifact.
   source?: {
     bindingId: string;

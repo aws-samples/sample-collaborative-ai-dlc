@@ -168,6 +168,20 @@ describe('loadLibrary — paginated table reads', () => {
     });
   });
 
+  it('does not load merged scope blocks for an unpinned library', async () => {
+    ddbMock.on(QueryCommand).callsFake((input) => {
+      const partition = input.ExpressionAttributeValues?.[':pk'];
+      if (partition === 'WF#SYSTEM#aidlc-v2') return { Items: [{ sk: 'V#1#META' }] };
+      if (partition === 'TENANT#SYSTEM#SCOPE') {
+        throw new Error('unneeded scope catalog read');
+      }
+      return { Items: [] };
+    });
+
+    const { library } = await loadLibrary({ workflowId: 'aidlc-v2', workflowVersion: 1 });
+    expect(library).not.toHaveProperty('scopesById');
+  });
+
   it('loads supporting blocks from exact execution pins instead of catalog heads', async () => {
     const agent = {
       tenantId: 'SYSTEM',
