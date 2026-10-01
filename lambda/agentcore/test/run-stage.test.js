@@ -4524,7 +4524,7 @@ describe('runStage — release-mode fidelity', () => {
   // trust decision and that the projected space reaches the sensor.
   describe('write-plane changed-file list', () => {
     const sensorLibrary = (matches) => {
-      const lib = library();
+      const lib = { ...library(), fromRelease: true };
       lib.stagesById['requirements-analysis'].sensors = ['linter'];
       lib.sensorsById.linter = {
         id: 'linter',
@@ -4548,7 +4548,10 @@ describe('runStage — release-mode fidelity', () => {
         ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
         redirectHeavyDirs: async () => ({ links: [] }),
       });
-      const res = await runStage({ ...baseArgs, repos }, deps);
+      const res = await runStage(
+        { ...baseArgs, repos, methodologyRelease: { releaseId: 'release-a' } },
+        deps,
+      );
       expect(res.reason ?? null).toBeNull();
       const run = store.calls.find(
         ([name, args]) => name === 'recordSensorRun' && args.sensorId === 'linter',
@@ -5128,5 +5131,185 @@ describe('runStage — checkpoint park races', () => {
     expect(result).toMatchObject({ ok: false });
     expect(result.detail).toContain('counter could not be persisted');
     expect(run.stageRow.state).toBe('FAILED');
+  });
+});
+
+describe('runStage — unpinned runs keep their single sensor pass and reviewer reads', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+
+  it('still runs a sensor that authors fire_on: gate', async () => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].sensors = ['required-sections'];
+    lib.sensorsById = {
+      'required-sections': {
+        id: 'required-sections',
+        command: 'bun <runtime-managed>/tools/aidlc-sensor-required-sections.ts',
+        runtime: 'bun',
+        severity: 'advisory',
+        matches: '**/aidlc-docs/**',
+        fireOn: 'gate',
+      },
+    };
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+    });
+
+    await runStage(baseArgs, deps);
+
+    const runs = deps.store.calls.filter(([name]) => name === 'recordSensorRun');
+    expect(runs.map(([, run]) => run.sensorId)).toContain('required-sections');
+  });
+
+  it('adds no gate reads after a reviewer verdict', async () => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].reviewer = 'aidlc-reviewer-agent';
+    lib.stagesById['requirements-analysis'].reviewerMaxIterations = 1;
+    lib.agentsById['aidlc-reviewer-agent'] = {
+      id: 'aidlc-reviewer-agent',
+      modelOverride: null,
+      bodyRef: { s3Key: 'blocks/bodies/sha256/reviewer' },
+    };
+    const store = spyStore();
+    store.listSensorRuns = async () => [
+      {
+        sensorRunId: 'review-1',
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+        sensorId: 'reviewer:aidlc-reviewer-agent',
+        kind: 'reviewer',
+        result: 'PASS',
+        detail: { verdict: 'READY', findings: '' },
+      },
+    ];
+    const deps = baseDeps({
+      store,
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+    });
+
+    const res = await runStage(baseArgs, deps);
+
+    expect(res.state).toBe('SUCCEEDED');
+    const consistentStageReads = store.calls.filter(
+      ([name, , options]) => name === 'getStage' && options?.consistentRead === true,
+    );
+    expect(consistentStageReads).toHaveLength(1);
+  });
+});
+
+describe('runStage — AGENT.maxTurns on the reviewer run', () => {
+  const okSpawn = () => ({
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  const reviewerLibrary = ({ fromRelease }) => {
+    const lib = { ...library(), ...(fromRelease ? { fromRelease: true } : {}) };
+    lib.stagesById['requirements-analysis'].reviewer = 'aidlc-architecture-reviewer-agent';
+    lib.stagesById['requirements-analysis'].reviewerMaxIterations = 1;
+    lib.agentsById['aidlc-architecture-reviewer-agent'] = {
+      id: 'aidlc-architecture-reviewer-agent',
+      modelOverride: null,
+      maxTurns: 60,
+      bodyRef: { s3Key: 'blocks/bodies/sha256/reviewer' },
+    };
+    return lib;
+  };
+  const readyStore = () => {
+    const store = spyStore();
+    store.listSensorRuns = async () => [
+      {
+        sensorRunId: 'review-1',
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+        sensorId: 'reviewer:aidlc-architecture-reviewer-agent',
+        kind: 'reviewer',
+        result: 'PASS',
+        detail: { verdict: 'READY', findings: '' },
+      },
+    ];
+    return store;
+  };
+  const release = { methodologyRelease: { releaseId: 'release-a' } };
+
+  it('caps the reviewer OpenCode run at the release reviewer agent turn limit', async () => {
+    const materializeOpenCodeConfig = vi.fn(async () => '{}');
+    const deps = baseDeps({
+      store: readyStore(),
+      spawnFn: okSpawn,
+      availableClis: ['opencode'],
+      materializeOpenCodeConfig,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: reviewerLibrary({ fromRelease: true }),
+      }),
+    });
+
+    await runStage({ ...baseArgs, ...release }, deps);
+
+    const reviewerCall = materializeOpenCodeConfig.mock.calls
+      .map(([args]) => args)
+      .find((args) => args.scope?.role === 'reviewer');
+    expect(reviewerCall).toMatchObject({ maxTurns: 60 });
+  });
+
+  it('caps the reviewer Claude run with --max-turns', async () => {
+    const spawned = [];
+    const deps = baseDeps({
+      store: readyStore(),
+      spawnFn: (command, args) => {
+        spawned.push(args);
+        return okSpawn();
+      },
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: reviewerLibrary({ fromRelease: true }),
+      }),
+    });
+
+    await runStage({ ...baseArgs, ...release }, deps);
+
+    expect(spawned).toHaveLength(2);
+    expect(spawned[1].join(' ')).toContain('--max-turns 60');
+    expect(spawned[0]).not.toContain('--max-turns');
+  });
+
+  it('applies no turn cap on an unpinned run', async () => {
+    const spawned = [];
+    const deps = baseDeps({
+      store: readyStore(),
+      spawnFn: (command, args) => {
+        spawned.push(args);
+        return okSpawn();
+      },
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: reviewerLibrary({ fromRelease: false }),
+      }),
+    });
+
+    await runStage(baseArgs, deps);
+
+    expect(spawned.flat()).not.toContain('--max-turns');
+  });
+
+  it('leaves the lead OpenCode run uncapped on an unpinned run', async () => {
+    const lib = library();
+    lib.agentsById['aidlc-product-agent'].maxTurns = 60;
+    const materializeStage = vi.fn(async ({ stage }) => ({
+      prompt: `PROMPT ${stage.stageId}`,
+      opencodeConfigContent: '{}',
+    }));
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      availableClis: ['opencode'],
+      materializeStage,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+    });
+
+    await runStage(baseArgs, deps);
+
+    expect(materializeStage.mock.calls[0][0].maxTurns ?? null).toBeNull();
   });
 });

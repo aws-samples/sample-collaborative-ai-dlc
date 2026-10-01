@@ -2368,3 +2368,18 @@ describe('contribution heads — persona-scoped logical identity', () => {
     ).rejects.toThrow(GraphWriteError);
   });
 });
+
+describe('updateArtifact ack', () => {
+  it('names the artifact type so an update can be attributed to its output', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'requirements-analysis', id: 'a1', title: 'R' });
+
+    const updated = await writer.updateArtifact({ id: 'a1', props: { status: 'final' } });
+
+    expect(updated).toEqual({
+      id: 'a1',
+      artifactType: 'requirements-analysis',
+      updated: ['status'],
+    });
+  });
+});

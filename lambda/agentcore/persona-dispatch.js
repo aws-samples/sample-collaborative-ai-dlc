@@ -101,6 +101,10 @@ export const dispatchPersona = async ({
   sectionIndex,
   ids,
   timeoutMs = 0,
+  // AGENT.maxTurns for this session. Defaults to the block's own value (persona
+  // sessions only run for release catalogs); the reviewer passes it explicitly
+  // so an unpinned review runs uncapped.
+  maxTurns = agentBlock?.maxTurns ?? null,
 }) => {
   const mcpRole = mcpRoleFor(role);
   const { agentRef, policy = null, checkpointOwner = true, canAsk = true } = personaScope ?? {};
@@ -145,7 +149,7 @@ export const dispatchPersona = async ({
                 mcpEntry,
                 scope,
                 env,
-                maxTurns: agentBlock?.maxTurns ?? null,
+                maxTurns,
               }),
             }
           : cli === 'codex'
@@ -160,6 +164,7 @@ export const dispatchPersona = async ({
       model,
       allowedTools: [],
       sessionId: cli === 'claude' ? ids() : null,
+      maxTurns,
       ...mcpKwargs,
     });
     const execute = () =>

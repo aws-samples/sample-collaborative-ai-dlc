@@ -96,6 +96,7 @@ import {
 import { workspaceRelativePath } from '../repo-paths.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { CHECKPOINTS, chosenLabel } from '../mcp/process-bridge.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner, isReleaseDependencyError } from '../sensor-runner.js';
 import {
@@ -123,6 +124,18 @@ const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'r
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
 import { invokeSourceControlOperation } from '../clients.js';
+
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'policy.change-control@v1',
+  'protocol.plan-approval.outcome-gate@v1',
+  'review.adversarial@v1',
+  'stage.mode.single-session@v1',
+  'workspace.always-restored@v1',
+  'agent.max-turns@v1',
+]);
 
 export const verifyReviewTargets = async ({
   targets = [],
@@ -518,6 +531,9 @@ const runReviewer = async ({
   sectionIndex,
   publish,
   ids,
+  // The reviewer agent's AGENT.maxTurns, or null. Passed only for a release
+  // catalog, where upstream sets it (on the two reviewer agents).
+  maxTurns = null,
 }) => {
   const brief = buildReviewerBrief({ stage, unit, reviewerAgent, round });
   await store
@@ -558,6 +574,7 @@ const runReviewer = async ({
     unitSlug,
     sectionIndex,
     ids,
+    maxTurns,
   });
   // Preserve the pre-extraction contract: a dispatch failure (spawn/materialize
   // throwing) propagates out of runReviewer exactly as it did before, so the
@@ -964,6 +981,7 @@ const readCheckpointFindings = async ({
   stage,
   policy,
   attempt,
+  validationRound = 0,
 }) => {
   // Tolerant of a store without the receipt family (older injected test doubles,
   // and any deployment mid-rollout): no evidence store means no evidence to judge,
@@ -979,6 +997,7 @@ const readCheckpointFindings = async ({
     stage,
     policy,
     attempt,
+    validationRound,
     receipts: withPlanApprovalLineage(receipts, events),
     events,
   });
@@ -1021,6 +1040,53 @@ const reviewerRepairMessage = ({ reviewerAgent, round, reviewerFindings }) =>
     'say plainly in the output what you did not change and why.',
   ].join('\n');
 
+// The WP2 durability rule as data: the failure a git result must turn into when
+// new work is at risk, or null. Shared by the stage commit and the repair-turn
+// commits so a repair cannot finish the stage with unpushed work.
+const workAtRiskFailure = (gitResult) => {
+  const atRiskRepos = gitResult?.ok
+    ? []
+    : (gitResult?.results ?? []).filter(
+        (r) =>
+          (r.committed === true &&
+            r.pushed !== true &&
+            r.pushed !== 'empty' &&
+            r.pushed !== 'up_to_date') ||
+          (r.committed !== true && (r.dirty === true || r.reason === 'engine_crashed')),
+      );
+  if (atRiskRepos.length === 0) return null;
+  const detail = atRiskRepos
+    .map(
+      (r) =>
+        `${r.repo}: ${r.reason ?? 'push_failed'}${r.detail ? ` — ${String(r.detail).slice(0, 300)}` : ''}`,
+    )
+    .join('; ');
+  const uncommitted = atRiskRepos.some((r) => r.committed !== true);
+  // 'push_failed' keeps its v1 meaning (commit exists, push did not land);
+  // 'git_commit_failed' is the new durability failure (work never became a
+  // commit at all — the loss mode the engine exists to close).
+  return { code: uncommitted ? 'git_commit_failed' : 'push_failed', detail };
+};
+
+// Whether a git result names every file it changed. A partial list is worse
+// than none: a consumer of `changedFiles: []` cannot tell "nothing changed" from
+// "the engine could not say". True only when the engine succeeded, reported at
+// least one repo, and every repo reported an explicit `files` array or a clean
+// commit.
+const gitReportsAllFiles = (gitResult) =>
+  Boolean(gitResult?.ok) &&
+  (gitResult?.results ?? []).length > 0 &&
+  gitResult.results.every(
+    (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
+  );
+
+// Whether this dispatch ends at a validation gate that shows the stage's
+// findings. Unit-lane stages do not: the lane merges on its own outcome and the
+// batch gate after it carries no per-stage findings, so a blocking finding on a
+// lane must fail the stage instead of riding a result nobody reads.
+const stageHasHumanGate = ({ stage, unitSlug = null }) =>
+  stage?.humanValidation === 'required' && !unitSlug;
+
 /**
  * Enforce the checkpoint policy for a finished stage.
  *
@@ -1048,6 +1114,7 @@ const runCheckpointLadder = async ({
   repairAllowed = () => true,
   onRepairSkipped = async () => {},
   pendingGate = null,
+  validationRound = 0,
   logger: log = logger,
 }) => {
   if (!policy) return { findings: [] };
@@ -1057,17 +1124,30 @@ const runCheckpointLadder = async ({
   const stageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
   const attempt = Number(stageRow?.attempt ?? 0);
   const read = () =>
-    readCheckpointFindings({ store, executionId, stageInstanceId, stage, policy, attempt });
+    readCheckpointFindings({
+      store,
+      executionId,
+      stageInstanceId,
+      stage,
+      policy,
+      attempt,
+      validationRound,
+    });
 
   let findings = await read();
   if (findings.length === 0) return { findings: [] };
 
-  // One bounded repair turn per counter per attempt. The counter is read from the
-  // STAGE# row and bumped atomically, so a re-invoked runner cannot grant a second.
+  // One bounded repair turn per counter per validation revision. The counter is
+  // read from the STAGE# row and bumped atomically, so a re-invoked runner cannot
+  // grant a second. A rewind resets it; within one attempt each revision may
+  // spend one more, so the counter is compared with the revision number rather
+  // than with zero.
   const counters = [
     ...new Set(findings.map((finding) => CHECKPOINT_LADDER[finding.code]?.counter).filter(Boolean)),
   ];
-  const alreadyRepaired = counters.some((counter) => Number(stageRow?.[counter] ?? 0) > 0);
+  const alreadyRepaired = counters.some(
+    (counter) => Number(stageRow?.[counter] ?? 0) > Number(validationRound ?? 0),
+  );
   const budgetAllowsRepair = runRepairTurn && !alreadyRepaired ? repairAllowed() : true;
   if (!budgetAllowsRepair) await onRepairSkipped();
   if (runRepairTurn && !alreadyRepaired && budgetAllowsRepair) {
@@ -1136,7 +1216,7 @@ const runCheckpointLadder = async ({
   // approve (waiving it on the record), request changes, or override. A stage
   // WITHOUT one has no human to ask, so it fails with a rewind-eligible code
   // rather than succeeding with the semantic silently missing.
-  if (stage.humanValidation === 'required') return { findings };
+  if (stageHasHumanGate({ stage, unitSlug })) return { findings };
   return {
     failure: {
       code: findings[0].code,
@@ -1157,8 +1237,10 @@ const formatResumeAnswer = (gate) => {
   // and what that obliges it to do next, not just "the human answered".
   const checkpoint = gate?.detail?.checkpoint ?? null;
   if (checkpoint) {
-    const label = typeof a === 'string' ? a : (a?.perQuestion?.[0]?.answer ?? a?.freeText ?? '');
-    const approved = label === 'Looks correct' || label === 'Approve plan';
+    // The same label parser and labels the bridge uses to decide whether a
+    // receipt is written, so this message never contradicts the receipt.
+    const label = chosenLabel(a);
+    const approved = label === CHECKPOINTS[checkpoint]?.approve;
     const free = typeof a === 'string' ? '' : (a?.freeText ?? a?.feedback ?? '');
     if (approved) {
       return (
@@ -1451,6 +1533,11 @@ export const runStage = async (
     // release closure alone, never from the reseedable SYSTEM rows or the
     // mutable aidlc-runtime/ prefix. Absent => unchanged legacy resolution.
     methodologyRelease = null,
+    // Which validation revision of this attempt the dispatch runs (0 first,
+    // +1 per "Request changes" at the stage's validation gate). Sent only for a
+    // stage with a resolved release policy, where the checkpoint receipts are
+    // scoped by it.
+    validationRound = 0,
     scope,
     // Per-run skip overlay (shared/stage-skip.js): intent-level deselections +
     // accumulated gate-time skips, forwarded by the orchestrator on EVERY
@@ -2071,7 +2158,10 @@ export const runStage = async (
     // and continue" as an answer to a question it never asked would be noise. The
     // change-control block renders the decision into the prompt instead.
     resumeAnswer = preAgentGate ? null : reviewFeedbackPrompt || formatResumeAnswer(resumeGate);
-    if (!cli || !priorSessionId) {
+    // A pre-agent gate re-enters as a fresh run even when the row names a
+    // session: the conversation was never started, and resuming it would send
+    // the CLI neither the stage prompt nor the change-control decision.
+    if (!cli || !priorSessionId || preAgentGate) {
       demotedResume = true;
       cli = selectCli({ requested: requestedCli, availableClis });
       if (!cli) {
@@ -2168,6 +2258,7 @@ export const runStage = async (
     // checkpoint tools it requires and withholds the ones it turns off. Null on
     // an unpinned/2.3.3 run, which registers exactly today's tool list.
     policy: stage.policy ?? null,
+    ...(stage.policy && validationRound ? { validationRound } : {}),
     // The lead's trusted identity under a resolved policy, so graph-writer lets
     // it write only its OWN contribution — never forge a support's evidence.
     // Absent on an unpinned/2.3.3 run, whose MCP config stays byte-identical.
@@ -2225,129 +2316,11 @@ export const runStage = async (
     }
   }
 
-  // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
-  const freshRun = (!resumeFrom && !reviewFeedback) || demotedResume;
-
-  // Mark RUNNING + advance the execution pointer + persist the conversation
-  // handle. A true resume PATCHES the parked row (WAITING_FOR_HUMAN) back to
-  // RUNNING: startedAt, attempt and the waitMs accumulator survive, and the
-  // open park window is folded into waitMs — rebuilding the row here was the
-  // "stage duration resets when a question is answered" bug. A fresh run (or a
-  // demoted resume, which genuinely re-runs the stage from scratch) rebuilds
-  // the row, carrying forward the attempt counter a rewind reset may have set.
-  if ((resumeFrom || reviewFeedback) && !demotedResume) {
-    await store.resumeStageRow({
-      executionId,
-      stageInstanceId,
-      cli,
-      cliSessionId,
-      resolvedModel: model,
-      stageCallbackId,
-      aidlcRepoRef,
-    });
-  } else {
-    await store.putStage({
-      executionId,
-      stageInstanceId,
-      stageId,
-      unitSlug,
-      sectionIndex,
-      phase: stage.phase,
-      state: 'RUNNING',
-      attempt: priorStageRow?.attempt ?? 0,
-      cli,
-      cliSessionId,
-      resolvedModel: model,
-      stageCallbackId,
-      aidlcRepoRef,
-      pendingCodeCommitRefs: retainedCodeCommitRefs,
-    });
-  }
-  await store.updateExecution({
-    executionId,
-    status: 'RUNNING',
-    currentPhase: stage.phase,
-    currentStage: stageId,
-  });
-  await store.appendEvent({
-    executionId,
-    type:
-      reviewFeedback && !demotedResume
-        ? 'v2.feedback.stage_resumed'
-        : resumeFrom && !demotedResume
-          ? 'v2.stage.resumed'
-          : 'v2.stage.running',
-    stageInstanceId,
-    unitSlug,
-    sectionIndex,
-    actor: 'agentcore',
-    summary: reviewFeedback
-      ? `Stage ${stageLabel} addressing selected review feedback`
-      : resumeFrom && !demotedResume
-        ? `Stage ${stageLabel} resumed`
-        : `Stage ${stageLabel} running`,
-  });
-  // Broadcast the stage start + the execution's new phase/stage pointer so the
-  // UI reflects the advance in real time.
-  await publish({
-    action: 'agent.stage',
-    stageInstanceId,
-    stageId,
-    unitSlug,
-    sectionIndex,
-    phase: stage.phase,
-    state: 'RUNNING',
-  });
-  await publish({
-    action: 'agent.execution',
-    status: 'RUNNING',
-    currentPhase: stage.phase,
-    currentStage: stageId,
-  });
-
-  // Record the agent launching time (cold start): dispatch → job accept,
-  // measured by run-stage-start and recorded here where the stage identity
-  // exists. One sample per dispatch leg (fresh AND resume — a resume after a
-  // park release hits a fresh microVM, exactly the cold start worth seeing).
-  // Classified gauge:max, so aggregation shows the worst leg. Best-effort.
-  if (typeof agentLaunchMs === 'number' && Number.isFinite(agentLaunchMs) && agentLaunchMs >= 0) {
-    try {
-      const row = await store.recordMetric({
-        executionId,
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-        metrics: { agentLaunchMs },
-      });
-      await publish({
-        action: 'agent.metric',
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-        metricId: row.metricId,
-        metrics: { agentLaunchMs },
-      });
-    } catch (e) {
-      logger.error('agentLaunchMs not recorded', e, { stageInstanceId });
-    }
-  }
-
-  // Steering (docs/v2-steering.md): every run-stage entry — fresh, resume, or
-  // demoted resume — is a deterministic injection point for pending human course
-  // corrections (gate-steer riding an answer, a revision of a past answer, or
-  // rewind guidance). Consume them NOW (CAS) and render them into whatever
-  // enters the conversation below.
-  const consumedSteering = await consumePendingSteering({
-    store,
-    executionId,
-    stageInstanceId,
-    publish,
-  });
-  const steeringMessage = renderSteering(consumedSteering);
-
-  // 2c. Change control — BEFORE the agent runs, because the point
-  // is to decide whether this stage should run at all against inputs that moved
-  // since they were approved. Gated on release mode via `stage.policy` (the plan
+  // 2c. Change control — BEFORE the stage is marked RUNNING and before pending
+  // course corrections are consumed, because the point is to decide whether this
+  // stage should run at all against inputs that moved since they were approved.
+  // A park or a halt here therefore leaves the steering rows pending for the run
+  // that does go ahead, and never records a conversation that was not started. Gated on release mode via `stage.policy` (the plan
   // resolves it only from a verified closure) AND on the field being effective:
   // `policy.changeControl == null` means neither the scope authored it nor did
   // the catalog prove it has change control, so nothing here runs and the prompt
@@ -2374,9 +2347,16 @@ export const runStage = async (
     } finally {
       await closeGraphSource(gCc);
     }
+    // An unreadable approval history is not "nothing changed": like an
+    // unreadable artifact history it is treated as unknown, which strict mode
+    // asks about before the agent runs.
+    let approvalHistoryReadFailed = false;
     const approvals = await (
       store.listReceipts?.(executionId, { kind: 'stage-approval' }) ?? Promise.resolve([])
-    ).catch(() => []);
+    ).catch(() => {
+      approvalHistoryReadFailed = true;
+      return [];
+    });
     const requiredInputs = (stage.inputArtifacts ?? [])
       .filter((input) => input?.required !== false && !input?.expectedAbsent)
       .map((input) => input.artifact ?? input)
@@ -2386,7 +2366,7 @@ export const runStage = async (
       heads,
       approvals,
     });
-    if (artifactHistoryReadFailed) {
+    if (artifactHistoryReadFailed || approvalHistoryReadFailed) {
       changedInputs = [...new Set(requiredInputs)].map((artifactType) => ({
         artifactId: null,
         artifactType,
@@ -2395,7 +2375,9 @@ export const runStage = async (
         toHash: null,
         approvedAt: null,
         approvalHistoryUnknown: true,
-        artifactHistoryReadFailed: true,
+        ...(artifactHistoryReadFailed
+          ? { artifactHistoryReadFailed: true }
+          : { approvalHistoryReadFailed: true }),
       }));
     }
     if (changedInputs.length > 0) {
@@ -2404,13 +2386,16 @@ export const runStage = async (
         severity: 'advisory',
         title: changed.artifactHistoryReadFailed
           ? `Artifact history for ${changed.artifactType} could not be read`
-          : `Approved input ${changed.artifactType ?? changed.artifactId} changed since it was approved`,
+          : changed.approvalHistoryReadFailed
+            ? `Approval history for ${changed.artifactType} could not be read`
+            : `Approved input ${changed.artifactType ?? changed.artifactId} changed since it was approved`,
         detail: changed,
         overridable: false,
         receiptKind: null,
-        remediation: changed.artifactHistoryReadFailed
-          ? 'Confirm the stage against the current artifact state.'
-          : 'Confirm the stage still holds against the changed input.',
+        remediation:
+          changed.artifactHistoryReadFailed || changed.approvalHistoryReadFailed
+            ? 'Confirm the stage against the current artifact state.'
+            : 'Confirm the stage still holds against the changed input.',
       }));
     }
     const approvalHistoryUnknown = changedInputs.some((changed) => changed.approvalHistoryUnknown);
@@ -2430,7 +2415,9 @@ export const runStage = async (
             actor: 'agentcore',
             summary: changed.artifactHistoryReadFailed
               ? `Artifact history for ${changed.artifactType} could not be read; continuing under change_control: relaxed`
-              : `Approval history for ${changed.artifactType} is incomplete; continuing under change_control: relaxed`,
+              : changed.approvalHistoryReadFailed
+                ? `Approval history for ${changed.artifactType} could not be read; continuing under change_control: relaxed`
+                : `Approval history for ${changed.artifactType} is incomplete; continuing under change_control: relaxed`,
             detail: changed,
           })
           .catch(() => {});
@@ -2572,8 +2559,8 @@ export const runStage = async (
           changeControlMessage = renderChangedInputs(changedInputs, { reconfirmed: true });
         } else {
           if (!ccGate) {
-            await store
-              .createHumanTask({
+            try {
+              await store.createHumanTask({
                 executionId,
                 humanTaskId: ccGateId,
                 stageInstanceId,
@@ -2588,23 +2575,44 @@ export const runStage = async (
                           .join(
                             ', ',
                           )} could not be read. Reconfirm before ${stage.stageId} runs against the current artifacts?`
-                      : approvalHistoryUnknown
+                      : approvalHistoryReadFailed
                         ? `Approval history for ${changedInputs
                             .map((changed) => changed.artifactType ?? changed.artifactId)
                             .join(
                               ', ',
-                            )} is incomplete because the approval receipt exceeded its size limit. Reconfirm before ${stage.stageId} runs against the current artifacts?`
-                        : `${changedInputs
-                            .map((changed) => changed.artifactType ?? changed.artifactId)
-                            .join(
-                              ', ',
-                            )} changed since ${changedInputs.length === 1 ? 'it was' : 'they were'} approved. Reconfirm before ${stage.stageId} runs against ${changedInputs.length === 1 ? 'it' : 'them'}?`,
+                            )} could not be read. Reconfirm before ${stage.stageId} runs against the current artifacts?`
+                        : approvalHistoryUnknown
+                          ? `Approval history for ${changedInputs
+                              .map((changed) => changed.artifactType ?? changed.artifactId)
+                              .join(
+                                ', ',
+                              )} is incomplete because the approval receipt exceeded its size limit. Reconfirm before ${stage.stageId} runs against the current artifacts?`
+                          : `${changedInputs
+                              .map((changed) => changed.artifactType ?? changed.artifactId)
+                              .join(
+                                ', ',
+                              )} changed since ${changedInputs.length === 1 ? 'it was' : 'they were'} approved. Reconfirm before ${stage.stageId} runs against ${changedInputs.length === 1 ? 'it' : 'them'}?`,
                     type: 'single',
                     options: CHANGE_CONTROL_OPTIONS.map((label) => ({ label })),
                   },
                 ]),
-              })
-              .catch(() => {});
+              });
+            } catch (error) {
+              // Parking on a gate that does not exist would leave the stage
+              // waiting for an answer nobody can give.
+              logger.error('change-control gate could not be created', {
+                error,
+                executionId,
+                stageInstanceId,
+                attempt: ccAttempt,
+              });
+              return fail(
+                stageInstanceId,
+                'change_control_gate_failed',
+                'could not open the strict change-control question; retry the stage',
+                { clearPending: true },
+              );
+            }
             // Deliberately NOT `v2.question.asked`: that event is the data
             // `summary_confirmation: if-present` reads as "a conditional question
             // flow ran", and an engine-opened gate is not the agent asking.
@@ -2626,6 +2634,25 @@ export const runStage = async (
               .updateExecution({ executionId, status: 'WAITING', pendingHumanTaskId: ccGateId })
               .catch(() => {});
           }
+          // No conversation exists yet, so the parked row records none: the
+          // answer re-enters as a fresh run (see `preAgentGate` above).
+          await store.putStage({
+            executionId,
+            stageInstanceId,
+            stageId,
+            unitSlug,
+            sectionIndex,
+            phase: stage.phase,
+            state: 'WAITING_FOR_HUMAN',
+            attempt: priorStageRow?.attempt ?? 0,
+            cli,
+            cliSessionId: null,
+            resolvedModel: model,
+            stageCallbackId,
+            aidlcRepoRef,
+            pendingCodeCommitRefs: retainedCodeCommitRefs,
+            pendingHumanTaskId: ccGateId,
+          });
           await store
             .updateStageState({
               executionId,
@@ -2664,6 +2691,126 @@ export const runStage = async (
       }
     }
   }
+
+  // A fresh conversation is spawned for a plain fresh run OR a demoted resume.
+  const freshRun = (!resumeFrom && !reviewFeedback) || demotedResume;
+
+  // Mark RUNNING + advance the execution pointer + persist the conversation
+  // handle. A true resume PATCHES the parked row (WAITING_FOR_HUMAN) back to
+  // RUNNING: startedAt, attempt and the waitMs accumulator survive, and the
+  // open park window is folded into waitMs — rebuilding the row here was the
+  // "stage duration resets when a question is answered" bug. A fresh run (or a
+  // demoted resume, which genuinely re-runs the stage from scratch) rebuilds
+  // the row, carrying forward the attempt counter a rewind reset may have set.
+  if ((resumeFrom || reviewFeedback) && !demotedResume) {
+    await store.resumeStageRow({
+      executionId,
+      stageInstanceId,
+      cli,
+      cliSessionId,
+      resolvedModel: model,
+      stageCallbackId,
+      aidlcRepoRef,
+    });
+  } else {
+    await store.putStage({
+      executionId,
+      stageInstanceId,
+      stageId,
+      unitSlug,
+      sectionIndex,
+      phase: stage.phase,
+      state: 'RUNNING',
+      attempt: priorStageRow?.attempt ?? 0,
+      cli,
+      cliSessionId,
+      resolvedModel: model,
+      stageCallbackId,
+      aidlcRepoRef,
+      pendingCodeCommitRefs: retainedCodeCommitRefs,
+    });
+  }
+  await store.updateExecution({
+    executionId,
+    status: 'RUNNING',
+    currentPhase: stage.phase,
+    currentStage: stageId,
+  });
+  await store.appendEvent({
+    executionId,
+    type:
+      reviewFeedback && !demotedResume
+        ? 'v2.feedback.stage_resumed'
+        : resumeFrom && !demotedResume
+          ? 'v2.stage.resumed'
+          : 'v2.stage.running',
+    stageInstanceId,
+    unitSlug,
+    sectionIndex,
+    actor: 'agentcore',
+    summary: reviewFeedback
+      ? `Stage ${stageLabel} addressing selected review feedback`
+      : resumeFrom && !demotedResume
+        ? `Stage ${stageLabel} resumed`
+        : `Stage ${stageLabel} running`,
+  });
+  // Broadcast the stage start + the execution's new phase/stage pointer so the
+  // UI reflects the advance in real time.
+  await publish({
+    action: 'agent.stage',
+    stageInstanceId,
+    stageId,
+    unitSlug,
+    sectionIndex,
+    phase: stage.phase,
+    state: 'RUNNING',
+  });
+  await publish({
+    action: 'agent.execution',
+    status: 'RUNNING',
+    currentPhase: stage.phase,
+    currentStage: stageId,
+  });
+
+  // Record the agent launching time (cold start): dispatch → job accept,
+  // measured by run-stage-start and recorded here where the stage identity
+  // exists. One sample per dispatch leg (fresh AND resume — a resume after a
+  // park release hits a fresh microVM, exactly the cold start worth seeing).
+  // Classified gauge:max, so aggregation shows the worst leg. Best-effort.
+  if (typeof agentLaunchMs === 'number' && Number.isFinite(agentLaunchMs) && agentLaunchMs >= 0) {
+    try {
+      const row = await store.recordMetric({
+        executionId,
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        metrics: { agentLaunchMs },
+      });
+      await publish({
+        action: 'agent.metric',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        metricId: row.metricId,
+        metrics: { agentLaunchMs },
+      });
+    } catch (e) {
+      logger.error('agentLaunchMs not recorded', e, { stageInstanceId });
+    }
+  }
+
+  // Steering (docs/v2-steering.md): every run-stage entry — fresh, resume, or
+  // demoted resume — is a deterministic injection point for pending human course
+  // corrections (gate-steer riding an answer, a revision of a past answer, or
+  // rewind guidance). Consume them NOW (CAS) and render them into whatever
+  // enters the conversation below.
+  const consumedSteering = await consumePendingSteering({
+    store,
+    executionId,
+    stageInstanceId,
+    publish,
+  });
+  const steeringMessage = renderSteering(consumedSteering);
 
   // 3. Build the invocation. A fresh run materializes the full workspace (prompt +
   // rules + knowledge); a resume only re-attaches the MCP config (the parked
@@ -2934,7 +3081,9 @@ export const runStage = async (
       cli,
       customRules: customRuleDocs,
       attachments: attachmentRefs,
-      maxTurns: agentBlock?.maxTurns ?? null,
+      // AGENT.maxTurns is a release-catalog field; an unpinned run keeps
+      // running without a cap, as it always has.
+      maxTurns: methodologyRelease ? (agentBlock?.maxTurns ?? null) : null,
     });
     prompt = materialized.prompt;
     // Native ensemble sessions: the lead's own role in the topology, appended
@@ -2978,6 +3127,7 @@ export const runStage = async (
       model,
       allowedTools: [],
       sessionId: cliSessionId,
+      maxTurns: methodologyRelease ? (agentBlock?.maxTurns ?? null) : null,
       ...mcpKwargs,
     });
 
@@ -3627,7 +3777,9 @@ export const runStage = async (
       ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
       : `aidlc(${stageId}): ${executionId}`,
   });
-  const stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
+  // Every commit of this attempt: carried from a parked leg, this leg's, and the
+  // repair turns' (added by runRepairTurn below).
+  let stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
   retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
@@ -3814,29 +3966,8 @@ export const runStage = async (
   // v2.git.push_failed event above but does not change stage behavior.
   // A parked stage (above) parks regardless — the human loop must not be
   // blocked by a push outage; the resume leg retries the push.
-  const atRiskRepos = gitResult.ok
-    ? []
-    : gitResult.results.filter(
-        (r) =>
-          (r.committed === true &&
-            r.pushed !== true &&
-            r.pushed !== 'empty' &&
-            r.pushed !== 'up_to_date') ||
-          (r.committed !== true && (r.dirty === true || r.reason === 'engine_crashed')),
-      );
-  if (atRiskRepos.length > 0) {
-    const detail = atRiskRepos
-      .map(
-        (r) =>
-          `${r.repo}: ${r.reason ?? 'push_failed'}${r.detail ? ` — ${String(r.detail).slice(0, 300)}` : ''}`,
-      )
-      .join('; ');
-    const uncommitted = atRiskRepos.some((r) => r.committed !== true);
-    // 'push_failed' keeps its v1 meaning (commit exists, push did not land);
-    // 'git_commit_failed' is the new durability failure (work never became a
-    // commit at all — the loss mode the engine exists to close).
-    return fail(stageInstanceId, uncommitted ? 'git_commit_failed' : 'push_failed', detail);
-  }
+  const gitFailure = workAtRiskFailure(gitResult);
+  if (gitFailure) return fail(stageInstanceId, gitFailure.code, gitFailure.detail);
   if (releaseBodyFailure) {
     return fail(
       stageInstanceId,
@@ -3852,6 +3983,11 @@ export const runStage = async (
   // already cleaned up above and restoring a rollout is the resume path's job. With
   // no resumable session the callers simply skip the repair rung.
   const canRepair = Boolean(cliSessionId) && cli !== 'codex';
+  // A repair commit goes through the same rule as the stage commit: its refs join
+  // the attempt's, and new work it could not push fails the stage (checked after
+  // the ladder and after the reviewer loop, once no park is pending).
+  let repairCommitted = false;
+  let repairGitFailure = null;
   const runRepairTurn = canRepair
     ? async (message, { label = 'checkpoint repair' } = {}) => {
         const mcpKwargs = await materializeCliMcp();
@@ -3893,7 +4029,7 @@ export const runStage = async (
         // The repair turn re-saves artifacts, so the tree moved: commit it, or
         // the lineage check (and the next reviewer round) would judge the stage on
         // the pre-repair commit.
-        await commitAndPushAll({
+        const repairGit = await commitAndPushAll({
           repos,
           workspaceDir,
           branch,
@@ -3903,9 +4039,18 @@ export const runStage = async (
           executionId,
           author: gitAuthor,
           message: unitSlug
-            ? `aidlc(${stageId}): ${unitSlug} \u2014 ${executionId} (${label})`
+            ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (${label})`
             : `aidlc(${stageId}): ${executionId} (${label})`,
-        }).catch(() => null);
+        }).catch((error) => ({
+          ok: false,
+          committed: false,
+          results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
+        }));
+        const refsBefore = stageCodeCommitRefs.length;
+        stageCodeCommitRefs = mergeCodeCommitRefs(stageCodeCommitRefs, repairGit);
+        if (stageCodeCommitRefs.length > refsBefore) repairCommitted = true;
+        retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
+        repairGitFailure ??= workAtRiskFailure(repairGit);
       }
     : null;
 
@@ -3944,8 +4089,12 @@ export const runStage = async (
       onRepairSkipped: () => noteRepairSkipped('checkpoint repair turn'),
       pendingGate: () =>
         pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex }),
+      validationRound,
     });
     if (ladder.parked) return parkStage(ladder.parked);
+    if (repairGitFailure) {
+      return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail);
+    }
     if (ladder.failure) {
       return fail(stageInstanceId, ladder.failure.code, ladder.failure.detail);
     }
@@ -3973,17 +4122,24 @@ export const runStage = async (
     // unless the git engine succeeded, reported at least one repo, and every repo
     // reported an explicit `files` array (a clean commit counts as none). Paths are projected from repo-relative
     // (git's space) into workspace-relative (the sensor glob's space).
-    const gitReportedFiles =
-      gitResult.ok &&
-      gitResult.results.length > 0 &&
-      gitResult.results.every(
-        (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
-      );
+    // The attempt's files, not only this leg's: a stage that parked on a
+    // checkpoint committed its first leg already, and checkpoint repair turns
+    // commit on their own. When either happened, the list is rebuilt from the
+    // attempt's commit references.
+    const sweepsWrites = withPlatformSensors(stage).some((sensor) => sensor.fireOn === 'write');
+    const attemptGitResult =
+      sweepsWrites && (carriedCodeCommitRefs.length > 0 || repairCommitted)
+        ? await gitResultForCommitRefs({
+            commitRefs: stageCodeCommitRefs,
+            repos,
+            workspaceDir,
+          }).catch(() => null)
+        : gitResult;
     const multiRepo = repos.length > 1;
-    const attemptChangedFiles = gitReportedFiles
+    const attemptChangedFiles = gitReportsAllFiles(attemptGitResult)
       ? [
           ...new Set(
-            gitResult.results.flatMap((gitChange) =>
+            attemptGitResult.results.flatMap((gitChange) =>
               (gitChange.files ?? [])
                 .map((file) =>
                   workspaceRelativePath({ repo: gitChange.repo, file, multi: multiRepo }),
@@ -4008,8 +4164,11 @@ export const runStage = async (
       spawnFn,
       store,
       publish,
-      changedFiles: attemptChangedFiles,
-      planes: ['write'],
+      // Release mode splits the sensors into a write pass here and a gate pass
+      // after the reviewer. An unpinned run has no gate pass, so it keeps the
+      // single pass over every sensor on the whole workspace.
+      changedFiles: methodologyRelease ? attemptChangedFiles : null,
+      planes: methodologyRelease ? ['write'] : null,
     }).catch(() => null);
     if (writePlane?.held) {
       return fail(stageInstanceId, 'sensor_blocked', writePlane.held);
@@ -4061,6 +4220,7 @@ export const runStage = async (
         unit,
         reviewerAgent,
         reviewerBlock,
+        maxTurns: methodologyRelease ? (reviewerBlock.maxTurns ?? null) : null,
         reviewerPersona,
         knowledge: reviewerMethodology,
         round,
@@ -4100,13 +4260,11 @@ export const runStage = async (
           .catch(() => {});
         return null;
       });
-      const reviewerParked = await pendingGate({
-        store,
-        executionId,
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-      });
+      // Only a release-mode stage can open a gate between reviewer rounds (the
+      // repair turn below); an unpinned reviewer loop has nothing to re-check.
+      const reviewerParked = stage.policy
+        ? await pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex })
+        : null;
       if (reviewerParked) return parkStage(reviewerParked);
       const ready = verdict?.result === 'PASS' || verdict?.detail?.verdict === 'READY';
       const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';
@@ -4156,6 +4314,9 @@ export const runStage = async (
         sectionIndex,
       });
       if (repairParked) return parkStage(repairParked);
+    }
+    if (repairGitFailure) {
+      return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail);
     }
     const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';
     if (advisory) {
@@ -4299,9 +4460,9 @@ export const runStage = async (
         },
       })
       .catch(() => {});
-    // No human gate means no one can override, so upstream's own autonomous
-    // path applies: halt. FAILED + rewind is this platform's equivalent halt.
-    if (gatePlane?.held && stage.humanValidation !== 'required') {
+    // No human gate (including a unit lane) means no one can override, so
+    // upstream's own autonomous path applies: halt. FAILED + rewind is this platform's equivalent halt.
+    if (gatePlane?.held && !stageHasHumanGate({ stage, unitSlug })) {
       return fail(stageInstanceId, 'sensor_blocked', gatePlane.held);
     }
   }
@@ -4315,7 +4476,7 @@ export const runStage = async (
   // implementation work into an execution failure.
   let completedGitResult = gitResult;
   try {
-    if (carriedCodeCommitRefs.length > 0) {
+    if (carriedCodeCommitRefs.length > 0 || repairCommitted) {
       completedGitResult = await gitResultForCommitRefs({
         commitRefs: stageCodeCommitRefs,
         repos,
@@ -4433,13 +4594,7 @@ export const runStage = async (
   // `changedFiles: []` cannot tell "this stage changed nothing" from "the git
   // engine could not say". Null unless the engine succeeded, reported at least
   // one repo, and every repo reported an explicit `files` array or a clean commit.
-  const completedReportedFiles =
-    completedGitResult.ok &&
-    completedGitResult.results.length > 0 &&
-    completedGitResult.results.every(
-      (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
-    );
-  const changedFiles = completedReportedFiles
+  const changedFiles = gitReportsAllFiles(completedGitResult)
     ? [
         ...new Set(completedGitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
       ].toSorted()

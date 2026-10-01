@@ -33,6 +33,16 @@ import {
 import { compileStageGraph, compileRules } from './compile.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'policy.review-cap@v1',
+  'policy.sensors@v1',
+  'policy.summary-confirmation.off@v1',
+  'review.artifact-focus@v1',
+]);
+
 // Stage modes the runtime can execute. Pipeline, mob, and subagent supports use
 // serial, persona-scoped sessions; agent-team remains unrunnable because it
 // requires real concurrent sessions.
@@ -200,7 +210,7 @@ const stageInputs = (stage) =>
 
 // Resolve + validate the deterministic sensors a stage runs. The reviewer is a
 // SEPARATE axis (stage.reviewer), handled below — it is NOT a sensor here.
-const resolveSensors = (stage, stageId, sensorsById, errors) =>
+const resolveSensors = (stage, stageId, sensorsById, errors, { policyEnabled = false } = {}) =>
   (stage?.sensors ?? [])
     .map((sid) => {
       const sensor = sensorsById[sid];
@@ -231,9 +241,10 @@ const resolveSensors = (stage, stageId, sensorsById, errors) =>
         scriptRef: sensor.scriptRef ?? null,
         // `fire_on` (≥2.7.0) decides which candidate set the runner sweeps, so it
         // has to reach the runtime on the plan — without it the whole plane was
-        // inert. Emitted ONLY when authored, so a sensor without it produces a
-        // byte-identical plan.
-        ...(sensor.fireOn ? { fireOn: sensor.fireOn } : {}),
+        // inert. Emitted ONLY when authored AND in release mode: an unpinned run
+        // has no gate plane and runs every sensor in its one pass, so a SYSTEM
+        // seed or a user block that authors the field must not change its plan.
+        ...(policyEnabled && sensor.fireOn ? { fireOn: sensor.fireOn } : {}),
       };
     })
     .filter(Boolean);
@@ -384,7 +395,7 @@ const resolveStagePolicy = ({ scopeBlock, stage, stageId, errors, capabilities =
     // is upstream's "absent means strict" rule made version-agnostic.
     changeControl:
       scopeBlock?.changeControl ?? defaultWhenAbsent('SCOPE:change_control', capabilities),
-    learnings: scopeBlock?.learnings ?? 'on',
+    learnings: scopeBlock?.learnings ?? defaultWhenAbsent('SCOPE:learnings', capabilities),
     skeleton: scopeBlock?.skeleton ?? null,
     // Plan Approval is protocol prose plus a PreToolUse guard upstream, not a
     // frontmatter field, so it is keyed on the CATALOG's runtime files and the
@@ -737,7 +748,7 @@ const buildExecutionPlan = ({
         }
       }
 
-      const sensors = resolveSensors(stage, stageId, sensorsById, errors);
+      const sensors = resolveSensors(stage, stageId, sensorsById, errors, { policyEnabled });
       const reviewer = resolveReviewer(stage, stageId, agentsById, errors);
 
       // Dependencies: every in-scope stage that must run before this one — the

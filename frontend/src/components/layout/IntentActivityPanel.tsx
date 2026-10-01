@@ -528,7 +528,7 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
       </div>
       <div className="flex-1 min-w-0 pb-2">
         <p className="text-xs font-medium leading-tight">
-          {headlineLabel ?? event.summary ?? event.type}
+          {headlineLabel ?? (event.summary || event.type)}
         </p>
         {headlineLabel && excerpt && (
           <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">

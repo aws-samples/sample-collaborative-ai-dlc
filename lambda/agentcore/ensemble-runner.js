@@ -41,6 +41,11 @@ import { neutralizeTokens } from './stage-materializer.js';
 import { evaluateGatePreconditions } from '../shared/gate-preconditions.js';
 import { contributionArtifactId } from '../shared/ensemble-contribution.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['stage.mode.ensemble-sessions@v1']);
+
 export { contributionArtifactId };
 
 // The stage modes that get real per-persona sessions. `pipeline` and `mob` have

@@ -21,6 +21,14 @@ import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-credentials.js';
 import { MCP_SERVER_NAME } from './cli/drivers.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'agent.max-turns@v1',
+  'prompt.learnings@v1',
+]);
+
 // The MCP execution annex — the harness binding that redirects the upstream
 // stage prose (which is written for a filesystem + `bun` harness) onto our MCP
 // tool surface. Injected FIRST in the prompt so the agent reads the binding
@@ -32,6 +40,18 @@ const annexPath = path.join(
   'mcp-execution-annex.md',
 );
 export const MCP_EXECUTION_ANNEX = readFileSync(annexPath, 'utf8').trimEnd();
+
+// `learnings: off` withdraws the two learning writers from the MCP session, so
+// the annex row that tells the agent to call them is swapped for one that says
+// learnings are off. Every other policy (and no policy) keeps the annex verbatim.
+const LEARNINGS_ANNEX_ROW = /^\| The learnings ritual .*\|$/m;
+const annexFor = (policy) =>
+  policy?.learnings === 'off'
+    ? MCP_EXECUTION_ANNEX.replace(
+        LEARNINGS_ANNEX_ROW,
+        '| The learnings ritual / "capture a learning" / a reusable convention, decision, constraint, or gotcha that should steer FUTURE intents in this project | **IGNORE.** Learnings are turned off for this scope: there is no tool to record them. Put anything worth keeping in your stage output instead. |',
+      )
+    : MCP_EXECUTION_ANNEX;
 
 // The {{INVOKE}} dialect annex — appended ONLY when a prompt part actually
 // carries the token (releases ≥2.8.2 expand it to the upstream engine CLI, which
@@ -326,7 +346,7 @@ export const buildStagePrompt = ({
   ];
   // The harness binding goes FIRST — it must be read before the filesystem-laden
   // stage prose so the agent translates rather than obeys it literally.
-  sections.push('', MCP_EXECUTION_ANNEX);
+  sections.push('', annexFor(stage.policy));
   // The intent — what the human actually asked for. Right after the harness
   // binding so every stage knows the run's north star without interviewing the
   // human for it.
@@ -473,6 +493,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         // everywhere else — independent of the policy, because the absence of an
         // answer path does not depend on what the release enables.
         ...(scope.canAsk === false ? { V2_ASK_QUESTION: '0' } : {}),
+        // The validation revision the checkpoint receipts are scoped to. Absent
+        // for the first run and for every run without a policy.
+        ...(scope.policy && scope.validationRound
+          ? { V2_VALIDATION_ROUND: String(scope.validationRound) }
+          : {}),
         // Trusted reviewer identity (reviewer role only): the bridge stamps this
         // on the verdict row instead of trusting the agent's self-reported name
         // (upstream §12a identity marker, enforced server-side). Empty → null.

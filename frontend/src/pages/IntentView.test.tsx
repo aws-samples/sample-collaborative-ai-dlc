@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
+import { formatTimelineTimestamp } from '@/lib/timeAgo';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
 const projectCacheMock = vi.hoisted(() => ({
@@ -1029,11 +1030,20 @@ describe('IntentView', () => {
       ],
       sensorRuns: [
         {
-          sensorRunId: 'sr-1',
+          sensorRunId: 'sr-new',
           stageInstanceId: 'si-a',
           sensorId: 'reviewer:qa',
           result: 'PASS',
           detail: { verdict: 'READY', findings: 'Looks complete' },
+          timestamp: '2026-03-01T12:00:00Z',
+        },
+        {
+          sensorRunId: 'sr-old',
+          stageInstanceId: 'si-a',
+          sensorId: 'reviewer:qa',
+          result: 'FAIL',
+          detail: { verdict: 'NOT-READY', findings: 'Earlier finding' },
+          timestamp: '2026-02-01T12:00:00Z',
         },
       ],
       artifacts: [
@@ -1096,8 +1106,25 @@ describe('IntentView', () => {
       'aria-expanded',
       'false',
     );
+    expect(screen.getByRole('button', { name: /Reviewer Agent findings/i })).toHaveTextContent(
+      'READY',
+    );
     await userEvent.click(screen.getByRole('button', { name: /Reviewer Agent findings/i }));
+    const reviewerRunTriggers = screen.getAllByTestId(/^reviewer-run-trigger-/);
+    expect(reviewerRunTriggers.map((trigger) => trigger.dataset.testid)).toEqual([
+      'reviewer-run-trigger-sr-new',
+      'reviewer-run-trigger-sr-old',
+    ]);
+    expect(reviewerRunTriggers[0]).toHaveAttribute('aria-expanded', 'true');
+    expect(reviewerRunTriggers[1]).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText(formatTimelineTimestamp('2026-03-01T12:00:00Z'))).toBeInTheDocument();
+    expect(screen.getByText(formatTimelineTimestamp('2026-02-01T12:00:00Z'))).toBeInTheDocument();
+    expect(screen.getAllByText('READY')).not.toHaveLength(0);
+    expect(screen.getByText('NOT-READY')).toBeInTheDocument();
     expect(screen.getByText('Looks complete')).toBeInTheDocument();
+    expect(screen.queryByText('Earlier finding')).not.toBeInTheDocument();
+    await userEvent.click(reviewerRunTriggers[1]);
+    expect(await screen.findByText('Earlier finding')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Approve stage' }));
     expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'eg-validation-si-a-0-run1', {
@@ -1158,7 +1185,7 @@ describe('IntentView', () => {
         .find((b) => !b.hasAttribute('aria-expanded') && b.textContent?.startsWith(label));
     expect(statCardButton('Artifacts')).toBeUndefined();
     expect(statCardButton('Identified items')).toBeUndefined();
-    expect(statCardButton('Reviewer findings')).toBeUndefined();
+    expect(statCardButton('Reviewer verdict')).toBeUndefined();
   });
 
   // Positive counterpart: when a category has data, its stat card is a button
@@ -2264,5 +2291,38 @@ describe('IntentView — provenance tree structure', () => {
     expect(screen.queryByRole('group', { name: /Filter/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /1 doc/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /\d+ item/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('IntentView — resume after a failed gate callback', () => {
+  const marker = { humanTaskId: 'h1', callbackId: 'cb-h1', answeredAt: null };
+
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+  });
+
+  it('offers the resume while the intent waits on the answered gate', async () => {
+    get.mockResolvedValue(
+      baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1', resumeRequired: marker }),
+    );
+    renderAt();
+
+    expect(
+      await screen.findByText('Your answer was saved but the run did not continue'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not offer it once the intent is no longer waiting', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'CANCELLED', resumeRequired: marker }));
+    renderAt();
+
+    expect(await screen.findByText('My intent')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Your answer was saved but the run did not continue'),
+    ).not.toBeInTheDocument();
   });
 });

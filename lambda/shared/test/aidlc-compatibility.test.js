@@ -89,12 +89,9 @@ describe('offline exact-source fixtures', () => {
       profile.frontmatterDialect === 'invoke-template-v1' ? 6 : 0,
     );
     expect(report.currentPlatformBaseline).toBe(profileId === 'current-stable');
-    // Certification reflects runtime fidelity, so a
-    // release clears the bar only when no authored value is `unsupported`. With
-    // the summary-confirmation checkpoint and the gate sensor plane native, every
-    // pinned profile now clears it.
-    expect(report.readyForCertification).toBe(true);
-    expect(report.certificationGaps).toEqual([]);
+    // Certification reflects this build's runtime fidelity, not profile age or
+    // an allowlist. Each report's ready flag must agree with its actual gaps.
+    expect(report.readyForCertification).toBe(report.certificationGaps.length === 0);
   });
 
   it('computes mode certification gaps from the handlers registered in this build', () => {
@@ -180,11 +177,15 @@ describe('offline exact-source fixtures', () => {
     ]);
 
     // A release's classification is derived from the handlers available in this
-    // build; handling can improve without changing the authored vocabulary. The
-    // pipeline and mob modes run each persona in a separate session with a
+    // build; handling can improve without changing the authored vocabulary.
+    // The pipeline and mob modes run each persona in a separate session with a
     // role-scoped brief, but remain `approximated`: visibility is brief-enforced,
     // and contributions are graph artifacts rather than `.aidlc-engine/**` files.
     const row = modeRow('v2.9.0');
+    const modeEntry = AIDLC_CAPABILITIES.find((entry) => entry.key === 'STAGE:mode');
+    expect(Object.fromEntries(row.values.map((item) => [item.value, item.handling]))).toEqual(
+      Object.fromEntries(row.values.map(({ value }) => [value, modeEntry.values[value].handling])),
+    );
     expect(row.handling).toBe('approximated');
     expect(Object.fromEntries(row.values.map((item) => [item.value, item.handling]))).toEqual({
       inline: 'native',
@@ -266,17 +267,27 @@ describe('offline exact-source fixtures', () => {
     const fields = (profileId) =>
       reports[profileId].unmappedFields.map(({ blockType, field }) => `${blockType}:${field}`);
 
-    // `workspace_requires` stays on the unmapped list — no adapter reads it —
-    // but it is the one key on the explicit informational allowlist, because the
-    // precondition it asserts holds architecturally (every stage runs on a
-    // restored checkout). It is separately classified in the fidelity table as
-    // `approximated`, not `native`: holding architecturally is not the same as
-    // the platform asserting the declaration per stage.
+    // `workspace_requires` stays on the unmapped list because the precondition
+    // holds architecturally (every stage runs on a restored checkout).
+    // It is separately classified in the fidelity table as `approximated`, not
+    // `native`: holding architecturally is not the same as the platform
+    // asserting the declaration per stage.
     expect(fields('current-stable')).toContain('STAGE:workspace_requires');
     for (const profileId of FIXTURE_IDS) {
       expect(reports[profileId].unmappedFields.some((field) => field.executionRelevant)).toBe(
         false,
       );
+      const report = reports[profileId];
+      for (const field of report.fidelity.fields) {
+        const entry = AIDLC_CAPABILITIES.find(
+          (candidate) => candidate.blockType === field.blockType && candidate.field === field.field,
+        );
+        if (!entry) continue;
+        for (const value of field.values ?? []) {
+          const expected = entry.values?.[value.value]?.handling ?? entry.handling;
+          expect(value.handling).toBe(expected);
+        }
+      }
       expect(reports[profileId].fidelity.approximated).toContain('STAGE:workspace_requires');
       expect(reports[profileId].fidelity.native).not.toContain('STAGE:workspace_requires');
     }
@@ -321,7 +332,9 @@ describe('offline exact-source fixtures', () => {
       expect.arrayContaining(['STAGE:summary_confirmation']),
     );
     expect(reports['v2.9.0'].fidelity.unsupported).toEqual([]);
-    expect(reports['v2.9.0'].readyForCertification).toBe(true);
+    // Every authored value is handled; the release is withheld only for the
+    // build-and-test loop-back protocol, which no handler reproduces yet.
+    expect(reports['v2.9.0'].readyForCertification).toBe(false);
     // The 2.3.3-era baseline carries no release-policy field. It does carry
     // `mode` (native) and `workspace_requires` (approximated), so the report
     // names both rather than leaving them unclassified.
@@ -638,7 +651,12 @@ describe('analyzeAidlcCompatibility', () => {
     });
   });
 
-  it('adapts a known execution-relevant field instead of blocking on it', () => {
+  // Until the write and gate sensor planes had runtime handlers, `fire_on` was
+  // recorded as a promotion gap. Both planes now run, so these two cases describe
+  // the earlier contract; the fixed expectations that replace them follow.
+  // prettier-ignore
+  describe.skip('before the sensor planes had runtime handlers', () => {
+  it('recognizes a known field but records it as unsupported until a handler ships', () => {
     const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
       content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: write'),
     );
@@ -646,46 +664,61 @@ describe('analyzeAidlcCompatibility', () => {
 
     expect(report.importable).toBe(true);
     expect(report.unmappedFields.map((field) => field.field)).not.toContain('fire_on');
-    const entry = AIDLC_CAPABILITIES.find((candidate) => candidate.key === 'SENSOR:fire_on');
-    const classification = entry.values.write;
-    const handled = RUNTIME_HANDLERS.has(classification.handler);
-    const field = report.fidelity.fields.find(
-      (candidate) => candidate.blockType === 'SENSOR' && candidate.field === 'fire_on',
+    expect(report.fidelity.unsupported).toContain('SENSOR:fire_on');
+    expect(report.certificationGaps).toContainEqual(
+      expect.objectContaining({ field: 'fire_on', value: 'write' }),
     );
-    expect(field.values).toEqual([
-      { value: 'write', handling: classification.handling, paths: expect.any(Array) },
-    ]);
-    expect(
-      report.certificationGaps.some((gap) => gap.field === 'fire_on' && gap.value === 'write'),
-    ).toBe(!handled);
-    // The WRITE plane is a real approximation (post-agent sweep narrowed to the
-    // attempt's changed files), so it is classified, not left unmapped.
-    expect(report.fidelity.approximated).toContain('SENSOR:fire_on');
-    expect(report.fidelity.unsupported).not.toContain('SENSOR:fire_on');
-    expect(report.unmappedFields.some((unmappedField) => unmappedField.executionRelevant)).toBe(
-      false,
-    );
+    expect(report.readyForCertification).toBe(false);
+    expect(report.unmappedFields.some((field) => field.executionRelevant)).toBe(false);
   });
 
-  it('marks the fire_on GATE plane native, and withholds no certification for it', () => {
+  it('retains the gate-plane value as a promotion gap until its runtime pass ships', () => {
     const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
       content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: gate'),
     );
     const report = analyzeAidlcCompatibility({ profileId: 'current-stable', files });
 
     expect(report.importable).toBe(true);
-    // The gate plane runs as its own pass after the reviewer loop resolves, once
-    // per existing declared deliverable, on the bytes the human approves — so it
-    // is reproduced, not merely approximated, and names a real runtime seam.
-    expect(report.fidelity.native).toContain('SENSOR:fire_on');
-    expect(report.fidelity.unsupported).not.toContain('SENSOR:fire_on');
-    expect(report.certificationGaps).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ field: 'fire_on', value: 'gate' })]),
+    expect(report.fidelity.unsupported).toContain('SENSOR:fire_on');
+    expect(report.certificationGaps).toContainEqual(
+      expect.objectContaining({ field: 'fire_on', value: 'gate' }),
     );
+    expect(report.readyForCertification).toBe(false);
+    const fireOn = report.fidelity.fields.find((field) => field.field === 'fire_on');
+    expect(fireOn.values).toEqual([
+      { value: 'gate', handling: 'unsupported', paths: expect.any(Array) },
+    ]);
+  });
+  });
+
+  it('classifies fire_on: write as an approximated plane, not a promotion gap', () => {
+    const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
+      content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: write'),
+    );
+    const report = analyzeAidlcCompatibility({ profileId: 'current-stable', files });
+
+    expect(report.importable).toBe(true);
+    expect(report.unmappedFields.map((field) => field.field)).not.toContain('fire_on');
+    expect(report.fidelity.approximated).toContain('SENSOR:fire_on');
+    const fireOn = report.fidelity.fields.find((field) => field.field === 'fire_on');
+    expect(fireOn.values).toEqual([
+      { value: 'write', handling: 'approximated', paths: expect.any(Array) },
+    ]);
+    expect(report.certificationGaps.filter((gap) => gap.field === 'fire_on')).toEqual([]);
+  });
+
+  it('classifies fire_on: gate as a native plane, not a promotion gap', () => {
+    const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
+      content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: gate'),
+    );
+    const report = analyzeAidlcCompatibility({ profileId: 'current-stable', files });
+
+    expect(report.importable).toBe(true);
     const fireOn = report.fidelity.fields.find((field) => field.field === 'fire_on');
     expect(fireOn.values).toEqual([
       { value: 'gate', handling: 'native', paths: expect.any(Array) },
     ]);
+    expect(report.certificationGaps.filter((gap) => gap.field === 'fire_on')).toEqual([]);
   });
 
   it('fails closed on a stage mode outside the known set', () => {
@@ -913,4 +946,33 @@ describe('custom fork profiles', () => {
       }).content,
     ).toBe(content);
   });
+});
+
+describe('certification gaps of the upstream fixtures', () => {
+  const gapsOf = (profileId) => {
+    const report = analyzeAidlcCompatibility({
+      profileId,
+      files: filesFromCompatibilityFixture({ profileId, fixture: fixtureFor(profileId) }),
+    });
+    return {
+      ready: report.readyForCertification,
+      gaps: report.certificationGaps
+        .map((gap) => `${gap.blockType}:${gap.field}=${gap.value}`)
+        .toSorted(),
+    };
+  };
+
+  it('certifies the current stable release with no gap', () => {
+    expect(gapsOf('current-stable')).toEqual({ ready: true, gaps: [] });
+  });
+
+  it.each(['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'])(
+    'withholds %s for the build-and-test loop-back only',
+    (profileId) => {
+      expect(gapsOf(profileId)).toEqual({
+        ready: false,
+        gaps: ['PROTOCOL:build-and-test-loopback=present'],
+      });
+    },
+  );
 });
