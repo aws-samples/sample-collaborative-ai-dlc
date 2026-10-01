@@ -44,14 +44,9 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
   'review.artifact-focus@v1',
 ]);
 
-// Stage modes the runtime can actually execute. `inline` and `subagent` run
-// natively. `pipeline` and `mob` (≥2.6.18) are run as APPROXIMATIONS: the
-// runtime still runs one agent session, and the stage prompt carries an ensemble
-// section describing the support personas and the topology protocol (see
-// `stage-materializer.js` renderEnsembleProtocol). `agent-team` remains
-// unrunnable — it needs real concurrent sessions, not a prompt — so a stage that
-// declares it is flagged `notImplemented` and fails fast at run time instead of
-// crashing the resolver.
+// Stage modes the runtime can execute. Pipeline, mob, and subagent supports use
+// serial, persona-scoped sessions; agent-team remains unrunnable because it
+// requires real concurrent sessions.
 const RUNNABLE_MODES = ['inline', 'subagent', 'pipeline', 'mob'];
 
 // The approximated multi-persona topologies. Kept separate from RUNNABLE_MODES
