@@ -690,6 +690,23 @@ const fidelityGapsFromCatalog = ({ catalog, bodies = [], runtimeFilePaths = [] }
   );
 };
 
+const protocolCertificationGaps = (runtimeFilePaths = []) => {
+  const present = resolveCapabilities({ runtimeFilePaths });
+  return AIDLC_CAPABILITIES.filter(
+    (capability) =>
+      capability.blockType === 'PROTOCOL' &&
+      capability.handling === 'unsupported' &&
+      present[capability.key] === true,
+  ).map((capability) => ({
+    kind: 'protocol',
+    blockType: capability.blockType,
+    field: capability.field,
+    value: 'present',
+    paths: [String(capability.capabilityPresentIf).replace(/^runtimeFilePresent:/, '')],
+    note: capability.note,
+  }));
+};
+
 // An explicit `profile` object is the custom-fork path: `profileFor` answers
 // only from the closed official allowlist, so a fork must hand its synthesized
 // profile in rather than be looked up by id.
@@ -1098,6 +1115,10 @@ const analyzeAidlcCompatibility = ({ profileId, profile: explicitProfile = null,
         note: 'No adapter consumes this field; its semantics are unknown to this platform.',
       })),
     ...fidelity.gaps,
+    // A protocol the release ships but this platform does not reproduce is the
+    // same failure as an unsupported field value; promotion refuses it from the
+    // release's runtime files, so the analyzer names it too.
+    ...protocolCertificationGaps(library.runtimeFilePaths),
   ];
 
   return {

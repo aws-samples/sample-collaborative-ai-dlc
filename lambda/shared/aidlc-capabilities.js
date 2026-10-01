@@ -311,8 +311,14 @@ const AIDLC_CAPABILITIES = Object.freeze([
       on: Object.freeze({ handling: 'approximated', handler: 'policy.learnings.ritual@v1' }),
       off: Object.freeze({ handling: 'native', handler: 'policy.learnings.off@v1' }),
     }),
-    defaultWhenAbsent: null,
-    capabilityPresentIf: null,
+    // Upstream's scope switch defaults to `on`, but only releases that have the
+    // switch run the ritual at all (2.9.0 on: classic authors `learnings: on`
+    // and the learnings protocol module ships with it). Before that no scope
+    // authors the field and no gate asks the question, so an omitted field stays
+    // inert unless the catalog proves the capability, exactly as for
+    // change_control.
+    defaultWhenAbsent: 'on',
+    capabilityPresentIf: 'anyBlockAuthorsField',
     note: '`on` runs the ritual INSIDE the existing approval gate (the prompt asks \u201cAnything to add for next time?\u201d and a non-empty answer writes a durable project learning) rather than as upstream\u2019s separate pre-gate turn \u2014 approximated deliberately, because a second mandatory human turn per stage across 18\u201333 stages is friction without decision value. `off` is native: the MCP server withdraws record_team_knowledge and record_learning_rule from the session outright (mcp/server.js), so no learning can be written, and the prompt says so.',
   }),
   Object.freeze({
@@ -364,6 +370,26 @@ const AIDLC_CAPABILITIES = Object.freeze([
     // the authored output slug stands in for upstream's `workspace_requires`).
     appliesTo: `stage.workspaceRequires === true || stage.produces includes ${PLAN_APPROVAL_ARTIFACT}`,
     note: 'Upstream prevents pre-approval writes with a PreToolUse guard. The platform has no per-write hook; instead, `request_plan_approval` records an attempt-bound authorization and the completion ladder blocks outputs whose stage commit does not follow that approval. This checks the outcome, not each write.',
+  }),
+  // The Build-and-Test loop-back is construction-protocol prose upstream, not a
+  // frontmatter field, so it is keyed on the closure shipping that protocol at
+  // all: 2.3.3 has no construction protocol (inert), 2.6.18+ do. Like
+  // PROTOCOL:plan-approval it never appears in the frontmatter fidelity report.
+  // Classified `unsupported` until a runtime handler routes the loop-back, so
+  // the promotion guard refuses every release that ships the protocol.
+  Object.freeze({
+    key: 'PROTOCOL:build-and-test-loopback',
+    blockType: 'PROTOCOL',
+    field: 'build-and-test-loopback',
+    planKey: null,
+    policy: null,
+    handling: 'unsupported',
+    handler: null,
+    values: null,
+    defaultWhenAbsent: null,
+    capabilityPresentIf:
+      'runtimeFilePresent:core/aidlc-common/protocols/stage-protocol-construction.md',
+    note: 'Upstream loops build-and-test back to code generation, up to three times per intent. No runtime handler reproduces the loop-back yet, so a release that ships the construction protocol is not promotable.',
   }),
 ]);
 

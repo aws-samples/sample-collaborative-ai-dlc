@@ -379,7 +379,7 @@ const resolveStagePolicy = ({ scopeBlock, stage, stageId, errors, capabilities =
     // is upstream's "absent means strict" rule made version-agnostic.
     changeControl:
       scopeBlock?.changeControl ?? defaultWhenAbsent('SCOPE:change_control', capabilities),
-    learnings: scopeBlock?.learnings ?? 'on',
+    learnings: scopeBlock?.learnings ?? defaultWhenAbsent('SCOPE:learnings', capabilities),
     skeleton: scopeBlock?.skeleton ?? null,
     // Plan Approval is protocol prose plus a PreToolUse guard upstream, not a
     // frontmatter field, so it is keyed on the CATALOG's runtime files and the

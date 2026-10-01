@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { filesFromCompatibilityFixture } from '../aidlc-compatibility.js';
 import { buildFromFiles, mapAgent, mapScope, mapSensor, mapStage } from '../block-mappers.js';
 import { buildExecutionPlan, resolveStagePolicy } from '../v2-execution-plan.js';
+import { resolveCapabilities } from '../aidlc-capabilities.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
@@ -298,7 +299,9 @@ describe('Per-release adapters: effective per-stage policy', () => {
       // policy key is present — 'strict' carries an active prompt instruction,
       // so it stays null until a scope declares it.
       changeControl: null,
-      learnings: 'on',
+      // Likewise learnings: no block authors it here, so the release proves no
+      // learnings switch and the ritual stays off.
+      learnings: null,
       skeleton: null,
       summaryConfirmation: 'none',
       reviewArtifact: null,
@@ -396,5 +399,50 @@ describe('Per-release adapters: effective per-stage policy', () => {
         errors: [],
       }),
     ).toBeNull();
+  });
+});
+
+describe('Per-release adapters: learnings default', () => {
+  const fixture = (profileId) =>
+    JSON.parse(
+      readFileSync(
+        new URL(`./fixtures/aidlc-compatibility/${profileId}.json`, import.meta.url),
+        'utf8',
+      ),
+    );
+  // The policy every stage of `scope` resolves to, from the release's own SCOPE
+  // block and the capabilities its closure proves.
+  const learningsFor = (profileId, scope) => {
+    const { blocks } = buildFromFiles(fixtureFiles(profileId));
+    const library = {
+      ...libraryFrom(blocks),
+      runtimeFilePaths: fixture(profileId).runtimeFiles.map((file) => file.path),
+    };
+    const capabilities = resolveCapabilities(library);
+    const scopeBlock = library.scopesById[scope];
+    return [
+      ...new Set(
+        Object.entries(library.stagesById).map(
+          ([stageId, stage]) =>
+            resolveStagePolicy({ scopeBlock, stage, stageId, errors: [], capabilities })
+              ?.learnings ?? null,
+        ),
+      ),
+    ];
+  };
+
+  it.each(['v2.6.18', 'v2.7.0', 'v2.8.2'])(
+    'does not turn the learnings ritual on for %s, which has no learnings switch',
+    (profileId) => {
+      expect(learningsFor(profileId, 'feature')).toEqual([null]);
+    },
+  );
+
+  it('applies the upstream default to a 2.9.0 scope that omits the field', () => {
+    expect(learningsFor('v2.9.0', 'feature')).toEqual(['on']);
+  });
+
+  it('keeps the value a 2.9.0 scope authors', () => {
+    expect(learningsFor('v2.9.0', 'classic')).toEqual(['on']);
   });
 });

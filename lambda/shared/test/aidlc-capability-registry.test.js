@@ -241,12 +241,15 @@ describe('capability presence and release defaults', () => {
       scopeFm: { learnings: 'on' },
       extraScopes: { classic: { id: 'classic', changeControl: 'relaxed', version: 1 } },
     });
-    expect(withCapability.plan.capabilities).toEqual({ 'SCOPE:change_control': true });
+    expect(withCapability.plan.capabilities).toEqual({
+      'SCOPE:change_control': true,
+      'SCOPE:learnings': true,
+    });
     expect(withCapability.plan.stages[0].policy.changeControl).toBe('strict');
 
     // Same authored scope, no other scope proving the capability: inert.
     const withoutCapability = planFor({ scopeFm: { learnings: 'on' } });
-    expect(withoutCapability.plan.capabilities).toBeUndefined();
+    expect(withoutCapability.plan.capabilities).toEqual({ 'SCOPE:learnings': true });
     expect(withoutCapability.plan.stages[0].policy.changeControl).toBeNull();
   });
 
@@ -418,5 +421,23 @@ describe('release promotion evidence', () => {
       expect(unhonouredValues({ fidelityGaps }), profileId).toEqual(expected);
       expect(report.readyForCertification, profileId).toBe(expected.length === 0);
     }
+  });
+});
+
+describe('the build-and-test loop-back protocol', () => {
+  it('is present wherever the release ships the construction protocol', () => {
+    expect(
+      resolveCapabilities({
+        runtimeFilePaths: ['core/aidlc-common/protocols/stage-protocol-construction.md'],
+      })['PROTOCOL:build-and-test-loopback'],
+    ).toBe(true);
+    expect(
+      resolveCapabilities({ runtimeFilePaths: [] })['PROTOCOL:build-and-test-loopback'],
+    ).not.toBe(true);
+  });
+
+  it('refuses promotion while no runtime handler reproduces it', () => {
+    const gap = { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' };
+    expect(unhonouredValues({ fidelityGaps: [gap] })).toEqual([gap]);
   });
 });

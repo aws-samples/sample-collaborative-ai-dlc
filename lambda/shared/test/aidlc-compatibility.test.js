@@ -876,3 +876,32 @@ describe('custom fork profiles', () => {
     ).toBe(content);
   });
 });
+
+describe('certification gaps of the upstream fixtures', () => {
+  const gapsOf = (profileId) => {
+    const report = analyzeAidlcCompatibility({
+      profileId,
+      files: filesFromCompatibilityFixture({ profileId, fixture: fixtureFor(profileId) }),
+    });
+    return {
+      ready: report.readyForCertification,
+      gaps: report.certificationGaps
+        .map((gap) => `${gap.blockType}:${gap.field}=${gap.value}`)
+        .toSorted(),
+    };
+  };
+
+  it('certifies the current stable release with no gap', () => {
+    expect(gapsOf('current-stable')).toEqual({ ready: true, gaps: [] });
+  });
+
+  it.each(['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'])(
+    'withholds %s for the persona modes and the build-and-test loop-back',
+    (profileId) => {
+      expect(gapsOf(profileId)).toEqual({
+        ready: false,
+        gaps: ['PROTOCOL:build-and-test-loopback=present', 'STAGE:mode=mob', 'STAGE:mode=pipeline'],
+      });
+    },
+  );
+});
