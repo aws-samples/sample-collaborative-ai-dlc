@@ -1222,10 +1222,12 @@ describe('bounded fan-out', () => {
       stageRow,
       topology,
       sessionTimeoutMs: 5,
-      // Never resolves: the session hangs, exactly like a wedged CLI child.
-      dispatchOverride: () => {
+      // A wedged CLI child: runChild kills it at `timeoutMs` and reports a timeout.
+      dispatchOverride: ({ timeoutMs }) => {
         dispatches += 1;
-        return new Promise(() => {});
+        return new Promise((resolve) => {
+          setTimeout(() => resolve({ ok: false, detail: { timedOut: true } }), timeoutMs);
+        });
       },
     });
     expect(dispatches).toBe(2 * MAX_PERSONA_ATTEMPTS);
@@ -1255,19 +1257,27 @@ describe('the aggregate stage wall-clock budget', () => {
       nowMs: () => now,
       deadlineMs: T0 + 2.5 * HOUR,
     });
-    // Three supports start (the third with 30 min left); the integrator does not.
-    expect(briefs.map((entry) => entry.role)).toEqual(['support', 'support', 'support']);
+    // Two supports start; the third (30 min left, less than a 45 min session) and
+    // the integrator do not.
+    expect(briefs.map((entry) => entry.role)).toEqual(['support', 'support']);
     expect(ensembleEvidence.budgetExhausted).toEqual([
+      { agentRef: 'quality-agent', role: 'support' },
       { agentRef: 'product-agent', role: 'integrator' },
     ]);
     const gaps = eventsOfType(store, 'v2.persona.gap');
     expect(gaps.map((row) => row.detail.reason)).toEqual([
       'stage wall-clock budget exhausted before this session could run',
+      'stage wall-clock budget exhausted before this session could run',
     ]);
     expect(findings.map((item) => item.code)).toContain('stage_budget_exhausted');
     expect(findings.find((item) => item.code === 'stage_budget_exhausted')).toMatchObject({
       severity: 'advisory',
-      detail: { sessions: [{ agentRef: 'product-agent', role: 'integrator' }] },
+      detail: {
+        sessions: [
+          { agentRef: 'quality-agent', role: 'support' },
+          { agentRef: 'product-agent', role: 'integrator' },
+        ],
+      },
     });
   });
 
@@ -1309,26 +1319,30 @@ describe('the aggregate stage wall-clock budget', () => {
     });
   });
 
-  it('clamps a running session to what is left of the budget', async () => {
+  // A session starts only while a full session still fits before the deadline,
+  // the same floor a lead repair turn uses. Read off an injected clock, so the
+  // decision does not depend on how fast the test machine runs.
+  it('starts no session, retry included, that could not finish before the deadline', async () => {
     const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent', 'quality-agent'] });
     const topology = await topologyFor(stageRow);
+    const SESSION = 45 * 60 * 1000;
+    let now = T0;
     const dispatched = [];
-    const started = Date.now();
     const { ensembleEvidence } = await run({
       stageRow,
       topology,
-      sessionTimeoutMs: 60 * 60 * 1000,
-      deadlineMs: started + 40,
-      nowMs: Date.now,
-      // A hung CLI child: without the clamp this would hold for the full hour.
-      dispatchOverride: ({ personaScope }) => {
-        const { agentRef } = personaScope;
-        dispatched.push(agentRef);
-        return new Promise(() => {});
+      sessionTimeoutMs: SESSION,
+      nowMs: () => now,
+      // Room for exactly one session.
+      deadlineMs: T0 + SESSION + 1000,
+      // The session runs 2 s and leaves no evidence, so a retry would be due.
+      dispatchOverride: async ({ personaScope, timeoutMs }) => {
+        dispatched.push({ agentRef: personaScope.agentRef, timeoutMs });
+        now += 2000;
+        return { ok: false, detail: 'no evidence' };
       },
     });
-    expect(Date.now() - started).toBeLessThan(5000);
-    expect(dispatched).toEqual(['design-agent']);
+    expect(dispatched).toEqual([{ agentRef: 'design-agent', timeoutMs: SESSION }]);
     expect(ensembleEvidence.budgetExhausted.map((row) => row.agentRef)).toEqual([
       'design-agent',
       'quality-agent',

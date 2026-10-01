@@ -475,21 +475,6 @@ const emptyEvidence = (topology) => {
   };
 };
 
-// Bound one dispatch. The loser of the race is abandoned, never awaited again, and
-// the timer is always cleared so a finished session cannot hold the event loop.
-const withSessionTimeout = (pending, timeoutMs) => {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return pending;
-  let timer = null;
-  const expiry = new Promise((resolve) => {
-    timer = setTimeout(
-      () => resolve({ ok: false, detail: `session exceeded ${timeoutMs}ms` }),
-      timeoutMs,
-    );
-    timer?.unref?.();
-  });
-  return Promise.race([pending, expiry]).finally(() => clearTimeout(timer));
-};
-
 // A link's / integrator's evidence is that the DECLARED STAGE OUTPUTS moved. There
 // is no contribution file to inspect there, and a session that
 // exited 0 having written nothing produced nothing — `true` would have recorded a
@@ -677,17 +662,15 @@ export const runEnsembleSessions = async ({
     canAsk = false,
   }) => {
     for (let tryIndex = 1; tryIndex <= MAX_PERSONA_ATTEMPTS; tryIndex += 1) {
-      // Checked before EVERY dispatch, retries included: a session is never
-      // started past the stage deadline, and one that starts is clamped to what is
-      // left of it, so the ensemble as a whole cannot outlive the container.
-      const left = remainingMs();
-      if (left <= 0) {
+      // Checked before EVERY dispatch, retries included: a session starts only
+      // while a full session still fits before the stage deadline (the floor lead
+      // repair turns use), so the ensemble as a whole cannot outlive it.
+      if (remainingMs() < sessionTimeoutMs) {
         recordBudgetCut({ agentRef, role });
         return { ok: false, verified: null, reason: BUDGET_GAP_REASON };
       }
       const reduced = tryIndex > 1;
       const baseline = snapshot ? await snapshot().catch(() => null) : null;
-      const dispatchTimeoutMs = Math.min(sessionTimeoutMs, left);
       const dispatchArgs = {
         role,
         agentBlock,
@@ -708,12 +691,9 @@ export const runEnsembleSessions = async ({
         stageInstanceId,
         unitSlug,
         sectionIndex,
-        ...(dispatch === dispatchPersona ? { timeoutMs: dispatchTimeoutMs } : {}),
+        timeoutMs: sessionTimeoutMs,
       };
-      const pending = dispatch(dispatchArgs);
-      const result = await (
-        dispatch === dispatchPersona ? pending : withSessionTimeout(pending, dispatchTimeoutMs)
-      ).catch((error) => ({ ok: false, detail: error }));
+      const result = await dispatch(dispatchArgs).catch((error) => ({ ok: false, detail: error }));
       const verified = result.ok ? await verify(baseline).catch(() => null) : null;
       if (verified) return { ok: true, verified };
       logger?.error?.('persona session produced no evidence', {
@@ -723,10 +703,6 @@ export const runEnsembleSessions = async ({
         attemptOfTwo: tryIndex,
         msg: result.ok ? 'session exited cleanly without evidence' : String(result.detail ?? ''),
       });
-    }
-    if (remainingMs() <= 0) {
-      recordBudgetCut({ agentRef, role });
-      return { ok: false, verified: null, reason: BUDGET_GAP_REASON };
     }
     return { ok: false, verified: null };
   };
