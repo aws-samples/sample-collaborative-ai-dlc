@@ -968,9 +968,20 @@ const mergeBranch = async (ctx, repoId, { base, head, message }) => {
 };
 
 const apiBase = API_BASE;
+// Declared contract gaps (none for GitLab); see git-providers.js DEFAULT_CAPABILITIES.
+const capabilities = Object.freeze({
+  issues: true,
+  draftPullRequests: true,
+  reopenPullRequest: true,
+  checkStatuses: true,
+  approvalRules: true,
+  events: 'webhook',
+});
+
 export {
   id,
   displayName,
+  capabilities,
   gitHost,
   apiBase,
   buildCloneUrl,
@@ -1009,6 +1020,7 @@ export {
 export default {
   id,
   displayName,
+  capabilities,
   gitHost,
   apiBase,
   buildCloneUrl,
