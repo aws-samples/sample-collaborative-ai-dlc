@@ -1304,13 +1304,15 @@ describe('the aggregate stage wall-clock budget', () => {
       // Room for exactly one session.
       deadlineMs: T0 + SESSION + 1000,
       // The session runs 2 s and leaves no evidence, so a retry would be due.
-      dispatchOverride: async ({ personaScope, timeoutMs }) => {
-        dispatched.push({ agentRef: personaScope.agentRef, timeoutMs });
+      dispatchOverride: async ({ personaScope, timeoutMs, processGroup }) => {
+        dispatched.push({ agentRef: personaScope.agentRef, timeoutMs, processGroup });
         now += 2000;
         return { ok: false, detail: 'no evidence' };
       },
     });
-    expect(dispatched).toEqual([{ agentRef: 'design-agent', timeoutMs: SESSION }]);
+    expect(dispatched).toEqual([
+      { agentRef: 'design-agent', timeoutMs: SESSION, processGroup: true },
+    ]);
     expect(ensembleEvidence.budgetExhausted.map((row) => row.agentRef)).toEqual([
       'design-agent',
       'quality-agent',

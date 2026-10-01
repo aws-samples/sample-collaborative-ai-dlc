@@ -101,6 +101,9 @@ export const dispatchPersona = async ({
   sectionIndex,
   ids,
   timeoutMs = 0,
+  // Ensemble persona sessions run as their own process group (see runChild); the
+  // reviewer keeps the plain spawn it always had.
+  processGroup = false,
   // AGENT.maxTurns for this session. Defaults to the block's own value (persona
   // sessions only run for release catalogs); the reviewer passes it explicitly
   // so an unpinned review runs uncapped.
@@ -176,6 +179,7 @@ export const dispatchPersona = async ({
         prompt,
         promptViaStdin: invocation.promptViaStdin,
         timeoutMs,
+        processGroup,
         spawnFn,
       });
     let childResult;

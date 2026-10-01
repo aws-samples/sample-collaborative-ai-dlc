@@ -266,6 +266,33 @@ describe('dispatchPersona — generic role: support', () => {
 
 // A dispatched persona inherits the stage policy, leaves checkpoint ownership
 // with the lead, and uses its server-supplied identity for author-side writes.
+describe('dispatchPersona — process groups', () => {
+  const optionsOf = async (overrides) => {
+    const seen = [];
+    await dispatchPersona({
+      ...baseDeps({
+        spawnFn: (_command, _args, options) => {
+          seen.push(options);
+          return okSpawn();
+        },
+      }),
+      personaScope: { agentRef: 'aidlc-support-agent' },
+      brief: 'brief',
+      ...overrides,
+    });
+    return seen[0];
+  };
+
+  it('spawns a reviewer exactly as before, with no process group', async () => {
+    expect(await optionsOf({ role: 'reviewer' })).not.toHaveProperty('detached');
+  });
+
+  it('spawns a session that asks for it as its own process group', async () => {
+    const options = await optionsOf({ role: 'support', processGroup: true });
+    expect(options.detached).toBe(process.platform !== 'win32');
+  });
+});
+
 describe('dispatchPersona — the trusted scope of a dispatched persona', () => {
   const POLICY = { summaryConfirmation: 'required', learnings: 'off' };
 

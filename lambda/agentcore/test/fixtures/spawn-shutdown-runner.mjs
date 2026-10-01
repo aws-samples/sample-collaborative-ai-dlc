@@ -1,4 +1,4 @@
-// Runner half of the CLI shutdown test: starts a detached child through the real
+// Runner half of the CLI shutdown test: starts a process-group child through the real
 // `runChild`, signals readiness, then waits. The test kills this process and
 // asserts the grandchild died with it.
 //
@@ -10,6 +10,7 @@ import { runChild } from '../../cli/spawn.js';
 const child = runChild({
   command: process.execPath,
   args: [process.env.SPAWN_SHUTDOWN_ORPHAN],
+  processGroup: true,
 });
 writeFileSync(process.env.SPAWN_SHUTDOWN_READY, 'ready');
 await child;

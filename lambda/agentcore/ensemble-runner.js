@@ -672,6 +672,7 @@ export const runEnsembleSessions = async ({
         unitSlug,
         sectionIndex,
         timeoutMs: sessionTimeoutMs,
+        processGroup: true,
       };
       const result = await dispatch(dispatchArgs).catch((error) => ({ ok: false, detail: error }));
       const verified = result.ok ? await verify(baseline).catch(() => null) : null;
