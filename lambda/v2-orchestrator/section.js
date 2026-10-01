@@ -55,6 +55,11 @@ import { buildIntentAttribution } from './pr-attribution.js';
 import { assertPrStrategySupported } from '../shared/pr-strategy.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['policy.skeleton.switch@v1']);
+
 const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 
 // Uninterpretable halt-and-ask answers are re-asked at most this many times

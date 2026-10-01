@@ -844,3 +844,24 @@ describe('buildMcpConfig — validation revision', () => {
     expect(envOf({ ...scope, validationRound: 2 })).not.toHaveProperty('V2_VALIDATION_ROUND');
   });
 });
+
+describe('buildStagePrompt — the learning tools in the execution annex', () => {
+  const stageWith = (policy) => ({
+    stageId: 's',
+    phase: 'inception',
+    ...(policy ? { policy } : {}),
+  });
+
+  it('does not point the agent at learning tools the scope withdrew', () => {
+    const prompt = buildStagePrompt({ stage: stageWith({ learnings: 'off' }) });
+    expect(prompt).not.toContain('record_team_knowledge');
+    expect(prompt).not.toContain('record_learning_rule');
+  });
+
+  it('keeps the annex verbatim without a policy and with learnings on', () => {
+    expect(buildStagePrompt({ stage: stageWith(null) })).toContain(MCP_EXECUTION_ANNEX);
+    expect(buildStagePrompt({ stage: stageWith({ learnings: 'on' }) })).toContain(
+      MCP_EXECUTION_ANNEX,
+    );
+  });
+});

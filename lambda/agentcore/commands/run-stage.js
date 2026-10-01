@@ -114,6 +114,18 @@ const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'r
 import { REGISTRY } from '../../shared/artifact-extractors.js';
 import { invokeSourceControlOperation } from '../clients.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'policy.change-control@v1',
+  'protocol.plan-approval.outcome-gate@v1',
+  'review.adversarial@v1',
+  'stage.mode.single-session@v1',
+  'workspace.always-restored@v1',
+  'agent.max-turns@v1',
+]);
+
 export const verifyReviewTargets = async ({
   targets = [],
   projectId,
@@ -477,6 +489,9 @@ const runReviewer = async ({
   sectionIndex,
   publish,
   ids,
+  // The reviewer agent's AGENT.maxTurns, or null. Passed only for a release
+  // catalog, where upstream sets it (on the two reviewer agents).
+  maxTurns = null,
 }) => {
   const driver = getDriver(cli);
   const model = resolveStageModel({ cliModels, tierModels, agentBlock: reviewerBlock, cli, env });
@@ -509,6 +524,7 @@ const runReviewer = async ({
               mcpEntry,
               scope,
               env,
+              maxTurns,
             }),
           }
         : cli === 'codex'
@@ -519,6 +535,7 @@ const runReviewer = async ({
     model,
     allowedTools: [],
     sessionId: cli === 'claude' ? ids() : null,
+    maxTurns,
     ...mcpKwargs,
   });
   await store
@@ -2977,7 +2994,9 @@ export const runStage = async (
       cli,
       customRules: customRuleDocs,
       attachments: attachmentRefs,
-      maxTurns: agentBlock?.maxTurns ?? null,
+      // AGENT.maxTurns is a release-catalog field; an unpinned run keeps
+      // running without a cap, as it always has.
+      maxTurns: methodologyRelease ? (agentBlock?.maxTurns ?? null) : null,
     });
     prompt = materialized.prompt;
     // Demoted resume (D2): the parked conversation was lost with the wiped mount,
@@ -3014,6 +3033,7 @@ export const runStage = async (
       model,
       allowedTools: [],
       sessionId: cliSessionId,
+      maxTurns: methodologyRelease ? (agentBlock?.maxTurns ?? null) : null,
       ...mcpKwargs,
     });
 
@@ -3824,6 +3844,7 @@ export const runStage = async (
         unit,
         reviewerAgent,
         reviewerBlock,
+        maxTurns: methodologyRelease ? (reviewerBlock.maxTurns ?? null) : null,
         reviewerPersona,
         knowledge: reviewerMethodology,
         round,

@@ -19,6 +19,11 @@
 
 import { GraphWriteError } from './graph-writer.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['policy.learnings.off@v1']);
+
 export const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
 export const fail = (msg) => ({ content: [{ type: 'text', text: msg }], isError: true });
 

@@ -33,6 +33,16 @@ import {
 import { compileStageGraph, compileRules } from './compile.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'policy.review-cap@v1',
+  'policy.sensors@v1',
+  'policy.summary-confirmation.off@v1',
+  'review.artifact-focus@v1',
+]);
+
 // Stage modes the runtime can execute in this layer. Multi-persona modes are in
 // the authored enum but remain fail-fast until their independent sessions land.
 const RUNNABLE_MODES = ['inline', 'subagent'];

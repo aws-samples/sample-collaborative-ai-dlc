@@ -38,6 +38,14 @@ import {
   evalGraphCoverage,
 } from '../shared/v2-sensor-contract.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'sensor.plane.gate@v1',
+  'sensor.plane.write@v1',
+]);
+
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'sensor-runner' } });
 
 // `fire_on` (upstream ≥2.7.0) declares WHEN a sensor fires:

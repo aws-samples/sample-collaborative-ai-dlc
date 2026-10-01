@@ -23,6 +23,11 @@
 import { isQuestionChannelOutput } from './aidlc-capabilities.js';
 import { eventTypeOf } from './v2-process-keys.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['review.advisory-findings@v1']);
+
 // Checked in upstream's own composition order (required outputs → summary
 // lineage → plan approval → reviewer → sensors), so a human reading the
 // findings list sees the most fundamental problem first.

@@ -482,3 +482,23 @@ describe('runChild — exit contract', () => {
     expect(piped).toBe('hello');
   });
 });
+
+describe('claudeDriver — turn cap', () => {
+  it('passes a positive integer cap as --max-turns', () => {
+    const inv = claudeDriver.buildInvocation({
+      prompt: 'p',
+      mcpConfigPath: '/m.json',
+      maxTurns: 60,
+    });
+    const at = inv.args.indexOf('--max-turns');
+    expect(at).toBeGreaterThan(-1);
+    expect(inv.args[at + 1]).toBe('60');
+  });
+
+  it('adds no flag without a cap or for a value that is not a positive integer', () => {
+    for (const maxTurns of [undefined, null, 0, -1, 2.5, '60']) {
+      const inv = claudeDriver.buildInvocation({ prompt: 'p', mcpConfigPath: '/m.json', maxTurns });
+      expect(inv.args).not.toContain('--max-turns');
+    }
+  });
+});

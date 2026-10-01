@@ -19,6 +19,11 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['checkpoint.summary-confirmation@v1']);
+
 const DEFAULT_POLL_MS = 3000;
 // How long ask_question waits inline before PARKING. A near-instant answer still
 // returns inline (today's fast-path UX); past the grace window the question parks

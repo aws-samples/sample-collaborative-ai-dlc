@@ -66,6 +66,11 @@ import {
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['policy.learnings.ritual@v1']);
+
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const s3 = new S3Client({});
