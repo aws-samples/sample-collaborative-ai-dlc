@@ -11,6 +11,7 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
+    "@aws-lambda-powertools/logger": "^2.35.0",
     "@aws-sdk/client-ssm": "^3.1092.0"
   }
 }

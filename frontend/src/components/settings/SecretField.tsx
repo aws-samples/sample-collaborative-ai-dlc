@@ -4,7 +4,7 @@
 
 import type { ReactNode } from 'react';
 import { Input } from '@/components/ui/input';
-import { Loader2, XCircle } from 'lucide-react';
+import { AlertCircle, Loader2, XCircle } from 'lucide-react';
 import { ConfigStatusBadge } from './ConfigStatusBadge';
 
 interface Props {
@@ -19,6 +19,8 @@ interface Props {
   /** Placeholder when a secret is already stored (rotate hint). */
   rotatePlaceholder?: string;
   helpText?: ReactNode;
+  /** Advisory message under the input, such as a format hint. It never blocks a save. */
+  warningText?: ReactNode;
   /** When provided (and the secret is set), renders a Clear action. */
   onClear?: () => void;
   clearing?: boolean;
@@ -35,10 +37,12 @@ export function SecretField({
   emptyPlaceholder,
   rotatePlaceholder = 'Enter new value to rotate, or leave blank',
   helpText,
+  warningText,
   onClear,
   clearing = false,
   disabled = false,
 }: Props) {
+  const warningId = `${id}-warning`;
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -71,8 +75,19 @@ export function SecretField({
         className="font-mono text-sm h-9"
         autoComplete="off"
         disabled={disabled}
+        aria-describedby={warningText ? warningId : undefined}
       />
       {helpText && <p className="text-[11px] text-muted-foreground">{helpText}</p>}
+      {warningText && (
+        <p
+          id={warningId}
+          role="status"
+          className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400"
+        >
+          <AlertCircle className="mt-px h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>{warningText}</span>
+        </p>
+      )}
     </div>
   );
 }

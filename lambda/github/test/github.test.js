@@ -1208,27 +1208,58 @@ describe('github handler', () => {
 
   describe('logging', () => {
     it('redacts sensitive fields from logged event', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      // Powertools Logger writes structured JSON to process.stdout, not
+      // console.log — capture stdout and parse the emitted log line. The
+      // security contract is unchanged: secrets must never reach the logs.
+      const lines = [];
+      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+        lines.push(typeof chunk === 'string' ? chunk : chunk.toString());
+        return true;
+      });
 
       const handler = await loadHandler();
       await handler({
-        ...makeEvent('OPTIONS', '/github/test'),
-        gitToken: 'secret-token',
-        code: 'secret-code',
-        state: 'secret-state',
-        accessToken: 'secret-access',
+        ...makeEvent('OPTIONS', '/github/callback', {
+          headers: {
+            origin: 'https://app.example.com',
+            Authorization: 'Bearer secret-authorization',
+          },
+          queryStringParameters: {
+            code: 'secret-query-code',
+            state: 'secret-query-state',
+          },
+        }),
         body: '{"password": "secret"}',
       });
 
-      const loggedArg = consoleSpy.mock.calls[0][1];
-      const logged = JSON.parse(loggedArg);
-      expect(logged.gitToken).toBeUndefined();
-      expect(logged.code).toBeUndefined();
-      expect(logged.state).toBeUndefined();
-      expect(logged.accessToken).toBeUndefined();
-      expect(logged.body).toBe('[REDACTED]');
+      const logged = lines
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .find((o) => o && o.message === 'Request');
+      expect(logged).toBeDefined();
+      expect(logged.event).toMatchObject({
+        httpMethod: 'OPTIONS',
+        path: '/github/callback',
+        queryStringParameters: {
+          code: '[REDACTED]',
+          state: '[REDACTED]',
+        },
+      });
+      expect(logged.event).not.toHaveProperty('headers');
+      expect(JSON.parse(logged.event.body)).toEqual({ password: '[REDACTED]' });
+      // Belt-and-suspenders: no secret value leaks anywhere in the raw output.
+      const raw = lines.join('');
+      expect(raw).not.toContain('secret-authorization');
+      expect(raw).not.toContain('secret-query-code');
+      expect(raw).not.toContain('secret-query-state');
+      expect(raw).not.toContain('"password": "secret"');
 
-      consoleSpy.mockRestore();
+      stdoutSpy.mockRestore();
     });
   });
 });

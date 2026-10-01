@@ -1,3 +1,4 @@
+import { Logger } from '@aws-lambda-powertools/logger';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
@@ -8,6 +9,8 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { verifyRealtimeAccess, requiredScopeForYjsDoc } from './realtime-token.js';
 import { docNameFromPath } from './doc-name.js';
+
+const logger = new Logger({ persistentKeys: { component: 'yjs-server' } });
 
 const PORT = Number(process.env.PORT) || 1234;
 const DOC_TTL_MS = 60_000; // Keep docs alive 60 s after last client leaves
@@ -29,7 +32,7 @@ const DOC_TOKEN_ENFORCE = process.env.DOC_TOKEN_ENFORCE !== 'false';
 const REALTIME_DOC_SECRET = process.env.REALTIME_DOC_SECRET || '';
 
 if (DOC_TOKEN_ENFORCE && !REALTIME_DOC_SECRET) {
-  console.error(
+  logger.error(
     'FATAL: REALTIME_DOC_SECRET must be set when DOC_TOKEN_ENFORCE is on (the default).',
   );
   process.exit(1);
@@ -49,9 +52,7 @@ const COGNITO_USER_POOL_ID = process.env.COGNITO_USER_POOL_ID;
 const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID;
 
 if (!COGNITO_USER_POOL_ID || !COGNITO_CLIENT_ID) {
-  console.error(
-    'FATAL: COGNITO_USER_POOL_ID and COGNITO_CLIENT_ID must be set in the environment.',
-  );
+  logger.error('FATAL: COGNITO_USER_POOL_ID and COGNITO_CLIENT_ID must be set in the environment.');
   process.exit(1);
 }
 
@@ -208,7 +209,7 @@ server.on('upgrade', async (req, socket, head) => {
   const token = parsedUrl.searchParams.get('token');
   if (!token) {
     // Do NOT log the (missing) token. Log only the event.
-    console.warn('WS upgrade rejected: missing token');
+    logger.warn('WS upgrade rejected: missing token');
     rejectUpgrade(socket, 401, 'Unauthorized');
     return;
   }
@@ -218,7 +219,7 @@ server.on('upgrade', async (req, socket, head) => {
     jwtPayload = await verifier.verify(token);
   } catch (err) {
     // Never log the token itself, only the verification error message.
-    console.warn('WS upgrade rejected: invalid token:', err.message);
+    logger.warn('WS upgrade rejected: invalid token', { reason: err.message });
     rejectUpgrade(socket, 401, 'Unauthorized');
     return;
   }
@@ -240,13 +241,14 @@ server.on('upgrade', async (req, socket, head) => {
   });
   if (!access.ok) {
     if (DOC_TOKEN_ENFORCE) {
-      console.warn(`WS upgrade rejected: doc token ${access.reason} for doc "${docName}"`);
+      logger.warn('WS upgrade rejected: doc token', { reason: access.reason, docName });
       rejectUpgrade(socket, 403, 'Forbidden');
       return;
     }
-    console.warn(
-      `WS upgrade allowed despite doc token ${access.reason} for doc "${docName}" (DOC_TOKEN_ENFORCE=false)`,
-    );
+    logger.warn('WS upgrade allowed despite doc token (DOC_TOKEN_ENFORCE=false)', {
+      reason: access.reason,
+      docName,
+    });
   }
 
   // Stash the docName + token expiry on the request so the 'connection'
@@ -275,7 +277,7 @@ wss.on('connection', (conn, req) => {
     tokenExpiryTimer = setTimeout(
       () => {
         tokenExpiryTimer = null;
-        console.log(`Closing connection on doc "${docName}": scope token expired`);
+        logger.info('Closing connection: scope token expired', { docName });
         try {
           conn.close(4401, 'token expired');
         } catch {
@@ -314,7 +316,7 @@ wss.on('connection', (conn, req) => {
     try {
       messageHandler(conn, docData, new Uint8Array(msg));
     } catch (e) {
-      console.error('Message handling error:', e.message);
+      logger.error('Message handling error', e);
     }
   });
 
@@ -338,7 +340,7 @@ wss.on('connection', (conn, req) => {
           docData.doc.destroy();
           docData.awareness.destroy();
           docs.delete(docName);
-          console.log(`Document "${docName}" destroyed after ${DOC_TTL_MS / 1000}s idle`);
+          logger.info('Document destroyed after idle', { docName, idleSeconds: DOC_TTL_MS / 1000 });
         }
         docData.destroyTimeout = null;
       }, DOC_TTL_MS);
@@ -347,5 +349,5 @@ wss.on('connection', (conn, req) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Yjs server running on port ${PORT} (Cognito auth enabled)`);
+  logger.info('Yjs server running (Cognito auth enabled)', { port: PORT });
 });

@@ -5,6 +5,8 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { STSClient } from '@aws-sdk/client-sts';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { getProvider } from '../shared/git-providers.js';
 import {
@@ -13,10 +15,9 @@ import {
   canonicalRepo,
   deleteProjectBindings,
   getBinding,
-  invalidationReasonForError,
+  invalidateBindingsForError,
   listProjectBindings,
   loggableErrorCode,
-  markBindingInvalid,
   replaceProjectBindings,
   sanitizeBinding,
 } from '../shared/source-control-bindings.js';
@@ -28,6 +29,8 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const sts = new STSClient({});
+const logger = new Logger({ persistentKeys: { component: 'source-control' } });
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 
@@ -140,6 +143,11 @@ const normalizeProviderSelections = (data = {}) => {
       selections[item.provider] = {
         authType: item.authType,
         confirmDelegation: item.confirmDelegation,
+        // codecommit-role: the tenant role and the committer identity.
+        ...(item.roleArn ? { roleArn: item.roleArn } : {}),
+        ...(item.externalId ? { externalId: item.externalId } : {}),
+        ...(item.committerName ? { committerName: item.committerName } : {}),
+        ...(item.committerEmail ? { committerEmail: item.committerEmail } : {}),
       };
     }
     return selections;
@@ -175,6 +183,7 @@ const validateProjectBindings = async ({
   ddbClient = ddb,
   ssmClient = ssm,
   secretsClient = secrets,
+  stsClient = sts,
   live = true,
 }) => {
   if (repos.length === 0) return { ready: true, repositories: [] };
@@ -229,6 +238,7 @@ const validateProjectBindings = async ({
         ddb: ddbClient,
         ssm: ssmClient,
         secrets: secretsClient,
+        sts: stsClient,
         binding,
         requiredAccess: 'write',
       });
@@ -255,10 +265,7 @@ const validateProjectBindings = async ({
         ready: true,
       });
     } catch (error) {
-      const invalidReason = invalidationReasonForError(error);
-      if (invalidReason) {
-        await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
-      }
+      await invalidateBindingsForError(ddbClient, binding, error).catch(() => {});
       results.push({
         provider: repo.provider,
         repo: repo.repo,
@@ -274,7 +281,7 @@ const validateProjectBindings = async ({
   }
   const ready = results.every((result) => result.ready);
   if (!ready) {
-    console.error('[source-control] project validation failed', {
+    logger.error('project validation failed', {
       projectId,
       reasonCodes: [
         ...new Set(results.filter((result) => !result.ready).map((result) => result.code)),
@@ -353,6 +360,7 @@ const executeSourceControlOperation = async ({
   ddbClient = ddb,
   ssmClient = ssm,
   secretsClient = secrets,
+  stsClient = sts,
 }) => {
   if (!SOURCE_CONTROL_OPERATIONS[operation]) {
     throw Object.assign(new Error('Unsupported source-control operation'), {
@@ -375,6 +383,7 @@ const executeSourceControlOperation = async ({
       ddb: ddbClient,
       ssm: ssmClient,
       secrets: secretsClient,
+      sts: stsClient,
       binding,
       requiredAccess: SOURCE_CONTROL_OPERATIONS[operation],
     });
@@ -392,11 +401,8 @@ const executeSourceControlOperation = async ({
       args,
     );
   } catch (error) {
-    const invalidReason = invalidationReasonForError(error);
-    if (invalidReason) {
-      await markBindingInvalid(ddbClient, binding, invalidReason).catch(() => {});
-    }
-    console.error('[source-control] provider operation failed', {
+    await invalidateBindingsForError(ddbClient, binding, error).catch(() => {});
+    logger.error('provider operation failed', {
       provider,
       operation,
       code: loggableErrorCode(error),
@@ -417,7 +423,8 @@ const apiOperation = (path) => {
 const reviewNumberFromPath = (path) =>
   path.match(/\/source-control\/reviews\/([^/]+)\/comments$/)?.[1] || null;
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   // Internal Lambda-only API. IAM is the authentication boundary.
   if (event?.action === 'validate-project' || event?.action === 'operate') {
     let conn;
@@ -432,7 +439,7 @@ export const handler = async (event) => {
       return { ok: true, result };
     } catch (error) {
       const code = loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
-      console.error('[source-control] internal operation failed', {
+      logger.error('internal operation failed', {
         action: event.action === 'validate-project' ? 'validate-project' : 'operate',
         code,
       });
@@ -515,10 +522,13 @@ export const handler = async (event) => {
             ddb,
             ssm,
             secrets,
+            sts,
             provider: repo.provider,
             repo: repo.repo,
             authType: selection.authType,
             userId,
+            selection,
+            projectBindings: existing,
             confirmDelegation:
               selection.confirmDelegation === true || data.confirmDelegation === true,
             actorName:
@@ -548,7 +558,7 @@ export const handler = async (event) => {
         }
       }
       if (failures.length) {
-        console.error('[source-control] binding verification failed', {
+        logger.error('binding verification failed', {
           projectId,
           reasonCodes: [...new Set(failures.map((failure) => failure.code))]
             .filter(Boolean)
@@ -595,7 +605,7 @@ export const handler = async (event) => {
     return response(200, result);
   } catch (error) {
     const code = loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
-    console.error('[source-control] request failed', { code });
+    logger.error('request failed', { code });
     const status =
       error.code === 'REPOSITORY_NOT_ON_PROJECT'
         ? 403

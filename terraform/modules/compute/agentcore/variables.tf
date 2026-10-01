@@ -8,6 +8,28 @@ variable "environment" {
   type        = string
 }
 
+variable "powertools_service_name" {
+  description = "Service name included in Powertools structured logs"
+  type        = string
+}
+
+variable "powertools_log_level" {
+  description = "Log level for Powertools structured logging"
+  type        = string
+}
+
+variable "kms_key_arn" {
+  description = "Customer-managed KMS key ARN for the v2 execution table. Empty uses the AWS-owned service default."
+  type        = string
+  default     = ""
+}
+
+variable "deletion_protection" {
+  description = "Protect the durable v2 execution table from deletion"
+  type        = bool
+  default     = true
+}
+
 variable "aws_region" {
   description = "AWS region"
   type        = string

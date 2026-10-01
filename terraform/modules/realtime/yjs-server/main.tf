@@ -210,6 +210,14 @@ resource "aws_ecs_task_definition" "yjs_server" {
         name  = "DOC_TOKEN_ENFORCE"
         value = var.doc_token_enforce ? "true" : "false"
       },
+      {
+        name  = "POWERTOOLS_SERVICE_NAME"
+        value = var.powertools_service_name
+      },
+      {
+        name  = "POWERTOOLS_LOG_LEVEL"
+        value = var.powertools_log_level
+      },
     ]
     secrets = [
       {

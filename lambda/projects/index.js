@@ -18,8 +18,10 @@ import {
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Logger } from '@aws-lambda-powertools/logger';
 import nodePath from 'node:path';
 import { buildResponse } from '../shared/response.js';
+import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import {
   isEnvironmentResolutionError,
   resolvePublishedEnvironment,
@@ -40,7 +42,11 @@ import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
-import { isSafeRepo } from '../shared/repo-validation.js';
+import {
+  findCheckoutPathCollision,
+  isSafeRepo,
+  isValidRepoPath,
+} from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { deleteCredentialScope } from '../shared/agent-credentials.js';
@@ -56,6 +62,10 @@ const secrets = new SecretsManagerClient({});
 const lambdaClient = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const store = createProcessStore({ ddb });
+
+// Structured logger (Powertools). serviceName defaults to 'projects' and is
+// overridden by POWERTOOLS_SERVICE_NAME; level via POWERTOOLS_LOG_LEVEL.
+const logger = new Logger({ persistentKeys: { component: 'projects' } });
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -287,11 +297,6 @@ const syncPrimaryRepo = async (g, projectId, primaryUrl, preloadedRepos) => {
   }
 };
 
-// Validates owner/repo format. GitHub allows alphanumeric, hyphens,
-// underscores, and dots; max 39 chars for owner and 100 for repo.
-// Used for the multi-repo `repos[]` API — these are real clone targets.
-const REPO_URL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/;
-
 // The legacy `gitRepo` field is historically a freeform string (bare names,
 // SSH URLs). We can't tighten it to owner/repo without breaking that contract,
 // but it still flows into the v2 workspace `git clone`. The shell/traversal-safe
@@ -310,7 +315,7 @@ const ALLOWED_REPO_ROLES = new Set([
   'docs',
   'unknown',
 ]);
-const ALLOWED_PROVIDERS = new Set(['github', 'gitlab', 'bitbucket']);
+const ALLOWED_PROVIDERS = new Set(['github', 'gitlab', 'bitbucket', 'codecommit']);
 
 // Validate a single repo input's role/provider against the canonical
 // vocabularies. Returns an error string when invalid, or null when valid.
@@ -339,17 +344,18 @@ const guessRole = (url) => {
 
 // Ensure a HAS_REPO edge + Repository vertex exists for a legacy git_repo value.
 // Called lazily on read — idempotent.
-const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
+const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo, projectProvider) => {
   if (!legacyGitRepo) return;
   // Defense-in-depth: this is the final gate before a value becomes a cloneable
   // Repository vertex (and flows into the v2 workspace's git clone).
   // Legacy git_repo is freeform, so we only enforce shell-safety here (not strict
   // owner/repo). Skip (don't throw) on a dangerous value — this runs on read paths
   // and must not break GETs of old projects.
-  if (!isSafeRepo(legacyGitRepo)) {
-    console.error(
-      `[projects] Skipping migration of unsafe git_repo value for ${projectId}: ${JSON.stringify(legacyGitRepo)}`,
-    );
+  if (!isValidRepoPath(legacyGitRepo) && !isSafeRepo(legacyGitRepo)) {
+    logger.error('Skipping migration of unsafe git_repo value', {
+      projectId,
+      gitRepo: legacyGitRepo,
+    });
     return;
   }
   const exists = await g
@@ -360,12 +366,19 @@ const ensureLegacyRepoMigrated = async (g, projectId, legacyGitRepo) => {
     .hasNext();
   if (exists) return;
 
+  const provider =
+    projectProvider ||
+    getVal(
+      (await g.V().has('Project', 'id', projectId).valueMap('git_provider').next()).value,
+      'git_provider',
+    ) ||
+    'github';
   const repoId = `repo-${randomUUID()}`;
   await g
     .addV('Repository')
     .property('id', repoId)
     .property('url', legacyGitRepo)
-    .property('provider', 'github')
+    .property('provider', provider)
     .property('role', 'primary')
     .property('detected_stack', '')
     .property('added_at', new Date().toISOString())
@@ -618,7 +631,7 @@ const handleProjectCustomMcpServers = async (
         const { set } = await listMcpSecrets(ssm, { base, projectId });
         return response(200, { mcpSecretsSet: set });
       } catch (e) {
-        console.error('[project mcp-secrets] list failed:', e.message);
+        logger.error('project mcp-secrets: list failed', e);
         return response(500, { error: 'Failed to list MCP secrets' });
       }
     }
@@ -638,7 +651,7 @@ const handleProjectCustomMcpServers = async (
         if (errors.length) return response(400, { error: errors.join('; ') });
         return response(200, { saved: true });
       } catch (e) {
-        console.error('[project mcp-secrets] write failed:', e.message);
+        logger.error('project mcp-secrets: write failed', e);
         return response(500, { error: 'Failed to write MCP secrets' });
       }
     }
@@ -787,7 +800,7 @@ const purgeS3Object = async (s3, bucket, key) => {
     if (objects.length === 0) return;
     await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }));
   } catch (err) {
-    console.error(`[projects] Failed to purge S3 object ${key}:`, err.message);
+    logger.error('Failed to purge S3 object', err, { key });
   }
 };
 
@@ -892,10 +905,10 @@ const handleProjectCustomRules = async (g, response, httpMethod, projectId, user
           );
           uploadUrls.push({ filename: doc.filename, s3Key: doc.s3Key, uploadUrl });
         } catch (err) {
-          console.error(
-            `[projects] Failed to generate presigned URL for ${doc.s3Key}:`,
-            err.message,
-          );
+          logger.error('Failed to generate presigned URL', {
+            s3Key: doc.s3Key,
+            error: err,
+          });
         }
       }
       return response(200, { uploadUrls });
@@ -1129,8 +1142,8 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 
     const data = JSON.parse(event.body || '{}');
     if (!data.url) return response(400, { error: 'url is required' });
-    if (!REPO_URL_PATTERN.test(data.url)) {
-      return response(400, { error: 'url must be in owner/repo format' });
+    if (!isValidRepoPath(data.url)) {
+      return response(400, { error: 'url must be a namespace/repository path' });
     }
     const repoInputError = validateRepoRoleAndProvider(data);
     if (repoInputError) return response(400, { error: repoInputError });
@@ -1143,6 +1156,21 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       .has('Repository', 'url', data.url)
       .hasNext();
     if (duplicate) return response(409, { error: 'Repository already added to this project' });
+    // Distinct repositories must not share a workspace checkout directory
+    // (the agent would reuse one's clone for the other).
+    const existingUrls = await g
+      .V()
+      .has('Project', 'id', projectId)
+      .out('HAS_REPO')
+      .values('url')
+      .toList();
+    const collision = findCheckoutPathCollision([...existingUrls, data.url]);
+    if (collision) {
+      return response(409, {
+        error: `Repository ${collision.second} would share a checkout directory with ${collision.first}`,
+        code: 'REPOSITORY_PATH_COLLISION',
+      });
+    }
 
     // Run quick detection (non-blocking — failures are non-fatal). Detection
     // runs against the repo's own provider so GitLab repos are detected too.
@@ -1153,7 +1181,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
       try {
         detection = await detectRepoStack(data.url, token, detectionProvider);
       } catch (e) {
-        console.error('Quick detection failed:', e.message);
+        logger.error('Quick detection failed', e);
       }
     }
 
@@ -1204,16 +1232,11 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 // Main handler
 // ---------------------------------------------------------------------------
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
+  logger.resetKeys();
+  logSafeEventIfEnabled(logger, event);
   const response = buildResponse(event);
-  console.log(
-    'Request:',
-    JSON.stringify({
-      httpMethod: event.httpMethod,
-      path: event.path,
-      pathParameters: event.pathParameters,
-    }),
-  );
 
   // Handle OPTIONS for CORS
   if (event.httpMethod === 'OPTIONS') {
@@ -1237,6 +1260,10 @@ export const handler = async (event) => {
     const { httpMethod, pathParameters, body, path } = event;
     const projectId = pathParameters?.projectId;
     const userId = event.requestContext?.authorizer?.claims?.sub;
+    logger.appendKeys({
+      ...(projectId && { projectId }),
+      ...(userId && { userId }),
+    });
     const userEmail = event.requestContext?.authorizer?.claims?.email || '';
     const isMigrateTracker = httpMethod === 'POST' && path?.endsWith('/migrate-tracker');
     const isAdminMigrationStatus =
@@ -1433,10 +1460,10 @@ export const handler = async (event) => {
         // Don't let one project's enrichment failure 500 the whole list.
         const failed = settled.filter((r) => r.status === 'rejected');
         if (failed.length > 0) {
-          console.error(
-            `[projects] ${failed.length} project(s) failed to enrich and were omitted:`,
-            failed.map((f) => f.reason?.message),
-          );
+          logger.error('Projects failed to enrich and were omitted', {
+            count: failed.length,
+            reasons: failed.map((f) => f.reason?.message),
+          });
         }
         const projects = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value);
         return response(200, projects);
@@ -1450,9 +1477,9 @@ export const handler = async (event) => {
 
         // Support both legacy `gitRepo` (string) and new `repos` (array) input.
         // SECURITY: repo urls become `git clone` targets in the v2 workspace.
-        // The multi-repo `repos[]` entries are real clone targets,
-        // so they must be strict owner/repo. The legacy `gitRepo` string stays
-        // freeform but must be shell-safe (no injection chars).
+        // The multi-repo `repos[]` entries must be safe namespace/repository
+        // paths. The legacy `gitRepo` string also accepts shell-safe freeform
+        // values for backward compatibility.
         if (data.repos !== undefined && !Array.isArray(data.repos)) {
           return response(400, { error: 'repos must be an array' });
         }
@@ -1461,15 +1488,15 @@ export const handler = async (event) => {
         const legacyGitRepo = data.gitRepo || '';
 
         for (const repo of inputRepos) {
-          if (!repo.url || !REPO_URL_PATTERN.test(repo.url)) {
+          if (!isValidRepoPath(repo.url)) {
             return response(400, {
-              error: `Invalid repository url "${repo.url}". Expected "owner/repo" format.`,
+              error: `Invalid repository url "${repo.url}". Expected "namespace/repository" path.`,
             });
           }
           const repoInputError = validateRepoRoleAndProvider(repo);
           if (repoInputError) return response(400, { error: repoInputError });
         }
-        if (legacyGitRepo && !isSafeRepo(legacyGitRepo)) {
+        if (legacyGitRepo && !isValidRepoPath(legacyGitRepo) && !isSafeRepo(legacyGitRepo)) {
           return response(400, { error: `Invalid gitRepo "${legacyGitRepo}".` });
         }
 
@@ -1478,6 +1505,14 @@ export const handler = async (event) => {
             url: legacyGitRepo,
             provider: data.gitProvider || 'github',
             role: 'primary',
+          });
+        }
+
+        const collision = findCheckoutPathCollision(inputRepos.map((repo) => repo.url));
+        if (collision) {
+          return response(400, {
+            error: `Repositories ${collision.first} and ${collision.second} would share a checkout directory`,
+            code: 'REPOSITORY_PATH_COLLISION',
           });
         }
 
@@ -1650,13 +1685,11 @@ export const handler = async (event) => {
         if (data.gitRepo !== undefined) {
           // SECURITY: same execSync sink as POST. This value also feeds
           // ensureLegacyRepoMigrated/syncPrimaryRepo, which can create a
-          // Repository vertex — so enforce the same strict owner/repo format
-          // as POST /repos. A looser value (full URL, extra path segments)
-          // passes the shell-safe check but later makes parseOwnerRepo throw
-          // inside trigger_pr_creation, bricking PR creation for the project.
-          if (data.gitRepo && !REPO_URL_PATTERN.test(data.gitRepo)) {
+          // Repository vertex — so enforce the same safe repository path
+          // as POST /repos, including nested namespaces.
+          if (data.gitRepo && !isValidRepoPath(data.gitRepo)) {
             return response(400, {
-              error: `Invalid gitRepo "${data.gitRepo}": expected "owner/repo".`,
+              error: `Invalid gitRepo "${data.gitRepo}": expected "namespace/repository" path.`,
             });
           }
           await g
@@ -1665,7 +1698,7 @@ export const handler = async (event) => {
             .property(cardinality.single, 'git_repo', data.gitRepo)
             .next();
           if (data.gitRepo) {
-            await ensureLegacyRepoMigrated(g, projectId, data.gitRepo);
+            await ensureLegacyRepoMigrated(g, projectId, data.gitRepo, data.gitProvider);
             await syncPrimaryRepo(g, projectId, data.gitRepo);
           }
         }
@@ -1880,7 +1913,10 @@ export const handler = async (event) => {
                 force: true,
               });
             } catch (err) {
-              console.error(`Project delete: intent ${intentId} cascade failed:`, err.message);
+              logger.error('Project delete: intent cascade failed', {
+                intentId,
+                error: err,
+              });
               failures.push(intentId);
             }
           }
@@ -1928,9 +1964,11 @@ export const handler = async (event) => {
           // The Project vertex itself LAST (its HAS_MEMBER / HAS_TRACKER edges
           // drop with it).
           await g.V().has('Project', 'id', projectId).drop().next();
-          console.log(
-            `Project ${projectId} deleted by ${actor} (${execs.length} intent(s) purged)`,
-          );
+          logger.info('Project deleted', {
+            projectId,
+            actor,
+            intentsPurged: execs.length,
+          });
           return response(204, {});
         }
 
@@ -1938,7 +1976,7 @@ export const handler = async (event) => {
         return response(405, { error: 'Method not allowed' });
     }
   } catch (err) {
-    console.error('Error:', err);
+    logger.error('Unhandled error', err);
     return response(500, {
       error: 'Internal server error',
       message: err.message,
@@ -1949,7 +1987,7 @@ export const handler = async (event) => {
       try {
         await conn.close();
       } catch (e) {
-        console.error('Error closing connection:', e);
+        logger.error('Error closing connection', e);
       }
     }
   }

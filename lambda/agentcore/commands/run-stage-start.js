@@ -27,6 +27,12 @@
 // it on the STAGE row (stageCallbackId) — who is waiting on what is always
 // recoverable from the row, and a stuck callback can be completed manually.
 
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({
+  persistentKeys: { component: 'agentcore', module: 'run-stage-start' },
+});
+
 // Key one in-flight stage attempt. resumeFrom distinguishes park/resume legs —
 // a resume may legitimately start while bookkeeping for the parked leg of the
 // same stage is still clearing. unitSlug distinguishes lanes: the same stage
@@ -53,7 +59,7 @@ export const createRunStageStart = ({
   busy = null,
   heartbeatIntervalMs = 60_000,
   activeJobs = new Map(),
-  log = (...args) => console.error('[run-stage-start]', ...args),
+  log = (...args) => logger.error(...args), // TODO: remove this (only used in tests)
 }) => {
   const start = async (payload) => {
     const { stageCallbackId, executionId, stageId } = payload ?? {};

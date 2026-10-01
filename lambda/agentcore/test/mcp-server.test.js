@@ -395,7 +395,10 @@ describe('registerTools', () => {
     const bound = {};
     const server = { tool: (name, _d, _s, fn) => (bound[name] = fn) };
     const handlers = { get_learning_rules: async () => ok({ hello: 'world' }) };
-    const errSpy = vi.spyOn(console, 'error').mockImplementation((m) => captured.push(m));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((message) => {
+      captured.push(String(message));
+    });
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       registerTools({ server, handlers, role: 'reviewer', z: fakeZod, env: {} });
       const env = await bound.get_learning_rules({});
@@ -405,17 +408,22 @@ describe('registerTools', () => {
       expect(line).toBeDefined();
       expect(line).toContain(`bytes=${Buffer.byteLength(env.content[0].text, 'utf8')}`);
       expect(line).toContain('ok=true');
+      expect(outSpy).not.toHaveBeenCalled();
     } finally {
       errSpy.mockRestore();
+      outSpy.mockRestore();
     }
   });
 
-  it('V2_MCP_TRACE=off silences the trace (no stderr line)', async () => {
+  it('V2_MCP_TRACE=off silences the trace (no trace line)', async () => {
     const captured = [];
     const bound = {};
     const server = { tool: (name, _d, _s, fn) => (bound[name] = fn) };
     const handlers = { get_learning_rules: async () => ok({ ok: true }) };
-    const errSpy = vi.spyOn(console, 'error').mockImplementation((m) => captured.push(m));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((message) => {
+      captured.push(String(message));
+    });
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       registerTools({
         server,
@@ -425,9 +433,11 @@ describe('registerTools', () => {
         env: { V2_MCP_TRACE: 'off' },
       });
       await bound.get_learning_rules({});
-      expect(captured.some((l) => String(l).startsWith('[mcp-trace]'))).toBe(false);
+      expect(captured.some((l) => l.startsWith('[mcp-trace]'))).toBe(false);
+      expect(outSpy).not.toHaveBeenCalled();
     } finally {
       errSpy.mockRestore();
+      outSpy.mockRestore();
     }
   });
 });

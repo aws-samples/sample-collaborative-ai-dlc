@@ -12,7 +12,10 @@
 // CLI's final error line (e.g. Kiro's ACP empty-completion signature) without
 // losing the log. Otherwise stderr is inherited as before.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'spawn' } });
 
 // Keep only the last `max` bytes of a growing string — the tail is where a CLI
 // prints its terminating error, and it bounds memory on a chatty child.
@@ -48,7 +51,7 @@ export const runChild = ({
       // spawn() throws SYNCHRONOUSLY for E2BIG (argv/env too large) — it never
       // reaches child.on('error'). Log the code loudly, then reject so the
       // runner's catch maps it to cli_error (was previously an invisible throw).
-      console.error(`[spawn:error] runChild command=${command} code=${e?.code} msg=${e?.message}`);
+      logger.error('runChild failed', e, { command });
       reject(e);
       return;
     }
@@ -117,9 +120,7 @@ export const captureChild = ({
     } catch (e) {
       // E2BIG throws synchronously here too. Log + degrade (this path resolves
       // rather than rejects — the caller treats exitCode null as a soft failure).
-      console.error(
-        `[spawn:error] captureChild command=${command} code=${e?.code} msg=${e?.message}`,
-      );
+      logger.error('captureChild failed', e, { command });
       resolve({ exitCode: null, stdout: '', stderr: '', timedOut: false });
       return;
     }

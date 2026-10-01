@@ -36,5 +36,10 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: '1.15.0'
+          terraform_wrapper: false
+
       - name: Run release tooling tests
         run: npm run test:release

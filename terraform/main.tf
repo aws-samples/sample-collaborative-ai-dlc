@@ -58,8 +58,9 @@ provider "awscc" {
 data "aws_partition" "current" {}
 
 locals {
-  partition  = data.aws_partition.current.partition
-  dns_suffix = data.aws_partition.current.dns_suffix
+  partition               = data.aws_partition.current.partition
+  dns_suffix              = data.aws_partition.current.dns_suffix
+  powertools_service_name = "collaborative-aidlc"
 
   custom_domain_enabled = var.app_domain != ""
 
@@ -86,6 +87,8 @@ locals {
   ))
   cors_allowed_origins = join(",", local.cors_origin_list)
 
+  auth_certificate_arn = var.auth_certificate_arn != "" ? var.auth_certificate_arn : var.acm_certificate_arn
+
   sso_enabled = var.auth_mode != "local"
 
   sso_role_config = {
@@ -99,7 +102,7 @@ locals {
 }
 
 resource "terraform_data" "sso_preconditions" {
-  input = nonsensitive(var.sso_providers)
+  input = var.sso_providers
 
   lifecycle {
     precondition {
@@ -185,6 +188,40 @@ resource "terraform_data" "domain_preconditions" {
       condition     = var.app_domain != "" || (var.acm_certificate_arn == "" && var.route53_zone_id == "")
       error_message = "acm_certificate_arn or route53_zone_id is set but app_domain is empty. Set app_domain to enable the custom domain, or clear both to serve on the CloudFront domain."
     }
+
+    precondition {
+      condition     = var.auth_domain == "" || local.auth_certificate_arn != ""
+      error_message = "auth_domain is set but neither auth_certificate_arn nor acm_certificate_arn was provided. Supply an issued us-east-1 certificate covering auth_domain."
+    }
+
+    precondition {
+      condition     = var.auth_domain == "" || !contains(local.app_aliases, var.auth_domain)
+      error_message = "auth_domain must differ from app_domain and app_domain_aliases; the managed-login domain uses its own CloudFront distribution."
+    }
+
+    precondition {
+      condition     = var.auth_domain != "" || var.auth_certificate_arn == ""
+      error_message = "auth_certificate_arn is set but auth_domain is empty. Set auth_domain to enable the custom managed-login domain, or clear auth_certificate_arn."
+    }
+
+    precondition {
+      condition     = !var.auth_domain_active || var.auth_domain != ""
+      error_message = "auth_domain_active requires auth_domain. Provision its DNS and register its IdP callbacks before activating it."
+    }
+  }
+}
+
+resource "terraform_data" "resiliency_preconditions" {
+  input = {
+    environment         = var.environment
+    skip_final_snapshot = var.skip_final_snapshot
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.environment != "prod" || !var.skip_final_snapshot
+      error_message = "skip_final_snapshot must remain false in production."
+    }
   }
 }
 
@@ -245,11 +282,20 @@ module "networking" {
 module "auth" {
   source = "./modules/auth"
 
-  project_name  = var.project_name
-  environment   = var.environment
-  app_url       = local.app_url
-  auth_mode     = var.auth_mode
-  sso_providers = var.sso_providers
+  project_name            = var.project_name
+  environment             = var.environment
+  powertools_service_name = local.powertools_service_name
+  powertools_log_level    = var.powertools_log_level
+  app_url                 = local.app_url
+  auth_mode               = var.auth_mode
+  sso_providers           = var.sso_providers
+  lambda_vpc_scope        = var.lambda_vpc_scope
+  vpc_subnet_ids          = module.networking.private_subnet_ids
+  vpc_security_group_ids  = [module.networking.default_security_group_id]
+
+  custom_domain                 = var.auth_domain
+  custom_domain_active          = var.auth_domain_active
+  custom_domain_certificate_arn = var.auth_domain == "" ? "" : terraform_data.auth_parent_dns[var.auth_domain].output
 }
 
 # Frontend (S3 + CloudFront)
@@ -290,6 +336,41 @@ resource "aws_route53_record" "app" {
   }
 }
 
+resource "aws_route53_record" "auth" {
+  for_each = var.auth_route53_zone_id == "" || var.auth_domain == "" ? toset([]) : toset(["A", "AAAA"])
+
+  zone_id = var.auth_route53_zone_id
+  name    = var.auth_domain
+  type    = each.value
+
+  alias {
+    name                   = module.auth.custom_domain_dns_target
+    zone_id                = module.auth.custom_domain_dns_target_hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+# Only the custom Cognito domain waits for the application DNS records. Making
+# the whole auth module depend on the frontend would create a dependency cycle
+# through the user pool and API. Gate the certificate input instead, and wait
+# for public A-record resolution after Route53 has accepted the parent record.
+resource "terraform_data" "auth_parent_dns" {
+  for_each = var.auth_domain == "" ? {} : { (var.auth_domain) = local.auth_certificate_arn }
+
+  input            = each.value
+  triggers_replace = [each.key, each.value]
+
+  provisioner "local-exec" {
+    command     = "node scripts/wait-for-auth-parent-dns.mjs"
+    working_dir = "${path.module}/.."
+    environment = {
+      AUTH_DOMAIN = each.key
+    }
+  }
+
+  depends_on = [aws_route53_record.app]
+}
+
 # VPC Endpoints
 module "vpc_endpoints" {
   source = "./modules/networking/vpc-endpoints"
@@ -322,8 +403,10 @@ module "s3" {
 module "dynamodb" {
   source = "./modules/data/dynamodb"
 
-  project_name = var.project_name
-  environment  = var.environment
+  project_name        = var.project_name
+  environment         = var.environment
+  kms_key_arn         = var.kms_key_arn
+  deletion_protection = var.deletion_protection
 
   tags = {
     Environment = var.environment
@@ -335,11 +418,14 @@ module "dynamodb" {
 module "neptune" {
   source = "./modules/data/neptune"
 
-  name_prefix        = "${var.project_name}-${var.environment}"
-  vpc_id             = module.networking.vpc_id
-  vpc_cidr           = module.networking.vpc_cidr_block
-  private_subnet_ids = module.networking.private_subnet_ids
-  instance_class     = "db.t3.medium"
+  name_prefix             = "${var.project_name}-${var.environment}"
+  vpc_id                  = module.networking.vpc_id
+  vpc_cidr                = module.networking.vpc_cidr_block
+  private_subnet_ids      = module.networking.private_subnet_ids
+  instance_class          = "db.t3.medium"
+  deletion_protection     = var.deletion_protection
+  backup_retention_period = var.backup_retention_period
+  skip_final_snapshot     = var.skip_final_snapshot
 
   tags = {
     Environment = var.environment
@@ -353,8 +439,12 @@ module "lambda" {
 
   project_name                = var.project_name
   environment                 = var.environment
+  powertools_service_name     = local.powertools_service_name
+  powertools_log_level        = var.powertools_log_level
+  powertools_log_event        = var.powertools_log_event
   lambda_vpc_scope            = var.lambda_vpc_scope
   aidlc_repo_ref              = var.aidlc_repo_ref
+  aidlc_release_pinning       = var.aidlc_release_pinning
   application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
@@ -367,6 +457,7 @@ module "lambda" {
     module.dynamodb.yjs_documents_table_arn,
     module.dynamodb.agent_outputs_table_arn
   ]
+  kms_key_arn                              = var.kms_key_arn
   artifacts_bucket_name                    = module.s3.artifacts_bucket_name
   artifacts_bucket_arn                     = module.s3.artifacts_bucket_arn
   blocks_table_name                        = module.dynamodb.blocks_table_name
@@ -431,6 +522,9 @@ module "api" {
 
   project_name                             = var.project_name
   environment                              = var.environment
+  powertools_service_name                  = local.powertools_service_name
+  powertools_log_level                     = var.powertools_log_level
+  powertools_log_event                     = var.powertools_log_event
   cognito_user_pool_arn                    = module.auth.user_pool_arn
   projects_lambda_invoke_arn               = module.lambda.projects_lambda_invoke_arn
   projects_lambda_name                     = module.lambda.projects_lambda_name
@@ -474,6 +568,8 @@ module "api" {
   gitlab_lambda_name                       = module.lambda.gitlab_lambda_name
   bitbucket_lambda_invoke_arn              = module.lambda.bitbucket_lambda_invoke_arn
   bitbucket_lambda_name                    = module.lambda.bitbucket_lambda_name
+  codecommit_lambda_invoke_arn             = module.lambda.codecommit_lambda_invoke_arn
+  codecommit_lambda_name                   = module.lambda.codecommit_lambda_name
   source_control_lambda_invoke_arn         = module.lambda.source_control_lambda_invoke_arn
   source_control_lambda_name               = module.lambda.source_control_lambda_name
   trackers_lambda_invoke_arn               = module.lambda.trackers_lambda_invoke_arn
@@ -504,12 +600,18 @@ module "api" {
 module "realtime" {
   source = "./modules/realtime"
 
-  project_name           = var.project_name
-  environment            = var.environment
-  cognito_user_pool_id   = module.auth.user_pool_id
-  cognito_client_id      = module.auth.user_pool_client_id
-  connections_table_name = module.dynamodb.connections_table_name
-  connections_table_arn  = module.dynamodb.connections_table_arn
+  project_name            = var.project_name
+  environment             = var.environment
+  powertools_service_name = local.powertools_service_name
+  powertools_log_level    = var.powertools_log_level
+  cognito_user_pool_id    = module.auth.user_pool_id
+  cognito_client_id       = module.auth.user_pool_client_id
+  connections_table_name  = module.dynamodb.connections_table_name
+  connections_table_arn   = module.dynamodb.connections_table_arn
+  kms_key_arn             = var.kms_key_arn
+  lambda_vpc_scope        = var.lambda_vpc_scope
+  vpc_subnet_ids          = module.networking.private_subnet_ids
+  vpc_security_group_ids  = [module.networking.default_security_group_id]
 
   # The WebSocket stage enables access logging, which requires the account-level
   # CloudWatch role to be configured first.
@@ -522,6 +624,8 @@ module "yjs_server" {
 
   project_name                  = var.project_name
   environment                   = var.environment
+  powertools_service_name       = local.powertools_service_name
+  powertools_log_level          = var.powertools_log_level
   aws_region                    = var.aws_region
   docker_build_args             = var.docker_build_args
   vpc_id                        = module.networking.vpc_id
@@ -544,6 +648,8 @@ module "agentcore" {
 
   project_name                = var.project_name
   environment                 = var.environment
+  powertools_service_name     = local.powertools_service_name
+  powertools_log_level        = var.powertools_log_level
   aws_region                  = var.aws_region
   docker_build_args           = var.docker_build_args
   neptune_endpoint            = module.neptune.cluster_endpoint
@@ -562,8 +668,10 @@ module "agentcore" {
   # model selector; a concrete model id (e.g. "claude-opus-4.6") is rejected at
   # spawn with `error: Model '...' does not exist. Available models: auto`,
   # failing every stage with cli_nonzero_exit. Let kiro resolve the model.
-  kiro_model  = "auto"
-  codex_model = var.codex_model
+  kiro_model          = "auto"
+  codex_model         = var.codex_model
+  kms_key_arn         = var.kms_key_arn
+  deletion_protection = var.deletion_protection
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.
@@ -582,8 +690,12 @@ module "managed_environments" {
 
   project_name                  = var.project_name
   environment                   = var.environment
+  powertools_service_name       = local.powertools_service_name
+  powertools_log_level          = var.powertools_log_level
+  powertools_log_event          = var.powertools_log_event
   registry_table_name           = module.dynamodb.environment_registry_table_name
   registry_table_arn            = module.dynamodb.environment_registry_table_arn
+  kms_key_arn                   = var.kms_key_arn
   core_image_uri                = module.agentcore.ecr_repository_url
   core_image_digest             = module.agentcore.image_digest
   core_image_size_bytes         = module.agentcore.image_size_bytes
@@ -600,6 +712,9 @@ module "managed_environments" {
   environment_repository_url    = module.agentcore.managed_environment_repository_url
   environment_repository_arn    = module.agentcore.managed_environment_repository_arn
   cors_allowed_origins          = local.cors_allowed_origins
+  lambda_vpc_scope              = var.lambda_vpc_scope
+  lambda_vpc_subnet_ids         = module.networking.private_subnet_ids
+  lambda_vpc_security_group_ids = [module.networking.default_security_group_id]
 
   tags = {
     Environment = var.environment
@@ -641,8 +756,10 @@ moved {
 module "git" {
   source = "./modules/git"
 
-  project_name = var.project_name
-  environment  = var.environment
+  project_name        = var.project_name
+  environment         = var.environment
+  kms_key_arn         = var.kms_key_arn
+  deletion_protection = var.deletion_protection
 
   tags = {
     Environment = var.environment

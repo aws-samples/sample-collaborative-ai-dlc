@@ -188,6 +188,9 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.bitbucket_callback_get,
     aws_api_gateway_integration.bitbucket_repos_get,
     aws_api_gateway_integration.bitbucket_status_get,
+    aws_api_gateway_integration.codecommit_status_get,
+    aws_api_gateway_integration.codecommit_connect_info_get,
+    aws_api_gateway_integration.codecommit_repos_post,
     aws_api_gateway_integration.bitbucket_disconnect_delete,
     aws_api_gateway_integration.bitbucket_repos_branches_get,
     aws_api_gateway_integration.bitbucket_repos_tree_get,
@@ -204,6 +207,12 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.migrate_tracker_post,
     aws_api_gateway_integration.project_agents_get,
     aws_api_gateway_integration.workflow,
+    aws_api_gateway_integration.aidlc_release,
+    module.cors_aidlc_releases,
+    module.cors_aidlc_release,
+    module.cors_aidlc_release_channels,
+    module.cors_aidlc_release_channel,
+    module.cors_aidlc_release_profiles,
     module.cors_block_item,
     module.cors_block_item_body,
     module.cors_block_item_script,
@@ -217,6 +226,9 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_bitbucket_callback,
     module.cors_bitbucket_repos,
     module.cors_bitbucket_status,
+    module.cors_codecommit_status,
+    module.cors_codecommit_connect_info,
+    module.cors_codecommit_repos,
     module.cors_bitbucket_disconnect,
     module.cors_bitbucket_repos_branches,
     module.cors_bitbucket_repos_tree,
@@ -410,6 +422,16 @@ resource "aws_api_gateway_deployment" "main" {
       # redeployed, so OPTIONS/GET 403'd (surfacing as a CORS preflight error).
       jsonencode({ for k, v in aws_api_gateway_method.workflow : k => v.id }),
       jsonencode({ for k, v in aws_api_gateway_integration.workflow : k => v.id }),
+      # AI-DLC release registry (issue #482 Phase 4/5) — same rule as the
+      # workflow map above: hash the whole route map so any future addition
+      # forces a stage redeployment instead of silently 403'ing OPTIONS/GET.
+      aws_api_gateway_resource.aidlc_releases.id,
+      aws_api_gateway_resource.aidlc_release.id,
+      aws_api_gateway_resource.aidlc_release_channels.id,
+      aws_api_gateway_resource.aidlc_release_channel.id,
+      aws_api_gateway_resource.aidlc_release_profiles.id,
+      jsonencode({ for k, v in aws_api_gateway_method.aidlc_release : k => v.id }),
+      jsonencode({ for k, v in aws_api_gateway_integration.aidlc_release : k => v.id }),
       aws_api_gateway_resource.intents.id,
       aws_api_gateway_resource.intents_metrics.id,
       aws_api_gateway_resource.intent.id,
@@ -505,6 +527,13 @@ resource "aws_api_gateway_deployment" "main" {
       aws_api_gateway_resource.bitbucket_repos_owner_repo.id,
       aws_api_gateway_resource.bitbucket_repos_pulls_comments.id,
       aws_api_gateway_method.bitbucket_callback_get.authorization,
+      # CodeCommit routes — same rationale: new resources must force a stage
+      # redeploy or the live stage 403s their preflight.
+      aws_api_gateway_resource.codecommit.id,
+      aws_api_gateway_resource.codecommit_status.id,
+      aws_api_gateway_resource.codecommit_connect_info.id,
+      aws_api_gateway_resource.codecommit_repos.id,
+      aws_api_gateway_method.codecommit_repos_post.http_method,
     ]))
   }
 }

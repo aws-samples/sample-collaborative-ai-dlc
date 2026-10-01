@@ -60,3 +60,9 @@ jobs:
 
       - name: Terraform validate
         run: terraform validate
+
+      - name: Test Cognito domain provisioning and cutover
+        run: terraform test -filter=tests/auth-domain.tftest.hcl
+
+      - name: Verify SSO plan output privacy
+        run: node --test ../scripts/test/terraform-sso-privacy.test.mjs

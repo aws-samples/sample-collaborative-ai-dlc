@@ -37,9 +37,9 @@ Collaborative AI-DLC is where a team of humans collaborates in real time with mu
 
 <p align="center">
   <a href="https://aws-samples.github.io/sample-collaborative-ai-dlc/overview-video/">
-    <img src="docs/assets/readme/collaborative-ai-dlc-overview-poster.png" alt="Scenes from the Collaborative AI-DLC overview: intent creation, collaboration, pull request delivery, and the traceability graph" width="800" />
+    <img src="docs/assets/readme/collaborative-ai-dlc-overview-poster.png" alt="Play the Collaborative AI-DLC overview: one live workspace for a team and its coding agents" width="800" />
   </a>
-  <br /><strong>See humans and remote coding agents build together in under five minutes.</strong>
+  <br /><strong>See humans and remote coding agents build together in under three minutes.</strong>
   <br /><sub>Click the preview to watch the full overview on the documentation site.</sub>
 </p>
 
@@ -129,7 +129,7 @@ Work is organized around **intents**. An intent is a title and a prompt (a featu
 2. **Start it.** A durable orchestrator compiles the pinned workflow into an execution plan and walks its stages. Each stage runs a headless agent CLI in an isolated Bedrock AgentCore session; agents write typed artifacts into the graph through MCP tools, and the engine owns all git operations.
 3. **Collaborate.** Answer clarifying questions, approve gates, discuss artifacts in threads, and steer the run with course corrections, all in real time.
 4. **Observe.** Watch live progress on the intent workbench, drill into per-stage sensors, durations, token usage, and cost, and explore the traceability graph.
-5. **Review.** On success the platform opens a pull request (GitHub, Bitbucket) or merge request (GitLab) from the intent branch. Review the code alongside the intent's artifacts and metrics.
+5. **Review.** On success the platform opens a pull request (GitHub, Bitbucket, CodeCommit) or merge request (GitLab) from the intent branch. Review the code alongside the intent's artifacts and metrics.
 
 Three orthogonal safety nets verify every stage: deterministic **sensors**, an LLM **reviewer** agent, and **human validation gates**. See the [architecture overview](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/architecture/) for the full system diagram.
 
@@ -164,7 +164,7 @@ Docker is the default container runtime and needs no configuration. The image bu
 
 See [Using an alternative container runtime](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/#using-an-alternative-container-runtime) for the socket paths, per-runtime setup, and the `DOCKER_HOST` contract.
 
-You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, Bedrock AgentCore, Secrets Manager, Systems Manager Parameter Store, and IAM. See [Prerequisites](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/) for the full service list and verification commands.
+You need an AWS account with permissions to manage VPC, ECS, ECR, Lambda, API Gateway, DynamoDB, Neptune, S3, CloudFront, Cognito, Bedrock AgentCore, Secrets Manager, Systems Manager Parameter Store, and IAM. Selecting customer-managed encryption additionally requires AWS KMS permissions. See [Prerequisites](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/prerequisites/) for the full service list and verification commands.
 
 Agent CLIs authenticate through credentials you configure after install, in **Admin → Agents**:
 
@@ -219,7 +219,7 @@ All tagged releases, including previews such as `v2.0.0-preview0`, are shown by 
 ```bash
 bash /tmp/aidlc-install.sh versions
 bash /tmp/aidlc-install.sh install --version 2.0.0-preview0 ...
-bash /tmp/aidlc-install.sh install --version 2.0.0 ...
+bash /tmp/aidlc-install.sh install --version 2.1.0 ...
 bash /tmp/aidlc-install.sh update
 ```
 
@@ -236,7 +236,7 @@ bash /tmp/aidlc-install.sh adopt \
   --profile <aws-profile> \
   --admin <existing-administrator-email>
 
-bash /tmp/aidlc-install.sh update --version 2.0.0
+bash /tmp/aidlc-install.sh update --version 2.1.0
 ```
 
 An update backs up Terraform state, rejects unexpected destruction of Cognito, Neptune, S3, or persistent DynamoDB resources, deploys infrastructure, grants the existing administrator `platform-admin`, and deploys the frontend. Removal of the retired v1 ECS agent runtime and agent-pool table is expected. If any step fails, `current` remains on the working version. Application-data backup beyond Terraform state remains the operator's responsibility. v1 work stays viewable but read-only after the upgrade.
@@ -252,13 +252,17 @@ For a managed installation:
 bash /tmp/aidlc-install.sh destroy
 ```
 
-The command requires typing the configured environment name; `--yes` is available for deliberate automation. It backs up Terraform state before destroying all application resources and data, then removes the managed `current` link. Local configuration, immutable checkouts, the state backup, and the Terraform state bucket are retained.
+The command requires typing the configured environment name; `--yes` is available for deliberate non-production automation. It backs up Terraform state before destroying all application resources and data, then removes the managed `current` link. Local configuration, immutable checkouts, the state backup, and the Terraform state bucket are retained.
 
 For a local/manual checkout:
 
 ```bash
 ./scripts/destroy.sh dev
 ```
+
+Both automated paths refuse an effective `prod` environment, including a differently named tfvars file whose `environment` value is `prod`. A bare `terraform destroy` is intentionally blocked by deletion protection.
+
+Production removal is a break-glass operation. First create and verify independent data backups, then empty every versioned application bucket including object versions and delete markers. Only after those steps should an independent reviewer inspect a saved Terraform plan that sets `deletion_protection=false`, apply that exact plan, and run a separately reviewed destroy with `skip_final_snapshot=false`. This ordering avoids deleting DynamoDB and Neptune before discovering that non-empty production buckets cannot be removed.
 
 To also remove the Terraform state bucket created during bootstrap:
 
@@ -338,18 +342,18 @@ In local/hybrid mode, the installer creates the first Cognito user and grants `p
 
 ### Provider OAuth apps
 
-The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud), so an intent can be started from a tracker issue. All providers are optional; skip any you don't need and the corresponding **Connect** buttons in the UI stay disabled.
+The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket, AWS CodeCommit) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud), so an intent can be started from a tracker issue. All providers are optional; skip any you don't need and the corresponding **Connect** buttons in the UI stay disabled. CodeCommit needs no OAuth app: a space connects an IAM role from the repository account that trusts the platform under a per-user external ID (see [docs/getting-started/setup.md](docs/getting-started/setup.md#codecommit-code-host)).
 
-For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only, and the Jira Cloud and GitLab Issues tracker integrations are read-only.
+For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only. Tracker integrations post delivery comments; GitHub and GitLab issues also close after all final delivery requests merge.
 
 `<your-app-domain>` is the deployment's canonical hostname: the custom domain when one is configured, otherwise the CloudFront domain. The Admin page shows it, and each provider's setup guide shows the exact callback URL to copy. To read it directly: `terraform -chdir=terraform output -raw application_domain`.
 
-| Provider     | Callback URL                                             | Scopes / permissions                                           |
-| ------------ | -------------------------------------------------------- | -------------------------------------------------------------- |
-| GitHub OAuth | `https://<your-app-domain>/github/callback`              | `repo`, `workflow`, `read:user`                                |
-| GitLab       | `https://<your-app-domain>/gitlab/callback`              | `api`, `read_user` (Confidential enabled)                      |
-| Bitbucket    | `https://<your-app-domain>/bitbucket/callback`           | Account (Read, Email), Repositories (R/W), Pull requests (R/W) |
-| Jira Cloud   | `https://<your-app-domain>/trackers/callback/jira-cloud` | `read:jira-work`, `read:jira-user`, `offline_access`           |
+| Provider     | Callback URL                                             | Scopes / permissions                                                    |
+| ------------ | -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| GitHub OAuth | `https://<your-app-domain>/github/callback`              | `repo`, `workflow`, `read:user`                                         |
+| GitLab       | `https://<your-app-domain>/gitlab/callback`              | `api`, `read_user` (Confidential enabled)                               |
+| Bitbucket    | `https://<your-app-domain>/bitbucket/callback`           | Account (Read, Email), Repositories (R/W), Pull requests (R/W)          |
+| Jira Cloud   | `https://<your-app-domain>/trackers/callback/jira-cloud` | `read:jira-work`, `read:jira-user`, `write:jira-work`, `offline_access` |
 
 GitHub also supports a **GitHub App** authentication type, configured independently in **Admin → Source Control → GitHub** with the App ID and private key; OAuth and App can be enabled simultaneously, and each project chooses its authentication type. Installation IDs are discovered per repository when a project is bound. See [Setup → Configure provider OAuth apps](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/setup/#configure-provider-oauth-apps) for the full step-by-step per provider, including GitHub App permissions and reauthorization notes.
 
@@ -446,6 +450,29 @@ npm run secretlint       # scan the repo for committed secrets
 npm run audit:prod:all   # npm audit on production deps for root + frontend (high+ severity)
 npm run typecheck:frontend  # tsc -b on the frontend package
 ```
+
+Analyze backend module coupling with [dependency-cruiser](https://github.com/sverweij/dependency-cruiser). The rules — no circular dependencies, no cross-workspace imports, `lambda/shared/` kept as a leaf foundation, and no production code importing test files — live in `.dependency-cruiser.cjs` and are enforced by the pre-commit hook and CI:
+
+```bash
+npm run dep:check        # enforce the rules (fails on any violation)
+npm run dep:report       # HTML dependency matrix -> reports/dependency/report.html
+npm run dep:metrics      # coupling / instability table -> reports/dependency/metrics.txt
+npm run dep:graph        # mermaid module graph -> reports/dependency/graph.mmd
+npm run dep:all          # report + metrics + graph
+```
+
+Two scripts take a module/subsystem pattern (a regex, passed after `--`) to explore coupling for one area:
+
+```bash
+# Focused HTML matrix of one subsystem -> reports/dependency/focus.html
+npm run dep:focus -- "shared/agent-credential"
+
+# Blast radius: every module that transitively depends on a file
+# (escape the dots to match an exact file)
+npm run dep:reaches -- "shared/agent-credential-grants\.js"
+```
+
+Generated reports land in `reports/dependency/` (git-ignored). In the HTML matrix, a filled cell means the **row** module imports the **column** module — so a dense column is a widely-depended-on module (high fan-in), and a dense row is one that depends on many others (high fan-out).
 
 A pre-commit hook (managed by Husky + lint-staged) runs these checks plus Terraform formatting/linting and the affected unit tests before each commit. It is installed automatically by `npm install`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 

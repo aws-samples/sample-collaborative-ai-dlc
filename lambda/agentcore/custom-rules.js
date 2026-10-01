@@ -8,9 +8,12 @@
 // the CLI auto-loads them — mirroring the retired v1 pool-worker
 // `writeScopedRules` (commit acd2d33) rather than concatenating into the prompt.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import path from 'node:path';
 import { s3 as defaultS3 } from './clients.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'custom-rules' } });
 
 // Hard cap on a single custom-rule body. The 100 KB limit is enforced in the
 // browser at upload time, but a presigned PUT has no server-side size
@@ -36,7 +39,7 @@ export const fetchCustomRules = async ({
   customRules = [],
   env = process.env,
   s3 = defaultS3,
-  log = (...a) => console.error('[custom-rules]', ...a),
+  log = (...a) => logger.error(...a), // TODO: remove this (only used in tests)
 } = {}) => {
   const bucket = env.ARTIFACTS_BUCKET;
   if (!bucket || !Array.isArray(customRules) || customRules.length === 0) return [];

@@ -21,13 +21,32 @@ const makeEvent = (body, connectionId = SENDER) => ({
 // client sends, returning 200 so API Gateway closes the frame cleanly.
 // -----------------------------------------------------------------------------
 describe('ws-message handler (defensive no-op)', () => {
+  let stdoutLines;
   beforeEach(() => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stdoutLines = [];
+    const capture = (chunk) => {
+      stdoutLines.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    };
+    // Powertools routes INFO to stdout and WARN/ERROR to stderr — capture both.
+    vi.spyOn(process.stdout, 'write').mockImplementation(capture);
+    vi.spyOn(process.stderr, 'write').mockImplementation(capture);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  const droppedWarnings = () =>
+    stdoutLines
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .filter((o) => o && o.level === 'WARN' && o.message === 'Dropped client message');
 
   it('handles empty event body gracefully', async () => {
     const handler = await loadHandler();
@@ -65,6 +84,6 @@ describe('ws-message handler (defensive no-op)', () => {
     const handler = await loadHandler();
     const res = await handler(makeEvent(body));
     expect(res).toEqual({ statusCode: 200 });
-    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(droppedWarnings()).toHaveLength(1);
   });
 });

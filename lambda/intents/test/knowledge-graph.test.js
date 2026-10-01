@@ -273,6 +273,104 @@ describe('fetchKnowledgeGraph', () => {
   });
 });
 
+describe('fetchKnowledgeGraph — CodeFile implementation layer', () => {
+  it('renders revision provenance and Unit/Story IMPLEMENTED_BY edges', async () => {
+    await seedFullGraph();
+    await addV('Story', {
+      id: 'story:intent-kg:ac1-1-1',
+      intent_id: INTENT,
+      artifact_id: 'reqs-1',
+      slug: 'ac1-1-1',
+      title: 'Authenticate users',
+      superseded_at: '',
+    });
+    await addE('Artifact', 'reqs-1', 'HAS_ITEM', 'Story', 'story:intent-kg:ac1-1-1');
+    await addV('UnitOfWork', {
+      id: 'unit:intent-kg:u-auth',
+      intent_id: INTENT,
+      slug: 'u-auth',
+      superseded_at: '',
+    });
+    await addE('Intent', INTENT, 'CONTAINS', 'UnitOfWork', 'unit:intent-kg:u-auth');
+    await addV('CodeFile', {
+      id: 'codefile:abc',
+      intent_id: INTENT,
+      file_path: 'src/auth/login.ts',
+      repository: 'owner/repo',
+      commit_ref: 'a'.repeat(40),
+      summary: 'Implements AC1.1.1',
+      unit_slug: 'u-auth',
+      stage_instance_id: 'si-code-auth',
+      file_kind: 'implementation',
+      traceability_source: 'aidlc-traceability',
+    });
+    await addE('Intent', INTENT, 'CONTAINS', 'CodeFile', 'codefile:abc');
+    await addE('UnitOfWork', 'unit:intent-kg:u-auth', 'IMPLEMENTED_BY', 'CodeFile', 'codefile:abc');
+    await addE('Story', 'story:intent-kg:ac1-1-1', 'IMPLEMENTED_BY', 'CodeFile', 'codefile:abc');
+
+    const { nodes, edges } = await fetchKnowledgeGraph(g, {
+      projectId: PROJECT,
+      intentId: INTENT,
+    });
+    expect(byId(nodes, 'codefile:abc')).toMatchObject({
+      type: 'CodeFile',
+      graphLayer: 'implementation',
+      label: 'src/auth/login.ts',
+      file_path: 'src/auth/login.ts',
+      repository: 'owner/repo',
+      commit_ref: 'a'.repeat(40),
+      intent_id: INTENT,
+      unit_slug: 'u-auth',
+      stage_instance_id: 'si-code-auth',
+      file_kind: 'implementation',
+      traceability_source: 'aidlc-traceability',
+    });
+    expect(edge(edges, INTENT, 'codefile:abc', 'CONTAINS')).toBeDefined();
+    expect(edge(edges, 'unit:intent-kg:u-auth', 'codefile:abc', 'IMPLEMENTED_BY')).toBeDefined();
+    expect(edge(edges, 'story:intent-kg:ac1-1-1', 'codefile:abc', 'IMPLEMENTED_BY')).toBeDefined();
+  });
+
+  it('excludes a superseded prior revision and its edges (only the latest renders)', async () => {
+    await seedFullGraph();
+    await addV('UnitOfWork', {
+      id: 'unit:intent-kg:u-auth',
+      intent_id: INTENT,
+      slug: 'u-auth',
+      superseded_at: '',
+    });
+    await addE('Intent', INTENT, 'CONTAINS', 'UnitOfWork', 'unit:intent-kg:u-auth');
+    // An older revision of the same file, superseded by a re-run.
+    await addV('CodeFile', {
+      id: 'codefile:old',
+      intent_id: INTENT,
+      file_path: 'src/auth/login.ts',
+      repository: 'owner/repo',
+      commit_ref: 'a'.repeat(40),
+      superseded_at: '2026-01-01T00:00:00Z',
+    });
+    await addE('Intent', INTENT, 'CONTAINS', 'CodeFile', 'codefile:old');
+    await addE('UnitOfWork', 'unit:intent-kg:u-auth', 'IMPLEMENTED_BY', 'CodeFile', 'codefile:old');
+    // The current revision.
+    await addV('CodeFile', {
+      id: 'codefile:new',
+      intent_id: INTENT,
+      file_path: 'src/auth/login.ts',
+      repository: 'owner/repo',
+      commit_ref: 'b'.repeat(40),
+      superseded_at: '',
+    });
+    await addE('Intent', INTENT, 'CONTAINS', 'CodeFile', 'codefile:new');
+    await addE('UnitOfWork', 'unit:intent-kg:u-auth', 'IMPLEMENTED_BY', 'CodeFile', 'codefile:new');
+
+    const { nodes, edges } = await fetchKnowledgeGraph(g, { projectId: PROJECT, intentId: INTENT });
+    expect(byId(nodes, 'codefile:new')).toBeDefined();
+    expect(byId(nodes, 'codefile:old')).toBeUndefined();
+    // Edges to the superseded revision drop out via the rendered-node guard.
+    expect(edge(edges, 'unit:intent-kg:u-auth', 'codefile:new', 'IMPLEMENTED_BY')).toBeDefined();
+    expect(edge(edges, 'unit:intent-kg:u-auth', 'codefile:old', 'IMPLEMENTED_BY')).toBeUndefined();
+  });
+});
+
 // ── Steering (docs/v2-steering.md) ──
 
 describe('fetchKnowledgeGraph — steering + supersede lineage', () => {

@@ -102,6 +102,175 @@ describe('AppSidebar active-work section', () => {
     const projectBtn = screen.getByTitle('V1 Project');
     expect(projectBtn).toBeInTheDocument();
   });
+
+  it('counts and displays every matching Intent in one v2 Space', () => {
+    localStorage.setItem('aidlc-sidebar-iterations-filter', 'attention');
+    const intents = [
+      { id: 'int-1', title: 'Waiting Intent One', status: 'WAITING' },
+      { id: 'int-2', title: 'Waiting Intent Two', status: 'WAITING' },
+      { id: 'int-3', title: 'Waiting Intent Three', status: 'WAITING' },
+    ];
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Busy Space', kind: 'v2', createdAt: '2024-01-01' },
+        latestSprint: null,
+        latestIntent: intents[0],
+        intents,
+        lastIntentActivityAt: null,
+        activity: { inProgress: 3, attention: 3 },
+      },
+    ];
+
+    renderSidebar();
+
+    expect(screen.getByLabelText(/active work filter/i)).toHaveTextContent('Needs attention3');
+    expect(screen.getByText('Waiting Intent One')).toBeInTheDocument();
+    expect(screen.getByText('Waiting Intent Two')).toBeInTheDocument();
+    expect(screen.getByText('Waiting Intent Three')).toBeInTheDocument();
+  });
+
+  it('counts only Intents matching the selected filter', () => {
+    localStorage.setItem('aidlc-sidebar-iterations-filter', 'attention');
+    const intents = [
+      { id: 'int-1', title: 'Waiting Intent', status: 'WAITING' },
+      { id: 'int-2', title: 'Failed Intent One', status: 'FAILED' },
+      { id: 'int-3', title: 'Failed Intent Two', status: 'FAILED' },
+      { id: 'int-4', title: 'Running Intent', status: 'RUNNING' },
+    ];
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Mixed Space', kind: 'v2', createdAt: '2024-01-01' },
+        latestSprint: null,
+        latestIntent: intents[3],
+        intents,
+        lastIntentActivityAt: null,
+        activity: { inProgress: 4, attention: 3 },
+      },
+    ];
+
+    renderSidebar();
+
+    expect(screen.getByLabelText(/active work filter/i)).toHaveTextContent('Needs attention3');
+    expect(screen.getByText('Waiting Intent')).toBeInTheDocument();
+    expect(screen.getByText('Failed Intent One')).toBeInTheDocument();
+    expect(screen.getByText('Failed Intent Two')).toBeInTheDocument();
+    expect(screen.queryByText('Running Intent')).not.toBeInTheDocument();
+  });
+
+  it('shows at most five matching Intents per Space without an overflow control', () => {
+    localStorage.setItem('aidlc-sidebar-iterations-filter', 'attention');
+    const intents = Array.from({ length: 6 }, (_, index) => ({
+      id: `int-${index + 1}`,
+      title: `Waiting Intent ${index + 1}`,
+      status: 'WAITING',
+    }));
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Overflow Space', kind: 'v2', createdAt: '2024-01-01' },
+        latestSprint: null,
+        latestIntent: intents[0],
+        intents,
+        lastIntentActivityAt: null,
+        activity: { inProgress: 6, attention: 6 },
+      },
+    ];
+
+    renderSidebar();
+
+    for (let index = 1; index <= 5; index++) {
+      expect(screen.getByText(`Waiting Intent ${index}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByText('Waiting Intent 6')).not.toBeInTheDocument();
+    expect(screen.queryByText(/view all/i)).not.toBeInTheDocument();
+  });
+
+  it('sorts matching Intents by recent activity before applying the five-row cap', () => {
+    localStorage.setItem('aidlc-sidebar-iterations-filter', 'active');
+    const intents = [
+      {
+        id: 'waiting-1',
+        title: 'Oldest waiting Intent',
+        status: 'WAITING',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'waiting-2',
+        title: 'Waiting Intent Two',
+        status: 'WAITING',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      },
+      {
+        id: 'waiting-3',
+        title: 'Waiting Intent Three',
+        status: 'WAITING',
+        updatedAt: '2026-01-03T00:00:00.000Z',
+      },
+      {
+        id: 'waiting-4',
+        title: 'Waiting Intent Four',
+        status: 'WAITING',
+        updatedAt: '2026-01-04T00:00:00.000Z',
+      },
+      {
+        id: 'waiting-5',
+        title: 'Waiting Intent Five',
+        status: 'WAITING',
+        updatedAt: '2026-01-05T00:00:00.000Z',
+      },
+      {
+        id: 'running-new',
+        title: 'Newest running Intent',
+        status: 'RUNNING',
+        updatedAt: '2026-02-01T00:00:00.000Z',
+      },
+    ];
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Status-grouped Space', kind: 'v2', createdAt: '2024-01-01' },
+        latestSprint: null,
+        latestIntent: intents[5],
+        intents,
+        lastIntentActivityAt: null,
+        activity: { inProgress: 6, attention: 5 },
+      },
+    ];
+
+    renderSidebar();
+
+    expect(screen.getByText('Newest running Intent')).toBeInTheDocument();
+    expect(screen.queryByText('Oldest waiting Intent')).not.toBeInTheDocument();
+  });
+
+  it('keeps a selected matching Intent visible when it falls beyond the five-row cap', () => {
+    localStorage.setItem('aidlc-sidebar-iterations-filter', 'attention');
+    const intents = Array.from({ length: 6 }, (_, index) => ({
+      id: `int-${index + 1}`,
+      title: `Waiting Intent ${index + 1}`,
+      status: 'WAITING',
+    }));
+    mockProjects.projects = [
+      {
+        project: { id: 'p1', name: 'Overflow Space', kind: 'v2', createdAt: '2024-01-01' },
+        latestSprint: null,
+        latestIntent: intents[0],
+        intents,
+        lastIntentActivityAt: null,
+        activity: { inProgress: 6, attention: 6 },
+      },
+    ];
+    mockIntentCtx.value = {
+      detail: {
+        intent: intents[5],
+      },
+    };
+
+    renderSidebar('/space/p1/intent/int-6/observability');
+
+    expect(screen.getByText('Waiting Intent 6')).toBeInTheDocument();
+    expect(screen.queryByText('Waiting Intent 5')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pinned-selected-intent')).not.toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: /intent sections/i })).toBeInTheDocument();
+  });
 });
 
 describe('AppSidebar IntentSectionTabs density', () => {

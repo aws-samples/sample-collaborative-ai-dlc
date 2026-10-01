@@ -10,6 +10,7 @@ export const validateSparseDirectories = (input) => {
     if (
       typeof entry !== 'string' ||
       !entry ||
+      entry !== entry.trim() ||
       entry.length > 1024 ||
       /[\\*?[\]":]/.test(entry) ||
       [...entry].some(
@@ -22,7 +23,7 @@ export const validateSparseDirectories = (input) => {
     ) {
       return {
         error:
-          'sparseCheckout directories must be relative paths without traversal, glob patterns, or .git components',
+          'sparseCheckout directories must be relative paths without surrounding whitespace, traversal, glob patterns, or .git components',
       };
     }
     paths.push(entry);

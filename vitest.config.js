@@ -24,6 +24,7 @@ export default defineConfig({
         root: fileURLToPath(new URL(name, lambdaRoot)),
         include: ['test/**/*.test.js'],
         setupFiles,
+        env: { POWERTOOLS_SERVICE_NAME: 'collaborative-aidlc' },
       },
     })),
     globalSetup,

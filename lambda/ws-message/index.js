@@ -13,9 +13,14 @@
 // (the allowlist was empty) and had no frontend callers, so it has been removed.
 // Recover it from git history if client-origin broadcast is ever revived.
 // -----------------------------------------------------------------------------
-export const handler = async (event) => {
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'ws-message' } });
+
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const connectionId = event.requestContext.connectionId;
   const { action } = JSON.parse(event.body || '{}');
-  console.warn(`Dropped client message "${action}" from ${connectionId}`);
+  logger.warn('Dropped client message', { action, connectionId });
   return { statusCode: 200 };
 };

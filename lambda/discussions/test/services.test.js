@@ -23,12 +23,31 @@ const invoke = () =>
   });
 
 describe('discussion assist runtime routing', () => {
+  let warnLines;
+  const warnedWith = (substr) =>
+    warnLines
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .some((o) => o && o.level === 'WARN' && String(o.message).includes(substr));
+
   beforeEach(() => {
     ddbMock.reset();
     agentcoreMock.reset();
     vi.stubEnv('AGENTCORE_RUNTIME_ARN', CORE_RUNTIME_ARN);
     vi.stubEnv('V2_PROCESS_TABLE', PROCESS_TABLE);
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warnLines = [];
+    const captureStream = (chunk) => {
+      warnLines.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    };
+    // Powertools routes WARN to stderr — capture both streams.
+    vi.spyOn(process.stdout, 'write').mockImplementation(captureStream);
+    vi.spyOn(process.stderr, 'write').mockImplementation(captureStream);
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true }) },
     });
@@ -65,7 +84,7 @@ describe('discussion assist runtime routing', () => {
     const input = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
     expect(input.agentRuntimeArn).toBe(CORE_RUNTIME_ARN);
     expect(input).not.toHaveProperty('qualifier');
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('runtime snapshot missing'));
+    expect(warnedWith('runtime snapshot missing')).toBe(true);
   });
 
   it('falls back to the core runtime when the snapshot lookup fails', async () => {
@@ -76,6 +95,6 @@ describe('discussion assist runtime routing', () => {
     const input = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
     expect(input.agentRuntimeArn).toBe(CORE_RUNTIME_ARN);
     expect(input).not.toHaveProperty('qualifier');
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('lookup failed'));
+    expect(warnedWith('lookup failed')).toBe(true);
   });
 });

@@ -14,6 +14,16 @@ if [ -n "$staged_pkg" ]; then
   npm run sdk:check
 fi
 
+# Backend dependency rules: circular deps, cross-workspace imports, shared/ as a
+# leaf, and no prod->test edges (dependency-cruiser). It is an npm
+# devDependency so it always runs; gated on staged lambda/ source to keep
+# unrelated commits fast. The whole graph is cruised, not just staged files,
+# since these are cross-file structural rules.
+staged_lambda=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^lambda/.*\.[cm]?js$' || true)
+if [ -n "$staged_lambda" ]; then
+  npm run dep:check
+fi
+
 # SCA on production deps. Root deps come with `npm install`, so this always
 # runs. Frontend has its own package.json outside workspaces — skip silently
 # if its node_modules don't exist.

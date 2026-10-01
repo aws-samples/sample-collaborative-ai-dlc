@@ -38,6 +38,9 @@ import {
   buildTrackerSyncRow,
   executionTypeStateIndex,
   HUMAN_TASK_STATUSES,
+  HUMAN_TASK_ANSWER_STATUSES,
+  isHumanTaskAnswerStatus,
+  humanTaskMatchesOwner,
   STEERING_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
@@ -93,15 +96,54 @@ describe('v2-process-keys', () => {
 
   it('carries the CLI session linkage (null by default) for park/resume', () => {
     const fresh = buildStageRow({ executionId: 'e1', stageInstanceId: 'si-1', now: 'T' });
-    expect(fresh).toMatchObject({ cli: null, cliSessionId: null });
+    expect(fresh).toMatchObject({
+      cli: null,
+      cliSessionId: null,
+      pendingCodeCommitRefs: null,
+    });
     const linked = buildStageRow({
       executionId: 'e1',
       stageInstanceId: 'si-1',
       cli: 'claude',
       cliSessionId: 'sess-7',
+      pendingCodeCommitRefs: [{ repo: 'owner/repo', sha: 'a'.repeat(40) }],
       now: 'T',
     });
-    expect(linked).toMatchObject({ cli: 'claude', cliSessionId: 'sess-7' });
+    expect(linked).toMatchObject({
+      cli: 'claude',
+      cliSessionId: 'sess-7',
+      pendingCodeCommitRefs: [{ repo: 'owner/repo', sha: 'a'.repeat(40) }],
+    });
+  });
+
+  it('defines one answer-status and legacy-compatible ownership contract for human gates', () => {
+    expect(HUMAN_TASK_ANSWER_STATUSES).toEqual(['answered', 'approved', 'rejected']);
+    expect(HUMAN_TASK_ANSWER_STATUSES.every(isHumanTaskAnswerStatus)).toBe(true);
+    expect(isHumanTaskAnswerStatus('pending')).toBe(false);
+    expect(isHumanTaskAnswerStatus('superseded')).toBe(false);
+
+    const owner = {
+      stageInstanceId: 'si-a',
+      unitSlug: 'auth',
+      sectionIndex: 2,
+    };
+    expect(humanTaskMatchesOwner({ task: owner, ...owner })).toBe(true);
+    expect(humanTaskMatchesOwner({ task: { ...owner, sectionIndex: null }, ...owner })).toBe(true);
+    expect(humanTaskMatchesOwner({ task: owner, ...owner, sectionIndex: null })).toBe(true);
+    expect(
+      humanTaskMatchesOwner({
+        task: owner,
+        ...owner,
+        sectionIndex: 3,
+      }),
+    ).toBe(false);
+    expect(
+      humanTaskMatchesOwner({
+        task: owner,
+        ...owner,
+        unitSlug: 'catalog',
+      }),
+    ).toBe(false);
   });
 
   it('builds a question human-task carrying the structured payload', () => {
@@ -182,6 +224,29 @@ describe('createProcessStore', () => {
     expect(eventual).not.toHaveProperty('ConsistentRead');
     expect(consistent).toMatchObject({
       Key: executionMetaKey('e1'),
+      ConsistentRead: true,
+    });
+  });
+
+  it('opts into strongly consistent stage and human-gate reads only when requested', async () => {
+    ddb.on(GetCommand).resolves({ Item: { executionId: 'e1' } });
+
+    await store.getStage('e1', 'si-1');
+    await store.getStage('e1', 'si-1', { consistentRead: true });
+    await store.getHumanTask('e1', 'h1');
+    await store.getHumanTask('e1', 'h1', { consistentRead: true });
+
+    const [eventualStage, consistentStage, eventualGate, consistentGate] = ddb
+      .commandCalls(GetCommand)
+      .map((call) => call.args[0].input);
+    expect(eventualStage).not.toHaveProperty('ConsistentRead');
+    expect(consistentStage).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      ConsistentRead: true,
+    });
+    expect(eventualGate).not.toHaveProperty('ConsistentRead');
+    expect(consistentGate).toMatchObject({
+      Key: humanTaskKey('e1', 'h1'),
       ConsistentRead: true,
     });
   });
@@ -319,15 +384,19 @@ describe('createProcessStore', () => {
 
   it('updateStageState stamps parkedAt on a park (human-wait accounting)', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: 'a'.repeat(40) }];
     await store.updateStageState({
       executionId: 'e1',
       stageInstanceId: 'si-1',
       state: 'WAITING_FOR_HUMAN',
       parkedAt: true,
+      pendingCodeCommitRefs,
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.UpdateExpression).toContain('parkedAt = :pa');
     expect(input.ExpressionAttributeValues[':pa']).toBe('T');
+    expect(input.UpdateExpression).toContain('pendingCodeCommitRefs = :pccr');
+    expect(input.ExpressionAttributeValues[':pccr']).toEqual(pendingCodeCommitRefs);
   });
 
   it('updateStageState leaves parkedAt untouched when not supplied', async () => {
@@ -409,10 +478,15 @@ describe('createProcessStore', () => {
     // The patch never touches first-start or attempt bookkeeping.
     expect(input.UpdateExpression).not.toContain('startedAt');
     expect(input.UpdateExpression).not.toContain('attempt');
+    expect(input.UpdateExpression).not.toContain('pendingCodeCommitRefs');
     expect(input.ExpressionAttributeValues[':csid']).toBe('sess-1');
     expect(input.ExpressionAttributeValues[':scb']).toBe('cb-2');
     expect(input.UpdateExpression).toContain('aidlcRepoRef = :aidlcRepoRef');
     expect(input.ExpressionAttributeValues[':aidlcRepoRef']).toBe('a'.repeat(40));
+    expect(ddb.commandCalls(GetCommand)[0].args[0].input).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      ConsistentRead: true,
+    });
   });
 
   it('resumeStageRow tolerates a missing/unparsable park stamp (waitMs unchanged, no NaN)', async () => {
@@ -429,8 +503,32 @@ describe('createProcessStore', () => {
     await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-1' });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.UpdateExpression).toContain('parkedAt = :null');
+    expect(input.UpdateExpression).toContain('pendingCodeCommitRefs = :pendingCodeCommitRefs');
+    expect(input.ExpressionAttributeValues[':pendingCodeCommitRefs']).toBeNull();
     expect(input.UpdateExpression).toContain('waitMs = :zero');
     expect(input.ExpressionAttributeValues[':zero']).toBe(0);
+  });
+
+  it('resetStageRow preserves pending commit refs for a plain retry', async () => {
+    const pendingCodeCommitRefs = [{ repo: 'owner/repo', sha: 'a'.repeat(40) }];
+    ddb.on(GetCommand).resolves({
+      Item: {
+        attempt: 0,
+        state: 'FAILED',
+        runtimeError: 'cli_nonzero_exit',
+        pendingCodeCommitRefs,
+      },
+    });
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.resetStageRow({
+      executionId: 'e1',
+      stageInstanceId: 'si-1',
+      preservePendingCodeCommitRefs: true,
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ExpressionAttributeValues[':pendingCodeCommitRefs']).toEqual(
+      pendingCodeCommitRefs,
+    );
   });
 
   it('answerHumanTask is a CAS on pending and returns null on a lost race', async () => {
@@ -446,6 +544,45 @@ describe('createProcessStore', () => {
     expect(res).toBeNull();
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe('#status = :pending');
+  });
+
+  it('answers with attached steering in one transaction', async () => {
+    ddb.on(TransactWriteCommand).resolves({});
+
+    const result = await store.answerHumanTaskWithSteering({
+      executionId: 'e1',
+      humanTaskId: 'h1',
+      status: 'answered',
+      answer: { choice: 'A' },
+      answeredBy: 'u1',
+      steering: {
+        kind: 'gate-steer',
+        message: 'Use the event bus.',
+        targetGateId: 'h1',
+        createdBy: 'u1',
+      },
+    });
+
+    expect(result).toMatchObject({
+      answered: { humanTaskId: 'h1', status: 'answered' },
+      steering: {
+        steerId: 'st-id-1',
+        status: 'pending',
+        message: 'Use the event bus.',
+        targetGateId: 'h1',
+      },
+    });
+    const transaction = ddb.commandCalls(TransactWriteCommand)[0].args[0].input.TransactItems;
+    expect(transaction).toHaveLength(2);
+    expect(transaction[0].Update).toMatchObject({
+      Key: humanTaskKey('e1', 'h1'),
+      ConditionExpression: '#status = :pending',
+    });
+    expect(transaction[1].Put).toMatchObject({
+      Item: expect.objectContaining({ sk: 'STEER#T#st-id-1' }),
+      ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+    });
+    expect(ddb.commandCalls(GetCommand)).toHaveLength(0);
   });
 
   it('listEvents queries the EVENT# prefix time-ordered and drains pagination', async () => {
@@ -967,13 +1104,19 @@ describe('steering store methods', () => {
     expect(input.ConditionExpression).toContain('attribute_not_exists(pk)');
   });
 
-  it('listPendingSteering queries GSI2 by TYPE#STEER#STATE#pending', async () => {
-    ddb.on(QueryCommand).resolves({ Items: [{ sk: 'STEER#T#st-1', steerId: 'st-1' }] });
+  it('listPendingSteering strongly reads the execution partition and filters pending rows', async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [
+        { sk: 'STEER#T#st-1', steerId: 'st-1', status: 'pending' },
+        { sk: 'STEER#T#st-2', steerId: 'st-2', status: 'consumed' },
+      ],
+    });
     const rows = await store.listPendingSteering('e1');
     expect(rows).toHaveLength(1);
     const input = ddb.commandCalls(QueryCommand)[0].args[0].input;
-    expect(input.IndexName).toBe('GSI2');
-    expect(input.ExpressionAttributeValues[':p']).toBe('TYPE#STEER#STATE#pending#');
+    expect(input.IndexName).toBeUndefined();
+    expect(input.ConsistentRead).toBe(true);
+    expect(input.ExpressionAttributeValues[':p']).toBe('STEER#');
   });
 
   it('markSteeringConsumed is a CAS on pending; a lost race returns null', async () => {

@@ -15,6 +15,26 @@
 
 import { parseFrontmatter } from './frontmatter.js';
 
+// ─── Per-release adapter fields ───
+// Releases ≥2.6.18 add execution-relevant frontmatter the 2.3.3-era baseline
+// does not have. Every mapper below adds its key ONLY when the frontmatter
+// carries the field, so a block authored against an older release maps to
+// byte-identical output — the whole coexistence contract rests on that.
+// Semantics live in docs/concepts/aidlc-release-compatibility.md;
+// enum validity is asserted by the compatibility analyzer, not here (a mapper
+// that silently dropped an unknown value would hide a drifted release).
+const present = (value) => value != null && value !== '';
+const optional = (key, value) => (present(value) ? { [key]: value } : {});
+
+// AGENT.maxTurns (≥2.6.18) is a decimal integer turn cap on the reviewer
+// agents. A non-integer value is mapped VERBATIM so the analyzer can reject it
+// rather than having the mapper launder it into a plausible number.
+const optionalInteger = (key, value) => {
+  if (!present(value)) return {};
+  const parsed = typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? Number(value) : value;
+  return { [key]: parsed };
+};
+
 const titleCase = (slug) =>
   String(slug)
     .split(/[-/]/)
@@ -87,6 +107,12 @@ const mapStage = (fm, body) => ({
   sensors: fm.sensors ?? [],
   reviewer: fm.reviewer ?? null,
   reviewerMaxIterations: fm.reviewer != null ? (fm.reviewer_max_iterations ?? null) : null,
+  // ≥2.6.18 `review_class` (adversarial | advisory), ≥2.7.0 `review_artifact`
+  // (the one canonical `produces` slug the reviewer judges) and ≥2.6.18
+  // `summary_confirmation` (required | if-present).
+  ...optional('reviewClass', fm.review_class),
+  ...optional('reviewArtifact', fm.review_artifact),
+  ...optional('summaryConfirmation', fm.summary_confirmation),
   number: fm.number != null ? String(fm.number) : null,
   bundle: fm.bundle ?? null,
   when: fm.when ?? null,
@@ -112,11 +138,18 @@ const mapAgent = (fm, body, id) => ({
   modelOverride: fm.modelOverride ?? fm.model ?? null,
   disallowedTools: fm.disallowedTools ?? null,
   examples: fm.examples ?? [],
+  ...optionalInteger('maxTurns', fm.maxTurns),
   ...(fm.tools ? { tools: fm.tools } : {}),
   body,
 });
 
 // ─── Scopes ───
+// Releases ≥2.6.18 put per-scope EXECUTION POLICY on the scope block: caps and
+// switches that may only ever narrow what a stage does (`review_cap`,
+// `sensors`, `summary_confirmation`, `learnings`, `skeleton`) plus
+// `change_control` (whether an edit to an approved input reopens its
+// checkpoint) and the packaging-only `runner`. `sensors` is renamed
+// `sensorsPolicy` so it can never be confused with a STAGE's sensor id list.
 const mapScope = (fm, body, id) => {
   const depth = fm.depth;
   return {
@@ -128,6 +161,13 @@ const mapScope = (fm, body, id) => {
     testStrategy: fm.testStrategy ?? depth,
     keywords: fm.keywords ?? [],
     description: fm.description ?? '',
+    ...optional('sensorsPolicy', fm.sensors),
+    ...optional('reviewCap', fm.review_cap),
+    ...optional('summaryConfirmation', fm.summary_confirmation),
+    ...optional('changeControl', fm.change_control),
+    ...optional('learnings', fm.learnings),
+    ...optional('skeleton', fm.skeleton),
+    ...(fm.runner == null ? {} : { runner: fm.runner }),
     body,
   };
 };
@@ -147,6 +187,9 @@ const mapSensor = (fm, body, id) => ({
   category: fm.category ?? null,
   matches: fm.matches ?? null,
   timeoutSeconds: fm.timeout_seconds ?? null,
+  // ≥2.7.0 `fire_on`: `write` (run when a matching file is written) or `gate`
+  // (run once per matching existing deliverable when the stage opens its gate).
+  ...optional('fireOn', fm.fire_on),
   ...(fm.input_schema ? { inputSchema: fm.input_schema } : {}),
   ...(fm.output_schema ? { outputSchema: fm.output_schema } : {}),
   body,

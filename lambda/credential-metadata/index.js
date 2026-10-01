@@ -6,6 +6,7 @@
 // trusted API Lambdas can ask only for set-state or effective source bindings.
 
 import { SSMClient } from '@aws-sdk/client-ssm';
+import { Logger } from '@aws-lambda-powertools/logger';
 import {
   AGENT_CREDENTIAL_METADATA_ACTIONS,
   readCredentialScopeStatus,
@@ -13,6 +14,8 @@ import {
 } from '../shared/agent-credentials.js';
 
 const ssm = new SSMClient({});
+
+const logger = new Logger({ persistentKeys: { component: 'credential-metadata' } });
 
 export const inspectAgentCredentialMetadata = async (
   event = {},
@@ -44,13 +47,14 @@ export const inspectAgentCredentialMetadata = async (
   }
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   try {
     return { ok: true, ...(await inspectAgentCredentialMetadata(event)) };
   } catch (error) {
     const code =
       error?.code === 'INVALID_REQUEST' ? 'INVALID_REQUEST' : 'CREDENTIAL_METADATA_FAILED';
-    console.error('[credential-metadata] request denied', {
+    logger.error('request denied', {
       code,
       action: event?.action || null,
       source: event?.source || null,

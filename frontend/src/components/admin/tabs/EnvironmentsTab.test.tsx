@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const list = vi.fn();
@@ -7,6 +7,7 @@ const listTools = vi.fn();
 const get = vi.fn();
 const build = vi.fn();
 const create = vi.fn();
+const update = vi.fn();
 const acceptFindings = vi.fn();
 const rebuild = vi.fn();
 
@@ -16,7 +17,7 @@ vi.mock('@/services/environments', () => ({
     get: (...args: unknown[]) => get(...args),
     build: (...args: unknown[]) => build(...args),
     create: (...args: unknown[]) => create(...args),
-    update: vi.fn(),
+    update: (...args: unknown[]) => update(...args),
     retry: vi.fn(),
     acceptFindings: (...args: unknown[]) => acceptFindings(...args),
     publish: vi.fn(),
@@ -83,6 +84,8 @@ const javaVersion = {
   definition: {
     schemaVersion: 1 as const,
     version: '21.0.8',
+    distribution: 'Eclipse Temurin',
+    publisher: 'Eclipse Adoptium',
     source: {
       type: 'https' as const,
       url: 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.8_9.tar.gz',
@@ -140,6 +143,8 @@ const mavenVersion = {
   definition: {
     ...javaVersion.definition,
     version: '3.9.11',
+    distribution: 'Apache Maven',
+    publisher: 'Apache Software Foundation',
     source: {
       type: 'https' as const,
       url: 'https://archive.apache.org/maven.tar.gz',
@@ -237,6 +242,15 @@ const standardDetail = {
 };
 
 describe('EnvironmentsTab', () => {
+  beforeAll(() => {
+    Object.defineProperties(Element.prototype, {
+      hasPointerCapture: { configurable: true, value: () => false },
+      setPointerCapture: { configurable: true, value: () => undefined },
+      releasePointerCapture: { configurable: true, value: () => undefined },
+      scrollIntoView: { configurable: true, value: () => undefined },
+    });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockResolvedValue([custom, standard]);
@@ -256,13 +270,76 @@ describe('EnvironmentsTab', () => {
     });
   });
 
+  it('shows plain-language status and the next action in the environment list', async () => {
+    render(<EnvironmentsTab />);
+
+    expect(await screen.findByText('Build the first revision')).toBeInTheDocument();
+    expect(screen.getAllByText('Ready to build').length).toBeGreaterThan(0);
+    expect(screen.getByText('Available to projects')).toBeInTheDocument();
+  });
+
+  it('keeps every unfinished environment visible in the in-progress filter', async () => {
+    const user = userEvent.setup();
+    const statuses = [
+      'DRAFT',
+      'QUEUED',
+      'BUILDING',
+      'SCANNING',
+      'SECURITY_REVIEW',
+      'VERIFYING',
+      'READY',
+      'FAILED',
+    ];
+    const unfinished = statuses.map((status) => ({
+      ...custom,
+      environmentId: status.toLowerCase(),
+      name: `${status} environment`,
+      status,
+    }));
+    list.mockResolvedValue([
+      custom,
+      ...unfinished,
+      standard,
+      { ...custom, environmentId: 'retired', name: 'Retired environment', status: 'RETIRED' },
+    ]);
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByLabelText('Filter environments'));
+    await user.click(await screen.findByRole('option', { name: 'In progress' }));
+
+    for (const environment of unfinished) {
+      expect(
+        screen.getByRole('button', { name: new RegExp(environment.name) }),
+      ).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /Standard Node\/Python/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Retired environment/ })).not.toBeInTheDocument();
+  });
+
   it('shows revision evidence and starts a draft build', async () => {
     const user = userEvent.setup();
     render(<EnvironmentsTab />);
-    expect(await screen.findByText('Generated Dockerfile')).toBeInTheDocument();
+    await user.click(await screen.findByRole('tab', { name: /Revisions/ }));
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+    await user.click(await screen.findByRole('button', { name: 'Generated Dockerfile' }));
     expect(screen.getByText(/FROM core@sha256:abc/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Build' }));
     expect(build).toHaveBeenCalledWith('custom', 'r-1');
+  });
+
+  it('preserves unsaved definition changes while revision actions refresh', async () => {
+    const user = userEvent.setup();
+    render(<EnvironmentsTab />);
+
+    const name = await screen.findByLabelText('Name');
+    await user.clear(name);
+    await user.type(name, 'Unsaved custom name');
+    await user.click(screen.getByRole('tab', { name: /Revisions/ }));
+    await user.click(screen.getByRole('button', { name: 'Build' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Build' })).not.toBeDisabled());
+    await user.click(screen.getByRole('tab', { name: /Definition/ }));
+
+    expect(screen.getByLabelText('Name')).toHaveValue('Unsaved custom name');
   });
 
   it('offers a latest-base rebuild instead of retrying a stale failed revision', async () => {
@@ -299,7 +376,7 @@ describe('EnvironmentsTab', () => {
     render(<EnvironmentsTab />);
 
     const rebuildButton = await screen.findByRole('button', {
-      name: 'Rebuild on Latest Base',
+      name: 'Rebuild on latest base',
     });
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     await user.click(rebuildButton);
@@ -341,10 +418,10 @@ describe('EnvironmentsTab', () => {
     });
 
     render(<EnvironmentsTab />);
-    await screen.findByText('Generated Dockerfile');
-    await user.click(screen.getByRole('button', { name: 'New' }));
+    await screen.findByText('Environment details');
+    await user.click(screen.getByRole('button', { name: 'New environment' }));
     await user.type(screen.getByLabelText('Name'), 'Generated Name');
-    await user.click(screen.getByRole('button', { name: 'Create Draft' }));
+    await user.click(screen.getByRole('button', { name: 'Create draft' }));
 
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -356,6 +433,29 @@ describe('EnvironmentsTab', () => {
     expect(get).toHaveBeenCalledWith('generated-name');
   });
 
+  it('validates generated IDs before sending a create request', async () => {
+    const user = userEvent.setup();
+    render(<EnvironmentsTab />);
+
+    await screen.findByText('Environment details');
+    await user.click(screen.getByRole('button', { name: 'New environment' }));
+    await user.type(screen.getByLabelText('Name'), '123 build');
+
+    expect(
+      screen.getByText('The environment ID must start with a letter and contain 2–63 characters.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create draft' })).toBeDisabled();
+
+    await user.type(screen.getByLabelText(/Environment ID/), 'build-123');
+
+    expect(
+      screen.queryByText(
+        'The environment ID must start with a letter and contain 2–63 characters.',
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create draft' })).toBeEnabled();
+  });
+
   it('shows inherited and platform versions without archive configuration inputs', async () => {
     const user = userEvent.setup();
     create.mockResolvedValue({
@@ -364,20 +464,22 @@ describe('EnvironmentsTab', () => {
     });
 
     render(<EnvironmentsTab />);
-    await screen.findByText('Generated Dockerfile');
-    await user.click(screen.getByRole('button', { name: 'New' }));
+    await screen.findByText('Environment details');
+    await user.click(screen.getByRole('button', { name: 'New environment' }));
 
+    expect(screen.getByText('Choose the base, tools, and optional settings.')).toBeInTheDocument();
+    expect(screen.getByText('Publish')).toBeInTheDocument();
     expect(await screen.findByText('Node.js 24.15.0')).toBeInTheDocument();
     expect(screen.getByText('Python 3.11')).toBeInTheDocument();
-    expect(screen.getByText('21.0.8')).toBeInTheDocument();
+    expect(screen.getByText('Eclipse Temurin 21.0.8')).toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Node.js version' })).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Java version' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Java archive URL')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Java checksum')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('switch', { name: 'Include Java JDK' }));
+    await user.click(screen.getByRole('button', { name: 'Add Java JDK' }));
     await user.type(screen.getByLabelText('Name'), 'Java Custom');
-    await user.click(screen.getByRole('button', { name: 'Create Draft' }));
+    await user.click(screen.getByRole('button', { name: 'Create draft' }));
 
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -394,13 +496,140 @@ describe('EnvironmentsTab', () => {
     listTools.mockResolvedValue([javaTool, mavenTool]);
 
     render(<EnvironmentsTab />);
-    await screen.findByText('Generated Dockerfile');
-    await user.click(screen.getByRole('button', { name: 'New' }));
-    await user.click(screen.getByRole('switch', { name: 'Include Apache Maven' }));
+    await screen.findByText('Environment details');
+    await user.click(screen.getByRole('button', { name: 'New environment' }));
+    await user.click(screen.getByRole('button', { name: 'Add Apache Maven' }));
 
     expect(await screen.findByText('Added automatically for Apache Maven')).toBeInTheDocument();
     expect(screen.getByText('Required')).toBeInTheDocument();
-    expect(screen.getByText('Projected 1200 / 2048 MiB')).toBeInTheDocument();
+    expect(screen.getByText('1200 / 2048 MiB')).toBeInTheDocument();
+  });
+
+  it.each([
+    [0, ''],
+    [null, ''],
+    [undefined, ''],
+    [200 * 1024 * 1024, '200 MiB'],
+  ])('renders selected tool size %s without stray text', async (imageSizeBytes, sizeLabel) => {
+    const user = userEvent.setup();
+    listTools.mockResolvedValue([{ ...javaTool, versions: [{ ...javaVersion, imageSizeBytes }] }]);
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Add Java JDK' }));
+
+    const tools = screen.getByRole('heading', { name: 'Tools' }).closest('section')!;
+    const versionDetails = within(tools).getByText('Eclipse Temurin 21.0.8').parentElement;
+    expect(versionDetails?.textContent).toBe(`Eclipse Temurin 21.0.8${sizeLabel}`);
+  });
+
+  it.each([
+    [0, ''],
+    [null, ''],
+    [undefined, ''],
+    [900 * 1024 * 1024, '900.0 MiB'],
+  ])('renders revision image size %s without stray text', async (imageSizeBytes, sizeLabel) => {
+    const user = userEvent.setup();
+    const readyEnvironment = { ...custom, status: 'READY' };
+    const readyRevision = {
+      ...revision,
+      status: 'READY',
+      imageDigest: javaVersion.imageDigest,
+      imageSizeBytes,
+    };
+    list.mockResolvedValue([readyEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : {
+            environment: readyEnvironment,
+            revisions: [readyRevision],
+            publishedRevision: null,
+          },
+    );
+
+    render(<EnvironmentsTab />);
+    await user.click(await screen.findByRole('button', { name: 'Details and evidence' }));
+
+    const imageCard = screen.getByText('Built successfully').parentElement;
+    expect(imageCard?.textContent).toBe(`ImageBuilt successfully${sizeLabel}`);
+  });
+
+  it('resets added tools when changing the base so inherited tools do not block saving', async () => {
+    const user = userEvent.setup();
+    const javaBase = {
+      ...custom,
+      environmentId: 'java-base',
+      name: 'Java base',
+      status: 'PUBLISHED',
+      currentRevisionId: 'java-base-1',
+      publishedRevisionId: 'java-base-1',
+    };
+    const inheritedJava = {
+      ...javaVersion.definition,
+      toolId: javaTool.toolId,
+      name: javaTool.name,
+      category: javaTool.category,
+      versionId: javaVersion.versionId,
+      imageUri: javaVersion.imageUri,
+      imageDigest: javaVersion.imageDigest,
+      imageSizeBytes: javaVersion.imageSizeBytes,
+      trustLevel: javaVersion.source.trustLevel,
+    };
+    const javaRecipe = {
+      ...recipe,
+      toolVersionIds: [javaVersion.versionId],
+      tools: [inheritedJava],
+      resolvedTools: [inheritedJava],
+    };
+    const javaBaseRevision = {
+      ...revision,
+      environmentId: javaBase.environmentId,
+      revisionId: javaBase.currentRevisionId,
+      status: 'PUBLISHED',
+      imageSizeBytes: 1900 * 1024 * 1024,
+      recipe: javaRecipe,
+      flattenedRecipe: javaRecipe,
+    };
+    list.mockResolvedValue([custom, standard, javaBase]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : environmentId === javaBase.environmentId
+          ? {
+              environment: javaBase,
+              revisions: [javaBaseRevision],
+              publishedRevision: javaBaseRevision,
+            }
+          : { environment: custom, revisions: [revision], publishedRevision: null },
+    );
+
+    render(<EnvironmentsTab />);
+    const name = await screen.findByLabelText('Name');
+    await user.clear(name);
+    await user.type(name, 'Java services');
+    await user.click(screen.getByRole('button', { name: 'Add Java JDK' }));
+    expect(screen.getByText('1100 / 2048 MiB')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: 'Base' }));
+    await user.click(await screen.findByRole('option', { name: javaBase.name }));
+
+    expect(await screen.findByText('1900 / 2048 MiB')).toBeInTheDocument();
+    expect(screen.getByText('Inherited')).toBeInTheDocument();
+    expect(screen.queryByText('Added here')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('The projected image is larger than the 2048 MiB runtime limit.'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save as new revision' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Save as new revision' }));
+    expect(update).toHaveBeenCalledWith(
+      'custom',
+      expect.objectContaining({
+        name: 'Java services',
+        description: custom.description,
+        baseEnvironmentId: javaBase.environmentId,
+        recipe: expect.objectContaining({ toolVersionIds: [] }),
+      }),
+    );
   });
 
   it('shows a successful image build and lets an admin accept security findings', async () => {
@@ -434,24 +663,96 @@ describe('EnvironmentsTab', () => {
         securityFindingsAcceptedBy: 'admin@example.com',
       },
     });
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     render(<EnvironmentsTab />);
 
-    expect(await screen.findByText('Build passed')).toBeInTheDocument();
-    expect(screen.getByText('Review required')).toBeInTheDocument();
+    expect(await screen.findByText('Built successfully')).toBeInTheDocument();
+    expect(screen.getByText('1 Critical · 2 High')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /CVE-2026-42010/ })).toHaveAttribute(
       'href',
       'https://example.test/CVE-2026-42010',
     );
     expect(screen.getByText('gnutls28 3.7.9-2+deb12u6')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Accept Findings & Continue' }));
-
-    expect(confirm).toHaveBeenCalledWith(
-      'Accept 1 Critical and 2 High security findings and continue to runtime validation? The findings will remain visible after publication.',
+    await user.click(screen.getByRole('button', { name: 'Review findings' }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(
+      'Accept 1 Critical and 2 High security findings',
     );
+    await user.click(screen.getByRole('button', { name: 'Accept and continue' }));
     expect(acceptFindings).toHaveBeenCalledWith('custom', 'r-1');
-    confirm.mockRestore();
+  });
+
+  it('shows live lifecycle progress with CodeBuild and ECR links', async () => {
+    const buildingEnvironment = {
+      ...custom,
+      status: 'SCANNING',
+    };
+    const scanningRevision = {
+      ...revision,
+      status: 'SCANNING',
+      imageUri: '123456789012.dkr.ecr.eu-west-1.amazonaws.com/managed-environments',
+      imageDigest: `sha256:${'f'.repeat(64)}`,
+      buildLogUrl:
+        'https://console.aws.amazon.com/codesuite/codebuild/projects/environments/build/1',
+    };
+    list.mockResolvedValue([buildingEnvironment, standard]);
+    get.mockImplementation(async (environmentId: string) =>
+      environmentId === 'standard'
+        ? standardDetail
+        : {
+            environment: buildingEnvironment,
+            revisions: [scanningRevision],
+            publishedRevision: null,
+          },
+    );
+
+    render(<EnvironmentsTab />);
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'ECR is inspecting its operating-system packages',
+    );
+    expect(screen.getByRole('link', { name: /CodeBuild logs/ })).toHaveAttribute(
+      'href',
+      scanningRevision.buildLogUrl,
+    );
+    expect(screen.getByRole('link', { name: /Open ECR/ })).toHaveAttribute(
+      'href',
+      'https://eu-west-1.console.aws.amazon.com/ecr/repositories/private/123456789012/managed-environments?region=eu-west-1',
+    );
+  });
+
+  it('keeps protected environment revisions compact and shows READY checks as complete', async () => {
+    const readyRevision = {
+      ...standardRevision,
+      revisionId: 'core-96-cde6f3fd0e12',
+      status: 'READY' as const,
+      imageDigest: `sha256:${'f'.repeat(64)}`,
+      verification: { status: 'PASSED' },
+    };
+    const publishedRevision = {
+      ...standardRevision,
+      revisionId: 'core-95-5e8a3c490898',
+    };
+    const readyEnvironment = {
+      ...standard,
+      status: 'READY',
+      currentRevisionId: readyRevision.revisionId,
+      publishedRevisionId: publishedRevision.revisionId,
+      updateAvailable: true,
+    };
+    list.mockResolvedValue([readyEnvironment]);
+    get.mockResolvedValue({
+      environment: readyEnvironment,
+      revisions: [readyRevision, publishedRevision],
+      publishedRevision,
+    });
+
+    render(<EnvironmentsTab />);
+
+    expect(await screen.findByRole('combobox', { name: 'Revision' })).toBeInTheDocument();
+    expect(screen.queryByText('Revision history')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /Definition/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Check: complete')).toBeInTheDocument();
+    expect(screen.getByLabelText('Verify: complete')).toBeInTheDocument();
+    expect(screen.getByLabelText('Publish: current')).toBeInTheDocument();
   });
 
   it('offers acceptance for a prior security-only failure', async () => {
@@ -483,12 +784,13 @@ describe('EnvironmentsTab', () => {
 
     render(<EnvironmentsTab />);
 
-    expect(await screen.findByText('Build passed')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Accept Findings & Continue' })).toBeInTheDocument();
+    expect(await screen.findByText('Built successfully')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review findings' })).toBeInTheDocument();
     expect(screen.queryByText('critical_vulnerability_findings')).not.toBeInTheDocument();
   });
 
   it('keeps accepted security issues visible after publication', async () => {
+    const user = userEvent.setup();
     const publishedEnvironment = {
       ...custom,
       status: 'PUBLISHED',
@@ -516,12 +818,45 @@ describe('EnvironmentsTab', () => {
 
     render(<EnvironmentsTab />);
 
+    expect(await screen.findByRole('button', { name: 'Details and evidence' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    await user.click(screen.getByRole('button', { name: 'Details and evidence' }));
     expect(await screen.findByText('Findings accepted')).toBeInTheDocument();
     expect(screen.getByText(/Accepted by admin@example.com/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /CVE-2026-42010/ })).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Accept Findings & Continue' }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review findings' })).not.toBeInTheDocument();
+  });
+
+  it('builds advanced settings with structured rows', async () => {
+    const user = userEvent.setup();
+    create.mockResolvedValue({
+      environment: custom,
+      revision,
+    });
+
+    render(<EnvironmentsTab />);
+    await screen.findByText('Environment details');
+    await user.click(screen.getByRole('button', { name: 'New environment' }));
+    await user.type(screen.getByLabelText('Name'), 'Native Build');
+    await user.click(screen.getByRole('button', { name: /Advanced settings/ }));
+    await user.click(screen.getByRole('button', { name: 'Add package' }));
+    await user.type(screen.getByLabelText('Package name 1'), 'libssl-dev');
+    await user.type(screen.getByLabelText('Package version 1'), '3.0.17-1~deb12u2');
+    await user.click(screen.getByRole('button', { name: 'Add variable' }));
+    await user.type(screen.getByLabelText('Variable name 1'), 'BUILD_MODE');
+    await user.type(screen.getByLabelText('Variable value 1'), 'release');
+    await user.click(screen.getByRole('button', { name: 'Create draft' }));
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipe: expect.objectContaining({
+          aptPackages: [{ name: 'libssl-dev', version: '3.0.17-1~deb12u2' }],
+          environmentVariables: { BUILD_MODE: 'release' },
+        }),
+      }),
+    );
   });
 
   it('points a read-only fixed-tool environment at an action the UI actually offers', async () => {

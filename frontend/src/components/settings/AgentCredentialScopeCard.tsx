@@ -11,6 +11,7 @@ import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
+import { agentCredentialFormatWarning } from '@/lib/agentCredentialFormat';
 
 // Credential storage scopes. Intents pin an opaque binding to one of these;
 // they do not store a separate secret.
@@ -250,6 +251,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
             clearing={clearingSecret === 'bedrockBearerToken'}
             disabled={saving || clearingSecret !== null}
             helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
+            warningText={agentCredentialFormatWarning('bedrockBearerToken', bearerToken)}
           />
           <SecretField
             id={`${scope}-kiro-api-key`}
@@ -263,6 +265,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
             clearing={clearingSecret === 'kiroApiKey'}
             disabled={saving || clearingSecret !== null}
             helpText={`Enables the Kiro CLI.${fallbackText('kiro') ?? ''}`}
+            warningText={agentCredentialFormatWarning('kiroApiKey', kiroApiKey)}
           />
           <SaveStatusButton
             onClick={save}

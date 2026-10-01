@@ -14,9 +14,15 @@
 // unparseable output, a grid the resolver rejects) FAILS the row with the
 // structured reason; an unrunnable grid is never presented as a proposal.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { mkdir } from 'node:fs/promises';
 import { runOneShotPrompt } from '../cli/one-shot.js';
-import { loadLibrary, loadBlockBody, listMergedBlocks } from '../block-loader.js';
+import {
+  loadLibrary,
+  loadBlockBody,
+  listMergedBlocks,
+  listReleaseBlocks,
+} from '../block-loader.js';
 import { buildExecutionPlan } from '../../shared/v2-execution-plan.js';
 import {
   buildGroundingPack,
@@ -25,6 +31,10 @@ import {
 } from '../../shared/compose-match.js';
 import { resolveCliSelection } from './discussion-assist-start.js';
 import { closeGraphSource } from '../mcp/graph-writer.js';
+
+const logger = new Logger({
+  persistentKeys: { component: 'agentcore', module: 'compose-plan-start' },
+});
 
 const CONTEXT_LIMIT = 48 * 1024;
 const MAX_REPORT_EXCERPT = 24 * 1024;
@@ -154,11 +164,12 @@ export const createComposePlanStart = ({
   loadLibraryFn = loadLibrary,
   loadBlockBodyFn = loadBlockBody,
   listMergedBlocksFn = listMergedBlocks,
+  listReleaseBlocksFn = listReleaseBlocks,
   mkdirFn = mkdir,
   env = process.env,
   busy = null,
   activeJobs = new Map(),
-  log = (...args) => console.error('[compose-plan-start]', ...args),
+  log = (...args) => logger.error(...args), // TODO: remove this (only used in tests)
 }) => {
   const start = async (payload = {}) => {
     const {
@@ -168,6 +179,8 @@ export const createComposePlanStart = ({
       mode = 'front',
       workflowId,
       workflowVersion,
+      methodologyRelease = null,
+      methodologyPins = null,
       prompt = '',
       instructions = '',
       repoSignals = null,
@@ -220,7 +233,16 @@ export const createComposePlanStart = ({
     const job = (async () => {
       let g;
       try {
-        const { workflow, library } = await loadLibraryFn({ workflowId, workflowVersion });
+        const { workflow, library } = await loadLibraryFn({
+          workflowId,
+          workflowVersion,
+          ...(methodologyRelease
+            ? {
+                methodologyRelease,
+                ...(methodologyPins ? { methodologyPins } : {}),
+              }
+            : {}),
+        });
         if (!workflow || !library) {
           await finish({
             state: 'FAILED',
@@ -228,7 +250,9 @@ export const createComposePlanStart = ({
           });
           return;
         }
-        const scopeBlocks = await listMergedBlocksFn('SCOPE').catch(() => []);
+        const scopeBlocks = methodologyRelease
+          ? await listReleaseBlocksFn('SCOPE', methodologyRelease, methodologyPins)
+          : await listMergedBlocksFn('SCOPE').catch(() => []);
         const { scopes, summaries, grids, stages, offeredScopeIds } = buildScopeGrounding({
           workflow,
           library,
@@ -238,14 +262,15 @@ export const createComposePlanStart = ({
 
         // Composer persona + methodology knowledge from the block library
         // (fork-shadowing applies — a user's edited composer is honoured).
+        const loadBody = methodologyRelease
+          ? (block) => loadBlockBodyFn(block, { methodologyRelease })
+          : (block) => loadBlockBodyFn(block).catch(() => '');
         const agentBlock = library.agentsById?.[COMPOSER_AGENT_ID] ?? null;
-        const persona = agentBlock ? await loadBlockBodyFn(agentBlock).catch(() => '') : '';
+        const persona = agentBlock ? await loadBody(agentBlock) : '';
         const knowledgeBlocks = Object.values(library.knowledgeById ?? {}).filter(
           (k) => k.agentRef === COMPOSER_AGENT_ID,
         );
-        const knowledgeBodies = await Promise.all(
-          knowledgeBlocks.map((k) => loadBlockBodyFn(k).catch(() => '')),
-        );
+        const knowledgeBodies = await Promise.all(knowledgeBlocks.map(loadBody));
 
         const fullPrompt = buildComposePrompt({
           mode,

@@ -11,7 +11,9 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, PutParameterCommand, DeleteParameterCommand } from '@aws-sdk/client-ssm';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from './response.js';
+import { redactEventForLogging } from './safe-event-logger.js';
 import {
   getOAuthCredentials,
   createSignedState,
@@ -28,6 +30,7 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const secrets = new SecretsManagerClient({});
 const ssm = new SSMClient({});
+const logger = new Logger({ persistentKeys: { component: 'git-handler' } });
 
 // Build a handler bound to a single provider.
 //
@@ -117,34 +120,7 @@ export const createGitHandler = (provider, routes) => {
 
   return async (event) => {
     const response = buildResponse(event, { methods: 'GET,POST,DELETE,OPTIONS' });
-    const {
-      gitToken: _gitToken,
-      code: _code,
-      state: _state,
-      accessToken: _accessToken,
-      ...safeEvent
-    } = event;
-    // The OAuth secrets travel in the callback's QUERY STRING (?code=&state=),
-    // not the top-level event — stripping the top-level keys above is not
-    // enough. Redact the nested query params too so authorization codes and
-    // signed state never reach CloudWatch (they grant account access if leaked).
-    const redactQuery = (q) => {
-      if (!q || typeof q !== 'object') return q;
-      const SENSITIVE = ['code', 'state', 'access_token', 'refresh_token', 'client_secret'];
-      const out = { ...q };
-      for (const k of SENSITIVE) {
-        if (k in out) out[k] = '[REDACTED]';
-      }
-      return out;
-    };
-    console.log(
-      'Request:',
-      JSON.stringify({
-        ...safeEvent,
-        body: '[REDACTED]',
-        queryStringParameters: redactQuery(safeEvent.queryStringParameters),
-      }),
-    );
+    logger.info('Request', { event: redactEventForLogging(event) });
 
     if (event.httpMethod === 'OPTIONS') return response(200, {});
 
@@ -237,7 +213,7 @@ export const createGitHandler = (provider, routes) => {
               authorEmail: user.authorEmail,
             };
           } catch (e) {
-            console.error(`Failed to fetch ${providerLabel} user for attribution:`, e.message);
+            logger.error(`Failed to fetch ${providerLabel} user for attribution`, e);
           }
         }
         await putGitConnection(ddb, {
@@ -299,7 +275,7 @@ export const createGitHandler = (provider, routes) => {
           try {
             await ssm.send(new DeleteParameterCommand({ Name: Item.parameterName }));
           } catch (e) {
-            console.error('Failed to delete git token parameter:', e.message);
+            logger.error('Failed to delete git token parameter', e);
           }
         }
         // Delete from BOTH the new and legacy tables so a stale legacy row
@@ -390,7 +366,7 @@ export const createGitHandler = (provider, routes) => {
 
       return response(404, { error: 'Not found' });
     } catch (err) {
-      console.error('Error:', err);
+      logger.error('Error', err);
       if (err.status && err.name === 'ProviderError') {
         return response(err.status, { error: err.message, ...err.extra });
       }

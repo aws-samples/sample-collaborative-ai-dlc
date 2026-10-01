@@ -1,3 +1,4 @@
+import { isGitProvider } from '@/services/gitProvider';
 import { useEffect, useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { projectsService } from '@/services/projects';
@@ -114,7 +115,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (searchParams.get('reopenCreateSpace') === '1') {
       const provider = searchParams.get('gitProvider');
-      if (provider === 'gitlab' || provider === 'github' || provider === 'bitbucket') {
+      if (isGitProvider(provider)) {
         setCreateInitialProvider(provider);
       }
       setShowCreateModal(true);

@@ -87,6 +87,28 @@ const renderProvider = () =>
     </MemoryRouter>,
   );
 
+function CompiledProbe() {
+  const { compiled: current } = useIntent();
+  const id = (current as { id?: string } | null)?.id;
+  return <div data-testid="compiled">{current ? (id ?? 'set') : 'null'}</div>;
+}
+
+const renderCompiledProbe = () =>
+  render(
+    <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+      <Routes>
+        <Route
+          path="/space/:projectId/intent/:intentId"
+          element={
+            <IntentProvider>
+              <CompiledProbe />
+            </IntentProvider>
+          }
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
 const detail = (over: Record<string, unknown> = {}) => ({
   intent: {
     id: 'i1',
@@ -113,6 +135,21 @@ const detail = (over: Record<string, unknown> = {}) => ({
   sensorRuns: [],
   artifacts: [],
 });
+
+const pinnedDetail = (
+  releaseId = 'aidlc:release-a',
+  importerRevision = 3,
+  intentOver: Record<string, unknown> = {},
+) =>
+  detail({
+    ...intentOver,
+    methodologyRelease: {
+      releaseId,
+      sourceSha: 'a'.repeat(40),
+      closureDigest: 'd'.repeat(64),
+      importerRevision,
+    },
+  });
 
 describe('IntentContext', () => {
   beforeEach(() => {
@@ -146,6 +183,176 @@ describe('IntentContext', () => {
     await waitFor(() =>
       expect(screen.getByTestId('rows')).toHaveTextContent('stage-a:PENDING,stage-c:RUNNING'),
     );
+  });
+
+  it('compiles the workflow with the intent release pin', async () => {
+    get.mockResolvedValue(
+      detail({
+        workflowVersion: 7,
+        currentPhase: 'ideation',
+        methodologyRelease: {
+          releaseId: 'aidlc:release-a',
+          sourceSha: 'a'.repeat(40),
+          closureDigest: 'd'.repeat(64),
+          importerRevision: 3,
+        },
+      }),
+    );
+    compiled.mockResolvedValue({
+      phases: [
+        {
+          phaseId: 'ideation',
+          name: 'Pinned Ideation',
+          kind: 'phase',
+          path: 'release-02',
+          parentPath: null,
+          order: 1,
+        },
+      ],
+      graph: { nodes: [], edges: [] },
+    });
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(compiled).toHaveBeenCalledWith('wf', 7, 'aidlc:release-a', 3, {
+        projectId: 'p1',
+        intentId: 'i1',
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('release-02'));
+    expect(workflowGet).not.toHaveBeenCalled();
+  });
+
+  it('dedupes pinned compilation when a realtime reload returns a new intent object', async () => {
+    get
+      .mockResolvedValueOnce(pinnedDetail())
+      .mockResolvedValueOnce(pinnedDetail('aidlc:release-a', 3, { updatedAt: 'later' }));
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note', noteType: 'v2.artifact.created' });
+    });
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+
+    expect(compiled).toHaveBeenCalledTimes(1);
+  });
+
+  it('recompiles a pinned intent when its release identity changes', async () => {
+    get
+      .mockResolvedValueOnce(pinnedDetail())
+      .mockResolvedValueOnce(pinnedDetail('aidlc:release-b', 4));
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+
+    expect(compiled).toHaveBeenLastCalledWith('wf', 1, 'aidlc:release-b', 4, {
+      projectId: 'p1',
+      intentId: 'i1',
+    });
+  });
+
+  it('recompiles a pinned intent when only its releaseId changes', async () => {
+    get
+      .mockResolvedValueOnce(pinnedDetail('aidlc:release-a', 3))
+      .mockResolvedValueOnce(pinnedDetail('aidlc:release-b', 3));
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+
+    expect(compiled).toHaveBeenLastCalledWith('wf', 1, 'aidlc:release-b', 3, {
+      projectId: 'p1',
+      intentId: 'i1',
+    });
+  });
+
+  it('discards a late compiled response after the release identity changed', async () => {
+    get
+      .mockResolvedValueOnce(pinnedDetail('aidlc:release-a', 3))
+      .mockResolvedValueOnce(pinnedDetail('aidlc:release-b', 3));
+    let resolveFirst: (value: unknown) => void = () => {};
+    compiled
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ id: 'release-b', graph: { nodes: [], edges: [] } });
+    renderCompiledProbe();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(screen.getByTestId('compiled')).toHaveTextContent('release-b'));
+
+    await act(async () => {
+      resolveFirst({ id: 'release-a', graph: { nodes: [], edges: [] } });
+    });
+    expect(screen.getByTestId('compiled')).toHaveTextContent('release-b');
+  });
+
+  it('evicts a failed pinned compilation so a realtime reload can retry', async () => {
+    get.mockResolvedValue(pinnedDetail());
+    compiled
+      .mockRejectedValueOnce(new Error('temporary compile failure'))
+      .mockResolvedValueOnce({ graph: { nodes: [], edges: [] } });
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes compilation on realtime reload for an unpinned intent', async () => {
+    get.mockResolvedValueOnce(detail()).mockResolvedValueOnce(detail({ updatedAt: 'later' }));
+    renderProvider();
+
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(1));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+    expect(compiled).toHaveBeenLastCalledWith('wf', 1, undefined, undefined);
+  });
+
+  it('keeps the previous compiled workflow while an unpinned reload recompiles', async () => {
+    get.mockResolvedValueOnce(detail()).mockResolvedValueOnce(detail({ updatedAt: 'later' }));
+    let resolveSecond: (value: unknown) => void = () => {};
+    compiled
+      .mockResolvedValueOnce({ id: 'first', graph: { nodes: [], edges: [] } })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+    renderCompiledProbe();
+
+    await waitFor(() => expect(screen.getByTestId('compiled')).toHaveTextContent('first'));
+    act(() => {
+      capturedOnEvent?.({ action: 'agent.note' });
+    });
+    await waitFor(() => expect(compiled).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('compiled')).toHaveTextContent('first');
+
+    await act(async () => {
+      resolveSecond({ id: 'second', graph: { nodes: [], edges: [] } });
+    });
+    expect(screen.getByTestId('compiled')).toHaveTextContent('second');
   });
 
   it('accumulates agent.question events by humanTaskId (upsert, never replace)', async () => {

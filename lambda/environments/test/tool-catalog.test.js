@@ -10,6 +10,7 @@ import {
   normalizeToolId,
   normalizeToolVersionDefinition,
   resolveToolDependencies,
+  toolVersionSnapshot,
 } from '../tool-catalog.js';
 
 const exec = promisify(execFile);
@@ -60,6 +61,10 @@ describe('managed tool catalog', () => {
       algorithm: 'sha256',
       evidenceUrl: expect.stringMatching(/^https:/),
     });
+    expect(javaTemplate.version).toMatchObject({
+      distribution: 'Eclipse Temurin',
+      publisher: 'Eclipse Adoptium',
+    });
     expect(goTemplate.version.source.expectedChecksum.evidenceUrl).toBe(
       'https://go.dev/dl/?mode=json&include=all',
     );
@@ -72,6 +77,34 @@ describe('managed tool catalog', () => {
 
   it('normalizes administrator tool ids without ambiguous boundary matching', () => {
     expect(normalizeToolId(`---Dot${'-'.repeat(100_000)}Net SDK---`)).toBe('dot-net-sdk');
+  });
+
+  it('preserves per-version distribution and publisher metadata', () => {
+    const definition = normalizeToolVersionDefinition({
+      ...javaTemplate.version,
+      version: '21.0.8.9.1',
+      distribution: ' Amazon Corretto ',
+      publisher: ' Amazon Web Services ',
+    });
+
+    expect(definition).toMatchObject({
+      version: '21.0.8.9.1',
+      distribution: 'Amazon Corretto',
+      publisher: 'Amazon Web Services',
+    });
+    expect(
+      toolVersionSnapshot(
+        {
+          toolId: 'java',
+          versionId: 'tv-corretto',
+          definition,
+        },
+        javaTemplate,
+      ),
+    ).toMatchObject({
+      distribution: 'Amazon Corretto',
+      publisher: 'Amazon Web Services',
+    });
   });
 
   it('rejects credential-bearing and mutable source URLs', () => {

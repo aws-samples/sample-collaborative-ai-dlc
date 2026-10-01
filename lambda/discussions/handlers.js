@@ -5,6 +5,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { PutCommand, GetCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
@@ -66,6 +67,8 @@ import {
   invokeDiscussionAssist,
 } from './services.js';
 import { resolveScope } from './scope.js';
+
+const logger = new Logger({ persistentKeys: { component: 'discussions' } });
 
 const ASSIST_COMMANDS = new Set(['summarize', 'explain', 'brainstorm', 'ask']);
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,160}$/;
@@ -507,7 +510,7 @@ export const postMessage = async (event, res) => {
       // Auto-advance the author's read cursor — your own message is read.
       // Best-effort: a failure only leaves a stale badge.
       await upsertReadCursor(caller.sub, discussionId, scope.rootId, createdAt, messageId).catch(
-        (err) => console.error('Read-cursor auto-advance failed:', err.message),
+        (err) => logger.error('Read-cursor auto-advance failed', err),
       );
 
       return res(201, message);
@@ -716,7 +719,7 @@ export const assistDiscussion = async (event, res) => {
         return await failMessage(out.reason ? `Reason: ${out.reason}` : '');
       }
     } catch (err) {
-      console.error('discussion assist invoke failed:', err.message);
+      logger.error('discussion assist invoke failed', err);
       return await failMessage(
         err?.code === 'agent_credential_required' ? `Reason: ${err.message}` : '',
       );

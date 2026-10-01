@@ -43,6 +43,8 @@ const presetVersionCommand = (preset, version) => {
 
 const archiveVersion = ({
   version,
+  distribution,
+  publisher,
   url,
   checksum,
   checksumAlgorithm = 'sha256',
@@ -57,6 +59,8 @@ const archiveVersion = ({
 }) => ({
   schemaVersion: TOOL_SCHEMA_VERSION,
   version,
+  distribution,
+  publisher,
   source: {
     type: 'https',
     url,
@@ -109,6 +113,8 @@ export const SYSTEM_TOOL_TEMPLATES = [
     publisher: 'Eclipse Temurin',
     version: archiveVersion({
       version: '21.0.8',
+      distribution: 'Eclipse Temurin',
+      publisher: 'Eclipse Adoptium',
       url: 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.8_9.tar.gz',
       checksum: 'e5c41a1ab0865ea5de9b4529bf8526005f1d4593090845387d14fe450ce39c33',
       checksumEvidenceUrl:
@@ -130,6 +136,8 @@ export const SYSTEM_TOOL_TEMPLATES = [
     publisher: 'The Go project',
     version: archiveVersion({
       version: '1.24.6',
+      distribution: 'Official Go',
+      publisher: 'The Go project',
       url: 'https://go.dev/dl/go1.24.6.linux-arm64.tar.gz',
       checksum: '124ea6033a8bf98aa9fbab53e58d134905262d45a022af3a90b73320f3c3afd5',
       checksumEvidenceUrl: 'https://go.dev/dl/?mode=json&include=all',
@@ -149,6 +157,8 @@ export const SYSTEM_TOOL_TEMPLATES = [
     publisher: 'The Rust project',
     version: archiveVersion({
       version: '1.89.0',
+      distribution: 'Official Rust',
+      publisher: 'The Rust project',
       url: 'https://static.rust-lang.org/dist/rust-1.89.0-aarch64-unknown-linux-gnu.tar.gz',
       checksum: '26d6de84ac59da702aa8c2f903e3c344e3259da02e02ce92ad1c735916b29a4a',
       checksumEvidenceUrl:
@@ -171,6 +181,8 @@ export const SYSTEM_TOOL_TEMPLATES = [
     publisher: 'Apache Software Foundation',
     version: archiveVersion({
       version: '3.9.11',
+      distribution: 'Apache Maven',
+      publisher: 'Apache Software Foundation',
       url: 'https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries/apache-maven-3.9.11-bin.tar.gz',
       checksum:
         'bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978',
@@ -190,6 +202,8 @@ export const SYSTEM_TOOL_TEMPLATES = [
     publisher: 'Gradle',
     version: archiveVersion({
       version: '9.0.0',
+      distribution: 'Gradle',
+      publisher: 'Gradle',
       url: 'https://services.gradle.org/distributions/gradle-9.0.0-bin.zip',
       checksum: '8fad3d78296ca518113f3d29016617c7f9367dc005f932bd9d93bf45ba46072b',
       checksumEvidenceUrl: 'https://services.gradle.org/distributions/gradle-9.0.0-bin.zip.sha256',
@@ -293,6 +307,12 @@ export const validateToolVersionDefinition = (definition) => {
   }
   if (!VERSION_PATTERN.test(definition.version ?? '')) {
     issues.push(issue('version', 'version must be exact and start with a number'));
+  }
+  for (const field of ['distribution', 'publisher']) {
+    const value = definition[field];
+    if (value !== undefined && (typeof value !== 'string' || !value.trim() || value.length > 120)) {
+      issues.push(issue(field, `${field} must be between 1 and 120 characters`));
+    }
   }
   if (definition.source?.type !== 'https') {
     issues.push(issue('source.type', 'source type must be https'));
@@ -441,6 +461,10 @@ export const normalizeToolVersionDefinition = (input = {}) => {
   const definition = {
     schemaVersion: TOOL_SCHEMA_VERSION,
     version,
+    ...(String(input.distribution ?? '').trim()
+      ? { distribution: String(input.distribution).trim() }
+      : {}),
+    ...(String(input.publisher ?? '').trim() ? { publisher: String(input.publisher).trim() } : {}),
     source: {
       type: 'https',
       url: String(input.source?.url ?? input.sourceUrl ?? '').trim(),
@@ -1274,7 +1298,8 @@ export const toolVersionSnapshot = (version, tool = {}) => ({
   toolId: version.toolId,
   name: tool.name ?? version.toolId,
   category: tool.category ?? 'cli',
-  publisher: tool.publisher ?? '',
+  distribution: version.definition.distribution ?? tool.publisher ?? '',
+  publisher: version.definition.publisher ?? tool.publisher ?? '',
   versionId: version.versionId,
   version: version.definition.version,
   imageUri: version.imageUri,

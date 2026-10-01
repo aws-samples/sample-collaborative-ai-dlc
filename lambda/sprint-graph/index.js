@@ -4,6 +4,9 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
 import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'sprint-graph' } });
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -21,7 +24,8 @@ const getConnection = async () => {
   return new DriverRemoteConnection(url, { headers });
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const res = buildResponse(event, { methods: 'GET,OPTIONS' });
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
@@ -122,7 +126,7 @@ export const handler = async (event) => {
 
     return res(200, { nodes, edges: edgeList });
   } catch (err) {
-    console.error('Error:', err);
+    logger.error('Error', err);
     return res(500, { error: 'Internal server error' });
   } finally {
     if (conn)

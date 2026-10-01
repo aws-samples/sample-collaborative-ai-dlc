@@ -2,8 +2,16 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
+  # Provisioning a custom domain must not cut over existing SSO redirects before
+  # its DNS and upstream IdP callbacks are ready.
+  hosted_ui_origin = (
+    var.custom_domain != "" && var.custom_domain_active ? "https://${aws_cognito_user_pool_domain.custom[0].domain}" :
+    "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.region}.amazoncognito.com"
+  )
+
   sso_enabled        = var.auth_mode != "local"
   local_enabled      = var.auth_mode != "sso-only"
+  all_lambdas_in_vpc = var.lambda_vpc_scope == "all"
   sso_provider_names = nonsensitive(toset(keys(var.sso_providers)))
   oidc_provider_names = nonsensitive(toset([
     for name, provider in var.sso_providers : name
@@ -61,8 +69,14 @@ module "sso_token_lambda" {
 
   hash_extra = local.sso_sources_hash
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
+  attach_network_policy  = local.all_lambdas_in_vpc
+
   environment_variables = {
-    SSO_ROLE_CONFIG = jsonencode(local.role_config)
+    POWERTOOLS_SERVICE_NAME = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
+    SSO_ROLE_CONFIG         = jsonencode(local.role_config)
   }
 }
 
@@ -174,6 +188,17 @@ resource "random_id" "cognito_domain" {
 resource "aws_cognito_user_pool_domain" "main" {
   domain       = "${substr(replace(lower("${var.project_name}-${var.environment}"), "/[^a-z0-9-]/", "-"), 0, 50)}-${random_id.cognito_domain.hex}"
   user_pool_id = aws_cognito_user_pool.main.id
+}
+
+# Optional custom managed-login domain. A user pool can hold one prefix domain
+# and one custom domain at the same time, so the prefix domain stays in place
+# and disabling custom_domain_active rolls back without replacing either domain.
+resource "aws_cognito_user_pool_domain" "custom" {
+  count = var.custom_domain != "" ? 1 : 0
+
+  domain          = var.custom_domain
+  certificate_arn = var.custom_domain_certificate_arn
+  user_pool_id    = aws_cognito_user_pool.main.id
 }
 
 resource "aws_cognito_identity_provider" "main" {

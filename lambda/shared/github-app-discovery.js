@@ -8,6 +8,7 @@
 
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from './response.js';
 import { getUserId } from './git-oauth.js';
 import { getGitHubAppConfig } from './github-auth-config.js';
@@ -16,6 +17,7 @@ import githubProvider from './git-providers/github.js';
 
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+const logger = new Logger({ persistentKeys: { component: 'github-app-discovery' } });
 
 const isAppConfigured = async () => {
   const { appId } = await getGitHubAppConfig(ssm);
@@ -29,7 +31,7 @@ const handleAppStatus = async (response) => {
     const { configured } = await isAppConfigured();
     return response(200, { configured });
   } catch (error) {
-    console.error('[github-app-discovery] status failed:', error.message);
+    logger.error('status failed', error);
     return response(200, { configured: false });
   }
 };
@@ -74,7 +76,7 @@ export const handleGitHubAppDiscovery = async (event) => {
     if (event.path?.endsWith('/app/repos')) return handleAppRepos(response);
     return response(404, { error: 'Not found' });
   } catch (error) {
-    console.error('[github-app-discovery] error:', error.message);
+    logger.error('error', error);
     return response(502, { error: 'GitHub App repository discovery failed' });
   }
 };

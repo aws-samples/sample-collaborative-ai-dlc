@@ -72,3 +72,6 @@ tfplan*
 # A7 local annex-check run artifacts (generated per-run; contain local paths)
 lambda/agentcore/test/a7-prompt.txt
 lambda/agentcore/test/a7-mcp-config.json
+
+# dependency-cruiser generated reports
+reports/dependency/

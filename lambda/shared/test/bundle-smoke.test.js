@@ -23,6 +23,7 @@ const bundles = [
   ['seed-blocks', 'lambda/seed-blocks/.build/index.mjs'],
   ['github-lambda', 'lambda/github/.build/index.mjs'],
   ['gitlab-lambda', 'lambda/gitlab/.build/index.mjs'],
+  ['intent-pin-lookup', 'lambda/intent-pin-lookup/.build/index.mjs'],
   ['user-stories', 'lambda/user-stories/.build/index.mjs'],
   ['users', 'lambda/users/.build/index.mjs'],
   ['v2-orchestrator', 'lambda/v2-orchestrator/.build/index.mjs'],

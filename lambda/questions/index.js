@@ -1,6 +1,9 @@
 import { create } from 'neptune-lambda-client';
 import { buildResponse } from '../shared/response.js';
 import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
+import { Logger } from '@aws-lambda-powertools/logger';
+
+const logger = new Logger({ persistentKeys: { component: 'questions' } });
 
 // Tests point GREMLIN_PROTOCOL at a plain ws:// gremlin-server (no IAM); Neptune
 // in production is wss:// + SigV4. Tying useIam to the protocol keeps the test
@@ -65,7 +68,8 @@ const mapQuestion = (v) => {
   };
 };
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
@@ -109,7 +113,7 @@ export const handler = async (event) => {
         return res(405, { error: 'Method not allowed' });
     }
   } catch (err) {
-    console.error('Error:', err);
+    logger.error('Error', err);
     return res(500, { error: 'Internal server error' });
   }
 };

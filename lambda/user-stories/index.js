@@ -2,7 +2,10 @@ import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { buildResponse } from '../shared/response.js';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { authorizeLegacySprintRead } from '../shared/legacy-authz.js';
+
+const logger = new Logger({ persistentKeys: { component: 'user-stories' } });
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -23,7 +26,8 @@ const mapStory = (v) => ({
   sprintId: v.get('sprint_id')?.[0] || '',
 });
 
-export const handler = async (event) => {
+export const handler = async (event, context) => {
+  if (context) logger.addContext(context);
   const res = buildResponse(event);
   if (event.httpMethod === 'OPTIONS') return res(200, {});
 
@@ -65,7 +69,7 @@ export const handler = async (event) => {
         return res(405, { error: 'Method not allowed' });
     }
   } catch (err) {
-    console.error('Error:', err);
+    logger.error('Error', err);
     return res(500, { error: 'Internal server error' });
   } finally {
     if (conn)

@@ -8,6 +8,16 @@ variable "environment" {
   type        = string
 }
 
+variable "powertools_service_name" {
+  description = "Service name included in Powertools structured logs"
+  type        = string
+}
+
+variable "powertools_log_level" {
+  description = "Log level for Powertools structured logging"
+  type        = string
+}
+
 variable "aws_region" {
   description = "AWS region"
   type        = string

@@ -27,6 +27,7 @@
 // run; this command owns ONLY process state. Every effect is injected so the
 // whole flow is unit-tested with the CLI + AWS mocked.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import { randomUUID } from 'node:crypto';
 import {
   selectCli,
@@ -76,9 +77,14 @@ import {
   ensureWorkspaceSource as defaultEnsureWorkspaceSource,
   redirectHeavyDirs as defaultRedirectHeavyDirs,
 } from '../workspace.js';
-import { commitAndPushAll as defaultCommitAndPushAll, freeDiskBytes } from '../git-engine.js';
+import {
+  commitAndPushAll as defaultCommitAndPushAll,
+  freeDiskBytes,
+  gitResultForCommitRefs as defaultGitResultForCommitRefs,
+} from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner } from '../sensor-runner.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
@@ -87,8 +93,12 @@ import {
   stageInstanceId as planStageInstanceId,
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
+import { humanTaskMatchesOwner } from '../../shared/v2-process-keys.js';
 import { credentialProviderForCli } from '../../shared/agent-credentials.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'run-stage' } });
+
 // The typed-extraction registry gates the platform-injected graph-coverage
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
@@ -219,11 +229,21 @@ const resolveStage = ({
 
 // Concatenate the methodology knowledge bodies for an agent (best-effort). This
 // is the authored, baseline-shipped tier (KNOWLEDGE blocks from the library).
-const loadMethodologyKnowledge = async ({ agentRef, library, loadBlockBody }) => {
+const loadMethodologyKnowledge = async ({
+  agentRef,
+  library,
+  loadBlockBody,
+  failOnLoadError = false,
+}) => {
   const knowledgeBlocks = Object.values(library.knowledgeById ?? {}).filter(
     (k) => k.agentRef === agentRef || k.agentRef === 'shared',
   );
-  const bodies = await Promise.all(knowledgeBlocks.map((k) => loadBlockBody(k).catch(() => '')));
+  const bodies = await Promise.all(
+    knowledgeBlocks.map((block) => {
+      const result = loadBlockBody(block);
+      return failOnLoadError ? result : result.catch(() => '');
+    }),
+  );
   return bodies.filter(Boolean).join('\n\n---\n\n');
 };
 
@@ -553,7 +573,8 @@ const summarizeSensorDetail = (detail) => {
 
 // Run the stage's deterministic sensors after the agent finishes. Records a
 // SensorRun verdict + broadcasts an `agent.note` per sensor. Returns a
-// human-readable reason string when a BLOCKING sensor held the stage, else null.
+// human-readable reason string when a blocking verdict or a release integrity
+// failure held the stage, else null.
 // `graph` sensors need a graph-writer; we open the same private graph the rest
 // of run-stage uses (best-effort — an unreachable graph yields INCONCLUSIVE
 // graph verdicts, never a crash).
@@ -887,30 +908,54 @@ export const isBenignKiroEmptyCompletion = (stderrTail = '') => {
   return !transportCause.test(s);
 };
 
-// Return THIS stage's still-pending HUMAN gate. Stage ownership is the source
-// of truth because one META pointer cannot represent concurrent lane questions.
-// The META fallback supports old rows, but only when the gate names this exact
-// stage; a sibling's question can therefore never park the current stage.
-const pendingGate = async ({ store, executionId, stageInstanceId, unitSlug, sectionIndex }) => {
-  const stage = await store.getStage(executionId, stageInstanceId).catch(() => null);
+// Return the HUMAN gate still owned by THIS stage at CLI exit. Stage ownership
+// is the source of truth because one META pointer cannot represent concurrent
+// lane questions. The META fallback supports old rows, but only when the gate
+// names this exact stage; a sibling's question can therefore never park the
+// current stage.
+//
+// Deliberately do NOT require gate.status === 'pending'. The human answer can
+// land after ask_question's grace window but before the CLI exits. In that
+// window the stage row still owns the gate and the conversation still needs a
+// resume turn with the answer; treating the answered gate as absent would let
+// the stage continue to sensors/success without ever delivering the answer.
+const ownedGateAtExit = async ({ store, executionId, stageInstanceId, unitSlug, sectionIndex }) => {
+  const stage = await store
+    .getStage(executionId, stageInstanceId, { consistentRead: true })
+    .catch(() => null);
   let humanTaskId = stage?.pendingHumanTaskId ?? null;
   if (!humanTaskId) {
-    const meta = await store.getExecution(executionId).catch(() => null);
+    const meta = await store.getExecution(executionId, { consistentRead: true }).catch(() => null);
     humanTaskId = meta?.pendingHumanTaskId ?? null;
   }
   if (!humanTaskId) return null;
-  const gate = await store.getHumanTask(executionId, humanTaskId).catch(() => null);
-  const ownsStage = gate?.stageInstanceId === stageInstanceId;
-  const ownsUnit = (gate?.unitSlug ?? null) === (unitSlug ?? null);
-  const ownsSection =
-    gate?.sectionIndex == null ||
-    sectionIndex == null ||
-    Number(gate.sectionIndex) === Number(sectionIndex);
+  const gate = await store
+    .getHumanTask(executionId, humanTaskId, { consistentRead: true })
+    .catch(() => null);
   // createdAt rides along for wait accounting: the park's parkedAt is the ASK
   // moment, not the (later) CLI exit.
-  return gate && gate.status === 'pending' && ownsStage && ownsUnit && ownsSection
+  return humanTaskMatchesOwner({ task: gate, stageInstanceId, unitSlug, sectionIndex })
     ? { humanTaskId, createdAt: gate.createdAt ?? null }
     : null;
+};
+
+const mergeCodeCommitRefs = (priorRefs, gitResult) => {
+  const refs = [];
+  const seen = new Set();
+  const add = (ref) => {
+    const repo = typeof ref?.repo === 'string' ? ref.repo : '';
+    const sha = typeof ref?.sha === 'string' ? ref.sha : '';
+    if (!repo || !sha) return;
+    const key = `${repo}\0${sha}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    refs.push({ repo, sha });
+  };
+  for (const ref of Array.isArray(priorRefs) ? priorRefs : []) add(ref);
+  for (const change of gitResult?.results ?? []) {
+    if (change?.committed === true) add(change);
+  }
+  return refs;
 };
 
 export const runStage = async (
@@ -923,6 +968,9 @@ export const runStage = async (
     workflowVersion,
     aidlcRepoRef = null,
     methodologyPins = null,
+    // Immutable release closure pinned on the intent META row. When present,
+    // the runtime resolves all methodology content from that verified closure.
+    methodologyRelease = null,
     scope,
     // Per-run skip overlay (shared/stage-skip.js): intent-level deselections +
     // accumulated gate-time skips, forwarded by the orchestrator on EVERY
@@ -996,7 +1044,7 @@ export const runStage = async (
   },
   deps,
 ) => {
-  const {
+  let {
     store,
     loadLibrary,
     loadBlockBody,
@@ -1037,6 +1085,13 @@ export const runStage = async (
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
+    // Project committed files into Neptune after all stage gates pass. The
+    // adapter detects traceability capability from a valid produced artifact,
+    // never from workflowVersion, and is deliberately best-effort.
+    ingestStageCodeTraceability = defaultIngestStageCodeTraceability,
+    // Reconstruct file lists for compact repo+SHA refs retained across a park.
+    // Injected for tests; Git remains authoritative after workspace re-clones.
+    gitResultForCommitRefs = defaultGitResultForCommitRefs,
     compileContextPack = defaultCompileContextPack,
     // Fetch project custom agent rules (.md bodies) from S3 → written into the
     // selected CLI's native rules dir by the materializer. Injected for tests.
@@ -1046,6 +1101,18 @@ export const runStage = async (
     resolveMcpSecrets = defaultResolveMcpSecrets,
     verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
   } = deps;
+
+  const releaseOptions = methodologyRelease ? { methodologyRelease } : undefined;
+  if (methodologyRelease) {
+    const readBlockBody = loadBlockBody;
+    const readBlockScript = loadBlockScript;
+    loadBlockBody = (block) => readBlockBody(block, releaseOptions);
+    loadBlockScript = (block) => readBlockScript(block, releaseOptions);
+  }
+  const loadOptionalBody = (block) => {
+    const result = loadBlockBody(block);
+    return methodologyRelease ? result : result.catch(() => '');
+  };
 
   const now = () => clock();
   const reviewFeedbackPrompt =
@@ -1059,6 +1126,11 @@ export const runStage = async (
   // a stage (mirrors the process bridge's broadcast contract).
   const publish = (payload) =>
     broadcast({ executionId, intentId, projectId, ...payload }).catch(() => {});
+
+  // Compact repo+SHA refs for work committed before projection. Once populated,
+  // every post-commit failure persists them so a clean retry can reconstruct the
+  // complete file set instead of losing traceability because Git has no new diff.
+  let retainedCodeCommitRefs = null;
 
   const emitLifecycleEvent = async ({
     type,
@@ -1099,6 +1171,9 @@ export const runStage = async (
           state: 'FAILED',
           runtimeError: reason,
           completedAt: true,
+          ...(retainedCodeCommitRefs?.length
+            ? { pendingCodeCommitRefs: retainedCodeCommitRefs }
+            : {}),
           ...(clearPending ? { pendingHumanTaskId: null } : {}),
         })
         .catch(() => {});
@@ -1160,7 +1235,13 @@ export const runStage = async (
   // agentRef, merge, then resolve against the enriched library.
   let loaded;
   try {
-    loaded = await loadLibrary({ workflowId, workflowVersion, methodologyPins, aidlcRepoRef });
+    loaded = await loadLibrary({
+      workflowId,
+      workflowVersion,
+      methodologyPins,
+      aidlcRepoRef,
+      ...(methodologyRelease ? { methodologyRelease } : {}),
+    });
   } catch (error) {
     return fail(null, 'methodology_snapshot_unavailable', error.message);
   }
@@ -1417,12 +1498,16 @@ export const runStage = async (
       stageInstanceId,
     });
     resumeGate = resumeFrom
-      ? await store.getHumanTask(executionId, resumeFrom).catch(() => null)
+      ? await store
+          .getHumanTask(executionId, resumeFrom, { consistentRead: true })
+          .catch(() => null)
       : null;
     if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
     if (resumeFrom && resumeGate.status === 'pending')
       return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
-    const row = await store.getStage(executionId, stageInstanceId).catch(() => null);
+    const row = await store
+      .getStage(executionId, stageInstanceId, { consistentRead: true })
+      .catch(() => null);
     cli = row?.cli ?? null;
     const priorSessionId = row?.cliSessionId ?? null;
     if ((!cli || !priorSessionId) && !reviewFeedback) {
@@ -1466,7 +1551,7 @@ export const runStage = async (
       const kiroRestored = await restoreKiroStore({ env }).catch(() => false);
       if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
       else if (!kiroRestored)
-        console.error(`[run-stage] kiro store not restored for resume ${stageInstanceId}`);
+        logger.error('kiro store not restored for resume', { stageInstanceId });
     } else if (!demotedResume && cli === 'opencode') {
       const storePresent = await hasOpenCodeStore({ env }).catch(() => false);
       if (!storePresent && resolveOpenCodeStore(env)) conversationLost = true;
@@ -1510,6 +1595,10 @@ export const runStage = async (
   // stage row + threaded to the MCP scope for read-time token pricing.
   const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
   const priorStageRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
+  const carriedCodeCommitRefs = Array.isArray(priorStageRow?.pendingCodeCommitRefs)
+    ? priorStageRow.pendingCodeCommitRefs
+    : [];
+  retainedCodeCommitRefs = carriedCodeCommitRefs.length ? carriedCodeCommitRefs : null;
   if (priorStageRow?.aidlcRepoRef && aidlcRepoRef && priorStageRow.aidlcRepoRef !== aidlcRepoRef) {
     return fail(
       stageInstanceId,
@@ -1558,9 +1647,11 @@ export const runStage = async (
       const detail = `${restoreStatus ?? 'restore_failed'}${
         restored?.error?.code ? ` (${restored.error.code})` : ''
       }`;
-      console.error(
-        `[run-stage] codex rollout not restored stage=${stageInstanceId} thread=${cliSessionId} status=${detail}`,
-      );
+      logger.error('codex rollout not restored', {
+        stage: stageInstanceId,
+        thread: cliSessionId,
+        status: detail,
+      });
       await store
         .appendEvent({
           executionId,
@@ -1575,7 +1666,7 @@ export const runStage = async (
       const recoveryFailure = await recoverLostConversation();
       if (recoveryFailure) return recoveryFailure;
     } else if (!restoredOk) {
-      console.error(`[run-stage] codex rollout store not configured for resume ${stageInstanceId}`);
+      logger.error('codex rollout store not configured for resume', { stageInstanceId });
     }
   }
 
@@ -1614,6 +1705,7 @@ export const runStage = async (
       resolvedModel: model,
       stageCallbackId,
       aidlcRepoRef,
+      pendingCodeCommitRefs: retainedCodeCommitRefs,
     });
   }
   await store.updateExecution({
@@ -1681,7 +1773,7 @@ export const runStage = async (
         metrics: { agentLaunchMs },
       });
     } catch (e) {
-      console.error(`[run-stage] agentLaunchMs not recorded for ${stageInstanceId}: ${e.message}`);
+      logger.error('agentLaunchMs not recorded', e, { stageInstanceId });
     }
   }
 
@@ -1725,7 +1817,7 @@ export const runStage = async (
   } catch (e) {
     // Fail closed: a collision or an unset referenced secret aborts the stage
     // with a clear, actionable error (never a silent drop / a generic CLI 401).
-    console.error(`[run-stage] mcp secret resolution failed: ${e.message}`);
+    logger.error('mcp secret resolution failed', e);
     return fail(stageInstanceId, 'mcp_secret_error', e.message);
   }
   const customServers = {
@@ -1798,9 +1890,11 @@ export const runStage = async (
   } else {
     const stageBlock = library.stagesById[stageId] ?? {};
     const [stageBody, agentPersona, conductor] = await Promise.all([
-      loadBlockBody(stageBlock).catch(() => ''),
-      agentBlock ? loadBlockBody(agentBlock).catch(() => '') : Promise.resolve(''),
-      loadConductor(aidlcRepoRef || env.AIDLC_REPO_REF).catch(() => ''),
+      loadOptionalBody(stageBlock),
+      agentBlock ? loadOptionalBody(agentBlock) : Promise.resolve(''),
+      methodologyRelease
+        ? loadConductor(aidlcRepoRef || env.AIDLC_REPO_REF, releaseOptions)
+        : loadConductor(aidlcRepoRef || env.AIDLC_REPO_REF).catch(() => ''),
     ]);
     // Knowledge has two tiers: the authored methodology (library blocks) and the
     // project's accrued team knowledge (already read from Neptune above). Both are
@@ -1809,7 +1903,8 @@ export const runStage = async (
     const methodology = await loadMethodologyKnowledge({
       agentRef: stage.agentRef,
       library,
-      loadBlockBody,
+      loadBlockBody: loadOptionalBody,
+      failOnLoadError: Boolean(methodologyRelease),
     });
     const knowledge = composeKnowledge(methodology, memory.teamKnowledge);
 
@@ -1823,7 +1918,7 @@ export const runStage = async (
         const body =
           typeof ruleBlock.body === 'string' && ruleBlock.body
             ? ruleBlock.body
-            : await loadBlockBody(ruleBlock).catch(() => '');
+            : await loadOptionalBody(ruleBlock);
         return [id, body];
       }),
     );
@@ -1942,7 +2037,7 @@ export const runStage = async (
   // resume — its mount was wiped, so there is nothing to restore.
   if (freshRun && !demotedResume && cli === 'kiro') {
     const restored = await restoreKiroStore({ env }).catch(() => false);
-    if (!restored) console.error(`[run-stage] kiro store not restored (fresh) ${stageInstanceId}`);
+    if (!restored) logger.error('kiro store not restored (fresh)', { stageInstanceId });
   }
 
   // 4. Spawn the headless CLI.
@@ -2025,11 +2120,14 @@ export const runStage = async (
   });
   // Correlate the [spawn:size] line below to THIS stage/cli — the diagnostic for
   // the 2026-07 nfr-design E2BIG (prompt now piped on stdin; this confirms it).
-  console.info(
-    `[run-stage] spawning cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
-      `promptBytes=${Buffer.byteLength(prompt ?? invocation.prompt ?? '', 'utf8')} ` +
-      `promptViaStdin=${invocation.promptViaStdin} argc=${invocation.args.length}`,
-  );
+  logger.info('spawning cli', {
+    cli,
+    stage: stageId,
+    unit: unitSlug ?? '-',
+    promptBytes: Buffer.byteLength(prompt ?? invocation.prompt ?? '', 'utf8'),
+    promptViaStdin: invocation.promptViaStdin,
+    argc: invocation.args.length,
+  });
   const spawnCli = () =>
     runChild({
       command: invocation.command,
@@ -2110,9 +2208,11 @@ export const runStage = async (
       const detail = `${codexPersistResult?.status ?? 'persist_failed'}${
         codexPersistResult?.error?.code ? ` (${codexPersistResult.error.code})` : ''
       }`;
-      console.error(
-        `[run-stage] codex rollout not persisted stage=${stageInstanceId} thread=${cliSessionId ?? '-'} status=${detail}`,
-      );
+      logger.error('codex rollout not persisted', {
+        stage: stageInstanceId,
+        thread: cliSessionId ?? '-',
+        status: detail,
+      });
       await store
         .appendEvent({
           executionId,
@@ -2132,18 +2232,24 @@ export const runStage = async (
     // Log the failure at the catch point — fail() only records it to DynamoDB
     // (the UI's cli_error), never to the container log. This makes the E2BIG (or
     // any spawn failure) visible + attributable to THIS stage/cli.
-    console.error(
-      `[run-stage] cli_error cli=${cli} stage=${stageId} unit=${unitSlug ?? '-'} ` +
-        `code=${spawnError?.code ?? '-'} msg=${spawnError?.message}`,
-    );
-    if (spawnError?.stack) console.error(spawnError.stack);
+    logger.error('cli_error', {
+      cli,
+      stage: stageId,
+      unit: unitSlug ?? '-',
+      code: spawnError?.code ?? '-',
+      msg: spawnError?.message,
+    });
+    if (spawnError?.stack) logger.error(spawnError.stack);
     return fail(stageInstanceId, 'cli_error', spawnError.message);
   }
 
   const exitCode = result?.exitCode ?? 0;
-  console.error(
-    `[run-stage] cli=${cli} stage=${stageId} exitCode=${exitCode} model=${model ?? '(default)'}`,
-  );
+  logger.error('cli exit', {
+    cli,
+    stage: stageId,
+    exitCode,
+    model: model ?? '(default)',
+  });
 
   // Kiro only: persist the live local store back to the durable mount after the
   // run. Runs on ANY exit (success, park, or crash) so a parked conversation is
@@ -2152,7 +2258,7 @@ export const runStage = async (
   if (cli === 'kiro') {
     const persisted = await persistKiroStore({ env }).catch(() => false);
     if (!persisted) {
-      console.error(`[run-stage] kiro store not persisted for ${stageInstanceId}`);
+      logger.error('kiro store not persisted', { stageInstanceId });
     }
   }
 
@@ -2195,7 +2301,7 @@ export const runStage = async (
         });
       }
     } catch (e) {
-      console.error(`[run-stage] kiro credits not recorded for ${stageInstanceId}: ${e.message}`);
+      logger.error('kiro credits not recorded', e, { stageInstanceId });
     }
   }
 
@@ -2292,6 +2398,8 @@ export const runStage = async (
       ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
       : `aidlc(${stageId}): ${executionId}`,
   });
+  const stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
+  retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
   if (gitResult.committed || !gitResult.ok) {
     const failedRepos = gitResult.results
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
@@ -2333,13 +2441,15 @@ export const runStage = async (
     }
   }
 
-  // 5. Park check — did the agent leave a pending question? ask_question parks
-  // (returns a sentinel) instead of blocking, so the agent is told to stop. The
-  // durable pending gate — NOT the CLI exit code — is the source of truth for a
-  // park: a clean exit OR a non-zero exit AFTER parking both mean "waiting on a
-  // human". We therefore check the gate BEFORE treating a non-zero exit as failure,
-  // so a Kiro run that parks then errors on its next turn parks rather than fails.
-  const parked = await pendingGate({
+  // 5. Park check — did the agent leave a question-owned stage boundary?
+  // ask_question parks (returns a sentinel) instead of blocking, so the agent is
+  // told to stop. The durable stage pointer — NOT the gate's current status or
+  // the CLI exit code — is the source of truth for a park. The gate may already
+  // be answered here if the answer landed while the CLI was shutting down; that
+  // still requires a resume turn so the conversation receives the answer.
+  // Therefore a clean exit OR a non-zero exit after asking both mean "park and
+  // hand control back to the orchestrator".
+  const parked = await ownedGateAtExit({
     store,
     executionId,
     stageInstanceId,
@@ -2380,9 +2490,10 @@ export const runStage = async (
     // message. Treat as success (not a stage failure) but record a note so the
     // signature stays visible. Sensors below still run and can hold the stage.
     if (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail)) {
-      console.error(
-        `[run-stage] kiro empty-completion (benign) on ${stageId}; exitCode=${exitCode} — treating as success`,
-      );
+      logger.error('kiro empty-completion (benign); treating as success', {
+        stage: stageId,
+        exitCode,
+      });
       await store
         .appendEvent({
           executionId,
@@ -2420,6 +2531,7 @@ export const runStage = async (
         parkedAt: parked.createdAt ?? true,
         cli,
         cliSessionId,
+        pendingCodeCommitRefs: stageCodeCommitRefs.length ? stageCodeCommitRefs : null,
       })
       .catch(() => {});
     await store.appendEvent({
@@ -2499,8 +2611,9 @@ export const runStage = async (
 
   // 6. Deterministic sensors — the verification axis that runs AFTER the agent.
   // Graph sensors evaluate the produced artifacts' content in-process; script
-  // sensors spawn against the workspace checkout. Advisory verdicts record a
-  // note and never hold; a BLOCKING sensor that did not PASS fails the stage.
+  // sensors spawn against the workspace checkout. Advisory verdicts normally
+  // record a note without holding; release-pinned script integrity failures
+  // hold regardless of severity, as does any non-PASS blocking sensor.
   // Best-effort wiring: a sensor subsystem error never masks a successful run.
   // The list is the authored sensors PLUS the platform-injected ones (see
   // withPlatformSensors) — hence the gate checks the merged list.
@@ -2533,7 +2646,7 @@ export const runStage = async (
       return fail(stageInstanceId, 'reviewer_not_found', reviewerAgent);
     }
     const [reviewerPersona, reviewerMethodology] = await Promise.all([
-      loadBlockBody(reviewerBlock).catch(() => ''),
+      loadOptionalBody(reviewerBlock),
       loadMethodologyKnowledge({
         agentRef: reviewerAgent,
         library,
@@ -2600,6 +2713,79 @@ export const runStage = async (
     }
   }
 
+  // The set of changed files comes from this stage's git commit — a source
+  // every workflow has, so we always create CodeFile nodes + their Intent/Unit
+  // topology from it. A valid, stage/unit-produced traceability.json is an
+  // OPTIONAL extra source (capability-detected) that only adds requirement→file
+  // evidence edges on top. Projection is intentionally best-effort: missing or
+  // malformed evidence and Neptune outages must not turn successful
+  // implementation work into an execution failure.
+  let completedGitResult = gitResult;
+  try {
+    if (carriedCodeCommitRefs.length > 0) {
+      completedGitResult = await gitResultForCommitRefs({
+        commitRefs: stageCodeCommitRefs,
+        repos,
+        workspaceDir,
+      });
+    }
+    const projected = await ingestStageCodeTraceability({
+      openGraph,
+      scope: {
+        projectId,
+        intentId,
+        executionId,
+        stageInstanceId,
+        sectionIndex,
+        unitSlug,
+      },
+      gitResult: completedGitResult,
+      repos,
+      workspaceDir,
+      stageId,
+      stageInstanceId,
+      unitSlug,
+    });
+    if (projected.codeFiles > 0) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.code_files.ingested',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Projected ${projected.codeFiles} code file revision(s) with ${projected.evidenceEdges} evidence edge(s)`,
+        })
+        .catch(() => {});
+    }
+    if (projected.statuses.includes('invalid')) {
+      await store
+        .appendEvent({
+          executionId,
+          type: 'v2.traceability.degraded',
+          stageInstanceId,
+          unitSlug,
+          sectionIndex,
+          actor: 'agentcore',
+          summary: `Stage ${stageLabel} produced invalid traceability.json; Git code topology was retained without evidence links`,
+        })
+        .catch(() => {});
+    }
+  } catch (error) {
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.traceability.degraded',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: `Code traceability projection skipped: ${error?.message ?? String(error)}`,
+      })
+      .catch(() => {});
+  }
+
   // 7. Terminal success.
   await store.updateStageState({
     executionId,
@@ -2608,6 +2794,7 @@ export const runStage = async (
     completedAt: true,
     cli,
     cliSessionId,
+    pendingCodeCommitRefs: null,
   });
   // Steering provenance: link the corrections this stage consumed to the
   // artifacts it produced (Steering --INFLUENCES--> Artifact), mirroring the
@@ -2649,10 +2836,11 @@ export const runStage = async (
     state: 'SUCCEEDED',
   });
   const changedFiles = [
-    ...new Set(gitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
+    ...new Set(completedGitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
   ].toSorted();
   const commitSha =
-    gitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ?? null;
+    completedGitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ??
+    null;
   return {
     ok: true,
     state: 'SUCCEEDED',

@@ -1,0 +1,1782 @@
+{
+  "files": {
+    "core/agents/aidlc-architect-agent.md": {
+      "content": "---\nname: aidlc-architect-agent\ndisplay_name: Architect Agent\nexamples:\n  - tech-stack.md\n  - infrastructure-preferences.md\ndescription: >\n  Solutions architect responsible for domain design, contract design, NFR patterns, and component decomposition.\n  Leads Feasibility, Domain Design, Units Generation, Contract Design, Functional Design, NFR Requirements, and NFR Design stages,\n  and serves as the dispatched final link of the Reverse Engineering pipeline.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "e7549a5b968b029f1b47dc0c575a424554db74b3c64f841d87e3ef278ce23756",
+      "kind": "frontmatter",
+      "originalSha256": "e820278f7e248cbf7293c554344e5388d4c017b2f6789f844551709a2927373c"
+    },
+    "core/agents/aidlc-architecture-reviewer-agent.md": {
+      "content": "---\nname: aidlc-architecture-reviewer-agent\ndisplay_name: Architecture Reviewer\ndescription: >\n  Senior solutions architect who reviews technical design artifacts for soundness, implementability, and coherence. Finds broken cross-references, hidden dependencies, unachievable quality targets, and designs that won't survive contact with reality.\ndisallowedTools: Task\ntier: balanced\nmaxTurns: 60\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "1f577ec7f7157d03e6b0c2f7e0cb21c7ed77ec72a14475bbef7b8f902e836eb8",
+      "kind": "frontmatter",
+      "originalSha256": "af3c7949d1d66b202fcf9a3b7e791006f743344e54a0d32612810fd5419085c2"
+    },
+    "core/agents/aidlc-aws-platform-agent.md": {
+      "content": "---\nname: aidlc-aws-platform-agent\ndisplay_name: AWS Platform Agent\nexamples:\n  - account-structure.md\n  - service-limits.md\ndescription: >\n  AWS solutions architect responsible for infrastructure design, environment provisioning, and cloud-native architecture.\n  Leads Infrastructure Design and Environment Provisioning stages.\n  Supports Feasibility, Domain Design, Contract Design, NFR Design, and Feedback & Optimization.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "1b82a6aadb8b5da0d254c3f1da0b674ea24944f41428f4b465e9f1e2cfe806c1",
+      "kind": "frontmatter",
+      "originalSha256": "e77f7428666e78ff6c487ebc4875e37216629cac46d782477895be6a45577be8"
+    },
+    "core/agents/aidlc-compliance-agent.md": {
+      "content": "---\nname: aidlc-compliance-agent\ndisplay_name: Compliance Agent\nexamples:\n  - data-governance.md\n  - audit-requirements.md\ndescription: >\n  GRC analyst and regulatory specialist responsible for compliance mapping, data classification, and risk assessment.\n  Support-only agent for Feasibility & Constraint Analysis and cross-cutting compliance validation.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "23d98a1976b46b35410918fbfbd681dae60b297f0068355995b8704c062c5d42",
+      "kind": "frontmatter",
+      "originalSha256": "a9b7c16cd0382b56092e19a6104a2c038a2bce41e8871b1077beb003fa5cbee7"
+    },
+    "core/agents/aidlc-composer-agent.md": {
+      "content": "---\nname: aidlc-composer-agent\ndisplay_name: Composer Agent\ndescription: >\n  Adaptive workflow composer. Estimates implementation entropy (intent\n  ambiguity, codebase structural uncertainty, verification entropy, risk,\n  unresolved assumptions) then composes the minimum viable workflow — the\n  least sufficient sequence of stages that can safely transform the intent\n  into a verified change. Prioritizes CodeKB MCP tools as the SOLE structural\n  evidence source when they are present and the relevant spaces/hyperspaces are\n  indexed; only falls back to bounded workspace analysis when CodeKB is absent\n  or not ready.\n  Dispatched by the /aidlc orchestrator; never invoked directly by a stage.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "cac254c15da32ab1a5be263a500cb054e808037953b2e897e37aca05f785beae",
+      "kind": "frontmatter",
+      "originalSha256": "87a658be6e8f431407968d3b7b042d76b65671672cb6cc053a863100bf93a764"
+    },
+    "core/agents/aidlc-delivery-agent.md": {
+      "content": "---\nname: aidlc-delivery-agent\ndisplay_name: Delivery Agent\nexamples:\n  - sprint-cadence.md\n  - definition-of-done.md\ndescription: >\n  Engineering manager responsible for team formation, Bolt sequencing, and phase handoffs.\n  Leads Team Formation, Initiative Approval & Handoff, and Delivery Planning stages.\n  Supports Scope Definition and Units Generation.\ndisallowedTools: Task\ntier: templated\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "5a55b5113f7c4d41f503bdc4acc6ebb6d42c9c8095b197cac575b004aea3a2cf",
+      "kind": "frontmatter",
+      "originalSha256": "af50516615589afba40eea4465378379e88d9acb21e12623f7f3ade6734b8ee7"
+    },
+    "core/agents/aidlc-design-agent.md": {
+      "content": "---\nname: aidlc-design-agent\ndisplay_name: Design Agent\nexamples:\n  - design-system.md\n  - accessibility.md\ndescription: >\n  UX/UI designer responsible for wireframing, interaction design, accessibility, and design system compliance.\n  Leads Rough Mockups and Refined Mockups stages. Supports Domain Design, and serves as a\n  dispatched collaborator in the User Stories mob ensemble.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "99f7caf714292e404b0786378c87598a1cfee1560bd1a8ba1b6641a7ea485695",
+      "kind": "frontmatter",
+      "originalSha256": "adfdd38d7423923e4e2e6788acc12efa3425ace4aea53459dec0b474ab35ce2c"
+    },
+    "core/agents/aidlc-developer-agent.md": {
+      "content": "---\nname: aidlc-developer-agent\ndisplay_name: Developer Agent\nexamples:\n  - db-conventions.md\n  - error-handling.md\ndescription: >\n  Senior developer responsible for code generation, reverse engineering, and data modelling.\n  Leads the Reverse Engineering code scan and Code Generation, and serves as a dispatched\n  collaborator in the Practices Discovery hub-and-spoke and User Stories mob ensembles.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "73a94aa1c789a15d84f8ae8fc359f1902acfdf683733ee204d472ac4d3151a03",
+      "kind": "frontmatter",
+      "originalSha256": "288edb996d79768d9a7877ff2fbace113502e87907b544a5711c182d06d68f0e"
+    },
+    "core/agents/aidlc-devsecops-agent.md": {
+      "content": "---\nname: aidlc-devsecops-agent\ndisplay_name: DevSecOps Agent\nexamples:\n  - security-baseline.md\n  - compliance-rules.md\ndescription: >\n  Security engineer and DevSecOps specialist responsible for threat modelling, security requirements, secure design review,\n  and security pipeline integration. Supports NFR Requirements, Infrastructure Design, Build and Test, and Environment\n  Provisioning, and serves as a dispatched collaborator in the Practices Discovery hub-and-spoke ensemble.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "18d4d32689e095c65abacc49d8820858b504676a577fb59e1e83a9d0be32d4d0",
+      "kind": "frontmatter",
+      "originalSha256": "9747d521a450fdadf2364b673740ea9ad378f178fa0e5e19b828ad30d0bee90d"
+    },
+    "core/agents/aidlc-operations-agent.md": {
+      "content": "---\nname: aidlc-operations-agent\ndisplay_name: Operations Agent\nexamples:\n  - monitoring.md\n  - incident-response.md\ndescription: >\n  SRE and reliability engineer responsible for observability, incident response, and operational optimization.\n  Leads Observability Setup, Incident Response, and Feedback & Optimization stages.\n  Supports Performance Validation.\ndisallowedTools: Task\ntier: templated\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "94c7284926fccfbf4dab2c2d2a39c1b8122bbc1856e51d35a9492fd1e5fa4cc5",
+      "kind": "frontmatter",
+      "originalSha256": "51c64169c0ddd5bb522317ddaf4698ee594afd80d4c27cd7c8367bd538978909"
+    },
+    "core/agents/aidlc-pipeline-deploy-agent.md": {
+      "content": "---\nname: aidlc-pipeline-deploy-agent\ndisplay_name: Pipeline & Deploy Agent\nexamples:\n  - pipeline-standards.md\n  - deployment-gates.md\ndescription: >\n  CI/CD engineer and release manager responsible for pipeline configuration, deployment strategy, and release execution.\n  Leads Practices Discovery, CI Pipeline, Deployment Pipeline, and Deployment Execution stages.\ndisallowedTools: Task\ntier: templated\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "0bcf0c64c9f984d2a9b982f54c950d7e680094f72a9586485a5ffa9117c88b5e",
+      "kind": "frontmatter",
+      "originalSha256": "bd2721b6dca5960b9fe3199dca604ff1c1d5f68c52c4ee35c7397eadeb30ba3a"
+    },
+    "core/agents/aidlc-product-agent.md": {
+      "content": "---\nname: aidlc-product-agent\ndisplay_name: Product Agent\nexamples:\n  - roadmap.md\n  - personas.md\ndescription: >\n  Product manager and business analyst responsible for requirements, user stories, market research, and scope.\n  Leads Intent Capture, Market Research, Scope Definition, Requirements Analysis, and User Stories stages.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "ec331b8cfe049ae55e03befa0352268c432f6a6e0f95f18ff1be7d7cf15d909e",
+      "kind": "frontmatter",
+      "originalSha256": "63934ee125e57b52e7aa4d98f5172b0b51ec57e7c2556b12fa0db741ae1a1a4b"
+    },
+    "core/agents/aidlc-product-lead-agent.md": {
+      "content": "---\nname: aidlc-product-lead-agent\ndisplay_name: Product Lead\ndescription: >\n  Senior product leader who reviews requirements, user stories, and UX artifacts for completeness, business alignment, and testability. Does not produce — only reviews and challenges. Represents the customer's voice at the quality gate.\ndisallowedTools: Task\ntier: balanced\nmaxTurns: 60\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "f814437667663750d5fd31c833bac213b93cdee49a41d859a2e4006053c512b8",
+      "kind": "frontmatter",
+      "originalSha256": "c2b27d69afed7939e049d6296e00ce2a808e5583114faa54c1d903a2ce005668"
+    },
+    "core/agents/aidlc-quality-agent.md": {
+      "content": "---\nname: aidlc-quality-agent\ndisplay_name: Quality Agent\nexamples:\n  - test-strategy.md\n  - coverage-requirements.md\ndescription: >\n  QA lead responsible for test strategy, test case design, quality gates, and performance validation.\n  Leads Build and Test and Performance Validation stages. Supports NFR Requirements and Functional Design,\n  and serves as a dispatched collaborator in the Practices Discovery hub-and-spoke and User Stories mob ensembles.\ndisallowedTools: Task\ntier: judgment\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "6ab32bdbd113f6e60cc363acfc0e8b23574ee60ccbf163afa9ff4cc84df598b9",
+      "kind": "frontmatter",
+      "originalSha256": "225b2655ae52d895581bdf6084c65cacf07a1797be611d80611373db8da266c6"
+    },
+    "core/aidlc-common/conductor.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "a0564eaa9caa29e3d106b5fb11fd3ab7d81888b65290a6ce94e53b6d2f4f9d32"
+    },
+    "core/aidlc-common/protocols/stage-definition.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "c1efe10b8780cbd301865ab270ed6ecc41e5615ee255fc5dde8b1d8e5e1d5c6f"
+    },
+    "core/aidlc-common/protocols/stage-protocol-construction.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "d69e699c231def1c124b8dab8987055237eb7c57a46b2507a2cb88bca5cae383"
+    },
+    "core/aidlc-common/protocols/stage-protocol-ensemble.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "d2ed285797195f5a0cddc24af44de04d3d21260d2abcd66f5e99d6ba6dd13979"
+    },
+    "core/aidlc-common/protocols/stage-protocol-governance.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "ab15dbc5747b7f83b9aa6b7b65a55d0b99f805288f6c506033cd2f636d64ff60"
+    },
+    "core/aidlc-common/protocols/stage-protocol-recovery.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "6db6fcad9cefd40559077bc25525e671a1995aa1d317f32c0a8018c95223c2b4"
+    },
+    "core/aidlc-common/protocols/stage-protocol-reviewer.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "e1ee67fd90ee196824b19772059e02295f5b6c1cbb63c47e94f9a7d8653ae5d8"
+    },
+    "core/aidlc-common/protocols/stage-protocol-swarm.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "65845ef30d16de768e87a5db6a3a742ae1a86fd3e32a48592946c89dad9da17b"
+    },
+    "core/aidlc-common/protocols/stage-protocol.md": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-path",
+      "originalSha256": "0a2b465ff6b60069f07afb565040d6e688b779c7744045f160099606f97ade6d"
+    },
+    "core/aidlc-common/stages/construction/build-and-test.md": {
+      "content": "---\nslug: build-and-test\nphase: construction\nexecution: ALWAYS\ncondition: Always executes once after all per-unit stages are finished.\nlead_agent: aidlc-quality-agent\nsupport_agents:\n  - aidlc-devsecops-agent\nmode: inline\nproduces:\n  - build-instructions\n  - integration-test-instructions\n  - performance-test-instructions\n  - security-test-instructions\n  - build-and-test-summary\n  - build-test-results\n  - cross-unit-traceability\nconsumes:\n  - artifact: code-generation-plan\n    required: true\n  - artifact: unit-test-instructions\n    required: true\n  - artifact: code-summary\n    required: true\nrequires_stage:\n  - code-generation\nsensors:\n  - required-sections\n  - upstream-coverage\n  - type-check\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - poc\n  - bugfix\n  - refactor\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: ALL code generation outputs across all units\noutputs: build-instructions.md, integration-test-instructions.md, performance-test-instructions.md, security-test-instructions.md, build-and-test-summary.md, test-results.md, cross-unit-traceability.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "67beea6c743a0b1868973186c1c452d82fa7a379b16d6ec5abb97267d480708c",
+      "kind": "frontmatter",
+      "originalSha256": "2fa1ec9d46d7feb6d3ab3f22462a38043ea455138dae0f145da32b50eee12e62"
+    },
+    "core/aidlc-common/stages/construction/ci-pipeline.md": {
+      "content": "---\nslug: ci-pipeline\nphase: construction\nexecution: CONDITIONAL\ncondition: Execute when CI pipeline needs creation or significant modification. Skip if CI already exists and is adequate.\nlead_agent: aidlc-pipeline-deploy-agent\nsupport_agents: []\nmode: inline\nsummary_confirmation: required\nproduces:\n  - ci-config\n  - quality-gates\n  - ci-pipeline-questions\nconsumes:\n  - artifact: code-summary\n    required: true\n  - artifact: build-and-test-summary\n    required: true\n  - artifact: build-test-results\n    required: true\nrequires_stage:\n  - build-and-test\nsensors:\n  - required-sections\n  - upstream-coverage\n  - linter\n  - type-check\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - infra\n  - classic\n  - workshop\ninputs: Code generation output from code-generation stage, build/test results from build-and-test stage\noutputs: ci-config.md, quality-gates.md, ci-pipeline-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "60184b54957af629e6c5048f48ba064cc153de1123de1b84801381eed64ee3dd",
+      "kind": "frontmatter",
+      "originalSha256": "343b20dd21f6796662157b9ef708d7053c33bdae03bb38192ab6c6a167e667ff"
+    },
+    "core/aidlc-common/stages/construction/code-generation.md": {
+      "content": "---\nslug: code-generation\nphase: construction\nexecution: ALWAYS\ncondition: Always executes for every unit in the execution plan.\nlead_agent: aidlc-developer-agent\nsupport_agents: []\nmode: subagent\nreviewer: aidlc-architecture-reviewer-agent\nreviewer_max_iterations: 2\nfor_each: unit-of-work\nworkspace_requires: true\nproduces:\n  - code-generation-plan\n  - unit-test-instructions\n  - code-summary\n  - traceability\nconsumes:\n  - artifact: functional-spec\n    required: false\n  - artifact: rules\n    required: false\n  - artifact: entities\n    required: false\n  - artifact: contract-summary\n    required: false\n  - artifact: performance-design\n    required: false\n  - artifact: security-design\n    required: false\n  - artifact: infrastructure-specification\n    required: false\n  - artifact: unit-of-work\n    required: true\n  - artifact: requirements\n    required: true\nrequires_stage:\n  - units-generation\n  - functional-design\n  - nfr-requirements\n  - nfr-design\n  - infrastructure-design\nsensors:\n  - required-sections\n  - linter\n  - type-check\n  - traceability\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - poc\n  - bugfix\n  - refactor\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: ALL prior design artifacts for this unit\noutputs: application code + code-generation-plan.md, code-generation-questions.md, unit-test-instructions.md, code-summary.md, traceability.json (under this stage's per-unit record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "a1722d2b47749a429948fb1fb168e6475e58db1ed2c48a4203fe2c6d2b6de439",
+      "kind": "frontmatter",
+      "originalSha256": "4f77d7dda22fae0ecda2d47b7739793afd570817dc76b67f95e161453a6ceb6e"
+    },
+    "core/aidlc-common/stages/construction/functional-design.md": {
+      "content": "---\nslug: functional-design\nphase: construction\nexecution: CONDITIONAL\ncondition: New data models, complex business logic, or business rules need design. Skip if simple logic changes with no new business logic.\nlead_agent: aidlc-architect-agent\nsupport_agents:\n  - aidlc-developer-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-architecture-reviewer-agent\nreviewer_max_iterations: 2\nfor_each: unit-of-work\nproduces:\n  - entities\n  - rules\n  - functional-spec\n  - traceability\noptional_produces:\n  - frontend-components\nproduces_kinds:\n  entities: [service, spec, library]\n  rules: [service, spec, library]\n  functional-spec: [service, ui, library]\n  traceability: [service, spec, ui, library]\n  frontend-components: [ui]\nconsumes:\n  - artifact: unit-of-work\n    required: true\n  - artifact: unit-of-work-story-map\n    required: false\n  - artifact: requirements\n    required: true\n  - artifact: components\n    required: true\n  - artifact: contract-summary\n    required: false\nrequires_stage:\n  - units-generation\n  - contract-design\nsensors:\n  - required-sections\n  - upstream-coverage\n  - linter\n  - type-check\n  - traceability\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - refactor\n  - classic\n  - workshop\ninputs: unit-of-work.md, unit-of-work-story-map.md, requirements.md, domain-design components.md, contract-design contract-summary.md (if produced)\noutputs: \"entities.md, rules.md, functional-spec.md, traceability.json, CONDITIONAL: frontend-components.md (under this stage's per-unit record dir, engine-resolved); per-kind applicability via produces_kinds (untagged unit: all). entities.md and rules.md each carry a fenced ```yaml source-of-truth block; functional-spec.md is the source of truth for workflows and state machines and carries derived ER-diagram and rules-summary views.\"\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "3e632fb55934afdeed1ffce42d82335c0260e91f2c9d4736bdc6692f5e859db9",
+      "kind": "frontmatter",
+      "originalSha256": "d547e85ca4ac549e5f8b4906c51b04452a318fe6dcdfe8a918b75493dfcc4ea1"
+    },
+    "core/aidlc-common/stages/construction/infrastructure-design.md": {
+      "content": "---\nslug: infrastructure-design\nphase: construction\nexecution: CONDITIONAL\ncondition: Infrastructure services need mapping, deployment architecture required, or cloud resources needed. Skip if no infrastructure changes and infrastructure already defined.\nlead_agent: aidlc-aws-platform-agent\nsupport_agents:\n  - aidlc-devsecops-agent\n  - aidlc-compliance-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-architecture-reviewer-agent\nreviewer_max_iterations: 2\nfor_each: unit-of-work\nproduces:\n  - infrastructure-specification\n  - monitoring-design\n  - cicd-pipeline\n  - traceability\nproduces_kinds:\n  infrastructure-specification: [service, ui, packaging]\n  monitoring-design: [service, ui, packaging]\n  cicd-pipeline: [service, ui, packaging, library]\n  traceability: [service, ui, packaging, library]\nconsumes:\n  - artifact: performance-design\n    required: true\n  - artifact: security-design\n    required: true\n  - artifact: scalability-design\n    required: true\n  - artifact: reliability-design\n    required: true\n  - artifact: observability-design\n    required: true\n  - artifact: logical-components\n    required: true\n  - artifact: components\n    required: true\n  - artifact: functional-spec\n    required: true\n  - artifact: contract-summary\n    required: false\nrequires_stage:\n  - units-generation\n  - nfr-design\nsensors:\n  - required-sections\n  - upstream-coverage\n  - linter\n  - type-check\n  - traceability\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - infra\n  - classic\n  - workshop\ninputs: NFR design artifacts, domain design components.md, functional design\noutputs: \"infrastructure-specification.md (deployment + services + shared, tabular), monitoring-design.md (tabular), cicd-pipeline.md, traceability.json (under this stage's per-unit record dir, engine-resolved); per-kind applicability via produces_kinds (a spec unit owes none)\"\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "6d1d6e5234c0446fb5a8cc75a48e01c5e95785cf8ec78d3338781b57741c8290",
+      "kind": "frontmatter",
+      "originalSha256": "4e0233460f029f20a587544743f86e06880939963a758418fdb8a38d27399d98"
+    },
+    "core/aidlc-common/stages/construction/nfr-design.md": {
+      "content": "---\nslug: nfr-design\nphase: construction\nexecution: CONDITIONAL\ncondition: NFR Requirements was executed and NFR patterns need design. Skip if NFR Requirements was skipped.\nlead_agent: aidlc-architect-agent\nsupport_agents:\n  - aidlc-aws-platform-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-architecture-reviewer-agent\nreviewer_max_iterations: 2\nfor_each: unit-of-work\nproduces:\n  - performance-design\n  - security-design\n  - scalability-design\n  - reliability-design\n  - observability-design\n  - logical-components\n  - traceability\nproduces_kinds:\n  performance-design: [service, ui]\n  scalability-design: [service]\n  reliability-design: [service]\n  observability-design: [service]\n  logical-components: [service, ui, library]\nconsumes:\n  - artifact: performance-requirements\n    required: true\n  - artifact: security-requirements\n    required: true\n  - artifact: scalability-requirements\n    required: true\n  - artifact: reliability-requirements\n    required: true\n  - artifact: observability-requirements\n    required: true\n  - artifact: tech-stack-decisions\n    required: true\n  - artifact: functional-spec\n    required: true\n  - artifact: contract-summary\n    required: false\nrequires_stage:\n  - units-generation\n  - nfr-requirements\nsensors:\n  - required-sections\n  - upstream-coverage\n  - linter\n  - type-check\n  - traceability\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - infra\n  - classic\n  - workshop\ninputs: NFR requirements artifacts, functional design artifacts\noutputs: \"performance-design.md, security-design.md, scalability-design.md, reliability-design.md, observability-design.md, logical-components.md, traceability.json (under this stage's per-unit record dir, engine-resolved); per-kind applicability via produces_kinds (untagged unit: all)\"\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "ee6f9e4977ad52a3856bfa4a82d5f0e95d8f10beb9a191d46d9ceffa1ef0033f",
+      "kind": "frontmatter",
+      "originalSha256": "dd3ca1dd44a6ea3043bb365b8975755e5005996bd0fef8e310458ba7f7245a38"
+    },
+    "core/aidlc-common/stages/construction/nfr-requirements.md": {
+      "content": "---\nslug: nfr-requirements\nphase: construction\nexecution: CONDITIONAL\ncondition: Performance, security, scalability, reliability, or observability requirements needed, or tech stack selection needed. Skip if no NFR requirements and tech stack already determined.\nlead_agent: aidlc-architect-agent\nsupport_agents:\n  - aidlc-devsecops-agent\n  - aidlc-compliance-agent\n  - aidlc-quality-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-architecture-reviewer-agent\nreviewer_max_iterations: 2\nfor_each: unit-of-work\nproduces:\n  - performance-requirements\n  - security-requirements\n  - scalability-requirements\n  - reliability-requirements\n  - observability-requirements\n  - tech-stack-decisions\n  - traceability\nproduces_kinds:\n  performance-requirements: [service, ui]\n  scalability-requirements: [service]\n  reliability-requirements: [service]\n  observability-requirements: [service]\nconsumes:\n  - artifact: functional-spec\n    required: true\n  - artifact: rules\n    required: true\n  - artifact: requirements\n    required: true\n  - artifact: contract-summary\n    required: false\n  - artifact: technology-stack\n    required: false\n    conditional_on: brownfield\nrequires_stage:\n  - units-generation\n  - functional-design\nsensors:\n  - required-sections\n  - upstream-coverage\n  - linter\n  - type-check\n  - traceability\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - infra\n  - security-patch\n  - classic\n  - workshop\ninputs: functional design artifacts, requirements.md, RE artifacts\noutputs: \"performance-requirements.md, security-requirements.md, scalability-requirements.md, reliability-requirements.md, observability-requirements.md, tech-stack-decisions.md, traceability.json (under this stage's per-unit record dir, engine-resolved); per-kind applicability via produces_kinds (untagged unit: all)\"\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "50e361f4759e2adcb2759fee04cb0e936b0c3bd80bb785c7e34015c32fd40380",
+      "kind": "frontmatter",
+      "originalSha256": "9fe7fd603d79f3ff98f713bd7f55167f9a462d647cab64240e3a889459a13c07"
+    },
+    "core/aidlc-common/stages/ideation/approval-handoff.md": {
+      "content": "---\nslug: approval-handoff\nphase: ideation\nexecution: ALWAYS\ncondition: Always executes — compiles all Ideation artifacts into initiative brief for approval\nlead_agent: aidlc-delivery-agent\nsupport_agents:\n  - aidlc-product-agent\nmode: inline\nsummary_confirmation: required\nproduces:\n  - initiative-brief\n  - decision-log\n  - approval-handoff-questions\nconsumes:\n  - artifact: intent-statement\n    required: true\n  - artifact: stakeholder-map\n    required: true\n  - artifact: scope-document\n    required: true\n  - artifact: intent-backlog\n    required: true\n  - artifact: competitive-analysis\n    required: false\n  - artifact: feasibility-assessment\n    required: false\n  - artifact: constraint-register\n    required: false\n  - artifact: team-assessment\n    required: false\n  - artifact: wireframes\n    required: false\nrequires_stage:\n  - intent-capture\n  - feasibility\n  - scope-definition\n  - team-formation\n  - rough-mockups\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\ninputs: All Ideation phase artifacts (intent, market research, feasibility, scope, team, mockups)\noutputs: initiative-brief.md, decision-log.md, approval-handoff-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "d00ef41201604a60d711e3fb98e6070da91b9255a477bb0f4d11a4156924a774",
+      "kind": "frontmatter",
+      "originalSha256": "f1ab7d801755f40ea35e48b12bdda69a127b027d3f61ef98c1f6f223571e0cae"
+    },
+    "core/aidlc-common/stages/ideation/feasibility.md": {
+      "content": "---\nslug: feasibility\nphase: ideation\nexecution: CONDITIONAL\ncondition: Execute when there are integration constraints, regulatory requirements, or significant technical uncertainty. Skip for trivial changes with no technical risk.\nlead_agent: aidlc-architect-agent\nsupport_agents:\n  - aidlc-aws-platform-agent\n  - aidlc-compliance-agent\nmode: inline\nsummary_confirmation: required\nproduces:\n  - feasibility-assessment\n  - constraint-register\n  - raid-log\n  - feasibility-questions\nconsumes:\n  - artifact: intent-statement\n    required: true\n  - artifact: competitive-analysis\n    required: false\n  - artifact: market-trends\n    required: false\n  - artifact: build-vs-buy\n    required: false\nrequires_stage:\n  - intent-capture\n  - market-research\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\ninputs: Intent statement from intent-capture stage, market research from market-research stage (if executed)\noutputs: feasibility-assessment.md, constraint-register.md, raid-log.md, feasibility-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "5c011aec7b2d4a53dc3ba7fcadc38e5f55592a6948ec57a2ae7d1165fd63a31f",
+      "kind": "frontmatter",
+      "originalSha256": "a80c18a5cb29db4fd6e2af6c46abecbe78af33127420e4d3f468e6993ec52a30"
+    },
+    "core/aidlc-common/stages/ideation/intent-capture.md": {
+      "content": "---\nslug: intent-capture\nphase: ideation\nexecution: ALWAYS\ncondition: First stage of every workflow — establishes the initiative's foundation\nlead_agent: aidlc-product-agent\nsupport_agents:\n  - aidlc-architect-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-product-lead-agent\nreviewer_max_iterations: 2\nreview_class: advisory\nproduces:\n  - intent-statement\n  - stakeholder-map\n  - intent-capture-questions\nconsumes: []\nrequires_stage: []\nsensors:\n  - claim-sources\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - poc\ninputs: User's project description ($ARGUMENTS), scope selection\noutputs: intent-statement.md, stakeholder-map.md, intent-capture-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "d76cf517c48dd608bc75b7f6460d65644974f6fdda8bc52e8177bbbf9b1d33f0",
+      "kind": "frontmatter",
+      "originalSha256": "b0f28b1af0bb4a3a8f317377e129ed97545432623aaf2a50cafbc1be70f5a2c0"
+    },
+    "core/aidlc-common/stages/ideation/market-research.md": {
+      "content": "---\nslug: market-research\nphase: ideation\nexecution: CONDITIONAL\ncondition: Execute when initiative has external market positioning or build-vs-buy considerations. Skip for internal tools, bug fixes, or refactors.\nlead_agent: aidlc-product-agent\nsupport_agents: []\nmode: inline\nsummary_confirmation: required\nproduces:\n  - competitive-analysis\n  - market-trends\n  - build-vs-buy\n  - market-research-questions\nconsumes:\n  - artifact: intent-statement\n    required: true\nrequires_stage:\n  - intent-capture\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\ninputs: Intent statement from intent-capture stage\noutputs: competitive-analysis.md, market-trends.md, build-vs-buy.md, market-research-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "608a6c97065cea3559f195efe4dd7b0b82fd61bbc825ccee0c7fd44a43c5d845",
+      "kind": "frontmatter",
+      "originalSha256": "039793ecd0b958cc658dc9aa083549bdd2e813bf8dd9849e1ff4c53b29346ded"
+    },
+    "core/aidlc-common/stages/ideation/rough-mockups.md": {
+      "content": "---\nslug: rough-mockups\nphase: ideation\nexecution: CONDITIONAL\ncondition: Execute when user-facing UI is part of the initiative; for API/backend, produce system interaction diagrams. Skip for non-UI, API-only, or infrastructure-only initiatives.\nlead_agent: aidlc-design-agent\nsupport_agents:\n  - aidlc-product-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-product-lead-agent\nreviewer_max_iterations: 2\nreview_class: advisory\nproduces:\n  - wireframes\n  - user-flow\n  - rough-mockups-questions\nconsumes:\n  - artifact: intent-statement\n    required: true\n  - artifact: scope-document\n    required: true\n  - artifact: intent-backlog\n    required: true\nrequires_stage:\n  - scope-definition\n  - team-formation\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\ninputs: Intent statement, scope definition, intent backlog\noutputs: wireframes.md, user-flow.md, rough-mockups-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "7640a13fce32f614109d125bc8e74f5b57a64e933c283b6741e66b7fbdf2dc89",
+      "kind": "frontmatter",
+      "originalSha256": "fdf11c8c6135b2460779f9ca6a0fcfdea11b03b27aabc35310adda45b7d4c772"
+    },
+    "core/aidlc-common/stages/ideation/scope-definition.md": {
+      "content": "---\nslug: scope-definition\nphase: ideation\nexecution: ALWAYS\ncondition: Always executes — defines the scope boundary and prioritized backlog\nlead_agent: aidlc-product-agent\nsupport_agents:\n  - aidlc-delivery-agent\nmode: inline\nsummary_confirmation: required\nproduces:\n  - scope-document\n  - intent-backlog\n  - scope-definition-questions\nconsumes:\n  - artifact: intent-statement\n    required: true\n  - artifact: feasibility-assessment\n    required: false\n  - artifact: constraint-register\n    required: false\nrequires_stage:\n  - intent-capture\n  - feasibility\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\ninputs: Intent statement, feasibility assessment, constraint register\noutputs: scope-document.md, intent-backlog.md, scope-definition-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "0224e94f439c2706614af0915e667f09f5a35c34cf65ec9310f8a1f171e188b5",
+      "kind": "frontmatter",
+      "originalSha256": "0b80abe6723441bc277501aea23f77cff1515afc2fd220c317b8b274977e84c2"
+    },
+    "core/aidlc-common/stages/ideation/team-formation.md": {
+      "content": "---\nslug: team-formation\nphase: ideation\nexecution: CONDITIONAL\ncondition: Execute when team composition, capacity, or mob planning is relevant. Skip for solo developer or small team projects.\nlead_agent: aidlc-delivery-agent\nsupport_agents: []\nmode: inline\nsummary_confirmation: required\nproduces:\n  - team-assessment\n  - skill-matrix\n  - mob-composition\n  - team-formation-questions\nconsumes:\n  - artifact: scope-document\n    required: true\n  - artifact: intent-backlog\n    required: true\n  - artifact: feasibility-assessment\n    required: false\nrequires_stage:\n  - scope-definition\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\ninputs: Scope definition, intent backlog, feasibility assessment\noutputs: team-assessment.md, skill-matrix.md, mob-composition.md, team-formation-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b8b988421f828bd86cf0f6cb53d9b1f96ff3e8ae5589d873c3515066e75f7b9e",
+      "kind": "frontmatter",
+      "originalSha256": "263ebdfae97ec6f93c8c8253171da5c7fd4c1e7f88bbedb3be3b38fbdf4e36a2"
+    },
+    "core/aidlc-common/stages/inception/contract-design.md": {
+      "content": "---\nslug: contract-design\nphase: inception\nexecution: CONDITIONAL\ncondition: Execute when the system has any formal contract to pin down — an inter-unit boundary (more than one unit that must integrate) OR a unit that exposes a public/external API consumed outside the system. Skip only for a single self-contained unit with no inter-unit boundaries and no externally consumed API.\nlead_agent: aidlc-architect-agent\nsupport_agents:\n  - aidlc-aws-platform-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-architecture-reviewer-agent\nreviewer_max_iterations: 2\nreview_class: advisory\nproduces:\n  - contract-summary\nconsumes:\n  - artifact: unit-of-work\n    required: true\n  - artifact: unit-of-work-dependency\n    required: true\n  - artifact: components\n    required: false\n  - artifact: requirements\n    required: false\nrequires_stage:\n  - units-generation\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - classic\n  - workshop\ninputs: <record>/inception/units-generation/unit-of-work.md, <record>/inception/units-generation/unit-of-work-dependency.md, <record>/inception/domain-design/components.md (if produced), <record>/inception/requirements-analysis/requirements.md\noutputs: contract-summary.md (under this stage's record dir, engine-resolved) — a human-readable overview of every contract (inter-unit boundaries and public/external APIs), each with a fenced spec block (OpenAPI / AsyncAPI / shared schema) inline\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "77950e8fc98fdaa37859bc81741c3410a0b6a028b13d4a44f5d550a343ecd56a",
+      "kind": "frontmatter",
+      "originalSha256": "b885d093d2d89daaa5aa068c195a161ebb0ccce146bd08946aa4b2dc30437f49"
+    },
+    "core/aidlc-common/stages/inception/delivery-planning.md": {
+      "content": "---\nslug: delivery-planning\nphase: inception\nexecution: ALWAYS\ncondition: Always executes — capstone Inception stage, produces the detailed execution plan for Construction and Operation\nlead_agent: aidlc-delivery-agent\nsupport_agents:\n  - aidlc-architect-agent\nmode: inline\nsummary_confirmation: required\nproduces:\n  - bolt-plan\n  - team-allocation\n  - risk-and-sequencing-rationale\n  - external-dependency-map\n  - delivery-planning-questions\nconsumes:\n  - artifact: requirements\n    required: true\n  - artifact: stories\n    required: false\n  - artifact: mockups\n    required: false\n  - artifact: components\n    required: true\n  - artifact: unit-of-work\n    required: true\n  - artifact: unit-of-work-dependency\n    required: true\n  - artifact: unit-of-work-story-map\n    required: false\n  - artifact: contract-summary\n    required: false\n  - artifact: team-practices\n    required: false\nrequires_stage:\n  - units-generation\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - classic\n  - workshop\ninputs: All Inception artifacts (requirements, stories, mockups, architecture, units)\noutputs: bolt-plan.md, team-allocation.md, risk-and-sequencing-rationale.md, external-dependency-map.md, delivery-planning-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "8812f56cad486f2dee745c134112eebcd87dfd3b3886bd03546906035202cc7a",
+      "kind": "frontmatter",
+      "originalSha256": "9085e92291846530c0e261848ebd2d724abca075cf1c35086d638d673899c8fe"
+    },
+    "core/aidlc-common/stages/inception/domain-design.md": {
+      "content": "---\nslug: domain-design\nphase: inception\nexecution: CONDITIONAL\ncondition: Execute when new components or logical building blocks are needed. Skip when changes are modifications to existing components only.\nlead_agent: aidlc-architect-agent\nsupport_agents:\n  - aidlc-aws-platform-agent\n  - aidlc-design-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-architecture-reviewer-agent\nreviewer_max_iterations: 2\nreview_class: advisory\nproduces:\n  - components\n  - decisions\n  - traceability\nconsumes:\n  - artifact: requirements\n    required: true\n  - artifact: stories\n    required: false\n  - artifact: architecture\n    required: false\n    conditional_on: brownfield\n  - artifact: component-inventory\n    required: false\n    conditional_on: brownfield\n  - artifact: team-practices\n    required: false\nrequires_stage:\n  - requirements-analysis\n  - refined-mockups\nsensors:\n  - required-sections\n  - upstream-coverage\n  - traceability\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - classic\n  - workshop\ninputs: <record>/inception/requirements-analysis/requirements.md, <record>/inception/user-stories/stories.md (if produced), RE artifacts (if brownfield)\noutputs: components.md (fenced ```yaml component catalogue plus a human-readable mermaid diagram and summary table), decisions.md (Architecture Decision Records), and traceability.json — all under this stage's record dir, engine-resolved\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "bf3ac11c1f36bb59c7e76884bed4bffc7c396e47dba2a91ae57e2816fa22bba5",
+      "kind": "frontmatter",
+      "originalSha256": "2afccf60f8584c115b675e4c288afd351e09fa5b6f8333361e620d95a1ca438a"
+    },
+    "core/aidlc-common/stages/inception/practices-discovery.md": {
+      "content": "---\nslug: practices-discovery\nphase: inception\nexecution: CONDITIONAL\ncondition: Always rerun for freshness. Brownfield discovers from evidence + reverse-engineering artifacts. Greenfield prompts user via structured questions using org.md defaults.\nlead_agent: aidlc-pipeline-deploy-agent\nsupport_agents:\n  - aidlc-quality-agent\n  - aidlc-developer-agent\n  - aidlc-devsecops-agent\nmode: subagent\nsummary_confirmation: required\nproduces:\n  - team-practices\n  - discovered-rules\n  - evidence\n  - practices-discovery-timestamp\nconsumes:\n  - artifact: code-structure\n    required: false\n    conditional_on: brownfield\n  - artifact: technology-stack\n    required: false\n    conditional_on: brownfield\n  - artifact: dependencies\n    required: false\n    conditional_on: brownfield\n  - artifact: code-quality-assessment\n    required: false\n    conditional_on: brownfield\n  - artifact: architecture\n    required: false\n    conditional_on: brownfield\n  - artifact: business-overview\n    required: false\n    conditional_on: brownfield\nrequires_stage:\n  - state-init\n  - reverse-engineering\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - infra\n  - classic\n  - workshop\ninputs: <record>/aidlc-state.md + (brownfield) reverse-engineering evidence\noutputs: \"team-practices.md, discovered-rules.md, evidence.md, practices-discovery-timestamp.md, plus one contribution file per support agent. On affirmation, content is promoted to aidlc/spaces/<active-space>/memory/team.md and project.md.\"\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "cca03f94e40ed4d80eccf2350914a04186323ceaf6d09d4b23de5f9fb6241df5",
+      "kind": "frontmatter",
+      "originalSha256": "ada2f572b5e189b722a9933b0e6b305fef73f0e872b70108c1c2b051d0e91d38"
+    },
+    "core/aidlc-common/stages/inception/refined-mockups.md": {
+      "content": "---\nslug: refined-mockups\nphase: inception\nexecution: CONDITIONAL\ncondition: Execute when user-facing UI exists and rough mockups were produced in Ideation; for APIs, refine interaction diagrams\nlead_agent: aidlc-design-agent\nsupport_agents:\n  - aidlc-product-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-product-lead-agent\nreviewer_max_iterations: 2\nreview_class: advisory\nproduces:\n  - mockups\n  - interaction-spec\n  - design-system-mapping\n  - accessibility-checklist\n  - refined-mockups-questions\nconsumes:\n  - artifact: wireframes\n    required: true\n  - artifact: user-flow\n    required: true\n  - artifact: stories\n    required: false\n  - artifact: requirements\n    required: true\n  - artifact: team-practices\n    required: false\nrequires_stage:\n  - user-stories\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - classic\n  - workshop\ninputs: Rough mockups from rough-mockups stage, user stories from user-stories stage, requirements from requirements-analysis stage\noutputs: mockups.md, interaction-spec.md, design-system-mapping.md, accessibility-checklist.md, refined-mockups-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "ae0dab5e4dc3757b77ccf4cb05dc625a8040a34f79d987ba485607ad4ea24b5e",
+      "kind": "frontmatter",
+      "originalSha256": "bb9b169aa850bbf2d89dea48c041e35e550b50e4ce7c983e772a22c0a18cfd5f"
+    },
+    "core/aidlc-common/stages/inception/requirements-analysis.md": {
+      "content": "---\nslug: requirements-analysis\nphase: inception\nexecution: ALWAYS\ncondition: Always executes — depth scales with project complexity\nlead_agent: aidlc-product-agent\nsupport_agents: []\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-product-lead-agent\nreviewer_max_iterations: 2\nreview_class: advisory\nproduces:\n  - requirements\n  - requirements-analysis-questions\nconsumes:\n  - artifact: intent-statement\n    required: false\n  - artifact: scope-document\n    required: false\n  - artifact: business-overview\n    required: false\n    conditional_on: brownfield\n  - artifact: architecture\n    required: false\n    conditional_on: brownfield\n  - artifact: code-structure\n    required: false\n    conditional_on: brownfield\n  - artifact: team-practices\n    required: false\nrequires_stage:\n  - approval-handoff\n  - reverse-engineering\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - poc\n  - bugfix\n  - refactor\n  - infra\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: RE artifacts (if brownfield), user's project description (from <record>/audit/<host>-<clone>.md)\noutputs: requirements.md, requirements-analysis-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "4517da099fd2b564153461c036ac776952d9370fb0ddbf3764afc59b9093b719",
+      "kind": "frontmatter",
+      "originalSha256": "99503ad8e8770b7585bebbaf514382da0cd062a33cfb71043ab8a966b5f55de2"
+    },
+    "core/aidlc-common/stages/inception/reverse-engineering.md": {
+      "content": "---\nslug: reverse-engineering\nphase: inception\nexecution: CONDITIONAL\ncondition: Execute when project is brownfield. On rerun the Step 1 guard checks store freshness (codekb-scope-diff) - verified-CURRENT stores may be reused by human choice, anything else rescans. Skip for greenfield projects.\nlead_agent: aidlc-developer-agent\nsupport_agents:\n  - aidlc-architect-agent\nmode: pipeline\nproduces:\n  - business-overview\n  - architecture\n  - code-structure\n  - api-documentation\n  - component-inventory\n  - technology-stack\n  - dependencies\n  - code-quality-assessment\n  - reverse-engineering-timestamp\nconsumes: []\nrequires_stage:\n  - state-init\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - poc\n  - bugfix\n  - refactor\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: <record>/aidlc-state.md\noutputs: \"aidlc/spaces/<active-space>/codekb/<repo>/ (9 artifacts: business-overview.md, architecture.md, code-structure.md, api-documentation.md, component-inventory.md, technology-stack.md, dependencies.md, code-quality-assessment.md, reverse-engineering-timestamp.md)\"\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "f9da333478714583e9014ccbbd512a1eea98203819e83ca5c37046356e59dce2",
+      "kind": "frontmatter",
+      "originalSha256": "7fb8b69bf81de99cda77cd57e2898cbaf65f8e1e74be0ccadfe329cffa89e1be"
+    },
+    "core/aidlc-common/stages/inception/units-generation.md": {
+      "content": "---\nslug: units-generation\nphase: inception\nexecution: ALWAYS\ncondition: Always executes when in scope. Produces the dependency DAG that Stage 2.9 Delivery Planning consumes for Bolt sequencing. In the compiled scope grid, 2.7 (Units Generation) and 2.9 (Delivery Planning) travel together — both EXECUTE or both SKIP per scope.\nlead_agent: aidlc-architect-agent\nsupport_agents:\n  - aidlc-delivery-agent\nmode: inline\nsummary_confirmation: required\nreviewer: aidlc-architecture-reviewer-agent\nreviewer_max_iterations: 2\nreview_class: advisory\nproduces:\n  - unit-of-work\n  - unit-of-work-dependency\n  - unit-of-work-story-map\n  - traceability\nconsumes:\n  - artifact: components\n    required: true\n  - artifact: decisions\n    required: false\n  - artifact: requirements\n    required: true\n  - artifact: stories\n    required: false\nrequires_stage:\n  - domain-design\nsensors:\n  - required-sections\n  - upstream-coverage\n  - traceability\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - classic\n  - workshop\ninputs: <record>/inception/domain-design/components.md, <record>/inception/requirements-analysis/requirements.md, <record>/inception/user-stories/stories.md (if produced)\noutputs: unit-of-work.md, unit-of-work-dependency.md, unit-of-work-story-map.md, traceability.json (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "cc800a51c28e88a79bc4510901a7471062f910922923818601d744566e76f79c",
+      "kind": "frontmatter",
+      "originalSha256": "fde58253af63d2d5b6e628dcc1ea27e076248e57f6a53f2dbf3c08f22692ee34"
+    },
+    "core/aidlc-common/stages/inception/user-stories.md": {
+      "content": "---\nslug: user-stories\nphase: inception\nexecution: CONDITIONAL\ncondition: Execute when user-facing features, multiple personas, complex business logic, or cross-team work is involved. Skip for pure refactoring, isolated bug fixes, infrastructure-only changes, or developer tooling.\nlead_agent: aidlc-product-agent\nsupport_agents:\n  - aidlc-design-agent\n  - aidlc-developer-agent\n  - aidlc-quality-agent\nmode: mob\nsummary_confirmation: required\nreviewer: aidlc-product-lead-agent\nreviewer_max_iterations: 2\nreview_class: advisory\nproduces:\n  - stories\n  - personas\n  - user-stories-assessment\n  - traceability\nconsumes:\n  - artifact: requirements\n    required: true\n  - artifact: business-overview\n    required: false\n    conditional_on: brownfield\n  - artifact: component-inventory\n    required: false\n    conditional_on: brownfield\n  - artifact: team-practices\n    required: false\nrequires_stage:\n  - requirements-analysis\nsensors:\n  - required-sections\n  - upstream-coverage\n  - traceability\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - classic\n  - workshop\ninputs: <record>/inception/requirements-analysis/requirements.md, RE artifacts (if brownfield)\noutputs: stories.md, personas.md, user-stories-assessment.md, traceability.json (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "4968085409a90f12cb91026a3bc6f2328cb5283580af211a7d93318d075f61b5",
+      "kind": "frontmatter",
+      "originalSha256": "85c1cc6dc5f9353926959b2e38d81c5bb05999e73abae92e89404e8fd04dabef"
+    },
+    "core/aidlc-common/stages/initialization/state-init.md": {
+      "content": "---\nslug: state-init\nphase: initialization\nexecution: ALWAYS\ncondition: Creates full populated state file and determines routing — auto-proceeds\nlead_agent: orchestrator\nsupport_agents: []\nmode: inline\nproduces: []\nconsumes: []\nrequires_stage:\n  - workspace-detection\nsensors: []\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - poc\n  - bugfix\n  - refactor\n  - infra\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: workspace classification from workspace-detection, scope from orchestrator\noutputs: <record>/aidlc-state.md (full populated version, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "65c6a9370ee31e48ed2f53d3b44649c8cea2c04e22415b0eb7fef89ff939dfbc",
+      "kind": "frontmatter",
+      "originalSha256": "b88ed441c9fc6b83e7b815d2f0aef8957ceef9929c406cd0c830dbe4335f2758"
+    },
+    "core/aidlc-common/stages/initialization/workspace-detection.md": {
+      "content": "---\nslug: workspace-detection\nphase: initialization\nexecution: ALWAYS\ncondition: Scans and classifies workspace — auto-proceeds (no approval gate)\nlead_agent: orchestrator\nsupport_agents: []\nmode: inline\nproduces: []\nconsumes: []\nrequires_stage:\n  - workspace-scaffold\nsensors: []\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - poc\n  - bugfix\n  - refactor\n  - infra\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: none (scans filesystem)\noutputs: workspace classification (greenfield/brownfield), technology stack detection\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "3bb0d381a1dfbe74b28a6fb36db928518d4e978becd1994d9f5b9b7b89950b9c",
+      "kind": "frontmatter",
+      "originalSha256": "c2c53c9dcdf28dcd7086da4153112a9055aa1cb4396bfa1970c49e7905cc0668"
+    },
+    "core/aidlc-common/stages/initialization/workspace-scaffold.md": {
+      "content": "---\nslug: workspace-scaffold\nphase: initialization\nexecution: ALWAYS\ncondition: Ensure-exists the per-intent record and in-scope phase dirs, idempotent (creates on demand, skips existing)\nlead_agent: orchestrator\nsupport_agents: []\nmode: inline\nproduces: []\nconsumes: []\nrequires_stage: []\nsensors: []\nscopes:\n  - enterprise\n  - feature\n  - mvp\n  - poc\n  - bugfix\n  - refactor\n  - infra\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: none (first stage after session start)\noutputs: the per-intent record tree (one dir per in-scope phase + verification dir) and the space-level knowledge/ dir\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "ca415f0af0c1ab4b024e034e754864330dc07d27099dfe107a14c1f7d11f4599",
+      "kind": "frontmatter",
+      "originalSha256": "e6cd3af3d8402d86987f8f9587ea4f6c3f94cbc936799ccf5752efa0d02db9d8"
+    },
+    "core/aidlc-common/stages/operation/deployment-execution.md": {
+      "content": "---\nslug: deployment-execution\nphase: operation\nexecution: CONDITIONAL\ncondition: Execute after deployment pipeline and environment are ready\nlead_agent: aidlc-pipeline-deploy-agent\nsupport_agents:\n  - aidlc-developer-agent\nmode: inline\nsummary_confirmation: required\nproduces:\n  - deployment-log\n  - smoke-test-results\n  - health-check-report\n  - deployment-execution-questions\nconsumes:\n  - artifact: cd-config\n    required: true\n  - artifact: deployment-strategy\n    required: true\n  - artifact: environment-inventory\n    required: true\n  - artifact: build-test-results\n    required: true\nrequires_stage:\n  - deployment-pipeline\n  - environment-provisioning\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - infra\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: CD pipeline config from deployment-pipeline stage, provisioned environments from environment-provisioning stage, built artifacts from Construction\noutputs: deployment-log.md, smoke-test-results.md, health-check-report.md, deployment-execution-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "51a42fdf4de8d183423ca99d92650c037a8208b22e729e5e3eb0dd09e167eccd",
+      "kind": "frontmatter",
+      "originalSha256": "daf2cef5ceab6547446aef3caf718465d0b96d23a54c0dac3ac6412061a80216"
+    },
+    "core/aidlc-common/stages/operation/deployment-pipeline.md": {
+      "content": "---\nslug: deployment-pipeline\nphase: operation\nexecution: CONDITIONAL\ncondition: Execute when CD pipeline needs creation or significant modification\nlead_agent: aidlc-pipeline-deploy-agent\nsupport_agents: []\nmode: inline\nsummary_confirmation: required\nproduces:\n  - cd-config\n  - deployment-strategy\n  - rollback-runbook\n  - deployment-pipeline-questions\nconsumes:\n  - artifact: ci-config\n    required: true\n  - artifact: quality-gates\n    required: true\n  - artifact: infrastructure-specification\n    required: true\n  - artifact: cicd-pipeline\n    required: true\nrequires_stage:\n  - ci-pipeline\n  - infrastructure-design\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - infra\n  - security-patch\n  - classic\n  - workshop\n  - express\ninputs: CI pipeline config from ci-pipeline stage, infrastructure design from infrastructure-design stage\noutputs: cd-config.md, deployment-strategy.md, rollback-runbook.md, deployment-pipeline-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "98420e1e29b6fa73b5c5353686153171d1839f09761d0b5b77c6c002e5d1ded1",
+      "kind": "frontmatter",
+      "originalSha256": "0ec4508e9886e6dc4e84a6559e083c75ed73ad380e87d5541514c19249fd7b15"
+    },
+    "core/aidlc-common/stages/operation/environment-provisioning.md": {
+      "content": "---\nslug: environment-provisioning\nphase: operation\nexecution: CONDITIONAL\ncondition: Execute when AWS environments need provisioning or validation\nlead_agent: aidlc-aws-platform-agent\nsupport_agents:\n  - aidlc-devsecops-agent\n  - aidlc-compliance-agent\nmode: inline\nsummary_confirmation: required\nproduces:\n  - environment-inventory\n  - validation-report\n  - environment-provisioning-questions\nconsumes:\n  - artifact: infrastructure-specification\n    required: true\n  - artifact: cd-config\n    required: true\nrequires_stage:\n  - infrastructure-design\n  - deployment-pipeline\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - infra\n  - classic\n  - workshop\ninputs: Infrastructure design from infrastructure-design stage, CD pipeline config from deployment-pipeline stage\noutputs: environment-inventory.md, validation-report.md, environment-provisioning-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "804d5a5629415cefd75a1d0035166a0f292dfd54621da43c2ef3589cda0e2b07",
+      "kind": "frontmatter",
+      "originalSha256": "00783417e6ba50a7fda0bf451860c9c95fc0c605a1e1b1b96155df3c00c951bf"
+    },
+    "core/aidlc-common/stages/operation/feedback-optimization.md": {
+      "content": "---\nslug: feedback-optimization\nphase: operation\nexecution: CONDITIONAL\ncondition: Execute when ongoing operational monitoring and optimization are needed\nlead_agent: aidlc-operations-agent\nsupport_agents:\n  - aidlc-aws-platform-agent\nmode: inline\nsummary_confirmation: required\nproduces:\n  - slo-report\n  - cost-analysis\n  - drift-report\n  - feedback-loop\n  - feedback-optimization-questions\nconsumes:\n  - artifact: dashboards\n    required: true\n  - artifact: alarms\n    required: true\n  - artifact: slo-config\n    required: true\n  - artifact: deployment-log\n    required: true\n  - artifact: load-test-results\n    required: false\n  - artifact: incident-plan\n    required: false\nrequires_stage:\n  - observability-setup\n  - deployment-execution\n  - incident-response\n  - performance-validation\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - classic\n  - workshop\ninputs: All Operation phase artifacts, production monitoring data\noutputs: slo-report.md, cost-analysis.md, drift-report.md, feedback-loop.md, feedback-optimization-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "f5166c14dfd86b3c4af0cc2b6f39f3b139bc7f985ced4ecf5a05d3b76709f513",
+      "kind": "frontmatter",
+      "originalSha256": "2dce30e11eb36d86854ff33275353fe9a086fa2805c2153c79b9f729c639366b"
+    },
+    "core/aidlc-common/stages/operation/incident-response.md": {
+      "content": "---\nslug: incident-response\nphase: operation\nexecution: CONDITIONAL\ncondition: Execute when operational runbooks and incident response procedures are needed\nlead_agent: aidlc-operations-agent\nsupport_agents: []\nmode: inline\nsummary_confirmation: required\nproduces:\n  - runbooks\n  - incident-plan\n  - escalation-matrix\n  - incident-response-questions\nconsumes:\n  - artifact: dashboards\n    required: true\n  - artifact: alarms\n    required: true\n  - artifact: reliability-design\n    required: true\n  - artifact: security-design\n    required: true\n  - artifact: infrastructure-specification\n    required: true\nrequires_stage:\n  - observability-setup\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - classic\n  - workshop\ninputs: Observability setup from observability-setup stage, NFR design from nfr-design stage, infrastructure design from infrastructure-design stage\noutputs: runbooks.md, incident-plan.md, escalation-matrix.md, incident-response-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "032e01b1b3ce44dfd0b25ccceb7b65fd79d4fd797116243ef116d01950942ac6",
+      "kind": "frontmatter",
+      "originalSha256": "40367d2ba35344b6de26adde2269ce7f8e29ab9c8fff5c4c9a4525735f849a90"
+    },
+    "core/aidlc-common/stages/operation/observability-setup.md": {
+      "content": "---\nslug: observability-setup\nphase: operation\nexecution: CONDITIONAL\ncondition: Execute when monitoring, dashboards, alarms, or tracing need configuration\nlead_agent: aidlc-operations-agent\nsupport_agents: []\nmode: inline\nsummary_confirmation: required\nproduces:\n  - dashboards\n  - alarms\n  - slo-config\n  - log-queries\n  - tracing-config\n  - anomaly-config\n  - observability-setup-questions\nconsumes:\n  - artifact: performance-design\n    required: true\n  - artifact: security-design\n    required: true\n  - artifact: reliability-design\n    required: true\n  - artifact: monitoring-design\n    required: true\n  - artifact: infrastructure-specification\n    required: true\nrequires_stage:\n  - nfr-design\n  - infrastructure-design\n  - deployment-execution\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - infra\n  - classic\n  - workshop\n  - express\ninputs: NFR design from nfr-design stage, infrastructure design from infrastructure-design stage, deployed application\noutputs: dashboards.md, alarms.md, slo-config.md, log-queries.md, tracing-config.md, anomaly-config.md, observability-setup-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "037ff4a6cea07447b6ce9e2652a13fc1573f8110c5819d55044a91f20c6d0274",
+      "kind": "frontmatter",
+      "originalSha256": "b8aeedcacd847136e43c15c6be671ae6d69daee439caad7ebc290eae1f111339"
+    },
+    "core/aidlc-common/stages/operation/performance-validation.md": {
+      "content": "---\nslug: performance-validation\nphase: operation\nexecution: CONDITIONAL\ncondition: Execute when NFR performance targets need validation under load\nlead_agent: aidlc-quality-agent\nsupport_agents: []\nmode: inline\nsummary_confirmation: required\nproduces:\n  - load-test-plan\n  - load-test-results\n  - nfr-validation-matrix\n  - performance-validation-questions\nconsumes:\n  - artifact: performance-requirements\n    required: true\n  - artifact: scalability-requirements\n    required: true\n  - artifact: performance-design\n    required: true\n  - artifact: scalability-design\n    required: true\n  - artifact: dashboards\n    required: true\nrequires_stage:\n  - nfr-requirements\n  - nfr-design\n  - observability-setup\nsensors:\n  - required-sections\n  - upstream-coverage\nscopes:\n  - enterprise\n  - feature\n  - classic\n  - workshop\ninputs: NFR requirements from nfr-requirements stage, NFR design from nfr-design stage, deployed application, observability data from observability-setup stage\noutputs: load-test-plan.md, test-results.md, nfr-validation-matrix.md, performance-validation-questions.md (under this stage's record dir, engine-resolved)\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "17698e1b8255209d1e0c7e030cb42af4bfe58b2c2a71188b0b2cafa6ce82f466",
+      "kind": "frontmatter",
+      "originalSha256": "cdfc8a1a386113bce814783d25511f383f47a2eec0c4690283ca536f87d37ff9"
+    },
+    "core/hooks/aidlc-continue-workflow.ts": {
+      "content": "import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport {\n  ActiveDirectiveLockContendedError,\n  activeIntentUuid,\n  auditFilePath,\n  clearSessionIntentHandoff,\n  composeMarkerPath,\n  consumeCopilotConversation,\n  copilotStopEvidence,\n  COMPOSE_MARKER_TTL_MS,\n  docsRoot,\n  errorMessage,\n  getField,\n  hasPendingDecision,\n  isEngineToolCall,\n  hooksHealthDir,\n  isoTimestamp,\n  parseCheckboxes,\n  readActiveDirectiveMarker,\n  readSessionIntentHandoff,\n  readSessionIntentUuid,\n  recordHookDrop,\n  resolveProjectDirFromHook,\n  stageDir,\n  stateFilePath,\n  stopHookDir,\n  STOP_HOOK_PROBE_ENV,\n  turnMarkersShowConversational,\n  updateCopilotStopCount,\n  SESSION_INTENT_HANDOFF_TTL_MS,\n  harnessDir,\n} from \"../tools/aidlc-lib.ts\";\nimport {\n  foldTranscriptIntoLedger,\n  writeCurrentTranscriptPath,\n} from \"../tools/aidlc-usage.ts\";\nimport { questionsFileHasPendingPlanApproval } from \"./aidlc-plan-approval-guard.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "eaba31c31bb09e231b4795b2d680b75a5082dbad3ee91ac120378f41139e0f0c",
+      "kind": "runtime-code",
+      "originalSha256": "12c23a9586ece69b24d67d7f2f8631c003387170849249619260ff13d40fdffc"
+    },
+    "core/hooks/aidlc-deliver-stage-rules.ts": {
+      "content": "import { createHash } from \"node:crypto\";\nimport { existsSync, readFileSync } from \"node:fs\";\nimport { isAbsolute, join, resolve } from \"node:path\";\nimport {\n  agentsDir,\n  getField,\n  stateFilePath,\n} from \"../tools/aidlc-lib.ts\";\nimport {\n  type GraphStage,\n  loadGraph,\n} from \"../tools/aidlc-graph.ts\";\nimport {\n  type RuleContent,\n  resolvedRuleBundle,\n} from \"../tools/aidlc-steering.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "45451af63af6ab139b932e3473f0c4bbf645bacda91059cfc83b8d652bea864e",
+      "kind": "runtime-code",
+      "originalSha256": "61e532cf1d0e9392c8078e90ba9c978f4f5c060758a97a914290bc920003c303"
+    },
+    "core/hooks/aidlc-fold-usage.ts": {
+      "content": "import { existsSync, readFileSync } from \"node:fs\";\nimport {\n  resolveProjectDirFromHook,\n  isEngineToolCall,\n  stateFilePath,\n  writeCurrentSessionId,\n} from \"../tools/aidlc-lib.ts\";\nimport { isLifecycleBoundaryCommand } from \"./aidlc-state-transition-guard.ts\";\nimport {\n  type FoldMode,\n  foldTranscriptIntoLedger,\n  usageTrackingDisabled,\n  writeCurrentTranscriptPath,\n} from \"../tools/aidlc-usage.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "abda4972c5e26712760753deb247e06ad97f120d9a37d2d32dad5c3b6abdc584",
+      "kind": "runtime-code",
+      "originalSha256": "7777a270c2ec1d1683e0200b2f577f1d62a7b424bad5139cf69027e6a524fa38"
+    },
+    "core/hooks/aidlc-log-subagent.ts": {
+      "content": "import { existsSync, mkdirSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { appendAuditEntry } from \"../tools/aidlc-audit.ts\";\nimport {\n  auditFilePath,\n  type ClaudeCodeHookInput,\n  errorMessage,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  recordHookDrop,\n  resolveProjectDirFromHook,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "2aa9e3f14c648c6a9e239d75c63bab206ddf14f1cd1253b512ecb7b1d2c20715",
+      "kind": "runtime-code",
+      "originalSha256": "efec352a0eeb2e67f70a5e86f0ce93c62da39181a5648a55b8fe2f9c3ed525f9"
+    },
+    "core/hooks/aidlc-plan-approval-guard.ts": {
+      "content": "import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { appendAuditEntryUnlocked } from \"../tools/aidlc-audit.ts\";\nimport {\n  acquireAuditLock,\n  auditFilePath,\n  type ClaudeCodeHookInput,\n  docsRoot,\n  errorMessage,\n  getField,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  readActiveDirectiveMarker,\n  recordHookDrop,\n  releaseAuditLock,\n  resolveBoltDag,\n  resolveProjectDirFromHook,\n  stateFilePath,\n} from \"../tools/aidlc-lib.ts\";\nimport {\n  evaluateCodeGenerationApproval,\n  promptTestingContractMarkers,\n} from \"../tools/aidlc-testing-posture.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "17518598e9d8089c5427a171af362b1a6cc657acca9691ced57e96061d6b4b49",
+      "kind": "runtime-code",
+      "originalSha256": "9687b5291ffcf933f2e16e2dd4cadb0db98637e1294cf2f7110f5d3fccfc7e6e"
+    },
+    "core/hooks/aidlc-rebuild-stage-graph.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { mkdirSync, statSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport {\n  activeIntent,\n  activeSpace,\n  auditShards,\n  classifyRuntimeCompileCommand,\n  type ClaudeCodeHookInput,\n  errorMessage,\n  hookDebug,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  listIntents,\n  readAllAuditShards,\n  readSessionIntentUuid,\n  recordHookDrop,\n  resolveProjectDirFromHook,\n  runtimeGraphPath,\n  harnessDir,\n  writeSessionIntentHandoff,\n  writeSessionIntentUuid,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "d72db0521cc4ed8d22cc17659446a11942f98a07b4a0d3c6840c7c5ee75ffbc0",
+      "kind": "runtime-code",
+      "originalSha256": "f40f9959d000b9ef5771471717192948d64f214871e649ba26121b3be41f2dee"
+    },
+    "core/hooks/aidlc-record-human-turn.ts": {
+      "content": "import { existsSync } from \"node:fs\";\nimport { markHumanTurn, resolveProjectDirFromHook, stateFilePath } from \"../tools/aidlc-lib.ts\";\nimport { appendAuditEntry } from \"../tools/aidlc-audit.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "a74c6332b3f632c7f4fd92baa0e144e6596f30349e7adcc45cef185d89b47cb3",
+      "kind": "runtime-code",
+      "originalSha256": "f8f452332e7e0029744e8157f8ec7c33d982ae48e493cb449cc12e8643a01c36"
+    },
+    "core/hooks/aidlc-review-freeze.ts": {
+      "content": "import { existsSync, mkdirSync, statSync, writeFileSync } from \"node:fs\";\nimport { basename, isAbsolute, join, resolve } from \"node:path\";\nimport { appendAuditEntryUnlocked } from \"../tools/aidlc-audit.ts\";\nimport {\n  acquireAuditLock,\n  auditFilePath,\n  type ClaudeCodeHookInput,\n  errorMessage,\n  freshReviewReceipts,\n  getField,\n  hooksHealthDir,\n  intentRepos,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  loadStageGraph,\n  parseCheckboxes,\n  producesArtifactUnit,\n  readAllAuditShards,\n  readStateFile,\n  recordHookDrop,\n  releaseAuditLock,\n  resolveReviewClass,\n  resolveProjectDirFromHook,\n  type StageEntry,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "78ca70c24693fdbce94fccac9b28ec24c5e95989da02e13499c2762aa9f2aae7",
+      "kind": "runtime-code",
+      "originalSha256": "e3cd31ffcd9cabe3927999a6618ad0b00b97f39b36639255e7fa28758676dc63"
+    },
+    "core/hooks/aidlc-reviewer-scope.ts": {
+      "content": "import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from \"node:fs\";\nimport { dirname, isAbsolute, join, resolve } from \"node:path\";\nimport { appendAuditEntryUnlocked } from \"../tools/aidlc-audit.ts\";\nimport {\n  acquireAuditLock,\n  auditFilePath,\n  type ClaudeCodeHookInput,\n  errorMessage,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  recordHookDrop,\n  releaseAuditLock,\n  resolveProjectDirFromHook,\n  REVIEWER_DISPATCH_TTL_MS,\n  reviewerDispatchPath,\n  toPosix,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "c1d9157dfaa5f3397467faa7b0fdabf46a9a64b686cce3b1379890b16a6edc65",
+      "kind": "runtime-code",
+      "originalSha256": "eecb146049ba380d3542363b81e6af3c6a3842c0707749ff190375db6b6dc8e7"
+    },
+    "core/hooks/aidlc-run-sensors.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { existsSync, mkdirSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { type GraphStage, loadGraph } from \"../tools/aidlc-graph.ts\";\nimport {\n  auditFilePath,\n  type ClaudeCodeHookInput,\n  getField,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  readActiveDirectiveMarker,\n  readStateFile,\n  recordHookDrop,\n  resolveProjectDirFromHook,\n  sensorsDir,\n  stateFilePath,\n  harnessDir,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "26d505b2e182c4b2e56446a07834ce0a9940e8230c9eea2ebd1b64d365ef64bf",
+      "kind": "runtime-code",
+      "originalSha256": "40d529efceee4e49d7d5d49953279c05c3aea91a5ff590175d5b7622f6410010"
+    },
+    "core/hooks/aidlc-session-end.ts": {
+      "content": "import { existsSync, mkdirSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { appendAuditEntry } from \"../tools/aidlc-audit.ts\";\nimport {\n  activeIntentUuid,\n  errorMessage,\n  findIntentByUuid,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  readSessionIntentUuid,\n  recordHookDrop,\n  resolveProjectDirFromHook,\n  stateFilePath,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "421c452f64007e43fe086a1ed70c8d3662812d86405adbde809edade18609ae4",
+      "kind": "runtime-code",
+      "originalSha256": "3627f42c32e106fb5aa7743dc08669207e0c12f9348a1dd337fdc0ae30c65307"
+    },
+    "core/hooks/aidlc-session-start.ts": {
+      "content": "import { existsSync, mkdirSync, readFileSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { appendAuditEntry } from \"../tools/aidlc-audit.ts\";\nimport { stageGraphDrift } from \"../tools/aidlc-graph.ts\";\nimport { repointHarnessIncludes } from \"../tools/aidlc-includes.ts\";\nimport {\n  activeIntentUuid,\n  activeSpace,\n  clearSessionIntentUuid,\n  ensureActiveSpaceCursor,\n  errorMessage,\n  findIntentByUuid,\n  getField,\n  harnessDir,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  readSessionIntentUuid,\n  recordHookDrop,\n  recoveryFilePath,\n  resolveProjectDirFromHook,\n  stateFilePath,\n  writeCurrentSessionId,\n  writeSessionIntentUuid,\n} from \"../tools/aidlc-lib.ts\";\nimport { writeCurrentTranscriptPath } from \"../tools/aidlc-usage.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "8f413f1ac62dec530d24eea6832acad6bfbc21e41fc5301a83f84ff23d3b823a",
+      "kind": "runtime-code",
+      "originalSha256": "2d5baa7e46c99d08ac899158a2a5084abe1bae3b22425c2a19a5f3acda3e356a"
+    },
+    "core/hooks/aidlc-state-transition-guard.ts": {
+      "content": "import {\n  type ClaudeCodeHookInput,\n  isClaudeCodeHookInput,\n  parseArgs,\n  parseWorkspaceCommand,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "b5b6bc7556747fcc0012ee6fc3b8091685d303a949f21931c88d21e916c28e03",
+      "kind": "runtime-code",
+      "originalSha256": "371c6001f9be91ed4331d6b7e75068e5d1cf1185ae52ec7eb44987f0ffc9702e"
+    },
+    "core/hooks/aidlc-statusline.ts": {
+      "content": "import { existsSync, readFileSync } from \"node:fs\";\nimport {\n  activeIntent,\n  activeSpace,\n  displaySlugFromDirName,\n  listIntents,\n  listSpaces,\n  loadAgents,\n  resolveProjectDirFromHook,\n  stateFilePath,\n} from \"../tools/aidlc-lib.ts\";\nimport { sessionUsageAggregate } from \"../tools/aidlc-usage.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "917490ea9feed8a5848b818d4a2d46424b72e30d6bc318159bdb4da0d99b1fc0",
+      "kind": "runtime-code",
+      "originalSha256": "18a934f26fe354e18e674d6db7de63b24922e1901a7eeabe1b0a510d332582bb"
+    },
+    "core/hooks/aidlc-sync-workflow-state.ts": {
+      "content": "import { existsSync, mkdirSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport {\n  type ClaudeCodeHookInput,\n  getField,\n  hookDebug,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  latestStartedStageSlug,\n  parseCheckboxes,\n  readAllAuditShards,\n  readStateFile,\n  resolveProjectDirFromHook,\n  stateFilePath,\n  harnessDir,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "f7519cb02dae47f8ba5a0af5cebd0ce87f2d584c19e66dc48c08bdf302ee318d",
+      "kind": "runtime-code",
+      "originalSha256": "127e43d23bd8ff28d3e6db9d6e516749de65ca0d17d92fe52c713fdd747c948b"
+    },
+    "core/hooks/aidlc-validate-state.ts": {
+      "content": "import { existsSync, mkdirSync, readFileSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { appendAuditEntry } from \"../tools/aidlc-audit.ts\";\nimport {\n  auditFilePath,\n  errorMessage,\n  getField,\n  hooksHealthDir,\n  invalidateActiveDirectiveContext,\n  isoTimestamp,\n  recordHookDrop,\n  recoveryFilePath,\n  resolveProjectDirFromHook,\n  stateFilePath,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "1913ba8f50749ec35046e5b52e7d72614b897bc39c81dd9ce62baa9809f420f4",
+      "kind": "runtime-code",
+      "originalSha256": "79f5a9d08cc99afd13ff236ffc96ee4381e19cae0b113a7a77d77de9da7a7b26"
+    },
+    "core/hooks/aidlc-write-audit-log.ts": {
+      "content": "import { existsSync, mkdirSync, writeFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { appendAuditEntry } from \"../tools/aidlc-audit.ts\";\nimport {\n  auditFilePath,\n  type ClaudeCodeHookInput,\n  codekbDir,\n  docsRoot,\n  errorMessage,\n  hookDebug,\n  hooksHealthDir,\n  isClaudeCodeHookInput,\n  isoTimestamp,\n  recordHookDrop,\n  resolveProjectDirFromHook,\n} from \"../tools/aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "99e72637a4cc6b0969a9f358d137cb0c1401f6b4de9ce2248fa9d4cd74222753",
+      "kind": "runtime-code",
+      "originalSha256": "b6b6df63a154f6a0c7b7bd2473212d419955bf14adfd32a7989368440520eed7"
+    },
+    "core/knowledge/aidlc-architect-agent/adr-template.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "d10447be6559ee1834e9471aa9fb4dbec2655cc71566ab44f350dbef81edc5b4"
+    },
+    "core/knowledge/aidlc-architect-agent/architecture-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "06f5c429030ca7b1da74817e21b1a753867276b5b012726a2b8007c4332dc3a2"
+    },
+    "core/knowledge/aidlc-architect-agent/architecture-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "e30a524e5d4669ddb62af351f6b1dbc512ceb6b65e0a52f2460b379222f055a5"
+    },
+    "core/knowledge/aidlc-architect-agent/ddd-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "2d5fbfb1c35410bb48b709793a26a2bae1eeb7cfc93a8e5e424db121af9ad1ce"
+    },
+    "core/knowledge/aidlc-architect-agent/nfr-design-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "856d91e29e6820abfdec79844467b2f72f0c19558fcb0c5f19d64e84be695816"
+    },
+    "core/knowledge/aidlc-architect-agent/nfr-design-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "af41327921e7acab9b7855131313252120c2da2148dc6336da1eac3582d4f526"
+    },
+    "core/knowledge/aidlc-architecture-reviewer-agent/reviewing.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "802a519d3a153c3fac994f4b01d68f659f1dbbe75656a1d9d6d5ffefef5bf480"
+    },
+    "core/knowledge/aidlc-aws-platform-agent/cdk-best-practices.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "4789e101ef3865270795a46f17f99a0f7fd0f9259b8225025e6182487ea5ae53"
+    },
+    "core/knowledge/aidlc-aws-platform-agent/cost-optimization-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "f21bbbed8aab03f7416062b7fb32b1f80c90b558ea94acadaa6ab6dc4f6e8041"
+    },
+    "core/knowledge/aidlc-aws-platform-agent/infrastructure-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "67ee5f3b67828e84dcefbd276ddfb3b5efcc04deca3355c9a2d6cd60d54044f8"
+    },
+    "core/knowledge/aidlc-aws-platform-agent/well-architected-framework.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "650b0e613d76d9ae3326b998c389ba8d9f068196ea772468dc4b3a751d6d8f24"
+    },
+    "core/knowledge/aidlc-compliance-agent/regulatory-frameworks.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "6774d09d0814c7af5fc600a8fbe61e35b01cbe947209e532d88d2e43164655b1"
+    },
+    "core/knowledge/aidlc-composer-agent/composing.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "e085e0b3ef7102f507faebc7676dda9a25954b056ee10c5781a0bdc721bce8d5"
+    },
+    "core/knowledge/aidlc-delivery-agent/mob-programming-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "ca5b7529c575eb62ee97f26a8422d76984112676061be1b83a32ee5aa670e7e0"
+    },
+    "core/knowledge/aidlc-delivery-agent/team-topologies.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "d936bfb7481a94690351d693fced2559ea7ffc00e46b3cf2e9efa4c2feec6f1d"
+    },
+    "core/knowledge/aidlc-delivery-agent/workflow-planning-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "4cf9e5dd824ff818a66a6832b84a7c380ffbd6c19bc5d26fc951b26b4916af1b"
+    },
+    "core/knowledge/aidlc-design-agent/accessibility-wcag.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "ea5fb2d543998de8660b7f98b9d368d9a2a264320fdf375684135146c5346de3"
+    },
+    "core/knowledge/aidlc-design-agent/component-spec-template.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "253b47804d6c7177cf184175c10a54ac35af4028a5d42de330d0e3a7b126c7b8"
+    },
+    "core/knowledge/aidlc-design-agent/interaction-design-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "d0ff5a138681a83a4af0fb012ff8c8c05fcb5fe40f5f6c844a4f29ddd411335d"
+    },
+    "core/knowledge/aidlc-design-agent/ux-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "b377bf0d5ae64fde1c1cecffbfbfcab2033f89ee538e8378d610a7a2d018739f"
+    },
+    "core/knowledge/aidlc-design-agent/wireframing-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "c9cc515f881bfdcf28af3ff9a30cc4f997511549b6286326a0689e0f7c8c82fb"
+    },
+    "core/knowledge/aidlc-developer-agent/api-design-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "a5e78f2f2c256286a541d8be298bad91b8de2cdcde8810922381fbada011e0b8"
+    },
+    "core/knowledge/aidlc-developer-agent/code-analysis-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "9a277562315b9cd01e8f1bd99c432ffcae1a0467c6914cdcb7bca74f0a39e56f"
+    },
+    "core/knowledge/aidlc-developer-agent/code-generation-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "d893013765635c374eeffd3d901a380048a61c0be9538a1411a7173bdf28125c"
+    },
+    "core/knowledge/aidlc-developer-agent/code-generation-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "74d8d7836635cd197d3a5e5adbd0c8ffa4c03ac0ee69a80900e01fa225315298"
+    },
+    "core/knowledge/aidlc-developer-agent/data-modelling-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "1b8b55db0da2d748fb3b88d2fd7eb1593cd4b20ad342a9b942f499ff3a1fe755"
+    },
+    "core/knowledge/aidlc-developer-agent/re-artifacts.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "da99d7277d833ef694c7dac022e8214b53a6dd8ef0638efdef083509fba8714d"
+    },
+    "core/knowledge/aidlc-devsecops-agent/devsecops-pipeline-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "c9defc71193fb07cbf066bd1de4c7d3d7d482a50d91714de3e6b0330ba5206b0"
+    },
+    "core/knowledge/aidlc-devsecops-agent/nfr-requirements-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "16d99282fa44c965192d26ca3b8639c448e4a08bacec9f13a9eb86344c58c193"
+    },
+    "core/knowledge/aidlc-devsecops-agent/security-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "7df1003a10e5a989a0345167b59e25abed747f83c419ba0d1699023466be3b5a"
+    },
+    "core/knowledge/aidlc-devsecops-agent/threat-modelling-stride.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "bc3df5f6a47634f3a6ff0f78c8f1af9162cb7f35176c530a0f5b0f454ac25a2b"
+    },
+    "core/knowledge/aidlc-operations-agent/incident-response-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "8e6e2bcf51b422fe28216ef3ff514821412eacc962bb8f37e4a8b028b8edc0d0"
+    },
+    "core/knowledge/aidlc-operations-agent/nfr-performance-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "bad8292569ef5f2a4f8165d13c363ea4bdbf0293718515b7b9d030b5074ba9a1"
+    },
+    "core/knowledge/aidlc-operations-agent/observability-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "c13df81342161b0bd4eae20a6e603c36b7b64ac775b94f688180d9dc0eb0be19"
+    },
+    "core/knowledge/aidlc-operations-agent/slo-sli-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "737d7b46eb6829ba4f136f31322505d67b21b21f056497528c1a2ed59f33ad63"
+    },
+    "core/knowledge/aidlc-pipeline-deploy-agent/branching-strategies.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "85852e2f7ae26ade3f0ce2e0ae9854516af605118d422f94419c68d9c5f4a599"
+    },
+    "core/knowledge/aidlc-pipeline-deploy-agent/cicd-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "08e64c6a91973ca9021a06f1d83a8aa75962cc8576f8d32df79e180d17ce2dbb"
+    },
+    "core/knowledge/aidlc-pipeline-deploy-agent/deployment-strategies.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "d5510bca14b1751b2d591e162eaa94c4925b43bd0f61fd8be016fe9e3bfa7f63"
+    },
+    "core/knowledge/aidlc-product-agent/functional-design-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "a71ba14528c4095f866425c807bcffec4fe285aeff312c40722c1922a1d5d591"
+    },
+    "core/knowledge/aidlc-product-agent/market-research-methods.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "46364f519c0a6061e4cfeebcbd8ed833628601f8868b43add11c9b1f4bcbad28"
+    },
+    "core/knowledge/aidlc-product-agent/prioritization-frameworks.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "17e5bb6d4b5cb8afd05ad3e5929f7676c460be12cb924f7ffd122dd4097de1de"
+    },
+    "core/knowledge/aidlc-product-agent/product-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "d7466ca5d5dc23684b56b7c966256392dab3a73563d7c82396f7944f3e45384f"
+    },
+    "core/knowledge/aidlc-product-agent/requirements-elicitation.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "898152a3b78f5370bd78987acef8333e4e5932c5b4801b91bcbafac833f69ad4"
+    },
+    "core/knowledge/aidlc-product-agent/requirements-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "cda16cdaac57be8d2303062cacafce846fbb0e19d66273c683af0a70e9ec2173"
+    },
+    "core/knowledge/aidlc-product-agent/user-story-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "d7bcdec5ce4e9e17b51a9761feeaa64ce696cbc7528e45de0a686e396b76c81f"
+    },
+    "core/knowledge/aidlc-product-lead-agent/reviewing.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "f7576a27f1bcc462ec2a09c9ad6a6945a1ea05f39d11f0c39c30016c9e034c85"
+    },
+    "core/knowledge/aidlc-quality-agent/nfr-reliability-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "28ea7f3b59fc8feea1fe77f14dfe1a36b6001a20ab580846771654b220c2e30c"
+    },
+    "core/knowledge/aidlc-quality-agent/nfr-validation-methods.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "cbf6b21acf112d208e29a192b0a527c2102e49ecd20299cd043d1ab7c2313218"
+    },
+    "core/knowledge/aidlc-quality-agent/test-strategy-patterns.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "e840aeb913f8f9e45a87a7246c9bf697314c940c6fdb0c1af3cb59c0b7166f7e"
+    },
+    "core/knowledge/aidlc-quality-agent/testing-guide.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "af45291ed21f530cd42469104ee85c0920305288a6f222c03e65582c631baecc"
+    },
+    "core/knowledge/aidlc-shared/ai-dlc-principles.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "170f6f2d3d0a295235d329f36424ccc283732072581bfa4fae42cbc439a0ca45"
+    },
+    "core/knowledge/aidlc-shared/audit-format.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "9f986875e0abc18a0b8c6da90f339b40e6e46bbb9a246e7be435422356b48db2"
+    },
+    "core/knowledge/aidlc-shared/brownfield.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "9fe4d24392a39f5edad08bf5b17d3aec4c9ae03304edf418a4e7d1716d91dcab"
+    },
+    "core/knowledge/aidlc-shared/knowledge-readme-template.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "22986435c787f00f97197e9e75af0bedf4e091d3cc053302b99e1dce6ad7ed16"
+    },
+    "core/knowledge/aidlc-shared/memory-template.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "a9c770481f2660b3efa92538df41f75f66150bf55d571f150bf0ce6fe2f624a4"
+    },
+    "core/knowledge/aidlc-shared/rules-reading.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "b6b9bc02f7b4706102650330a9aa78076337a0ed65700a788d7000a90a7c0e39"
+    },
+    "core/knowledge/aidlc-shared/state-template.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "390d738f3b39f361421466bafc43146c598ce9b3e83803b1f9b04d1232349590"
+    },
+    "core/knowledge/aidlc-shared/verification.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "33533a6e0d1e53320d9430bbd5b61b23b3120aa3b65af0f8d53fc292ec245eda"
+    },
+    "core/knowledge/aidlc-shared/worktree-info-schema.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "a4f04b3782d90ae1c0ad6f7dd431bbb03fd62c077c5e2d89274d745279e50979"
+    },
+    "core/memory/org.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "58baeaa068350d6b33e4cef19ac1ffce32e9e74c06900756c5b5c1ddb767be45"
+    },
+    "core/memory/phases/construction.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "336a0e700510ec5d932aa0e4476c1123ce925e6a4afffee31c513bf7d1e1cf1b"
+    },
+    "core/memory/phases/ideation.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "6179c9da75d3f2944c37f51968bcdab2fb4e59052b30a1ebb716f0bbd0d4fcb4"
+    },
+    "core/memory/phases/inception.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "a23a5931ec6cb06dd9b49d905f001694babc99089e97da0314fc9920fb3ee64b"
+    },
+    "core/memory/phases/operation.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "2ca872806259b476e5fc10896d39b3461cae4a80e173e4a7af122eeb0c7e66b9"
+    },
+    "core/memory/project.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "48a0686495d791abaad4512f8a33497947138edddf1c6b35914e51f64099b5c3"
+    },
+    "core/memory/team.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "c065a3f8811764025aa9bdb5a9c51628f2724e57fc5ec0caa0973693e08d2c3e"
+    },
+    "core/memory/templates/.gitkeep": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "9cf930a165d4d24fd80ff21a9c7df39419a285e035fbe669bf5460ad0921d13c"
+    },
+    "core/scopes/aidlc-bugfix.md": {
+      "content": "---\nname: bugfix\ndepth: Minimal\nkeywords:\n  - fix\n  - bug\n  - broken\ndescription: Fix a specific bug\nskeleton: off\nrunner: true\nreview_cap: advisory\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "c5420b15d1120973de40eb237df5fc5325693bea35cd725fb1b1cc69898ad2c8",
+      "kind": "frontmatter",
+      "originalSha256": "4da8a68eceaa7baab5565307b5e157d7deab2f7de86196414396971e5a0843dc"
+    },
+    "core/scopes/aidlc-classic.md": {
+      "content": "---\nname: classic\ndepth: Standard\nkeywords: []\ndescription: \"V1-style lifecycle without ideation ceremony — the implicit default\"\nskeleton: on\nreview_cap: advisory\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b85800e75c217091bb5fd9c674d3e94197947332dd0fd2b5ef127dd74e283946",
+      "kind": "frontmatter",
+      "originalSha256": "26137b9f8043639753f036055727afd8b6891f395d20505a4d6affb78450bdae"
+    },
+    "core/scopes/aidlc-enterprise.md": {
+      "content": "---\nname: enterprise\ndepth: Comprehensive\nkeywords: []\ndescription: Regulated enterprise feature, full audit trail\nskeleton: on\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "8e43f1266fca0832aef3de7d39b00814c57fbdaff6a35e459398ac1028dc9887",
+      "kind": "frontmatter",
+      "originalSha256": "dd7b8d1f055b886dfe123f20824528414a8ce188ca40bda92ef56d64a62d3351"
+    },
+    "core/scopes/aidlc-express.md": {
+      "content": "---\nname: express\ndepth: Minimal\nkeywords:\n  - express\n  - lightweight\ndescription: \"Lightest run: requirements to deploy, no design pass, no reviewers\"\nskeleton: off\nrunner: true\nreview_cap: none\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "a029203eb53c847816e3053330b6908f2da47a87cd8e8ffb01c5608d73a83bcf",
+      "kind": "frontmatter",
+      "originalSha256": "de1857e9e62061d7c4c75564644c45fa950266d3472f4f88c318e07091f411c6"
+    },
+    "core/scopes/aidlc-feature.md": {
+      "content": "---\nname: feature\ndepth: Standard\nkeywords: []\ndescription: Full lifecycle for new features, practical depth\nskeleton: on\nrunner: true\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "1fc60d42dfe91bd9892fd8fb999ea347098460942dba6b0a2fdfa80963d58295",
+      "kind": "frontmatter",
+      "originalSha256": "de390ee4950657195e3399429c922135cc757c227aca325815e46bf5e8861e11"
+    },
+    "core/scopes/aidlc-infra.md": {
+      "content": "---\nname: infra\ndepth: Standard\nkeywords:\n  - infrastructure\n  - deploy\n  - infra\ndescription: Infrastructure changes\nskeleton: on\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "9ae565aadf5ca1a19c863cf18bc1f00caeae55fc8fe34e024359c623472229b1",
+      "kind": "frontmatter",
+      "originalSha256": "46bfe366de36102a84dd5fe4e8862bad2a53e5fcbfc38b0cb4202a6c25d6d3aa"
+    },
+    "core/scopes/aidlc-mvp.md": {
+      "content": "---\nname: mvp\ndepth: Standard\nkeywords:\n  - mvp\n  - minimum viable\ndescription: Skip operations, ship the core\nskeleton: on\nrunner: true\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "c906f45a22f007eea08a7f11fcec9cb3da0eb31bde596064bb1b68f9c8ba54cd",
+      "kind": "frontmatter",
+      "originalSha256": "82cb88b7a099ce62b1d79111f0df95f13ae2dfe41c55f71e2ea9e7615e61e78f"
+    },
+    "core/scopes/aidlc-poc.md": {
+      "content": "---\nname: poc\ndepth: Minimal\nkeywords:\n  - proof of concept\n  - prototype\n  - poc\n  - spike\ndescription: Prove feasibility fast\nskeleton: on\nreview_cap: advisory\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "a7367f8352a420325b28c61cf3af90511cbc0bbb7cd380629a940377db2cd6af",
+      "kind": "frontmatter",
+      "originalSha256": "bda1abc2b8127cdd05de4c8b85f29729165ede54adbb67e873a4ab3115a2c917"
+    },
+    "core/scopes/aidlc-refactor.md": {
+      "content": "---\nname: refactor\ndepth: Minimal\nkeywords:\n  - refactor\n  - clean up\n  - simplify\ndescription: Clean up existing code\nskeleton: off\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "4a2f7e53656666fbe106bdd546801192c7e556076efd0f6e22bdb58d50d2d426",
+      "kind": "frontmatter",
+      "originalSha256": "7e3961c3077b5c6d4d1047932487b48a1df1c2309d6a0d736cbb4293d1a2b16c"
+    },
+    "core/scopes/aidlc-security-patch.md": {
+      "content": "---\nname: security-patch\ndepth: Minimal\nkeywords:\n  - security\n  - CVE\n  - vulnerability\n  - patch\ndescription: CVE response\nskeleton: off\nrunner: true\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "c6277f2f3f3525ff48d83c13b039032ba27472a145b378fcbcf32fb22973eb94",
+      "kind": "frontmatter",
+      "originalSha256": "b95368d1285d5f97de584fba3d8803595937cd99917b411850836d33bfc3277b"
+    },
+    "core/scopes/aidlc-workshop.md": {
+      "content": "---\nname: workshop\ndepth: Standard\ntestStrategy: Minimal\nkeywords:\n  - workshop\n  - lab\n  - training\ndescription: Facilitated group session with mandatory gates\nskeleton: on\nreview_cap: advisory\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "1aa5069341ab05f59155729df4bd2e5181e440a7b3745f3cdbb966d0be2a4be1",
+      "kind": "frontmatter",
+      "originalSha256": "1d5b17aba492bba2291983e5d2835fa2ba849d08f134e9e6559e479c3e8c3134"
+    },
+    "core/sensors/aidlc-claim-sources.md": {
+      "content": "---\nid: claim-sources\nkind: deterministic\ncommand: bun {{HARNESS_DIR}}/tools/aidlc-sensor-claim-sources.ts\ndefault_severity: advisory\ndescription: Checks Intent Capture claims carry source tags that resolve to the stage's confirmed source register and answers\ncategory: document-provenance\nmatches: \"**/{aidlc-docs,intents}/**\"\ninput_schema:\n  output_path: string\n  stage_slug: string\n  deliverables: string[]\noutput_schema:\n  pass: boolean\n  findings: string[]\n  scanned_files: string[]\n  questions_file: string\n  findings_count: integer\ntimeout_seconds: 5\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "317bb0c5932ccc197ec16b076e843ee0e345c060a81898b7468656b21bf85052",
+      "kind": "frontmatter",
+      "originalSha256": "b5a568692b88f1b5942c597de5729e4fef5c1d77336ec4ac11b0184e12ac718d"
+    },
+    "core/sensors/aidlc-linter.md": {
+      "content": "---\nid: linter\nkind: deterministic\ncommand: bun {{HARNESS_DIR}}/tools/aidlc-sensor-linter.ts\ndefault_severity: advisory\ndescription: Wraps the project's configured linter (eslint by default for v0.5.0); fires on TS/JS code outputs\ncategory: code-quality\nmatches: \"**/*.{ts,js}\"\ninput_schema:\n  file_path: string\noutput_schema:\n  pass: boolean\n  violations:\n    - file: string\n      line: number\n      rule: string\n      message: string\ntimeout_seconds: 30\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "395bfb76a256bc0ba2882afda1eb2e9c97b8e80cc7488fc8ef5427c3d461e684",
+      "kind": "frontmatter",
+      "originalSha256": "a25d035fcf9f662df93fc57a30a993be5d447da484394e58696a50ec93d76f05"
+    },
+    "core/sensors/aidlc-required-sections.md": {
+      "content": "---\nid: required-sections\nkind: deterministic\ncommand: bun {{HARNESS_DIR}}/tools/aidlc-sensor-required-sections.ts\ndefault_severity: advisory\ndescription: Checks that stage output contains the required H2 headings — generic content-shape check, fires on every stage that writes markdown\ncategory: document-shape\nmatches: \"**/{aidlc-docs,intents}/**\"\ninput_schema:\n  output_path: string\n  stage_slug: string\noutput_schema:\n  pass: boolean\n  h2_count: integer\n  headings: string[]\n  findings_count: integer\n  edge_block: string\n  template: string\n  template_expected: string[]\n  template_missing: string[]\n  config_warning: string\ntimeout_seconds: 5\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "2ee56a4bfe93d772353f6a96865a254d4b959a3ed118bb6cb796e44fb17aee85",
+      "kind": "frontmatter",
+      "originalSha256": "74833174788f2572d83e45b0bb35cf1773de338db848aa3e96c2579fb2ab742d"
+    },
+    "core/sensors/aidlc-traceability.md": {
+      "content": "---\nid: traceability\nkind: deterministic\ncommand: bun {{HARNESS_DIR}}/tools/aidlc-sensor-traceability.ts\ndefault_severity: advisory\ndescription: Verifies element-level upstream coverage, downstream targets, and derived orphans in traceability.json\ncategory: document-traceability\nmatches: \"**/traceability.json\"\ninput_schema:\n  output_path: string\n  stage_slug: string\noutput_schema:\n  pass: boolean\n  gaps: string[]\n  orphans: string[]\n  missing_from_table: string[]\n  missing_from_upstream_ids: string[]\n  invalid_entries: string[]\n  invalid_targets: string[]\n  findings_count: integer\n  reason: string\ntimeout_seconds: 5\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "51c3f9f1f706db5226ddb6d73761b180800af6c775b778a832d130eb06993b45",
+      "kind": "frontmatter",
+      "originalSha256": "714d2cfa542fc23f2bc72ef8889874abdef4760a132965c8e85a5dfe1e5e1c30"
+    },
+    "core/sensors/aidlc-type-check.md": {
+      "content": "---\nid: type-check\nkind: deterministic\ncommand: bun {{HARNESS_DIR}}/tools/aidlc-sensor-type-check.ts\ndefault_severity: advisory\ndescription: Wraps the project's configured type-checker (tsc by default for v0.5.0); fires on TS/TSX code outputs\ncategory: code-quality\nmatches: \"**/*.{ts,tsx}\"\ninput_schema:\n  file_path: string\noutput_schema:\n  pass: boolean\n  errors:\n    - file: string\n      line: number\n      column: number\n      message: string\ntimeout_seconds: 60\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "43db2f2e8b0219d34f137a9e5df1c4680c8ab207f8ed569247249dd4f98945c5",
+      "kind": "frontmatter",
+      "originalSha256": "e8121702e665ae8a87147768c0a9dce4cba1943887a1aa3d5ef43fb7f454954e"
+    },
+    "core/sensors/aidlc-upstream-coverage.md": {
+      "content": "---\nid: upstream-coverage\nkind: deterministic\ncommand: bun {{HARNESS_DIR}}/tools/aidlc-sensor-upstream-coverage.ts\ndefault_severity: advisory\ndescription: Checks the stage's deliverables reference the upstream artifacts the stage frontmatter declares it consumes\ncategory: document-shape\nmatches: \"**/{aidlc-docs,intents}/**\"\ninput_schema:\n  output_path: string\n  stage_slug: string\n  consumes: string[]\n  deliverables: string[]\noutput_schema:\n  pass: boolean\n  unreferenced_artifacts: string[]\ntimeout_seconds: 5\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "3de1c5b81f4744e699ae126c3ccbb23ee715c09ca1a556db929bcc4b8f5c03b7",
+      "kind": "frontmatter",
+      "originalSha256": "525ca1ebb18ff23d43a1f6c03814fa92ad491a2cb09c08686a7b4b76a5781734"
+    },
+    "core/skills/aidlc-knowledge/SKILL.md": {
+      "content": "---\nname: aidlc-knowledge\ndescription: >\n  Index the team's own documents — PDFs, Word files, Markdown, plain\n  text — into a per-space catalog the AI-DLC agents can cite. Wraps\n  `aidlc-knowledge.ts`: onboard, sync, list, show, associate,\n  dissociate, rebind. Every catalog row is written by the tool under a\n  workspace lock; this skill never edits the catalog by hand and never\n  advances workflow state.\nargument-hint: \"[onboard <path> | list | show <id> | sync]\"\nuser-invocable: true\nclassification: read-write\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "d0a88aff4e77f2ac453caa8b863177c5290c74da9fa56783f14e33aee0014a9e",
+      "kind": "frontmatter",
+      "originalSha256": "70945fcbcaf187632fb52e27b6f56d3efa440ca035c39b52279762c6328ddfe6"
+    },
+    "core/skills/aidlc-outcomes-pack/SKILL.md": {
+      "content": "---\nname: aidlc-outcomes-pack\ndescription: >\n  Generate a comprehensive handover document at workflow close so the\n  team can own, operate, and continue the system without re-running the\n  workflow. Stage/phase/learning counts come from\n  `aidlc-runtime.ts summary`; prose comes from the artefacts. Writes\n  OUTCOMES.md but never mutates workflow state or emits audit events.\nargument-hint: \"\"\nuser-invocable: true\nclassification: read-only\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "a2e25b9eb741bb2d80a5ce8f11a3689e25c25d0b072ba5169971ac96ba96504d",
+      "kind": "frontmatter",
+      "originalSha256": "5e9680ab21e4af40d04827f7f945ad37d53d75ac45fd324710825f1e64f4aedc"
+    },
+    "core/skills/aidlc-replay/SKILL.md": {
+      "content": "---\nname: aidlc-replay\ndescription: >\n  Print a structured session narrative for stakeholders who weren't in\n  the room. Numbers (stage counts, phase rollup, duration) come from\n  `aidlc-runtime.ts summary`; prose comes from the audit trail and\n  artefacts. Renders to the terminal only — writes no file, never\n  mutates workflow state, never emits audit events.\nargument-hint: \"\"\nuser-invocable: true\nclassification: read-only\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "0136aa11640d5fc8ac52678677fff1e6799b324db6137081b44a107fe627cc2e",
+      "kind": "frontmatter",
+      "originalSha256": "e35fc14dd30194435cb99339c3c8e3de073bbf46f3c0c756084fd97fe944911e"
+    },
+    "core/skills/aidlc-session-cost/SKILL.md": {
+      "content": "---\nname: aidlc-session-cost\ndescription: >\n  Read-only session cost view. Prints deterministic aggregates for the\n  current workflow — duration, stage outcomes, memory entries, sensor\n  firings, learnings captured — sourced entirely from\n  `aidlc-runtime.ts summary`. Never mutates workflow state, never emits\n  audit events, never writes files.\nargument-hint: \"\"\nuser-invocable: true\nclassification: read-only\n---\n[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "5d1c83397ed1b527ba53fdf39fde69bc463c6e5356bb8b9f115c55e31e44105f",
+      "kind": "frontmatter",
+      "originalSha256": "f6ae0c5ca90829a27ed16b040787c4ac46b485cae07ca31ccb8e2e5051652f8b"
+    },
+    "core/templates/onboarding.md": {
+      "content": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]\n",
+      "fixtureSha256": "b7b3791c7fc252c9aca37b53f7da22d4b25fc23fc05330a49a295d18ea9a584e",
+      "kind": "path-only",
+      "originalSha256": "497f50ba1807de01907c2e9b1c7938084402224852bfb1703b2871959ab10dba"
+    },
+    "core/tools/aidlc-audit.ts": {
+      "content": "import { createHash } from \"node:crypto\";\nimport {\n  closeSync,\n  constants as fsConstants,\n  existsSync,\n  fstatSync,\n  lstatSync,\n  mkdirSync,\n  openSync,\n  readFileSync,\n  readSync,\n  realpathSync,\n  statSync,\n  writeSync,\n} from \"node:fs\";\nimport { dirname, isAbsolute, relative, resolve, sep } from \"node:path\";\nimport {\n  acquireAuditLock,\n  assertNoSymlinkInChainOrThrow,\n  auditFilePath,\n  cloneIdPath,\n  errorMessage,\n  hasUnsafeSingleLineCharacter,\n  isoTimestamp,\n  parseFieldArgs,\n  relativeRecordDir,\n  readRegularFileNoFollowOrThrow,\n  releaseAuditLock,\n  resolveProjectDir,\n  validateBoltSlug,\n  worktreeAuditFilePath,\n  worktreePath,\n  writeBufferAtomic,\n} from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "71559b9e49822e027f7d19a26d74c92f64efaa6f1f6a897d7eebf9bd6e28c64f",
+      "kind": "runtime-code",
+      "originalSha256": "488377c7f4b68599fee31549f399b2ac8e95bc65640747c9c8eef8c978523894"
+    },
+    "core/tools/aidlc-bolt.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { existsSync, readFileSync, writeFileSync } from \"node:fs\";\nimport { fileURLToPath } from \"node:url\";\nimport { appendAuditEntry, appendAuditEntryUnlocked } from \"./aidlc-audit.ts\";\nimport {\n  emitError,\n  errorMessage,\n  getField,\n  holdsAuditLock,\n  humanActedSinceGate,\n  humanPresenceGuardDisabled,\n  relativeRecordDir,\n  readStateFile,\n  resolveProjectDir,\n  setFieldStrict,\n  setOrInsertField,\n  withAuditLock,\n  worktreePath,\n  worktreeStateFilePath,\n  writeStateFile,\n} from \"./aidlc-lib.js\";\nimport { compiledExecutable } from \"./aidlc-runtime-paths.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "7a5318315401504a3f897848e0e337f4c81d909b0e006f6e2f565e13a67cdd1d",
+      "kind": "runtime-code",
+      "originalSha256": "286226b24edafda3e2b7d1db563a9dc46a7aab03b7e930a4703aaba0cea3e5b8"
+    },
+    "core/tools/aidlc-directive.ts": {
+      "content": "import { isPlainObject } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "a003143cccb1dafdde3aba186a6e75ac66ad78715172aba63199b65333611ffb",
+      "kind": "runtime-code",
+      "originalSha256": "a2f0a6c58edf726773c318552ba536da943e5aef9cd3e0255ec71be15e531a32"
+    },
+    "core/tools/aidlc-doctor-bundle.ts": {
+      "content": "import {\n  chmodSync,\n  closeSync,\n  existsSync,\n  lstatSync,\n  mkdirSync,\n  openSync,\n  readSync,\n  readdirSync,\n  realpathSync,\n  rmSync,\n  statSync,\n  type Stats,\n  writeFileSync,\n} from \"node:fs\";\nimport { createHash } from \"node:crypto\";\nimport { homedir } from \"node:os\";\nimport { basename, join, sep } from \"node:path\";\nimport {\n  activeSpace,\n  auditBlockField,\n  auditShardDir,\n  docsRoot,\n  harnessDir,\n  hooksHealthDir,\n  isoTimestamp,\n  listIntentDirs,\n  listSpaces,\n  parseCheckboxes,\n  planFilePath,\n  readAllAuditShards,\n  readRegularFileNoFollowOrThrow,\n  recordDir,\n  recoveryFilePath,\n  relativeRecordDir,\n  runtimeGraphPath,\n  stateFilePath,\n  stopHookDir,\n} from \"./aidlc-lib.ts\";\nimport { AIDLC_VERSION } from \"./aidlc-version.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "997f57893922a00079a433fb961a263900ce9cdfc80f3b14cfa864c19cb005d3",
+      "kind": "runtime-code",
+      "originalSha256": "764ff4602779cc8d746592fe7ed14e81549be050f0e8636c8130d54b4c8cc74c"
+    },
+    "core/tools/aidlc-documentkb-schema.ts": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-code",
+      "originalSha256": "49183f8f24e4c30031fe32e58aedb0f373ea120faa568fb15e2c702b95e32858"
+    },
+    "core/tools/aidlc-graph.ts": {
+      "content": "import { existsSync, readdirSync, readFileSync, statSync } from \"node:fs\";\nimport { basename, dirname, join } from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport {\n  resolveDistributionPath,\n  resolveHarnessPath,\n  runtimeProjectDir,\n} from \"./aidlc-runtime-paths.ts\";\nimport {\n  _resetAgentsForTests,\n  _resetHarnessDataForTests,\n  _resetScopeMappingForTests,\n  _resetStageGraphForTests,\n  activeSpace,\n  auditLockOwnedByProcess,\n  type AgentMetadata,\n  errorMessage,\n  gridCostSummary,\n  loadAgents,\n  loadScopeMapping,\n  loadScopeMetadata,\n  loadScopeMetadataAll,\n  harnessDir,\n  PHASES,\n  type Phase,\n  loadStageGraph,\n  loadStageGraphAll,\n  pluginsEnabled,\n  type ScopeCostSummary,\n  mustGet,\n  mustPop,\n  mustShift,\n  parseStageFrontmatter,\n  planFilePath,\n  resolveProjectDir,\n  type ScopeDefinition,\n  type StageEntry,\n  stageEnabledBySelection,\n  toPosix,\n  validScopes,\n  withAuditLock,\n  writeFileAtomic,\n} from \"./aidlc-lib.ts\";\nimport {\n  parseRuleFrontmatter,\n  type RuleFrontmatter,\n  validateRuleFrontmatter,\n} from \"./aidlc-rule-schema.ts\";\nimport {\n  parseSensorManifest,\n  type SensorManifest,\n  validateSensorManifest,\n} from \"./aidlc-sensor-schema.ts\";\nimport { type StageFrontmatter, validateStageFrontmatter } from \"./aidlc-stage-schema.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "a1f29fcc0c5062ba26163cb7513f629bd9de9ce6171ee97c168569379e5770c0",
+      "kind": "runtime-code",
+      "originalSha256": "859746e63222afceac1e901d72ab09a4fcd346d22dcbe3e78388cb54a8c89e61"
+    },
+    "core/tools/aidlc-includes.ts": {
+      "content": "import { existsSync, readdirSync, readFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { activeSpace, harnessDir, writeFileAtomic } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e417ebc445173cf7ce5ae6a7c4c3a136c8830ecbf5e295e65dfe1338e2a31b1a",
+      "kind": "runtime-code",
+      "originalSha256": "d6d0a43d562de0d5b3dfb956058800112852157341a9befe200c83238998c46c"
+    },
+    "core/tools/aidlc-jump.ts": {
+      "content": "import { appendAuditEntry } from \"./aidlc-audit.ts\";\nimport {\n  type CheckboxState,\n  countCheckboxes,\n  emitError,\n  errorMessage,\n  findStageBySlug,\n  firstInScopeStageOfPhase,\n  getField,\n  isoTimestamp,\n  loadScopeMapping,\n  loadStageGraph,\n  nextInScopeStage,\n  PHASE_NUMBERS,\n  PHASES,\n  parseCheckboxes,\n  parseStateStageSuffixes,\n  readStateFile,\n  resolveProjectDir,\n  resolveStage,\n  type StageEntry,\n  setCheckbox,\n  setField,\n  setPhaseProgress,\n  stageIndex,\n  writeStateFile,\n} from \"./aidlc-lib.js\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "1c90b1786634936bf2705c6b6d4055cda62c414c6119ad15aa9a86c15fc930eb",
+      "kind": "runtime-code",
+      "originalSha256": "3e30bf5b3e687aafca5c89403b155f50fa10ea1296e6e1ceb13373700de918f6"
+    },
+    "core/tools/aidlc-knowledge.ts": {
+      "content": "import { createHash } from \"node:crypto\";\nimport { type SpawnSyncReturns, spawnSync } from \"node:child_process\";\nimport {\n  accessSync,\n  existsSync,\n  lstatSync,\n  readdirSync,\n  realpathSync,\n  statSync,\n} from \"node:fs\";\nimport { dirname, isAbsolute, join, relative, resolve, sep } from \"node:path\";\nimport {\n  activeIntent,\n  activeSpace,\n  assertNoSymlinkInChainOrThrow,\n  auditBlockField,\n  auditShardName,\n  documentExtractors,\n  emitError,\n  ensureDirSync,\n  errorMessage,\n  intentsDir,\n  isPidAlive,\n  knowledgeDir,\n  listIntents,\n  listSpaces,\n  readAtomicReplacedFileNoFollowOrThrow,\n  readRegularFileNoFollowOrThrow,\n  readAuditShardEvents,\n  removeTreeSync,\n  renameIntoPlace,\n  resolveProjectDir,\n  uuidv7,\n  validSpaceFlag,\n  withAuditLock,\n  writeBufferAtomic,\n  writeFileAtomic,\n} from \"./aidlc-lib.ts\";\nimport { appendAuditEntryAtPathUnlocked } from \"./aidlc-audit.ts\";\nimport {\n  DOCUMENTKB_SCHEMA_VERSION,\n  type DocumentIndex,\n  type DocumentMetadata,\n  type DocumentRow,\n  type ExtractionRecord,\n  derivativeIsCurrent,\n  effectiveExtractionState,\n  isCanonicalUuid,\n  isTombstoned,\n  validateDocumentIndex,\n  validateDocumentMetadata,\n} from \"./aidlc-documentkb-schema.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "be8e9a8216f8d3908977b437d6cf1067b224b4de5ec0affa60555229c1a90689",
+      "kind": "runtime-code",
+      "originalSha256": "1a9e08c43505fdf224fe6c6b75947937e0a668de34bf08695e651597a55f96fb"
+    },
+    "core/tools/aidlc-learnings.ts": {
+      "content": "import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from \"node:fs\";\nimport { dirname, join } from \"node:path\";\nimport { appendAuditEntryUnlocked } from \"./aidlc-audit.ts\";\nimport { memoryDirFor } from \"./aidlc-graph.ts\";\nimport {\n  appendUnderHeading,\n  errorMessage,\n  findAllEvents,\n  getField,\n  isoTimestamp,\n  parseMemoryEntries,\n  readAllAuditShards,\n  readStateFile,\n  resolveProjectDir,\n  runtimeGraphPath,\n  withAuditLock,\n  writeFileAtomic,\n  harnessDir,\n} from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "3e8fe075399a85ea48028fd3c875a66f9a1c6c00afab5dc0560c021371ef39cd",
+      "kind": "runtime-code",
+      "originalSha256": "620e45853c17fc5c47f72bfd1fbc51b66f7f24327fd23043d73c28deb7816b3e"
+    },
+    "core/tools/aidlc-lib.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { createHash, randomUUID } from \"node:crypto\";\nimport { accessSync, appendFileSync, closeSync, constants as fsConstants, cpSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from \"node:fs\";\nimport { hostname, tmpdir } from \"node:os\";\nimport { basename, dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport {\n  resolveHarnessPath,\n} from \"./aidlc-runtime-paths.ts\";\nimport type { subgraphForScope as SubgraphForScope } from \"./aidlc-graph.ts\";\nimport type {\n  appendAuditEntry as AppendAuditEntry,\n  appendAuditEntryUnlocked as AppendAuditEntryUnlocked,\n} from \"./aidlc-audit.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "2f6a643ab781c65b2c90b862b96e6310ebeeac14c1c2212c2fd322fac1ff6bce",
+      "kind": "runtime-code",
+      "originalSha256": "6773864ad58748af3447cb40d3e7ce09b74f973aa377250cf6ad6392f4ba3b10"
+    },
+    "core/tools/aidlc-log.ts": {
+      "content": "import { createHash } from \"node:crypto\";\nimport { existsSync, readFileSync } from \"node:fs\";\nimport { relative, resolve, sep } from \"node:path\";\nimport { appendAuditEntry, appendAuditEntryUnlocked } from \"./aidlc-audit.ts\";\nimport {\n  activeIntent,\n  activeSpace,\n  auditBlockField,\n  emitError,\n  errorMessage,\n  extractMarkdownSection,\n  freshReviewReceipts,\n  getField,\n  holdsAuditLock,\n  humanActedSinceLastAnswer,\n  humanPresenceGuardDisabled,\n  isAutonomousConstructionDecision,\n  isAutonomousSwarmStage,\n  loadStageGraphAll,\n  isNonAnswer,\n  parseCheckboxes,\n  readAllAuditShards,\n  readStateFile,\n  recordDir,\n  reviewArtifactFingerprint,\n  resolveProjectDir,\n  resolveReviewClass,\n  selfAttributedDecisionMarker,\n  SUMMARY_CONFIRMATION_CHECKPOINT,\n  stateFilePath,\n  toPosix,\n  withAuditLock,\n} from \"./aidlc-lib.js\";\nimport type { ReviewClass } from \"./aidlc-lib.js\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "55a8856749efe0e2a4fb8ebd2fa063bb38681a2d57a8133ef490032ca546d943",
+      "kind": "runtime-code",
+      "originalSha256": "259abc0eb32de871728ff7d0ffdcb9cd2f7dc803542ae9a970487d38a70d5bd5"
+    },
+    "core/tools/aidlc-metrics.ts": {
+      "content": "import { existsSync, readFileSync } from \"node:fs\";\nimport { hostname, userInfo } from \"node:os\";\nimport { fileURLToPath } from \"node:url\";\nimport {\n  activeSpace,\n  getField,\n  harnessDir,\n  stateFilePath,\n} from \"./aidlc-lib.ts\";\nimport { compiledExecutable } from \"./aidlc-runtime-paths.ts\";\nimport { AIDLC_VERSION } from \"./aidlc-version.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "a6bfec6dee1def1be17efa84320f40d008484a85b8d4793c613eeb44fc805d36",
+      "kind": "runtime-code",
+      "originalSha256": "687a61cf87d742a1e5bb12da905bacfa55600ac98a47a9f1c635f9a95f319eff"
+    },
+    "core/tools/aidlc-orchestrate.ts": {
+      "content": "import {\n  createHash,\n  createHmac,\n  randomBytes,\n  timingSafeEqual,\n} from \"node:crypto\";\nimport {\n  type Dirent,\n  existsSync,\n  mkdirSync,\n  readFileSync,\n  readdirSync,\n  writeFileSync,\n} from \"node:fs\";\nimport { dirname, join } from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport {\n  type AskDirective,\n  type Directive,\n  type ErrorDirective,\n  GATE_UNRESOLVED,\n  type GateValue,\n  type LoadSteeringDirective,\n  type ParkedDirective,\n  type PrintDirective,\n  type ProtocolModule,\n  type RunStageDirective,\n  type RunStageWave,\n  type RunStageWaveEntry,\n  validateDirective,\n} from \"./aidlc-directive.ts\";\nimport {\n  activeSpace,\n  ActiveDirectiveLockContendedError,\n  advanceCopilotContinuation,\n  activeUnitCheckpoint,\n  artifactFilename,\n  auditBlockField,\n  type CheckboxLine,\n  checkSummaryConfirmationEvidence,\n  clearActiveDirectiveMarker,\n  codekbRepoName,\n  copilotDirectiveCommitRequired,\n  currentUnitLifecycleMode,\n  errorMessage,\n  filterProducesByKind,\n  firstInScopeStageOfPhase,\n  freshReviewReceipts,\n  getField,\n  intentRepos,\n  inspectCopilotContinuation,\n  isPerUnitStage,\n  isRegularFile,\n  listIntents,\n  loadScopeMetadata,\n  loadScopeMetadataAll,\n  resolveReviewClass,\n  loadScopeMapping,\n  nextInScopeStage,\n  parseCheckboxes,\n  type KnowledgeCommand,\n  parseKnowledgeCommand,\n  type PluginCommand,\n  parsePluginCommand,\n  parseStateStageSuffixes,\n  PHASE_NUMBERS,\n  PHASES,\n  parseWorkspaceCommand,\n  READ_ONLY_FLAGS,\n  readAllAuditShards,\n  recordHookDrop,\n  markEngineTouch,\n  markActiveDirectiveResumeWaiting,\n  relativeCodekbDir,\n  relativeRecordDir,\n  relativeSpaceRecordPrefix,\n  resolveBoltDag,\n  type BoltDagResolution,\n  resolveProjectDir,\n  scopeCostSummary,\n  selectionAwareDefaultScope,\n  resolveDefaultScope,\n  DEFAULT_SCOPE,\n  type StageEntry,\n  stateFilePath,\n  swarmConvergedUnits,\n  unitCompletedReceipts,\n  unitLifecycleReceiptsInUse,\n  toPosix,\n  validScopes,\n  harnessDir,\n  type WorkspaceCommand,\n  writeActiveDirectiveMarker,\n  workspaceCommandUtilityArgv,\n  classifyStateVersion,\n} from \"./aidlc-lib.ts\";\nimport {\n  type Consume,\n  type GraphStage,\n  loadGraph,\n  producersOf,\n  subgraphForScope,\n} from \"./aidlc-graph.ts\";\nimport { inferScopeFromText } from \"./aidlc-utility.ts\";\nimport { resolveHarnessPath, resolveHarnessRoot } from \"./aidlc-runtime-paths.ts\";\nimport {\n  readRuleBundle,\n  rulesContentEntries,\n  type RuleContent,\n} from \"./aidlc-steering.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "a5bba5a37267ca483941168868eb9c1d3bb3600f3484fc131868c8fdb6ecfd2f",
+      "kind": "runtime-code",
+      "originalSha256": "be0108773d2b14b16611cb1d77aa33659554610e4a64c20aa713bc9991794518"
+    },
+    "core/tools/aidlc-rule-schema.ts": {
+      "content": "import { scalarField } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "53a7015b9046e2e4b2e6f2b1f4ebb7bef61fc2f14ef31cd75460a25c186c81f1",
+      "kind": "runtime-code",
+      "originalSha256": "0ceb6ed00675fa990b5663d202c2943946b5538067c242479e5719889a457646"
+    },
+    "core/tools/aidlc-runner-gen.ts": {
+      "content": "import {\n  existsSync,\n  mkdirSync,\n  readdirSync,\n  readFileSync,\n  rmSync,\n  writeFileSync,\n} from \"node:fs\";\nimport { dirname, join } from \"node:path\";\nimport {\n  errorMessage,\n  frontmatterBlock,\n  harnessDir,\n  isPluginEnabled,\n  loadScopeMetadataAll,\n  loadStageGraphAll,\n  pluginsEnabled,\n  runnerFrontmatterAdditions,\n  scopeGridPath,\n} from \"./aidlc-lib.ts\";\nimport { type GraphStage, loadGraph } from \"./aidlc-graph.ts\";\nimport {\n  resolveHarnessPath,\n  resolveSkillsPath,\n} from \"./aidlc-runtime-paths.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "ce25b215fc4c79d98edb54ab9eca572ce6b245aa9ded160255ee40c789497975",
+      "kind": "runtime-code",
+      "originalSha256": "6bf6262ba335fab8532378a9063219506303ced5ee0a516e32eca63725ea32b1"
+    },
+    "core/tools/aidlc-runtime-paths.ts": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-code",
+      "originalSha256": "7c0c04a16b75cd83a39cdc9704c1086f316f8ed5300bf271340cf35bc7a8ffa6"
+    },
+    "core/tools/aidlc-runtime.ts": {
+      "content": "import { createHash } from \"node:crypto\";\nimport { existsSync, readFileSync, unlinkSync, writeFileSync } from \"node:fs\";\nimport { appendAuditEntryUnlocked } from \"./aidlc-audit.ts\";\nimport {\n  errorMessage,\n  activeIntent,\n  findAllEvents,\n  getField,\n  loadStageGraph,\n  memoryFilePath,\n  parseBoltDag,\n  parseCheckboxes,\n  parseMemoryHeadings,\n  parseStateStageSuffixes,\n  readAllAuditShards,\n  activeSpace,\n  readStateFile,\n  relativeMemoryPath,\n  relativeRecordDir,\n  resolveProjectDir,\n  runtimeGraphPath,\n  stateFilePath,\n  unitDependencyPath,\n  validateBoltSlug,\n  withAuditLock,\n  worktreePath,\n  worktreeRuntimeGraphPath,\n  writeFileAtomic,\n} from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "859c559d50f04208164e3d90f5349f415b5a8cf3381338e3118b134e3468d944",
+      "kind": "runtime-code",
+      "originalSha256": "083eb9b69a34dbd85a4dfe0e1e931356d2ca3309edb725284428e84b29f7a5ea"
+    },
+    "core/tools/aidlc-sensor-claim-sources.ts": {
+      "content": "import { existsSync, readFileSync } from \"node:fs\";\nimport { basename, dirname, join, relative, resolve, sep } from \"node:path\";\nimport { errorMessage } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY SENSOR BODY OMITTED]\n",
+      "fixtureSha256": "2996d42c956c3aa372f8323434172a357af1aa3ab717170f610ecbcbd52a671b",
+      "kind": "sensor-script",
+      "originalSha256": "d120117fd758e5048d01e04eedc9a2cad8500302582ece1bcc0ab7f32d351621"
+    },
+    "core/tools/aidlc-sensor-linter.ts": {
+      "content": "[AI-DLC COMPATIBILITY SENSOR BODY OMITTED]\n",
+      "fixtureSha256": "879c09f7e8b89798c39d1533f520bfac706e825acbbfd33dfa2f95864168bf00",
+      "kind": "sensor-script",
+      "originalSha256": "c2209125fb6aeeb127b8724152eb5db6cdef7167bba06ef04efdbcdbcf64d3c1"
+    },
+    "core/tools/aidlc-sensor-required-sections.ts": {
+      "content": "import { existsSync, readFileSync } from \"node:fs\";\nimport { basename, join } from \"node:path\";\nimport { errorMessage, parseBoltDag } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY SENSOR BODY OMITTED]\n",
+      "fixtureSha256": "e8ea2e346e6f3f18dad0aadd6951c55f06e85b9839c6f3fc098e03a4493c4708",
+      "kind": "sensor-script",
+      "originalSha256": "623bd29555957f7ffdd9ebc3ae5b4fe96dd808b44cdb129d8a3dac93d73a729e"
+    },
+    "core/tools/aidlc-sensor-schema.ts": {
+      "content": "import { scalarField } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY SENSOR BODY OMITTED]\n",
+      "fixtureSha256": "96b66cdc8f1ca11391a7e445b995f25bab91864d285172142cf0cc2b6151a3d8",
+      "kind": "sensor-script",
+      "originalSha256": "019b1cc67f7a5a1e7b20fa8ddb212fe476ec56fda09c35662c9cd9a8500ac77e"
+    },
+    "core/tools/aidlc-sensor-traceability.ts": {
+      "content": "import { existsSync, readFileSync, statSync } from \"node:fs\";\nimport { isAbsolute, join, relative, resolve } from \"node:path\";\nimport {\n  errorMessage,\n  recordDir,\n  resolveBoltDag,\n  resolveProjectDir,\n} from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY SENSOR BODY OMITTED]\n",
+      "fixtureSha256": "5d6c4451450eae6159537e508647594143d3ee9fbf2517606affb055f3dcca32",
+      "kind": "sensor-script",
+      "originalSha256": "0c46165c9d42a3eaa038ecae508408202f1ff8968ffc772461e90d8340bc71f4"
+    },
+    "core/tools/aidlc-sensor-type-check.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { existsSync, mkdirSync } from \"node:fs\";\nimport { dirname, isAbsolute, join, relative, resolve } from \"node:path\";\nimport { sensorsDir } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY SENSOR BODY OMITTED]\n",
+      "fixtureSha256": "22e38b6a3f0b7fc2227425166260d50e9628912aaa8a4c0bd89be0fcadc5e299",
+      "kind": "sensor-script",
+      "originalSha256": "41de75ab3645aac509676164a7b4adc0302f524fc5a05d573b48d577a59aafbc"
+    },
+    "core/tools/aidlc-sensor-upstream-coverage.ts": {
+      "content": "import { existsSync, readFileSync } from \"node:fs\";\nimport { basename, dirname, join, resolve } from \"node:path\";\nimport { errorMessage } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY SENSOR BODY OMITTED]\n",
+      "fixtureSha256": "c1b9f60dd70dadcfab578bf2ddf939dfe1b45f4d7039ed4b550a9be9e910aadc",
+      "kind": "sensor-script",
+      "originalSha256": "788a7e28532f88053cccc6ca1efd1f9f0682b10f6e3d74f84930d4c2cf2fa939"
+    },
+    "core/tools/aidlc-sensor.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { randomBytes } from \"node:crypto\";\nimport { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from \"node:fs\";\nimport { dirname, isAbsolute, join, resolve as pathResolve } from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport { appendAuditEntryUnlocked } from \"./aidlc-audit.ts\";\nimport {\n\tframeworkTemplatesDir,\n\tloadGraph,\n\tloadSensors,\n\tmemoryTemplatesDir,\n\tproducersOf,\n\ttype SensorFile,\n\ttemplateEligibleArtifacts,\n} from \"./aidlc-graph.ts\";\nimport {\n\tartifactFilename,\n\tcodekbDir,\n\terrorMessage,\n\tisoTimestamp,\n\tisPlainObject,\n\trecordDir,\n\tresolveProjectDir,\n\tsensorsDir,\n\twithAuditLock,\n} from \"./aidlc-lib.ts\";\nimport {\n\tcompiledExecutable,\n\tresolveHarnessPath,\n} from \"./aidlc-runtime-paths.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "39977f0455de68c63150120203651227367d4fa7f42b8305337a605afc81bc96",
+      "kind": "runtime-code",
+      "originalSha256": "a300a2c7340f998b2e09796050b67f255c6e0fc7890cba6c427d08cdcc5b813c"
+    },
+    "core/tools/aidlc-stage-schema.ts": {
+      "content": "import { isPlainObject, UNIT_KINDS } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "bfe9f178159781714e55a157f52e900eed527ca496a71695e7d7fd2c3fcbef4c",
+      "kind": "runtime-code",
+      "originalSha256": "493def43e0d0f8f9158730e33321c6b1364d93b2b40c2693794994fa3eec5ba8"
+    },
+    "core/tools/aidlc-state.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { createHash } from \"node:crypto\";\nimport { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from \"node:fs\";\nimport { dirname, join } from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport { appendAuditEntry, appendAuditEntryUnlocked } from \"./aidlc-audit.ts\";\nimport {\n  activeIntent,\n  activeUnitCheckpoint,\n  appendSlug,\n  appendUnderHeading,\n  artifactFilename,\n  type CheckboxState,\n  checkSummaryConfirmationEvidence,\n  codekbDir,\n  countCheckboxes,\n  emitError,\n  errorMessage,\n  extractMarkdownSection,\n  filterProducesByKind,\n  findStageBySlug,\n  findAllEvents,\n  firstInScopeStageOfPhase,\n  freshReviewReceipts,\n  getField,\n  hasUnsafeSingleLineCharacter,\n  holdsAuditLock,\n  humanActedSinceGate,\n  humanPresenceGuardDisabled,\n  intentRepos,\n  isAutonomousConstructionDecision,\n  isAutonomousMode,\n  isAutonomousSwarmStage,\n  isNonAnswer,\n  isRegularFile,\n  isoTimestamp,\n  KNOWN_CODEKB_STAGES,\n  latestMainWorkflowStageRunFloorForProject,\n  loadScopeMapping,\n  nextInScopeStage,\n  PHASE_NUMBERS,\n  PHASES,\n  parseCheckboxes,\n  parseMemoryEntries,\n  parseRefsList,\n  parseStateStageSuffixes,\n  producesArtifactFile,\n  readAllAuditShards,\n  readStateFile,\n  recordDir,\n  relativeMemoryPath,\n  relativeRecordDir,\n  removeField,\n  removeSlug,\n  replaceSection,\n  selfAttributedDecisionMarker,\n  resolveBoltDag,\n  reviewArtifactFingerprint,\n  resolveReviewClass,\n  resolveProjectDir,\n  resolveStage,\n  setCheckbox,\n  setField,\n  setFieldStrict,\n  setOrInsertField,\n  setPhaseProgress,\n  stagesInScope,\n  swarmConvergedUnits,\n  updateIntentStatus,\n  validateUnitName,\n  validScopes,\n  withAuditLock,\n  worktreeDocsDir,\n  worktreePath,\n  worktreeStateFilePath,\n  writeStateFile,\n  writeFileAtomic,\n} from \"./aidlc-lib.js\";\nimport { memoryDirFor } from \"./aidlc-graph.ts\";\nimport { compiledExecutable } from \"./aidlc-runtime-paths.ts\";\nimport {\n  stageUsageAuditFields,\n  workflowUsageAuditFields,\n} from \"./aidlc-usage.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e8ae00bd2ae92fe6d649d2ca0fdfc9734ddc252fb64a1083e04fe582e15d27da",
+      "kind": "runtime-code",
+      "originalSha256": "a4fc2ea2fb132a86ca3c8d76c15c67f27057787d7604f69f26584bf4ff80e508"
+    },
+    "core/tools/aidlc-steering.ts": {
+      "content": "import { readFileSync } from \"node:fs\";\nimport { isAbsolute, join, resolve } from \"node:path\";\nimport {\n  activeSpace,\n  errorMessage,\n  toPosix,\n} from \"./aidlc-lib.ts\";\nimport {\n  type GraphStage,\n  memoryDirFor,\n} from \"./aidlc-graph.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "c02c38471526e0b0e03acbf14f1012cc21e3324d007f1b212e9f2b11c67586e6",
+      "kind": "runtime-code",
+      "originalSha256": "919087833f0fd50aeefb58f114579351f9cc54273b7c02570104e37a0b5441b5"
+    },
+    "core/tools/aidlc-swarm.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { createHash } from \"node:crypto\";\nimport { existsSync, readFileSync } from \"node:fs\";\nimport { basename, join, resolve, sep } from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport { dirname } from \"node:path\";\nimport { appendAuditEntry } from \"./aidlc-audit.ts\";\nimport {\n  auditBlockField,\n  auditShardDir,\n  boltSlugForUnit,\n  findAllEvents,\n  getField,\n  isRegularFile,\n  latestMainWorkflowStageRunFloor,\n  latestMainWorkflowStageRunFloorForProject,\n  parseArgs,\n  readAuditShardEvents,\n  readAllAuditShards,\n  readStateFile,\n  relativeRecordDir,\n  reviewArtifactFingerprint,\n  resolveBoltDag,\n  resolveConstructionRepo,\n  resolveProjectDir,\n  resolveStage,\n  terminalReviewVerdict,\n  validateUnitName,\n  worktreeAuditFilePath,\n  worktreePath,\n  worktreeRuntimeGraphPath,\n  worktreeStateFilePath,\n} from \"./aidlc-lib.ts\";\nimport { compiledExecutable } from \"./aidlc-runtime-paths.ts\";\nimport { evaluateCodeGenerationApproval } from \"./aidlc-testing-posture.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "fff365abe56796aa0d4f7ebabeb729df766cc2eb771f67e0d84315105fc83fa5",
+      "kind": "runtime-code",
+      "originalSha256": "3e8a930b417b5da73cbe2f6a3249245c45f0d8fab142df1ea6ece8fc3d39faa9"
+    },
+    "core/tools/aidlc-testing-posture.ts": {
+      "content": "import { createHash } from \"node:crypto\";\nimport { existsSync, readFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport {\n  activeSpace,\n  docsRoot,\n  extractMarkdownSection,\n  getField,\n  resolveProjectDir,\n  stateFilePath,\n} from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "8457a5212e22ca59a5f381ae335b6d446f800eba608ef85f59b4f92b13888044",
+      "kind": "runtime-code",
+      "originalSha256": "934c680505493b4466cbb1c1111f7d8c6bdce564ea9f2f463081197c6ad9c4a7"
+    },
+    "core/tools/aidlc-tiers.ts": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-code",
+      "originalSha256": "0934990f9bdfd207632fd8c73e95923cb776d6c78cc3d939240cb8f71ec055c9"
+    },
+    "core/tools/aidlc-usage.ts": {
+      "content": "import {\n  closeSync,\n  existsSync,\n  fstatSync,\n  mkdirSync,\n  openSync,\n  readSync,\n  readdirSync,\n  readFileSync,\n} from \"node:fs\";\nimport { basename, dirname, join } from \"node:path\";\nimport {\n  activeIntent,\n  activeIntentUuid,\n  activeSpace,\n  modelRatesPath,\n  readSessionIntentUuid,\n  sessionsDir,\n  withAuditLock,\n  writeFileAtomic,\n} from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "61ec89d3df11351a04e2ff824c21ed1d9c2e37c8a0f1bd53a42e96037f50ef6a",
+      "kind": "runtime-code",
+      "originalSha256": "b62f14db958cfe26927f7823f17db36cd7378d0b12df4a97a17b6fc71304ef61"
+    },
+    "core/tools/aidlc-utility.ts": {
+      "content": "import {\n  cpSync,\n  existsSync,\n  lstatSync,\n  mkdirSync,\n  readdirSync,\n  readFileSync,\n  realpathSync,\n  rmSync,\n  statSync,\n  writeFileSync,\n} from \"node:fs\";\nimport { spawnSync } from \"node:child_process\";\nimport { basename, dirname, join } from \"node:path\";\nimport { pathToFileURL } from \"node:url\";\nimport { appendAuditEntry, appendAuditEntryUnlocked } from \"./aidlc-audit.ts\";\nimport { adaptLegacyResult, buildBundle, mergeFindings, runDoctorAnalysis } from \"./aidlc-doctor-bundle.ts\";\nimport {\n  artifactsRegistryFor,\n  findCycles,\n  frameworkMemorySeedDir,\n  loadGraph,\n  loadRules,\n  memoryDirFor,\n  selectionDroppedOrderingEdges,\n  stageGraphDrift,\n  type GraphStage,\n  validateGrid,\n  validateScope,\n} from \"./aidlc-graph.ts\";\nimport { repointHarnessIncludes } from \"./aidlc-includes.ts\";\nimport { workspaceManifestChecks } from \"./aidlc-workspace-doctor.ts\";\nimport {\n  activeIntent,\n  activeSpace,\n  auditFilePath,\n  auditShards,\n  createIntent,\n  composeMarkerPath,\n  COMPOSE_MARKER_TTL_MS,\n  DEFAULT_SCOPE,\n  DEFAULT_SPACE,\n  detectLeakedLocks,\n  docsDir,\n  envDefaultScope,\n  knowledgeDir,\n  agentsDir,\n  emitError,\n  errorMessage,\n  escapeRegex,\n  findAllEvents,\n  findStageBySlug,\n  frontmatterBlock,\n  getField,\n  holdsAuditLock,\n  hooksHealthDir,\n  isAutonomousMode,\n  isoTimestamp,\n  isPackageJson,\n  codekbRepoName,\n  codekbScopeFingerprint,\n  parseReScope,\n  relativeCodekbDir,\n  RESERVED_RECORD_NAMES,\n  scopePathCovered,\n  gridCostSummary,\n  listIntents,\n  listSpaces,\n  loadAgents,\n  loadScopeMapping,\n  loadStageGraph,\n  loadStageGraphAll,\n  loadScopeMetadataAll,\n  MERGE_SUCCEEDED_TAG_REGEX,\n  migrateFlatLayout,\n  nextInScopeStage,\n  PHASES,\n  parseArgs,\n  parseCheckboxes,\n  parseRefsList,\n  parseStageFrontmatter,\n  parseStateStageSuffixes,\n  readAllAuditShards,\n  readActiveDirectiveMarker,\n  recordHookDrop,\n  readCurrentSessionId,\n  readStateFile,\n  refreshActiveDirectiveMarker,\n  resolveBirthRepoSet,\n  resolveProjectDir,\n  setActiveIntentCursor,\n  setActiveSpaceCursor,\n  slugify,\n  SLUG_TAG_REGEX,\n  spacesRoot,\n  type StageEntry,\n  setCheckbox,\n  setField,\n  setPhaseProgress,\n  setStageSuffix,\n  scopeGridPath,\n  scopesDir,\n  harnessDataPath,\n  pluginsEnabled,\n  selectionAwareDefaultScope,\n  resolveDefaultScope,\n  scalarField,\n  stageEnabledBySelection,\n  stagesInScope,\n  stateFilePath,\n  withAuditLock,\n  validateBoltSlug,\n  validScopes,\n  worktreeAuditFilePath,\n  worktreePath,\n  worktreeStateFilePath,\n  writeSessionIntentUuid,\n  writeStateFile,\n  harnessDir,\n  rulesSubdir,\n  _resetHarnessDataForTests,\n  _resetScopeMappingForTests,\n  _resetStageGraphForTests,\n  classifyStateVersion,\n  CURRENT_STATE_VERSION,\n} from \"./aidlc-lib.ts\";\nimport { validateStageFrontmatter } from \"./aidlc-stage-schema.ts\";\nimport { AIDLC_VERSION } from \"./aidlc-version.ts\";\nimport {\n  compiledExecutable,\n  resolveHarnessPath,\n  resolveSkillsPath,\n  runtimeHarnessName,\n} from \"./aidlc-runtime-paths.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "fcd8e41c00ee5251396a6579e03710f00c6139f87d0b684a6b85b286cc44b996",
+      "kind": "runtime-code",
+      "originalSha256": "d807a48a24a1b8506cf9fcc147f97cadcd20c27e0dc96e3e6d8b78d5b300f2ae"
+    },
+    "core/tools/aidlc-validate.ts": {
+      "content": "import { existsSync, readFileSync } from \"node:fs\";\nimport { basename, join } from \"node:path\";\nimport {\n  loadStageGraph,\n  PHASES,\n  parseStageFrontmatter,\n} from \"./aidlc-lib.ts\";\nimport { resolveHarnessPath } from \"./aidlc-runtime-paths.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "41425c48758380d8ab4a77fd3444fe825bf4181c636710c8636050307f67fe24",
+      "kind": "runtime-code",
+      "originalSha256": "941a9af97419354dcd4db08e17c6cc1a43337e0e69d00b09141c388bb70e944a"
+    },
+    "core/tools/aidlc-version.ts": {
+      "content": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "kind": "runtime-code",
+      "originalSha256": "2bf0ef9aef100d5b95679bbf066187c24da52a5e28a26795a7db4864505e797c"
+    },
+    "core/tools/aidlc-workspace-doctor.ts": {
+      "content": "import { existsSync, readFileSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport { discoverSiblingRepos, errorMessage, harnessDir } from \"./aidlc-lib.ts\";\nimport {\n  parseWorkspaceManifest,\n  WORKSPACE_GITIGNORE_GATE_BEGIN as GATE_BEGIN,\n  WORKSPACE_GITIGNORE_GATE_END as GATE_END,\n  WORKSPACE_RECOVERY_GITIGNORE,\n} from \"./aidlc-workspace-manifest.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "e3108c90e62c7ad85cfc756fd4d71b103692fcfc340af3a8b831ece0566c5405",
+      "kind": "runtime-code",
+      "originalSha256": "92bbde984e0949ad9bae0c186b2a0cc3f7c6e5e77463fe986698897dced93602"
+    },
+    "core/tools/aidlc-workspace-manifest.ts": {
+      "content": "import { dirname, resolve } from \"node:path\";\nimport { isValidRepoName, REPO_NAME_REGEX } from \"./aidlc-lib.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "d0157598e71a5cacee038a3276c8d7092e795b5b6867ffe8ef392509c34685c6",
+      "kind": "runtime-code",
+      "originalSha256": "b9f12144f84e71a0f0e0647bf40768eb32f61654d824b4d57b0b20945e095f66"
+    },
+    "core/tools/aidlc-workspace-sync.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport {\n  existsSync,\n  linkSync,\n  lstatSync,\n  mkdirSync,\n  mkdtempSync,\n  readFileSync,\n  readdirSync,\n  realpathSync,\n  renameSync,\n  rmSync,\n  unlinkSync,\n  writeFileSync,\n} from \"node:fs\";\nimport { basename, isAbsolute, join, relative, resolve, sep } from \"node:path\";\nimport { tmpdir } from \"node:os\";\nimport { fileURLToPath } from \"node:url\";\nimport {\n  discoverSiblingRepos,\n  resolveProjectDir,\n  withAuditLock,\n} from \"./aidlc-lib.ts\";\nimport {\n  parseWorkspaceManifest,\n  type WorkspaceManifest,\n  type WorkspaceRepoEntry,\n  WORKSPACE_GITIGNORE_GATE_BEGIN as GATE_BEGIN,\n  WORKSPACE_GITIGNORE_GATE_END as GATE_END,\n  WORKSPACE_RECOVERY_GITIGNORE,\n  workspaceRepoPath,\n} from \"./aidlc-workspace-manifest.ts\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "6c2b21c97ee0f1f70789a476b684d6709e05a4fb9906d72921a3121ca037eb85",
+      "kind": "runtime-code",
+      "originalSha256": "6e5be903e17774d20cf961eb2c993c2cfa2a115d9c10fa9aab4dce40f849f2e1"
+    },
+    "core/tools/aidlc-worktree.ts": {
+      "content": "import { spawnSync } from \"node:child_process\";\nimport { existsSync, readFileSync, realpathSync } from \"node:fs\";\nimport { dirname, resolve } from \"node:path\";\nimport { appendAuditEntry } from \"./aidlc-audit.ts\";\nimport {\n  emitError,\n  errorMessage,\n  findAllEvents,\n  getField,\n  readAllAuditShards,\n  resolveConstructionRepo,\n  resolveProjectDir,\n  worktreePath,\n  worktreeStateFilePath,\n} from \"./aidlc-lib.js\";\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "6e881da3bc4793cfdeb050193d11500c9beefd6625546ec7bfd3b4c8d41f64ea",
+      "kind": "runtime-code",
+      "originalSha256": "669cf7c191330256b5945d2e628f830093e25ea2fff4accc632278abe6012a01"
+    },
+    "core/tools/aidlc.ts": {
+      "content": "import { existsSync, writeSync } from \"node:fs\";\nimport { basename, dirname, isAbsolute, join, resolve } from \"node:path\";\nimport { fileURLToPath, pathToFileURL } from \"node:url\";\nimport {\n  errorMessage,\n  parsePluginCommand,\n  parseWorkspaceCommand,\n  workspaceCommandUtilityArgv,\n} from \"./aidlc-lib.ts\";\nimport { AIDLC_VERSION } from \"./aidlc-version.ts\";\nimport { packagedDistributionRoot, runtimeHarnessDir } from \"./aidlc-runtime-paths.ts\";\n      return import(\"./aidlc-audit.ts\");\n      return import(\"./aidlc-bolt.ts\");\n      return import(\"./aidlc-graph.ts\");\n      return import(\"./aidlc-jump.ts\");\n      return import(\"./aidlc-knowledge.ts\");\n      return import(\"./aidlc-learnings.ts\");\n      return import(\"./aidlc-log.ts\");\n      return import(\"./aidlc-orchestrate.ts\");\n      return import(\"./aidlc-runner-gen.ts\");\n      return import(\"./aidlc-runtime.ts\");\n      return import(\"./aidlc-sensor.ts\");\n      return import(\"./aidlc-sensor-claim-sources.ts\");\n      return import(\"./aidlc-sensor-linter.ts\");\n      return import(\"./aidlc-sensor-required-sections.ts\");\n      return import(\"./aidlc-sensor-type-check.ts\");\n      return import(\"./aidlc-sensor-upstream-coverage.ts\");\n      return import(\"./aidlc-state.ts\");\n      return import(\"./aidlc-swarm.ts\");\n      return import(\"./aidlc-utility.ts\");\n      return import(\"./aidlc-validate.ts\");\n      return import(\"./aidlc-worktree.ts\");\n  const sensorModule = await import(\"./aidlc-sensor.ts\") as {\n    const metrics = await import(\"./aidlc-metrics.ts\");\n[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]\n",
+      "fixtureSha256": "b4943a6e034e25fca90e7fe84e328242159cae330eb0d6bf4b2a0ccaeaa24f11",
+      "kind": "runtime-code",
+      "originalSha256": "26545c5cee35a8b7bb245c6f8a8dc1fa25fb2eedbde04cf5d336e53cdfcf1e55"
+    }
+  },
+  "originalFileHashes": {
+    "core/agents/aidlc-architect-agent.md": "e820278f7e248cbf7293c554344e5388d4c017b2f6789f844551709a2927373c",
+    "core/agents/aidlc-architecture-reviewer-agent.md": "af3c7949d1d66b202fcf9a3b7e791006f743344e54a0d32612810fd5419085c2",
+    "core/agents/aidlc-aws-platform-agent.md": "e77f7428666e78ff6c487ebc4875e37216629cac46d782477895be6a45577be8",
+    "core/agents/aidlc-compliance-agent.md": "a9b7c16cd0382b56092e19a6104a2c038a2bce41e8871b1077beb003fa5cbee7",
+    "core/agents/aidlc-composer-agent.md": "87a658be6e8f431407968d3b7b042d76b65671672cb6cc053a863100bf93a764",
+    "core/agents/aidlc-delivery-agent.md": "af50516615589afba40eea4465378379e88d9acb21e12623f7f3ade6734b8ee7",
+    "core/agents/aidlc-design-agent.md": "adfdd38d7423923e4e2e6788acc12efa3425ace4aea53459dec0b474ab35ce2c",
+    "core/agents/aidlc-developer-agent.md": "288edb996d79768d9a7877ff2fbace113502e87907b544a5711c182d06d68f0e",
+    "core/agents/aidlc-devsecops-agent.md": "9747d521a450fdadf2364b673740ea9ad378f178fa0e5e19b828ad30d0bee90d",
+    "core/agents/aidlc-operations-agent.md": "51c64169c0ddd5bb522317ddaf4698ee594afd80d4c27cd7c8367bd538978909",
+    "core/agents/aidlc-pipeline-deploy-agent.md": "bd2721b6dca5960b9fe3199dca604ff1c1d5f68c52c4ee35c7397eadeb30ba3a",
+    "core/agents/aidlc-product-agent.md": "63934ee125e57b52e7aa4d98f5172b0b51ec57e7c2556b12fa0db741ae1a1a4b",
+    "core/agents/aidlc-product-lead-agent.md": "c2b27d69afed7939e049d6296e00ce2a808e5583114faa54c1d903a2ce005668",
+    "core/agents/aidlc-quality-agent.md": "225b2655ae52d895581bdf6084c65cacf07a1797be611d80611373db8da266c6",
+    "core/aidlc-common/conductor.md": "a0564eaa9caa29e3d106b5fb11fd3ab7d81888b65290a6ce94e53b6d2f4f9d32",
+    "core/aidlc-common/protocols/stage-definition.md": "c1efe10b8780cbd301865ab270ed6ecc41e5615ee255fc5dde8b1d8e5e1d5c6f",
+    "core/aidlc-common/protocols/stage-protocol-construction.md": "d69e699c231def1c124b8dab8987055237eb7c57a46b2507a2cb88bca5cae383",
+    "core/aidlc-common/protocols/stage-protocol-ensemble.md": "d2ed285797195f5a0cddc24af44de04d3d21260d2abcd66f5e99d6ba6dd13979",
+    "core/aidlc-common/protocols/stage-protocol-governance.md": "ab15dbc5747b7f83b9aa6b7b65a55d0b99f805288f6c506033cd2f636d64ff60",
+    "core/aidlc-common/protocols/stage-protocol-recovery.md": "6db6fcad9cefd40559077bc25525e671a1995aa1d317f32c0a8018c95223c2b4",
+    "core/aidlc-common/protocols/stage-protocol-reviewer.md": "e1ee67fd90ee196824b19772059e02295f5b6c1cbb63c47e94f9a7d8653ae5d8",
+    "core/aidlc-common/protocols/stage-protocol-swarm.md": "65845ef30d16de768e87a5db6a3a742ae1a86fd3e32a48592946c89dad9da17b",
+    "core/aidlc-common/protocols/stage-protocol.md": "0a2b465ff6b60069f07afb565040d6e688b779c7744045f160099606f97ade6d",
+    "core/aidlc-common/stages/construction/build-and-test.md": "2fa1ec9d46d7feb6d3ab3f22462a38043ea455138dae0f145da32b50eee12e62",
+    "core/aidlc-common/stages/construction/ci-pipeline.md": "343b20dd21f6796662157b9ef708d7053c33bdae03bb38192ab6c6a167e667ff",
+    "core/aidlc-common/stages/construction/code-generation.md": "4f77d7dda22fae0ecda2d47b7739793afd570817dc76b67f95e161453a6ceb6e",
+    "core/aidlc-common/stages/construction/functional-design.md": "d547e85ca4ac549e5f8b4906c51b04452a318fe6dcdfe8a918b75493dfcc4ea1",
+    "core/aidlc-common/stages/construction/infrastructure-design.md": "4e0233460f029f20a587544743f86e06880939963a758418fdb8a38d27399d98",
+    "core/aidlc-common/stages/construction/nfr-design.md": "dd3ca1dd44a6ea3043bb365b8975755e5005996bd0fef8e310458ba7f7245a38",
+    "core/aidlc-common/stages/construction/nfr-requirements.md": "9fe7fd603d79f3ff98f713bd7f55167f9a462d647cab64240e3a889459a13c07",
+    "core/aidlc-common/stages/ideation/approval-handoff.md": "f1ab7d801755f40ea35e48b12bdda69a127b027d3f61ef98c1f6f223571e0cae",
+    "core/aidlc-common/stages/ideation/feasibility.md": "a80c18a5cb29db4fd6e2af6c46abecbe78af33127420e4d3f468e6993ec52a30",
+    "core/aidlc-common/stages/ideation/intent-capture.md": "b0f28b1af0bb4a3a8f317377e129ed97545432623aaf2a50cafbc1be70f5a2c0",
+    "core/aidlc-common/stages/ideation/market-research.md": "039793ecd0b958cc658dc9aa083549bdd2e813bf8dd9849e1ff4c53b29346ded",
+    "core/aidlc-common/stages/ideation/rough-mockups.md": "fdf11c8c6135b2460779f9ca6a0fcfdea11b03b27aabc35310adda45b7d4c772",
+    "core/aidlc-common/stages/ideation/scope-definition.md": "0b80abe6723441bc277501aea23f77cff1515afc2fd220c317b8b274977e84c2",
+    "core/aidlc-common/stages/ideation/team-formation.md": "263ebdfae97ec6f93c8c8253171da5c7fd4c1e7f88bbedb3be3b38fbdf4e36a2",
+    "core/aidlc-common/stages/inception/contract-design.md": "b885d093d2d89daaa5aa068c195a161ebb0ccce146bd08946aa4b2dc30437f49",
+    "core/aidlc-common/stages/inception/delivery-planning.md": "9085e92291846530c0e261848ebd2d724abca075cf1c35086d638d673899c8fe",
+    "core/aidlc-common/stages/inception/domain-design.md": "2afccf60f8584c115b675e4c288afd351e09fa5b6f8333361e620d95a1ca438a",
+    "core/aidlc-common/stages/inception/practices-discovery.md": "ada2f572b5e189b722a9933b0e6b305fef73f0e872b70108c1c2b051d0e91d38",
+    "core/aidlc-common/stages/inception/refined-mockups.md": "bb9b169aa850bbf2d89dea48c041e35e550b50e4ce7c983e772a22c0a18cfd5f",
+    "core/aidlc-common/stages/inception/requirements-analysis.md": "99503ad8e8770b7585bebbaf514382da0cd062a33cfb71043ab8a966b5f55de2",
+    "core/aidlc-common/stages/inception/reverse-engineering.md": "7fb8b69bf81de99cda77cd57e2898cbaf65f8e1e74be0ccadfe329cffa89e1be",
+    "core/aidlc-common/stages/inception/units-generation.md": "fde58253af63d2d5b6e628dcc1ea27e076248e57f6a53f2dbf3c08f22692ee34",
+    "core/aidlc-common/stages/inception/user-stories.md": "85c1cc6dc5f9353926959b2e38d81c5bb05999e73abae92e89404e8fd04dabef",
+    "core/aidlc-common/stages/initialization/state-init.md": "b88ed441c9fc6b83e7b815d2f0aef8957ceef9929c406cd0c830dbe4335f2758",
+    "core/aidlc-common/stages/initialization/workspace-detection.md": "c2c53c9dcdf28dcd7086da4153112a9055aa1cb4396bfa1970c49e7905cc0668",
+    "core/aidlc-common/stages/initialization/workspace-scaffold.md": "e6cd3af3d8402d86987f8f9587ea4f6c3f94cbc936799ccf5752efa0d02db9d8",
+    "core/aidlc-common/stages/operation/deployment-execution.md": "daf2cef5ceab6547446aef3caf718465d0b96d23a54c0dac3ac6412061a80216",
+    "core/aidlc-common/stages/operation/deployment-pipeline.md": "0ec4508e9886e6dc4e84a6559e083c75ed73ad380e87d5541514c19249fd7b15",
+    "core/aidlc-common/stages/operation/environment-provisioning.md": "00783417e6ba50a7fda0bf451860c9c95fc0c605a1e1b1b96155df3c00c951bf",
+    "core/aidlc-common/stages/operation/feedback-optimization.md": "2dce30e11eb36d86854ff33275353fe9a086fa2805c2153c79b9f729c639366b",
+    "core/aidlc-common/stages/operation/incident-response.md": "40367d2ba35344b6de26adde2269ce7f8e29ab9c8fff5c4c9a4525735f849a90",
+    "core/aidlc-common/stages/operation/observability-setup.md": "b8aeedcacd847136e43c15c6be671ae6d69daee439caad7ebc290eae1f111339",
+    "core/aidlc-common/stages/operation/performance-validation.md": "cdfc8a1a386113bce814783d25511f383f47a2eec0c4690283ca536f87d37ff9",
+    "core/hooks/aidlc-continue-workflow.ts": "12c23a9586ece69b24d67d7f2f8631c003387170849249619260ff13d40fdffc",
+    "core/hooks/aidlc-deliver-stage-rules.ts": "61e532cf1d0e9392c8078e90ba9c978f4f5c060758a97a914290bc920003c303",
+    "core/hooks/aidlc-fold-usage.ts": "7777a270c2ec1d1683e0200b2f577f1d62a7b424bad5139cf69027e6a524fa38",
+    "core/hooks/aidlc-log-subagent.ts": "efec352a0eeb2e67f70a5e86f0ce93c62da39181a5648a55b8fe2f9c3ed525f9",
+    "core/hooks/aidlc-plan-approval-guard.ts": "9687b5291ffcf933f2e16e2dd4cadb0db98637e1294cf2f7110f5d3fccfc7e6e",
+    "core/hooks/aidlc-rebuild-stage-graph.ts": "f40f9959d000b9ef5771471717192948d64f214871e649ba26121b3be41f2dee",
+    "core/hooks/aidlc-record-human-turn.ts": "f8f452332e7e0029744e8157f8ec7c33d982ae48e493cb449cc12e8643a01c36",
+    "core/hooks/aidlc-review-freeze.ts": "e3cd31ffcd9cabe3927999a6618ad0b00b97f39b36639255e7fa28758676dc63",
+    "core/hooks/aidlc-reviewer-scope.ts": "eecb146049ba380d3542363b81e6af3c6a3842c0707749ff190375db6b6dc8e7",
+    "core/hooks/aidlc-run-sensors.ts": "40d529efceee4e49d7d5d49953279c05c3aea91a5ff590175d5b7622f6410010",
+    "core/hooks/aidlc-session-end.ts": "3627f42c32e106fb5aa7743dc08669207e0c12f9348a1dd337fdc0ae30c65307",
+    "core/hooks/aidlc-session-start.ts": "2d5baa7e46c99d08ac899158a2a5084abe1bae3b22425c2a19a5f3acda3e356a",
+    "core/hooks/aidlc-state-transition-guard.ts": "371c6001f9be91ed4331d6b7e75068e5d1cf1185ae52ec7eb44987f0ffc9702e",
+    "core/hooks/aidlc-statusline.ts": "18a934f26fe354e18e674d6db7de63b24922e1901a7eeabe1b0a510d332582bb",
+    "core/hooks/aidlc-sync-workflow-state.ts": "127e43d23bd8ff28d3e6db9d6e516749de65ca0d17d92fe52c713fdd747c948b",
+    "core/hooks/aidlc-validate-state.ts": "79f5a9d08cc99afd13ff236ffc96ee4381e19cae0b113a7a77d77de9da7a7b26",
+    "core/hooks/aidlc-write-audit-log.ts": "b6b6df63a154f6a0c7b7bd2473212d419955bf14adfd32a7989368440520eed7",
+    "core/knowledge/aidlc-architect-agent/adr-template.md": "d10447be6559ee1834e9471aa9fb4dbec2655cc71566ab44f350dbef81edc5b4",
+    "core/knowledge/aidlc-architect-agent/architecture-guide.md": "06f5c429030ca7b1da74817e21b1a753867276b5b012726a2b8007c4332dc3a2",
+    "core/knowledge/aidlc-architect-agent/architecture-patterns.md": "e30a524e5d4669ddb62af351f6b1dbc512ceb6b65e0a52f2460b379222f055a5",
+    "core/knowledge/aidlc-architect-agent/ddd-patterns.md": "2d5fbfb1c35410bb48b709793a26a2bae1eeb7cfc93a8e5e424db121af9ad1ce",
+    "core/knowledge/aidlc-architect-agent/nfr-design-guide.md": "856d91e29e6820abfdec79844467b2f72f0c19558fcb0c5f19d64e84be695816",
+    "core/knowledge/aidlc-architect-agent/nfr-design-patterns.md": "af41327921e7acab9b7855131313252120c2da2148dc6336da1eac3582d4f526",
+    "core/knowledge/aidlc-architecture-reviewer-agent/reviewing.md": "802a519d3a153c3fac994f4b01d68f659f1dbbe75656a1d9d6d5ffefef5bf480",
+    "core/knowledge/aidlc-aws-platform-agent/cdk-best-practices.md": "4789e101ef3865270795a46f17f99a0f7fd0f9259b8225025e6182487ea5ae53",
+    "core/knowledge/aidlc-aws-platform-agent/cost-optimization-patterns.md": "f21bbbed8aab03f7416062b7fb32b1f80c90b558ea94acadaa6ab6dc4f6e8041",
+    "core/knowledge/aidlc-aws-platform-agent/infrastructure-guide.md": "67ee5f3b67828e84dcefbd276ddfb3b5efcc04deca3355c9a2d6cd60d54044f8",
+    "core/knowledge/aidlc-aws-platform-agent/well-architected-framework.md": "650b0e613d76d9ae3326b998c389ba8d9f068196ea772468dc4b3a751d6d8f24",
+    "core/knowledge/aidlc-compliance-agent/regulatory-frameworks.md": "6774d09d0814c7af5fc600a8fbe61e35b01cbe947209e532d88d2e43164655b1",
+    "core/knowledge/aidlc-composer-agent/composing.md": "e085e0b3ef7102f507faebc7676dda9a25954b056ee10c5781a0bdc721bce8d5",
+    "core/knowledge/aidlc-delivery-agent/mob-programming-guide.md": "ca5b7529c575eb62ee97f26a8422d76984112676061be1b83a32ee5aa670e7e0",
+    "core/knowledge/aidlc-delivery-agent/team-topologies.md": "d936bfb7481a94690351d693fced2559ea7ffc00e46b3cf2e9efa4c2feec6f1d",
+    "core/knowledge/aidlc-delivery-agent/workflow-planning-guide.md": "4cf9e5dd824ff818a66a6832b84a7c380ffbd6c19bc5d26fc951b26b4916af1b",
+    "core/knowledge/aidlc-design-agent/accessibility-wcag.md": "ea5fb2d543998de8660b7f98b9d368d9a2a264320fdf375684135146c5346de3",
+    "core/knowledge/aidlc-design-agent/component-spec-template.md": "253b47804d6c7177cf184175c10a54ac35af4028a5d42de330d0e3a7b126c7b8",
+    "core/knowledge/aidlc-design-agent/interaction-design-patterns.md": "d0ff5a138681a83a4af0fb012ff8c8c05fcb5fe40f5f6c844a4f29ddd411335d",
+    "core/knowledge/aidlc-design-agent/ux-guide.md": "b377bf0d5ae64fde1c1cecffbfbfcab2033f89ee538e8378d610a7a2d018739f",
+    "core/knowledge/aidlc-design-agent/wireframing-guide.md": "c9cc515f881bfdcf28af3ff9a30cc4f997511549b6286326a0689e0f7c8c82fb",
+    "core/knowledge/aidlc-developer-agent/api-design-guide.md": "a5e78f2f2c256286a541d8be298bad91b8de2cdcde8810922381fbada011e0b8",
+    "core/knowledge/aidlc-developer-agent/code-analysis-guide.md": "9a277562315b9cd01e8f1bd99c432ffcae1a0467c6914cdcb7bca74f0a39e56f",
+    "core/knowledge/aidlc-developer-agent/code-generation-guide.md": "d893013765635c374eeffd3d901a380048a61c0be9538a1411a7173bdf28125c",
+    "core/knowledge/aidlc-developer-agent/code-generation-patterns.md": "74d8d7836635cd197d3a5e5adbd0c8ffa4c03ac0ee69a80900e01fa225315298",
+    "core/knowledge/aidlc-developer-agent/data-modelling-patterns.md": "1b8b55db0da2d748fb3b88d2fd7eb1593cd4b20ad342a9b942f499ff3a1fe755",
+    "core/knowledge/aidlc-developer-agent/re-artifacts.md": "da99d7277d833ef694c7dac022e8214b53a6dd8ef0638efdef083509fba8714d",
+    "core/knowledge/aidlc-devsecops-agent/devsecops-pipeline-patterns.md": "c9defc71193fb07cbf066bd1de4c7d3d7d482a50d91714de3e6b0330ba5206b0",
+    "core/knowledge/aidlc-devsecops-agent/nfr-requirements-guide.md": "16d99282fa44c965192d26ca3b8639c448e4a08bacec9f13a9eb86344c58c193",
+    "core/knowledge/aidlc-devsecops-agent/security-guide.md": "7df1003a10e5a989a0345167b59e25abed747f83c419ba0d1699023466be3b5a",
+    "core/knowledge/aidlc-devsecops-agent/threat-modelling-stride.md": "bc3df5f6a47634f3a6ff0f78c8f1af9162cb7f35176c530a0f5b0f454ac25a2b",
+    "core/knowledge/aidlc-operations-agent/incident-response-guide.md": "8e6e2bcf51b422fe28216ef3ff514821412eacc962bb8f37e4a8b028b8edc0d0",
+    "core/knowledge/aidlc-operations-agent/nfr-performance-guide.md": "bad8292569ef5f2a4f8165d13c363ea4bdbf0293718515b7b9d030b5074ba9a1",
+    "core/knowledge/aidlc-operations-agent/observability-patterns.md": "c13df81342161b0bd4eae20a6e603c36b7b64ac775b94f688180d9dc0eb0be19",
+    "core/knowledge/aidlc-operations-agent/slo-sli-patterns.md": "737d7b46eb6829ba4f136f31322505d67b21b21f056497528c1a2ed59f33ad63",
+    "core/knowledge/aidlc-pipeline-deploy-agent/branching-strategies.md": "85852e2f7ae26ade3f0ce2e0ae9854516af605118d422f94419c68d9c5f4a599",
+    "core/knowledge/aidlc-pipeline-deploy-agent/cicd-patterns.md": "08e64c6a91973ca9021a06f1d83a8aa75962cc8576f8d32df79e180d17ce2dbb",
+    "core/knowledge/aidlc-pipeline-deploy-agent/deployment-strategies.md": "d5510bca14b1751b2d591e162eaa94c4925b43bd0f61fd8be016fe9e3bfa7f63",
+    "core/knowledge/aidlc-product-agent/functional-design-guide.md": "a71ba14528c4095f866425c807bcffec4fe285aeff312c40722c1922a1d5d591",
+    "core/knowledge/aidlc-product-agent/market-research-methods.md": "46364f519c0a6061e4cfeebcbd8ed833628601f8868b43add11c9b1f4bcbad28",
+    "core/knowledge/aidlc-product-agent/prioritization-frameworks.md": "17e5bb6d4b5cb8afd05ad3e5929f7676c460be12cb924f7ffd122dd4097de1de",
+    "core/knowledge/aidlc-product-agent/product-guide.md": "d7466ca5d5dc23684b56b7c966256392dab3a73563d7c82396f7944f3e45384f",
+    "core/knowledge/aidlc-product-agent/requirements-elicitation.md": "898152a3b78f5370bd78987acef8333e4e5932c5b4801b91bcbafac833f69ad4",
+    "core/knowledge/aidlc-product-agent/requirements-guide.md": "cda16cdaac57be8d2303062cacafce846fbb0e19d66273c683af0a70e9ec2173",
+    "core/knowledge/aidlc-product-agent/user-story-patterns.md": "d7bcdec5ce4e9e17b51a9761feeaa64ce696cbc7528e45de0a686e396b76c81f",
+    "core/knowledge/aidlc-product-lead-agent/reviewing.md": "f7576a27f1bcc462ec2a09c9ad6a6945a1ea05f39d11f0c39c30016c9e034c85",
+    "core/knowledge/aidlc-quality-agent/nfr-reliability-guide.md": "28ea7f3b59fc8feea1fe77f14dfe1a36b6001a20ab580846771654b220c2e30c",
+    "core/knowledge/aidlc-quality-agent/nfr-validation-methods.md": "cbf6b21acf112d208e29a192b0a527c2102e49ecd20299cd043d1ab7c2313218",
+    "core/knowledge/aidlc-quality-agent/test-strategy-patterns.md": "e840aeb913f8f9e45a87a7246c9bf697314c940c6fdb0c1af3cb59c0b7166f7e",
+    "core/knowledge/aidlc-quality-agent/testing-guide.md": "af45291ed21f530cd42469104ee85c0920305288a6f222c03e65582c631baecc",
+    "core/knowledge/aidlc-shared/ai-dlc-principles.md": "170f6f2d3d0a295235d329f36424ccc283732072581bfa4fae42cbc439a0ca45",
+    "core/knowledge/aidlc-shared/audit-format.md": "9f986875e0abc18a0b8c6da90f339b40e6e46bbb9a246e7be435422356b48db2",
+    "core/knowledge/aidlc-shared/brownfield.md": "9fe4d24392a39f5edad08bf5b17d3aec4c9ae03304edf418a4e7d1716d91dcab",
+    "core/knowledge/aidlc-shared/knowledge-readme-template.md": "22986435c787f00f97197e9e75af0bedf4e091d3cc053302b99e1dce6ad7ed16",
+    "core/knowledge/aidlc-shared/memory-template.md": "a9c770481f2660b3efa92538df41f75f66150bf55d571f150bf0ce6fe2f624a4",
+    "core/knowledge/aidlc-shared/rules-reading.md": "b6b9bc02f7b4706102650330a9aa78076337a0ed65700a788d7000a90a7c0e39",
+    "core/knowledge/aidlc-shared/state-template.md": "390d738f3b39f361421466bafc43146c598ce9b3e83803b1f9b04d1232349590",
+    "core/knowledge/aidlc-shared/verification.md": "33533a6e0d1e53320d9430bbd5b61b23b3120aa3b65af0f8d53fc292ec245eda",
+    "core/knowledge/aidlc-shared/worktree-info-schema.md": "a4f04b3782d90ae1c0ad6f7dd431bbb03fd62c077c5e2d89274d745279e50979",
+    "core/memory/org.md": "58baeaa068350d6b33e4cef19ac1ffce32e9e74c06900756c5b5c1ddb767be45",
+    "core/memory/phases/construction.md": "336a0e700510ec5d932aa0e4476c1123ce925e6a4afffee31c513bf7d1e1cf1b",
+    "core/memory/phases/ideation.md": "6179c9da75d3f2944c37f51968bcdab2fb4e59052b30a1ebb716f0bbd0d4fcb4",
+    "core/memory/phases/inception.md": "a23a5931ec6cb06dd9b49d905f001694babc99089e97da0314fc9920fb3ee64b",
+    "core/memory/phases/operation.md": "2ca872806259b476e5fc10896d39b3461cae4a80e173e4a7af122eeb0c7e66b9",
+    "core/memory/project.md": "48a0686495d791abaad4512f8a33497947138edddf1c6b35914e51f64099b5c3",
+    "core/memory/team.md": "c065a3f8811764025aa9bdb5a9c51628f2724e57fc5ec0caa0973693e08d2c3e",
+    "core/memory/templates/.gitkeep": "9cf930a165d4d24fd80ff21a9c7df39419a285e035fbe669bf5460ad0921d13c",
+    "core/scopes/aidlc-bugfix.md": "4da8a68eceaa7baab5565307b5e157d7deab2f7de86196414396971e5a0843dc",
+    "core/scopes/aidlc-classic.md": "26137b9f8043639753f036055727afd8b6891f395d20505a4d6affb78450bdae",
+    "core/scopes/aidlc-enterprise.md": "dd7b8d1f055b886dfe123f20824528414a8ce188ca40bda92ef56d64a62d3351",
+    "core/scopes/aidlc-express.md": "de1857e9e62061d7c4c75564644c45fa950266d3472f4f88c318e07091f411c6",
+    "core/scopes/aidlc-feature.md": "de390ee4950657195e3399429c922135cc757c227aca325815e46bf5e8861e11",
+    "core/scopes/aidlc-infra.md": "46bfe366de36102a84dd5fe4e8862bad2a53e5fcbfc38b0cb4202a6c25d6d3aa",
+    "core/scopes/aidlc-mvp.md": "82cb88b7a099ce62b1d79111f0df95f13ae2dfe41c55f71e2ea9e7615e61e78f",
+    "core/scopes/aidlc-poc.md": "bda1abc2b8127cdd05de4c8b85f29729165ede54adbb67e873a4ab3115a2c917",
+    "core/scopes/aidlc-refactor.md": "7e3961c3077b5c6d4d1047932487b48a1df1c2309d6a0d736cbb4293d1a2b16c",
+    "core/scopes/aidlc-security-patch.md": "b95368d1285d5f97de584fba3d8803595937cd99917b411850836d33bfc3277b",
+    "core/scopes/aidlc-workshop.md": "1d5b17aba492bba2291983e5d2835fa2ba849d08f134e9e6559e479c3e8c3134",
+    "core/sensors/aidlc-claim-sources.md": "b5a568692b88f1b5942c597de5729e4fef5c1d77336ec4ac11b0184e12ac718d",
+    "core/sensors/aidlc-linter.md": "a25d035fcf9f662df93fc57a30a993be5d447da484394e58696a50ec93d76f05",
+    "core/sensors/aidlc-required-sections.md": "74833174788f2572d83e45b0bb35cf1773de338db848aa3e96c2579fb2ab742d",
+    "core/sensors/aidlc-traceability.md": "714d2cfa542fc23f2bc72ef8889874abdef4760a132965c8e85a5dfe1e5e1c30",
+    "core/sensors/aidlc-type-check.md": "e8121702e665ae8a87147768c0a9dce4cba1943887a1aa3d5ef43fb7f454954e",
+    "core/sensors/aidlc-upstream-coverage.md": "525ca1ebb18ff23d43a1f6c03814fa92ad491a2cb09c08686a7b4b76a5781734",
+    "core/skills/aidlc-knowledge/SKILL.md": "70945fcbcaf187632fb52e27b6f56d3efa440ca035c39b52279762c6328ddfe6",
+    "core/skills/aidlc-outcomes-pack/SKILL.md": "5e9680ab21e4af40d04827f7f945ad37d53d75ac45fd324710825f1e64f4aedc",
+    "core/skills/aidlc-replay/SKILL.md": "e35fc14dd30194435cb99339c3c8e3de073bbf46f3c0c756084fd97fe944911e",
+    "core/skills/aidlc-session-cost/SKILL.md": "f6ae0c5ca90829a27ed16b040787c4ac46b485cae07ca31ccb8e2e5051652f8b",
+    "core/templates/onboarding.md": "497f50ba1807de01907c2e9b1c7938084402224852bfb1703b2871959ab10dba",
+    "core/tools/aidlc-audit.ts": "488377c7f4b68599fee31549f399b2ac8e95bc65640747c9c8eef8c978523894",
+    "core/tools/aidlc-bolt.ts": "286226b24edafda3e2b7d1db563a9dc46a7aab03b7e930a4703aaba0cea3e5b8",
+    "core/tools/aidlc-directive.ts": "a2f0a6c58edf726773c318552ba536da943e5aef9cd3e0255ec71be15e531a32",
+    "core/tools/aidlc-doctor-bundle.ts": "764ff4602779cc8d746592fe7ed14e81549be050f0e8636c8130d54b4c8cc74c",
+    "core/tools/aidlc-documentkb-schema.ts": "49183f8f24e4c30031fe32e58aedb0f373ea120faa568fb15e2c702b95e32858",
+    "core/tools/aidlc-graph.ts": "859746e63222afceac1e901d72ab09a4fcd346d22dcbe3e78388cb54a8c89e61",
+    "core/tools/aidlc-includes.ts": "d6d0a43d562de0d5b3dfb956058800112852157341a9befe200c83238998c46c",
+    "core/tools/aidlc-jump.ts": "3e30bf5b3e687aafca5c89403b155f50fa10ea1296e6e1ceb13373700de918f6",
+    "core/tools/aidlc-knowledge.ts": "1a9e08c43505fdf224fe6c6b75947937e0a668de34bf08695e651597a55f96fb",
+    "core/tools/aidlc-learnings.ts": "620e45853c17fc5c47f72bfd1fbc51b66f7f24327fd23043d73c28deb7816b3e",
+    "core/tools/aidlc-lib.ts": "6773864ad58748af3447cb40d3e7ce09b74f973aa377250cf6ad6392f4ba3b10",
+    "core/tools/aidlc-log.ts": "259abc0eb32de871728ff7d0ffdcb9cd2f7dc803542ae9a970487d38a70d5bd5",
+    "core/tools/aidlc-metrics.ts": "687a61cf87d742a1e5bb12da905bacfa55600ac98a47a9f1c635f9a95f319eff",
+    "core/tools/aidlc-orchestrate.ts": "be0108773d2b14b16611cb1d77aa33659554610e4a64c20aa713bc9991794518",
+    "core/tools/aidlc-rule-schema.ts": "0ceb6ed00675fa990b5663d202c2943946b5538067c242479e5719889a457646",
+    "core/tools/aidlc-runner-gen.ts": "6bf6262ba335fab8532378a9063219506303ced5ee0a516e32eca63725ea32b1",
+    "core/tools/aidlc-runtime-paths.ts": "7c0c04a16b75cd83a39cdc9704c1086f316f8ed5300bf271340cf35bc7a8ffa6",
+    "core/tools/aidlc-runtime.ts": "083eb9b69a34dbd85a4dfe0e1e931356d2ca3309edb725284428e84b29f7a5ea",
+    "core/tools/aidlc-sensor-claim-sources.ts": "d120117fd758e5048d01e04eedc9a2cad8500302582ece1bcc0ab7f32d351621",
+    "core/tools/aidlc-sensor-linter.ts": "c2209125fb6aeeb127b8724152eb5db6cdef7167bba06ef04efdbcdbcf64d3c1",
+    "core/tools/aidlc-sensor-required-sections.ts": "623bd29555957f7ffdd9ebc3ae5b4fe96dd808b44cdb129d8a3dac93d73a729e",
+    "core/tools/aidlc-sensor-schema.ts": "019b1cc67f7a5a1e7b20fa8ddb212fe476ec56fda09c35662c9cd9a8500ac77e",
+    "core/tools/aidlc-sensor-traceability.ts": "0c46165c9d42a3eaa038ecae508408202f1ff8968ffc772461e90d8340bc71f4",
+    "core/tools/aidlc-sensor-type-check.ts": "41de75ab3645aac509676164a7b4adc0302f524fc5a05d573b48d577a59aafbc",
+    "core/tools/aidlc-sensor-upstream-coverage.ts": "788a7e28532f88053cccc6ca1efd1f9f0682b10f6e3d74f84930d4c2cf2fa939",
+    "core/tools/aidlc-sensor.ts": "a300a2c7340f998b2e09796050b67f255c6e0fc7890cba6c427d08cdcc5b813c",
+    "core/tools/aidlc-stage-schema.ts": "493def43e0d0f8f9158730e33321c6b1364d93b2b40c2693794994fa3eec5ba8",
+    "core/tools/aidlc-state.ts": "a4fc2ea2fb132a86ca3c8d76c15c67f27057787d7604f69f26584bf4ff80e508",
+    "core/tools/aidlc-steering.ts": "919087833f0fd50aeefb58f114579351f9cc54273b7c02570104e37a0b5441b5",
+    "core/tools/aidlc-swarm.ts": "3e8a930b417b5da73cbe2f6a3249245c45f0d8fab142df1ea6ece8fc3d39faa9",
+    "core/tools/aidlc-testing-posture.ts": "934c680505493b4466cbb1c1111f7d8c6bdce564ea9f2f463081197c6ad9c4a7",
+    "core/tools/aidlc-tiers.ts": "0934990f9bdfd207632fd8c73e95923cb776d6c78cc3d939240cb8f71ec055c9",
+    "core/tools/aidlc-usage.ts": "b62f14db958cfe26927f7823f17db36cd7378d0b12df4a97a17b6fc71304ef61",
+    "core/tools/aidlc-utility.ts": "d807a48a24a1b8506cf9fcc147f97cadcd20c27e0dc96e3e6d8b78d5b300f2ae",
+    "core/tools/aidlc-validate.ts": "941a9af97419354dcd4db08e17c6cc1a43337e0e69d00b09141c388bb70e944a",
+    "core/tools/aidlc-version.ts": "2bf0ef9aef100d5b95679bbf066187c24da52a5e28a26795a7db4864505e797c",
+    "core/tools/aidlc-workspace-doctor.ts": "92bbde984e0949ad9bae0c186b2a0cc3f7c6e5e77463fe986698897dced93602",
+    "core/tools/aidlc-workspace-manifest.ts": "b9f12144f84e71a0f0e0647bf40768eb32f61654d824b4d57b0b20945e095f66",
+    "core/tools/aidlc-workspace-sync.ts": "6e5be903e17774d20cf961eb2c993c2cfa2a115d9c10fa9aab4dce40f849f2e1",
+    "core/tools/aidlc-worktree.ts": "669cf7c191330256b5945d2e628f830093e25ea2fff4accc632278abe6012a01",
+    "core/tools/aidlc.ts": "26545c5cee35a8b7bb245c6f8a8dc1fa25fb2eedbde04cf5d336e53cdfcf1e55",
+    "core/tools/data/ars-priors.json": "d1b3c7b759b62588f55c4c4ff389d5501c0b6a5f83fa5f7526e20fea4369e738",
+    "core/tools/data/model-rates.json": "05b7376b63f583b46e495f1bbb3666d85260c74058555664a05fb2a2ffa35bc5",
+    "core/tools/data/templates/.gitkeep": "da10c5820101c36f22cdd2930e09d1ae4d7a8d14871f1e225ca670566afec968"
+  },
+  "redaction": {
+    "frontmatterBody": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]",
+    "pathOnlyBody": "[AI-DLC COMPATIBILITY FIXTURE BODY OMITTED]",
+    "runtimeBody": "[AI-DLC COMPATIBILITY RUNTIME CONTENT OMITTED]",
+    "sensorBody": "[AI-DLC COMPATIBILITY SENSOR BODY OMITTED]"
+  },
+  "runtimeFiles": [
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "a0564eaa9caa29e3d106b5fb11fd3ab7d81888b65290a6ce94e53b6d2f4f9d32",
+      "path": "core/aidlc-common/conductor.md"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "c1efe10b8780cbd301865ab270ed6ecc41e5615ee255fc5dde8b1d8e5e1d5c6f",
+      "path": "core/aidlc-common/protocols/stage-definition.md"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "d69e699c231def1c124b8dab8987055237eb7c57a46b2507a2cb88bca5cae383",
+      "path": "core/aidlc-common/protocols/stage-protocol-construction.md"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "d2ed285797195f5a0cddc24af44de04d3d21260d2abcd66f5e99d6ba6dd13979",
+      "path": "core/aidlc-common/protocols/stage-protocol-ensemble.md"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "ab15dbc5747b7f83b9aa6b7b65a55d0b99f805288f6c506033cd2f636d64ff60",
+      "path": "core/aidlc-common/protocols/stage-protocol-governance.md"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "6db6fcad9cefd40559077bc25525e671a1995aa1d317f32c0a8018c95223c2b4",
+      "path": "core/aidlc-common/protocols/stage-protocol-recovery.md"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "e1ee67fd90ee196824b19772059e02295f5b6c1cbb63c47e94f9a7d8653ae5d8",
+      "path": "core/aidlc-common/protocols/stage-protocol-reviewer.md"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "65845ef30d16de768e87a5db6a3a742ae1a86fd3e32a48592946c89dad9da17b",
+      "path": "core/aidlc-common/protocols/stage-protocol-swarm.md"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "0a2b465ff6b60069f07afb565040d6e688b779c7744045f160099606f97ade6d",
+      "path": "core/aidlc-common/protocols/stage-protocol.md"
+    },
+    {
+      "fixtureSha256": "eaba31c31bb09e231b4795b2d680b75a5082dbad3ee91ac120378f41139e0f0c",
+      "originalSha256": "12c23a9586ece69b24d67d7f2f8631c003387170849249619260ff13d40fdffc",
+      "path": "core/hooks/aidlc-continue-workflow.ts"
+    },
+    {
+      "fixtureSha256": "45451af63af6ab139b932e3473f0c4bbf645bacda91059cfc83b8d652bea864e",
+      "originalSha256": "61e532cf1d0e9392c8078e90ba9c978f4f5c060758a97a914290bc920003c303",
+      "path": "core/hooks/aidlc-deliver-stage-rules.ts"
+    },
+    {
+      "fixtureSha256": "abda4972c5e26712760753deb247e06ad97f120d9a37d2d32dad5c3b6abdc584",
+      "originalSha256": "7777a270c2ec1d1683e0200b2f577f1d62a7b424bad5139cf69027e6a524fa38",
+      "path": "core/hooks/aidlc-fold-usage.ts"
+    },
+    {
+      "fixtureSha256": "2aa9e3f14c648c6a9e239d75c63bab206ddf14f1cd1253b512ecb7b1d2c20715",
+      "originalSha256": "efec352a0eeb2e67f70a5e86f0ce93c62da39181a5648a55b8fe2f9c3ed525f9",
+      "path": "core/hooks/aidlc-log-subagent.ts"
+    },
+    {
+      "fixtureSha256": "17518598e9d8089c5427a171af362b1a6cc657acca9691ced57e96061d6b4b49",
+      "originalSha256": "9687b5291ffcf933f2e16e2dd4cadb0db98637e1294cf2f7110f5d3fccfc7e6e",
+      "path": "core/hooks/aidlc-plan-approval-guard.ts"
+    },
+    {
+      "fixtureSha256": "d72db0521cc4ed8d22cc17659446a11942f98a07b4a0d3c6840c7c5ee75ffbc0",
+      "originalSha256": "f40f9959d000b9ef5771471717192948d64f214871e649ba26121b3be41f2dee",
+      "path": "core/hooks/aidlc-rebuild-stage-graph.ts"
+    },
+    {
+      "fixtureSha256": "a74c6332b3f632c7f4fd92baa0e144e6596f30349e7adcc45cef185d89b47cb3",
+      "originalSha256": "f8f452332e7e0029744e8157f8ec7c33d982ae48e493cb449cc12e8643a01c36",
+      "path": "core/hooks/aidlc-record-human-turn.ts"
+    },
+    {
+      "fixtureSha256": "78ca70c24693fdbce94fccac9b28ec24c5e95989da02e13499c2762aa9f2aae7",
+      "originalSha256": "e3cd31ffcd9cabe3927999a6618ad0b00b97f39b36639255e7fa28758676dc63",
+      "path": "core/hooks/aidlc-review-freeze.ts"
+    },
+    {
+      "fixtureSha256": "c1d9157dfaa5f3397467faa7b0fdabf46a9a64b686cce3b1379890b16a6edc65",
+      "originalSha256": "eecb146049ba380d3542363b81e6af3c6a3842c0707749ff190375db6b6dc8e7",
+      "path": "core/hooks/aidlc-reviewer-scope.ts"
+    },
+    {
+      "fixtureSha256": "26d505b2e182c4b2e56446a07834ce0a9940e8230c9eea2ebd1b64d365ef64bf",
+      "originalSha256": "40d529efceee4e49d7d5d49953279c05c3aea91a5ff590175d5b7622f6410010",
+      "path": "core/hooks/aidlc-run-sensors.ts"
+    },
+    {
+      "fixtureSha256": "421c452f64007e43fe086a1ed70c8d3662812d86405adbde809edade18609ae4",
+      "originalSha256": "3627f42c32e106fb5aa7743dc08669207e0c12f9348a1dd337fdc0ae30c65307",
+      "path": "core/hooks/aidlc-session-end.ts"
+    },
+    {
+      "fixtureSha256": "8f413f1ac62dec530d24eea6832acad6bfbc21e41fc5301a83f84ff23d3b823a",
+      "originalSha256": "2d5baa7e46c99d08ac899158a2a5084abe1bae3b22425c2a19a5f3acda3e356a",
+      "path": "core/hooks/aidlc-session-start.ts"
+    },
+    {
+      "fixtureSha256": "b5b6bc7556747fcc0012ee6fc3b8091685d303a949f21931c88d21e916c28e03",
+      "originalSha256": "371c6001f9be91ed4331d6b7e75068e5d1cf1185ae52ec7eb44987f0ffc9702e",
+      "path": "core/hooks/aidlc-state-transition-guard.ts"
+    },
+    {
+      "fixtureSha256": "917490ea9feed8a5848b818d4a2d46424b72e30d6bc318159bdb4da0d99b1fc0",
+      "originalSha256": "18a934f26fe354e18e674d6db7de63b24922e1901a7eeabe1b0a510d332582bb",
+      "path": "core/hooks/aidlc-statusline.ts"
+    },
+    {
+      "fixtureSha256": "f7519cb02dae47f8ba5a0af5cebd0ce87f2d584c19e66dc48c08bdf302ee318d",
+      "originalSha256": "127e43d23bd8ff28d3e6db9d6e516749de65ca0d17d92fe52c713fdd747c948b",
+      "path": "core/hooks/aidlc-sync-workflow-state.ts"
+    },
+    {
+      "fixtureSha256": "1913ba8f50749ec35046e5b52e7d72614b897bc39c81dd9ce62baa9809f420f4",
+      "originalSha256": "79f5a9d08cc99afd13ff236ffc96ee4381e19cae0b113a7a77d77de9da7a7b26",
+      "path": "core/hooks/aidlc-validate-state.ts"
+    },
+    {
+      "fixtureSha256": "99e72637a4cc6b0969a9f358d137cb0c1401f6b4de9ce2248fa9d4cd74222753",
+      "originalSha256": "b6b6df63a154f6a0c7b7bd2473212d419955bf14adfd32a7989368440520eed7",
+      "path": "core/hooks/aidlc-write-audit-log.ts"
+    },
+    {
+      "fixtureSha256": "71559b9e49822e027f7d19a26d74c92f64efaa6f1f6a897d7eebf9bd6e28c64f",
+      "originalSha256": "488377c7f4b68599fee31549f399b2ac8e95bc65640747c9c8eef8c978523894",
+      "path": "core/tools/aidlc-audit.ts"
+    },
+    {
+      "fixtureSha256": "7a5318315401504a3f897848e0e337f4c81d909b0e006f6e2f565e13a67cdd1d",
+      "originalSha256": "286226b24edafda3e2b7d1db563a9dc46a7aab03b7e930a4703aaba0cea3e5b8",
+      "path": "core/tools/aidlc-bolt.ts"
+    },
+    {
+      "fixtureSha256": "a003143cccb1dafdde3aba186a6e75ac66ad78715172aba63199b65333611ffb",
+      "originalSha256": "a2f0a6c58edf726773c318552ba536da943e5aef9cd3e0255ec71be15e531a32",
+      "path": "core/tools/aidlc-directive.ts"
+    },
+    {
+      "fixtureSha256": "997f57893922a00079a433fb961a263900ce9cdfc80f3b14cfa864c19cb005d3",
+      "originalSha256": "764ff4602779cc8d746592fe7ed14e81549be050f0e8636c8130d54b4c8cc74c",
+      "path": "core/tools/aidlc-doctor-bundle.ts"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "49183f8f24e4c30031fe32e58aedb0f373ea120faa568fb15e2c702b95e32858",
+      "path": "core/tools/aidlc-documentkb-schema.ts"
+    },
+    {
+      "fixtureSha256": "a1f29fcc0c5062ba26163cb7513f629bd9de9ce6171ee97c168569379e5770c0",
+      "originalSha256": "859746e63222afceac1e901d72ab09a4fcd346d22dcbe3e78388cb54a8c89e61",
+      "path": "core/tools/aidlc-graph.ts"
+    },
+    {
+      "fixtureSha256": "e417ebc445173cf7ce5ae6a7c4c3a136c8830ecbf5e295e65dfe1338e2a31b1a",
+      "originalSha256": "d6d0a43d562de0d5b3dfb956058800112852157341a9befe200c83238998c46c",
+      "path": "core/tools/aidlc-includes.ts"
+    },
+    {
+      "fixtureSha256": "1c90b1786634936bf2705c6b6d4055cda62c414c6119ad15aa9a86c15fc930eb",
+      "originalSha256": "3e30bf5b3e687aafca5c89403b155f50fa10ea1296e6e1ceb13373700de918f6",
+      "path": "core/tools/aidlc-jump.ts"
+    },
+    {
+      "fixtureSha256": "be8e9a8216f8d3908977b437d6cf1067b224b4de5ec0affa60555229c1a90689",
+      "originalSha256": "1a9e08c43505fdf224fe6c6b75947937e0a668de34bf08695e651597a55f96fb",
+      "path": "core/tools/aidlc-knowledge.ts"
+    },
+    {
+      "fixtureSha256": "3e8fe075399a85ea48028fd3c875a66f9a1c6c00afab5dc0560c021371ef39cd",
+      "originalSha256": "620e45853c17fc5c47f72bfd1fbc51b66f7f24327fd23043d73c28deb7816b3e",
+      "path": "core/tools/aidlc-learnings.ts"
+    },
+    {
+      "fixtureSha256": "2f6a643ab781c65b2c90b862b96e6310ebeeac14c1c2212c2fd322fac1ff6bce",
+      "originalSha256": "6773864ad58748af3447cb40d3e7ce09b74f973aa377250cf6ad6392f4ba3b10",
+      "path": "core/tools/aidlc-lib.ts"
+    },
+    {
+      "fixtureSha256": "55a8856749efe0e2a4fb8ebd2fa063bb38681a2d57a8133ef490032ca546d943",
+      "originalSha256": "259abc0eb32de871728ff7d0ffdcb9cd2f7dc803542ae9a970487d38a70d5bd5",
+      "path": "core/tools/aidlc-log.ts"
+    },
+    {
+      "fixtureSha256": "a6bfec6dee1def1be17efa84320f40d008484a85b8d4793c613eeb44fc805d36",
+      "originalSha256": "687a61cf87d742a1e5bb12da905bacfa55600ac98a47a9f1c635f9a95f319eff",
+      "path": "core/tools/aidlc-metrics.ts"
+    },
+    {
+      "fixtureSha256": "a5bba5a37267ca483941168868eb9c1d3bb3600f3484fc131868c8fdb6ecfd2f",
+      "originalSha256": "be0108773d2b14b16611cb1d77aa33659554610e4a64c20aa713bc9991794518",
+      "path": "core/tools/aidlc-orchestrate.ts"
+    },
+    {
+      "fixtureSha256": "53a7015b9046e2e4b2e6f2b1f4ebb7bef61fc2f14ef31cd75460a25c186c81f1",
+      "originalSha256": "0ceb6ed00675fa990b5663d202c2943946b5538067c242479e5719889a457646",
+      "path": "core/tools/aidlc-rule-schema.ts"
+    },
+    {
+      "fixtureSha256": "ce25b215fc4c79d98edb54ab9eca572ce6b245aa9ded160255ee40c789497975",
+      "originalSha256": "6bf6262ba335fab8532378a9063219506303ced5ee0a516e32eca63725ea32b1",
+      "path": "core/tools/aidlc-runner-gen.ts"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "7c0c04a16b75cd83a39cdc9704c1086f316f8ed5300bf271340cf35bc7a8ffa6",
+      "path": "core/tools/aidlc-runtime-paths.ts"
+    },
+    {
+      "fixtureSha256": "859c559d50f04208164e3d90f5349f415b5a8cf3381338e3118b134e3468d944",
+      "originalSha256": "083eb9b69a34dbd85a4dfe0e1e931356d2ca3309edb725284428e84b29f7a5ea",
+      "path": "core/tools/aidlc-runtime.ts"
+    },
+    {
+      "fixtureSha256": "2996d42c956c3aa372f8323434172a357af1aa3ab717170f610ecbcbd52a671b",
+      "originalSha256": "d120117fd758e5048d01e04eedc9a2cad8500302582ece1bcc0ab7f32d351621",
+      "path": "core/tools/aidlc-sensor-claim-sources.ts"
+    },
+    {
+      "fixtureSha256": "879c09f7e8b89798c39d1533f520bfac706e825acbbfd33dfa2f95864168bf00",
+      "originalSha256": "c2209125fb6aeeb127b8724152eb5db6cdef7167bba06ef04efdbcdbcf64d3c1",
+      "path": "core/tools/aidlc-sensor-linter.ts"
+    },
+    {
+      "fixtureSha256": "e8ea2e346e6f3f18dad0aadd6951c55f06e85b9839c6f3fc098e03a4493c4708",
+      "originalSha256": "623bd29555957f7ffdd9ebc3ae5b4fe96dd808b44cdb129d8a3dac93d73a729e",
+      "path": "core/tools/aidlc-sensor-required-sections.ts"
+    },
+    {
+      "fixtureSha256": "96b66cdc8f1ca11391a7e445b995f25bab91864d285172142cf0cc2b6151a3d8",
+      "originalSha256": "019b1cc67f7a5a1e7b20fa8ddb212fe476ec56fda09c35662c9cd9a8500ac77e",
+      "path": "core/tools/aidlc-sensor-schema.ts"
+    },
+    {
+      "fixtureSha256": "5d6c4451450eae6159537e508647594143d3ee9fbf2517606affb055f3dcca32",
+      "originalSha256": "0c46165c9d42a3eaa038ecae508408202f1ff8968ffc772461e90d8340bc71f4",
+      "path": "core/tools/aidlc-sensor-traceability.ts"
+    },
+    {
+      "fixtureSha256": "22e38b6a3f0b7fc2227425166260d50e9628912aaa8a4c0bd89be0fcadc5e299",
+      "originalSha256": "41de75ab3645aac509676164a7b4adc0302f524fc5a05d573b48d577a59aafbc",
+      "path": "core/tools/aidlc-sensor-type-check.ts"
+    },
+    {
+      "fixtureSha256": "c1b9f60dd70dadcfab578bf2ddf939dfe1b45f4d7039ed4b550a9be9e910aadc",
+      "originalSha256": "788a7e28532f88053cccc6ca1efd1f9f0682b10f6e3d74f84930d4c2cf2fa939",
+      "path": "core/tools/aidlc-sensor-upstream-coverage.ts"
+    },
+    {
+      "fixtureSha256": "39977f0455de68c63150120203651227367d4fa7f42b8305337a605afc81bc96",
+      "originalSha256": "a300a2c7340f998b2e09796050b67f255c6e0fc7890cba6c427d08cdcc5b813c",
+      "path": "core/tools/aidlc-sensor.ts"
+    },
+    {
+      "fixtureSha256": "bfe9f178159781714e55a157f52e900eed527ca496a71695e7d7fd2c3fcbef4c",
+      "originalSha256": "493def43e0d0f8f9158730e33321c6b1364d93b2b40c2693794994fa3eec5ba8",
+      "path": "core/tools/aidlc-stage-schema.ts"
+    },
+    {
+      "fixtureSha256": "e8ae00bd2ae92fe6d649d2ca0fdfc9734ddc252fb64a1083e04fe582e15d27da",
+      "originalSha256": "a4fc2ea2fb132a86ca3c8d76c15c67f27057787d7604f69f26584bf4ff80e508",
+      "path": "core/tools/aidlc-state.ts"
+    },
+    {
+      "fixtureSha256": "c02c38471526e0b0e03acbf14f1012cc21e3324d007f1b212e9f2b11c67586e6",
+      "originalSha256": "919087833f0fd50aeefb58f114579351f9cc54273b7c02570104e37a0b5441b5",
+      "path": "core/tools/aidlc-steering.ts"
+    },
+    {
+      "fixtureSha256": "fff365abe56796aa0d4f7ebabeb729df766cc2eb771f67e0d84315105fc83fa5",
+      "originalSha256": "3e8a930b417b5da73cbe2f6a3249245c45f0d8fab142df1ea6ece8fc3d39faa9",
+      "path": "core/tools/aidlc-swarm.ts"
+    },
+    {
+      "fixtureSha256": "8457a5212e22ca59a5f381ae335b6d446f800eba608ef85f59b4f92b13888044",
+      "originalSha256": "934c680505493b4466cbb1c1111f7d8c6bdce564ea9f2f463081197c6ad9c4a7",
+      "path": "core/tools/aidlc-testing-posture.ts"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "0934990f9bdfd207632fd8c73e95923cb776d6c78cc3d939240cb8f71ec055c9",
+      "path": "core/tools/aidlc-tiers.ts"
+    },
+    {
+      "fixtureSha256": "61ec89d3df11351a04e2ff824c21ed1d9c2e37c8a0f1bd53a42e96037f50ef6a",
+      "originalSha256": "b62f14db958cfe26927f7823f17db36cd7378d0b12df4a97a17b6fc71304ef61",
+      "path": "core/tools/aidlc-usage.ts"
+    },
+    {
+      "fixtureSha256": "fcd8e41c00ee5251396a6579e03710f00c6139f87d0b684a6b85b286cc44b996",
+      "originalSha256": "d807a48a24a1b8506cf9fcc147f97cadcd20c27e0dc96e3e6d8b78d5b300f2ae",
+      "path": "core/tools/aidlc-utility.ts"
+    },
+    {
+      "fixtureSha256": "41425c48758380d8ab4a77fd3444fe825bf4181c636710c8636050307f67fe24",
+      "originalSha256": "941a9af97419354dcd4db08e17c6cc1a43337e0e69d00b09141c388bb70e944a",
+      "path": "core/tools/aidlc-validate.ts"
+    },
+    {
+      "fixtureSha256": "e2bd3b1bfbe8a06ddea56df575c49d5ee39edaa77b62d028486d45bd30849e8e",
+      "originalSha256": "2bf0ef9aef100d5b95679bbf066187c24da52a5e28a26795a7db4864505e797c",
+      "path": "core/tools/aidlc-version.ts"
+    },
+    {
+      "fixtureSha256": "e3108c90e62c7ad85cfc756fd4d71b103692fcfc340af3a8b831ece0566c5405",
+      "originalSha256": "92bbde984e0949ad9bae0c186b2a0cc3f7c6e5e77463fe986698897dced93602",
+      "path": "core/tools/aidlc-workspace-doctor.ts"
+    },
+    {
+      "fixtureSha256": "d0157598e71a5cacee038a3276c8d7092e795b5b6867ffe8ef392509c34685c6",
+      "originalSha256": "b9f12144f84e71a0f0e0647bf40768eb32f61654d824b4d57b0b20945e095f66",
+      "path": "core/tools/aidlc-workspace-manifest.ts"
+    },
+    {
+      "fixtureSha256": "6c2b21c97ee0f1f70789a476b684d6709e05a4fb9906d72921a3121ca037eb85",
+      "originalSha256": "6e5be903e17774d20cf961eb2c993c2cfa2a115d9c10fa9aab4dce40f849f2e1",
+      "path": "core/tools/aidlc-workspace-sync.ts"
+    },
+    {
+      "fixtureSha256": "6e881da3bc4793cfdeb050193d11500c9beefd6625546ec7bfd3b4c8d41f64ea",
+      "originalSha256": "669cf7c191330256b5945d2e628f830093e25ea2fff4accc632278abe6012a01",
+      "path": "core/tools/aidlc-worktree.ts"
+    },
+    {
+      "fixtureSha256": "b4943a6e034e25fca90e7fe84e328242159cae330eb0d6bf4b2a0ccaeaa24f11",
+      "originalSha256": "26545c5cee35a8b7bb245c6f8a8dc1fa25fb2eedbde04cf5d336e53cdfcf1e55",
+      "path": "core/tools/aidlc.ts"
+    }
+  ],
+  "schemaVersion": 1,
+  "source": {
+    "id": "v2.6.18",
+    "label": "AI-DLC 2.6.18",
+    "ref": "fbb1460c5225657dac7f5a025657785751b41634",
+    "releaseId": "aidlc:fbb1460c5225657dac7f5a025657785751b41634",
+    "repository": "awslabs/aidlc-workflows",
+    "sha": "fbb1460c5225657dac7f5a025657785751b41634"
+  }
+}

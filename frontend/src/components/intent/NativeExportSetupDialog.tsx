@@ -188,16 +188,16 @@ export function NativeExportSetupDialog({
                   <div>
                     <p className="text-xs font-medium">Fresh clone: {repository.id}</p>
                     <CommandBlock label={`Copy fresh clone command for ${repository.id}`}>
-                      {`git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.directory)}`}
+                      {`git clone --branch ${shellQuote(repository.branch)} -- ${shellQuote(repository.url)} ${shellQuote(`./${repository.directory}`)}`}
                     </CommandBlock>
                   </div>
                   <div>
                     <p className="text-xs font-medium">Existing clone: {repository.id}</p>
                     <CommandBlock label={`Copy existing clone commands for ${repository.id}`}>
                       {[
-                        `git -C ${shellQuote(repository.directory)} fetch origin`,
-                        `git -C ${shellQuote(repository.directory)} switch ${shellQuote(repository.branch)}`,
-                        `git -C ${shellQuote(repository.directory)} pull --ff-only`,
+                        `git -C ${shellQuote(`./${repository.directory}`)} fetch origin`,
+                        `git -C ${shellQuote(`./${repository.directory}`)} switch ${shellQuote(repository.branch)}`,
+                        `git -C ${shellQuote(`./${repository.directory}`)} pull --ff-only`,
                       ].join('\n')}
                     </CommandBlock>
                   </div>
@@ -237,8 +237,8 @@ export function NativeExportSetupDialog({
                     <p className="text-xs font-medium">Fresh clone</p>
                     <CommandBlock label={`Copy fresh clone commands for ${repository.id}`}>
                       {[
-                        `git clone --branch ${shellQuote(repository.branch)} ${shellQuote(repository.url)} ${shellQuote(repository.directory)}`,
-                        `cd ${shellQuote(repository.directory)}`,
+                        `git clone --branch ${shellQuote(repository.branch)} -- ${shellQuote(repository.url)} ${shellQuote(`./${repository.directory}`)}`,
+                        `cd ${shellQuote(`./${repository.directory}`)}`,
                       ].join('\n')}
                     </CommandBlock>
                   </div>

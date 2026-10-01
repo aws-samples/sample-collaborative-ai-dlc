@@ -61,6 +61,27 @@ describe('managed environment handler', () => {
     vi.stubEnv('ENVIRONMENT_ECR_REPOSITORY_NAME', 'environments');
   });
 
+  it('logs a sanitized API Gateway event when event logging is enabled', async () => {
+    const eventLogger = { logEventIfEnabled: vi.fn() };
+    const handler = createHandler({ store: storeBase(), eventLogger });
+
+    await handler({
+      httpMethod: 'OPTIONS',
+      path: '/environments',
+      headers: { Authorization: 'Bearer admin-secret' },
+      body: JSON.stringify({
+        recipe: { environmentVariables: { SERVICE_TOKEN: 'recipe-secret' } },
+      }),
+    });
+
+    const logged = eventLogger.logEventIfEnabled.mock.calls[0][0];
+    expect(logged).not.toHaveProperty('headers');
+    expect(JSON.stringify(logged)).not.toContain('admin-secret');
+    expect(JSON.parse(logged.body).recipe.environmentVariables).toEqual({
+      SERVICE_TOKEN: '[REDACTED]',
+    });
+  });
+
   it('allows authenticated users to list only published environments', async () => {
     const store = {
       ...storeBase(),

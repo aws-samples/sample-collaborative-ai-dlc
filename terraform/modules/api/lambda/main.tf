@@ -5,7 +5,10 @@ data "aws_partition" "current" {}
 locals {
   partition            = data.aws_partition.current.partition
   dns_suffix           = data.aws_partition.current.dns_suffix
-  enable_public_egress = var.lambda_vpc_scope == "public-egress"
+  enable_public_egress = contains(["public-egress", "all"], var.lambda_vpc_scope)
+  all_lambdas_in_vpc   = var.lambda_vpc_scope == "all"
+
+  powertools_service_name = var.powertools_service_name
 
   # Lambdas that bundle code from lambda/shared/** via esbuild are packaged by
   # the terraform-aws-modules/lambda module,
@@ -54,6 +57,34 @@ locals {
       "neptune-db:connect"
     ]
     Resource = local.neptune_resource_arn
+  }
+}
+
+module "dynamodb_kms_runtime_access" {
+  source = "../../security/dynamodb-kms-runtime-access"
+
+  kms_key_arn = var.kms_key_arn
+  dns_suffix  = local.dns_suffix
+  role_names = {
+    agents_orchestrator  = aws_iam_role.agents_orchestrator.name
+    bitbucket_connector  = aws_iam_role.bitbucket_connector.name
+    blocks               = aws_iam_role.blocks.name
+    codecommit_connector = aws_iam_role.codecommit_connector.name
+    credential_broker    = aws_iam_role.credential_broker.name
+    discussions          = aws_iam_role.discussions.name
+    github_connector     = aws_iam_role.github_connector.name
+    gitlab_connector     = aws_iam_role.gitlab_connector.name
+    intent_pin_lookup    = aws_iam_role.intent_pin_lookup.name
+    intents              = aws_iam_role.intents.name
+    neptune_artifacts    = aws_iam_role.neptune_artifacts.name
+    neptune_questions    = aws_iam_role.neptune_questions.name
+    neptune_reader       = aws_iam_role.neptune_reader.name
+    seed_blocks          = aws_iam_role.seed_blocks.name
+    source_control       = aws_iam_role.source_control.name
+    trackers             = aws_iam_role.trackers.name
+    users                = aws_iam_role.users.name
+    v2_orchestrator      = aws_iam_role.v2_orchestrator.name
+    workflows            = aws_iam_role.workflows.name
   }
 }
 
@@ -350,6 +381,13 @@ resource "aws_iam_role" "cognito_reader" {
 resource "aws_iam_role_policy_attachment" "cognito_reader_basic" {
   role       = aws_iam_role.cognito_reader.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "cognito_reader_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.cognito_reader.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "cognito_reader" {
@@ -748,11 +786,14 @@ resource "aws_iam_role_policy" "neptune_tasks" {
 }
 
 # -----------------------------------------------------------------------------
-# Role 7: blocks (2 Lambdas — building-blocks CRUD + seed-blocks)
+# Role 7: blocks (building-blocks CRUD; workflows and seed-blocks have their own)
 # DynamoDB RW on the blocks table + its GSI1, plus S3 RW scoped to the blocks/
 # prefix (content-addressed block bodies/scripts), the aidlc-runtime/ prefix
 # (the seed job's commit-pinned internal runtime snapshot), and aidlc-catalogs/
-# (structured methodology snapshots used by historical exports). No Neptune;
+# (structured methodology snapshots used by historical exports). No access to
+# aidlc-releases/ — reading published release bytes belongs to Role 7a and
+# writing them to Role 7b.
+# No Neptune;
 # seed-blocks optionally uses VPC NAT egress to download the pinned workflow
 # source from codeload.github.com.
 # -----------------------------------------------------------------------------
@@ -792,6 +833,8 @@ resource "aws_iam_role_policy" "blocks" {
           "dynamodb:Scan",
           "dynamodb:BatchGetItem",
           "dynamodb:BatchWriteItem",
+          "dynamodb:TransactWriteItems",
+          "dynamodb:ConditionCheckItem",
         ]
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
@@ -802,6 +845,175 @@ resource "aws_iam_role_policy" "blocks" {
           "${var.artifacts_bucket_arn}/blocks/*",
           "${var.artifacts_bucket_arn}/aidlc-runtime/*",
           "${var.artifacts_bucket_arn}/aidlc-catalogs/*",
+        ]
+      },
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Role 7a: workflows (workflow composition over the block library)
+# The same blocks-table access Role 7 has, plus READ-ONLY aidlc-releases/ so the
+# workflows Lambda can register a published release in the selection registry
+# (only Role 7b may write there). Its own principal for two reasons: workflows is
+# the only Lambda allowed to invoke the intent pin lookup (issue #482), and the
+# user-facing building-blocks API must inherit neither that grant nor the release
+# read. No Neptune — workflows carries no block bodies. It is placed in the VPC
+# only when lambda_vpc_scope is "all", like every other Lambda.
+#
+# No s3:ListBucket is granted: without it S3 answers a GET for an absent key with
+# 403 AccessDenied instead of 404 NoSuchKey, and the "is this profile published
+# yet?" probe handles that in code (release-registry.js probePublishedManifest
+# treats a masked 403 as "not published"). A prefix-conditioned ListBucket would
+# NOT change the GET response anyway — s3:prefix is not part of the GetObject
+# authorization context — so granting it would widen the role for no effect.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "workflows" {
+  name               = "${var.project_name}-workflows-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "workflows_basic" {
+  role       = aws_iam_role.workflows.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "workflows_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.workflows.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "workflows" {
+  name = "workflows-blocks-and-release-read"
+  role = aws_iam_role.workflows.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:TransactWriteItems",
+          "dynamodb:ConditionCheckItem",
+        ]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = [
+          "${var.artifacts_bucket_arn}/blocks/*",
+          "${var.artifacts_bucket_arn}/aidlc-runtime/*",
+          "${var.artifacts_bucket_arn}/aidlc-catalogs/*",
+          "${var.artifacts_bucket_arn}/aidlc-releases/*",
+        ]
+      },
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Role 7c: intent-pin-lookup (read-only, invoked only by workflows)
+# Neptune READ for the project-membership check and a single GetItem on the
+# process table for the intent's META row. No write action anywhere, and no
+# other Lambda's role grants permission to invoke the function that uses it.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "intent_pin_lookup" {
+  name               = "${var.project_name}-intent-pin-lookup-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "intent_pin_lookup_basic" {
+  role       = aws_iam_role.intent_pin_lookup.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "intent_pin_lookup_vpc" {
+  role       = aws_iam_role.intent_pin_lookup.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "intent_pin_lookup" {
+  name = "intent-pin-lookup-read"
+  role = aws_iam_role.intent_pin_lookup.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["neptune-db:ReadDataViaQuery", "neptune-db:connect"]
+        Resource = local.neptune_resource_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = [var.v2_executions_table_arn]
+      },
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Role 7b: seed-blocks (admin one-shot only)
+# Same blocks-table and legacy S3 access as Role 7 (the SYSTEM seed/reseed
+# modes are unchanged), plus write access to aidlc-releases/: immutable,
+# commit-pinned AI-DLC release bundles. Kept separate from Role 7 so the
+# user-facing building-blocks and workflows Lambdas cannot write releases.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "seed_blocks" {
+  name               = "${var.project_name}-seed-blocks-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "seed_blocks_basic" {
+  role       = aws_iam_role.seed_blocks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "seed_blocks_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.seed_blocks.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "seed_blocks" {
+  name = "seed-blocks-table-and-bucket"
+  role = aws_iam_role.seed_blocks.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          # Scan: the reseed mode scans for SYSTEM-owned partitions to clear.
+          "dynamodb:Scan",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+        ]
+        Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${var.artifacts_bucket_arn}/blocks/*",
+          "${var.artifacts_bucket_arn}/aidlc-runtime/*",
+          "${var.artifacts_bucket_arn}/aidlc-catalogs/*",
+          "${var.artifacts_bucket_arn}/aidlc-releases/*",
         ]
       }
     ]
@@ -899,6 +1111,18 @@ resource "aws_iam_role_policy" "source_control" {
           var.bitbucket_oauth_secret_arn,
         ])
       },
+      {
+        # CodeCommit (`codecommit-role` bindings): assume the tenant's repository
+        # access role. The caller-side ExternalId condition means this role can
+        # only ever assume a role whose trust policy names a platform-issued
+        # external id — never a role that happens to trust the account broadly.
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = "arn:${local.partition}:iam::*:role/*"
+        Condition = {
+          StringLike = { "sts:ExternalId" = "aidlc:*" }
+        }
+      },
     ]
   })
 }
@@ -932,6 +1156,9 @@ module "source_control_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT        = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT                   = var.neptune_endpoint
     SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
     GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
@@ -977,6 +1204,13 @@ resource "aws_iam_role_policy" "credential_broker" {
         Resource = [var.v2_executions_table_arn, var.source_control_bindings_table_arn]
       },
       {
+        # A refused CodeCommit credential (role + external ID) invalidates every
+        # binding on it: they are found through the credentialRef index.
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = ["${var.source_control_bindings_table_arn}/index/*"]
+      },
+      {
         Effect = "Allow"
         Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
         Resource = compact([
@@ -1016,6 +1250,18 @@ resource "aws_iam_role_policy" "credential_broker" {
           var.bitbucket_oauth_secret_arn,
         ])
       },
+      {
+        # CodeCommit (`codecommit-role` bindings): assume the tenant's repository
+        # access role. The caller-side ExternalId condition means this role can
+        # only ever assume a role whose trust policy names a platform-issued
+        # external id — never a role that happens to trust the account broadly.
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = "arn:${local.partition}:iam::*:role/*"
+        Condition = {
+          StringLike = { "sts:ExternalId" = "aidlc:*" }
+        }
+      },
     ]
   })
 }
@@ -1049,6 +1295,9 @@ module "credential_broker_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     V2_PROCESS_TABLE                    = var.v2_executions_table_name
     SOURCE_CONTROL_BINDINGS_TABLE       = var.source_control_bindings_table_name
     GIT_CONNECTIONS_TABLE               = var.git_connections_table_name
@@ -1061,6 +1310,8 @@ module "credential_broker_lambda" {
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
   }
+
+  depends_on = [aws_iam_role_policy_attachment.credential_broker_vpc]
 }
 
 # Metadata-only companion to the value-redemption broker. It runs under the
@@ -1089,11 +1340,19 @@ module "credential_metadata_lambda" {
   create_role = false
   lambda_role = aws_iam_role.credential_broker.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
-    AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    AGENT_SETTINGS_SSM_PREFIX   = "/${var.project_name}/${var.environment}"
   }
+
+  depends_on = [aws_iam_role_policy_attachment.credential_broker_vpc]
 }
 
 # Projects Lambda
@@ -1138,6 +1397,10 @@ module "projects_lambda" {
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     ARTIFACTS_BUCKET               = var.artifacts_bucket_name
+    # Powertools structured logging (see lambda/projects/index.js).
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
     # Project delete fans out into the intents' process state: the v2 process
     # table (drained per intent, incl. metrics), the intent-scoped Yjs docs, and
     # the AgentCore runtime (stop live sessions of deleted intents).
@@ -1184,6 +1447,9 @@ module "users_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT              = var.neptune_endpoint
     SOURCE_CONTROL_BINDINGS_TABLE = var.source_control_bindings_table_name
     ENVIRONMENT                   = var.environment
@@ -1218,9 +1484,12 @@ module "sprints_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1254,9 +1523,12 @@ module "requirements_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1290,9 +1562,12 @@ module "user_stories_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1323,9 +1598,12 @@ module "tasks_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1359,9 +1637,12 @@ module "code_files_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1395,9 +1676,12 @@ module "reviews_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1430,9 +1714,12 @@ module "questions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1463,9 +1750,12 @@ module "sprint_graph_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1499,9 +1789,12 @@ module "general_info_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1535,6 +1828,9 @@ module "github_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT        = tostring(var.powertools_log_event)
     GITHUB_OAUTH_SECRET_NAME           = var.github_oauth_secret_name
     GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
@@ -1545,6 +1841,8 @@ module "github_lambda" {
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.github_connector_vpc]
 }
 
 # -----------------------------------------------------------------------------
@@ -1634,6 +1932,9 @@ module "gitlab_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
     GITLAB_OAUTH_SECRET_NAME       = var.gitlab_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
@@ -1643,6 +1944,8 @@ module "gitlab_lambda" {
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.gitlab_connector_vpc]
 }
 
 # -----------------------------------------------------------------------------
@@ -1733,12 +2036,118 @@ module "bitbucket_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
     BITBUCKET_OAUTH_SECRET_NAME    = var.bitbucket_oauth_secret_name
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     SOURCE_CONTROL_BINDINGS_TABLE  = var.source_control_bindings_table_name
     GIT_TOKEN_SSM_PREFIX           = "${var.project_name}/${var.environment}/git-token"
     BITBUCKET_REDIRECT_URI         = var.bitbucket_redirect_uri
+    ENVIRONMENT                    = var.environment
+    CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.bitbucket_connector_vpc]
+}
+
+# -----------------------------------------------------------------------------
+# Role 3e: codecommit-connector (1 Lambda — codecommit)
+# No OAuth, no token storage, no tables: the only thing this function does with
+# AWS is assume a tenant-owned repository access role (discover-only session
+# policy) to list repositories while a project is being connected.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "codecommit_connector" {
+  name               = "${var.project_name}-codecommit-connector-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+
+resource "aws_iam_role_policy_attachment" "codecommit_connector_basic" {
+  role       = aws_iam_role.codecommit_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "codecommit_connector_vpc" {
+  count = local.enable_public_egress ? 1 : 0
+
+  role       = aws_iam_role.codecommit_connector.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "codecommit_connector" {
+  name = "codecommit-tenant-role-discovery"
+  role = aws_iam_role.codecommit_connector.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = "arn:${local.partition}:iam::*:role/*"
+        Condition = {
+          StringLike = { "sts:ExternalId" = "aidlc:*" }
+        }
+      },
+      {
+        # The caller's CodeCommit connection (platform-issued external ID),
+        # get-or-create only.
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+        Resource = [var.git_provider_connections_table_arn]
+      },
+    ]
+  })
+}
+
+# The execution roles a tenant must trust on their CodeCommit access role. The
+# broker mints runtime git/API credentials, source-control verifies bindings
+# and runs project operations, codecommit discovers repositories at connect
+# time. Rendered into the trust policy shown by the connect flow.
+locals {
+  codecommit_platform_principals = join(",", [
+    aws_iam_role.credential_broker.arn,
+    aws_iam_role.source_control.arn,
+    aws_iam_role.codecommit_connector.arn,
+  ])
+}
+
+# CodeCommit Lambda
+module "codecommit_lambda" {
+  #checkov:skip=CKV_TF_1:Terraform Registry module follows the repository-wide version constraint.
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-codecommit-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/codecommit"
+      commands = [
+        "cd ../.. && npm run build -w codecommit-lambda",
+        ":zip lambda/codecommit/.build",
+      ]
+    }
+  ]
+
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.codecommit_connector.arn
+
+  vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
+
+  environment_variables = {
+    POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
+    CODECOMMIT_PLATFORM_PRINCIPALS = local.codecommit_platform_principals
+    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
@@ -1775,6 +2184,9 @@ module "trackers_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     GIT_CONNECTIONS_TABLE          = var.git_connections_table_name
     GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
@@ -1846,9 +2258,12 @@ module "timeline_events_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -1963,6 +2378,9 @@ module "discussions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     NEPTUNE_ENDPOINT                    = var.neptune_endpoint
     ENVIRONMENT                         = var.environment
     CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
@@ -1982,7 +2400,7 @@ module "discussions_lambda" {
   }
 }
 
-# Cognito Users Lambda (lists users from Cognito - no VPC needed)
+# Cognito Users Lambda (lists users from Cognito)
 module "cognito_users_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -2009,12 +2427,20 @@ module "cognito_users_lambda" {
   create_role = false
   lambda_role = aws_iam_role.cognito_reader.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
-    COGNITO_USER_POOL_ID = var.cognito_user_pool_id
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
-    SSO_ROLE_CONFIG      = var.sso_role_config
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    COGNITO_USER_POOL_ID        = var.cognito_user_pool_id
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
+    SSO_ROLE_CONFIG             = var.sso_role_config
   }
+
+  depends_on = [aws_iam_role_policy_attachment.cognito_reader_vpc]
 }
 
 # Purge Neptune Lambda (admin utility, invoked directly via CLI)
@@ -2044,9 +2470,12 @@ module "purge_neptune_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT     = var.neptune_endpoint
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
 }
 
@@ -2081,13 +2510,16 @@ module "migrate_tracker_fields_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT = var.neptune_endpoint
-    ENVIRONMENT      = var.environment
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
   }
 }
 
 # Building Blocks Lambda — CRUD over the reusable-block library. DynamoDB + S3
-# only, so no VPC config. Generic over all block types; block metadata lives in
+# only. Generic over all block types; block metadata lives in
 # the blocks table, bodies/scripts in the artifacts bucket under blocks/.
 module "building_blocks_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -2111,18 +2543,27 @@ module "building_blocks_lambda" {
   create_role = false
   lambda_role = aws_iam_role.blocks.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
-    BLOCKS_TABLE         = var.blocks_table_name
-    ARTIFACTS_BUCKET     = var.artifacts_bucket_name
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    BLOCKS_TABLE                = var.blocks_table_name
+    ARTIFACTS_BUCKET            = var.artifacts_bucket_name
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.blocks_vpc]
 }
 
 # Seed-blocks Lambda (admin one-shot, invoked directly via CLI). Writes the
 # SYSTEM baseline library blocks into the blocks table + artifacts bucket.
 # Idempotent (attribute_not_exists guard); supports {dryRun:true}. Mirrors the
-# migrate-tracker-fields operational-job pattern. Reuses the blocks IAM role.
+# migrate-tracker-fields operational-job pattern. Uses its own seed_blocks IAM
+# role (Role 7b) so only this admin job can publish immutable AI-DLC releases.
 # Stays deployed permanently — OSS forks are on their own upgrade timelines.
 module "seed_blocks_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
@@ -2145,23 +2586,32 @@ module "seed_blocks_lambda" {
   ]
 
   create_role = false
-  lambda_role = aws_iam_role.blocks.arn
+  lambda_role = aws_iam_role.seed_blocks.arn
 
   vpc_subnet_ids         = local.enable_public_egress ? var.private_subnet_ids : null
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
-    BLOCKS_TABLE     = var.blocks_table_name
-    ARTIFACTS_BUCKET = var.artifacts_bucket_name
-    ENVIRONMENT      = var.environment
-    AIDLC_REPO_REF   = var.aidlc_repo_ref
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    BLOCKS_TABLE                = var.blocks_table_name
+    ARTIFACTS_BUCKET            = var.artifacts_bucket_name
+    ENVIRONMENT                 = var.environment
+    AIDLC_REPO_REF              = var.aidlc_repo_ref
   }
+
+  depends_on = [aws_iam_role_policy_attachment.blocks_vpc]
 }
 
 # Workflows Lambda — composition over the block library: a workflow references
 # and arranges library blocks (grouping tree + skill placements + scope/
 # guardrail refs). Workflows share the blocks table (WF#… partitions) and the
-# blocks IAM role; no S3 (workflows carry no bodies), so no VPC config.
+# workflows IAM role (Role 7a). Workflows carry no block bodies and need no
+# Neptune, so they join the VPC only when lambda_vpc_scope is "all"; their only
+# S3 access is a read of published release content, and the
+# separate principal is what keeps the intent pin lookup out of reach of the
+# building-blocks API (issue #482).
 module "workflows_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -2181,14 +2631,37 @@ module "workflows_lambda" {
     }
   ]
 
+  hash_extra = local.shared_sources_hash
+
   create_role = false
-  lambda_role = aws_iam_role.blocks.arn
+  lambda_role = aws_iam_role.workflows.arn
+
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
-    BLOCKS_TABLE         = var.blocks_table_name
-    ENVIRONMENT          = var.environment
-    CORS_ALLOWED_ORIGINS = var.cors_allowed_origins
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    BLOCKS_TABLE                = var.blocks_table_name
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
+    # Existing-intent release reads ask the intent pin lookup to authorize the
+    # project member and return that intent's stored immutable pin.
+    INTENT_PIN_LOOKUP_FUNCTION = module.intent_pin_lookup_lambda.lambda_function_name
+    # Issue #482 Phase 4: read a published release manifest when registering it
+    # in the selection registry. Read-only — the role cannot write releases.
+    ARTIFACTS_BUCKET = var.artifacts_bucket_name
+    # Reported as `pinningEnabled` on GET /aidlc-release-channels so the admin UI
+    # can say whether the pointers are actually consulted. Same variable the
+    # intents Lambda gates on; this Lambda never gates on it.
+    AIDLC_RELEASE_PINNING = var.aidlc_release_pinning
   }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.workflows_vpc,
+    aws_iam_role_policy.workflows_intent_lookup,
+  ]
 }
 
 # -----------------------------------------------------------------------------
@@ -2385,6 +2858,13 @@ resource "aws_iam_role_policy" "intents" {
         Resource = "${var.artifacts_bucket_arn}/aidlc-catalogs/*"
       },
       {
+        # Read-only: resolve intents pinned to an immutable AI-DLC release.
+        # Only the seed-blocks role may publish under this prefix.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${var.artifacts_bucket_arn}/aidlc-releases/*"
+      },
+      {
         # Allow cache-prefix listing where S3 evaluates it; cache readers also
         # tolerate GetObject masking a missing key as 403.
         Effect   = "Allow"
@@ -2481,12 +2961,15 @@ module "intents_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
-    NEPTUNE_ENDPOINT      = var.neptune_endpoint
-    ENVIRONMENT           = var.environment
-    CORS_ALLOWED_ORIGINS  = var.cors_allowed_origins
-    V2_PROCESS_TABLE      = var.v2_executions_table_name
-    BLOCKS_TABLE          = var.blocks_table_name
-    REALTIME_SECRET_PARAM = var.realtime_doc_secret_param_name
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    ENVIRONMENT                 = var.environment
+    CORS_ALLOWED_ORIGINS        = var.cors_allowed_origins
+    V2_PROCESS_TABLE            = var.v2_executions_table_name
+    BLOCKS_TABLE                = var.blocks_table_name
+    REALTIME_SECRET_PARAM       = var.realtime_doc_secret_param_name
     # Intent-scoped realtime docs are removed on intent delete.
     YJS_DOCUMENTS_TABLE = var.yjs_documents_table_name
     # Admin global cli-models default lives under this SSM prefix; the intents
@@ -2506,6 +2989,8 @@ module "intents_lambda" {
     # Default upstream ref for legacy intents created before the ref was
     # persisted. Native distributions are fetched and cached on export.
     AIDLC_REPO_REF = var.aidlc_repo_ref
+    # Issue #482: pin new intents to their published immutable release.
+    AIDLC_RELEASE_PINNING = var.aidlc_release_pinning
     # Server-origin realtime reload hints (artifact edited/verified, quorum
     # edit lifecycle) on the intent channel — lambda/shared/ws-fanout.js.
     CONNECTIONS_TABLE  = var.connections_table_name
@@ -2515,6 +3000,66 @@ module "intents_lambda" {
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
   }
+}
+
+# Intent pin lookup — the one read the workflows Lambda cannot do itself.
+# Workflows holds no Neptune permission, so it cannot query Neptune to check
+# that the caller is a member of an existing intent's project. This function is
+# VPC-attached, has no API Gateway route, and returns only the intent's
+# methodology coordinates (issue #482).
+module "intent_pin_lookup_lambda" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-intent-pin-lookup-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 15
+  memory_size   = 256
+
+  source_path = [
+    {
+      path = "${path.module}/../../../../lambda/intent-pin-lookup"
+      commands = [
+        "cd ../.. && npm run build -w intent-pin-lookup",
+        ":zip lambda/intent-pin-lookup/.build",
+      ]
+    }
+  ]
+
+  hash_extra = local.shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.intent_pin_lookup.arn
+
+  vpc_subnet_ids         = var.private_subnet_ids
+  vpc_security_group_ids = [aws_security_group.lambda.id]
+
+  environment_variables = {
+    POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
+    NEPTUNE_ENDPOINT            = var.neptune_endpoint
+    V2_PROCESS_TABLE            = var.v2_executions_table_name
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.intent_pin_lookup_vpc]
+}
+
+# Only the workflows principal may invoke the lookup, and only that one function.
+# Anything holding this grant can ask about any user's intents, because the
+# subject is a parameter rather than the invoker's own identity.
+resource "aws_iam_role_policy" "workflows_intent_lookup" {
+  name = "workflows-intent-lookup"
+  role = aws_iam_role.workflows.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = module.intent_pin_lookup_lambda.lambda_function_arn
+    }]
+  })
 }
 
 resource "aws_cloudwatch_event_rule" "intents_durable_watchdog" {
@@ -2639,6 +3184,13 @@ resource "aws_iam_role_policy_attachment" "v2_orchestrator_basic" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "v2_orchestrator_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.v2_orchestrator.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role_policy" "v2_orchestrator" {
   name = "v2-orchestrator"
   role = aws_iam_role.v2_orchestrator.id
@@ -2677,6 +3229,14 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:Query"]
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
+      },
+      {
+        # Release-pinned intents (issue #482): read the intent's immutable AI-DLC
+        # release manifest + catalog so the plan resolves from the published
+        # closure instead of the reseedable SYSTEM rows. Read-only, releases only.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["${var.artifacts_bucket_arn}/aidlc-releases/*"]
       },
       {
         # Delegate provider API operations to the source-control service.
@@ -2732,19 +3292,25 @@ module "v2_orchestrator_lambda" {
   create_role = false
   lambda_role = aws_iam_role.v2_orchestrator.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
+
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
     ENVIRONMENT                         = var.environment
     APPLICATION_URL                     = var.application_url
     V2_PROCESS_TABLE                    = var.v2_executions_table_name
     BLOCKS_TABLE                        = var.blocks_table_name
+    ARTIFACTS_BUCKET                    = var.artifacts_bucket_name
     AGENTCORE_RUNTIME_ARN               = var.agentcore_runtime_arn
     SOURCE_CONTROL_FUNCTION             = module.source_control_lambda.lambda_function_name
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     # Live realtime fan-out (lambda/shared/ws-fanout.js) — the orchestrator emits
     # execution/workspace lifecycle events on the intent:<id> channel itself, since
     # it is the only component that owns those transitions (the runtime broadcasts
-    # stage-level events). Reaches the connections table over the public DDB
-    # endpoint (the orchestrator is not VPC-attached).
+    # stage-level events).
     CONNECTIONS_TABLE                    = var.connections_table_name
     WEBSOCKET_ENDPOINT                   = var.websocket_api_endpoint_https
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
@@ -2752,6 +3318,8 @@ module "v2_orchestrator_lambda" {
   }
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  depends_on = [aws_iam_role_policy_attachment.v2_orchestrator_vpc]
 }
 
 # `live` alias for the orchestrator — durable functions are invocable only via a

@@ -10,5 +10,8 @@
     "lint": "oxlint .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@aws-lambda-powertools/logger": "^2.35.0"
   }
 }

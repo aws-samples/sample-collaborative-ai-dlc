@@ -37,3 +37,6 @@ jobs:
 
       - name: Check AWS SDK version alignment
         run: npm run sdk:check
+
+      - name: Check backend dependency rules
+        run: npm run dep:check

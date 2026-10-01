@@ -2,7 +2,7 @@
 // project (add / remove / set primary). Self-contained — owns the add dialog
 // and the remove confirmation; the page provides the project and a reload.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -27,6 +27,7 @@ import { GitBranch, Loader2, Plus, Star, Trash2, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { projectsService, type Project } from '@/services/projects';
 import { gitProviderTerminology, type GitProvider, type GitRepo } from '@/services/gitProvider';
+import { codecommitService } from '@/services/codecommit';
 import { GitRepoSelect } from '@/components/GitRepoSelect';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { SourceControlBindingSection } from './SourceControlBindingSection';
@@ -70,10 +71,44 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
   const [settingPrimary, setSettingPrimary] = useState<string | null>(null);
   const [confirmRemoveRepo, setConfirmRemoveRepo] = useState<string | null>(null);
 
-  const boundAuthType =
-    sourceControlStatus?.repositories.find((r) => r.provider === provider && r.authType)
-      ?.authType ?? null;
-  const repoSource = boundAuthType === 'github-app' ? 'github-app' : 'oauth';
+  const boundRepository =
+    sourceControlStatus?.repositories.find((r) => r.provider === provider && r.authType) ?? null;
+  const boundAuthType = boundRepository?.authType ?? null;
+  const repoSource =
+    boundAuthType === 'github-app'
+      ? 'github-app'
+      : boundAuthType === 'codecommit-role'
+        ? 'codecommit-role'
+        : 'oauth';
+
+  // codecommit-role: repositories are discovered through the bound role (no
+  // personal connection to list from), fetched when the Add dialog opens.
+  const [codecommitRepos, setCodecommitRepos] = useState<GitRepo[] | undefined>(undefined);
+  const [codecommitReposError, setCodecommitReposError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!showAddRepo || repoSource !== 'codecommit-role') return;
+    const { roleArn, region } = boundRepository ?? {};
+    if (!roleArn || !region) {
+      setCodecommitReposError('The CodeCommit binding is incomplete; rebind it below.');
+      return;
+    }
+    let cancelled = false;
+    setCodecommitRepos(undefined);
+    setCodecommitReposError(null);
+    codecommitService
+      .listRepos({ roleArn, region })
+      .then((list) => {
+        if (!cancelled) setCodecommitRepos(list.repositories);
+      })
+      .catch((e) => {
+        if (!cancelled) setCodecommitReposError(e instanceof Error ? e.message : 'Listing failed');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // boundRepository fields are the only inputs that matter for the fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAddRepo, repoSource, boundRepository?.roleArn, boundRepository?.region]);
 
   const handleAddRepos = async () => {
     if (selectedNewRepos.length === 0) return;
@@ -260,16 +295,25 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 py-4">
-              <GitRepoSelect
-                provider={project.gitProvider ?? 'github'}
-                multiple
-                value={selectedNewRepos}
-                onChange={(selected: GitRepo[]) => {
-                  setSelectedNewRepos(selected.map((r) => r.fullName));
-                }}
-                exclude={repos.map((r) => r.url)}
-                repoSource={repoSource}
-              />
+              {repoSource === 'codecommit-role' && codecommitReposError ? (
+                <p className="text-sm text-destructive">{codecommitReposError}</p>
+              ) : repoSource === 'codecommit-role' && codecommitRepos === undefined ? (
+                <p className="text-sm text-muted-foreground">
+                  Listing repositories via the role...
+                </p>
+              ) : (
+                <GitRepoSelect
+                  provider={project.gitProvider ?? 'github'}
+                  multiple
+                  value={selectedNewRepos}
+                  onChange={(selected: GitRepo[]) => {
+                    setSelectedNewRepos(selected.map((r) => r.fullName));
+                  }}
+                  exclude={repos.map((r) => r.url)}
+                  repoSource={repoSource}
+                  repos={codecommitRepos}
+                />
+              )}
               {addError && <p className="text-sm text-destructive">{addError}</p>}
             </div>
             <DialogFooter>

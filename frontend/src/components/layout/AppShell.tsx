@@ -115,6 +115,9 @@ export function AppShell() {
   const [commandOpen, setCommandOpen] = useState(false);
   const activityPanel = useResizablePanel(ACTIVITY_PANEL_SIZING);
   const sidebarPanel = useResizablePanel(SIDEBAR_SIZING);
+  const activityOverlayRef = useRef<HTMLElement | null>(null);
+  const activityReturnFocusRef = useRef<HTMLElement | null>(null);
+  const shouldFocusActivityOverlayRef = useRef(false);
 
   // Track the route category so the panel default reapplies on section
   // navigation but not on every render — preserves manual toggle.
@@ -131,9 +134,44 @@ export function AppShell() {
   const showActivity = (inSprint || inIntent || onProjectPage) && activityPanelOpen;
 
   const toggleSidebar = useCallback(() => setSidebarCollapsed((prev) => !prev), []);
-  const toggleActivity = useCallback(() => setActivityPanelOpen((prev) => !prev), []);
+  const closeActivityPanel = useCallback(() => {
+    setActivityPanelOpen(false);
+    shouldFocusActivityOverlayRef.current = false;
+    const returnFocus = activityReturnFocusRef.current;
+    activityReturnFocusRef.current = null;
+    if (!returnFocus) return;
+    window.requestAnimationFrame(() => {
+      if (returnFocus.isConnected) returnFocus.focus();
+    });
+  }, []);
   // Opening a discussion pops the activity panel (the thread renders there).
-  const showActivityPanel = useCallback(() => setActivityPanelOpen(true), []);
+  const showActivityPanel = useCallback(() => {
+    if (!activityPanelOpen && !panelsInline) {
+      const activeElement = document.activeElement;
+      activityReturnFocusRef.current =
+        activeElement instanceof HTMLElement && activeElement !== document.body
+          ? activeElement
+          : null;
+      shouldFocusActivityOverlayRef.current = true;
+    }
+    setActivityPanelOpen(true);
+  }, [activityPanelOpen, panelsInline]);
+  const toggleActivity = useCallback(() => {
+    if (activityPanelOpen) closeActivityPanel();
+    else showActivityPanel();
+  }, [activityPanelOpen, closeActivityPanel, showActivityPanel]);
+
+  useEffect(() => {
+    if (!showActivity || panelsInline || !shouldFocusActivityOverlayRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const overlay = activityOverlayRef.current;
+      if (!overlay) return;
+      const closeButton = overlay.querySelector<HTMLElement>('[aria-label="Close activity panel"]');
+      (closeButton ?? overlay).focus();
+      shouldFocusActivityOverlayRef.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [panelsInline, showActivity]);
 
   // Grid columns only contain panels that render INLINE at the current
   // breakpoint — overlay panels must not reserve track space.
@@ -216,13 +254,13 @@ export function AppShell() {
                   />
                   {inIntent ? (
                     <Suspense fallback={null}>
-                      <IntentActivityPanel onClose={() => setActivityPanelOpen(false)} />
+                      <IntentActivityPanel onClose={closeActivityPanel} />
                     </Suspense>
                   ) : (
                     <Suspense fallback={null}>
                       <ActivityPanel
                         sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
-                        onClose={() => setActivityPanelOpen(false)}
+                        onClose={closeActivityPanel}
                       />
                     </Suspense>
                   )}
@@ -237,16 +275,21 @@ export function AppShell() {
                 </aside>
               )}
               {showActivity && !panelsInline && (
-                <aside className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl">
+                <aside
+                  ref={activityOverlayRef}
+                  aria-label="Activity panel"
+                  tabIndex={-1}
+                  className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md overflow-hidden bg-background shadow-2xl"
+                >
                   {inIntent ? (
                     <Suspense fallback={null}>
-                      <IntentActivityPanel onClose={() => setActivityPanelOpen(false)} />
+                      <IntentActivityPanel onClose={closeActivityPanel} />
                     </Suspense>
                   ) : (
                     <Suspense fallback={null}>
                       <ActivityPanel
                         sprintId={inSprint ? sprintId : (latestActiveSprintId ?? undefined)}
-                        onClose={() => setActivityPanelOpen(false)}
+                        onClose={closeActivityPanel}
                       />
                     </Suspense>
                   )}

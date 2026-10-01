@@ -22,9 +22,11 @@
 // and all store writes) MUST be inside ctx.step(...) or it re-executes on replay.
 
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
+import { S3Client } from '@aws-sdk/client-s3';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
@@ -38,10 +40,12 @@ import { commandDefinition } from '../shared/agent-command-registry.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
+import { intentMethodologyOptions } from '../shared/intent-methodology.js';
 import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
+import { humanTaskMatchesOwner, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { resolveSkipTo, skipTargetsFrom, resolveRecomposeSkips } from '../shared/stage-skip.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
@@ -58,12 +62,16 @@ import { buildIntentAttribution } from './pr-attribution.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
+const s3 = new S3Client({});
 const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
 
+const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
+
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
 const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
+const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
 const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
 const APPLICATION_URL = () => process.env.APPLICATION_URL;
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
@@ -92,7 +100,20 @@ const defaultInvokeRuntime = async (
     }),
   );
   const text = res.response ? await streamToString(res.response) : '';
-  return text ? JSON.parse(text) : {};
+  const parsed = text ? JSON.parse(text) : {};
+  // The AgentCore transport succeeds even when the agentcore HTTP server returns
+  // an error: only the response BODY reaches us here (the { statusCode } is the
+  // HTTP status, not part of the payload). Every agentcore error body is shaped
+  // { error: '...' } (missing/unknown command, invalid JSON, or a handler throw),
+  // so surface that so a runtime error is diagnosable instead of silently
+  // flowing downstream as an opaque failure.
+  if (parsed?.error) {
+    logger.error('runtime returned error', {
+      command: payload?.command,
+      error: parsed.error,
+    });
+  }
+  return parsed;
 };
 
 // Free a parked stage's warm microVM compute (D1 release-on-park). Resume
@@ -191,13 +212,13 @@ const defaultDeps = () => ({
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
-  openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body }) =>
+  openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body, attemptKey }) =>
     defaultSourceControlOperation({
       projectId,
       provider: gitProvider,
       repo: repoId,
       operation: 'create-pr',
-      args: { branch, baseBranch, title, body },
+      args: { branch, baseBranch, title, body, attemptKey },
     }),
   // PR-time verification (2026-07 incident): compare base...head BEFORE the PR
   // call so a never-pushed or commit-less intent branch is a LOUD failure, not
@@ -232,13 +253,22 @@ const defaultDeps = () => ({
           state: gitProvider === 'gitlab' && state === 'open' ? 'opened' : state,
         },
       }),
-    createDraft: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body }) =>
+    createDraft: ({
+      projectId,
+      gitProvider,
+      repoId,
+      branch,
+      baseBranch,
+      title,
+      body,
+      attemptKey,
+    }) =>
       defaultSourceControlOperation({
         projectId,
         provider: gitProvider,
         repo: repoId,
         operation: 'create-pr',
-        args: { branch, baseBranch, title, body, draft: true },
+        args: { branch, baseBranch, title, body, draft: true, attemptKey },
       }),
     status: ({ projectId, gitProvider, repoId, number }) =>
       defaultSourceControlOperation({
@@ -304,6 +334,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     applicationUrl,
   } = deps;
   const { intentId, executionId } = event;
+  logger.resetKeys();
+  logger.appendKeys({
+    ...(intentId && { intentId }),
+    ...(executionId && { executionId }),
+  });
   // Quorum-supported artifact edit (post-hoc document editing): its own small
   // durable flow — plan → human approval → apply — fully independent of the
   // stage loop below (an edit is refused while a run is active anyway).
@@ -313,7 +348,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   if (event.action !== 'start') {
     // Resume is handled out-of-band via SendDurableExecutionCallbackSuccess
     // against the suspended callback — there is no separate resume invocation.
-    ctx.logger?.info?.('ignoring non-start invocation', { action: event.action });
+    logger.info('ignoring non-start invocation', { action: event.action });
     return { ok: false, reason: 'not_a_start' };
   }
 
@@ -428,7 +463,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
     });
     if (!owned) {
-      ctx.logger?.info?.('retired run skipped terminal write', { intentId, reason });
+      logger.info('retired run skipped terminal write', { reason });
       return { ok: false, reason: 'retired', supersededBy: 'relaunch' };
     }
     await emitEvent(ctx, `fail-event-${reason}`, 'v2.execution.failed', message);
@@ -481,6 +516,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             sessionId,
           );
         } catch (error) {
+          logger.error('create-workflow-checkpoint failed', {
+            stepName,
+            sourceStageInstanceId,
+            error: error?.message,
+          });
           return { ok: false, reason: 'checkpoint_failed', detail: error.message };
         }
       });
@@ -583,7 +623,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         scope,
         ...(intentSkipIds.length ? { skipStageIds: intentSkipIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
-        ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+        ...intentMethodologyOptions(meta, { s3, bucket: ARTIFACTS_BUCKET }),
       }),
     );
     if (!planResult.valid || !planResult.plan) {
@@ -785,6 +825,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         workflowVersion,
         ...(meta.aidlcRepoRef ? { aidlcRepoRef: meta.aidlcRepoRef } : {}),
         ...(meta.methodologyPins ? { methodologyPins: meta.methodologyPins } : {}),
+        ...(meta.methodologyRelease ? { methodologyRelease: meta.methodologyRelease } : {}),
         scope,
         ...(allSkipIds.length ? { skipStageIds: allSkipIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
@@ -848,23 +889,64 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Create a durable callback and stamp it on the gate so the answer path
         // can resume THIS execution. Then suspend (zero compute) until answered.
         const [callbackPromise, callbackId] = await ctxArg.createCallback(`await-${humanTaskId}`);
+        const expectedStageInstanceId = result.stageInstanceId ?? stage.stageInstanceId ?? null;
+        const expectedCallbackOwner = `stage:${expectedStageInstanceId ?? label}`;
         const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
           store.setGateCallbackId({
             executionId,
             humanTaskId,
             callbackId,
-            stageInstanceId: result.stageInstanceId ?? stage.stageInstanceId ?? null,
-            callbackOwner: `stage:${result.stageInstanceId ?? stage.stageInstanceId ?? label}`,
+            stageInstanceId: expectedStageInstanceId,
+            callbackOwner: expectedCallbackOwner,
           }),
         );
+        let answeredEarly = false;
         if (!callbackBound) {
-          return {
-            state: 'TERMINAL',
-            value: await fail(
-              'gate_callback_conflict',
-              `gate ${humanTaskId} is already bound to a different stage callback`,
-            ),
-          };
+          // The answer can win the CAS immediately before this bind. In that
+          // case setGateCallbackId returns null because the gate is no longer
+          // pending, but no callback is needed: resume directly with the
+          // persisted answer. Any still-pending, differently owned, or already
+          // bound gate remains an invariant violation.
+          const gateAfterBindFailure = await ctxArg.step(
+            `gate-after-bind-failure-${humanTaskId}`,
+            () => store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
+          );
+          if (gateAfterBindFailure?.status === 'superseded') {
+            ctx.logger?.info?.('run retired before gate callback bind', {
+              intentId,
+              humanTaskId,
+            });
+            return {
+              state: 'TERMINAL',
+              value: { ok: false, reason: 'retired', intentId, humanTaskId },
+            };
+          }
+          const ownsExpectedStage = humanTaskMatchesOwner({
+            task: gateAfterBindFailure,
+            stageInstanceId: expectedStageInstanceId,
+            unitSlug,
+            sectionIndex,
+          });
+          const callbackIdCompatible =
+            gateAfterBindFailure?.callbackId == null ||
+            gateAfterBindFailure.callbackId === callbackId;
+          const callbackOwnerCompatible =
+            gateAfterBindFailure?.callbackOwner == null ||
+            gateAfterBindFailure.callbackOwner === expectedCallbackOwner;
+          answeredEarly =
+            isHumanTaskAnswerStatus(gateAfterBindFailure?.status) &&
+            ownsExpectedStage &&
+            callbackIdCompatible &&
+            callbackOwnerCompatible;
+          if (!answeredEarly) {
+            return {
+              state: 'TERMINAL',
+              value: await fail(
+                'gate_callback_conflict',
+                `gate ${humanTaskId} bind failed without an unbound answer owned by this stage`,
+              ),
+            };
+          }
         }
 
         // Answer/bind race (field incident): a fast human can answer in the
@@ -874,10 +956,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // parkReleaseSeconds stall the human reads as "my answer was
         // ignored"). Re-read AFTER binding: an already-answered gate skips
         // the wait entirely and resumes now.
-        const answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
-          const gate = await store.getHumanTask(executionId, humanTaskId);
-          return Boolean(gate?.status) && gate.status !== 'pending';
-        });
+        if (callbackBound) {
+          answeredEarly = await ctxArg.step(`gate-answered-early-${humanTaskId}`, async () => {
+            const gate = await store.getHumanTask(executionId, humanTaskId, {
+              consistentRead: true,
+            });
+            return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+          });
+        }
         if (!answeredEarly) {
           // D1 release-on-park: if no human answers within parkReleaseSeconds, free
           // the warm microVM compute (StopRuntimeSession) while we keep waiting —
@@ -895,7 +981,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               ctxArg.wait(`release-timer-${humanTaskId}`, { seconds: parkReleaseSeconds }),
             ]);
             const stillPending = await ctxArg.step(`gate-status-${humanTaskId}`, async () => {
-              const gate = await store.getHumanTask(executionId, humanTaskId);
+              const gate = await store.getHumanTask(executionId, humanTaskId, {
+                consistentRead: true,
+              });
               return gate?.status === 'pending';
             });
             if (stillPending) {
@@ -911,10 +999,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // wakes this callback with a cancel sentinel. The cancel/rewind path owns
         // META from here — exit WITHOUT any further write (docs/v2-steering.md).
         const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, () =>
-          store.getHumanTask(executionId, humanTaskId),
+          store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
         );
         if (gateAfter?.status === 'superseded') {
-          ctx.logger?.info?.('run retired while parked', { intentId, humanTaskId });
+          logger.info('run retired while parked', { humanTaskId });
           return {
             state: 'TERMINAL',
             value: { ok: false, reason: 'retired', intentId, humanTaskId },
@@ -932,8 +1020,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           return currentMeta?.orchestratorRunId ?? null;
         });
         if (runId && ownerRunId && ownerRunId !== runId) {
-          ctx.logger?.info?.('run retired while parked (ownership lost)', {
-            intentId,
+          logger.info('run retired while parked (ownership lost)', {
             humanTaskId,
           });
           return {
@@ -946,7 +1033,18 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // before AgentCore restores a released session's workspace, otherwise
         // the re-clone is rejected while the execution still reads WAITING.
         const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, async () => {
+          // Lane gates never park META: another lane may own its single pending
+          // gate pointer, and this lane's META status has remained RUNNING. The
+          // conditional ownership update leaves that status and pointer intact.
           try {
+            if (unitSlug) {
+              await store.updateExecution({
+                executionId,
+                orchestratorRunId: runId,
+                ifOrchestratorRunId: runId,
+              });
+              return true;
+            }
             await store.updateExecution({
               executionId,
               status: 'RUNNING',
@@ -961,7 +1059,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           }
         });
         if (!ownedUnpark) {
-          ctx.logger?.info?.('run retired while unparking gate', { intentId, humanTaskId });
+          logger.info('run retired while unparking gate', { humanTaskId });
           return {
             state: 'TERMINAL',
             value: { ok: false, reason: 'retired', intentId, humanTaskId },
@@ -1470,7 +1568,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
     });
     if (!ownedFinish) {
-      ctx.logger?.info?.('retired run skipped terminal success write', { intentId });
+      logger.info('retired run skipped terminal success write');
       return { ok: false, reason: 'retired', intentId };
     }
     await emitEvent(ctx, 'succeeded-event', 'v2.execution.succeeded', 'All stages completed');
@@ -1487,8 +1585,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         store,
         meta,
         executionId,
+        runId,
         applicationUrl,
-        log: (m) => ctx.logger?.info?.(m, { intentId }),
+        log: (m) => logger.info(m),
       }),
     );
     for (let i = 0; i < prResults.length; i++) {
@@ -1517,10 +1616,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             });
             return true;
           } catch (error) {
-            ctx.logger?.error?.('tracker sync publication failed', {
-              intentId,
-              error: error?.message,
-            });
+            logger.error('tracker sync publication failed', error);
             return false;
           }
         });
@@ -1540,7 +1636,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             sessionId,
           );
         } catch (e) {
-          ctx.logger?.error?.('record-pr dispatch failed', { intentId, error: e?.message });
+          logger.error('record-pr dispatch failed', e);
           return { ok: false, reason: 'dispatch_failed' };
         }
       });
@@ -1562,7 +1658,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // it so the UI shows FAILED + the message rather than the run silently dying
     // at the durable-function boundary (module INIT crashes used to fail with
     // zero user-visible feedback).
-    ctx.logger?.error?.('orchestrator failed', { intentId, error: err?.message });
+    logger.error('orchestrator failed', err);
     return await fail('orchestrator_error', err?.message ?? String(err));
   }
 };
@@ -1599,6 +1695,7 @@ const runStage = async (
     workflowVersion,
     aidlcRepoRef = null,
     methodologyPins = null,
+    methodologyRelease = null,
     scope,
     // Per-run skip overlay (intent-level + accumulated gate-time skips) —
     // forwarded so the container's plan resolution matches the walk's.
@@ -1669,6 +1766,7 @@ const runStage = async (
         workflowVersion,
         ...(aidlcRepoRef ? { aidlcRepoRef } : {}),
         ...(methodologyPins ? { methodologyPins } : {}),
+        ...(methodologyRelease ? { methodologyRelease } : {}),
         scope,
         ...(skipStageIds?.length ? { skipStageIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
@@ -1810,6 +1908,7 @@ const openIntentPrs = async ({
   store,
   meta,
   executionId,
+  runId = null,
   applicationUrl,
   log,
 }) => {
@@ -1975,6 +2074,12 @@ const openIntentPrs = async ({
         baseBranch: baseFor(repoId),
         title,
         body,
+        // One creation attempt per orchestrator run. The execution id alone
+        // is the intent id, identical across a rewind or repair relaunch, so
+        // it would replay a PR a reviewer closed in the meantime (CodeCommit
+        // cannot reopen it). A durable replay of this step keeps its run id
+        // and therefore its key.
+        attemptKey: runId ? `${executionId}:${runId}` : executionId,
       });
       if (res?.prUrl) {
         results.push({

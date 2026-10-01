@@ -3,8 +3,9 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  partition  = data.aws_partition.current.partition
-  dns_suffix = data.aws_partition.current.dns_suffix
+  partition          = data.aws_partition.current.partition
+  dns_suffix         = data.aws_partition.current.dns_suffix
+  all_lambdas_in_vpc = var.lambda_vpc_scope == "all"
 
   lambda_assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -25,6 +26,19 @@ locals {
   managed_workload_identity_directory_arn = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default"
   managed_workload_identity_arn           = "${local.managed_workload_identity_directory_arn}/workload-identity/*"
   ecr_registry_host                       = split("/", var.environment_repository_url)[0]
+}
+
+module "dynamodb_kms_runtime_access" {
+  source = "../../security/dynamodb-kms-runtime-access"
+
+  kms_key_arn = var.kms_key_arn
+  dns_suffix  = local.dns_suffix
+  role_names = {
+    control      = aws_iam_role.control.name
+    status       = aws_iam_role.status.name
+    tool_control = aws_iam_role.tool_control.name
+    tool_status  = aws_iam_role.tool_status.name
+  }
 }
 
 resource "random_id" "context_bucket_suffix" {
@@ -285,6 +299,13 @@ resource "aws_iam_role_policy_attachment" "control_basic" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "control_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.control.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role_policy" "control" {
   name = "managed-environment-control"
   role = aws_iam_role.control.id
@@ -344,9 +365,15 @@ module "control_lambda" {
   create_role = false
   lambda_role = aws_iam_role.control.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.lambda_vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.lambda_vpc_security_group_ids : null
+
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT     = tostring(var.powertools_log_event)
     ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
     BUILD_CONTEXT_BUCKET            = aws_s3_bucket.build_context.id
     ENVIRONMENT_CODEBUILD_PROJECT   = aws_codebuild_project.managed_environments.name
@@ -361,6 +388,8 @@ module "control_lambda" {
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
     CORS_ALLOWED_ORIGINS            = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.control_vpc]
 }
 
 resource "aws_iam_role" "status" {
@@ -372,6 +401,13 @@ resource "aws_iam_role" "status" {
 resource "aws_iam_role_policy_attachment" "status_basic" {
   role       = aws_iam_role.status.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "status_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.status.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "status" {
@@ -467,9 +503,14 @@ module "status_lambda" {
   create_role = false
   lambda_role = aws_iam_role.status.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.lambda_vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.lambda_vpc_security_group_ids : null
+
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
     ENVIRONMENT_ECR_REPOSITORY_NAME = var.environment_repository_name
     ENVIRONMENT_ECR_REPOSITORY_URI  = var.environment_repository_url
@@ -481,6 +522,8 @@ module "status_lambda" {
     MANAGED_RUNTIME_TAGS            = jsonencode(var.tags)
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
   }
+
+  depends_on = [aws_iam_role_policy_attachment.status_vpc]
 }
 
 resource "aws_cloudwatch_event_rule" "build_status" {
@@ -697,6 +740,13 @@ resource "aws_iam_role_policy_attachment" "tool_control_basic" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "tool_control_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.tool_control.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role_policy" "tool_control" {
   name = "managed-tool-control"
   role = aws_iam_role.tool_control.id
@@ -756,9 +806,15 @@ module "tool_control_lambda" {
   create_role = false
   lambda_role = aws_iam_role.tool_control.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.lambda_vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.lambda_vpc_security_group_ids : null
+
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
     ENVIRONMENT_REGISTRY_TABLE    = var.registry_table_name
     BUILD_CONTEXT_BUCKET          = aws_s3_bucket.build_context.id
     TOOL_CODEBUILD_PROJECT        = aws_codebuild_project.managed_tools.name
@@ -769,6 +825,8 @@ module "tool_control_lambda" {
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
     CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
   }
+
+  depends_on = [aws_iam_role_policy_attachment.tool_control_vpc]
 }
 
 resource "aws_cloudwatch_event_rule" "tool_catalog_bootstrap" {
@@ -800,6 +858,13 @@ resource "aws_iam_role" "tool_status" {
 resource "aws_iam_role_policy_attachment" "tool_status_basic" {
   role       = aws_iam_role.tool_status.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "tool_status_vpc" {
+  count = local.all_lambdas_in_vpc ? 1 : 0
+
+  role       = aws_iam_role.tool_status.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 resource "aws_iam_role_policy" "tool_status" {
@@ -870,15 +935,22 @@ module "tool_status_lambda" {
   create_role = false
   lambda_role = aws_iam_role.tool_status.arn
 
+  vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.lambda_vpc_subnet_ids : null
+  vpc_security_group_ids = local.all_lambdas_in_vpc ? var.lambda_vpc_security_group_ids : null
+
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    POWERTOOLS_SERVICE_NAME    = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL       = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE = var.registry_table_name
     BUILD_CONTEXT_BUCKET       = aws_s3_bucket.build_context.id
     TOOL_ECR_REPOSITORY_NAME   = aws_ecr_repository.managed_tools.name
     TOOL_ECR_REPOSITORY_URI    = aws_ecr_repository.managed_tools.repository_url
     MAX_TOOL_IMAGE_MB          = "1536"
   }
+
+  depends_on = [aws_iam_role_policy_attachment.tool_status_vpc]
 }
 
 resource "aws_cloudwatch_event_rule" "tool_build_status" {

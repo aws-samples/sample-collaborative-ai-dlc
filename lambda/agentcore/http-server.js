@@ -64,9 +64,12 @@
 // The dispatcher is pure (handlers injected) so it is unit-tested without a
 // socket; createServer wires the real commands + clients.
 
+import { Logger } from '@aws-lambda-powertools/logger';
 import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
+
+const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
 // Track whether a stage is currently running so /ping can report HealthyBusy.
 export const createBusyTracker = () => {
@@ -95,10 +98,16 @@ export const dispatchInvocation = async ({
   now = () => new Date().toISOString(),
 }) => {
   const command = payload?.command;
-  if (!command) return { statusCode: 400, body: { error: 'missing "command"' } };
+  if (!command) {
+    logger.warn('dispatch rejected: missing command');
+    return { statusCode: 400, body: { error: 'missing "command"' } };
+  }
   const definition = commandDefinition(command);
   const handler = definition ? handlers[definition.handler] : null;
-  if (!handler) return { statusCode: 400, body: { error: `unknown command "${command}"` } };
+  if (!handler) {
+    logger.warn('dispatch rejected: unknown command', { command });
+    return { statusCode: 400, body: { error: `unknown command "${command}"` } };
+  }
 
   busy?.enter();
   try {
@@ -111,9 +120,20 @@ export const dispatchInvocation = async ({
     const result = await handler(handlerPayload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
-    // instead of turning the response into an SDK transport exception.
+    // instead of turning the response into an SDK transport exception. Log them
+    // so a swallowed failure (e.g. a checkpoint that silently didn't apply) is
+    // diagnosable from the container logs.
+    if (result?.ok === false) {
+      logger.warn('command returned failure', {
+        command,
+        reason: result.reason,
+        detail: result.detail,
+        error: result.error,
+      });
+    }
     return { statusCode: 200, body: { ...result, command, at: now() } };
   } catch (e) {
+    logger.error('command threw', e, { command });
     return { statusCode: 500, body: { error: e.message, command } };
   } finally {
     busy?.leave();
@@ -394,12 +414,12 @@ const main = async () => {
     busy,
     prepareInvocation: invocationContext,
   });
-  server.listen(8080, '0.0.0.0', () => console.error('[agentcore] listening on 0.0.0.0:8080'));
+  server.listen(8080, '0.0.0.0', () => logger.info('listening on 0.0.0.0:8080'));
 };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => {
-    console.error('[agentcore] fatal:', e);
+    logger.error('fatal', e);
     process.exit(1);
   });
 }
