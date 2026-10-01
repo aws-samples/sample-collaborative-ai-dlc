@@ -1009,6 +1009,13 @@ const reviewerRepairMessage = ({ reviewerAgent, round, reviewerFindings }) =>
     'say plainly in the output what you did not change and why.',
   ].join('\n');
 
+// Whether this dispatch ends at a validation gate that shows the stage's
+// findings. Unit-lane stages do not: the lane merges on its own outcome and the
+// batch gate after it carries no per-stage findings, so a blocking finding on a
+// lane must fail the stage instead of riding a result nobody reads.
+const stageHasHumanGate = ({ stage, unitSlug = null }) =>
+  stage?.humanValidation === 'required' && !unitSlug;
+
 /**
  * Enforce the checkpoint policy for a finished stage.
  *
@@ -1118,7 +1125,7 @@ const runCheckpointLadder = async ({
   // approve (waiving it on the record), request changes, or override. A stage
   // WITHOUT one has no human to ask, so it fails with a rewind-eligible code
   // rather than succeeding with the semantic silently missing.
-  if (stage.humanValidation === 'required') return { findings };
+  if (stageHasHumanGate({ stage, unitSlug })) return { findings };
   return {
     failure: {
       code: findings[0].code,
@@ -3971,9 +3978,9 @@ export const runStage = async (
         },
       })
       .catch(() => {});
-    // No human gate means no one can override, so upstream's own autonomous
-    // path applies: halt. FAILED + rewind is this platform's equivalent halt.
-    if (gatePlane?.held && stage.humanValidation !== 'required') {
+    // No human gate (including a unit lane) means no one can override, so
+    // upstream's own autonomous path applies: halt. FAILED + rewind is this platform's equivalent halt.
+    if (gatePlane?.held && !stageHasHumanGate({ stage, unitSlug })) {
       return fail(stageInstanceId, 'sensor_blocked', gatePlane.held);
     }
   }

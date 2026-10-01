@@ -206,6 +206,33 @@ describe('checkpoint repair when the agent never calls confirm_summary', () => {
     });
   });
 
+  it('fails a unit-lane stage, whose lane carries no stage gate to hold the finding', async () => {
+    const store = fakeStore();
+
+    const result = await ladder(store, {
+      unitSlug: 'u1',
+      sectionIndex: 1,
+      stage: { ...STAGE, forEach: 'unit-of-work' },
+      runRepairTurn: async () => {},
+    });
+
+    expect(result.findings).toBeUndefined();
+    expect(result.failure).toMatchObject({ code: 'summary_confirmation_missing' });
+  });
+
+  it('fails a lane stage that implemented without an approved plan', async () => {
+    const store = fakeStore();
+
+    const result = await ladder(store, {
+      unitSlug: 'u1',
+      sectionIndex: 1,
+      stage: { ...STAGE, forEach: 'unit-of-work' },
+      policy: { ...POLICY, summaryConfirmation: 'none', planApproval: 'required' },
+    });
+
+    expect(result.failure).toMatchObject({ code: 'plan_approval_missing' });
+  });
+
   it('still reaches the gate when the repair turn itself throws', async () => {
     const store = fakeStore();
 
