@@ -307,6 +307,9 @@ const installDdbFakes = () => {
     ) {
       casFail();
     }
+    if (cond.includes(':ifRrh') && existing?.resumeRequired?.humanTaskId !== values[':ifRrh']) {
+      casFail();
+    }
     if (
       cond.includes(':ifAttachmentRevision') &&
       existing?.attachmentRevision !== undefined &&
@@ -9091,6 +9094,92 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
     expect(procStore.get(metaKey).resumeRequired).toMatchObject({ callbackId: 'cb-lane' });
     return { intent, metaKey, stageKey };
   };
+
+  // A second unit lane of the same intent, parked on its own answered question
+  // whose first callback send failed too.
+  const addParkedLane = async (sub, projectId, intent, n) => {
+    seedGate(intent.id, `h-lane-${n}`, {
+      status: 'pending',
+      callbackId: `cb-lane-${n}`,
+      stageInstanceId: `si-lane-${n}`,
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#si-lane-${n}`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `STAGE#si-lane-${n}`,
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: `si-lane-${n}`,
+      stageId: 'code-generation',
+      unitSlug: `unit-${n}`,
+      sectionIndex: 1,
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: `h-lane-${n}`,
+    });
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejects(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    const answered = await answerGate(sub, projectId, intent.id, `h-lane-${n}`);
+    expect(answered.statusCode).toBe(503);
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).resolves({});
+  };
+  const sentCallbackIds = () =>
+    lambdaMock
+      .commandCalls(SendDurableExecutionCallbackSuccessCommand)
+      .map((call) => call.args[0].input.CallbackId);
+
+  it('re-sends every owed lane answer in one call, whichever the marker names', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await laneParkedOnGate(sub, projectId);
+    await addParkedLane(sub, projectId, intent, 2);
+    expect(procStore.get(metaKey).resumeRequired).toMatchObject({ humanTaskId: 'h-lane-2' });
+    const sentBefore = sentCallbackIds().length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    expect(sentCallbackIds().slice(sentBefore).toSorted()).toEqual(['cb-lane', 'cb-lane-2']);
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h-lane')).callbackConsumedAt,
+    ).toBeTruthy();
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h-lane-2')).callbackConsumedAt,
+    ).toBeTruthy();
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('re-sends an owed lane answer even when its marker could not be written', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await laneParkedOnGate(sub, projectId);
+    failResumeMarkerWrites = 1;
+    await addParkedLane(sub, projectId, intent, 3);
+    const marker = procStore.get(metaKey).resumeRequired;
+    expect(marker?.humanTaskId).not.toBe('h-lane-3');
+    const sentBefore = sentCallbackIds().length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    expect(sentCallbackIds().slice(sentBefore)).toContain('cb-lane-3');
+  });
+
+  it('resumes the owed gate when the marker names one that is no longer owed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await laneParkedOnGate(sub, projectId);
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      resumeRequired: { humanTaskId: 'h-gone', callbackId: 'cb-gone', answeredAt: null },
+    });
+    const sentBefore = sentCallbackIds().length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    expect(sentCallbackIds().slice(sentBefore)).toEqual(['cb-lane']);
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
 
   it('resumes an answered lane question while the intent keeps running', async () => {
     const sub = `u-${randomUUID()}`;

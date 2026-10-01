@@ -1326,3 +1326,22 @@ describe('`?release=` selectability gate for non-admins', () => {
     expect(JSON.stringify(response.body)).not.toContain(CANDIDATE_RELEASE_ID);
   });
 });
+
+describe('GET /aidlc-releases — gap lists stored before protocol evidence', () => {
+  it('shows an admin the gaps promotion would refuse', async () => {
+    await register(CANDIDATE_PROFILE);
+    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
+    const row = { ...rows.get(key), fidelityGaps: [] };
+    delete row.fidelityEvidenceRevision;
+    rows.set(key, row);
+
+    const res = parse(await listReleases());
+
+    const listed = res.body.releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
+    expect(listed.unhonouredValues).toEqual(
+      expect.arrayContaining([
+        { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
+      ]),
+    );
+  });
+});

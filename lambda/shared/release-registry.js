@@ -281,7 +281,7 @@ const getChannels = async ({ ddb, tableName, selectionOnly = false }) => {
  * withheld rather than shown as if they were runnable — and the records that DO
  * come back carry only the selection fields (see `releaseToSelectionApi`).
  */
-const listReleases = async ({ ddb, tableName, visibleOnly = false }) => {
+const listReleases = async ({ ddb, tableName, visibleOnly = false, s3 = null, bucket = null }) => {
   const items = [];
   let ExclusiveStartKey;
   do {
@@ -297,7 +297,7 @@ const listReleases = async ({ ddb, tableName, visibleOnly = false }) => {
     items.push(...(page.Items ?? []));
     ExclusiveStartKey = page.LastEvaluatedKey;
   } while (ExclusiveStartKey);
-  return items
+  const sortedItems = items
     .filter(
       (item) =>
         !visibleOnly ||
@@ -307,8 +307,29 @@ const listReleases = async ({ ddb, tableName, visibleOnly = false }) => {
       (left, right) =>
         releaseGsi1Sk(left).localeCompare(releaseGsi1Sk(right)) ||
         left.releaseId.localeCompare(right.releaseId),
-    )
-    .map(visibleOnly ? releaseToSelectionApi : releaseToApi);
+    );
+  const projected = sortedItems.map(visibleOnly ? releaseToSelectionApi : releaseToApi);
+  if (visibleOnly || !s3 || !bucket) return projected;
+  // The admin view states what promotion would decide: a gap list stored
+  // before protocol evidence existed is re-evaluated from the closure, the same
+  // way promotion does (unknown when the closure cannot be verified).
+  return Promise.all(
+    projected.map(async (release, index) => {
+      const item = sortedItems[index];
+      if (hasCurrentFidelityEvidence(item)) return release;
+      const fidelityGaps = await fidelityGapsForRecord({
+        release: item,
+        s3,
+        bucket,
+        requireCurrentEvidence: true,
+      }).catch(() => null);
+      return {
+        ...release,
+        fidelityGaps,
+        unhonouredValues: fidelityGaps ? unhonouredValues({ fidelityGaps }) : null,
+      };
+    }),
+  );
 };
 
 const assertRegistryStorage = (s3, bucket) => {
