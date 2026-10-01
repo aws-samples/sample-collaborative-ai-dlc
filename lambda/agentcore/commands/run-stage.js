@@ -97,6 +97,7 @@ import { workspaceRelativePath } from '../repo-paths.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { CHECKPOINTS, chosenLabel } from '../mcp/process-bridge.js';
+import { LOOP_BACK_OPTION, parseChoice } from '../../shared/gate-answer.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner, isReleaseDependencyError } from '../sensor-runner.js';
 import {
@@ -823,6 +824,11 @@ const changeControlGateId = (stageInstanceId, attempt) =>
 const isChangeControlGate = (gate) =>
   typeof gate?.humanTaskId === 'string' && gate.humanTaskId.startsWith(CHANGE_CONTROL_GATE_PREFIX);
 
+// A build-and-test gate answered `loop-back` sends the run back to this
+// code-generation stage. The gate belongs to another stage, whose reset left this
+// row with no session, so the stage runs fresh with the answer in its prompt.
+const isLoopBackAnswer = (gate) => parseChoice(gate?.answer, [LOOP_BACK_OPTION]) !== null;
+
 // The approved inputs whose bytes moved since an approval recorded them.
 // Identity is the artifact's LOGICAL key, not its type: a stage may consume
 // several artifacts of one type, and comparing by type would report the wrong
@@ -1274,6 +1280,14 @@ const formatResumeAnswer = (gate) => {
       `Revise accordingly, then call ${
         checkpoint === 'plan-approval' ? '`request_plan_approval`' : '`confirm_summary`'
       } again with the revision.`
+    );
+  }
+  if (isLoopBackAnswer(gate)) {
+    const feedback = typeof a === 'string' ? '' : (a?.feedback ?? a?.freeText ?? '');
+    return (
+      `Build-and-test sent this work back to you: ${gate.loopBackReason || 'no reason recorded'}.` +
+      `${feedback ? `\nThe reviewer added: ${feedback}` : ''}\n\n` +
+      'Revise the generated code to address this, then finish again.'
     );
   }
   // Validation gates AND engine gates answered request-changes (skeleton /
@@ -2172,7 +2186,8 @@ export const runStage = async (
     // is already durable and the change-control block below reads it from the
     // receipt, so nothing is lost and nothing is re-asked.
     const preAgentGate = isChangeControlGate(resumeGate);
-    if ((!cli || !priorSessionId) && !reviewFeedback && !preAgentGate) {
+    const freshFromGate = preAgentGate || isLoopBackAnswer(resumeGate);
+    if ((!cli || !priorSessionId) && !reviewFeedback && !freshFromGate) {
       return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
     }
     if (cli && !availableClis.includes(cli)) {

@@ -132,7 +132,12 @@ import {
   pendingAttachmentDeletions,
   validateAttachmentDescriptor,
 } from '../shared/intent-attachments.js';
-import { GATE_CHOICES, OVERRIDE_REASON_MAX, parseChoice } from '../shared/gate-answer.js';
+import {
+  GATE_CHOICES,
+  LOOP_BACK_OPTION,
+  OVERRIDE_REASON_MAX,
+  parseChoice,
+} from '../shared/gate-answer.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -2673,6 +2678,14 @@ export const handler = async (event, context) => {
           return response(400, {
             error: `This gate offers ${offered.join(', ')}; "${chosen}" is not one of them`,
             code: 'gate_choice_not_offered',
+          });
+        }
+        // Orchestrator code that predates the loop-back reads a rejected answer
+        // as request-changes; any other status would be misread on a rollback.
+        if (chosen === LOOP_BACK_OPTION && answerStatus !== 'rejected') {
+          return response(400, {
+            error: 'A loop-back answer must be recorded with status "rejected"',
+            code: 'loop_back_status_invalid',
           });
         }
       }

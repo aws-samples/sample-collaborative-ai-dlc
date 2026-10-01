@@ -4200,6 +4200,46 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     expect(accepted.statusCode).toBe(200);
   });
 
+  it('accepts loop-back only where offered, and only recorded as rejected', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const seedValidation = (humanTaskId, options) => {
+      const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+      seedGate(intent.id, humanTaskId);
+      procStore.set(humanKey, { ...procStore.get(humanKey), kind: 'validation', options });
+      return humanKey;
+    };
+    const loopBack = { decision: 'loop-back', feedback: 'check the refund path' };
+
+    const plainKey = seedValidation('h-no-loop-back', ['approve', 'request-changes']);
+    const notOffered = await answerGate(sub, projectId, intent.id, 'h-no-loop-back', {
+      status: 'rejected',
+      answer: loopBack,
+    });
+    expect(notOffered.statusCode).toBe(400);
+    expect(JSON.parse(notOffered.body).code).toBe('gate_choice_not_offered');
+    expect(procStore.get(plainKey).status).toBe('pending');
+
+    // Code that predates the loop-back reads a rejected answer as request-changes,
+    // so any other status would be misread by it.
+    const offeredKey = seedValidation('h-loop-back', ['approve', 'request-changes', 'loop-back']);
+    const approved = await answerGate(sub, projectId, intent.id, 'h-loop-back', {
+      status: 'approved',
+      answer: loopBack,
+    });
+    expect(approved.statusCode).toBe(400);
+    expect(JSON.parse(approved.body).code).toBe('loop_back_status_invalid');
+    expect(procStore.get(offeredKey).status).toBe('pending');
+
+    const accepted = await answerGate(sub, projectId, intent.id, 'h-loop-back', {
+      status: 'rejected',
+      answer: loopBack,
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(procStore.get(offeredKey).answer).toEqual(loopBack);
+  });
+
   it('answers a pending gate (CAS) and resumes the durable callback when bound', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

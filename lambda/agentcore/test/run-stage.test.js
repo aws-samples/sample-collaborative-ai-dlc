@@ -2189,6 +2189,40 @@ describe('runStage — resume mode', () => {
     expect(res).toMatchObject({ ok: false, reason: 'resume_no_session' });
   });
 
+  it('re-runs a loop-back target fresh with the reason and the feedback in the prompt', async () => {
+    // The build-and-test gate sent the work back here: this stage's row was reset
+    // (no session), and the answer belongs to the build-and-test gate.
+    let argsSeen = null;
+    let promptSeen = null;
+    const deps = baseDeps({
+      availableClis: ['claude'],
+      spawnFn: (_command, args) => {
+        argsSeen = args.join(' ');
+        return { ...okSpawn(), stdin: { end: (prompt) => (promptSeen = prompt) } };
+      },
+      ids: () => 'fresh-uuid',
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'eg-validation-si-bt-0-run-1',
+          kind: 'validation',
+          status: 'rejected',
+          answer: { decision: 'loop-back', feedback: 'check the null refund path' },
+          loopBackReason: 'payment integration tests fail',
+        },
+        stage: { state: 'PENDING', attempt: 1, cli: null, cliSessionId: null },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, resumeFrom: 'eg-validation-si-bt-0-run-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(promptSeen).toContain('payment integration tests fail');
+    expect(promptSeen).toContain('check the null refund path');
+    expect(argsSeen).not.toContain('--resume');
+    expect(deps.store.calls.find((c) => c[0] === 'putStage')[1]).toMatchObject({
+      state: 'RUNNING',
+      attempt: 1,
+    });
+  });
+
   it('explains a removed pinned credential when resuming a parked stage', async () => {
     const deps = baseDeps({
       availableClis: [],
