@@ -572,11 +572,20 @@ export const runEnsembleSessions = async ({
     });
   };
 
+  // The receipts this run wrote, so the runner's findings are evaluated over the
+  // same rows the orchestrator re-reads before the gate opens.
+  const written = [];
   const receipt = async (row) => {
     if (typeof store?.putReceipt !== 'function') return null;
     return store
       .putReceipt({ executionId, stageInstanceId, attempt, unitSlug, sectionIndex, ...row })
-      .catch(() => null);
+      .then(
+        (stored) => {
+          written.push({ attempt, ...row });
+          return stored;
+        },
+        () => null,
+      );
   };
 
   // Defence in depth for a session that was never given ask_question (a support or
@@ -678,6 +687,7 @@ export const runEnsembleSessions = async ({
     return { ok: false, verified: null };
   };
 
+  let priorReceipts = [];
   try {
     for (const agentRef of topology.dropped ?? []) {
       await gap({
@@ -686,7 +696,7 @@ export const runEnsembleSessions = async ({
         reason: `topology declares more than ${MAX_SUPPORT_PERSONAS} support personas; this one was not dispatched`,
       });
     }
-    const priorReceipts =
+    priorReceipts =
       typeof store?.listReceipts === 'function'
         ? await store.listReceipts(executionId, { stageInstanceId, attempt }).catch(() => [])
         : [];
@@ -761,7 +771,16 @@ export const runEnsembleSessions = async ({
 
   return {
     ensembleEvidence: evidence,
-    findings: findingsFor({ stage, policy, attempt, evidence }),
+    findings: findingsFor({
+      stage,
+      policy,
+      attempt,
+      evidence,
+      receipts: latestReceipts([
+        ...(Array.isArray(priorReceipts) ? [...priorReceipts] : []),
+        ...written,
+      ]),
+    }),
   };
 };
 
@@ -1140,21 +1159,14 @@ const ENSEMBLE_FINDING_CODES = new Set([
 // severities and remediation text cannot drift from the ones the orchestrator
 // produces when it re-reads the receipts before the gate opens (`mergeFindings`
 // then dedupes the overlap on (code, detail)).
-export const findingsFor = ({ stage, policy, attempt, evidence }) => {
+// One row per receipt key (kind + ordinal), the newest winning, as the store
+// keeps them.
+const latestReceipts = (rows) => [
+  ...new Map(rows.map((row) => [`${row?.kind}#${row?.ordinal ?? ''}`, row])).values(),
+];
+
+export const findingsFor = ({ stage, policy, attempt, evidence, receipts = [] }) => {
   if (!policy) return [];
-  const gapped = new Set(evidence.gaps.map((row) => row.agentRef));
-  const receipts = [
-    ...evidence.contributions.map((row) => ({
-      kind: 'persona-contribution',
-      attempt,
-      detail: { agentRef: row.agentRef },
-    })),
-    // A gapped link holds a receipt so a resume advances past it, but it is NOT a
-    // completed link — the gate must still hear that the chain broke.
-    ...evidence.links
-      .filter((agentRef) => !gapped.has(agentRef))
-      .map((agentRef) => ({ kind: 'pipeline-link', attempt, detail: { agentRef } })),
-  ];
   const { findings } = evaluateGatePreconditions({
     stage,
     policy,

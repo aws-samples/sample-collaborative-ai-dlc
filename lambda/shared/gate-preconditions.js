@@ -91,6 +91,11 @@ const sameAttempt = (row, attempt) => Number(row?.attempt) === Number(attempt);
 const receiptsOfKind = (receipts, kind, attempt) =>
   (receipts ?? []).filter((row) => row?.kind === kind && sameAttempt(row, attempt));
 
+// Ensemble receipts that are evidence. A gapped pipeline link also holds a receipt
+// (`choice: 'gap'`) so a resume advances past it; it is not a completed link.
+const evidenceReceipts = (receipts, kind, attempt) =>
+  receiptsOfKind(receipts, kind, attempt).filter((row) => row?.choice !== 'gap');
+
 // The checkpoint receipts (summary confirmation, plan approval) are also scoped
 // to the validation revision. "Request changes" at the validation gate re-runs
 // the stage within the same attempt, and a decision the human took about the
@@ -309,7 +314,7 @@ const evaluateGatePreconditions = ({
   const declaredSupports = ensembleEvidence?.supports ?? [];
   if (declaredSupports.length > 0) {
     const contributed = new Set(
-      receiptsOfKind(receipts, 'persona-contribution', attempt).map(
+      evidenceReceipts(receipts, 'persona-contribution', attempt).map(
         (row) => row.detail?.agentRef ?? row.unitSlug,
       ),
     );
@@ -328,7 +333,7 @@ const evaluateGatePreconditions = ({
 
   const declaredLinks = ensembleEvidence?.links ?? [];
   if (declaredLinks.length > 0) {
-    const completed = receiptsOfKind(receipts, 'pipeline-link', attempt).length;
+    const completed = evidenceReceipts(receipts, 'pipeline-link', attempt).length;
     if (completed < declaredLinks.length) {
       findings.push(
         finding({
@@ -353,10 +358,10 @@ const evaluateGatePreconditions = ({
   if (budgetCut.length > 0) {
     const collaboratorEvidence = [
       ...(declaredSupports.length > 0
-        ? [receiptsOfKind(receipts, 'persona-contribution', attempt).length]
+        ? [evidenceReceipts(receipts, 'persona-contribution', attempt).length]
         : []),
       ...(declaredLinks.length > 0
-        ? [Math.max(0, receiptsOfKind(receipts, 'pipeline-link', attempt).length - 1)]
+        ? [Math.max(0, evidenceReceipts(receipts, 'pipeline-link', attempt).length - 1)]
         : []),
     ];
     const fullyCut =

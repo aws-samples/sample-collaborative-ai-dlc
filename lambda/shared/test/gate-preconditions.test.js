@@ -717,6 +717,42 @@ describe('evaluateGatePreconditions: stage wall-clock budget', () => {
     );
   });
 
+  // runPipeline writes a receipt for a gapped link too (`choice: 'gap'`), so a
+  // resume advances past it. The orchestrator re-reads those durable rows, and
+  // must reach the same findings as the runner: a gap is not a completed link.
+  it('does not count a gapped pipeline-link receipt as a completed link', () => {
+    const link = (ordinal, agentRef, choice) => ({
+      kind: 'pipeline-link',
+      attempt: 0,
+      ordinal,
+      choice,
+      detail: { agentRef, ordinal },
+    });
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        link(1, 'lead', 'completed'),
+        link(2, 'design-agent', 'gap'),
+        link(3, 'quality-agent', 'gap'),
+      ],
+      ensembleEvidence: {
+        supports: [],
+        links: ['lead', 'design-agent', 'quality-agent'],
+        dissent: [],
+        budgetExhausted: [
+          { agentRef: 'design-agent', role: 'link' },
+          { agentRef: 'quality-agent', role: 'link' },
+        ],
+      },
+    });
+    expect(result.findings.map((item) => [item.code, item.severity])).toEqual([
+      ['pipeline_link_incomplete', 'advisory'],
+      ['stage_budget_exhausted', 'blocking'],
+    ]);
+  });
+
   it('says nothing when no session was cut', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,
