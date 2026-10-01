@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional per-repository directory selection when creating an intent reduces checkout size using Git sparse checkout and is preserved when workspaces are restored. Git history still occupies storage; this does not raise the managed workspace limit.
+
 ## [2.2.0] - 2026-09-29
 
 This release adds AWS CodeCommit support, custom Cognito login domains, code-file traceability, and direct unit branch and pull-request links in reviews, alongside data-store protection, structured logging, workflow reliability fixes, and usability improvements.

@@ -145,7 +145,11 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     expect(create.mock.calls[0][1].methodologyReleaseId).toBeUndefined();
   });
 
-  it('lets the user pick a non-default release', async () => {
+  it('preserves directory selections when the user picks a non-default release', async () => {
+    useProjectCache.mockReturnValue({
+      project: { ...project, repos: [{ url: 'owner/repo', role: 'primary' }] },
+      loading: false,
+    });
     listReleases.mockResolvedValue({
       releases: [
         release(),
@@ -167,9 +171,12 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     renderPage();
     await user.click(await screen.findByLabelText('AI-DLC version'));
     await user.click(await screen.findByRole('option', { name: /1\.3\.0/ }));
+    await user.click(screen.getByText('Repository directories (optional)'));
+    await user.type(screen.getByLabelText('Directories for owner/repo'), 'services/api');
 
     await submitPrompt(user);
     expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:ccc333');
+    expect(create.mock.calls[0][1].sparseCheckout).toEqual({ 'owner/repo': ['services/api'] });
   });
 
   it('hides the selector and omits the field when no release is offered', async () => {
@@ -215,6 +222,10 @@ describe('NewIntentPage — AI-DLC release selection', () => {
   });
 
   it('retries once without the pin when create 400s with release_selection_disabled', async () => {
+    useProjectCache.mockReturnValue({
+      project: { ...project, repos: [{ url: 'owner/repo', role: 'primary' }] },
+      loading: false,
+    });
     listReleases.mockResolvedValue({
       releases: [
         release(),
@@ -240,6 +251,8 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     renderPage();
     await user.click(await screen.findByLabelText('AI-DLC version'));
     await user.click(await screen.findByRole('option', { name: /1\.3\.0/ }));
+    await user.click(screen.getByText('Repository directories (optional)'));
+    await user.type(screen.getByLabelText('Directories for owner/repo'), 'services/api');
 
     await submitPrompt(user);
     await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
@@ -248,6 +261,9 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     ).toBeInTheDocument();
     expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:ccc333');
     expect(create.mock.calls[1][1].methodologyReleaseId).toBeUndefined();
+    for (const [, input] of create.mock.calls) {
+      expect(input.sparseCheckout).toEqual({ 'owner/repo': ['services/api'] });
+    }
     expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
   });
 

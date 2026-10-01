@@ -68,6 +68,7 @@ export default function NewIntentPage() {
   // create-time only (the branch is derived at create), so it lives here and
   // not on the compose page.
   const [showBaseBranch, setShowBaseBranch] = useState(false);
+  const [sparseSelections, setSparseSelections] = useState<Record<string, string>>({});
   const [baseBranchSelections, setBaseBranchSelections] = useState<Record<string, string>>({});
   const [branchOptions, setBranchOptions] = useState<Record<string, string[]>>({});
   const [branchDefaults, setBranchDefaults] = useState<Record<string, string>>({});
@@ -215,12 +216,27 @@ export default function NewIntentPage() {
       const baseBranches = Object.fromEntries(
         Object.entries(baseBranchSelections).filter(([, branch]) => branch),
       );
+      const sparseCheckout = Object.fromEntries(
+        Object.entries(sparseSelections)
+          .map(
+            ([repo, text]) =>
+              [
+                repo,
+                text
+                  .split('\n')
+                  .map((line) => line.trim())
+                  .filter(Boolean),
+              ] as const,
+          )
+          .filter(([, directories]) => directories.length),
+      );
       // Scope is deliberately omitted — the server defaults it and the compose
       // page is where the projection is actually chosen (collaboratively).
       const input: CreateIntentInput = {
         title: title.trim(),
         prompt: prompt.trim(),
         baseBranches: Object.keys(baseBranches).length ? baseBranches : undefined,
+        sparseCheckout: Object.keys(sparseCheckout).length ? sparseCheckout : undefined,
         // The stable release is the platform default, so it is left implicit:
         // only a create without an explicit release lets the server fall back
         // past an incompatible workflow override on the stable channel.
@@ -530,6 +546,39 @@ export default function NewIntentPage() {
                   </div>
                 )}
               </div>
+            )}
+
+            {repos.length > 0 && (
+              <details className="border rounded-md px-3 py-2">
+                <summary className="cursor-pointer text-sm font-medium">
+                  Repository directories (optional)
+                </summary>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Leave blank for the full repository. To reduce workspace size, enter one directory
+                  per line, such as services/api or packages/shared. Include shared dependencies
+                  needed for the work. Root files and files directly inside parent directories are
+                  included. Selected files plus Git history must still fit within the workspace
+                  limit.
+                </p>
+                {repos.map((repo) => (
+                  <div key={repo.url} className="mt-3">
+                    <Label htmlFor={`sparse-${repo.url}`}>Directories for {repo.url}</Label>
+                    <textarea
+                      id={`sparse-${repo.url}`}
+                      className="mt-1.5 w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      rows={3}
+                      placeholder="services/api"
+                      value={sparseSelections[repo.url] ?? ''}
+                      onChange={(e) =>
+                        setSparseSelections((previous) => ({
+                          ...previous,
+                          [repo.url]: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                ))}
+              </details>
             )}
 
             <div className="flex items-center gap-3 pt-2">

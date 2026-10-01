@@ -158,6 +158,14 @@ describe('orchestrator durable handler', () => {
     expect(res).toEqual({ ok: false, reason: 'not_a_start' });
   });
 
+  it('forwards immutable sparse selections to initialization and every stage', async () => {
+    const sparseCheckout = { 'owner/repo': ['services/api'] };
+    deps.store.getExecution.mockResolvedValue({ ...META, sparseCheckout });
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    expect(invokes.length).toBeGreaterThan(1);
+    for (const payload of invokes) expect(payload.sparseCheckout).toEqual(sparseCheckout);
+  });
+
   it('runs init-ws then every stage to SUCCEEDED', async () => {
     const res = await __durableHandler(
       { action: 'start', intentId: 'i1', executionId: 'i1' },
