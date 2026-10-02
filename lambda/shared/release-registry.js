@@ -19,7 +19,10 @@
 // Release records are listable through GSI1 (`AIDLC_RELEASES`), ordered by a
 // zero-padded upstream version so a lexicographic index scan is also a version
 // ordering. Every mutation is a compare-and-swap on an integer `revision`, so
-// two concurrent admins cannot silently clobber one another's decision.
+// two concurrent admins cannot silently clobber one another's decision. The one
+// deliberate exception is the fidelity-evidence cache (`cacheFidelityEvidence`):
+// it is still CAS-guarded on `revision`, but it does NOT bump it, because what it
+// writes is derived from an immutable closure rather than decided by anyone.
 //
 // Clients are injected (shared/ is a leaf foundation, see .dependency-cruiser.cjs).
 
@@ -46,6 +49,7 @@ import {
   profileFor,
 } from './aidlc-compatibility-profiles.js';
 import { unhonouredValues } from './aidlc-capabilities.js';
+import { mapWithConcurrency } from './concurrency.js';
 
 const logger = new Logger({ persistentKeys: { component: 'release-registry' } });
 
@@ -75,6 +79,11 @@ const SELECTABLE_SUPPORT_STATES = Object.freeze(['selectable', 'certified']);
 const RELEASE_CHANNELS = Object.freeze(['stable', 'candidate', 'preview']);
 
 const VERSION_SEGMENT_WIDTH = 6;
+
+// How many legacy records the admin listing may re-verify from object storage at
+// once. One closure's catalog and objects are buffered per verification, so this
+// stays at 1: the listing Lambda has 128 MB and a registry page is unbounded.
+const RELEASE_LIST_EVIDENCE_CONCURRENCY = 1;
 
 class ReleaseRegistryError extends Error {
   constructor(code, message, { cause, details = null } = {}) {
@@ -281,7 +290,7 @@ const getChannels = async ({ ddb, tableName, selectionOnly = false }) => {
  * withheld rather than shown as if they were runnable — and the records that DO
  * come back carry only the selection fields (see `releaseToSelectionApi`).
  */
-const listReleases = async ({ ddb, tableName, visibleOnly = false }) => {
+const listReleases = async ({ ddb, tableName, visibleOnly = false, s3 = null, bucket = null }) => {
   const items = [];
   let ExclusiveStartKey;
   do {
@@ -297,7 +306,7 @@ const listReleases = async ({ ddb, tableName, visibleOnly = false }) => {
     items.push(...(page.Items ?? []));
     ExclusiveStartKey = page.LastEvaluatedKey;
   } while (ExclusiveStartKey);
-  return items
+  const sortedItems = items
     .filter(
       (item) =>
         !visibleOnly ||
@@ -307,8 +316,37 @@ const listReleases = async ({ ddb, tableName, visibleOnly = false }) => {
       (left, right) =>
         releaseGsi1Sk(left).localeCompare(releaseGsi1Sk(right)) ||
         left.releaseId.localeCompare(right.releaseId),
-    )
-    .map(visibleOnly ? releaseToSelectionApi : releaseToApi);
+    );
+  const projected = sortedItems.map(visibleOnly ? releaseToSelectionApi : releaseToApi);
+  if (visibleOnly || !s3 || !bucket) return projected;
+  // The admin view states what promotion would decide: a gap list stored
+  // before protocol evidence existed is re-evaluated from the closure, the same
+  // way promotion does (unknown when the closure cannot be verified).
+  //
+  // Verifying a closure buffers its catalog and objects, so releases are verified
+  // one at a time: the peak heap is one closure rather than the whole page, which
+  // is what a 128 MB listing Lambda can actually afford. The recomputed evidence
+  // is then cached back onto the row, so this cost is paid once per legacy record.
+  return mapWithConcurrency(
+    projected,
+    RELEASE_LIST_EVIDENCE_CONCURRENCY,
+    async (release, index) => {
+      const item = sortedItems[index];
+      if (hasCurrentFidelityEvidence(item)) return release;
+      const fidelityGaps = await fidelityGapsForRecord({
+        release: item,
+        s3,
+        bucket,
+        requireCurrentEvidence: true,
+      }).catch(() => null);
+      if (fidelityGaps) await cacheFidelityEvidence({ ddb, tableName, item, fidelityGaps });
+      return {
+        ...release,
+        fidelityGaps,
+        unhonouredValues: fidelityGaps ? unhonouredValues({ fidelityGaps }) : null,
+      };
+    },
+  );
 };
 
 const assertRegistryStorage = (s3, bucket) => {
@@ -401,6 +439,7 @@ const persistReleaseRecord = async ({
     supportState: structurallyValid ? 'structurally-valid' : 'importable',
     structurallyValid,
     fidelityGaps,
+    fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION,
     visible: false,
     runnable: profileIsRunnable(profile),
     notes: null,
@@ -555,8 +594,27 @@ const registerCustomRelease = async ({
   return persistReleaseRecord({ ddb, tableName, manifest, profile, s3, bucket, actor });
 };
 
-const fidelityGapsForRecord = async ({ release, s3, bucket }) => {
-  if (Array.isArray(release.fidelityGaps)) return release.fidelityGaps;
+// The revision of the evidence a record's stored `fidelityGaps` was computed
+// with. Revision 2 includes the protocol capabilities the closure ships (the
+// build-and-test loop-back), which a gap list stored by an earlier build never
+// judged. Promotion therefore re-evaluates such a list from the immutable
+// closure, exactly like a record with no list at all. Other readers (the
+// intent-creation eligibility check) keep using the stored list: a record can
+// only be selected after a promotion has written current evidence.
+const FIDELITY_EVIDENCE_REVISION = 2;
+
+const hasCurrentFidelityEvidence = (release) =>
+  Array.isArray(release.fidelityGaps) &&
+  Number(release.fidelityEvidenceRevision) >= FIDELITY_EVIDENCE_REVISION;
+
+const fidelityGapsForRecord = async ({ release, s3, bucket, requireCurrentEvidence = false }) => {
+  if (
+    requireCurrentEvidence
+      ? hasCurrentFidelityEvidence(release)
+      : Array.isArray(release.fidelityGaps)
+  ) {
+    return release.fidelityGaps;
+  }
 
   try {
     assertRegistryStorage(s3, bucket);
@@ -599,6 +657,44 @@ const fidelityGapsForRecord = async ({ release, s3, bucket }) => {
   }
 };
 
+/**
+ * Caches evidence re-verified from a record's immutable closure back onto its
+ * row, so a legacy record costs that verification once rather than on every
+ * admin listing.
+ *
+ * This is a lazy migrate-on-read (the pattern `git-connection-store.js` already
+ * uses), not a decision: the gap list is a pure function of a closure that can
+ * never change, so writing it cannot clobber what an admin decided. It is
+ * therefore the one mutation in this module that is CAS-guarded on `revision`
+ * yet deliberately does not BUMP it, and it leaves `updatedAt` and `updatedBy`
+ * untouched too — an admin holding revision N can still promote, while the guard
+ * still stops the write resurrecting a row a concurrent decision has moved past.
+ *
+ * Every write failure is swallowed: this runs inside `GET /aidlc-releases`, which
+ * must keep answering with the evidence it just computed whether or not the cache
+ * could be filled. A record whose closure can never be verified never reaches
+ * this function, so it simply stays uncached and is re-attempted each listing.
+ */
+const cacheFidelityEvidence = async ({ ddb, tableName, item, fidelityGaps }) => {
+  if (typeof item.revision !== 'number') return;
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: { ...item, fidelityGaps, fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION },
+        ConditionExpression: 'revision = :expected',
+        ExpressionAttributeValues: { ':expected': item.revision },
+      }),
+    );
+  } catch (error) {
+    logger.info('release fidelity evidence cache write failed; leaving the row stale', {
+      releaseId: item.releaseId,
+      revision: item.revision,
+      error: error?.name ?? 'Error',
+    });
+  }
+};
+
 const assertFidelityGapsHonoured = ({ release, fidelityGaps }) => {
   const gaps = unhonouredValues({ fidelityGaps });
   if (gaps.length > 0) {
@@ -611,10 +707,15 @@ const assertFidelityGapsHonoured = ({ release, fidelityGaps }) => {
   return fidelityGaps;
 };
 
-const assertReleaseCapabilitiesHonoured = async ({ release, s3, bucket }) =>
+const assertReleaseCapabilitiesHonoured = async ({
+  release,
+  s3,
+  bucket,
+  requireCurrentEvidence = false,
+}) =>
   assertFidelityGapsHonoured({
     release,
-    fidelityGaps: await fidelityGapsForRecord({ release, s3, bucket }),
+    fidelityGaps: await fidelityGapsForRecord({ release, s3, bucket, requireCurrentEvidence }),
   });
 
 const isSelectableRecord = (release) =>
@@ -768,7 +869,13 @@ const updateRelease = async ({
         },
       );
     }
-    next.fidelityGaps = await assertReleaseCapabilitiesHonoured({ release: current, s3, bucket });
+    next.fidelityGaps = await assertReleaseCapabilitiesHonoured({
+      release: current,
+      s3,
+      bucket,
+      requireCurrentEvidence: true,
+    });
+    next.fidelityEvidenceRevision = FIDELITY_EVIDENCE_REVISION;
   }
 
   const channelsByName = await getChannels({ ddb, tableName });
@@ -1026,6 +1133,7 @@ const upgradeReleaseClosure = async ({
     catalogKey: releaseCatalogKey(keyArgs),
     structurallyValid,
     fidelityGaps,
+    fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION,
     importerHistory: [
       ...(current.importerHistory ?? []),
       {
@@ -1128,7 +1236,16 @@ const setChannel = async ({
   }
   assertSelectableRecord(target);
   if (!(channel === 'stable' && profileFor(target.profileId)?.currentPlatformBaseline === true)) {
-    await assertReleaseCapabilitiesHonoured({ release: target, s3, bucket });
+    // Same evidence bar as `updateRelease`: a gap list stored before protocol
+    // evidence existed is re-evaluated from the closure rather than trusted, so
+    // what this gate decides cannot depend on whether a listing happened to
+    // refresh the record's evidence first.
+    await assertReleaseCapabilitiesHonoured({
+      release: target,
+      s3,
+      bucket,
+      requireCurrentEvidence: true,
+    });
   }
   if (channel === 'stable' && !isStableEligible(target)) {
     throw new ReleaseRegistryError(

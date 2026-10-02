@@ -54,6 +54,12 @@ import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from './pr-attribution.js';
 import { assertPrStrategySupported } from '../shared/pr-strategy.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
+import { parseChoice } from '../shared/gate-answer.js';
+
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['policy.skeleton.switch@v1']);
 
 const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 
@@ -63,7 +69,7 @@ const { CONSTRUCTION_AUTONOMY_MODES } = processKeysPkg;
 // submitting garbage).
 const HALT_REASK_LIMIT = 5;
 
-// App-level concurrency cap (docs/v2-parallel.md B1 note): the wavefront shape
+// App-level concurrency cap: the wavefront shape
 // has no built-in maxConcurrency. Replayed (completed) lanes never re-execute
 // their bodies, so they never re-contend for permits — only genuinely pending
 // lanes queue here. limit <= 0 → unbounded (the DAG is the only limit).
@@ -154,6 +160,12 @@ export const awaitEngineGate = async (
     // undefined = not computed (non-validation gates) — the UI keeps its
     // generic labels. Display-only; never drives routing.
     nextStageId = undefined,
+    // Gate-precondition findings, structured so the review
+    // UI renders severity and remediation instead of re-parsing the prompt.
+    findings = null,
+    // The learnings ritual rides this gate. `false`/undefined is
+    // every gate that does not run it, and writes nothing.
+    learningsRitual = false,
   },
 ) => {
   const { store, broadcast, ids, runId } = toolkit;
@@ -183,6 +195,8 @@ export const awaitEngineGate = async (
         ...(skipTargets ? { skipTargets } : {}),
         ...(recomposeTargets ? { recomposeTargets } : {}),
         ...(nextStageId !== undefined ? { nextStageId } : {}),
+        ...(findings?.length ? { findings } : {}),
+        ...(learningsRitual ? { learningsRitual: true } : {}),
       });
     } catch {
       /* already exists from a prior attempt — idempotent open */
@@ -214,6 +228,8 @@ export const awaitEngineGate = async (
         ...(skipTargets ? { skipTargets } : {}),
         ...(recomposeTargets ? { recomposeTargets } : {}),
         ...(nextStageId !== undefined ? { nextStageId } : {}),
+        ...(findings?.length ? { findings } : {}),
+        ...(learningsRitual ? { learningsRitual: true } : {}),
       });
     } catch {
       /* live fan-out is best-effort */
@@ -245,7 +261,13 @@ export const awaitEngineGate = async (
   if (!gate || gate.status === 'superseded') return { superseded: true };
   await ctxArg.step(`gate-unpark-${name}`, async () => {
     try {
-      await store.updateExecution({ executionId, status: 'RUNNING', pendingHumanTaskId: null });
+      // The answer reached the run, so any resume marker for it is resolved.
+      await store.updateExecution({
+        executionId,
+        status: 'RUNNING',
+        pendingHumanTaskId: null,
+        resumeRequired: null,
+      });
     } catch {
       /* best-effort un-park */
     }
@@ -253,24 +275,8 @@ export const awaitEngineGate = async (
   return { gate };
 };
 
-// Parse a gate answer into one of `allowed`, tolerating the shapes the answer
-// endpoint stores ({ decision }, { mode }, a raw string, { freeText }).
-// Anything unrecognized returns null — the CALLER picks the deterministic
-// fallback and records what was interpreted.
-export const parseChoice = (answer, allowed) => {
-  const candidates = [
-    answer?.decision,
-    answer?.mode,
-    answer?.choice,
-    typeof answer === 'string' ? answer : null,
-    typeof answer?.freeText === 'string' ? answer.freeText : null,
-  ];
-  for (const c of candidates) {
-    const v = typeof c === 'string' ? c.trim().toLowerCase() : null;
-    if (v && allowed.includes(v)) return v;
-  }
-  return null;
-};
+// The gate-answer parser is shared with the intents API (shared/gate-answer.js).
+export { parseChoice };
 
 // Validate fan-out-gate overrides against the plan (A2 rule 7: only
 // CONDITIONAL section stages are skippable, only known units addressable; the
@@ -2208,11 +2214,28 @@ export const runParallelSection = async (segment, toolkit) => {
   };
 
   // ── phase 1: walking skeleton, SOLO (A2 rule 8) ───────────────────────────
+  // `SCOPE.skeleton: off` removes the CEREMONY, not the work: the
+  // picked unit still runs, it just does not run ALONE first and gets no gate of
+  // its own. Upstream is explicit that skeleton-off drops the walking-skeleton
+  // ritual and not every gate, and the first construction stage's ordinary
+  // approval gate is untouched by this branch. Read from the resolved stage
+  // policy, which only exists in release mode — so an unpinned run takes the
+  // pre-Phase-6 path byte for byte.
   const skeleton = decisions.walkingSkeleton;
+  const skeletonCeremonyOff =
+    (segment.stages.find((stage) => stage.policy?.skeleton)?.policy?.skeleton ?? null) === 'off';
   const skeletonAlreadyApproved =
     laneState.get(skeleton) === 'MERGED' &&
     CONSTRUCTION_AUTONOMY_MODES.includes(unitPlan.autonomyMode);
-  if (laneState.get(skeleton) !== 'MERGED') {
+  if (skeletonCeremonyOff) {
+    await emitEvent(
+      ctx,
+      `skeleton-skipped-${sk}`,
+      'v2.units.skeleton_skipped',
+      `Walking-skeleton ceremony skipped for section ${segment.index} (scope authors skeleton: off): ${skeleton} runs with the other lanes and no skeleton gate is opened`,
+      { unitSlug: skeleton, sectionIndex: segment.index },
+    );
+  } else if (laneState.get(skeleton) !== 'MERGED') {
     const skeletonOut = await runUntilResolved([skeleton], { tag: '-skel' });
     if (skeletonOut) return skeletonOut;
   }
@@ -2221,7 +2244,7 @@ export const runParallelSection = async (segment, toolkit) => {
   // request-changes. Request-changes carries feedback, re-runs the skeleton
   // lane (revive + resumeFrom the answered gate), and re-asks; after 3 cycles
   // the accept-as-is escape hatch appears. Never a terminal reject.
-  if (!skeletonAlreadyApproved) {
+  if (!skeletonAlreadyApproved && !skeletonCeremonyOff) {
     for (let revision = 0; laneState.get(skeleton) === 'MERGED';) {
       const options =
         revision >= 3
@@ -2285,7 +2308,9 @@ export const runParallelSection = async (segment, toolkit) => {
   }
 
   // ── phase 2: autonomy ladder (A2 rule 9), then the remaining lanes ───────
-  const remaining = laneOrder.filter((s) => s !== skeleton && laneState.get(s) !== 'MERGED');
+  const remaining = laneOrder.filter(
+    (s) => (skeletonCeremonyOff || s !== skeleton) && laneState.get(s) !== 'MERGED',
+  );
   if (remaining.length === 0) {
     await emitEvent(
       ctx,

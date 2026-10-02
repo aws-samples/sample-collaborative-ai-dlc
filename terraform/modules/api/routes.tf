@@ -1333,6 +1333,15 @@ resource "aws_api_gateway_resource" "intent_rewind" {
   path_part   = "rewind"
 }
 
+# Re-attempt the durable callback for a gate answer that was recorded but whose
+# resume failed (META.resumeRequired) — the one-click recovery for a run left
+# WAITING with no pending gate.
+resource "aws_api_gateway_resource" "intent_resume" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "resume"
+}
+
 resource "aws_api_gateway_resource" "intent_repair" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.intent.id
@@ -1531,6 +1540,7 @@ locals {
     start_post             = { resource = aws_api_gateway_resource.intent_start.id, method = "POST" }
     cancel_post            = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
     rewind_post            = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
+    resume_post            = { resource = aws_api_gateway_resource.intent_resume.id, method = "POST" }
     repair_post            = { resource = aws_api_gateway_resource.intent_repair.id, method = "POST" }
     compose_post           = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
     compose_upload         = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
@@ -1656,6 +1666,12 @@ module "cors_intent_rewind" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_rewind.id
+}
+
+module "cors_intent_resume" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_resume.id
 }
 
 module "cors_intent_repair" {

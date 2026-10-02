@@ -397,3 +397,43 @@ describe('submitReview', () => {
     expect(store.sensorRuns).toEqual([]);
   });
 });
+
+// `summaryConfirmation: if-present` is keyed off "did THIS
+// attempt ask a question", and the evaluator's attempt filter had nothing to read —
+// the emitter recorded no attempt at all, so a question from a rewound attempt
+// still obliged the new one.
+describe('ask_question — attempt provenance', () => {
+  it('stamps the trusted stage attempt on the v2.question.asked event', async () => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, stageAttempt: 2, policy: { summaryConfirmation: 'if-present' } },
+      parkGraceMs: 0,
+    });
+    await bridge.askQuestion({ questions: [{ text: 'which one?', type: 'single', options: [] }] });
+    const asked = store.events.find((row) => row.type === 'v2.question.asked');
+    expect(asked.detail).toEqual({ attempt: 2 });
+  });
+
+  it('stamps attempt 0 when the container passed none', async () => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({
+      store,
+      scope: { ...SCOPE, policy: { summaryConfirmation: 'if-present' } },
+      parkGraceMs: 0,
+    });
+    await bridge.askQuestion({ questions: [{ text: 'q', type: 'single', options: [] }] });
+    expect(store.events.find((row) => row.type === 'v2.question.asked').detail).toEqual({
+      attempt: 0,
+    });
+  });
+
+  it('records no attempt on an unpinned run, where nothing reads it', async () => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({ store, scope: SCOPE, parkGraceMs: 0 });
+    await bridge.askQuestion({ questions: [{ text: 'q', type: 'single', options: [] }] });
+    expect(store.events.find((row) => row.type === 'v2.question.asked')).not.toHaveProperty(
+      'detail',
+    );
+  });
+});

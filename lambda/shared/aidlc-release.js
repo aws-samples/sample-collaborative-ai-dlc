@@ -19,6 +19,7 @@ import {
   analyzeAidlcCompatibility,
   blockTypeForPath,
   fidelityGapsFromCatalog,
+  invokeCommandCollector,
   normalizeAidlcFrontmatter,
   profileFor,
 } from './aidlc-compatibility.js';
@@ -536,10 +537,15 @@ const readReleaseFidelityGaps = async ({ s3, bucket, manifest }) => {
   }
 
   let totalBytes = 0;
-  const bodies = await mapWithConcurrency(
+  // Each body is folded into the invoke evidence and then dropped, so at most
+  // RELEASE_EVIDENCE_IO_CONCURRENCY objects are resident at a time. Retaining all
+  // of them made the capability check cost the whole closure in heap at once,
+  // which a 128 MB Lambda cannot afford for a multi-release page.
+  const invokes = invokeCommandCollector();
+  await mapWithConcurrency(
     manifest.objects ?? [],
     RELEASE_EVIDENCE_IO_CONCURRENCY,
-    async (object) => {
+    async (object, index) => {
       if (Number(object.bytes ?? 0) > RELEASE_OBJECT_MAX_BYTES) {
         throw new AidlcReleaseError(
           'release_object_too_large',
@@ -578,13 +584,13 @@ const readReleaseFidelityGaps = async ({ s3, bucket, manifest }) => {
           { keys: [object.key] },
         );
       }
-      return body;
+      invokes.add(`closure/body-${index}.md`, body);
     },
   );
 
   return fidelityGapsFromCatalog({
     catalog,
-    bodies,
+    invokeCommands: invokes.commands(),
     runtimeFilePaths: (manifest.runtimeFiles ?? []).map(({ path }) => path),
   });
 };

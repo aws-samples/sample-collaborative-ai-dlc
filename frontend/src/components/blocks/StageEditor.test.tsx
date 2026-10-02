@@ -44,4 +44,10 @@ describe('StageEditor', () => {
     expect(screen.getByLabelText(/manual stage dependencies/i)).toHaveValue('scope-definition');
     expect(screen.getByLabelText(/manual output artifacts/i)).toHaveValue('scope-document');
   });
+
+  it('shows the support agents picker so a stale reference can be fixed', () => {
+    render(<StageEditor value={{ supportAgents: ['aidlc-qa-agent'] }} onChange={vi.fn()} />);
+
+    expect(screen.getByText('Support agents')).toBeInTheDocument();
+  });
 });

@@ -57,6 +57,9 @@ function Probe() {
     <div>
       <div data-testid="rows">{stageRows.map((r) => `${r.stageId}:${r.state}`).join(',')}</div>
       <div data-testid="pending">{pendingGates.length}</div>
+      <div data-testid="ritual">
+        {pendingGates.map((gate) => String(gate.learningsRitual ?? '')).join(',')}
+      </div>
       <div data-testid="out" data-version={outputVersion}>
         {[...outputBuffers.entries()].map(([k, v]) => `${k}=${v}`).join('|')}
       </div>
@@ -370,6 +373,23 @@ describe('IntentContext', () => {
       capturedOnEvent?.({ action: 'agent.question', humanTaskId: 'h2', questions: '[]' });
     });
     expect(screen.getByTestId('pending')).toHaveTextContent('2');
+  });
+
+  it('keeps the learnings ritual flag of a live validation gate', async () => {
+    get.mockResolvedValue(detail());
+    renderProvider();
+    await screen.findByTestId('pending');
+
+    act(() => {
+      capturedOnEvent?.({
+        action: 'agent.question',
+        humanTaskId: 'eg-validation-si-1-0',
+        kind: 'validation',
+        learningsRitual: true,
+      });
+    });
+
+    expect(screen.getByTestId('ritual')).toHaveTextContent('true');
   });
 
   it('appends agent.output to per-stage buffers (null stage → intent bucket)', async () => {

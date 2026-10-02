@@ -9,6 +9,7 @@ import {
   customProfile,
   fidelityGapsFromCatalog,
   filesFromCompatibilityFixture,
+  invokeCommandCollector,
   isCustomProfile,
   normalizeAidlcFrontmatter,
   profileFor,
@@ -580,7 +581,7 @@ describe('analyzeAidlcCompatibility', () => {
     });
   });
 
-  it('recognizes a known field but records it as unsupported until a handler ships', () => {
+  it('recognizes a known field and classifies the write plane as approximated', () => {
     const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
       content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: write'),
     );
@@ -588,29 +589,27 @@ describe('analyzeAidlcCompatibility', () => {
 
     expect(report.importable).toBe(true);
     expect(report.unmappedFields.map((field) => field.field)).not.toContain('fire_on');
-    expect(report.fidelity.unsupported).toContain('SENSOR:fire_on');
-    expect(report.certificationGaps).toContainEqual(
+    expect(report.fidelity.approximated).toContain('SENSOR:fire_on');
+    expect(report.certificationGaps).not.toContainEqual(
       expect.objectContaining({ field: 'fire_on', value: 'write' }),
     );
-    expect(report.readyForCertification).toBe(false);
     expect(report.unmappedFields.some((field) => field.executionRelevant)).toBe(false);
   });
 
-  it('retains the gate-plane value as a promotion gap until its runtime pass ships', () => {
+  it('classifies the gate-plane value as native, with no promotion gap', () => {
     const files = replaceFile(CORE_FILES, 'core/sensors/aidlc-linter.md', (content) =>
       content.replace('default_severity: advisory', 'default_severity: advisory\nfire_on: gate'),
     );
     const report = analyzeAidlcCompatibility({ profileId: 'current-stable', files });
 
     expect(report.importable).toBe(true);
-    expect(report.fidelity.unsupported).toContain('SENSOR:fire_on');
-    expect(report.certificationGaps).toContainEqual(
+    expect(report.fidelity.native).toContain('SENSOR:fire_on');
+    expect(report.certificationGaps).not.toContainEqual(
       expect.objectContaining({ field: 'fire_on', value: 'gate' }),
     );
-    expect(report.readyForCertification).toBe(false);
     const fireOn = report.fidelity.fields.find((field) => field.field === 'fire_on');
     expect(fireOn.values).toEqual([
-      { value: 'gate', handling: 'unsupported', paths: expect.any(Array) },
+      { value: 'gate', handling: 'native', paths: expect.any(Array) },
     ]);
   });
 
@@ -838,5 +837,72 @@ describe('custom fork profiles', () => {
         content,
       }).content,
     ).toBe(content);
+  });
+});
+
+describe('certification gaps of the upstream fixtures', () => {
+  const gapsOf = (profileId) => {
+    const report = analyzeAidlcCompatibility({
+      profileId,
+      files: filesFromCompatibilityFixture({ profileId, fixture: fixtureFor(profileId) }),
+    });
+    return {
+      ready: report.readyForCertification,
+      gaps: report.certificationGaps
+        .map((gap) => `${gap.blockType}:${gap.field}=${gap.value}`)
+        .toSorted(),
+    };
+  };
+
+  it('certifies the current stable release with no gap', () => {
+    expect(gapsOf('current-stable')).toEqual({ ready: true, gaps: [] });
+  });
+
+  it.each(['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'])(
+    'withholds %s for the persona modes and the build-and-test loop-back',
+    (profileId) => {
+      expect(gapsOf(profileId)).toEqual({
+        ready: false,
+        gaps: ['PROTOCOL:build-and-test-loopback=present', 'STAGE:mode=mob', 'STAGE:mode=pipeline'],
+      });
+    },
+  );
+});
+
+describe('streaming {{INVOKE}} evidence out of a closure', () => {
+  // The property: a caller may fold bodies in one at a time and drop each one,
+  // instead of holding the whole closure, and still get identical gaps. The
+  // release reader relies on exactly this to verify a closure in bounded memory.
+  const bodies = [
+    'body one runs {{INVOKE}} engine state practices-promote then stops\n',
+    'body two runs {{INVOKE}} engine orchestrate and {{INVOKE}} engine sensor-linter\n',
+    'body three runs {{INVOKE}} engine state practices-promote again\n',
+  ];
+
+  it('matches folding every body in at once, whatever order they arrive in', () => {
+    const atOnce = fidelityGapsFromCatalog({ catalog: { blocks: {} }, bodies });
+
+    for (const order of [
+      [0, 1, 2],
+      [2, 0, 1],
+      [1, 2, 0],
+    ]) {
+      const collector = invokeCommandCollector();
+      for (const index of order) collector.add(`closure/body-${index}.md`, bodies[index]);
+      expect(
+        fidelityGapsFromCatalog({
+          catalog: { blocks: {} },
+          invokeCommands: collector.commands(),
+        }),
+      ).toEqual(atOnce);
+    }
+    expect(atOnce.length).toBeGreaterThan(0);
+  });
+
+  it('ignores a body that is not a string, exactly as the bulk path does', () => {
+    const collector = invokeCommandCollector();
+    collector.add('closure/body-0.md', null);
+
+    expect(collector.commands()).toEqual([]);
   });
 });

@@ -2293,3 +2293,84 @@ describe('IntentView — provenance tree structure', () => {
     expect(screen.queryByRole('button', { name: /\d+ item/ })).not.toBeInTheDocument();
   });
 });
+
+describe('IntentView — resume after a failed gate callback', () => {
+  const marker = { humanTaskId: 'h1', callbackId: 'cb-h1', answeredAt: null };
+
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+  });
+
+  const answered = (over: Record<string, unknown> = {}) => ({
+    humanTaskId: 'h1',
+    stageInstanceId: 'si-1',
+    unitSlug: null,
+    sectionIndex: null,
+    kind: 'question',
+    status: 'answered',
+    resumeAvailable: true,
+    prompt: null,
+    options: null,
+    questions: '[]',
+    answer: { ok: 1 },
+    answeredBy: 'u1',
+    answeredByName: 'U',
+    answeredAt: null,
+    createdAt: null,
+    ...over,
+  });
+
+  it('offers the resume while the intent waits on the answered gate', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1', resumeRequired: marker }),
+      gates: [answered()],
+    });
+    renderAt();
+
+    expect(
+      await screen.findByText('Your answer was saved but the run did not continue'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not offer it once the intent is no longer waiting', async () => {
+    get.mockResolvedValue(baseDetail({ status: 'CANCELLED', resumeRequired: marker }));
+    renderAt();
+
+    expect(await screen.findByText('My intent')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Your answer was saved but the run did not continue'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('offers the resume of a lane question while the intent keeps running', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({
+        status: 'RUNNING',
+        resumeRequired: { ...marker, humanTaskId: 'h-lane', callbackId: 'cb-lane' },
+      }),
+      gates: [answered({ humanTaskId: 'h-lane', unitSlug: 'billing', sectionIndex: 1 })],
+    });
+    renderAt();
+
+    expect(
+      await screen.findByText('Your answer was saved but the run did not continue'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not offer it when the server says no resume is owed', async () => {
+    get.mockResolvedValue({
+      ...baseDetail({ status: 'RUNNING', resumeRequired: marker }),
+      gates: [answered({ resumeAvailable: false })],
+    });
+    renderAt();
+
+    expect(await screen.findByText('My intent')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Your answer was saved but the run did not continue'),
+    ).not.toBeInTheDocument();
+  });
+});
