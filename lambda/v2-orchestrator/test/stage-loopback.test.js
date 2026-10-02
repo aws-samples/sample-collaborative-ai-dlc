@@ -434,6 +434,54 @@ describe('a recommended loop-back the human accepts', () => {
     });
   });
 
+  it('reads the recommendation without clearing it inside the offer step', async () => {
+    let step = null;
+    const writesDuringOffer = [];
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        const previous = step;
+        step = name;
+        try {
+          return await fn();
+        } finally {
+          step = previous;
+        }
+      },
+    });
+    const write = deps.store.setLoopBackRecommendation;
+    deps.store.setLoopBackRecommendation = vi.fn(async (args) => {
+      if (String(step).startsWith('loop-back-offer-')) writesDuringOffer.push(args);
+      return write(args);
+    });
+
+    await run();
+
+    expect(writesDuringOffer).toEqual([]);
+    expect(deps.store.setLoopBackRecommendation).toHaveBeenCalledWith({
+      executionId: 'i1',
+      stageInstanceId: 'si-bt',
+      reason: null,
+    });
+  });
+
+  it('still offers the loop-back when the offer step re-runs after a crash', async () => {
+    // A Lambda that dies after the step body ran but before its result was
+    // checkpointed replays the body. The second run must see the same state.
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        if (String(name).startsWith('loop-back-offer-')) await fn();
+        return fn();
+      },
+    });
+
+    await run();
+
+    const gate = gates()[0];
+    expect(gate.options).toEqual(['approve', 'request-changes', 'loop-back']);
+    expect(gate.loopBackTarget).toBe('code-generation');
+    expect(gate.loopBackReason).toBe(REASON);
+  });
+
   it('fails rewindably without recording or applying a jump when a reset fails', async () => {
     const resetStageRow = deps.store.resetStageRow;
     deps.store.resetStageRow = vi.fn(async (input) => {

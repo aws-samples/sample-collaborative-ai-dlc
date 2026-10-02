@@ -1453,10 +1453,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // Build-and-Test loop-back. The offer is computed from durable state
           // at the moment the gate opens: the recommendation the agent recorded
           // on this stage's row, the plan's own stage order, and the per-intent
-          // tally on META. The recommendation is cleared once read, so the next
-          // validation round starts without one. Guarded outside the step so a
-          // run without the release policy records no extra durable step.
-          const loopBack =
+          // tally on META. The step only reads: if the Lambda dies before its
+          // result is checkpointed, the replayed step must find the same
+          // recommendation. It is cleared in a later step, once the gate is open.
+          // Guarded outside the step so a run without the release policy records
+          // no extra durable step.
+          const loopBackLookup =
             stage.policy?.loopBack === 'human-offered'
               ? await ctx.step(
                   `loop-back-offer-${stage.stageInstanceId ?? stage.stageId}-${round}`,
@@ -1476,17 +1478,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                       recommendation: row?.loopBackRecommendation ?? null,
                       loopBackCount: Number(execution.loopBackCount ?? 0),
                     });
-                    if (row?.loopBackRecommendation) {
-                      await store.setLoopBackRecommendation({
-                        executionId,
-                        stageInstanceId: stage.stageInstanceId,
-                        reason: null,
-                      });
-                    }
-                    return offer;
+                    return { offer, recommended: Boolean(row?.loopBackRecommendation) };
                   },
                 )
-              : { offered: false };
+              : { offer: { offered: false }, recommended: false };
+          const loopBack = loopBackLookup.offer;
           const overridable = overridableFindings(gateFindings);
           // Blocking findings require an explicit override; the loop-back, when
           // offered, remains a third option on this same gate.
@@ -1535,6 +1531,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               ? { loopBackTarget: loopBack.target.stageId, loopBackReason: loopBack.reason }
               : {}),
           });
+          // The gate holds the offer now, so the next validation round starts
+          // without a recommendation unless the agent records a new one.
+          if (loopBackLookup.recommended) {
+            await ctx.step(
+              `loop-back-clear-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+              () =>
+                store.setLoopBackRecommendation({
+                  executionId,
+                  stageInstanceId: stage.stageInstanceId,
+                  reason: null,
+                }),
+            );
+          }
           if (validation.superseded) return { ok: false, reason: 'retired', intentId };
 
           const gateAnswer = validation.gate?.answer;
