@@ -39,6 +39,7 @@ describe('validateMcpServers', () => {
     const res = validateMcpServers([{ command: 'npx' }]);
     expect(res.valid).toBe(false);
     expect(res.issues[0].path).toBe('');
+    expect(res.issues[0].code).toBe('invalid_type');
     expect(res.issues[0].message).toMatch(/Expected a JSON object/);
   });
 
@@ -48,6 +49,7 @@ describe('validateMcpServers', () => {
     expect(res.issues).toContainEqual(
       expect.objectContaining({
         path: RESERVED_SERVER_NAME,
+        code: 'reserved_server_name',
         message: expect.stringMatching(/reserved/),
       }),
     );
@@ -57,7 +59,11 @@ describe('validateMcpServers', () => {
     const res = validateMcpServers({ workspace: { command: 'node' } });
     expect(res.valid).toBe(false);
     expect(res.issues).toContainEqual(
-      expect.objectContaining({ path: 'workspace', message: expect.stringMatching(/reserved/) }),
+      expect.objectContaining({
+        path: 'workspace',
+        code: 'reserved_server_name',
+        message: expect.stringMatching(/reserved/),
+      }),
     );
   });
 
@@ -67,6 +73,7 @@ describe('validateMcpServers', () => {
     expect(res.issues).toContainEqual(
       expect.objectContaining({
         path: 'r.type',
+        code: 'transport_required',
         message: expect.stringMatching(/Remote servers require/),
       }),
     );
@@ -75,7 +82,9 @@ describe('validateMcpServers', () => {
   it('requires command for stdio servers', () => {
     const res = validateMcpServers({ x: {} });
     expect(res.valid).toBe(false);
-    expect(res.issues).toContainEqual(expect.objectContaining({ path: 'x.command' }));
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 'x.command', code: 'command_required' }),
+    );
   });
 
   it('accepts known bare commands (node/npx/bun/bunx/uv/uvx/python/python3)', () => {
@@ -91,6 +100,7 @@ describe('validateMcpServers', () => {
     expect(res.issues).toContainEqual(
       expect.objectContaining({
         path: 'typo.command',
+        code: 'unknown_command',
         message: expect.stringMatching(/Unknown executable "uvxx"/),
       }),
     );
@@ -105,7 +115,11 @@ describe('validateMcpServers', () => {
     const res = validateMcpServers({ x: { command: 'npx', foo: 1 } });
     expect(res.valid).toBe(false);
     expect(res.issues).toContainEqual(
-      expect.objectContaining({ path: 'x.foo', message: expect.stringMatching(/Unknown key/) }),
+      expect.objectContaining({
+        path: 'x.foo',
+        code: 'unknown_field',
+        message: expect.stringMatching(/Unknown key/),
+      }),
     );
   });
 
@@ -113,50 +127,68 @@ describe('validateMcpServers', () => {
     const res = validateMcpServers({ x: { command: 'npx', env: [{ name: 'K', value: 'v' }] } });
     expect(res.valid).toBe(false);
     expect(res.issues).toContainEqual(
-      expect.objectContaining({ path: 'x.env', message: expect.stringMatching(/object/) }),
+      expect.objectContaining({
+        path: 'x.env',
+        code: 'invalid_type',
+        message: expect.stringMatching(/object/),
+      }),
     );
   });
 
   it('rejects non-string args entries', () => {
     const res = validateMcpServers({ x: { command: 'npx', args: ['ok', 3] } });
     expect(res.valid).toBe(false);
-    expect(res.issues).toContainEqual(expect.objectContaining({ path: 'x.args[1]' }));
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 'x.args[1]', code: 'invalid_type' }),
+    );
   });
 
   it('rejects an unknown transport type', () => {
     const res = validateMcpServers({ x: { type: 'ftp', url: 'https://e.com' } });
     expect(res.valid).toBe(false);
-    expect(res.issues).toContainEqual(expect.objectContaining({ path: 'x.type' }));
+    expect(res.issues).toContainEqual(
+      expect.objectContaining({ path: 'x.type', code: 'invalid_transport' }),
+    );
   });
 
   it('rejects invalid url on http servers', () => {
     const res = validateMcpServers({ x: { type: 'http', url: 'not a url' } });
     expect(res.valid).toBe(false);
     expect(res.issues).toContainEqual(
-      expect.objectContaining({ path: 'x.url', message: expect.stringMatching(/Invalid URL/) }),
+      expect.objectContaining({
+        path: 'x.url',
+        code: 'invalid_url',
+        message: expect.stringMatching(/Invalid URL/),
+      }),
     );
   });
 
-  it('rejects non-http(s) url schemes (file:, ftp:, etc.)', () => {
+  it('rejects non-https url schemes (file:, ftp:, etc.)', () => {
     for (const url of ['file:///etc/passwd', 'ftp://example.com/x', 'ws://example.com']) {
       const res = validateMcpServers({ x: { type: 'http', url } });
       expect(res.valid, url).toBe(false);
       expect(res.issues).toContainEqual(
         expect.objectContaining({
           path: 'x.url',
-          message: expect.stringMatching(/must use http:\/\/ or https:\/\//),
+          code: 'https_required',
+          message: expect.stringMatching(/must use https:\/\//),
         }),
       );
     }
   });
 
-  it('accepts http and https urls', () => {
-    expect(
-      validateMcpServers({ a: { type: 'http', url: 'http://localhost:3000/mcp' } }).valid,
-    ).toBe(true);
-    expect(validateMcpServers({ b: { type: 'sse', url: 'https://example.com/sse' } }).valid).toBe(
-      true,
-    );
+  it.each([
+    ['http', 'http://example.com/mcp'],
+    ['sse', 'http://example.com/sse'],
+    ['http', 'http://localhost:3000/mcp'],
+  ])('rejects plaintext %s URL %s', (type, url) => {
+    const res = validateMcpServers({ remote: { type, url } });
+    expect(res.valid).toBe(false);
+    expect(res.issues).toContainEqual({
+      path: 'remote.url',
+      code: 'https_required',
+      message: expect.stringMatching(/must use https:\/\//),
+    });
   });
 
   it('caps the number of servers', () => {
@@ -166,8 +198,31 @@ describe('validateMcpServers', () => {
     const res = validateMcpServers(many);
     expect(res.valid).toBe(false);
     expect(res.issues).toContainEqual(
-      expect.objectContaining({ message: expect.stringMatching(/Too many/) }),
+      expect.objectContaining({
+        code: 'too_many_servers',
+        message: expect.stringMatching(/Too many/),
+      }),
     );
+  });
+
+  it.each([
+    [{ '': { command: 'node' } }, '', 'server_name_required'],
+    [{ x: null }, 'x', 'invalid_type'],
+    [{ x: { command: 'node', args: 'bad' } }, 'x.args', 'invalid_type'],
+    [{ x: { command: 'node', env: { TOKEN: 42 } } }, 'x.env.TOKEN', 'invalid_type'],
+    [{ x: { type: 'http' } }, 'x.url', 'url_required'],
+    [{ x: { type: 'http', url: 'https://example.com', extra: true } }, 'x.extra', 'unknown_field'],
+    [{ x: { type: 'sse', url: 'https://example.com', headers: [] } }, 'x.headers', 'invalid_type'],
+    [
+      { x: { type: 'http', url: 'https://example.com', headers: { Auth: 42 } } },
+      'x.headers.Auth',
+      'invalid_type',
+    ],
+  ])('returns a coded issue for %j at %s', (servers, path, code) => {
+    expect(validateMcpServers(servers)).toEqual({
+      valid: false,
+      issues: [{ path, code, message: expect.any(String) }],
+    });
   });
 });
 
@@ -176,6 +231,7 @@ describe('validateMcpServersJson', () => {
     const res = validateMcpServersJson('{ not json');
     expect(res.valid).toBe(false);
     expect(res.issues[0].path).toBe('');
+    expect(res.issues[0].code).toBe('invalid_json');
     expect(res.issues[0].message).toMatch(/Invalid JSON/);
   });
 
@@ -264,6 +320,7 @@ describe('extractSecretRefs', () => {
     expect(issues).toContainEqual(
       expect.objectContaining({
         path: 's.command',
+        code: 'unsupported_secret_reference',
         message: expect.stringMatching(/only in `env` and `headers`/),
       }),
     );
@@ -274,7 +331,11 @@ describe('extractSecretRefs', () => {
       s: { command: 'npx', args: ['-y', '--api-key', '${KEY}'] },
     });
     expect(issues).toContainEqual(
-      expect.objectContaining({ path: 's.args[2]', message: expect.stringMatching(/only in/) }),
+      expect.objectContaining({
+        path: 's.args[2]',
+        code: 'unsupported_secret_reference',
+        message: expect.stringMatching(/only in/),
+      }),
     );
   });
 
@@ -283,7 +344,11 @@ describe('extractSecretRefs', () => {
       r: { type: 'http', url: 'https://e.com/${TENANT}/mcp' },
     });
     expect(issues).toContainEqual(
-      expect.objectContaining({ path: 'r.url', message: expect.stringMatching(/only in/) }),
+      expect.objectContaining({
+        path: 'r.url',
+        code: 'unsupported_secret_reference',
+        message: expect.stringMatching(/only in/),
+      }),
     );
   });
 
@@ -292,6 +357,7 @@ describe('extractSecretRefs', () => {
     expect(issues).toContainEqual(
       expect.objectContaining({
         path: 's.env.K',
+        code: 'invalid_secret_reference',
         message: expect.stringMatching(/Invalid secret reference/),
       }),
     );
@@ -323,7 +389,11 @@ describe('validateMcpServers — secret refs', () => {
     const res = validateMcpServers({ s: { command: 'npx', args: ['${KEY}'] } });
     expect(res.valid).toBe(false);
     expect(res.issues).toContainEqual(
-      expect.objectContaining({ path: 's.args[0]', message: expect.stringMatching(/only in/) }),
+      expect.objectContaining({
+        path: 's.args[0]',
+        code: 'unsupported_secret_reference',
+        message: expect.stringMatching(/only in/),
+      }),
     );
   });
 });
