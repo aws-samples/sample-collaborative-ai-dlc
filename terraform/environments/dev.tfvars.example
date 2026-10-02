@@ -17,6 +17,9 @@ kms_key_arn = ""
 # "all"           - every Lambda function
 lambda_vpc_scope = "required"
 
+# Optional AWS WAF protection for CloudFront, API Gateway, and Cognito.
+enable_waf = false
+
 # Bedrock model pinning (for claude and opencode drivers)
 bedrock_model = "us.anthropic.claude-sonnet-4-6"
 

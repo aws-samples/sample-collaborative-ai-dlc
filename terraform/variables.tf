@@ -115,6 +115,16 @@ variable "docker_build_args" {
 }
 
 # ---------------------------------------------------------------------------
+# AWS WAF (optional)
+# ---------------------------------------------------------------------------
+
+variable "enable_waf" {
+  description = "Create AWS WAF web ACLs for CloudFront and the regional API Gateway/Cognito resources"
+  type        = bool
+  default     = false
+}
+
+# ---------------------------------------------------------------------------
 # Authentication and enterprise federation
 # ---------------------------------------------------------------------------
 
