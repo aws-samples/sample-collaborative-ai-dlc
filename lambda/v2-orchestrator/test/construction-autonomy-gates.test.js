@@ -94,6 +94,7 @@ let deps;
 let ctx;
 let stageVerdicts;
 let execution;
+let recommendations;
 
 const makeRuntime = () =>
   vi.fn(async (payload) => {
@@ -144,6 +145,7 @@ beforeEach(() => {
   ctx = makeCtx();
   stageVerdicts = () => ({ ok: true, state: 'SUCCEEDED' });
   execution = { ...META };
+  recommendations = new Map();
   deps = {
     store: {
       getExecution: vi.fn(async () => execution),
@@ -162,7 +164,19 @@ beforeEach(() => {
       failRunningStageAttempt: vi.fn(async () => null),
       listUnits: vi.fn(async () => []),
       getUnit: vi.fn(async () => null),
-      getStage: vi.fn(async (_e, stageInstanceId) => ({ stageInstanceId, attempt: 0 })),
+      // Upstream keeps the loop-back recommendation on the STAGE ROW and clears it
+      // in its own step after the gate; the offer step itself is read-only.
+      getStage: vi.fn(async (_e, stageInstanceId) => ({
+        stageInstanceId,
+        attempt: 0,
+        ...(recommendations.has(stageInstanceId)
+          ? { loopBackRecommendation: recommendations.get(stageInstanceId) }
+          : {}),
+      })),
+      setLoopBackRecommendation: vi.fn(async ({ stageInstanceId, reason }) => {
+        if (reason) recommendations.set(stageInstanceId, reason);
+        else recommendations.delete(stageInstanceId);
+      }),
       listReceipts: vi.fn(async () => []),
       listEvents: vi.fn(async () => []),
       putReceipt: vi.fn(async (args) => args),
@@ -473,5 +487,119 @@ describe('construction autonomy: the lane ladder must not confer the sequential 
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
     // The lane field was never touched by the sequential walk.
     expect(execution.constructionAutonomyMode).toBe('gated');
+  });
+});
+
+describe('construction autonomy: the build-and-test loop-back', () => {
+  const LOOPBACK_PLAN = () => ({
+    valid: true,
+    plan: {
+      stages: [
+        ANCHOR,
+        constructionStage('code-generation', {
+          outputArtifacts: [{ artifact: 'code-generation-plan' }],
+        }),
+        constructionStage('build-and-test', { policy: { ...POLICY, loopBack: 'human-offered' } }),
+      ],
+    },
+  });
+
+  beforeEach(() => {
+    execution = { ...META, constructionGateAutonomy: 'autonomous', loopBackCount: 0 };
+    deps.loadPlan = vi.fn(async () => LOOPBACK_PLAN());
+    // The agent recorded a recommendation on build-and-test's row. The engine
+    // clears it in its own step after the gate, so it is offered exactly once —
+    // which is also what keeps this fixture from looping to the cap.
+    recommendations.set('si-build-and-test', 'three suites fail');
+  });
+
+  it('takes the jump itself, with the protocol marker as the recorded answer', async () => {
+    await run();
+    const recorded = eventsOfType('v2.loopback.recorded');
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].summary).toContain(
+      'Autonomous loop-back 1 per construction protocol module',
+    );
+    expect(execution.loopBackCount).toBe(1);
+    // The jump was taken without ever opening build-and-test's gate.
+    expect(gateFor('si-build-and-test')).toBeNull();
+  });
+
+  it.each([
+    {
+      name: 'a blocking gate sensor',
+      verdict: { ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] },
+      code: 'sensor_gate_blocking',
+    },
+    {
+      name: 'an INCONCLUSIVE blocking sensor',
+      verdict: {
+        ok: true,
+        state: 'SUCCEEDED',
+        gateSensorVerdicts: [{ ...BLOCKING_SENSOR, result: 'INCONCLUSIVE' }],
+      },
+      code: 'sensor_gate_blocking',
+    },
+    {
+      name: 'a terminal adversarial NOT-READY',
+      verdict: {
+        ok: true,
+        state: 'SUCCEEDED',
+        reviewAdvisory: { advisory: false, verdict: 'NOT-READY', reviewerAgent: 'arch-reviewer' },
+      },
+      code: 'review_not_ready',
+    },
+  ])(
+    'refuses to auto-rewind on $name and opens the human gate instead',
+    async ({ verdict, code }) => {
+      // The jump answers failing tests, never a blocking finding: rewinding here
+      // would discard the finding and silently re-run the work.
+      stageVerdicts = (stageId) =>
+        stageId === 'build-and-test' ? verdict : { ok: true, state: 'SUCCEEDED' };
+      await run();
+      expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+      const gate = gateFor('si-build-and-test');
+      expect(gate).not.toBeNull();
+      expect(gate.findings.map((item) => item.code)).toContain(code);
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+      // code-generation is legitimately waived; build-and-test must NOT be.
+      expect(
+        eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+      ).not.toContain('build-and-test');
+    },
+  );
+
+  it('still takes the jump when only ADVISORY findings accompany the failure', async () => {
+    stageVerdicts = (stageId) =>
+      stageId === 'build-and-test'
+        ? {
+            ok: true,
+            state: 'SUCCEEDED',
+            reviewAdvisory: {
+              advisory: true,
+              verdict: 'NOT-READY',
+              reviewerAgent: 'arch-reviewer',
+            },
+          }
+        : { ok: true, state: 'SUCCEEDED' };
+    await run();
+    // The jump is taken on the advisory evidence. (The later re-run then parks on
+    // its own gate, because `autoApprove` needs ZERO findings — advisory included.)
+    expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+    expect(deps.store.resetStageRow).toHaveBeenCalled();
+    expect(eventsOfType('v2.loopback.recorded')[0].summary).toContain(
+      'Autonomous loop-back 1 per construction protocol module',
+    );
+  });
+
+  it('halts at the cap instead of approving', async () => {
+    execution = { ...execution, loopBackCount: 3 };
+    await run();
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    const gate = gateFor('si-build-and-test');
+    expect(gate).not.toBeNull();
+    expect(
+      eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+    ).not.toContain('build-and-test');
   });
 });
