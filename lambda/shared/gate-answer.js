@@ -17,6 +17,12 @@ export const GATE_CHOICES = Object.freeze([
   'override-and-approve',
   'accept-as-is',
   LOOP_BACK_OPTION,
+  // The construction-autonomy escalation. Spelled literally rather than imported
+  // from construction-autonomy.js so this module stays dependency-free, and listed
+  // here so the answer endpoint's `gate_choice_not_offered` check can REJECT it on
+  // a gate that never offered it — an option missing from this list parses as null
+  // there, which silently skips that check.
+  'grant-autonomy',
 ]);
 
 // Parse a gate answer into one of `allowed`, tolerating the shapes the answer

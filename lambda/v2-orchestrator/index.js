@@ -59,6 +59,14 @@ import {
   LOOP_BACK_RECORDED_EVENT,
   resolveLoopBackOffer,
 } from '../shared/stage-loopback.js';
+import {
+  AUTONOMOUS_GATE_INPUT,
+  AUTONOMY_MODE_SET_EVENT,
+  GATE_AUTO_APPROVED_EVENT,
+  GRANT_AUTONOMY_OPTION,
+  autonomousGateApplies,
+  grantAutonomyOffered,
+} from '../shared/construction-autonomy.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import {
@@ -78,6 +86,7 @@ import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 // capability cannot be declared handled without the code that handles it.
 export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
   'policy.learnings.ritual@v1',
+  'protocol.construction-autonomy.gate-waiver@v1',
   'protocol.loopback.gate-offered@v1',
 ]);
 
@@ -92,7 +101,11 @@ const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 
 // Keep the gate's answer set in one pure function so the orchestrator and the
 // offline release matrix exercise the same three-outcome contract.
-export const buildGateOptions = ({ findings = [], loopBackOffered = false } = {}) => {
+export const buildGateOptions = ({
+  findings = [],
+  loopBackOffered = false,
+  autonomyGrantOffered = false,
+} = {}) => {
   const overridable = overridableFindings(findings);
   const blocked = findings.some((item) => item.severity === 'blocking');
   return [
@@ -102,6 +115,10 @@ export const buildGateOptions = ({ findings = [], loopBackOffered = false } = {}
         : ['request-changes']
       : ['approve', 'request-changes']),
     ...(loopBackOffered ? [LOOP_BACK_OPTION] : []),
+    // The autonomy escalation is an APPROVAL of this stage plus a grant for the
+    // rest of construction, so a blocked gate never offers it: the grant would
+    // waive gates the human is, right now, being told they must not waive.
+    ...(autonomyGrantOffered && !blocked ? [GRANT_AUTONOMY_OPTION] : []),
   ];
 };
 
@@ -115,6 +132,12 @@ const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
   Number(process.env.DURABLE_GATE_DEADLINE_MARGIN_SECONDS || 300);
 const MAX_STAGE_APPROVAL_DETAIL_BYTES = 300 * 1024;
+// Statuses that mean this run is over, checked by a waived construction gate
+// because it opens no gate row for `supersedeHumanTask` to reach. Cancel writes
+// CANCELLED. Delete removes the whole EXEC# partition instead, so the companion
+// `orchestratorRunId` check — not this set — is what catches a deleted or
+// relaunched intent.
+const RETIRED_STATUSES = new Set(['CANCELLED', 'SUCCEEDED']);
 
 // AgentCore requires a session id >= 33 chars; reuse ONE per intent so the
 // checkout stays warm across init-ws + every run-stage (matches scripts/phaseb.sh).
@@ -450,6 +473,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           summary,
           ...(extra.unitSlug !== undefined ? { unitSlug: extra.unitSlug } : {}),
           ...(extra.sectionIndex !== undefined ? { sectionIndex: extra.sectionIndex } : {}),
+          // Structured evidence, persisted rather than only broadcast. No caller
+          // passed either key before, so every existing event row is unchanged.
+          ...(extra.stageInstanceId !== undefined
+            ? { stageInstanceId: extra.stageInstanceId }
+            : {}),
+          ...(extra.detail !== undefined ? { detail: extra.detail } : {}),
         });
       } catch {
         /* events are best-effort telemetry */
@@ -1362,6 +1391,70 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // section names the section's first stage. null = final stage; the
           // gate reads as "Complete workflow".
           const nextStageId = nextStageIdAfter(runStages, stage);
+          // The intent's construction autonomy grant, RE-READ at the gate rather
+          // than taken from the META snapshot this run started with: a
+          // `grant-autonomy` answer at an earlier gate of this same run changes it.
+          // Guarded on the resolved policy so an unpinned gate — or a release with
+          // no construction protocol — records no extra durable operation and its
+          // history stays byte-identical. A failed read reads as gated, which is
+          // the fail-closed direction: the human gate opens.
+          //
+          // The SAME read carries the cancel/rewind check. A waived gate opens no
+          // gate row, so `supersedeHumanTask` has nothing to supersede and cancel
+          // cannot reach it — the live-ownership test that every parked gate does
+          // (`run-owner-*`) is this walk's only stopping point, so it has to happen
+          // here, before anything is auto-approved.
+          const autonomyRead =
+            stage.policy?.constructionAutonomy === 'native'
+              ? await ctx.step(
+                  `autonomy-mode-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                  async () => {
+                    try {
+                      const execution = await store.getExecution(executionId, {
+                        consistentRead: true,
+                      });
+                      const ownerRunId = execution?.orchestratorRunId ?? null;
+                      return {
+                        mode: execution?.constructionGateAutonomy ?? null,
+                        retired:
+                          (Boolean(runId) && Boolean(ownerRunId) && ownerRunId !== runId) ||
+                          RETIRED_STATUSES.has(String(execution?.status ?? '')),
+                      };
+                    } catch (error) {
+                      logger.error(
+                        'Construction autonomy read failed; treating the gate as gated',
+                        error,
+                      );
+                      return { mode: null, retired: false };
+                    }
+                  },
+                )
+              : { mode: null, retired: false };
+          if (autonomyRead.retired) {
+            logger.info('run retired while an autonomous gate was being decided', {
+              executionId,
+              stageId: stage.stageId,
+            });
+            return { ok: false, reason: 'retired', intentId };
+          }
+          const autonomyMode = autonomyRead.mode;
+          // Whether the grant could waive THIS gate at all, computed before the
+          // evidence is judged because it changes HOW the evidence is judged (a
+          // waivable gate treats a terminal adversarial NOT-READY as blocking).
+          const autonomyWaivable = (() => {
+            try {
+              return autonomousGateApplies({
+                mode: autonomyMode,
+                stage,
+                stages,
+                skippedStageIds: [...intentSkipIds, ...dynamicSkipIds],
+                fanoutGateNeeded,
+              });
+            } catch (error) {
+              logger.error('Construction autonomy decision failed; opening the human gate', error);
+              return false;
+            }
+          })();
           // Gate preconditions. The stage result carries
           // what only the runner could observe (the workspace); the receipts and
           // stamps are RE-READ here rather than trusted from that result, so the
@@ -1406,6 +1499,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     // leaves `producedArtifacts` null, which the evaluator treats as
                     // "not observed" and never reports as missing.
                     producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads),
+                    // A gate this grant may waive is judged more strictly: see
+                    // `autonomyGoverned` in gate-preconditions.js.
+                    autonomyGoverned: autonomyWaivable,
                   });
                   const merged = mergeFindings(outcome.result?.findings ?? [], reread.findings);
                   // Logged inside the step so a durable replay does not repeat it: an
@@ -1484,53 +1580,119 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               : { offer: { offered: false }, recommended: false };
           const loopBack = loopBackLookup.offer;
           const overridable = overridableFindings(gateFindings);
+          // Whether this gate may be waived, and whether it may offer the
+          // escalation. Both predicates are pure and both fail closed: anything
+          // unexpected leaves `autoApprove` false, which opens the ordinary gate.
+          let autoApprove = false;
+          let autonomyGrantOffered = false;
+          try {
+            // At the cap the option is withheld and upstream halts: the bound is
+            // one of the two cases autonomy stops to consult the human, so the
+            // gate must open even though nothing in the evidence blocks.
+            autoApprove = autonomyWaivable && !loopBack.atCap && gateFindings.length === 0;
+            autonomyGrantOffered = grantAutonomyOffered({
+              mode: autonomyMode,
+              stage,
+              stages,
+              skippedStageIds: [...intentSkipIds, ...dynamicSkipIds],
+            });
+          } catch (error) {
+            logger.error('Construction autonomy decision failed; opening the human gate', error);
+            autoApprove = false;
+            autonomyGrantOffered = false;
+          }
           // Blocking findings require an explicit override; the loop-back, when
           // offered, remains a third option on this same gate.
           const gateOptions = buildGateOptions({
             findings: gateFindings,
             loopBackOffered: loopBack.offered,
+            autonomyGrantOffered,
           });
-          const validation = await awaitEngineGate(ctx, sectionToolkit, {
-            name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-            kind: 'validation',
-            stageInstanceId: stage.stageInstanceId ?? null,
-            prompt: [
-              validationPrompt({
-                stage,
-                outputArtifactTypes,
-                round: validationRound,
-                skipTargets: gateSkipTargets,
+          // The waived gate. It is never OPENED: opening it would park the run on
+          // a callback nobody is going to answer, which is the opposite of what the
+          // grant asked for. Instead the approved answer is synthesized and the run
+          // continues down the EXACT path a human `approve` takes — same validated
+          // event, same attempt-scoped `stage-approval` receipt (whose durable step
+          // makes a replay write it once), same advance. The receipt carries the
+          // protocol's marker input so an audit reader can tell a waived gate from
+          // a human one without correlating timestamps. The loop-back clear step
+          // below still runs either way: it is keyed on a recommendation having
+          // been READ, not on a gate having been opened.
+          if (autoApprove) {
+            await emitEvent(
+              ctx,
+              `gate-auto-approved-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+              GATE_AUTO_APPROVED_EVENT,
+              `Stage ${stage.stageId} approved without a human gate (construction autonomy)`,
+              {
+                stageInstanceId: stage.stageInstanceId ?? null,
+                detail: {
+                  mode: 'autonomous',
+                  stageId: stage.stageId,
+                  attempt: Number(outcome.result?.attempt ?? 0),
+                  userInput: AUTONOMOUS_GATE_INPUT,
+                  evidence: {
+                    producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads) ?? [],
+                    gateSensorVerdicts: (outcome.result?.gateSensorVerdicts ?? []).map(
+                      (verdict) => verdict?.sensorId ?? null,
+                    ),
+                    reviewVerdict: outcome.result?.reviewAdvisory?.verdict ?? null,
+                  },
+                },
+              },
+            );
+          }
+          const validation = autoApprove
+            ? {
+                gate: {
+                  humanTaskId: null,
+                  status: 'approved',
+                  answer: { decision: 'approve', userInput: AUTONOMOUS_GATE_INPUT },
+                  answeredBy: null,
+                  answeredByName: AUTONOMOUS_GATE_INPUT,
+                },
+              }
+            : await awaitEngineGate(ctx, sectionToolkit, {
+                name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                kind: 'validation',
+                stageInstanceId: stage.stageInstanceId ?? null,
+                prompt: [
+                  validationPrompt({
+                    stage,
+                    outputArtifactTypes,
+                    round: validationRound,
+                    skipTargets: gateSkipTargets,
+                    nextStageId,
+                    recomposeTargets: gateRecomposeTargets,
+                    findings: gateFindings,
+                    learnings: learningsRitual ? { candidates: learningCandidates } : null,
+                    loopBack,
+                  }),
+                  // A2 rules 2/7/8: the unit-DAG stage's gate presents the fan-out
+                  // plan (units, waves, skeleton pick, skip matrix) and accepts
+                  // structured overrides on the approve answer.
+                  ...(fanoutGateNeeded
+                    ? [
+                        '',
+                        fanoutGateAddendum({
+                          sectionIndex: fanoutSection.index,
+                          unitPlan: unitPlanForGate,
+                          sectionStages: fanoutSection.stages,
+                          skeleton: defaultSkeletonFor(unitPlanForGate),
+                        }),
+                      ]
+                    : []),
+                ].join('\n'),
+                options: gateOptions,
                 nextStageId,
-                recomposeTargets: gateRecomposeTargets,
-                findings: gateFindings,
-                learnings: learningsRitual ? { candidates: learningCandidates } : null,
-                loopBack,
-              }),
-              // A2 rules 2/7/8: the unit-DAG stage's gate presents the fan-out
-              // plan (units, waves, skeleton pick, skip matrix) and accepts
-              // structured overrides on the approve answer.
-              ...(fanoutGateNeeded
-                ? [
-                    '',
-                    fanoutGateAddendum({
-                      sectionIndex: fanoutSection.index,
-                      unitPlan: unitPlanForGate,
-                      sectionStages: fanoutSection.stages,
-                      skeleton: defaultSkeletonFor(unitPlanForGate),
-                    }),
-                  ]
-                : []),
-            ].join('\n'),
-            options: gateOptions,
-            nextStageId,
-            ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
-            ...(gateRecomposeTargets.length ? { recomposeTargets: gateRecomposeTargets } : {}),
-            ...(gateFindings.length ? { findings: gateFindings } : {}),
-            ...(learningsRitual ? { learningsRitual: true } : {}),
-            ...(loopBack.offered
-              ? { loopBackTarget: loopBack.target.stageId, loopBackReason: loopBack.reason }
-              : {}),
-          });
+                ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
+                ...(gateRecomposeTargets.length ? { recomposeTargets: gateRecomposeTargets } : {}),
+                ...(gateFindings.length ? { findings: gateFindings } : {}),
+                ...(learningsRitual ? { learningsRitual: true } : {}),
+                ...(loopBack.offered
+                  ? { loopBackTarget: loopBack.target.stageId, loopBackReason: loopBack.reason }
+                  : {}),
+              });
           // The gate holds the offer now, so the next validation round starts
           // without a recommendation unless the agent records a new one.
           if (loopBackLookup.recommended) {
@@ -1712,7 +1874,54 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               },
             );
           }
-          const choice = answered === 'override-and-approve' ? 'approve' : answered;
+          // Granting autonomy IS approving this stage, plus a standing grant for
+          // the rest of construction. Recorded BEFORE the stage is marked
+          // validated, so a crash between the two leaves the grant on the record
+          // rather than an approval whose grant was lost. The write is by value, so
+          // a durable replay of this step converges on the same mode.
+          if (answered === GRANT_AUTONOMY_OPTION && autonomyGrantOffered) {
+            await ctx.step(
+              `autonomy-grant-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+              () =>
+                store.updateExecution({
+                  executionId,
+                  constructionGateAutonomy: 'autonomous',
+                  constructionGateAutonomyGrant: {
+                    source: 'gate',
+                    stageId: stage.stageId,
+                    grantedAt: nowIso(),
+                    grantedBy: validation.gate?.answeredBy ?? null,
+                    grantedByName: validation.gate?.answeredByName ?? null,
+                  },
+                }),
+            );
+            await emitEvent(
+              ctx,
+              `autonomy-grant-event-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+              AUTONOMY_MODE_SET_EVENT,
+              `${validation.gate?.answeredByName || 'Someone'} set construction autonomy to autonomous at ${stage.stageId}`,
+              {
+                stageInstanceId: stage.stageInstanceId ?? null,
+                detail: {
+                  mode: 'autonomous',
+                  grantedAt: nowIso(),
+                  grantedBy: validation.gate?.answeredBy ?? null,
+                  grantedByName: validation.gate?.answeredByName ?? null,
+                  stageId: stage.stageId,
+                },
+              },
+            );
+          }
+          const choice =
+            answered === 'override-and-approve' ||
+            (answered === GRANT_AUTONOMY_OPTION && autonomyGrantOffered)
+              ? 'approve'
+              : answered === GRANT_AUTONOMY_OPTION
+                ? // The grant was not on offer at this gate, so the answer carries no
+                  // approval either: re-running the stage is the only safe reading,
+                  // exactly as for any other option the gate never presented.
+                  'request-changes'
+                : answered;
           if (choice === 'approve') {
             await emitEvent(
               ctx,
@@ -1744,6 +1953,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   const detail = {
                     ...stageApprovalOverride,
                     approvedInputs,
+                    // Upstream mandates a marker string on an autonomous
+                    // completion, so the receipt — not just the timeline — says
+                    // which gates a human actually stood at.
+                    ...(autoApprove ? { autonomous: true, userInput: AUTONOMOUS_GATE_INPUT } : {}),
                     ...(learningsRitual
                       ? {
                           learnings: gateLearnings(validation.gate?.answer) ? 'offered' : 'none',

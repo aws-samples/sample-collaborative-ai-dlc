@@ -36,8 +36,9 @@ import {
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
+import { constructionAutonomyApplies } from '../shared/construction-autonomy.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
-import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
+import { CONSTRUCTION_AUTONOMY_MODES, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -1339,6 +1340,7 @@ const mapIntent = (meta) => ({
   parkReleaseSeconds: meta.parkReleaseSeconds ?? null,
   maxParallelUnits: meta.maxParallelUnits ?? null,
   constructionAutonomyMode: meta.constructionAutonomyMode ?? null,
+  constructionGateAutonomy: meta.constructionGateAutonomy ?? null,
   prStrategy: meta.prStrategy ?? null,
   stageSkipping: meta.stageSkipping ?? null,
   skipStageIds: meta.skipStageIds ?? null,
@@ -5240,6 +5242,28 @@ export const handler = async (event, context) => {
         typeof data.methodologyReleaseId === 'string' && data.methodologyReleaseId
           ? data.methodologyReleaseId
           : null;
+      // Construction Autonomy Mode, frozen onto the intent at create. The human
+      // typing this create request IS the grant, which is what upstream's
+      // human-presence guard exists to prove — so the field is accepted here and
+      // nowhere an unattended run could reach. Absent and null both leave the
+      // intent gated; a malformed value is a client bug, not an opt-out, because
+      // silently dropping it would run a gated intent while the caller believes
+      // it asked for autonomy.
+      if (
+        Object.hasOwn(data, 'constructionGateAutonomy') &&
+        data.constructionGateAutonomy !== null &&
+        !CONSTRUCTION_AUTONOMY_MODES.includes(data.constructionGateAutonomy)
+      ) {
+        return response(400, {
+          error: `constructionGateAutonomy must be one of ${CONSTRUCTION_AUTONOMY_MODES.join(', ')}, or null`,
+          code: 'construction_autonomy_mode_invalid',
+        });
+      }
+      const requestedAutonomyMode = CONSTRUCTION_AUTONOMY_MODES.includes(
+        data.constructionGateAutonomy,
+      )
+        ? data.constructionGateAutonomy
+        : null;
       if (requestedReleaseId && AIDLC_RELEASE_PINNING() !== 'on') {
         return response(400, {
           error: 'Per-intent AI-DLC release selection is disabled',
@@ -5423,6 +5447,11 @@ export const handler = async (event, context) => {
       }
       workflowVersion = planCheck.workflowVersion ?? workflowVersion;
       const planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+      // The capability map of the plan the intent will actually run. Only a
+      // release-mode plan resolves one, which is exactly the boundary the autonomy
+      // grant needs: an unpinned intent has no authored protocol to honour.
+      // Re-stamped below if the deployment-ref auto-pin replaces this plan.
+      let resolvedCapabilities = planCheck.plan?.capabilities ?? null;
       let aidlcRepoRef = null;
       // A selected release IS the source of truth for the ref, so the network
       // lookup of the deployment ref is skipped: resolving an unrelated ref
@@ -5595,6 +5624,7 @@ export const handler = async (event, context) => {
             if (releasePlan.valid) {
               methodologyRelease = candidatePin;
               methodologyPins = releasePlan.methodologyPins;
+              resolvedCapabilities = releasePlan.plan?.capabilities ?? null;
               workflowVersion = releasePlan.workflowVersion ?? workflowVersion;
               if (skippedStableReleaseId) {
                 logger.info(
@@ -5715,6 +5745,21 @@ export const handler = async (event, context) => {
         if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
         return response(409, { error: error.message, code: error.code });
       }
+      // Refuse the grant the resolved methodology cannot honour, before the
+      // execution exists. An unpinned intent, or a release whose closure ships no
+      // construction protocol, has no authored autonomy to reproduce — accepting
+      // the field there would persist a grant the gate walk ignores, which reads
+      // to the operator as autonomy that silently never happened.
+      if (
+        requestedAutonomyMode &&
+        !constructionAutonomyApplies({ capabilities: resolvedCapabilities ?? {} })
+      ) {
+        return response(400, {
+          error:
+            'constructionGateAutonomy needs an AI-DLC release whose methodology authors the construction autonomy protocol',
+          code: 'construction_autonomy_unavailable',
+        });
+      }
       const meta = await store.createExecution({
         executionId: newIntentId,
         projectId,
@@ -5744,6 +5789,15 @@ export const handler = async (event, context) => {
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,
         prStrategy,
+        constructionGateAutonomy: requestedAutonomyMode,
+        constructionGateAutonomyGrant: requestedAutonomyMode
+          ? {
+              source: 'create',
+              grantedAt: new Date().toISOString(),
+              grantedBy: sub,
+              grantedByName: null,
+            }
+          : null,
         stageSkipping,
         skipStageIds,
         composedGrid,
