@@ -1355,10 +1355,13 @@ export const runStage = async (
     if (!validation.valid) {
       // Report field paths, not raw config values that might contain secrets.
       const fields = validation.issues.map(({ path }) => path || '<root>').join(', ');
+      const httpsHint = validation.issues.some(({ code }) => code === 'https_required')
+        ? ' Remote MCP URLs must use https://.'
+        : '';
       return fail(
         stageInstanceId,
         'mcp_config_error',
-        `Invalid ${tier} MCP configuration at ${fields}. Update MCP settings; remote URLs must use https://.`,
+        `Invalid ${tier} MCP configuration at ${fields}.${httpsHint} Correct MCP settings, then retry the intent to reload the corrected configuration.`,
       );
     }
   }

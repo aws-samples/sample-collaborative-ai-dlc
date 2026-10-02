@@ -82,6 +82,7 @@ function scanRefsInString(str, path, refs, issues) {
     if (!SECRET_VAR_NAME.test(name)) {
       issues.push({
         path,
+        code: 'invalid_secret_reference',
         message:
           `Invalid secret reference \`\${${name}}\` — variable names must match ` +
           `${SECRET_VAR_NAME.source} (letters, digits, underscore; not starting with a digit).`,
@@ -99,7 +100,11 @@ function rejectRefsInString(str, path, issues) {
   for (const m of str.matchAll(SECRET_REF_TOKEN)) {
     // The name may be malformed; report the unsupported-field problem regardless
     // (that is the primary, actionable error here).
-    issues.push({ path, message: unsupportedRefMessage(m[1]) });
+    issues.push({
+      path,
+      code: 'unsupported_secret_reference',
+      message: unsupportedRefMessage(m[1]),
+    });
   }
 }
 
@@ -111,7 +116,7 @@ function rejectRefsInString(str, path, issues) {
  * runtime runs it on the global map and the project map SEPARATELY (never on a
  * merged map), letting each tier's refs resolve against that tier's SSM prefix.
  *
- * Returns `{ refs: Set<string>, issues: Array<{path,message}> }`.
+ * Returns `{ refs: Set<string>, issues: Array<{path,code,message}> }`.
  */
 function extractSecretRefs(servers) {
   const refs = new Set();
@@ -153,6 +158,7 @@ function validateStringMap(obj, path, issues, kind) {
   if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
     issues.push({
       path,
+      code: 'invalid_type',
       message: `Expected ${kind} to be an object of string values (e.g. {"KEY":"value"}); got ${describe(obj)}.`,
     });
     return;
@@ -161,6 +167,7 @@ function validateStringMap(obj, path, issues, kind) {
     if (typeof value !== 'string') {
       issues.push({
         path: `${path}.${key}`,
+        code: 'invalid_type',
         message: `Expected string; got ${describe(value)}.`,
       });
     }
@@ -172,6 +179,7 @@ function validateStdio(server, path, issues) {
     if (!STDIO_ALLOWED_KEYS.has(key)) {
       issues.push({
         path: `${path}.${key}`,
+        code: 'unknown_field',
         message: `Unknown key "${key}" for stdio MCP server. Allowed: ${[...STDIO_ALLOWED_KEYS].join(', ')}.`,
       });
     }
@@ -179,11 +187,13 @@ function validateStdio(server, path, issues) {
   if (typeof server.command !== 'string' || server.command.length === 0) {
     issues.push({
       path: `${path}.command`,
+      code: 'command_required',
       message: 'Required non-empty string (the MCP server executable, e.g. "npx").',
     });
   } else if (!server.command.includes('/') && !KNOWN_AGENT_IMAGE_MCP_COMMANDS.has(server.command)) {
     issues.push({
       path: `${path}.command`,
+      code: 'unknown_command',
       message: `Unknown executable "${server.command}". Use an absolute path or one of: ${[
         ...KNOWN_AGENT_IMAGE_MCP_COMMANDS,
       ].join(', ')}.`,
@@ -193,6 +203,7 @@ function validateStdio(server, path, issues) {
     if (!Array.isArray(server.args)) {
       issues.push({
         path: `${path}.args`,
+        code: 'invalid_type',
         message: `Expected array of strings (omit or use [] if none); got ${describe(server.args)}.`,
       });
     } else {
@@ -200,6 +211,7 @@ function validateStdio(server, path, issues) {
         if (typeof arg !== 'string') {
           issues.push({
             path: `${path}.args[${i}]`,
+            code: 'invalid_type',
             message: `Expected string; got ${describe(arg)}.`,
           });
         }
@@ -216,12 +228,17 @@ function validateHttpOrSse(server, path, issues, type) {
     if (!HTTP_ALLOWED_KEYS.has(key)) {
       issues.push({
         path: `${path}.${key}`,
+        code: 'unknown_field',
         message: `Unknown key "${key}" for ${type} MCP server. Allowed: ${[...HTTP_ALLOWED_KEYS].join(', ')}.`,
       });
     }
   }
   if (typeof server.url !== 'string' || server.url.length === 0) {
-    issues.push({ path: `${path}.url`, message: 'Required non-empty string.' });
+    issues.push({
+      path: `${path}.url`,
+      code: 'url_required',
+      message: 'Required non-empty string.',
+    });
   } else {
     let parsed;
     try {
@@ -230,12 +247,17 @@ function validateHttpOrSse(server, path, issues, type) {
       parsed = null;
     }
     if (!parsed) {
-      issues.push({ path: `${path}.url`, message: `Invalid URL: "${server.url}".` });
+      issues.push({
+        path: `${path}.url`,
+        code: 'invalid_url',
+        message: `Invalid URL: "${server.url}".`,
+      });
     } else if (parsed.protocol !== 'https:') {
       // Remote MCP traffic can carry credentials and workspace content.
       // The transport type remains http/sse, but its URL must use TLS.
       issues.push({
         path: `${path}.url`,
+        code: 'https_required',
         message: `Remote MCP URL must use https:// (got "${parsed.protocol}//"). Configure an HTTPS endpoint.`,
       });
     }
@@ -247,7 +269,11 @@ function validateHttpOrSse(server, path, issues, type) {
 
 function validateServer(server, path, issues) {
   if (server === null || typeof server !== 'object' || Array.isArray(server)) {
-    issues.push({ path, message: `Expected an object; got ${describe(server)}.` });
+    issues.push({
+      path,
+      code: 'invalid_type',
+      message: `Expected an object; got ${describe(server)}.`,
+    });
     return;
   }
   // Determine transport. Default: stdio (matches Claude/Kiro). Reject unknown
@@ -259,6 +285,7 @@ function validateServer(server, path, issues) {
     if (server && typeof server === 'object' && 'url' in server) {
       issues.push({
         path: `${path}.type`,
+        code: 'transport_required',
         message: 'Remote servers require an explicit "type" of "http" or "sse" alongside "url".',
       });
       return;
@@ -267,6 +294,7 @@ function validateServer(server, path, issues) {
   } else if (typeof type !== 'string' || !ALLOWED_TYPES.has(type)) {
     issues.push({
       path: `${path}.type`,
+      code: 'invalid_transport',
       message: `Expected one of "stdio", "http", "sse"; got ${JSON.stringify(server.type)}.`,
     });
     return; // can't validate further without a known transport
@@ -279,14 +307,16 @@ function validateServer(server, path, issues) {
  * Validate a parsed custom MCP servers value (already-parsed JSON, expected to
  * be an OBJECT keyed by server name). Returns `{ valid, issues }`.
  *
- * Issues have the shape `{ path, message }` where `path` is a JSON-ish locator
- * like `aws-mcp.env.TOKEN` so the UI can point at the exact field.
+ * Issues have the shape `{ path, code, message }` where `path` is a JSON-ish locator
+ * like `aws-mcp.env.TOKEN` so the UI can point at the exact field. `code` is a
+ * stable identifier for callers; `message` is the human-readable explanation.
  */
 function validateMcpServers(value) {
   const issues = [];
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     issues.push({
       path: '',
+      code: 'invalid_type',
       message: `Expected a JSON object of MCP servers keyed by name; got ${describe(value)}.`,
     });
     return { valid: false, issues };
@@ -295,17 +325,23 @@ function validateMcpServers(value) {
   if (names.length > MAX_SERVERS) {
     issues.push({
       path: '',
+      code: 'too_many_servers',
       message: `Too many MCP servers (${names.length}). Maximum is ${MAX_SERVERS}.`,
     });
   }
   for (const name of names) {
     if (name.length === 0) {
-      issues.push({ path: name, message: 'Server name must be a non-empty string.' });
+      issues.push({
+        path: name,
+        code: 'server_name_required',
+        message: 'Server name must be a non-empty string.',
+      });
       continue;
     }
     if (RESERVED_SERVER_NAMES.has(name)) {
       issues.push({
         path: name,
+        code: 'reserved_server_name',
         message: `"${name}" is a reserved server name and cannot be used.`,
       });
       continue;
@@ -331,7 +367,7 @@ function validateMcpServersJson(jsonString) {
   } catch (err) {
     return {
       valid: false,
-      issues: [{ path: '', message: `Invalid JSON: ${err.message}.` }],
+      issues: [{ path: '', code: 'invalid_json', message: `Invalid JSON: ${err.message}.` }],
     };
   }
   return validateMcpServers(parsed);
