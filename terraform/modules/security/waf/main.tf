@@ -33,6 +33,19 @@ resource "aws_wafv2_web_acl" "cloudfront" {
         managed_rule_group_statement {
           name        = rule.key
           vendor_name = "AWS"
+
+          # Draft/artifact bodies exceed 8 KB; realtime token queries exceed 2 KB.
+          # Count these size matches while retaining the other managed rules.
+          dynamic "rule_action_override" {
+            for_each = rule.key == "AWSManagedRulesCommonRuleSet" ? ["SizeRestrictions_BODY", "SizeRestrictions_QUERYSTRING"] : []
+
+            content {
+              name = rule_action_override.value
+              action_to_use {
+                count {}
+              }
+            }
+          }
         }
       }
 
@@ -81,6 +94,19 @@ resource "aws_wafv2_web_acl" "regional" {
         managed_rule_group_statement {
           name        = rule.key
           vendor_name = "AWS"
+
+          # API requests also cross this ACL. The managed 8 KB threshold is
+          # independent of the configurable body inspection limit.
+          dynamic "rule_action_override" {
+            for_each = rule.key == "AWSManagedRulesCommonRuleSet" ? ["SizeRestrictions_BODY"] : []
+
+            content {
+              name = rule_action_override.value
+              action_to_use {
+                count {}
+              }
+            }
+          }
         }
       }
 
