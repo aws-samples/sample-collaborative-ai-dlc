@@ -1654,26 +1654,22 @@ describe('promotion of a record registered before protocol evidence existed', ()
     return row;
   };
 
-  it('re-evaluates the closure, so the loop-back protocol is judged too', async () => {
+  it('re-evaluates the closure, and promotes it once the loop-back is handled', async () => {
     const row = await registeredEarlier();
 
-    await expect(
-      updateRelease({
-        ...registryArgs(),
-        s3,
-        bucket: BUCKET,
-        releaseId: CANDIDATE_RELEASE_ID,
-        expectedRevision: row.revision,
-        patch: { supportState: 'selectable' },
-        actor: 'admin-1',
-      }),
-    ).rejects.toMatchObject({
-      code: 'release_capability_unhandled',
-      details: {
-        gaps: expect.arrayContaining([
-          { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
-        ]),
-      },
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: CANDIDATE_RELEASE_ID,
+      expectedRevision: row.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
+    expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
+      fidelityEvidenceRevision: 2,
     });
   });
 
@@ -1687,7 +1683,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
 });
 
 describe('admin listing of a record registered before protocol evidence existed', () => {
-  it('reports what promotion would refuse instead of the stored list', async () => {
+  it('reports what promotion decides once the loop-back is handled', async () => {
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
     const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
     const row = { ...rows.get(key), fidelityGaps: [] };
@@ -1697,10 +1693,6 @@ describe('admin listing of a record registered before protocol evidence existed'
     const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(listed.unhonouredValues).toEqual(
-      expect.arrayContaining([
-        { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
-      ]),
-    );
+    expect(listed.unhonouredValues).toEqual([]);
   });
 });

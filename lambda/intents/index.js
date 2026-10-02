@@ -132,7 +132,12 @@ import {
   pendingAttachmentDeletions,
   validateAttachmentDescriptor,
 } from '../shared/intent-attachments.js';
-import { GATE_CHOICES, OVERRIDE_REASON_MAX, parseChoice } from '../shared/gate-answer.js';
+import {
+  GATE_CHOICES,
+  LOOP_BACK_OPTION,
+  OVERRIDE_REASON_MAX,
+  parseChoice,
+} from '../shared/gate-answer.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -2673,6 +2678,14 @@ export const handler = async (event, context) => {
           return response(400, {
             error: `This gate offers ${offered.join(', ')}; "${chosen}" is not one of them`,
             code: 'gate_choice_not_offered',
+          });
+        }
+        // Orchestrator code that predates the loop-back reads a rejected answer
+        // as request-changes; any other status would be misread on a rollback.
+        if (chosen === LOOP_BACK_OPTION && answerStatus !== 'rejected') {
+          return response(400, {
+            error: 'A loop-back answer must be recorded with status "rejected"',
+            code: 'loop_back_status_invalid',
           });
         }
       }
@@ -6340,6 +6353,10 @@ const mapHumanTask = (h) => ({
   // Absent (not false) on every gate that does not run it, so the UI's own
   // default decides rather than a value the backend never computed.
   ...('learningsRitual' in h ? { learningsRitual: h.learningsRitual ?? false } : {}),
+  // The stage a `loop-back` answer sends the run back to. Absent
+  // (not null) on every gate that does not offer the option, so the review panel
+  // renders no third button rather than one with an empty target.
+  ...('loopBackTarget' in h ? { loopBackTarget: h.loopBackTarget ?? null } : {}),
   // The computed next stage a plain approve continues to (upstream 2.2.6):
   // string = stageId, null = approving completes the workflow. Omitted (not
   // null) on legacy rows / gates where it was never computed, so the UI can

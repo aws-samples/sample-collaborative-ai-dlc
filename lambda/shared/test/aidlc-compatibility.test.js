@@ -331,9 +331,8 @@ describe('offline exact-source fixtures', () => {
       expect.arrayContaining(['STAGE:summary_confirmation']),
     );
     expect(reports['v2.9.0'].fidelity.unsupported).toEqual([]);
-    // Every authored value is handled; the release is withheld only for the
-    // build-and-test loop-back protocol, which no handler reproduces yet.
-    expect(reports['v2.9.0'].readyForCertification).toBe(false);
+    // Every authored value and the build-and-test loop-back protocol are handled.
+    expect(reports['v2.9.0'].readyForCertification).toBe(true);
     // The 2.3.3-era baseline carries no release-policy field. It does carry
     // `mode` (native) and `workspace_requires` (approximated), so the report
     // names both rather than leaving them unclassified.
@@ -928,12 +927,9 @@ describe('certification gaps of the upstream fixtures', () => {
   });
 
   it.each(['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'])(
-    'withholds %s for the build-and-test loop-back only',
+    'certifies %s once the loop-back is offered at the gate',
     (profileId) => {
-      expect(gapsOf(profileId)).toEqual({
-        ready: false,
-        gaps: ['PROTOCOL:build-and-test-loopback=present'],
-      });
+      expect(gapsOf(profileId)).toEqual({ ready: true, gaps: [] });
     },
   );
 });

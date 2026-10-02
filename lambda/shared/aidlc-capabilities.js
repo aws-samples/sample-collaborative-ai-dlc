@@ -53,6 +53,7 @@ const RUNTIME_HANDLERS = Object.freeze(
     'policy.skeleton.switch@v1',
     'policy.summary-confirmation.off@v1',
     'prompt.learnings@v1',
+    'protocol.loopback.gate-offered@v1',
     'protocol.plan-approval.outcome-gate@v1',
     'review.adversarial@v1',
     'review.advisory-findings@v1',
@@ -376,21 +377,23 @@ const AIDLC_CAPABILITIES = Object.freeze([
   // frontmatter field, so it is keyed on the closure shipping that protocol at
   // all: 2.3.3 has no construction protocol (inert), 2.6.18+ do. Like
   // PROTOCOL:plan-approval it never appears in the frontmatter fidelity report.
-  // Classified `unsupported` until a runtime handler routes the loop-back, so
-  // the promotion guard refuses every release that ships the protocol.
   Object.freeze({
     key: 'PROTOCOL:build-and-test-loopback',
     blockType: 'PROTOCOL',
     field: 'build-and-test-loopback',
     planKey: null,
     policy: null,
-    handling: 'unsupported',
-    handler: null,
+    handling: 'approximated',
+    handler: 'protocol.loopback.gate-offered@v1',
     values: null,
     defaultWhenAbsent: null,
     capabilityPresentIf:
       'runtimeFilePresent:core/aidlc-common/protocols/stage-protocol-construction.md',
-    note: 'Upstream loops build-and-test back to code generation, up to three times per intent. No runtime handler reproduces the loop-back yet, so a release that ships the construction protocol is not promotable.',
+    // The target is derived from the plan, never from a stage id: the code
+    // generation stage immediately before (see `stage-loopback.js`, which reads
+    // the same output slug as PLAN_APPROVAL).
+    appliesTo: `in-scope stage immediately before the current one, with workspaceRequires === true || produces includes ${PLAN_APPROVAL_ARTIFACT}`,
+    note: 'Upstream loops build-and-test back to code generation AUTONOMOUSLY, up to three times per intent. The platform reproduces the bound and the routing but OFFERS the jump to the human at the validation gate build-and-test already has: the agent records a recommendation through `emit_stage_note`\u2019s `loopBackRecommended` field (written by the platform onto the stage row, never parsed from prose), and the gate then carries a third `loop-back` option naming the code-generation stage immediately before. Choosing it resets both stage rows, which bumps their attempt and makes every prior plan-approval and review receipt invisible, and re-runs code generation with the reason and the reviewer\u2019s feedback. At three recorded loop-backs the option is withheld and the gate says so. `approximated`, not `native`: the bound is faithful, the autonomy is deliberately not. Residual: in scopes that run code generation per unit (classic, enterprise, feature, mvp, workshop) build-and-test has no linear target, so the gate shows the recommendation as a note and those scopes keep the rewind API.',
   }),
 ]);
 

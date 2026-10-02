@@ -319,26 +319,32 @@ export function StageReviewPanel({
     ? gate.options.filter((option): option is string => typeof option === 'string')
     : [];
   const canOverride = gateOptions.includes('override-and-approve');
+  // The build-and-test loop-back: offered only when the engine named the
+  // code-generation stage it goes back to. Like request-changes it records as
+  // rejected, with the reviewer's feedback, so the re-run is told why.
+  const loopBackTarget = gateOptions.includes('loop-back') ? (gate.loopBackTarget ?? null) : null;
   const gateFindings = gate.findings ?? [];
   const blockingFindingCount = gateFindings.filter((item) => item.severity === 'blocking').length;
   const canApprove = gateOptions.length === 0 || gateOptions.includes('approve');
-  const submit = async (decision: 'approve' | 'request-changes' | 'override-and-approve') => {
+  const submit = async (
+    decision: 'approve' | 'request-changes' | 'override-and-approve' | 'loop-back',
+  ) => {
+    const sendsBack = decision === 'request-changes' || decision === 'loop-back';
     setSubmitting(true);
     try {
       const currentFeedback = getFeedback();
       await onAnswer(gate, {
-        status: decision === 'request-changes' ? 'rejected' : 'approved',
-        answer:
-          decision === 'request-changes'
-            ? { decision, feedback: currentFeedback }
-            : {
-                decision,
-                ...(decision === 'override-and-approve' && overrideReason.trim()
-                  ? { reason: overrideReason.trim() }
-                  : {}),
-                ...(skipTo ? { skipTo } : {}),
-                ...(learningsRitual && learnings.trim() ? { learnings: learnings.trim() } : {}),
-              },
+        status: sendsBack ? 'rejected' : 'approved',
+        answer: sendsBack
+          ? { decision, feedback: currentFeedback }
+          : {
+              decision,
+              ...(decision === 'override-and-approve' && overrideReason.trim()
+                ? { reason: overrideReason.trim() }
+                : {}),
+              ...(skipTo ? { skipTo } : {}),
+              ...(learningsRitual && learnings.trim() ? { learnings: learnings.trim() } : {}),
+            },
       });
       onBack();
     } finally {
@@ -760,6 +766,24 @@ export function StageReviewPanel({
                 >
                   Request changes
                 </Button>
+                {loopBackTarget && (
+                  <Button
+                    variant="outline"
+                    disabled={submitting || !synced}
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          `Send this work back to ${loopBackTarget}? ${loopBackTarget} and this stage re-run from scratch with your feedback, and their earlier plan approvals and reviews will be invalidated.`,
+                        )
+                      ) {
+                        return;
+                      }
+                      void submit('loop-back');
+                    }}
+                  >
+                    Send back to {loopBackTarget}
+                  </Button>
+                )}
                 {canOverride && (
                   <Button
                     variant="outline"
@@ -796,6 +820,13 @@ export function StageReviewPanel({
               </>
             )}
           </div>
+          {pending && loopBackTarget && (
+            <p className="text-xs text-amber-600 dark:text-amber-500">
+              The agent recommends revising the generated code. Sending this back re-runs{' '}
+              {loopBackTarget} and this stage from scratch, with your feedback, and their earlier
+              plan approvals and reviews stop counting.
+            </p>
+          )}
           {pending && skipTo && (
             <p className="text-xs text-amber-600 dark:text-amber-500">
               Every CONDITIONAL stage between this one and {skipTo} will be marked skipped;

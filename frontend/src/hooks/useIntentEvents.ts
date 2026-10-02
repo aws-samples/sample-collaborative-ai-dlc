@@ -62,6 +62,8 @@ export interface IntentEvent {
   findings?: GateFinding[] | null;
   /** Validation gate: ask "Anything to add for next time?" with the decision. */
   learningsRitual?: boolean | null;
+  /** Validation gate: the stage a `loop-back` answer goes back to. */
+  loopBackTarget?: string | null;
   // agent.metric
   metricId?: string;
   metrics?: Record<string, number>;

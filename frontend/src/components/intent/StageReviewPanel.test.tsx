@@ -155,6 +155,24 @@ describe('StageReviewPanel — learnings ritual', () => {
       answer: { decision: 'request-changes', feedback: 'fix the headings' },
     });
   });
+
+  it('sends the feedback with a loop-back, recorded as rejected', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderPanel(
+      gate({
+        options: ['approve', 'request-changes', 'loop-back'],
+        loopBackTarget: 'code-generation',
+      }),
+    );
+    await userEvent.type(screen.getByLabelText(/Feedback for the agent/i), 'check the refund path');
+    await userEvent.click(screen.getByRole('button', { name: 'Send back to code-generation' }));
+    expect(confirm.mock.calls[0][0]).toContain('code-generation and this stage re-run');
+    expect(onAnswer).toHaveBeenCalledWith(expect.anything(), {
+      status: 'rejected',
+      answer: { decision: 'loop-back', feedback: 'check the refund path' },
+    });
+    confirm.mockRestore();
+  });
 });
 
 const run = (over: Partial<IntentSensorRun> = {}): IntentSensorRun =>

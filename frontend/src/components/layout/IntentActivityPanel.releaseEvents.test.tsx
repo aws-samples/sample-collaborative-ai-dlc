@@ -26,6 +26,7 @@ const EVENTS = [
   { eventId: 'e10', type: 'v2.sensor.gate', summary: 'Gate-plane sensor verdict' },
   { eventId: 'e11', type: 'v2.change.accepted', summary: 'Changed input accepted' },
   { eventId: 'e12', type: 'v2.change.reconfirmed', summary: 'Changed input reconfirmed' },
+  { eventId: 'e14', type: 'v2.loopback.recorded', summary: 'Looped back to code-generation' },
   // A family member nobody has classified yet: the suffix rule still colours it.
   { eventId: 'e15', type: 'v2.persona.link_completed', summary: 'Pipeline link 2 completed' },
   { eventId: 'e16', type: 'v2.change.halt', summary: 'Change control halted the stage' },
@@ -95,6 +96,7 @@ describe('IntentActivityPanel release-semantics event colours', () => {
       'design-agent contributed',
       'Changed input accepted',
       'Changed input reconfirmed',
+      'Looped back to code-generation',
       'Pipeline link 2 completed',
       'Code generation plan approved',
       'Learning recorded',
