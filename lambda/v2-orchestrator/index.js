@@ -65,6 +65,7 @@ import {
   GATE_AUTO_APPROVED_EVENT,
   GRANT_AUTONOMY_OPTION,
   autonomousGateApplies,
+  autonomousLoopBackInput,
   grantAutonomyOffered,
 } from '../shared/construction-autonomy.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -1580,16 +1581,38 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               : { offer: { offered: false }, recommended: false };
           const loopBack = loopBackLookup.offer;
           const overridable = overridableFindings(gateFindings);
+          // Any finding that refuses gate entry on its own: a blocking gate sensor
+          // that did not PASS (FAIL, INCONCLUSIVE, unavailable, timed out), a
+          // missing required artifact, or a terminal adversarial NOT-READY.
+          const blocked = gateFindings.some((item) => item.severity === 'blocking');
           // Whether this gate may be waived, and whether it may offer the
           // escalation. Both predicates are pure and both fail closed: anything
           // unexpected leaves `autoApprove` false, which opens the ordinary gate.
           let autoApprove = false;
+          let autoLoopBack = false;
           let autonomyGrantOffered = false;
           try {
+            // Upstream takes the Build-and-Test jump itself under autonomy, so an
+            // offered loop-back is TAKEN rather than approved — and it is decided
+            // first, because a stage whose agent asked to go back to code
+            // generation is not a stage to auto-approve.
+            //
+            // But the jump is the autonomous answer to ONE thing: the agent's typed
+            // recommendation that the build-and-test results need a code fix. It is
+            // not an answer to a blocking finding. A blocking gate sensor, a missing
+            // required artifact, or an unresolved reviewer objection means the
+            // evidence itself cannot be trusted — rewinding on that would discard
+            // the finding and silently re-run the work, which is precisely the
+            // halt-and-ask case upstream refuses to let autonomy override. Advisory
+            // findings do NOT withhold the jump: failing tests routinely arrive
+            // alongside advisory notes, and halting on those would make the
+            // autonomous loop-back unreachable in practice.
+            autoLoopBack = autonomyWaivable && loopBack.offered && !blocked;
             // At the cap the option is withheld and upstream halts: the bound is
             // one of the two cases autonomy stops to consult the human, so the
             // gate must open even though nothing in the evidence blocks.
-            autoApprove = autonomyWaivable && !loopBack.atCap && gateFindings.length === 0;
+            autoApprove =
+              autonomyWaivable && !autoLoopBack && !loopBack.atCap && gateFindings.length === 0;
             autonomyGrantOffered = grantAutonomyOffered({
               mode: autonomyMode,
               stage,
@@ -1599,6 +1622,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           } catch (error) {
             logger.error('Construction autonomy decision failed; opening the human gate', error);
             autoApprove = false;
+            autoLoopBack = false;
             autonomyGrantOffered = false;
           }
           // Blocking findings require an explicit override; the loop-back, when
@@ -1642,6 +1666,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               },
             );
           }
+          const autonomousLoopBackMarker = autoLoopBack
+            ? autonomousLoopBackInput(loopBack.spent + 1)
+            : null;
           const validation = autoApprove
             ? {
                 gate: {
@@ -1652,47 +1679,67 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   answeredByName: AUTONOMOUS_GATE_INPUT,
                 },
               }
-            : await awaitEngineGate(ctx, sectionToolkit, {
-                name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-                kind: 'validation',
-                stageInstanceId: stage.stageInstanceId ?? null,
-                prompt: [
-                  validationPrompt({
-                    stage,
-                    outputArtifactTypes,
-                    round: validationRound,
-                    skipTargets: gateSkipTargets,
-                    nextStageId,
-                    recomposeTargets: gateRecomposeTargets,
-                    findings: gateFindings,
-                    learnings: learningsRitual ? { candidates: learningCandidates } : null,
-                    loopBack,
-                  }),
-                  // A2 rules 2/7/8: the unit-DAG stage's gate presents the fan-out
-                  // plan (units, waves, skeleton pick, skip matrix) and accepts
-                  // structured overrides on the approve answer.
-                  ...(fanoutGateNeeded
-                    ? [
-                        '',
-                        fanoutGateAddendum({
-                          sectionIndex: fanoutSection.index,
-                          unitPlan: unitPlanForGate,
-                          sectionStages: fanoutSection.stages,
-                          skeleton: defaultSkeletonFor(unitPlanForGate),
-                        }),
-                      ]
-                    : []),
-                ].join('\n'),
-                options: gateOptions,
-                nextStageId,
-                ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
-                ...(gateRecomposeTargets.length ? { recomposeTargets: gateRecomposeTargets } : {}),
-                ...(gateFindings.length ? { findings: gateFindings } : {}),
-                ...(learningsRitual ? { learningsRitual: true } : {}),
-                ...(loopBack.offered
-                  ? { loopBackTarget: loopBack.target.stageId, loopBackReason: loopBack.reason }
-                  : {}),
-              });
+            : autoLoopBack
+              ? {
+                  gate: {
+                    // The cap is keyed on this id (`resetStageRow`'s `loopBackId`), so a
+                    // waived jump MUST carry one or the bound would never be recorded and
+                    // an autonomous run could loop past three. Derived from the stage and
+                    // the validation round, so it is stable across a durable replay and
+                    // distinct per jump — the same two properties a human gate id has.
+                    humanTaskId: `auto-loopback-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                    status: 'answered',
+                    answer: {
+                      decision: LOOP_BACK_OPTION,
+                      userInput: autonomousLoopBackMarker,
+                    },
+                    answeredBy: null,
+                    answeredByName: autonomousLoopBackMarker,
+                  },
+                }
+              : await awaitEngineGate(ctx, sectionToolkit, {
+                  name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                  kind: 'validation',
+                  stageInstanceId: stage.stageInstanceId ?? null,
+                  prompt: [
+                    validationPrompt({
+                      stage,
+                      outputArtifactTypes,
+                      round: validationRound,
+                      skipTargets: gateSkipTargets,
+                      nextStageId,
+                      recomposeTargets: gateRecomposeTargets,
+                      findings: gateFindings,
+                      learnings: learningsRitual ? { candidates: learningCandidates } : null,
+                      loopBack,
+                    }),
+                    // A2 rules 2/7/8: the unit-DAG stage's gate presents the fan-out
+                    // plan (units, waves, skeleton pick, skip matrix) and accepts
+                    // structured overrides on the approve answer.
+                    ...(fanoutGateNeeded
+                      ? [
+                          '',
+                          fanoutGateAddendum({
+                            sectionIndex: fanoutSection.index,
+                            unitPlan: unitPlanForGate,
+                            sectionStages: fanoutSection.stages,
+                            skeleton: defaultSkeletonFor(unitPlanForGate),
+                          }),
+                        ]
+                      : []),
+                  ].join('\n'),
+                  options: gateOptions,
+                  nextStageId,
+                  ...(gateSkipTargets.length ? { skipTargets: gateSkipTargets } : {}),
+                  ...(gateRecomposeTargets.length
+                    ? { recomposeTargets: gateRecomposeTargets }
+                    : {}),
+                  ...(gateFindings.length ? { findings: gateFindings } : {}),
+                  ...(learningsRitual ? { learningsRitual: true } : {}),
+                  ...(loopBack.offered
+                    ? { loopBackTarget: loopBack.target.stageId, loopBackReason: loopBack.reason }
+                    : {}),
+                });
           // The gate holds the offer now, so the next validation round starts
           // without a recommendation unless the agent records a new one.
           if (loopBackLookup.recommended) {
