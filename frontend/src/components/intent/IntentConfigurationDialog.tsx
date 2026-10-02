@@ -198,9 +198,16 @@ export function IntentConfigurationDialog({
               <Definition
                 label="Credentials"
                 value={
-                  intent.credentialSource
-                    ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
-                    : 'Default'
+                  intent.credentialConnection
+                    ? `${intent.credentialConnection.backend} · ${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialConnection.source]} · ${intent.credentialConnection.mechanism}`
+                    : intent.credentialSource
+                      ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                      : 'Selected at next start'
+                }
+                secondaryValue={
+                  intent.credentialConnection
+                    ? `Pinned for this intent${intent.credentialConnection.policyRevision !== null ? ` at policy revision ${intent.credentialConnection.policyRevision}` : ' using the legacy key reference'}. Platform changes apply to new work.`
+                    : undefined
                 }
               />
             </dl>

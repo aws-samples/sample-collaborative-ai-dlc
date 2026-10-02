@@ -1,3 +1,4 @@
+import { discoverAgentModels } from '../shared/agent-model-discovery.js';
 // Agents Lambda — v1 agent HISTORY (read-only) + shared admin/model plumbing.
 //
 // The v1 execution engine (ECS pool dispatch) was removed when v2 became the
@@ -12,6 +13,8 @@
 //     model picker (probes the AgentCore runtime; refreshes model-pricing SSM)
 //   - GET/PUT /agents/settings                 — Admin CLI auth + model defaults
 //     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
+//   - POST /agents/authentication-setup        — Admin setup steps of registered
+//     authentication providers (authentication-settings-providers.js)
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
@@ -46,13 +49,13 @@ import {
   AGENT_CREDENTIAL_PROVIDERS,
   credentialProviderForCli,
   credentialSourcesFromBindings,
-  writeCredentialScope,
 } from '../shared/agent-credentials.js';
 import {
   readCredentialScopeStatusViaBroker,
   resolveEffectiveCredentialBindingsViaBroker,
 } from '../shared/agent-credential-metadata.js';
-import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
+import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
   authorizeLegacySprintRead,
@@ -82,9 +85,6 @@ const RUNTIME_MODEL_OVERRIDE = {
 // The protected core runtime remains the target for global Admin discovery.
 // Project-scoped probes resolve the project's published environment below.
 const coreRuntimeTarget = () => runtimeTargetInput(null, process.env.AGENTCORE_RUNTIME_ARN || '');
-// A session id >= 33 chars is required by InvokeAgentRuntime; the capabilities
-// command is stateless so any stable id works.
-const CAPABILITIES_SESSION_ID = 'aidlc-capabilities-probe-00000001';
 const PLATFORM_CREDENTIAL_BINDINGS = Object.fromEntries(
   AGENT_CREDENTIAL_PROVIDERS.map((provider) => [provider, { provider, source: 'platform' }]),
 );
@@ -99,19 +99,34 @@ export const fetchRuntimeCapabilities = async (
   projectId = null,
 ) => {
   if (!runtimeTarget.agentRuntimeArn) return null;
+  const runtimeSessionId = randomUUID();
   try {
-    const bindings = Object.values(credentialBindings || {}).filter(Boolean);
-    const agentCredentialGrant = bindings.length
-      ? await issueAgentCredentialGrant(ssm, {
-          purpose: 'capabilities',
-          projectId,
-          bindings,
-        })
-      : null;
+    let runtimeCapabilities;
+    if (Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)) {
+      const probe = await agentcore.send(
+        new InvokeAgentRuntimeCommand({
+          ...runtimeTarget,
+          runtimeSessionId,
+          contentType: 'application/json',
+          accept: 'application/json',
+          payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+        }),
+      );
+      runtimeCapabilities = JSON.parse(await probe.response.transformToString());
+    }
+    const { agentCredentialGrant } = await prepareAgentInvocation(
+      {
+        purpose: 'capabilities',
+        projectId,
+        credentialBindings,
+        runtimeCapabilities,
+      },
+      { ssm },
+    );
     const res = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         ...runtimeTarget,
-        runtimeSessionId: CAPABILITIES_SESSION_ID,
+        runtimeSessionId,
         contentType: 'application/json',
         accept: 'application/json',
         payload: Buffer.from(
@@ -340,6 +355,29 @@ async function refreshModelPricing() {
   }
 }
 
+const authenticationSettings = () =>
+  createAuthenticationSettingsService({
+    ddb,
+    ssm,
+    withNeptune,
+    agentcore,
+    logger,
+    resolveTarget: (projectId) => withNeptune((g) => resolveProjectRuntimeTarget(g, projectId)),
+  });
+const authenticationView = (request) => authenticationSettings().authenticationView(request);
+const reviewedCredentialUpdate = (request) =>
+  authenticationSettings().reviewedCredentialUpdate(request);
+const authChangeResponse = (response, error) =>
+  response(
+    error.code?.startsWith('AGENT_AUTH_') ? (error.code === 'AGENT_AUTH_INVALID' ? 400 : 409) : 500,
+    {
+      error: error.code?.startsWith('AGENT_AUTH_')
+        ? error.message
+        : 'Failed to apply credential change; retry the same review',
+      code: error.code?.startsWith('AGENT_AUTH_') ? error.code : 'AGENT_AUTH_WRITE_FAILED',
+    },
+  );
+
 // --- Handler ---
 
 export const handler = async (event, context) => {
@@ -351,6 +389,7 @@ export const handler = async (event, context) => {
   const projectId = pathParameters?.projectId;
   const taskId = pathParameters?.taskId ? decodeURIComponent(pathParameters.taskId) : null;
   const credentialUserId = event.requestContext?.authorizer?.claims?.sub || '';
+  const actor = { userId: credentialUserId, platformAdmin: isPlatformAdmin(event) };
   logger.appendKeys({
     ...(projectId && { projectId }),
     ...(taskId && { taskId }),
@@ -358,7 +397,22 @@ export const handler = async (event, context) => {
   });
 
   try {
-    const credentialBase = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
+    // POST /agents/authentication-setup — provider setup steps (defaults, generated
+    // documents, connection checks), selected by the body's mode and action.
+    if (httpMethod === 'POST' && path.endsWith('/agents/authentication-setup')) {
+      const denied = requirePlatformAdmin(event);
+      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      if (!input || typeof input !== 'object' || Array.isArray(input))
+        return response(400, { error: 'Invalid authentication setup request' });
+      const result = await authenticationSettings().providerAction(input, actor);
+      return response(result.statusCode, result.body);
+    }
 
     // ===== HIERARCHICAL AGENT CREDENTIALS =====
 
@@ -368,13 +422,23 @@ export const handler = async (event, context) => {
       if (!credentialUserId) return response(401, { error: 'Unauthorized' });
       if (httpMethod === 'GET') {
         try {
-          return response(
-            200,
-            await readCredentialScopeStatusViaBroker({
-              source: 'user',
-              userId: credentialUserId,
-            }),
-          );
+          const status = await readCredentialScopeStatusViaBroker({
+            source: 'user',
+            userId: credentialUserId,
+          });
+          return response(200, {
+            ...status,
+            ...(process.env.V2_PROCESS_TABLE
+              ? {
+                  authentication: await authenticationView({
+                    source: 'user',
+                    userId: credentialUserId,
+                    scopeStatus: status,
+                    actor,
+                  }),
+                }
+              : {}),
+          });
         } catch (error) {
           logger.error('[user agent credentials] GET failed', error);
           return response(500, { error: 'Failed to load personal agent credentials' });
@@ -388,16 +452,20 @@ export const handler = async (event, context) => {
           return response(400, { error: 'Invalid JSON body' });
         }
         try {
-          await writeCredentialScope(ssm, {
-            base: credentialBase,
-            source: 'user',
-            userId: credentialUserId,
-            update: input,
-          });
-          return response(200, { saved: true });
+          return response(
+            200,
+            await reviewedCredentialUpdate({
+              input,
+              source: 'user',
+              userId: credentialUserId,
+              actorId: credentialUserId,
+            }),
+          );
         } catch (error) {
-          logger.error('[user agent credentials] PUT failed', error);
-          return response(500, { error: 'Failed to save personal agent credentials' });
+          logger.error('[user agent credentials] PUT failed', {
+            code: error.code?.startsWith('AGENT_AUTH_') ? error.code : 'AGENT_AUTH_WRITE_FAILED',
+          });
+          return authChangeResponse(response, error);
         }
       }
       return response(405, { error: 'Method not allowed' });
@@ -408,7 +476,7 @@ export const handler = async (event, context) => {
     if (projectId && path.endsWith('/agent-credentials')) {
       if (!credentialUserId) return response(401, { error: 'Unauthorized' });
       const role = await withNeptune((g) => fetchMembershipRole(g, projectId, credentialUserId));
-      if (role !== 'owner' && role !== 'admin') {
+      if (role !== 'owner' && role !== 'admin' && !isPlatformAdmin(event)) {
         return response(403, {
           error: 'Only space owners and admins can manage agent credentials',
         });
@@ -424,7 +492,20 @@ export const handler = async (event, context) => {
               source: 'platform',
             }),
           ]);
-          return response(200, { ...space, platformFallback });
+          return response(200, {
+            ...space,
+            platformFallback,
+            ...(process.env.V2_PROCESS_TABLE
+              ? {
+                  authentication: await authenticationView({
+                    source: 'space',
+                    projectId,
+                    scopeStatus: space,
+                    actor,
+                  }),
+                }
+              : {}),
+          });
         } catch (error) {
           logger.error('[space agent credentials] GET failed', error);
           return response(500, { error: 'Failed to load space agent credentials' });
@@ -438,16 +519,20 @@ export const handler = async (event, context) => {
           return response(400, { error: 'Invalid JSON body' });
         }
         try {
-          await writeCredentialScope(ssm, {
-            base: credentialBase,
-            source: 'space',
-            projectId,
-            update: input,
-          });
-          return response(200, { saved: true });
+          return response(
+            200,
+            await reviewedCredentialUpdate({
+              input,
+              source: 'space',
+              projectId,
+              actorId: credentialUserId,
+            }),
+          );
         } catch (error) {
-          logger.error('[space agent credentials] PUT failed', error);
-          return response(500, { error: 'Failed to save space agent credentials' });
+          logger.error('[space agent credentials] PUT failed', {
+            code: error.code?.startsWith('AGENT_AUTH_') ? error.code : 'AGENT_AUTH_WRITE_FAILED',
+          });
+          return authChangeResponse(response, error);
         }
       }
       return response(405, { error: 'Method not allowed' });
@@ -461,6 +546,8 @@ export const handler = async (event, context) => {
       let credentialBindings;
       try {
         credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
+          providers: AGENT_CREDENTIAL_PROVIDERS,
+          reserve: false,
           projectId,
           userId: credentialUserId,
         });
@@ -470,19 +557,19 @@ export const handler = async (event, context) => {
       }
       const withModels = event.queryStringParameters?.models === '1';
       if (withModels) refreshModelPricing().catch(() => {});
-      const [claudeModels, runtimeCaps] = await Promise.all([
-        withModels
-          ? listClaudeModels({
-              listInferenceProfiles: async () => {
-                const out = await bedrock.send(
-                  new ListInferenceProfilesCommand({ maxResults: 100 }),
-                );
-                return out.inferenceProfileSummaries ?? [];
-              },
-            })
-          : [],
-        fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
-      ]);
+      const { claudeModels, runtimeCaps } = await discoverAgentModels({
+        credentialBindings,
+        withModels,
+        loadKeyModels: () =>
+          listClaudeModels({
+            listInferenceProfiles: async () => {
+              const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
+              return out.inferenceProfileSummaries ?? [];
+            },
+          }),
+        loadRuntimeCapabilities: () =>
+          fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
+      });
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
       const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
         ...cli,
@@ -613,6 +700,14 @@ export const handler = async (event, context) => {
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           ...platformCredentialStatus,
+          ...(process.env.V2_PROCESS_TABLE
+            ? {
+                authentication: await authenticationView({
+                  scopeStatus: platformCredentialStatus,
+                  actor,
+                }),
+              }
+            : {}),
           cliModels,
           tierModels,
           deriveEnrichment,
@@ -638,38 +733,36 @@ export const handler = async (event, context) => {
       const input = JSON.parse(body || '{}');
       const errors = [];
 
-      if (typeof input.bedrockBearerToken === 'string') {
-        // Empty string clears the token (stored as literal "placeholder" sentinel)
-        const value = input.bedrockBearerToken.trim() || 'placeholder';
+      if (input.authenticationChange) {
+        const settings = authenticationSettings();
+        const service = settings.authenticationChanges();
         try {
-          await ssm.send(
-            new PutParameterCommand({
-              Name: `${prefix}/bedrock-bearer-token`,
-              Value: value,
-              Type: 'SecureString',
-              Overwrite: true,
-            }),
-          );
-        } catch (err) {
-          logger.error('[settings] Failed to write bearer token', err);
-          errors.push('bedrockBearerToken: ' + err.message);
+          const request = input.authenticationChange;
+          if (request.action === 'preview')
+            return response(
+              200,
+              await service.preview(
+                await settings.changeCandidate(request.candidate),
+                credentialUserId,
+              ),
+            );
+          if (request.action === 'apply')
+            return response(200, await service.apply(request.reviewId, credentialUserId));
+          return response(400, { error: 'Unsupported authentication change action' });
+        } catch (error) {
+          return authChangeResponse(response, error);
         }
       }
-
-      if (typeof input.kiroApiKey === 'string') {
-        const value = input.kiroApiKey.trim() || 'placeholder';
+      if (typeof input.bedrockBearerToken === 'string' || typeof input.kiroApiKey === 'string') {
         try {
-          await ssm.send(
-            new PutParameterCommand({
-              Name: `${prefix}/kiro-api-key`,
-              Value: value,
-              Type: 'SecureString',
-              Overwrite: true,
-            }),
-          );
-        } catch (err) {
-          logger.error('[settings] Failed to write Kiro API key', err);
-          errors.push('kiroApiKey: ' + err.message);
+          const result = await reviewedCredentialUpdate({
+            input,
+            source: 'platform',
+            actorId: credentialUserId,
+          });
+          if (process.env.V2_PROCESS_TABLE) return response(200, result);
+        } catch (error) {
+          return authChangeResponse(response, error);
         }
       }
 
@@ -964,12 +1057,19 @@ export const handler = async (event, context) => {
       const capabilitiesProjectId = event.queryStringParameters?.projectId;
       let runtimeTarget = coreRuntimeTarget();
       let credentialBindings = PLATFORM_CREDENTIAL_BINDINGS;
+      if (!capabilitiesProjectId && process.env.V2_PROCESS_TABLE)
+        credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
+          providers: AGENT_CREDENTIAL_PROVIDERS,
+          reserve: false,
+        });
       if (capabilitiesProjectId) {
         const access = await projectRuntimeAccess(event, capabilitiesProjectId);
         if (access.denied) return response(access.statusCode, { error: access.error });
         runtimeTarget = access.runtimeTarget;
         try {
           credentialBindings = await resolveEffectiveCredentialBindingsViaBroker({
+            providers: AGENT_CREDENTIAL_PROVIDERS,
+            reserve: false,
             projectId: capabilitiesProjectId,
             userId: credentialUserId,
           });
@@ -999,15 +1099,22 @@ export const handler = async (event, context) => {
 
       // Bedrock (claude/opencode) + runtime (kiro + auth state) discovery, in
       // parallel. Both are best-effort — a failure yields empty models, never a 500.
-      const [claudeModels, runtimeCaps] = await Promise.all([
-        listClaudeModels({
-          listInferenceProfiles: async () => {
-            const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
-            return out.inferenceProfileSummaries ?? [];
-          },
-        }),
-        fetchRuntimeCapabilities(runtimeTarget, credentialBindings, capabilitiesProjectId || null),
-      ]);
+      const { claudeModels, runtimeCaps } = await discoverAgentModels({
+        credentialBindings,
+        loadKeyModels: () =>
+          listClaudeModels({
+            listInferenceProfiles: async () => {
+              const out = await bedrock.send(new ListInferenceProfilesCommand({ maxResults: 100 }));
+              return out.inferenceProfileSummaries ?? [];
+            },
+          }),
+        loadRuntimeCapabilities: () =>
+          fetchRuntimeCapabilities(
+            runtimeTarget,
+            credentialBindings,
+            capabilitiesProjectId || null,
+          ),
+      });
       const kiroModels = runtimeCaps?.kiroModels?.models ?? [];
       // OpenCode drives the SAME Bedrock profiles as claude but requires the
       // `amazon-bedrock/` provider prefix (see cli-models validation).

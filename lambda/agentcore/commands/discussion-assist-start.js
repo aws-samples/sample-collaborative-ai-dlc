@@ -1,3 +1,4 @@
+import { runCredentialJob } from '../credential-session.js';
 // discussion-assist-start — async Quorum responses for intent discussions.
 //
 // The discussions Lambda creates a pending agent-authored DiscussionMessage and
@@ -384,7 +385,7 @@ export const createDiscussionAssistStart = ({
     activeJobs.set(key, { startedAt: Date.now(), messageId });
     busy?.enter();
 
-    const job = (async () => {
+    const job = runCredentialJob(async () => {
       let g;
       try {
         g = await openGraph();
@@ -518,7 +519,7 @@ export const createDiscussionAssistStart = ({
         activeJobs.delete(key);
         busy?.leave();
       }
-    })();
+    });
     job.catch((err) => log(`job promise rejected unexpectedly (${key}):`, err?.message));
 
     return { ok: true, accepted: true, requestId, messageId, jobKey: key };

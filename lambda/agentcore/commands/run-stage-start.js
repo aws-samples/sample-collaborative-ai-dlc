@@ -1,3 +1,4 @@
+import { runCredentialJob } from '../credential-session.js';
 // run-stage-start — the async stage invocation (docs/v2-parallel.md WP1).
 //
 // The synchronous run-stage path holds the AgentCore HTTP request (and the
@@ -125,7 +126,7 @@ export const createRunStageStart = ({
         ? { ...payload, agentLaunchMs: launchMs }
         : payload;
 
-    const job = (async () => {
+    const job = runCredentialJob(async () => {
       let heartbeatTimer = null;
       try {
         const scheduleHeartbeat = () => {
@@ -184,7 +185,7 @@ export const createRunStageStart = ({
         activeJobs.delete(key);
         busy?.leave();
       }
-    })();
+    });
     // Surfacing job rejections: the job function never rejects (all paths are
     // caught), but guard anyway so an unexpected bug can't crash the process.
     job.catch((err) => log(`stage job promise rejected unexpectedly (${key}):`, err?.message));

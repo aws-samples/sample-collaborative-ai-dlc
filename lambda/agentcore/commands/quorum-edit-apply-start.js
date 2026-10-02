@@ -1,3 +1,4 @@
+import { runCredentialJob } from '../credential-session.js';
 // quorum-edit-apply-start — apply an APPROVED Quorum edit plan (async
 // accept-then-background-job, the run-stage-start pattern).
 //
@@ -156,7 +157,7 @@ export const createQuorumEditApplyStart = ({
     activeJobs.set(key, { startedAt: Date.now(), callbackId });
     busy?.enter();
 
-    const job = (async () => {
+    const job = runCredentialJob(async () => {
       let heartbeatTimer = null;
       let g;
       let result;
@@ -422,7 +423,7 @@ export const createQuorumEditApplyStart = ({
         activeJobs.delete(key);
         busy?.leave();
       }
-    })();
+    });
     job.catch((err) => log(`apply job promise rejected unexpectedly (${key}):`, err?.message));
 
     return { ok: true, accepted: true, editId, callbackId, jobKey: key };

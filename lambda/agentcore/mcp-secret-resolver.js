@@ -62,7 +62,9 @@
 
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import mcpValidatorPkg from '../shared/mcp-validator.js';
-import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-credentials.js';
+import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/environment.js';
+import { AGENT_CREDENTIAL_ENV_NAMES } from '../shared/agent-auth-contracts.js';
+import { CREDENTIAL_ADAPTER_ENV_NAMES } from './credential-material-registry.js';
 
 const { extractSecretRefs } = mcpValidatorPkg;
 
@@ -81,6 +83,13 @@ const { extractSecretRefs } = mcpValidatorPkg;
 export const RESERVED_MCP_ENV_KEYS = new Set([
   // Agent CLI auth (the tokens that must never reach a custom MCP server).
   ...AGENT_CREDENTIAL_ENV_NAMES,
+  // Env names runtime auth providers write for their CLIs.
+  ...CREDENTIAL_ADAPTER_ENV_NAMES,
+  ...APPLICATION_CREDENTIAL_ENV,
+  ...INFERENCE_CREDENTIAL_ENV,
+  'AIDLC_MCP_SOCKET',
+  'AIDLC_MCP_CONTEXT_ID',
+  'ANTHROPIC_BASE_URL',
   // Bedrock / region control the drivers set.
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',

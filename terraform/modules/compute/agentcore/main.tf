@@ -246,6 +246,13 @@ resource "aws_dynamodb_table" "v2_executions" {
   write_capacity              = local.write_capacity
   deletion_protection_enabled = var.deletion_protection
 
+  # Only ephemeral authentication selection/invocation records set this field.
+  # Historical execution records are retained unchanged.
+  ttl {
+    attribute_name = "agentAuthTtl"
+    enabled        = true
+  }
+
   attribute {
     name = "pk"
     type = "S"
@@ -389,6 +396,12 @@ resource "aws_iam_role_policy" "agentcore" {
             local.credential_broker_function_arn,
             local.source_control_function_arn,
           ]
+        },
+        {
+          # Only the broker may assume inference roles; the runtime receives leased credentials.
+          Effect   = "Deny"
+          Action   = ["sts:AssumeRole"]
+          Resource = "*"
         },
         {
           Effect   = "Allow"
@@ -701,6 +714,8 @@ locals {
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
+  depends_on = [aws_iam_role_policy.agentcore]
+
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn
   # The container speaks the HTTP contract (POST /invocations + GET /ping on 8080).

@@ -59,7 +59,7 @@ export const resolveModelId = (raw, { env = process.env } = {}) => {
   // Prefix the alias target with the geo unless it already carries one.
   return isFullId(target) && /^(us|eu|apac)\./.test(target)
     ? target
-    : `${regionPrefix(env.AWS_REGION || env.BEDROCK_REGION)}.${target}`;
+    : `${regionPrefix(env.BEDROCK_REGION || env.AWS_REGION)}.${target}`;
 };
 
 // CLIs whose `--model` value is a Bedrock id (inference profile / provider-
@@ -138,9 +138,10 @@ export const resolveStageModel = ({
   agentBlock = null,
   cli,
   env = process.env,
+  backend = null,
 }) => {
   const tier = agentBlock?.tier ?? null;
-  if (!BEDROCK_CLIS.has(cli)) {
+  if ((backend && backend.id !== 'bedrock') || !BEDROCK_CLIS.has(cli)) {
     const selected =
       tierModelFor({ tierModels, tier, cli }) ||
       cliModels?.[cli] ||

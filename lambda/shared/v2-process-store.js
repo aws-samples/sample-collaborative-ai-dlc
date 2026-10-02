@@ -1,3 +1,4 @@
+import { inventoryReferenceWrites, scopeActivityWrites } from './agent-auth-inventory.js';
 // V2 process store — the thin DynamoDB I/O shell over the pure key scheme +
 // record builders in v2-process-keys.js. The AgentCore container uses this to
 // write execution/stage/event/human/metric state; a future trigger/resume
@@ -89,6 +90,19 @@ const queryAll = async (ddb, input) => {
   return items;
 };
 
+// META writes that also index the credential binding run as a transaction,
+// so a failed META condition arrives as TransactionCanceledException. Callers
+// expect the single-item ConditionalCheckFailedException, so translate it
+// when the META write (always the first item) was the one that failed.
+const metaConditionFailure = (error, message) =>
+  error?.name === 'TransactionCanceledException' &&
+  error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed'
+    ? Object.assign(new Error(message), {
+        name: 'ConditionalCheckFailedException',
+        cause: error,
+      })
+    : error;
+
 const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   if (!ddb) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
   const table = () => tableName ?? process.env.V2_PROCESS_TABLE;
@@ -96,17 +110,30 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   const nextId = () => (ids ? ids() : randomUUID());
 
   // Create the execution META row. Conditional so a re-invoke (same session)
-  // never clobbers an in-flight execution. `init-ws` calls this once.
+  // never clobbers an in-flight execution. `init-ws` calls this once and
+  // treats an existing row (ConditionalCheckFailedException) as idempotent.
   const createExecution = async (input) => {
     const startedAt = input.startedAt ?? now();
     const item = buildExecutionMeta({ ...input, startedAt });
-    await ddb.send(
-      new PutCommand({
-        TableName: table(),
-        Item: item,
-        ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
-      }),
-    );
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Put: {
+                TableName: table(),
+                Item: item,
+                ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+              },
+            },
+            ...inventoryReferenceWrites(table(), item),
+            ...scopeActivityWrites(table(), [item], { includePlatform: true }),
+          ],
+        }),
+      );
+    } catch (error) {
+      throw metaConditionFailure(error, `Execution ${item.executionId} already exists`);
+    }
     return item;
   };
 
@@ -475,6 +502,24 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       params.ExpressionAttributeValues[':ifAttachmentRevision'] = ifAttachmentRevision;
     }
     if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
+    if (credentialBinding !== undefined) {
+      const row = { ...executionMetaKey(executionId), projectId, credentialBinding };
+      const { ReturnValues: _returnValues, ...write } = params;
+      try {
+        await ddb.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              { Update: write },
+              ...inventoryReferenceWrites(table(), row),
+              ...scopeActivityWrites(table(), [row], { includePlatform: true }),
+            ],
+          }),
+        );
+      } catch (error) {
+        throw metaConditionFailure(error, `Execution ${executionId} changed`);
+      }
+      return getExecution(executionId, { consistentRead: true });
+    }
     const { Attributes } = await ddb.send(new UpdateCommand(params));
     return Attributes;
   };
@@ -1378,7 +1423,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return items;
   };
 
-  const listActiveExecutions = async ({ limit = 100 } = {}) => {
+  const listActiveExecutions = async ({ limit = Infinity } = {}) => {
     const items = [];
     let ExclusiveStartKey;
     do {
@@ -1388,7 +1433,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           IndexName: 'GSI3',
           KeyConditionExpression: 'GSI3PK = :pk',
           ExpressionAttributeValues: { ':pk': ACTIVE_EXECUTIONS_INDEX_PK },
-          Limit: limit - items.length,
+          ...(Number.isFinite(limit) ? { Limit: limit - items.length } : {}),
           ExclusiveStartKey,
         }),
       );
