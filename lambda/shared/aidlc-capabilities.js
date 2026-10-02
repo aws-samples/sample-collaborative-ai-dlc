@@ -53,6 +53,7 @@ const RUNTIME_HANDLERS = Object.freeze(
     'policy.skeleton.switch@v1',
     'policy.summary-confirmation.off@v1',
     'prompt.learnings@v1',
+    'protocol.construction-autonomy.gate-waiver@v1',
     'protocol.loopback.gate-offered@v1',
     'protocol.plan-approval.outcome-gate@v1',
     'review.adversarial@v1',
@@ -394,6 +395,26 @@ const AIDLC_CAPABILITIES = Object.freeze([
     // the same output slug as PLAN_APPROVAL).
     appliesTo: `in-scope stage immediately before the current one, with workspaceRequires === true || produces includes ${PLAN_APPROVAL_ARTIFACT}`,
     note: 'Upstream loops build-and-test back to code generation AUTONOMOUSLY, up to three times per intent. The platform reproduces the bound and the routing but OFFERS the jump to the human at the validation gate build-and-test already has: the agent records a recommendation through `emit_stage_note`\u2019s `loopBackRecommended` field (written by the platform onto the stage row, never parsed from prose), and the gate then carries a third `loop-back` option naming the code-generation stage immediately before. Choosing it resets both stage rows, which bumps their attempt and makes every prior plan-approval and review receipt invisible, and re-runs code generation with the reason and the reviewer\u2019s feedback. At three recorded loop-backs the option is withheld and the gate says so. `approximated`, not `native`: the bound is faithful, the autonomy is deliberately not. Residual: in scopes that run code generation per unit (classic, enterprise, feature, mvp, workshop) build-and-test has no linear target, so the gate shows the recommendation as a note and those scopes keep the rewind API.',
+  }),
+  // Construction Autonomy Mode is protocol prose plus a state field upstream, not
+  // a frontmatter field, so like the two entries above it is keyed on the closure
+  // shipping the construction protocol at all and never appears in the
+  // frontmatter fidelity report.
+  Object.freeze({
+    key: 'PROTOCOL:construction-autonomy',
+    blockType: 'PROTOCOL',
+    field: 'construction-autonomy',
+    planKey: null,
+    policy: null,
+    handling: 'native',
+    handler: 'protocol.construction-autonomy.gate-waiver@v1',
+    values: null,
+    defaultWhenAbsent: null,
+    capabilityPresentIf:
+      'runtimeFilePresent:core/aidlc-common/protocols/stage-protocol-construction.md',
+    appliesTo:
+      'construction-phase stages other than the plan\u2019s first non-skipped construction stage, excluding a gate that carries a fan-out approval or a Plan Approval',
+    note: 'Upstream records the human\u2019s grant in `Construction Autonomy Mode` (`unset`/`gated`/`autonomous`, only the exact `autonomous` truthy) and waives the remaining construction stage gates. The platform freezes the same two-valued grant onto the intent at create, or escalates it from the one construction gate that always stays human through a `grant-autonomy` answer (`v2.autonomy.mode_set`, compare-and-set so a replay sets it once). A waived gate still runs the full gate-precondition evaluation; only an EMPTY findings list auto-approves, writing the same attempt-scoped `stage-approval` receipt with the protocol\u2019s marker input plus `v2.gate.auto_approved`, and anything else \u2014 a blocking sensor, a terminal adversarial NOT-READY, a missing required artifact, or an evaluation error \u2014 opens the ordinary human gate with its findings. The first construction stage, every Plan Approval, every fan-out approval, a stage failure, and an exhausted loop-back bound remain human, which is upstream\u2019s halt-and-ask set. `native`: the grant, its scope, the anchor carve-out and the halt-and-ask set are all reproduced. Residuals: (1) upstream additionally refuses a blocking-sensor override under autonomy \u2014 here an autonomous gate never overrides at all (it halts), so the refusal has nothing to refuse; (2) the grant governs only the once-per-workflow sequential gates. Per-unit stages inside a parallel section keep their own ceremony \u2014 the skeleton gate and the section ladder (`v2.units.autonomy_set`, whose `UNITPLAN.autonomyMode` is a SEPARATE decision from this grant), so a scope with a unit DAG still batches its lane approvals there; (3) a terminal adversarial NOT-READY halts a waived gate instead of being auto-approved, which is stricter than upstream.',
   }),
 ]);
 

@@ -32,6 +32,7 @@ import {
 } from './aidlc-capabilities.js';
 import { compileStageGraph, compileRules } from './compile.js';
 import { loopBackApplies } from './stage-loopback.js';
+import { constructionAutonomyApplies } from './construction-autonomy.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
@@ -405,6 +406,12 @@ const resolveStagePolicy = ({ scopeBlock, stage, stageId, errors, capabilities =
     // reproduce"; WHICH stage may offer it, and to which target, is derived from
     // the plan's stage order at the gate (stage-loopback.js).
     loopBack: loopBackApplies({ capabilities }) ? 'human-offered' : null,
+    // Construction Autonomy Mode shares the loop-back's protocol module, so it is
+    // keyed the same way: the key says only "this release has an autonomy grant to
+    // reproduce". WHETHER a given gate is waived depends on the intent's own
+    // grant and on the stage's position in the plan, both resolved at the gate
+    // (construction-autonomy.js).
+    constructionAutonomy: constructionAutonomyApplies({ capabilities }) ? 'native' : null,
   };
 };
 

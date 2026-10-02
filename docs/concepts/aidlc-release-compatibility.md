@@ -282,6 +282,47 @@ the intent's Resume action. Callback-consumption markers and answered gate state
 prevent a duplicate resume; an expired callback transitions the intent to a
 rewind-recoverable `FAILED` state rather than leaving it indefinitely `WAITING`.
 
+### Construction autonomy
+
+Releases that ship the construction protocol also carry `Construction Autonomy
+Mode`: the human's standing permission to complete the remaining construction
+stage gates without stopping. The capability is classified `native` — the grant,
+its two-value vocabulary, the first-stage carve-out and the halt-and-ask set are
+all reproduced.
+
+- The grant is per-intent and two-valued. Absent and `gated` both read as gated;
+  only `autonomous` waives anything. It is frozen onto the intent at create by
+  the human creating it, or escalated later by an explicit human answer: the
+  `grant-autonomy` option, offered at the one construction gate that always stays
+  human. The answer API rejects it on a gate that does not offer it.
+- It lives on its own META attribute, `constructionGateAutonomy`. The
+  per-section unit-lane ladder keeps `constructionAutonomyMode`: that question
+  asks only about parallel lane batching, and reading it here would waive gates
+  the human was never asked about.
+- A waived gate is never opened. The approved answer is synthesized and the run
+  takes the ordinary approval path, so the durable record is the ordinary
+  attempt-scoped `stage-approval` receipt, carrying `autonomous: true` and the
+  protocol's marker input. The `v2.gate.auto_approved` timeline event is
+  best-effort telemetry on top of that receipt, never the record itself. The
+  grant's own provenance — who, when, and whether at create or at a gate — is
+  durable too, as `constructionGateAutonomyGrant`.
+- The halt-and-ask set is reproduced in full: the plan's first non-skipped
+  construction stage, every Code Generation Plan Approval, every fan-out
+  approval, a stage failure, a blocking gate sensor, and an exhausted loop-back
+  bound all still open a human gate. Losing the run to a cancel, a delete, or
+  another orchestrator stops the walk — a waived gate opens no gate row, so that
+  re-read is what keeps an autonomous run cancellable.
+- Two deviations, both stricter than upstream: the gate-precondition evaluation
+  runs in full on a waived gate, so ANY finding (advisory included) opens the
+  human gate; and a terminal adversarial `NOT-READY` blocks a waived gate instead
+  of being auto-approved. On a gate the grant does not cover, that same verdict
+  stays an advisory finding and `approve` remains on offer, exactly as before.
+- Residual: the grant governs only the once-per-workflow sequential gates.
+  Per-unit stages inside a parallel section keep their own ceremony — the
+  walking-skeleton gate and the section autonomy ladder — so a scope with a unit
+  DAG still batches its lane approvals there. Non-construction phases are
+  untouched.
+
 ## Persona sessions
 
 Pinned releases that declare `pipeline`, `mob`, or `subagent` supports dispatch

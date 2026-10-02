@@ -711,6 +711,67 @@ describe('POST /projects/{id}/intents', () => {
     expect(intent.prStrategy).toBe('intent-pr');
   });
 
+  it.each([
+    ['a number', 7],
+    ['an unknown string', 'yolo'],
+    ['the upstream unset literal', 'unset'],
+    ['a boolean', true],
+    ['an object', { mode: 'autonomous' }],
+  ])(
+    '400s a malformed constructionGateAutonomy (%s) instead of ignoring it',
+    async (_label, value) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: 'feature',
+        constructionGateAutonomy: value,
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).code).toBe('construction_autonomy_mode_invalid');
+    },
+  );
+
+  it('400s an autonomy grant on an unpinned intent, whose methodology authors none', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+      constructionGateAutonomy: 'autonomous',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('construction_autonomy_unavailable');
+  });
+
+  it.each([
+    ['absent', {}],
+    ['explicitly null', { constructionGateAutonomy: null }],
+  ])('leaves the intent gated when the field is %s', async (_label, over) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: 'feature',
+      ...over,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const created = JSON.parse(res.body);
+    expect(created.constructionGateAutonomy).toBeNull();
+    expect(
+      procStore.get(keyOf(`EXEC#${created.executionId}`, 'META')).constructionGateAutonomyGrant,
+    ).toBeNull();
+  });
+
   it('snapshots the resolved tools from a published managed environment', async () => {
     vi.stubEnv('ENVIRONMENT_REGISTRY_TABLE', 'environment-registry-test');
     vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', '1');
@@ -4186,6 +4247,10 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     for (const body of [
       { answer: { decision: 'approve' } },
       { status: 'approved', answer: { ok: 1 } },
+      // The autonomy escalation is a real gate choice, so it must be REJECTED on a
+      // gate that never offered it rather than parsing as null and slipping past
+      // this check.
+      { answer: { decision: 'grant-autonomy' } },
     ]) {
       const invalid = await answerGate(sub, projectId, intent.id, humanTaskId, body);
       expect(invalid.statusCode).toBe(400);
@@ -8177,6 +8242,42 @@ describe('AI-DLC per-intent release selection', () => {
     expect(res.statusCode).toBe(201);
     expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toEqual(pinB);
   });
+
+  it.each([
+    { label: 'autonomous', mode: 'autonomous' },
+    { label: 'gated', mode: 'gated' },
+  ])(
+    'freezes a $label construction autonomy grant onto a release-pinned intent',
+    async ({ mode }) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1();
+      seedRegistryRecord(bundleB, 'v2.9.0');
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope: SCOPE_ONLY_IN_B,
+        methodologyReleaseId: pinB.releaseId,
+        constructionGateAutonomy: mode,
+      });
+
+      expect(res.statusCode).toBe(201);
+      const intent = JSON.parse(res.body);
+      expect(intent.constructionGateAutonomy).toBe(mode);
+      // The grant is frozen on META with durable attribution — who gave it, when,
+      // and through which door — so an audit never depends on the timeline event.
+      const meta = metaFor(intent.id);
+      expect(meta.constructionGateAutonomy).toBe(mode);
+      expect(meta.constructionGateAutonomyGrant).toMatchObject({
+        source: 'create',
+        grantedBy: sub,
+        grantedAt: expect.any(String),
+      });
+      expect(meta.startedBy).toBe(sub);
+      expect(meta.startedAt).toEqual(expect.any(String));
+    },
+  );
 
   it('auto-pins when the release CAN reproduce the plan, and persists no SYSTEM pins', async () => {
     const sub = `u-${randomUUID()}`;
