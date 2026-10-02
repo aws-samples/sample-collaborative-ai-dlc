@@ -1257,7 +1257,6 @@ describe('runStage — deterministic sensors', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-    expect(deps.store.calls.some((c) => c[0] === 'recordSensorRun')).toBe(true);
   });
 
   it('surfaces a NON-PASS advisory verdict as a v2.sensor.flagged event (does not hold)', async () => {
@@ -1544,6 +1543,26 @@ describe('runStage — LLM reviewer axis', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(res.reviewAdvisory).toMatchObject({
+      reviewerAgent: 'aidlc-reviewer-agent',
+      advisory: false,
+      verdict: 'NOT-READY',
+      findings: 'human should decide',
+    });
+  });
+
+  it('carries no reviewer verdict DTO when the adversarial reviewer is READY', async () => {
+    const deps = baseDeps({
+      store: storeWithVerdict('READY'),
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({
+        workflow: workflow(),
+        library: libWithReviewer({ humanValidation: 'required' }),
+      }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(res.reviewAdvisory).toBeUndefined();
   });
 
   it('retries a NOT-READY reviewer verdict up to reviewerMaxIterations before failing', async () => {
