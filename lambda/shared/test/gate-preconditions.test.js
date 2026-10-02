@@ -503,27 +503,83 @@ describe('evaluateGatePreconditions: reviewer and sensors', () => {
     expect(result.findings[0].title).toContain('architecture-reviewer');
   });
 
-  it('says nothing about an adversarial reviewer or a READY advisory one', () => {
-    expect(
-      codesOf(
-        evaluateGatePreconditions({
-          stage: STAGE,
-          policy: POLICY,
-          reviewVerdict: { advisory: false, verdict: 'NOT-READY' },
-          producedArtifacts: ['requirements'],
-        }),
-      ),
-    ).toEqual([]);
-    expect(
-      codesOf(
-        evaluateGatePreconditions({
-          stage: STAGE,
-          policy: POLICY,
-          reviewVerdict: { advisory: true, verdict: 'READY' },
-          producedArtifacts: ['requirements'],
-        }),
-      ),
-    ).toEqual([]);
+  it.each([
+    {
+      name: 'an adversarial NOT-READY blocks overridably ONLY on an autonomy-governed gate',
+      reviewVerdict: {
+        advisory: false,
+        verdict: 'NOT-READY',
+        reviewerAgent: 'architecture-reviewer',
+        findings: 'Section 3 is unsupported',
+      },
+      autonomyGoverned: true,
+      codes: ['review_not_ready'],
+      ok: false,
+      overridable: true,
+    },
+    {
+      name: 'the same adversarial NOT-READY stays ADVISORY at a human gate',
+      reviewVerdict: {
+        advisory: false,
+        verdict: 'NOT-READY',
+        reviewerAgent: 'architecture-reviewer',
+        findings: 'Section 3 is unsupported',
+      },
+      autonomyGoverned: false,
+      codes: ['review_advisory_findings'],
+      ok: true,
+    },
+    {
+      name: 'a verdict with no advisory flag is read as advisory even when governed',
+      reviewVerdict: { verdict: 'NOT-READY', reviewerAgent: 'architecture-reviewer' },
+      autonomyGoverned: true,
+      codes: ['review_advisory_findings'],
+      ok: true,
+    },
+    {
+      name: 'an advisory NOT-READY never blocks, governed or not',
+      reviewVerdict: { advisory: true, verdict: 'NOT-READY' },
+      autonomyGoverned: true,
+      codes: ['review_advisory_findings'],
+      ok: true,
+    },
+    {
+      name: 'an adversarial READY says nothing',
+      reviewVerdict: { advisory: false, verdict: 'READY' },
+      autonomyGoverned: true,
+      codes: [],
+      ok: true,
+    },
+    {
+      name: 'a READY advisory one says nothing',
+      reviewVerdict: { advisory: true, verdict: 'READY' },
+      codes: [],
+      ok: true,
+    },
+    {
+      name: 'no reviewer verdict at all says nothing',
+      reviewVerdict: null,
+      codes: [],
+      ok: true,
+    },
+  ])('$name', ({ reviewVerdict, codes, ok, overridable, autonomyGoverned = false }) => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      reviewVerdict,
+      autonomyGoverned,
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(codes);
+    expect(result.ok).toBe(ok);
+    if (overridable) {
+      expect(result.findings[0]).toMatchObject({
+        severity: 'blocking',
+        overridable: true,
+        receiptKind: 'stage-approval',
+      });
+      expect(overridableFindings(result.findings)).toHaveLength(1);
+    }
   });
 
   it('holds the gate on a BLOCKING gate-plane sensor, with an override', () => {

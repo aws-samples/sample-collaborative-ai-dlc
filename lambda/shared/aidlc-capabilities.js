@@ -190,7 +190,7 @@ const AIDLC_CAPABILITIES = Object.freeze([
     }),
     defaultWhenAbsent: null,
     capabilityPresentIf: null,
-    note: 'The plan pins an advisory reviewer to one terminal pass and NOT-READY neither fails the stage nor triggers repair. Its findings are carried into the approval prompt\u2019s findings section AND the structured gate row, which is upstream\u2019s at-the-gate presentation; the timeline note remains as the durable record. `adversarial` resumes the lead for one repair turn between NOT-READY rounds, bounded by the stage wall-clock budget. Residual: a codex lead, or any lead with no resumable CLI session, gets no repair turn, so its next round re-reviews the same revision.',
+    note: 'The plan pins an advisory reviewer to one terminal pass and NOT-READY neither fails the stage nor triggers repair. Its findings are carried into the approval prompt\u2019s findings section AND the structured gate row, which is upstream\u2019s at-the-gate presentation; the timeline note remains as the durable record. `adversarial` resumes the lead for one repair turn between NOT-READY rounds, bounded by the stage wall-clock budget. An adversarial verdict still NOT-READY after that loop reaches a gated stage\u2019s approval gate as a BLOCKING overridable finding (`review_not_ready`), so plain `approve` is withheld and accepting the objection is recorded \u2014 deliberately stricter than upstream, which lets a post-cap NOT-READY be approved like any other gate. Residual: a codex lead, or any lead with no resumable CLI session, gets no repair turn, so its next round re-reviews the same revision.',
   }),
   Object.freeze({
     key: 'STAGE:review_artifact',

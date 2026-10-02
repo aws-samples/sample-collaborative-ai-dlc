@@ -4590,6 +4590,19 @@ export const runStage = async (
         'reviewer_not_ready',
         verdict?.detail?.findings ?? `${reviewerAgent} returned NOT-READY`,
       );
+    } else if (notReady) {
+      // A gated stage does not fail on a terminal NOT-READY — the human decides.
+      // But the decision has to CARRY the verdict, so the same DTO is handed to the
+      // gate with `advisory: false`, which the precondition evaluator turns into a
+      // blocking overridable finding. Without this the reviewer's unresolved
+      // objection reached the gate as silence.
+      reviewAdvisory = {
+        reviewerAgent,
+        advisory: false,
+        verdict: verdict?.detail?.verdict ?? verdict?.result ?? 'NOT-READY',
+        findings: verdict?.detail?.findings ?? null,
+        ...(reviewArtifactUnderReview ? { artifact: reviewArtifactUnderReview } : {}),
+      };
     }
   }
 
