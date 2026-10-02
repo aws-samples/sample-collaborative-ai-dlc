@@ -163,15 +163,14 @@ const DEPTHS = ['Minimal', 'Standard', 'Comprehensive'];
 
 // V2's stage execution modes — the authored vocabulary a release description
 // must be able to round-trip. `inline` and `subagent` run natively; `pipeline`
-// and `mob` (≥2.6.18) and the reserved `agent-team` have no runtime handler yet
-// (see aidlc-capabilities.js, which classifies them as unsupported), so they are
-// recorded rather than executed.
+// and `mob` (≥2.6.18) run as persona sessions for a release-pinned intent only;
+// the reserved `agent-team` has no runtime handler.
 const STAGE_MODES = ['inline', 'subagent', 'pipeline', 'mob', 'agent-team'];
 
 // Stage modes a user-authored block may declare. An imported release may carry
 // any authored mode (the promotion guard reports the unsupported ones); a user
-// block has no such guard, so it is held to the modes the runtime can schedule
-// plus the reserved `agent-team`, which is what the API accepted before.
+// block has no such guard and is not part of a release, so it is held to the
+// modes an unpinned run can schedule plus the reserved `agent-team`.
 const USER_STAGE_MODES = STAGE_MODES.filter((mode) => mode !== 'pipeline' && mode !== 'mob');
 
 // Per-type required/shape checks. Kept small and explicit — only the fields
