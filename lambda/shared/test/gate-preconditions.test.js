@@ -333,6 +333,58 @@ describe('evaluateGatePreconditions: plan approval', () => {
   });
 });
 
+describe('evaluateGatePreconditions: ensemble evidence', () => {
+  it('reports a support persona that produced no contribution as an advisory GAP', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      ensembleEvidence: { supports: ['design-agent', 'quality-agent'] },
+      receipts: [
+        receipt({
+          kind: 'persona-contribution',
+          sk: 'RECEIPT#persona-contribution#si-1#0#-',
+          detail: { agentRef: 'quality-agent' },
+        }),
+      ],
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['persona_contribution_missing']);
+    // A gap never blocks: the run continues and the human is told.
+    expect(result.ok).toBe(true);
+    expect(result.findings[0]).toMatchObject({
+      severity: 'advisory',
+      overridable: false,
+      detail: { agentRef: 'design-agent' },
+    });
+  });
+
+  it('reports an incomplete pipeline chain as advisory', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      ensembleEvidence: { links: ['lead', 'a', 'b'] },
+      receipts: [receipt({ kind: 'pipeline-link', sk: 'RECEIPT#pipeline-link#si-1#0#-#0' })],
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['pipeline_link_incomplete']);
+    expect(result.findings[0].detail).toMatchObject({ completed: 1, declared: 3 });
+    expect(result.ok).toBe(true);
+  });
+
+  it('quotes maintained dissent verbatim', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      ensembleEvidence: {
+        dissent: [{ agentRef: 'quality-agent', position: 'OBJECT: the retry budget is wrong' }],
+      },
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['review_dissent_maintained']);
+    expect(result.findings[0].detail.position).toBe('OBJECT: the retry budget is wrong');
+  });
+});
+
 describe('evaluateGatePreconditions: reviewer and sensors', () => {
   it('surfaces an advisory reviewer verdict without blocking', () => {
     const result = evaluateGatePreconditions({
@@ -448,6 +500,10 @@ describe('evaluateGatePreconditions: composition order and codes', () => {
       stage: STAGE,
       policy: { ...POLICY, summaryConfirmation: 'required', changeControl: 'relaxed' },
       producedArtifacts: [],
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        dissent: [{ agentRef: 'quality-agent', position: 'OBJECT' }],
+      },
       reviewVerdict: { advisory: true, verdict: 'NOT-READY' },
       sensorVerdicts: [{ sensorId: 's1', result: 'FAIL', severity: 'blocking' }],
       changedInputs: [{ artifactId: 'design' }],
@@ -455,7 +511,9 @@ describe('evaluateGatePreconditions: composition order and codes', () => {
     expect(codesOf(result)).toEqual([
       'required_artifact_missing',
       'summary_confirmation_missing',
+      'persona_contribution_missing',
       'review_advisory_findings',
+      'review_dissent_maintained',
       'sensor_gate_blocking',
       'change_control_input_changed',
     ]);
@@ -491,10 +549,224 @@ describe('mergeFindings', () => {
   });
 });
 
+// The verbatim dissent text has to REACH the gate. `detail.position` alone is
+// invisible to every renderer, so the finding carries `quote` too — and only the
+// findings that actually quote something carry the field, which is what keeps
+// every other finding's shape (and the byte-identical prompt) unchanged.
+describe('evaluateGatePreconditions: maintained dissent carries the verbatim text', () => {
+  const dissentResult = (dissent) =>
+    evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      ensembleEvidence: { dissent: [dissent] },
+    });
+
+  it('quotes the position verbatim', () => {
+    const result = dissentResult({
+      agentRef: 'aidlc-quality-agent',
+      class: 'knowledge',
+      position: 'OBJECT: the retry budget ignores the 429 path',
+    });
+    expect(codesOf(result)).toEqual(['review_dissent_maintained']);
+    expect(result.findings[0].quote).toBe('OBJECT: the retry budget ignores the 429 path');
+    // Still advisory: a dissent informs the decision, it does not block it.
+    expect(result.ok).toBe(true);
+  });
+
+  it('prefers an explicit quote over the position when the emitter sends both', () => {
+    expect(
+      dissentResult({ agentRef: 'a', position: 'summarised', quote: 'the exact words' }).findings[0]
+        .quote,
+    ).toBe('the exact words');
+  });
+
+  it('omits the field entirely when there is nothing to quote', () => {
+    const result = dissentResult({ agentRef: 'a' });
+    expect(result.findings[0]).not.toHaveProperty('quote');
+  });
+
+  it('leaves every other finding shape untouched', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: [],
+    });
+    expect(result.findings[0]).not.toHaveProperty('quote');
+    expect(Object.keys(result.findings[0])).toEqual([
+      'code',
+      'severity',
+      'title',
+      'detail',
+      'overridable',
+      'receiptKind',
+      'remediation',
+    ]);
+  });
+});
+
+describe('evaluateGatePreconditions: stage wall-clock budget', () => {
+  it('reports the sessions the budget cut as ONE advisory finding', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        { kind: 'summary-confirmation', attempt: 0, sk: 'RECEIPT#summary-confirmation#si-1#0#-' },
+      ],
+      ensembleEvidence: {
+        supports: [],
+        links: [],
+        dissent: [],
+        budgetExhausted: [{ agentRef: 'aidlc-product-agent', role: 'integrator' }],
+      },
+    });
+    const cut = result.findings.find((item) => item.code === 'stage_budget_exhausted');
+    expect(cut).toMatchObject({
+      severity: 'advisory',
+      overridable: false,
+      detail: { sessions: [{ agentRef: 'aidlc-product-agent', role: 'integrator' }] },
+    });
+  });
+
+  it('blocks, overridably, when the cut left no collaborator evidence at all', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      ensembleEvidence: {
+        supports: ['design-agent', 'quality-agent'],
+        links: [],
+        dissent: [],
+        budgetExhausted: [
+          { agentRef: 'design-agent', role: 'support' },
+          { agentRef: 'quality-agent', role: 'support' },
+        ],
+      },
+    });
+    const cut = result.findings.find((item) => item.code === 'stage_budget_exhausted');
+    expect(cut).toMatchObject({
+      severity: 'blocking',
+      overridable: true,
+      receiptKind: 'stage-approval',
+    });
+    expect(overridableFindings(result.findings)).toContainEqual(cut);
+  });
+
+  it('stays advisory when one collaborator contributed before the cut', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        { kind: 'persona-contribution', attempt: 0, detail: { agentRef: 'design-agent' } },
+      ],
+      ensembleEvidence: {
+        supports: ['design-agent', 'quality-agent'],
+        links: [],
+        dissent: [],
+        budgetExhausted: [{ agentRef: 'quality-agent', role: 'support' }],
+      },
+    });
+    expect(result.findings.find((item) => item.code === 'stage_budget_exhausted')).toMatchObject({
+      severity: 'advisory',
+      overridable: false,
+    });
+  });
+
+  it('stays advisory when pipeline evidence exists but a support persona was cut', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        { kind: 'pipeline-link', attempt: 0, detail: { agentRef: 'lead' } },
+        { kind: 'pipeline-link', attempt: 0, detail: { agentRef: 'quality-agent' } },
+      ],
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        links: ['lead', 'quality-agent'],
+        dissent: [],
+        budgetExhausted: [{ agentRef: 'design-agent', role: 'support' }],
+      },
+    });
+
+    const budget = result.findings.find((item) => item.code === 'stage_budget_exhausted');
+    expect(result.ok).toBe(true);
+    expect(codesOf(result)).toContain('persona_contribution_missing');
+    expect(codesOf(result)).not.toContain('pipeline_link_incomplete');
+    expect(budget).toMatchObject({ severity: 'advisory', overridable: false });
+    expect(budget.receiptKind).toBeNull();
+  });
+
+  it('blocks a pipeline whose only completed link is the lead', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [{ kind: 'pipeline-link', attempt: 0, detail: { agentRef: 'lead' } }],
+      ensembleEvidence: {
+        supports: [],
+        links: ['lead', 'design-agent'],
+        dissent: [],
+        budgetExhausted: [{ agentRef: 'design-agent', role: 'link' }],
+      },
+    });
+    expect(result.findings.find((item) => item.code === 'stage_budget_exhausted').severity).toBe(
+      'blocking',
+    );
+  });
+
+  // runPipeline writes a receipt for a gapped link too (`choice: 'gap'`), so a
+  // resume advances past it. The orchestrator re-reads those durable rows, and
+  // must reach the same findings as the runner: a gap is not a completed link.
+  it('does not count a gapped pipeline-link receipt as a completed link', () => {
+    const link = (ordinal, agentRef, choice) => ({
+      kind: 'pipeline-link',
+      attempt: 0,
+      ordinal,
+      choice,
+      detail: { agentRef, ordinal },
+    });
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        link(1, 'lead', 'completed'),
+        link(2, 'design-agent', 'gap'),
+        link(3, 'quality-agent', 'gap'),
+      ],
+      ensembleEvidence: {
+        supports: [],
+        links: ['lead', 'design-agent', 'quality-agent'],
+        dissent: [],
+        budgetExhausted: [
+          { agentRef: 'design-agent', role: 'link' },
+          { agentRef: 'quality-agent', role: 'link' },
+        ],
+      },
+    });
+    expect(result.findings.map((item) => [item.code, item.severity])).toEqual([
+      ['pipeline_link_incomplete', 'advisory'],
+      ['stage_budget_exhausted', 'blocking'],
+    ]);
+  });
+
+  it('says nothing when no session was cut', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      ensembleEvidence: { supports: [], links: [], dissent: [] },
+    });
+    expect(codesOf(result)).not.toContain('stage_budget_exhausted');
+  });
+});
+
 describe('FINDING_CODES is closed', () => {
   it('still refuses an unknown code', () => {
-    expect(FINDING_CODES).toContain('sensor_gate_blocking');
-    expect(FINDING_CODES).not.toContain('review_dissent_maintained');
+    expect(FINDING_CODES).toContain('review_dissent_maintained');
   });
 });
 

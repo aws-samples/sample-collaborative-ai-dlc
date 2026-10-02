@@ -120,14 +120,14 @@ safe-to-run releases.
 
 The gate handlers cover summary and plan-approval checkpoints, review policy,
 both sensor planes, change control, learnings, skeleton selection, and
-`AGENT.maxTurns`. `pipeline` and `mob` remain unsupported until this build
-registers their runtime handlers.
+`AGENT.maxTurns`. The persona runtime dispatches `pipeline`, `mob`, and
+`subagent` supports in separate serial sessions with role-scoped briefs.
+`agent-team` remains unsupported because it requires concurrent sessions.
 
 The 2.3.3 baseline remains promotable. The 2.6.18, 2.7.0, 2.8.2, and 2.9.0
-fixtures all author `pipeline`/`mob`; those modes remain promotion gaps until
-matching handlers are available. The verified fixtures show earlier profiles
-author the same unsupported mode values, so the handler-based guard applies
-consistently across profiles rather than using version-specific exceptions.
+fixtures have runtime handlers for their authored persona modes. Their
+compatibility classification remains field-driven and reflects the supported
+runtime semantics rather than profile-version exceptions.
 
 `readyForCertification` is derived from the current compatibility report. It is
 not a version allowlist, and the report's Boolean is not treated as durable
@@ -245,6 +245,41 @@ An answered gate whose durable callback failed to resume can be retried through
 the intent's Resume action. Callback-consumption markers and answered gate state
 prevent a duplicate resume; an expired callback transitions the intent to a
 rewind-recoverable `FAILED` state rather than leaving it indefinitely `WAITING`.
+
+## Persona sessions
+
+Pinned releases that declare `pipeline`, `mob`, or `subagent` supports dispatch
+each persona in its own serial session. Each session receives a role-scoped brief:
+pipeline links see earlier outputs, support personas see the lead draft without
+sibling contributions, and the lead integration sees the collected contributions.
+The reviewer remains a separate read-only session.
+
+Contributions are written as persona-scoped artifacts and timeline events. The
+platform stamps the contributor identity from the trusted session scope, so one
+persona cannot create or overwrite another persona's evidence. A failed support
+session is retried once with a reduced brief; if it still produces no evidence,
+the run records a gap and continues. A timed-out CLI child is killed and its exit
+awaited before retry or gap handling. A persona session, retry included, starts
+only if a full 45-minute session still fits the stage budget of 6.5 hours; the
+budget restarts with each run of the stage, including a resume. A session that
+does not fit is recorded as a gap. Mob dissent is triaged for at most two
+rounds and any maintained objection is shown verbatim at the existing validation
+gate. Only the lead session can ask the human: no persona session, the
+integrator included, is given `ask_question`, and judgment-class objections are
+quoted at the validation gate instead.
+
+`get_team_knowledge` and `record_team_knowledge` use the project's shared
+knowledge. Persona identity scopes authorship; it does not create a private
+knowledge namespace for each persona. Identity checks apply through supported
+tool calls; they are workflow controls, not an isolation boundary against a
+compromised AgentCore runtime identity, which remains trusted.
+
+Persona sessions apply to release-pinned intents only; release pinning itself
+defaults to `off`. There is no separate switch for them: to stop running
+persona sessions, do not pin intents to a release that declares these modes.
+
+`agent-team` remains explicitly unimplemented. Build-and-Test loop-back is a
+separate runtime behavior; persona sessions do not add a loop-back gate option.
 
 ### Verification
 

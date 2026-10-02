@@ -178,11 +178,21 @@ describe('offline exact-source fixtures', () => {
 
     // A release's classification is derived from the handlers available in this
     // build; handling can improve without changing the authored vocabulary.
+    // The pipeline and mob modes run each persona in a separate session with a
+    // role-scoped brief, but remain `approximated`: visibility is brief-enforced,
+    // and contributions are graph artifacts rather than `.aidlc-engine/**` files.
     const row = modeRow('v2.9.0');
     const modeEntry = AIDLC_CAPABILITIES.find((entry) => entry.key === 'STAGE:mode');
     expect(Object.fromEntries(row.values.map((item) => [item.value, item.handling]))).toEqual(
       Object.fromEntries(row.values.map(({ value }) => [value, modeEntry.values[value].handling])),
     );
+    expect(row.handling).toBe('approximated');
+    expect(Object.fromEntries(row.values.map((item) => [item.value, item.handling]))).toEqual({
+      inline: 'native',
+      subagent: 'native',
+      pipeline: 'approximated',
+      mob: 'approximated',
+    });
   });
 
   it('classifies the {{INVOKE}} dialect by the command families a release invokes', () => {
@@ -259,6 +269,9 @@ describe('offline exact-source fixtures', () => {
 
     // `workspace_requires` stays on the unmapped list because the precondition
     // holds architecturally (every stage runs on a restored checkout).
+    // It is separately classified in the fidelity table as `approximated`, not
+    // `native`: holding architecturally is not the same as the platform
+    // asserting the declaration per stage.
     expect(fields('current-stable')).toContain('STAGE:workspace_requires');
     for (const profileId of FIXTURE_IDS) {
       expect(reports[profileId].unmappedFields.some((field) => field.executionRelevant)).toBe(
@@ -275,7 +288,64 @@ describe('offline exact-source fixtures', () => {
           expect(value.handling).toBe(expected);
         }
       }
+      expect(reports[profileId].fidelity.approximated).toContain('STAGE:workspace_requires');
+      expect(reports[profileId].fidelity.native).not.toContain('STAGE:workspace_requires');
     }
+
+    // `fire_on` is value-level: the write plane is still an approximation (no
+    // per-write hook), the GATE plane is native (its own pass after the reviewer
+    // loop, on final bytes), and 2.7.0+ author only `gate` — so the row is native.
+    expect(reports['v2.7.0'].fidelity.native).toContain('SENSOR:fire_on');
+    expect(reports['v2.7.0'].fidelity.unsupported).not.toContain('SENSOR:fire_on');
+    expect(reports['v2.7.0'].fidelity.native).toContain('STAGE:review_artifact');
+    // The scope switches are enforced by the platform, not just explained in the
+    // prompt: a fingerprint comparison for change control, and a real skip of the
+    // skeleton ceremony.
+    expect(reports['v2.8.2'].fidelity.approximated).toContain('SCOPE:change_control');
+    expect(reports['v2.8.2'].fidelity.native).not.toContain('SCOPE:change_control');
+    expect(reports['v2.9.0'].fidelity.native).toEqual(
+      expect.arrayContaining(['STAGE:review_class']),
+    );
+    // `learnings` stays approximated by DESIGN: the ritual rides the approval gate
+    // instead of taking a second mandatory human turn per stage. `change_control`
+    // reproduces only the input-fingerprint half of upstream's mechanism, and
+    // `skeleton` is only approximated for its `on` value — `off` is native
+    // (`SCOPE.skeleton`).
+    // 2.6.18+ author pipeline/mob alongside inline/subagent, so the STAGE:mode
+    // row's worst-case rollup is `approximated`.
+    expect(reports['v2.9.0'].fidelity.approximated).toEqual(
+      expect.arrayContaining([
+        'SCOPE:learnings',
+        'SCOPE:change_control',
+        'SCOPE:skeleton',
+        'STAGE:mode',
+      ]),
+    );
+    // SCOPE.summary_confirmation is `off` in 2.9.0: removing a requirement IS
+    // something the platform can do natively, unlike imposing one.
+    expect(reports['v2.9.0'].fidelity.native).toEqual(
+      expect.arrayContaining(['SCOPE:sensors', 'SCOPE:summary_confirmation']),
+    );
+    expect(reports['v2.9.0'].fidelity.packagingOnly).toEqual(['SCOPE:runner']);
+    expect(reports['v2.9.0'].fidelity.native).toEqual(
+      expect.arrayContaining(['STAGE:summary_confirmation']),
+    );
+    expect(reports['v2.9.0'].fidelity.unsupported).toEqual([]);
+    // Every authored value is handled; the release is withheld only for the
+    // build-and-test loop-back protocol, which no handler reproduces yet.
+    expect(reports['v2.9.0'].readyForCertification).toBe(false);
+    // The 2.3.3-era baseline carries no release-policy field. It does carry
+    // `mode` (native) and `workspace_requires` (approximated), so the report
+    // names both rather than leaving them unclassified.
+    expect(reports['current-stable'].fidelity).toMatchObject({
+      native: ['STAGE:mode'],
+      approximated: ['STAGE:workspace_requires'],
+      unsupported: [],
+      packagingOnly: [],
+      gaps: [],
+    });
+    // An `approximated` value does not withhold certification — only `unsupported`
+    // does — so the reclassification must NOT demote the baseline.
     expect(reports['current-stable'].readyForCertification).toBe(true);
   });
 
@@ -858,11 +928,11 @@ describe('certification gaps of the upstream fixtures', () => {
   });
 
   it.each(['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'])(
-    'withholds %s for the persona modes and the build-and-test loop-back',
+    'withholds %s for the build-and-test loop-back only',
     (profileId) => {
       expect(gapsOf(profileId)).toEqual({
         ready: false,
-        gaps: ['PROTOCOL:build-and-test-loopback=present', 'STAGE:mode=mob', 'STAGE:mode=pipeline'],
+        gaps: ['PROTOCOL:build-and-test-loopback=present'],
       });
     },
   );

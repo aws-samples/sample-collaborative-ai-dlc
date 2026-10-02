@@ -16,6 +16,57 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'spawn' } });
+const usesPosixProcessGroups = process.platform !== 'win32';
+const SHUTDOWN_GRACE_MS = 250;
+// Persona-session process groups still running, killed if the runner is stopped.
+const liveProcessGroups = new Map();
+let shutdownHandlersInstalled = false;
+let shuttingDown = false;
+
+// Signal a CLI's whole process group (it is the group leader), falling back to
+// the CLI itself when the group is already gone.
+const signalGroup = (child, signal) => {
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill?.(signal);
+    } catch {
+      /* the child exited while cleanup was running */
+    }
+  }
+};
+
+const signalLiveProcessGroups = (signal) => {
+  for (const child of liveProcessGroups.values()) signalGroup(child, signal);
+};
+
+// Installed on the first persona session only, so a runner that never starts
+// one keeps Node's default signal handling.
+const installShutdownHandlers = () => {
+  if (shutdownHandlersInstalled) return;
+  shutdownHandlersInstalled = true;
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      signalLiveProcessGroups('SIGTERM');
+      setTimeout(() => {
+        signalLiveProcessGroups('SIGKILL');
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      }, SHUTDOWN_GRACE_MS);
+    });
+  }
+  process.once('exit', () => signalLiveProcessGroups('SIGKILL'));
+};
+
+const trackProcessGroup = (child) => {
+  const pid = child?.pid;
+  if (!pid) return () => {};
+  liveProcessGroups.set(pid, child);
+  installShutdownHandlers();
+  return () => liveProcessGroups.delete(pid);
+};
 
 // Keep only the last `max` bytes of a growing string — the tail is where a CLI
 // prints its terminating error, and it bounds memory on a chatty child.
@@ -30,10 +81,16 @@ export const runChild = ({
   promptViaStdin = false,
   captureStderrTail = 0,
   onStdout = null,
+  // Persona sessions only: run the CLI as its own process group, reaped when it
+  // exits, killed whole on `timeoutMs` or runner shutdown. Every other caller
+  // spawns exactly as before.
+  processGroup = false,
+  timeoutMs = 0,
   spawnFn = spawn,
 }) =>
   new Promise((resolve, reject) => {
     const capture = captureStderrTail > 0;
+    const grouped = processGroup && usesPosixProcessGroups;
     const mergedEnv = { ...process.env, ...env };
     let child;
     try {
@@ -41,6 +98,7 @@ export const runChild = ({
         cwd,
         env: mergedEnv,
         shell: false,
+        ...(grouped ? { detached: true } : {}),
         stdio: [
           promptViaStdin ? 'pipe' : 'ignore',
           onStdout ? 'pipe' : 'inherit',
@@ -55,6 +113,7 @@ export const runChild = ({
       reject(e);
       return;
     }
+    const untrackProcessGroup = grouped ? trackProcessGroup(child) : () => {};
     let stderrTail = '';
     if (onStdout) {
       child.stdout?.on('data', (c) => {
@@ -70,13 +129,39 @@ export const runChild = ({
       });
     }
     let settled = false;
+    let timedOut = false;
+    let timer = null;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      resolve({ exitCode, stderrTail });
+      if (timer) clearTimeout(timer);
+      resolve({ exitCode, stderrTail, ...(timedOut ? { timedOut: true } : {}) });
     };
-    child.on('error', () => finish(null)); // spawn failure → runner maps to FAILED
-    child.on('close', (code) => finish(code));
+    child.on('error', () => {
+      untrackProcessGroup();
+      finish(null);
+    }); // spawn failure → runner maps to FAILED
+    if (grouped) {
+      // A CLI may exit after leaving background tools behind: reap the rest of
+      // its group as soon as it exits, before inherited descriptors delay close.
+      child.on('exit', () => {
+        if (child.pid) signalGroup(child, 'SIGKILL');
+        untrackProcessGroup();
+      });
+    }
+    child.on('close', (code) => {
+      untrackProcessGroup();
+      finish(code);
+    });
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        timedOut = true;
+        if (grouped && child.pid) signalGroup(child, 'SIGKILL');
+        else child.kill?.('SIGKILL');
+      }, timeoutMs);
+      timer.unref?.();
+    }
     if (promptViaStdin) {
       try {
         child.stdin?.end(prompt ?? '');

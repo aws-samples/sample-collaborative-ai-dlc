@@ -428,6 +428,26 @@ describe('ask_question — attempt provenance', () => {
     });
   });
 
+  // No persona session is given ask_question, so a question event carries the
+  // same shape whoever raised it.
+  it('records the same question detail for a non-owner session', async () => {
+    const store = fakeStore();
+    const bridge = createProcessBridge({
+      store,
+      scope: {
+        ...SCOPE,
+        stageAttempt: 1,
+        checkpointOwner: false,
+        policy: { summaryConfirmation: 'if-present' },
+      },
+      parkGraceMs: 0,
+    });
+    await bridge.askQuestion({ questions: [{ text: 'q', type: 'single', options: [] }] });
+    expect(store.events.find((row) => row.type === 'v2.question.asked').detail).toEqual({
+      attempt: 1,
+    });
+  });
+
   it('records no attempt on an unpinned run, where nothing reads it', async () => {
     const store = fakeStore();
     const bridge = createProcessBridge({ store, scope: SCOPE, parkGraceMs: 0 });

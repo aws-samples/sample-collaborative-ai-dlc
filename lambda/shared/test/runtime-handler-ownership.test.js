@@ -12,6 +12,7 @@ import { IMPLEMENTED_RUNTIME_HANDLERS as runStage } from '../../agentcore/comman
 import { IMPLEMENTED_RUNTIME_HANDLERS as stageMaterializer } from '../../agentcore/stage-materializer.js';
 import { IMPLEMENTED_RUNTIME_HANDLERS as sensorRunner } from '../../agentcore/sensor-runner.js';
 import { IMPLEMENTED_RUNTIME_HANDLERS as cliDrivers } from '../../agentcore/cli/drivers.js';
+import { IMPLEMENTED_RUNTIME_HANDLERS as ensembleRunner } from '../../agentcore/ensemble-runner.js';
 import { IMPLEMENTED_RUNTIME_HANDLERS as mcpServer } from '../../agentcore/mcp/server.js';
 import { IMPLEMENTED_RUNTIME_HANDLERS as processBridge } from '../../agentcore/mcp/process-bridge.js';
 import { IMPLEMENTED_RUNTIME_HANDLERS as orchestrator } from '../../v2-orchestrator/index.js';
@@ -24,6 +25,7 @@ const DECLARED = {
   'agentcore/stage-materializer.js': stageMaterializer,
   'agentcore/sensor-runner.js': sensorRunner,
   'agentcore/cli/drivers.js': cliDrivers,
+  'agentcore/ensemble-runner.js': ensembleRunner,
   'agentcore/mcp/server.js': mcpServer,
   'agentcore/mcp/process-bridge.js': processBridge,
   'v2-orchestrator/index.js': orchestrator,
