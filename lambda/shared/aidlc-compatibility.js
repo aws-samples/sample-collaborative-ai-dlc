@@ -556,31 +556,50 @@ const invokeFamilyHandling = (command) => {
 // command family, so the report can classify the engine dialect by what the
 // release actually invokes instead of by the token's mere presence.
 const INVOKE_COMMAND_RE = /\{\{INVOKE\}\}\s+engine\s+([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*)?)/g;
-const collectInvokeCommands = (files) => {
+
+/**
+ * Accumulates the same evidence one file at a time, so a caller that reads very
+ * large bodies out of object storage can fold each body in and then drop it
+ * instead of holding the whole closure in the heap (see `readReleaseFidelityGaps`).
+ *
+ * The result is independent of the order the bodies are folded in: every family,
+ * command and path list is sorted on the way out, and a family's `handling` is a
+ * property of the family rather than of the body it was first seen in.
+ */
+const invokeCommandCollector = () => {
   const byFamily = new Map();
-  for (const [path, content] of files) {
-    if (typeof content !== 'string') continue;
-    for (const match of content.matchAll(INVOKE_COMMAND_RE)) {
-      const { family, handling } = invokeFamilyHandling(match[1]);
-      const entry = byFamily.get(family) ?? {
-        family,
-        handling,
-        commands: new Set(),
-        paths: new Set(),
-      };
-      entry.commands.add(match[1]);
-      entry.paths.add(path);
-      byFamily.set(family, entry);
-    }
-  }
-  return [...byFamily.values()]
-    .map((entry) => ({
-      family: entry.family,
-      handling: entry.handling,
-      commands: [...entry.commands].toSorted(),
-      paths: [...entry.paths].toSorted(),
-    }))
-    .toSorted((left, right) => left.family.localeCompare(right.family));
+  return {
+    add: (path, content) => {
+      if (typeof content !== 'string') return;
+      for (const match of content.matchAll(INVOKE_COMMAND_RE)) {
+        const { family, handling } = invokeFamilyHandling(match[1]);
+        const entry = byFamily.get(family) ?? {
+          family,
+          handling,
+          commands: new Set(),
+          paths: new Set(),
+        };
+        entry.commands.add(match[1]);
+        entry.paths.add(path);
+        byFamily.set(family, entry);
+      }
+    },
+    commands: () =>
+      [...byFamily.values()]
+        .map((entry) => ({
+          family: entry.family,
+          handling: entry.handling,
+          commands: [...entry.commands].toSorted(),
+          paths: [...entry.paths].toSorted(),
+        }))
+        .toSorted((left, right) => left.family.localeCompare(right.family)),
+  };
+};
+
+const collectInvokeCommands = (files) => {
+  const collector = invokeCommandCollector();
+  for (const [path, content] of files) collector.add(path, content);
+  return collector.commands();
 };
 
 // Build the per-profile fidelity report. `adapterFieldValues` maps
@@ -655,8 +674,15 @@ const fidelityReport = (adapterFieldValues, invokeCommands) => {
 
 // Re-evaluates analyzer fidelity evidence from an immutable mapped catalog and
 // its content-addressed bodies. The manifest predates this projection, so these
-// values stay out of its bytes and closure digest.
-const fidelityGapsFromCatalog = ({ catalog, bodies = [], runtimeFilePaths = [] }) => {
+// values stay out of its bytes and closure digest. A caller that cannot afford to
+// hold every body at once folds them through `invokeCommandCollector` instead and
+// hands the collected `invokeCommands` in; the gaps are identical either way.
+const fidelityGapsFromCatalog = ({
+  catalog,
+  bodies = [],
+  invokeCommands = null,
+  runtimeFilePaths = [],
+}) => {
   const adapterFieldValues = new Map();
   for (const capability of AIDLC_CAPABILITIES) {
     const fidelity = FIDELITY_BY_KEY.get(`${capability.blockType}:${capability.field}`);
@@ -675,9 +701,10 @@ const fidelityGapsFromCatalog = ({ catalog, bodies = [], runtimeFilePaths = [] }
     }
   }
   const bodyFiles = new Map(bodies.map((body, index) => [`closure/body-${index}.md`, body]));
-  const fieldGaps = fidelityReport(adapterFieldValues, collectInvokeCommands(bodyFiles)).gaps.map(
-    ({ blockType, field, value }) => ({ blockType, field, value }),
-  );
+  const fieldGaps = fidelityReport(
+    adapterFieldValues,
+    invokeCommands ?? collectInvokeCommands(bodyFiles),
+  ).gaps.map(({ blockType, field, value }) => ({ blockType, field, value }));
   const presentCapabilities = resolveCapabilities({ runtimeFilePaths });
   const protocolGaps = AIDLC_CAPABILITIES.filter(
     (capability) =>
@@ -1168,6 +1195,7 @@ export {
   REQUIRED_FRONTMATTER_FIELDS,
   analyzeAidlcCompatibility,
   fidelityGapsFromCatalog,
+  invokeCommandCollector,
   blockTypeForPath,
   customProfile,
   filesFromCompatibilityFixture,
@@ -1191,6 +1219,7 @@ export default {
   REQUIRED_FRONTMATTER_FIELDS,
   analyzeAidlcCompatibility,
   fidelityGapsFromCatalog,
+  invokeCommandCollector,
   blockTypeForPath,
   customProfile,
   filesFromCompatibilityFixture,
