@@ -2,7 +2,11 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { filesFromCompatibilityFixture, blockTypeForPath } from '../aidlc-compatibility.js';
+import {
+  blockTypeForPath,
+  fidelityGapsFromCatalog,
+  filesFromCompatibilityFixture,
+} from '../aidlc-compatibility.js';
 import { AIDLC_COMPATIBILITY_PROFILES, customProfile } from '../aidlc-compatibility-profiles.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
 import {
@@ -11,6 +15,7 @@ import {
   buildReleaseBundle,
   collectReleaseObjects,
   publishReleaseBundle,
+  readReleaseFidelityGaps,
   readReleaseManifest,
   releaseCatalogKey,
   releaseKeyArgs,
@@ -638,5 +643,45 @@ describe('custom fork releases', () => {
     expect(() =>
       validateReleaseManifest({ ...manifest, sourceRepository: 'awslabs/aidlc-workflows' }),
     ).toThrow();
+  });
+});
+
+describe('reading capability evidence out of a published closure', () => {
+  // A 128 MB Lambda verifies a closure whose objects may total tens of MB, so the
+  // reader must bound both the reads it has in flight and what it keeps from them:
+  // it folds each body into the invoke evidence and then drops it.
+  const trackedReads = () => {
+    const state = { inFlight: 0, peakInFlight: 0, reads: 0 };
+    s3Mock.on(GetObjectCommand).callsFake(async (input) => {
+      if (!store.has(input.Key)) throw noSuchKey();
+      state.inFlight += 1;
+      state.reads += 1;
+      state.peakInFlight = Math.max(state.peakInFlight, state.inFlight);
+      // Yield so every read the implementation started concurrently is counted
+      // before any of them settles.
+      await Promise.resolve();
+      state.inFlight -= 1;
+      return { Body: { transformToString: async () => store.get(input.Key) } };
+    });
+    return state;
+  };
+
+  it('reports the same gaps as the whole closure held at once, reading a bounded slice', async () => {
+    const bundle = buildReleaseBundle({ profileId: NEXT, files: filesFor(NEXT) });
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+    const { manifest } = bundle;
+    const wholeClosure = fidelityGapsFromCatalog({
+      catalog: JSON.parse(store.get(manifest.catalog.key)),
+      bodies: manifest.objects.map((object) => store.get(object.key)),
+      runtimeFilePaths: manifest.runtimeFiles.map(({ path }) => path),
+    });
+    const reads = trackedReads();
+
+    const gaps = await readReleaseFidelityGaps({ s3, bucket: BUCKET, manifest });
+
+    expect(gaps).toEqual(wholeClosure);
+    expect(reads.reads).toBe(manifest.objects.length + 1);
+    expect(manifest.objects.length).toBeGreaterThan(8);
+    expect(reads.peakInFlight).toBeLessThan(manifest.objects.length);
   });
 });

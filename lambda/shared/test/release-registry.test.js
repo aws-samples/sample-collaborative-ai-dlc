@@ -1680,19 +1680,131 @@ describe('promotion of a record registered before protocol evidence existed', ()
       fidelityEvidenceRevision: 2,
     });
   });
-});
 
-describe('admin listing of a record registered before protocol evidence existed', () => {
-  it('reports what promotion decides once the loop-back is handled', async () => {
+  // Pointing a channel at a release is a promotion gate too, so it must hold the
+  // same evidence bar. Were it to trust a pre-protocol list, the decision would
+  // depend on whether an admin listing had refreshed that record first.
+  it('points a channel at a record whose stored evidence predates the protocol, once the loop-back is handled', async () => {
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
+    const promoted = await promote(CANDIDATE_RELEASE_ID, 'certified');
     const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
     const row = { ...rows.get(key), fidelityGaps: [] };
     delete row.fidelityEvidenceRevision;
     rows.set(key, row);
 
+    await expect(
+      setChannel({
+        ...registryArgs(),
+        s3,
+        bucket: BUCKET,
+        channel: 'candidate',
+        releaseId: CANDIDATE_RELEASE_ID,
+        actor: 'admin-1',
+      }),
+    ).resolves.toMatchObject({ releaseId: CANDIDATE_RELEASE_ID });
+    expect(promoted.supportState).toBe('certified');
+  });
+});
+
+describe('admin listing of a record registered before protocol evidence existed', () => {
+  // Drop the protocol evidence from a registered row, the shape an earlier build
+  // left behind: a stored gap list with no `fidelityEvidenceRevision`.
+  const makeLegacy = (releaseId) => {
+    const key = keyOf(`AIDLC_RELEASE#${releaseId}`, 'META');
+    const row = { ...rows.get(key), fidelityGaps: [] };
+    delete row.fidelityEvidenceRevision;
+    rows.set(key, row);
+    return key;
+  };
+
+  // The listing Lambda has 128 MB, so the closure reads it issues must stay
+  // bounded however many legacy records the page carries.
+  const trackedReads = () => {
+    const state = { inFlight: 0, peakInFlight: 0, reads: 0 };
+    s3Mock.on(GetObjectCommand).callsFake(async (input) => {
+      if (!objects.has(input.Key)) throw noSuchKey();
+      state.inFlight += 1;
+      state.reads += 1;
+      state.peakInFlight = Math.max(state.peakInFlight, state.inFlight);
+      await Promise.resolve();
+      state.inFlight -= 1;
+      return { Body: { transformToString: async () => objects.get(input.Key) } };
+    });
+    return state;
+  };
+
+  beforeEach(async () => {
+    await registerRelease(registerArgs(BASELINE_PROFILE));
+    await registerRelease(registerArgs(CANDIDATE_PROFILE));
+  });
+
+  it('reports what promotion decides once the loop-back is handled', async () => {
+    makeLegacy(CANDIDATE_RELEASE_ID);
+
     const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
     expect(listed.unhonouredValues).toEqual([]);
+  });
+
+  it('verifies one closure at a time however many records are stale', async () => {
+    makeLegacy(BASELINE_RELEASE_ID);
+    makeLegacy(CANDIDATE_RELEASE_ID);
+    const perClosure = baselineBundle.manifest.objects.length + 2;
+    const reads = trackedReads();
+
+    await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+
+    expect(reads.reads).toBeGreaterThan(perClosure);
+    // Two closures verified in parallel would peak at both evidence pools at
+    // once; one closure at a time cannot exceed a single pool.
+    expect(reads.peakInFlight).toBeLessThanOrEqual(4);
+  });
+
+  it('caches the recomputed evidence so the next listing reads no closure', async () => {
+    const key = makeLegacy(CANDIDATE_RELEASE_ID);
+    const legacy = rows.get(key);
+
+    const first = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+    const cached = rows.get(key);
+    const reads = trackedReads();
+    const second = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+
+    const listed = first.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
+    expect(cached.fidelityEvidenceRevision).toBe(2);
+    expect(cached.fidelityGaps).toEqual(listed.fidelityGaps);
+    // Evidence is derived from an immutable closure, never a decision, so the
+    // cache write must leave the record's revision and audit trail alone.
+    expect(cached.revision).toBe(legacy.revision);
+    expect(cached.updatedAt).toBe(legacy.updatedAt);
+    expect(cached.updatedBy).toBe(legacy.updatedBy);
+    expect(reads.reads).toBe(0);
+    expect(second).toEqual(first);
+  });
+
+  // Filling the cache is opportunistic; the listing is a GET that must answer with
+  // the evidence it just computed whatever the write does, so EVERY failure mode
+  // is swallowed — a lost CAS race and a hard store failure alike.
+  it.each([
+    ['the cache write loses a race', conditionalCheckFailed],
+    [
+      'the store rejects the cache write outright',
+      () => new Error('ProvisionedThroughputExceeded'),
+    ],
+  ])('still reports the recomputed gaps when %s', async (_case, failure) => {
+    const key = makeLegacy(CANDIDATE_RELEASE_ID);
+    const stale = rows.get(key);
+    ddbMock.on(PutCommand).callsFake((input) => {
+      const putKey = keyOf(input.Item.pk, input.Item.sk);
+      if (putKey === key) throw failure();
+      rows.set(putKey, { ...input.Item });
+      return {};
+    });
+
+    const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+
+    const listed = releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
+    expect(listed.unhonouredValues).toEqual([]);
+    expect(rows.get(key)).toEqual(stale);
   });
 });

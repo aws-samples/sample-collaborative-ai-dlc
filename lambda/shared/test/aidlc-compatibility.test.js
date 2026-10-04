@@ -9,6 +9,7 @@ import {
   customProfile,
   fidelityGapsFromCatalog,
   filesFromCompatibilityFixture,
+  invokeCommandCollector,
   isCustomProfile,
   normalizeAidlcFrontmatter,
   profileFor,
@@ -932,4 +933,42 @@ describe('certification gaps of the upstream fixtures', () => {
       expect(gapsOf(profileId)).toEqual({ ready: true, gaps: [] });
     },
   );
+});
+
+describe('streaming {{INVOKE}} evidence out of a closure', () => {
+  // The property: a caller may fold bodies in one at a time and drop each one,
+  // instead of holding the whole closure, and still get identical gaps. The
+  // release reader relies on exactly this to verify a closure in bounded memory.
+  const bodies = [
+    'body one runs {{INVOKE}} engine state practices-promote then stops\n',
+    'body two runs {{INVOKE}} engine orchestrate and {{INVOKE}} engine sensor-linter\n',
+    'body three runs {{INVOKE}} engine state practices-promote again\n',
+  ];
+
+  it('matches folding every body in at once, whatever order they arrive in', () => {
+    const atOnce = fidelityGapsFromCatalog({ catalog: { blocks: {} }, bodies });
+
+    for (const order of [
+      [0, 1, 2],
+      [2, 0, 1],
+      [1, 2, 0],
+    ]) {
+      const collector = invokeCommandCollector();
+      for (const index of order) collector.add(`closure/body-${index}.md`, bodies[index]);
+      expect(
+        fidelityGapsFromCatalog({
+          catalog: { blocks: {} },
+          invokeCommands: collector.commands(),
+        }),
+      ).toEqual(atOnce);
+    }
+    expect(atOnce.length).toBeGreaterThan(0);
+  });
+
+  it('ignores a body that is not a string, exactly as the bulk path does', () => {
+    const collector = invokeCommandCollector();
+    collector.add('closure/body-0.md', null);
+
+    expect(collector.commands()).toEqual([]);
+  });
 });

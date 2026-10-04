@@ -1340,4 +1340,20 @@ describe('GET /aidlc-releases — gap lists stored before protocol evidence', ()
     const listed = res.body.releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
     expect(listed.unhonouredValues).toEqual([]);
   });
+
+  it('records the recomputed evidence so a repeat listing costs no closure read', async () => {
+    await register(CANDIDATE_PROFILE);
+    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
+    const row = { ...rows.get(key), fidelityGaps: [] };
+    delete row.fidelityEvidenceRevision;
+    rows.set(key, row);
+
+    const first = parse(await listReleases());
+    const readsAfterFirst = s3Mock.commandCalls(GetObjectCommand).length;
+    const second = parse(await listReleases());
+
+    expect(rows.get(key).fidelityEvidenceRevision).toBe(2);
+    expect(s3Mock.commandCalls(GetObjectCommand).length).toBe(readsAfterFirst);
+    expect(second.body.releases).toEqual(first.body.releases);
+  });
 });
