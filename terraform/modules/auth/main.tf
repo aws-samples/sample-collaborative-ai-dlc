@@ -181,6 +181,13 @@ resource "aws_cognito_user_pool" "main" {
   depends_on = [aws_lambda_permission.allow_cognito_sso_token]
 }
 
+resource "aws_wafv2_web_acl_association" "user_pool" {
+  count = var.waf_enabled ? 1 : 0
+
+  resource_arn = aws_cognito_user_pool.main.arn
+  web_acl_arn  = var.web_acl_arn
+}
+
 resource "random_id" "cognito_domain" {
   byte_length = 4
 }

@@ -45,6 +45,7 @@ import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../sha
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
 import { parseTierModels, mergeTierModels } from '../shared/tier-models.js';
+import { validateMcpServers, validateMcpServersJson } from '../shared/mcp-validator.js';
 import {
   loadWorkflowScopes,
   loadExecutionPlan,
@@ -696,18 +697,85 @@ const fetchGlobalTierModels = async () => {
 
 // Read the Admin global custom MCP servers (raw JSON string) from SSM (written
 // by the agents lambda). Merged UNDER the project's custom MCP servers at
-// intent create (project wins by name). Best-effort: any failure yields '{}'.
-const fetchGlobalCustomMcpServers = async () => {
+// intent create (project wins by name). Creation is best-effort; launch preflight
+// fails on read errors so an outage cannot silently remove global servers.
+const fetchGlobalCustomMcpServers = async ({ failOnReadError = false } = {}) => {
   const prefix = AGENT_SETTINGS_SSM_PREFIX();
   if (!prefix) return '{}';
   try {
     const res = await ssm.send(
       new GetParameterCommand({ Name: `${prefix}/custom-mcp-servers`, WithDecryption: true }),
     );
+    if (failOnReadError && typeof res?.Parameter?.Value !== 'string') {
+      throw new Error('Global MCP settings response is missing its value');
+    }
     return res.Parameter?.Value || '{}';
-  } catch {
+  } catch (error) {
+    if (failOnReadError && error?.name !== 'ParameterNotFound') throw error;
     return '{}';
   }
+};
+
+// Check before starting/stopping sessions or resetting work. A first start uses
+// current settings; a relaunch keeps its pinned config unless it is no longer
+// valid. Repair an invalid snapshot from current settings so "correct and retry"
+// works for existing intents too. Only the launch CAS persists the replacement.
+const prepareMcpLaunch = async (g, meta) => {
+  const pinned = meta.mcpServersByTier ?? {
+    global: {},
+    project: meta.customMcpServers ?? {},
+  };
+  if (
+    meta.status !== 'DRAFT' &&
+    ['global', 'project'].every((tier) => validateMcpServers(pinned[tier] ?? {}).valid)
+  ) {
+    return { update: {} };
+  }
+  let rawGlobal;
+  let project;
+  try {
+    [rawGlobal, project] = await Promise.all([
+      fetchGlobalCustomMcpServers({ failOnReadError: true }),
+      g.V().has('Project', 'id', meta.projectId).valueMap('custom_mcp_servers').next(),
+    ]);
+    if (project.done) throw new Error('Project not found');
+  } catch (error) {
+    logger.error(error);
+    return {
+      statusCode: 503,
+      error: {
+        code: 'mcp_settings_unavailable',
+        error: 'Cannot start the runtime: MCP settings could not be loaded. Retry later.',
+      },
+    };
+  }
+  const mcpServersByTier = {};
+  for (const [tier, raw] of Object.entries({
+    global: rawGlobal,
+    project: getVal(project.value, 'custom_mcp_servers') || '{}',
+  })) {
+    const validation = validateMcpServersJson(raw);
+    if (!validation.valid) {
+      const fields = validation.issues.map(({ path }) => path || '<root>').join(', ');
+      const httpsHint = validation.issues.some(({ code }) => code === 'https_required')
+        ? ' Remote MCP URLs must use https://.'
+        : '';
+      const settings = tier === 'global' ? 'Platform Admin settings' : 'Space Settings';
+      return {
+        statusCode: 400,
+        error: {
+          code: 'mcp_config_error',
+          error:
+            `Cannot start the runtime: invalid ${tier} MCP configuration at ${fields}.${httpsHint} ` +
+            `Correct your MCP servers in ${settings}, then retry.`,
+        },
+      };
+    }
+    mcpServersByTier[tier] = JSON.parse(raw);
+  }
+  // Keep explicit empty maps: null would reactivate legacy customMcpServers in
+  // the orchestrator when the user removed every server to repair the intent.
+  return { update: { mcpServersByTier } };
 };
 
 // Read the Admin derive-time graph enrichment mode ('off'|'llm') from SSM
@@ -3125,6 +3193,8 @@ export const handler = async (event, context) => {
       }
       const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
       if (sourceControlBlocked) return sourceControlBlocked;
+      const mcpLaunch = await prepareMcpLaunch(g, meta);
+      if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
       // Flip <current> → CREATED (CAS on the observed status) so a double-start
       // can't launch two runs, then hand off to the orchestrator (init-ws + run the
       // plan). If the hand-off throws, roll back to the prior status — otherwise the
@@ -3151,6 +3221,7 @@ export const handler = async (event, context) => {
           startedBy: starter.sub,
           starterName: starter.displayName,
           starterEmail: starter.email,
+          ...mcpLaunch.update,
           ...(priorStatus === 'DRAFT'
             ? {
                 agentCli: selectedAgentCli,
@@ -4143,6 +4214,8 @@ export const handler = async (event, context) => {
         });
       }
 
+      const mcpLaunch = await prepareMcpLaunch(g, meta);
+      if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
       let priorDurableExecutionArn = meta.durableExecutionArn ?? null;
       if (!priorDurableExecutionArn && meta.durableExecutionName && ORCHESTRATOR_FN()) {
         const listed = await lambdaClient.send(
@@ -4353,6 +4426,7 @@ export const handler = async (event, context) => {
         startedBy: responder.sub,
         starterName: responder.displayName,
         starterEmail: responder.email,
+        ...mcpLaunch.update,
       });
       try {
         const invoked = await invokeOrchestrator(
@@ -4546,6 +4620,8 @@ export const handler = async (event, context) => {
       const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
       if (sourceControlBlocked) return sourceControlBlocked;
 
+      const mcpLaunch = await prepareMcpLaunch(g, meta);
+      if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
       // Artifact history is a hard precondition for a restart. Snapshot before
       // META, gates, stage rows, lanes, or sessions are touched; a Neptune
       // failure leaves the run exactly where it was and no relaunch occurs.
@@ -4685,6 +4761,7 @@ export const handler = async (event, context) => {
         // Un-skip: the rewind target leaves the intent's skip overlay so the
         // relaunch (and every later plan recompute) actually runs it.
         ...(unskipping ? { skipStageIds: rewindSkipIds.length ? rewindSkipIds : null } : {}),
+        ...mcpLaunch.update,
       });
       try {
         const invoked = await invokeOrchestrator(
@@ -4865,6 +4942,8 @@ export const handler = async (event, context) => {
       const responder = getResponder(event);
       const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
       if (sourceControlBlocked) return sourceControlBlocked;
+      const mcpLaunch = await prepareMcpLaunch(g, meta);
+      if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
       // Reset the relaunch stage's non-terminal instances (a parked/failed
       // stage re-runs from scratch, attempt+1).
       const resetIds = (rowsByStageId.get(fromStage.stageId) ?? [])
@@ -4927,6 +5006,7 @@ export const handler = async (event, context) => {
         startedBy: responder.sub,
         starterName: responder.displayName,
         starterEmail: responder.email,
+        ...mcpLaunch.update,
       });
       try {
         const invoked = await invokeOrchestrator(

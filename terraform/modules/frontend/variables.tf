@@ -58,3 +58,9 @@ variable "acm_certificate_arn" {
   type        = string
   default     = ""
 }
+
+variable "web_acl_arn" {
+  description = "ARN of a CLOUDFRONT-scoped AWS WAFv2 web ACL. Empty leaves the distribution without AWS WAF."
+  type        = string
+  default     = ""
+}
