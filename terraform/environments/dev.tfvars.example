@@ -23,6 +23,11 @@ enable_waf = false
 # Bedrock model pinning (for claude and opencode drivers)
 bedrock_model = "us.anthropic.claude-sonnet-4-6"
 
+# Optional Bedrock inference region (empty = aws_region). Bedrock API keys are
+# regional: set this when the key or model access lives in another region, and
+# use that region's geo prefix (or global.) in bedrock_model.
+# bedrock_region = "us-east-1"
+
 # ---------------------------------------------------------------------------
 # Custom domain (optional)
 #

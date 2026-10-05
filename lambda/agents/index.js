@@ -61,7 +61,10 @@ import {
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
-const bedrock = new BedrockClient({ region: process.env.AWS_REGION || 'us-east-1' });
+// Model discovery must list the profiles of the region the CLIs invoke.
+const bedrock = new BedrockClient({
+  region: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1',
+});
 const agentcore = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || 'us-east-1' });
 // The AWS Price List API only serves us-east-1 / ap-south-1 — pin to the nearest.
 const pricing = new PricingClient({

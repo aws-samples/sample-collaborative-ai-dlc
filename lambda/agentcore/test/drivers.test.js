@@ -100,6 +100,13 @@ describe('claude driver', () => {
     });
   });
 
+  it('sends inference to BEDROCK_REGION instead of the deployment region', () => {
+    expect(
+      claudeDriver.envForAuth({ AWS_REGION: 'eu-central-1', BEDROCK_REGION: 'us-east-1' })
+        .AWS_REGION,
+    ).toBe('us-east-1');
+  });
+
   it('omits the bearer token when not configured', () => {
     expect(
       claudeDriver.envForAuth({ AWS_REGION: 'us-east-1' }).AWS_BEARER_TOKEN_BEDROCK,

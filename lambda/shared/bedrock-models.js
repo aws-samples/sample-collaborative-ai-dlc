@@ -36,10 +36,14 @@ const isUsable = (p, geo) => {
   return id.startsWith(`${geo}.`) || id.startsWith('global.');
 };
 
-// Resolve the usable Claude models for a deployment region. `listInferenceProfiles`
+// Resolve the usable Claude models for the inference region (BEDROCK_REGION when
+// inference runs outside the deployment region). `listInferenceProfiles`
 // returns the raw `inferenceProfileSummaries` array (all pages). Returns a compact,
 // de-duplicated, sorted list; never throws (a failed lookup yields []).
-const listClaudeModels = async ({ listInferenceProfiles, region = process.env.AWS_REGION }) => {
+const listClaudeModels = async ({
+  listInferenceProfiles,
+  region = process.env.BEDROCK_REGION || process.env.AWS_REGION,
+}) => {
   const geo = regionPrefix(region);
   let summaries;
   try {
