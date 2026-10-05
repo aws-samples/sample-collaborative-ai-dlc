@@ -167,7 +167,10 @@ const trackerSyncKey = (executionId) => ({
 // rejection, jump or restart makes every prior receipt unreachable without
 // deleting anything, which is exactly upstream's "prior confirmations are
 // invalidated" rule at zero cost.
-const receiptKey = (executionId, { kind, stageInstanceId, attempt, unitSlug = null, ordinal }) => ({
+const receiptKey = (
+  executionId,
+  { kind, stageInstanceId, attempt, unitSlug = null, ordinal, round = null },
+) => ({
   pk: executionPk(executionId),
   sk: [
     'RECEIPT',
@@ -176,6 +179,11 @@ const receiptKey = (executionId, { kind, stageInstanceId, attempt, unitSlug = nu
     String(attempt),
     unitSlug == null ? '-' : encodedKeyPart(unitSlug),
     ...(ordinal == null ? [] : [String(ordinal)]),
+    // A checkpoint that is raised again within one revision is a NEW decision,
+    // not a replay of the first: the round keeps each one addressable so the
+    // evaluator can resolve authority from the latest. Round 0 writes no part,
+    // which is what keeps every pre-round key byte-identical.
+    ...(round == null || Number(round) === 0 ? [] : [`r${Number(round)}`]),
   ].join('#'),
 });
 
@@ -928,6 +936,7 @@ const buildReceiptRow = ({
   unitSlug = null,
   sectionIndex = null,
   ordinal = null,
+  round = null,
   boundDigest = null,
   choice = null,
   decidedBy = null,
@@ -936,7 +945,7 @@ const buildReceiptRow = ({
   detail = null,
   now,
 }) => {
-  const key = receiptKey(executionId, { kind, stageInstanceId, attempt, unitSlug, ordinal });
+  const key = receiptKey(executionId, { kind, stageInstanceId, attempt, unitSlug, ordinal, round });
   return {
     ...key,
     ...executionTypeStateIndex({ executionId, type: 'RECEIPT', state: kind, id: key.sk }),
@@ -948,6 +957,7 @@ const buildReceiptRow = ({
     unitSlug,
     sectionIndex,
     ordinal,
+    round,
     boundDigest,
     choice,
     decidedBy,

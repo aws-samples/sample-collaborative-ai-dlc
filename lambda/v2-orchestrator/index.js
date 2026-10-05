@@ -91,16 +91,19 @@ const defaultStore = createProcessStore({ ddb });
 const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 
 // Keep the gate's answer set in one pure function so the orchestrator and the
-// offline release matrix exercise the same three-outcome contract.
+// offline release matrix exercise the same three-outcome contract. A single
+// non-overridable block withholds `override-and-approve` even when other
+// blocking findings are overridable: offering it would let one answer waive a
+// finding no human is allowed to waive.
 export const buildGateOptions = ({ findings = [], loopBackOffered = false } = {}) => {
-  const overridable = overridableFindings(findings);
-  const blocked = findings.some((item) => item.severity === 'blocking');
+  const blocking = findings.filter((item) => item.severity === 'blocking');
+  const everyBlockOverridable = blocking.every((item) => item.overridable);
   return [
-    ...(blocked
-      ? overridable.length > 0
+    ...(blocking.length === 0
+      ? ['approve', 'request-changes']
+      : everyBlockOverridable && overridableFindings(findings).length > 0
         ? ['request-changes', 'override-and-approve']
-        : ['request-changes']
-      : ['approve', 'request-changes']),
+        : ['request-changes']),
     ...(loopBackOffered ? [LOOP_BACK_OPTION] : []),
   ];
 };
@@ -1402,10 +1405,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     // cannot derive from receipts: it needs what the stage actually
                     // LEFT BEHIND. `producedHeads` is that observation (the container's
                     // graph read of the artifact heads), and its artifact types are the
-                    // produced set. Absent — an unreachable graph, or an unpinned run —
+                    // produced set. An EMPTY array is a successful observation of
+                    // nothing and is reported as missing outputs; `producedHeads`
+                    // absent — an unpinned run — or an explicitly unavailable read
                     // leaves `producedArtifacts` null, which the evaluator treats as
                     // "not observed" and never reports as missing.
-                    producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads),
+                    producedArtifacts:
+                      outcome.result?.producedHeadsUnavailable === true
+                        ? null
+                        : producedArtifactTypes(outcome.result?.producedHeads),
                   });
                   const merged = mergeFindings(outcome.result?.findings ?? [], reread.findings);
                   // Logged inside the step so a durable replay does not repeat it: an
@@ -1737,13 +1745,38 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   const row = await store.getStage(executionId, stage.stageInstanceId, {
                     consistentRead: true,
                   });
-                  const approvedInputs = (outcome.result?.producedHeads ?? []).map((head) => ({
+                  // `producedHeads` is an INTENT-WIDE observation (the container
+                  // reads every current artifact head). A human approving THIS
+                  // stage reviewed only what THIS stage produced, so the approval
+                  // covers that subset alone — otherwise approving stage B would
+                  // silently re-approve stage A's edited output and the next
+                  // consumer's change control would never ask about it. A head with
+                  // no recorded producer (legacy intents) stays in scope, because an
+                  // unattributed artifact cannot be proven to belong elsewhere.
+                  const observedHeads = outcome.result?.producedHeads ?? [];
+                  const stageHeads = observedHeads.filter(
+                    (head) =>
+                      head?.stageInstanceId == null ||
+                      head.stageInstanceId === '' ||
+                      head.stageInstanceId === stage.stageInstanceId,
+                  );
+                  const approvedInputs = stageHeads.map((head) => ({
                     logicalKey: head.logicalKey,
                     snapshotHash: head.snapshotHash,
                   }));
                   const detail = {
                     ...stageApprovalOverride,
                     approvedInputs,
+                    // Producing-stage and lane attribution for everything the
+                    // decision covers, recorded once rather than per entry.
+                    approvedInputsScope: {
+                      stageInstanceId: stage.stageInstanceId ?? null,
+                      sectionIndex: stageHeads[0]?.sectionIndex ?? null,
+                      unitSlug: stageHeads[0]?.unitSlug ?? null,
+                    },
+                    ...(observedHeads.length > stageHeads.length
+                      ? { observedInputsOutOfScope: observedHeads.length - stageHeads.length }
+                      : {}),
                     ...(learningsRitual
                       ? {
                           learnings: gateLearnings(validation.gate?.answer) ? 'offered' : 'none',

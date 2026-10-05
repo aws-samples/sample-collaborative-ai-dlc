@@ -107,6 +107,40 @@ const checkpointReceipts = (receipts, kind, attempt, validationRound) =>
     (row) => Number(row?.ordinal ?? 0) === Number(validationRound ?? 0),
   );
 
+// The event each checkpoint writes when the human answers "Request changes". It is
+// the DURABLE record that an authorization was withdrawn: the MCP process also
+// drops it from memory, but that memory dies with the container while this does not.
+const CHECKPOINT_WITHDRAWAL_EVENTS = Object.freeze({
+  'summary-confirmation': 'v2.summary.changes_requested',
+  'plan-approval': 'v2.plan.changes_requested',
+});
+
+const withdrawnAfter = (events, kind, receipt) => {
+  const withdrawal = CHECKPOINT_WITHDRAWAL_EVENTS[kind];
+  if (!withdrawal) return false;
+  const decidedAt = String(receipt?.decidedAt ?? '');
+  return (events ?? []).some(
+    (event) =>
+      eventTypeOf(event) === withdrawal &&
+      String(event.timestamp ?? '').localeCompare(decidedAt) > 0,
+  );
+};
+
+// The receipt that AUTHORIZES this revision, or null. A checkpoint can be raised
+// several times within one revision ("raise a different summary"), and each round
+// records its own receipt — so only the LATEST round speaks for the stage, and a
+// "Request changes" answered after it withdraws the authorization here exactly as
+// it does in the MCP process. Rows written before rounds were tracked carry no
+// `round`, so they resolve to the single approval they always were.
+const currentCheckpointReceipt = (receipts, kind, attempt, validationRound, events) => {
+  const latest = checkpointReceipts(receipts, kind, attempt, validationRound).reduce(
+    (best, row) => (!best || Number(row?.round ?? 0) >= Number(best?.round ?? 0) ? row : best),
+    null,
+  );
+  if (!latest) return null;
+  return withdrawnAfter(events, kind, latest) ? null : latest;
+};
+
 // A `<stage>-questions` output is satisfied by the platform question channel
 // (HUMAN# rows + timeline), not by a graph artifact — see
 // `isQuestionChannelOutput`. Excluded here so it is neither reported missing nor
@@ -173,6 +207,15 @@ const lineageGaps = ({ events, artifacts, authorizationId, decidedAt }) =>
 // as a fresh finding from either side. A PASS says nothing; `notApplicable`
 // (INCONCLUSIVE with the flag) says the sensor had no deliverable to inspect,
 // which is also nothing to decide.
+// A release-integrity failure (the pinned sensor script is missing, or failed its
+// digest check) is not an ordinary verdict: the declared check never executed, so
+// the sensor's authored severity says nothing about it. The fail-closed release
+// rule therefore outranks severity — it is always a BLOCKING, NON-OVERRIDABLE
+// finding, and no `sensor-override` receipt and no `notApplicable` flag can clear
+// it. `request-changes` re-runs the stage, which re-resolves the release, so the
+// run is still never stuck.
+const isReleaseIntegrityFailure = (verdict) => verdict?.detail?.releaseIntegrityFailure === true;
+
 const sensorGateFindings = ({ sensorVerdicts = [], receipts = [], attempt = 0 } = {}) => {
   const overridden = new Set(
     receiptsOfKind(receipts, 'sensor-override', attempt).flatMap(
@@ -181,24 +224,33 @@ const sensorGateFindings = ({ sensorVerdicts = [], receipts = [], attempt = 0 } 
   );
   const findings = [];
   for (const verdict of sensorVerdicts ?? []) {
-    if (verdict?.result === 'PASS' || overridden.has(verdict?.sensorId)) continue;
-    if (verdict?.detail?.notApplicable === true) continue;
-    const blocking = verdict?.severity === 'blocking';
+    if (verdict?.result === 'PASS') continue;
+    const integrityFailure = isReleaseIntegrityFailure(verdict);
+    if (!integrityFailure && overridden.has(verdict?.sensorId)) continue;
+    if (!integrityFailure && verdict?.detail?.notApplicable === true) continue;
+    const blocking = integrityFailure || verdict?.severity === 'blocking';
+    const overridable = blocking && !integrityFailure;
+    const onArtifact = verdict.detail?.artifact ? ` on ${verdict.detail.artifact}` : '';
     findings.push(
       finding({
         code: blocking ? 'sensor_gate_blocking' : 'sensor_gate_advisory',
         severity: blocking ? 'blocking' : 'advisory',
-        title: `Sensor ${verdict.sensorId} (gate) → ${verdict.result}${verdict.detail?.artifact ? ` on ${verdict.detail.artifact}` : ''}`,
+        title: integrityFailure
+          ? `Sensor ${verdict.sensorId} (gate) could not be verified — release integrity failure${onArtifact}`
+          : `Sensor ${verdict.sensorId} (gate) → ${verdict.result}${onArtifact}`,
         detail: {
           sensorId: verdict.sensorId,
           result: verdict.result,
           reason: verdict.detail?.reason ?? null,
+          ...(integrityFailure ? { releaseIntegrityFailure: true } : {}),
         },
-        overridable: blocking,
-        ...(blocking ? { receiptKind: 'sensor-override' } : {}),
-        remediation: blocking
-          ? 'Override to accept the verdict on the record, or request changes so the agent fixes it.'
-          : 'Advisory verdict; decide with it in view.',
+        overridable,
+        ...(overridable ? { receiptKind: 'sensor-override' } : {}),
+        remediation: integrityFailure
+          ? 'The pinned check could not be verified, so it never ran. Request changes: the stage re-runs once the release content is intact.'
+          : blocking
+            ? 'Override to accept the verdict on the record, or request changes so the agent fixes it.'
+            : 'Advisory verdict; decide with it in view.',
       }),
     );
   }
@@ -252,11 +304,12 @@ const evaluateGatePreconditions = ({
   }
 
   if (summaryConfirmationRequired(policy, events, attempt)) {
-    const [receipt] = checkpointReceipts(
+    const receipt = currentCheckpointReceipt(
       receipts,
       'summary-confirmation',
       attempt,
       validationRound,
+      events,
     );
     if (!receipt) {
       findings.push(
@@ -295,7 +348,7 @@ const evaluateGatePreconditions = ({
   }
 
   if (policy.planApproval === 'required') {
-    if (checkpointReceipts(receipts, 'plan-approval', attempt, validationRound).length === 0) {
+    if (!currentCheckpointReceipt(receipts, 'plan-approval', attempt, validationRound, events)) {
       findings.push(
         finding({
           code: 'plan_approval_missing',

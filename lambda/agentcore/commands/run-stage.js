@@ -28,7 +28,7 @@
 // whole flow is unit-tested with the CLI + AWS mocked.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   selectCli,
   getDriver,
@@ -789,8 +789,33 @@ const CHANGE_CONTROL_OPTIONS = Object.freeze([
   'Stop here so I can rewind',
 ]);
 
-const changeControlGateId = (stageInstanceId, attempt) =>
-  `${CHANGE_CONTROL_GATE_PREFIX}${stageInstanceId}-${attempt}`;
+const changeControlGateId = (stageInstanceId, attempt, fingerprint = null) =>
+  `${CHANGE_CONTROL_GATE_PREFIX}${stageInstanceId}-${attempt}${
+    fingerprint ? `-${fingerprint}` : ''
+  }`;
+
+// The identity of the inputs a change-control decision is ABOUT: each changed
+// input's logical key (its type when the comparison could not read one) paired
+// with the fingerprint that was observed. The question and the reconfirmation
+// receipt are both bound to it, so a decision taken about one set of bytes can
+// never authorize a run against another — neither a later revision of the same
+// input nor a change that lands while the question is still pending.
+const changeControlFingerprint = (changedInputs = []) =>
+  createHash('sha256')
+    .update(
+      JSON.stringify(
+        (changedInputs ?? [])
+          .map(
+            (changed) =>
+              `${changed?.logicalKey ?? changed?.artifactType ?? changed?.artifactId ?? ''}\u0000${
+                changed?.toHash ?? 'unavailable'
+              }`,
+          )
+          .toSorted(),
+      ),
+    )
+    .digest('hex')
+    .slice(0, 16);
 
 const isChangeControlGate = (gate) =>
   typeof gate?.humanTaskId === 'string' && gate.humanTaskId.startsWith(CHANGE_CONTROL_GATE_PREFIX);
@@ -869,20 +894,36 @@ const changeControlChoice = (gate) => {
 // The prompt section a changed approved input adds. `relaxed` states the change
 // and continues; `strict` states that the human already reconfirmed it, so the
 // agent knows the divergence was accepted deliberately rather than missed.
+// A fingerprint the comparison could not read is rendered as such. A null hash is
+// a real state here — an unreadable approval or artifact history records no
+// fingerprints at all — and the documented behaviour for it is to state the gap
+// and continue (relaxed) or ask about it (strict), never to crash before the
+// agent runs.
+const shortFingerprint = (hash) =>
+  typeof hash === 'string' && hash ? hash.slice(0, 12) : 'unavailable';
+
 const renderChangedInputs = (changed, { reconfirmed = false } = {}) => {
   if (!changed.length) return '';
   const artifactHistoryReadFailed = changed.some((item) => item.artifactHistoryReadFailed);
+  // The heading speaks for the WHOLE list, so it only claims the approval history was
+  // unreadable when that is true of every item; a mixed list keeps the generic
+  // heading and the per-item lines say which is which.
+  const approvalHistoryReadFailed = changed.every((item) => item.approvalHistoryReadFailed);
   const lines = changed.map((item) =>
     item.artifactHistoryReadFailed
       ? `- ${item.artifactType ?? item.artifactId}: current artifact history could not be read`
-      : item.approvalHistoryUnknown
-        ? `- ${item.artifactType ?? item.artifactId} has incomplete approval history (receipt size limit); current fingerprint ${item.toHash.slice(0, 12)}`
-        : `- ${item.artifactType ?? item.artifactId} changed since it was approved (${item.fromHash.slice(0, 12)} → ${item.toHash.slice(0, 12)})`,
+      : item.approvalHistoryReadFailed
+        ? `- ${item.artifactType ?? item.artifactId}: approval history could not be read, so no approved fingerprint is known`
+        : item.approvalHistoryUnknown
+          ? `- ${item.artifactType ?? item.artifactId} has incomplete approval history (receipt size limit); current fingerprint ${shortFingerprint(item.toHash)}`
+          : `- ${item.artifactType ?? item.artifactId} changed since it was approved (${shortFingerprint(item.fromHash)} → ${shortFingerprint(item.toHash)})`,
   );
   return [
     artifactHistoryReadFailed
       ? '## Artifact history could not be read'
-      : '## Inputs that changed since they were approved',
+      : approvalHistoryReadFailed
+        ? '## Approval history could not be read'
+        : '## Inputs that changed since they were approved',
     '',
     ...lines,
     '',
@@ -2496,6 +2537,7 @@ export const runStage = async (
       changedInputs.length > 0 &&
       (stage.policy.changeControl === 'strict' || approvalHistoryUnknown)
     ) {
+      const ccFingerprint = changeControlFingerprint(changedInputs);
       const reconfirmed = await (
         store.listReceipts?.(executionId, {
           kind: 'change-reconfirm',
@@ -2503,10 +2545,13 @@ export const runStage = async (
           attempt: ccAttempt,
         }) ?? Promise.resolve([])
       ).catch(() => []);
-      if (reconfirmed.length > 0) {
+      // A reconfirmation covers the inputs it was taken about and nothing else: a
+      // receipt whose fingerprint no longer matches what this run observed reopens
+      // the decision instead of waving the stage through.
+      if (reconfirmed.some((row) => (row?.detail?.inputsFingerprint ?? null) === ccFingerprint)) {
         changeControlMessage = renderChangedInputs(changedInputs, { reconfirmed: true });
       } else {
-        const ccGateId = changeControlGateId(stageInstanceId, ccAttempt);
+        const ccGateId = changeControlGateId(stageInstanceId, ccAttempt, ccFingerprint);
         const ccGate = await store.getHumanTask(executionId, ccGateId).catch(() => null);
         const choice = ccGate && ccGate.status !== 'pending' ? changeControlChoice(ccGate) : null;
         // Anything but an explicit reconfirmation halts: `stop`, and an answer
@@ -2562,7 +2607,7 @@ export const runStage = async (
               decidedBy: ccGate.answeredBy ?? null,
               decidedByName: ccGate.answeredByName ?? null,
               humanTaskId: ccGateId,
-              detail: { changedInputs },
+              detail: { changedInputs, inputsFingerprint: ccFingerprint },
             });
           } catch (error) {
             logger.error('change-control reconfirmation receipt could not be persisted', {
@@ -2593,6 +2638,23 @@ export const runStage = async (
           changeControlMessage = renderChangedInputs(changedInputs, { reconfirmed: true });
         } else {
           if (!ccGate) {
+            // The inputs moved again while an earlier question was still waiting,
+            // so that question is about bytes nobody will run against. Retire it
+            // rather than leaving the team two live change-control gates.
+            const stalePending = ccRow?.pendingHumanTaskId ?? null;
+            if (
+              stalePending &&
+              stalePending !== ccGateId &&
+              isChangeControlGate({ humanTaskId: stalePending })
+            ) {
+              await (
+                store.supersedeHumanTask?.({
+                  executionId,
+                  humanTaskId: stalePending,
+                  supersededBy: ccGateId,
+                }) ?? Promise.resolve()
+              ).catch(() => {});
+            }
             try {
               await store.createHumanTask({
                 executionId,
@@ -3788,8 +3850,14 @@ export const runStage = async (
   // repair turns' (added by runRepairTurn below).
   let stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
   retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
-  if (gitResult.committed || !gitResult.ok) {
-    const failedRepos = gitResult.results
+  // The authoritative commit evidence. `v2.git.pushed` is what the plan-approval
+  // lineage rule (`latestCommitAt` / `withPlanApprovalLineage`) reads to decide
+  // whether the stage's code predates its approval, so EVERY commit of the attempt
+  // must publish it — a repair commit that stayed silent left the lineage check
+  // judging the stage on its pre-approval commit.
+  const publishGitEvidence = async (result, { label = null } = {}) => {
+    if (!result || (!result.committed && result.ok)) return;
+    const failedRepos = (result.results ?? [])
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
       // Carry the git stderr into the event — the 2026-07 incident's ENOSPC
       // root cause was invisible because only the reason label was recorded.
@@ -3797,16 +3865,17 @@ export const runStage = async (
         (r) =>
           `${r.repo} (${r.reason ?? 'unknown'}${r.detail ? `: ${String(r.detail).slice(0, 300)}` : ''})`,
       );
-    const gitSummary = gitResult.ok
-      ? `Engine committed + pushed work for ${stageLabel} (${gitResult.results
+    const scope = label ? `${stageLabel} (${label})` : stageLabel;
+    const gitSummary = result.ok
+      ? `Engine committed + pushed work for ${scope} (${(result.results ?? [])
           .filter((r) => r.committed)
           .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
           .join(', ')})`
-      : `Engine push failed for ${stageLabel}: ${failedRepos.join(', ')}`;
+      : `Engine push failed for ${scope}: ${failedRepos.join(', ')}`;
     await store
       .appendEvent({
         executionId,
-        type: gitResult.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
+        type: result.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
         stageInstanceId,
         unitSlug,
         sectionIndex,
@@ -3817,7 +3886,7 @@ export const runStage = async (
     // Surface a push failure live (agent.note is the timeline-note action the
     // UI already routes) — the user must see git trouble at stage N, not after
     // the whole run has burned its tokens.
-    if (!gitResult.ok) {
+    if (!result.ok) {
       await publish({
         action: 'agent.note',
         noteType: 'v2.git.push_failed',
@@ -3827,7 +3896,8 @@ export const runStage = async (
         summary: gitSummary,
       });
     }
-  }
+  };
+  await publishGitEvidence(gitResult);
 
   const parkStage = async (parked) => {
     if ((cli === 'opencode' || cli === 'codex') && !cliSessionId) {
@@ -4057,6 +4127,7 @@ export const runStage = async (
         stageCodeCommitRefs = mergeCodeCommitRefs(stageCodeCommitRefs, repairGit);
         if (stageCodeCommitRefs.length > refsBefore) repairCommitted = true;
         retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
+        await publishGitEvidence(repairGit, { label });
         repairGitFailure ??= workAtRiskFailure(repairGit);
       }
     : null;
@@ -4611,7 +4682,13 @@ export const runStage = async (
   // container hands it the fingerprints of everything this stage leaves behind.
   // Read-only and best-effort: an unreachable graph costs the next stage its
   // comparison, never this stage its success.
+  //
+  // "Observed nothing" and "could not observe" are different facts and must not
+  // collapse into one absent field: an empty SUCCESSFUL read is the evidence that
+  // the stage produced no artifact, which is exactly what the required-output check
+  // exists to catch. An unreachable graph is reported on its own field instead.
   let producedHeads = null;
+  let producedHeadsUnavailable = false;
   if (stage.policy && openGraph) {
     let gHeads = null;
     try {
@@ -4619,6 +4696,7 @@ export const runStage = async (
       producedHeads = await readArtifactHeadHashes({ g: gHeads, intentId });
     } catch {
       producedHeads = null;
+      producedHeadsUnavailable = true;
     } finally {
       await closeGraphSource(gHeads);
     }
@@ -4650,7 +4728,8 @@ export const runStage = async (
       return findings.length ? { findings } : {};
     })(),
     ...(changedInputs.length ? { changedInputs } : {}),
-    ...(producedHeads?.length ? { producedHeads } : {}),
+    ...(Array.isArray(producedHeads) ? { producedHeads } : {}),
+    ...(producedHeadsUnavailable ? { producedHeadsUnavailable: true } : {}),
   };
 };
 
@@ -4673,6 +4752,7 @@ export const __test = {
   changedApprovedInputs,
   changeControlChoice,
   changeControlGateId,
+  changeControlFingerprint,
   isChangeControlGate,
   renderChangedInputs,
   CHANGE_CONTROL_OPTIONS,

@@ -648,6 +648,109 @@ describe('validation gate with findings', () => {
   });
 });
 
+// A pinned sensor script that is missing or failed its digest check was never
+// executed, so its verdict is not an ordinary advisory one: the gate must not
+// offer approval over it, and must not offer an override even when another
+// blocking finding on the same gate is overridable.
+describe('validation gate with a release-integrity failure', () => {
+  const INTEGRITY_VERDICT = {
+    sensorId: 'linter',
+    severity: 'advisory',
+    result: 'BLOCKED',
+    held: true,
+    detail: {
+      error: 'release script digest mismatch',
+      code: 'release_closure_mismatch',
+      releaseIntegrityFailure: true,
+    },
+  };
+
+  const sendBackThenApprove = () => {
+    let call = 0;
+    deps.store.getHumanTask = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return null;
+      if (call === 2) {
+        return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
+      }
+      if (call === 3) return null;
+      return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
+    });
+  };
+
+  beforeEach(() => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [{ ...GATED_STAGE, policy: POLICY }] },
+    }));
+  });
+
+  it('offers request-changes alone for an advisory sensor that could not be verified', async () => {
+    let attempt = 0;
+    stageVerdict = () => {
+      attempt += 1;
+      return attempt === 1
+        ? { ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [INTEGRITY_VERDICT] }
+        : { ok: true, state: 'SUCCEEDED' };
+    };
+    sendBackThenApprove();
+
+    const res = await run();
+
+    const firstGate = deps.store.createHumanTask.mock.calls[0][0];
+    expect(firstGate.options).toEqual(['request-changes']);
+    expect(firstGate.findings.map((finding) => finding.code)).toEqual(['sensor_gate_blocking']);
+    expect(firstGate.findings[0]).toMatchObject({
+      overridable: false,
+      detail: { releaseIntegrityFailure: true },
+    });
+    expect(firstGate.prompt).toContain('A blocking finding cannot be overridden here');
+    // The re-run is clean, so the run still escapes: no stuck state.
+    expect(res.ok).toBe(true);
+    expect(
+      deps.store.putReceipt.mock.calls.filter(
+        ([receipt]) => receipt.choice === 'override-and-approve',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('withholds override-and-approve when mixed with an overridable block', async () => {
+    let attempt = 0;
+    stageVerdict = () => {
+      attempt += 1;
+      return attempt === 1
+        ? {
+            ok: true,
+            state: 'SUCCEEDED',
+            gateSensorVerdicts: [BLOCKING_SENSOR, INTEGRITY_VERDICT],
+          }
+        : { ok: true, state: 'SUCCEEDED' };
+    };
+    sendBackThenApprove();
+
+    await run();
+
+    const firstGate = deps.store.createHumanTask.mock.calls[0][0];
+    expect(firstGate.options).toEqual(['request-changes']);
+    expect(firstGate.findings.filter((finding) => finding.overridable)).toHaveLength(1);
+    expect(firstGate.findings).toHaveLength(2);
+  });
+
+  it('keeps the gate byte-identical for an unpinned run', async () => {
+    deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages: [GATED_STAGE] } }));
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      gateSensorVerdicts: [INTEGRITY_VERDICT],
+    });
+
+    await run();
+
+    expect(openedGate().options).toEqual(['approve', 'request-changes']);
+    expect(openedGate()).not.toHaveProperty('findings');
+  });
+});
+
 describe('operator logging at the gate', () => {
   it('logs each finding code, severity and the stage when a gate opens with findings', async () => {
     const info = vi.spyOn(Logger.prototype, 'info');
@@ -816,5 +919,191 @@ describe('override audit writes', () => {
     await run();
 
     expect(eventTypes()).not.toContain('v2.stage.validated');
+  });
+});
+
+// What a stage approval COVERS. The container's `producedHeads` is an intent-wide
+// observation; the human at this gate reviewed only the artifacts this stage
+// produced, and the receipt must say exactly that — otherwise approving stage B
+// records stage A's edited design as approved and the next consumer of that design
+// never asks about the change.
+describe('stage-approval receipt scope', () => {
+  const STAGE_A_HEAD = {
+    artifactType: 'application-design',
+    logicalKey: 'i1::application-design::si-A',
+    snapshotHash: 'sha-design-edited',
+    stageInstanceId: 'si-A',
+    sectionIndex: null,
+    unitSlug: null,
+  };
+  const STAGE_B_HEAD = {
+    artifactType: 'requirements',
+    logicalKey: 'i1::requirements::si-1',
+    snapshotHash: 'sha-requirements',
+    stageInstanceId: 'si-1',
+    sectionIndex: 2,
+    unitSlug: 'lane/one',
+  };
+
+  beforeEach(() => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [{ ...GATED_STAGE, policy: POLICY }] },
+    }));
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      producedHeads: [STAGE_A_HEAD, STAGE_B_HEAD],
+    });
+  });
+
+  it('records only the artifacts this stage produced, with their attribution', async () => {
+    await run();
+
+    const receipt = deps.store.putReceipt.mock.calls
+      .map(([args]) => args)
+      .find((args) => args.kind === 'stage-approval');
+    expect(receipt.detail.approvedInputs).toEqual([
+      { logicalKey: STAGE_B_HEAD.logicalKey, snapshotHash: STAGE_B_HEAD.snapshotHash },
+    ]);
+    expect(receipt.detail.approvedInputsScope).toEqual({
+      stageInstanceId: 'si-1',
+      sectionIndex: 2,
+      unitSlug: 'lane/one',
+    });
+    expect(receipt.detail.observedInputsOutOfScope).toBe(1);
+  });
+
+  // The provenance stamp writes '' for a dimension the scope did not have, and an
+  // older row carries no property at all. Both mean "not recorded", so both stay in
+  // scope: an unattributed artifact cannot be proven to belong to another stage.
+  it.each([
+    ['an absent producer', {}],
+    ['an empty producer stamp', { stageInstanceId: '', sectionIndex: '', unitSlug: '' }],
+  ])('still records a head with %s', async (_label, attribution) => {
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      producedHeads: [
+        {
+          artifactType: 'requirements',
+          logicalKey: 'k-legacy',
+          snapshotHash: 'sha-legacy',
+          ...attribution,
+        },
+      ],
+    });
+
+    await run();
+
+    const receipt = deps.store.putReceipt.mock.calls
+      .map(([args]) => args)
+      .find((args) => args.kind === 'stage-approval');
+    expect(receipt.detail.approvedInputs).toEqual([
+      { logicalKey: 'k-legacy', snapshotHash: 'sha-legacy' },
+    ]);
+    expect(receipt.detail).not.toHaveProperty('observedInputsOutOfScope');
+  });
+
+  it('still reports a required output the intent-wide observation never saw', async () => {
+    // The required-output check reads the whole observation, not the approval
+    // scope: narrowing the receipt must not narrow what the gate checks.
+    let attempt = 0;
+    stageVerdict = () => {
+      attempt += 1;
+      return {
+        ok: true,
+        state: 'SUCCEEDED',
+        producedHeads: attempt === 1 ? [STAGE_A_HEAD] : [STAGE_A_HEAD, STAGE_B_HEAD],
+      };
+    };
+    let call = 0;
+    deps.store.getHumanTask = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return null;
+      if (call === 2) {
+        return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
+      }
+      if (call === 3) return null;
+      return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
+    });
+
+    const res = await run();
+
+    expect(res.ok).toBe(true);
+    const firstGate = deps.store.createHumanTask.mock.calls[0][0];
+    expect(firstGate.findings.map((finding) => finding.code)).toEqual([
+      'required_artifact_missing',
+    ]);
+    // The second attempt produced it, so that gate is clean and the approval
+    // covers only this stage's head.
+    const receipt = deps.store.putReceipt.mock.calls
+      .map(([args]) => args)
+      .find((args) => args.kind === 'stage-approval');
+    expect(receipt.detail.approvedInputs).toEqual([
+      { logicalKey: STAGE_B_HEAD.logicalKey, snapshotHash: STAGE_B_HEAD.snapshotHash },
+    ]);
+  });
+});
+
+// The orchestrator's half of the same distinction: an EMPTY observation is the
+// evidence that a required output is missing, while an unavailable one is not an
+// observation at all and must stay inert.
+describe('gate evaluation of an empty produced-head observation', () => {
+  const sendBackThenProduce = () => {
+    let call = 0;
+    deps.store.getHumanTask = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return null;
+      if (call === 2) {
+        return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
+      }
+      if (call === 3) return null;
+      return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
+    });
+  };
+
+  beforeEach(() => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [{ ...GATED_STAGE, policy: POLICY }] },
+    }));
+  });
+
+  it('reports required_artifact_missing when the stage produced nothing', async () => {
+    let attempt = 0;
+    stageVerdict = () => {
+      attempt += 1;
+      return {
+        ok: true,
+        state: 'SUCCEEDED',
+        producedHeads:
+          attempt === 1
+            ? []
+            : [{ artifactType: 'requirements', logicalKey: 'k1', snapshotHash: 'sha-1' }],
+      };
+    };
+    sendBackThenProduce();
+
+    const res = await run();
+
+    expect(res.ok).toBe(true);
+    const firstGate = deps.store.createHumanTask.mock.calls[0][0];
+    expect(firstGate.findings.map((finding) => finding.code)).toEqual([
+      'required_artifact_missing',
+    ]);
+    expect(firstGate.options).not.toContain('approve');
+    expect(firstGate.options).toContain('override-and-approve');
+    // The second attempt produced it, so that gate is clean.
+    expect(deps.store.createHumanTask.mock.calls.at(-1)[0]).not.toHaveProperty('findings');
+  });
+
+  it('stays inert when the observation was unavailable', async () => {
+    stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', producedHeadsUnavailable: true });
+
+    await run();
+
+    expect(openedGate()).not.toHaveProperty('findings');
+    expect(openedGate().options).toEqual(['approve', 'request-changes']);
   });
 });

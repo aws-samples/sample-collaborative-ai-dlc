@@ -217,6 +217,110 @@ describe('repair-turn commits', () => {
   });
 });
 
+// The plan-approval lineage rule reads `v2.git.pushed` to decide whether a stage's
+// code predates its approval. A repair commit that published nothing left that rule
+// judging the stage on its pre-approval commit, so a repair that DID obtain the
+// approval and commit afterwards still reported plan_approval_missing.
+describe('repair-turn commit evidence', () => {
+  const repairPush = (sha) => ({
+    ok: true,
+    committed: true,
+    results: [{ repo: REPO, committed: true, pushed: true, sha, files: ['src/repair.ts'] }],
+  });
+
+  const gitEvents = (store) =>
+    store.of('appendEvent').filter((event) => String(event.type).startsWith('v2.git.'));
+
+  it('publishes v2.git.pushed for the repair commit, naming the repo and the repair', async () => {
+    const repairSha = 'd'.repeat(40);
+    const commitAndPushAll = vi
+      .fn()
+      .mockResolvedValueOnce(clean)
+      .mockResolvedValueOnce(repairPush(repairSha));
+    const store = recordingStore();
+
+    const res = await runStage(
+      args(),
+      deps(store, { lib: library({ summaryConfirmation: 'required' }), commitAndPushAll }),
+    );
+
+    expect(res.state).toBe('SUCCEEDED');
+    const pushed = gitEvents(store).filter((event) => event.type === 'v2.git.pushed');
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]).toMatchObject({ stageInstanceId: res.stageInstanceId });
+    // The orchestrator's per-repo read matches on the repo id in the summary.
+    expect(pushed[0].summary).toContain(REPO);
+    expect(pushed[0].summary).toContain(repairSha.slice(0, 8));
+    expect(pushed[0].summary).toContain('checkpoint repair');
+  });
+
+  it('publishes one event per commit when the stage commit landed too', async () => {
+    const stageSha = 'e'.repeat(40);
+    const repairSha = 'f'.repeat(40);
+    const commitAndPushAll = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        committed: true,
+        results: [
+          { repo: REPO, committed: true, pushed: true, sha: stageSha, files: ['src/stage.ts'] },
+        ],
+      })
+      .mockResolvedValueOnce(repairPush(repairSha));
+    const store = recordingStore();
+
+    await runStage(
+      args(),
+      deps(store, { lib: library({ summaryConfirmation: 'required' }), commitAndPushAll }),
+    );
+
+    const summaries = gitEvents(store).map((event) => event.summary);
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]).toContain(stageSha.slice(0, 8));
+    expect(summaries[1]).toContain(repairSha.slice(0, 8));
+  });
+
+  it('keeps reporting a failed repair push as v2.git.push_failed', async () => {
+    const commitAndPushAll = vi
+      .fn()
+      .mockResolvedValueOnce(clean)
+      .mockResolvedValueOnce({
+        ok: false,
+        committed: true,
+        results: [
+          {
+            repo: REPO,
+            committed: true,
+            pushed: false,
+            reason: 'push_failed',
+            sha: 'b'.repeat(40),
+          },
+        ],
+      });
+    const store = recordingStore();
+
+    const res = await runStage(
+      args(),
+      deps(store, { lib: library({ summaryConfirmation: 'required' }), commitAndPushAll }),
+    );
+
+    expect(res).toMatchObject({ ok: false, reason: 'push_failed' });
+    expect(gitEvents(store).map((event) => event.type)).toEqual(['v2.git.push_failed']);
+  });
+
+  it('publishes nothing when the repair turn changed nothing', async () => {
+    const commitAndPushAll = vi.fn().mockResolvedValue(clean);
+    const store = recordingStore();
+
+    await runStage(
+      args(),
+      deps(store, { lib: library({ summaryConfirmation: 'required' }), commitAndPushAll }),
+    );
+
+    expect(gitEvents(store)).toEqual([]);
+  });
+});
+
 describe('write-plane sweep over the whole attempt', () => {
   const lint = {
     id: 'lint',

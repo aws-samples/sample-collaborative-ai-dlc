@@ -427,6 +427,36 @@ describe('plan approval rides the same ladder on commit lineage', () => {
     expect(result.failure.code).toBe('plan_approval_missing');
   });
 
+  // The repair turn's half of the lineage contract: the approval it obtains is only
+  // believed once the code it approved is committed, and the commit the repair
+  // publishes is the evidence that clears the finding.
+  it('clears the finding when the repair obtains the approval and publishes its commit', async () => {
+    const store = fakeStore({ events: [commit('2026-09-24T09:00:00.000Z')] });
+
+    const result = await ladder(store, {
+      policy: PLAN_POLICY,
+      runRepairTurn: async () => {
+        store.receipts.push(planReceipt({ decidedAt: '2026-09-24T11:00:00.000Z' }));
+        store.events.push(commit('2026-09-24T11:30:00.000Z'));
+      },
+    });
+
+    expect(result).toEqual({ findings: [] });
+  });
+
+  it('still reports the finding when the repair commit published no evidence', async () => {
+    const store = fakeStore({ events: [commit('2026-09-24T09:00:00.000Z')] });
+
+    const result = await ladder(store, {
+      policy: PLAN_POLICY,
+      runRepairTurn: async () => {
+        store.receipts.push(planReceipt({ decidedAt: '2026-09-24T11:00:00.000Z' }));
+      },
+    });
+
+    expect(result.findings.map((finding) => finding.code)).toEqual(['plan_approval_missing']);
+  });
+
   it('bounds the summary and plan repair turns independently', async () => {
     const store = fakeStore({ counters: { summaryRepairAttempts: 1 } });
     const messages = [];
