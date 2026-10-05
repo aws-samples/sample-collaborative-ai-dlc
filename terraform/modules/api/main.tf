@@ -570,6 +570,13 @@ resource "aws_api_gateway_stage" "main" {
   }
 }
 
+resource "aws_wafv2_web_acl_association" "stage" {
+  count = var.waf_enabled ? 1 : 0
+
+  resource_arn = aws_api_gateway_stage.main.arn
+  web_acl_arn  = var.web_acl_arn
+}
+
 # CORS Configuration for OPTIONS method
 resource "aws_api_gateway_method" "cors_options" {
   rest_api_id   = aws_api_gateway_rest_api.main.id

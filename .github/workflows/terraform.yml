@@ -59,10 +59,14 @@ jobs:
         run: terraform init -backend=false -lockfile=readonly
 
       - name: Terraform validate
-        run: terraform validate
+        # Mocked provider aliases are validated by the terraform test steps below.
+        run: terraform validate -no-tests
 
       - name: Test Cognito domain provisioning and cutover
         run: terraform test -filter=tests/auth-domain.tftest.hcl
+
+      - name: Test WAF request size overrides
+        run: terraform test -filter=tests/waf.tftest.hcl
 
       - name: Verify SSO plan output privacy
         run: node --test ../scripts/test/terraform-sso-privacy.test.mjs
