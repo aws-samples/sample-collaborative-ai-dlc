@@ -1592,13 +1592,38 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   const row = await store.getStage(executionId, stage.stageInstanceId, {
                     consistentRead: true,
                   });
-                  const approvedInputs = (outcome.result?.producedHeads ?? []).map((head) => ({
+                  // `producedHeads` is an INTENT-WIDE observation (the container
+                  // reads every current artifact head). A human approving THIS
+                  // stage reviewed only what THIS stage produced, so the approval
+                  // covers that subset alone — otherwise approving stage B would
+                  // silently re-approve stage A's edited output and the next
+                  // consumer's change control would never ask about it. A head with
+                  // no recorded producer (legacy intents) stays in scope, because an
+                  // unattributed artifact cannot be proven to belong elsewhere.
+                  const observedHeads = outcome.result?.producedHeads ?? [];
+                  const stageHeads = observedHeads.filter(
+                    (head) =>
+                      head?.stageInstanceId == null ||
+                      head.stageInstanceId === '' ||
+                      head.stageInstanceId === stage.stageInstanceId,
+                  );
+                  const approvedInputs = stageHeads.map((head) => ({
                     logicalKey: head.logicalKey,
                     snapshotHash: head.snapshotHash,
                   }));
                   const detail = {
                     ...stageApprovalOverride,
                     approvedInputs,
+                    // Producing-stage and lane attribution for everything the
+                    // decision covers, recorded once rather than per entry.
+                    approvedInputsScope: {
+                      stageInstanceId: stage.stageInstanceId ?? null,
+                      sectionIndex: stageHeads[0]?.sectionIndex ?? null,
+                      unitSlug: stageHeads[0]?.unitSlug ?? null,
+                    },
+                    ...(observedHeads.length > stageHeads.length
+                      ? { observedInputsOutOfScope: observedHeads.length - stageHeads.length }
+                      : {}),
                     ...(learningsRitual
                       ? {
                           learnings: gateLearnings(validation.gate?.answer) ? 'offered' : 'none',

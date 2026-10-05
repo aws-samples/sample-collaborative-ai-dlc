@@ -924,3 +924,89 @@ describe('runStage — a reconfirmation covers only the inputs it was taken abou
     );
   });
 });
+
+// The consumer half of the approval-scope rule: a stage approval that covered only
+// its OWN outputs leaves an edited upstream artifact still unapproved, so the next
+// consumer's change control asks about it. Before the scope rule, the unrelated
+// stage's approval recorded the edited design's new fingerprint and the comparison
+// was silently satisfied.
+describe('changedApprovedInputs across three stages', () => {
+  const PRODUCER_INSTANCE = planStageInstanceId('aidlc-v2@1', PRODUCER);
+  const UNRELATED_INSTANCE = planStageInstanceId('aidlc-v2@1', 'unrelated-stage');
+  const DESIGN_HEAD = Object.freeze({
+    artifactId: 'a-design',
+    artifactType: PRODUCER,
+    logicalKey: `i1::${PRODUCER}::${PRODUCER_INSTANCE}`,
+    snapshotHash: 'sha-edited',
+    stageInstanceId: PRODUCER_INSTANCE,
+  });
+  // Stage A approved the design BEFORE the human edited it.
+  const APPROVAL_A = Object.freeze({
+    kind: 'stage-approval',
+    attempt: 0,
+    stageInstanceId: PRODUCER_INSTANCE,
+    decidedAt: '2026-01-01T00:00:00.000Z',
+    detail: {
+      approvedInputs: [{ logicalKey: DESIGN_HEAD.logicalKey, snapshotHash: 'sha-original' }],
+      approvedInputsScope: {
+        stageInstanceId: PRODUCER_INSTANCE,
+        sectionIndex: null,
+        unitSlug: null,
+      },
+    },
+  });
+  // Stage B is unrelated: it neither produced nor consumed the design, so its
+  // approval records only its own output.
+  const scopedApprovalB = Object.freeze({
+    kind: 'stage-approval',
+    attempt: 0,
+    stageInstanceId: UNRELATED_INSTANCE,
+    decidedAt: '2026-02-01T00:00:00.000Z',
+    detail: {
+      approvedInputs: [
+        { logicalKey: `i1::unrelated::${UNRELATED_INSTANCE}`, snapshotHash: 'sha-b' },
+      ],
+      approvedInputsScope: {
+        stageInstanceId: UNRELATED_INSTANCE,
+        sectionIndex: null,
+        unitSlug: null,
+      },
+    },
+  });
+
+  it('reports the edited design to stage C after an unrelated stage was approved', () => {
+    expect(
+      changedApprovedInputs({
+        requiredInputs: [PRODUCER],
+        heads: [DESIGN_HEAD],
+        approvals: [APPROVAL_A, scopedApprovalB],
+      }),
+    ).toMatchObject([
+      {
+        logicalKey: DESIGN_HEAD.logicalKey,
+        fromHash: 'sha-original',
+        toHash: 'sha-edited',
+      },
+    ]);
+  });
+
+  it('is satisfied only once the producing stage re-approves the edited design', () => {
+    const reapprovalA = {
+      ...APPROVAL_A,
+      decidedAt: '2026-03-01T00:00:00.000Z',
+      detail: {
+        ...APPROVAL_A.detail,
+        approvedInputs: [
+          { logicalKey: DESIGN_HEAD.logicalKey, snapshotHash: DESIGN_HEAD.snapshotHash },
+        ],
+      },
+    };
+    expect(
+      changedApprovedInputs({
+        requiredInputs: [PRODUCER],
+        heads: [DESIGN_HEAD],
+        approvals: [APPROVAL_A, scopedApprovalB, reapprovalA],
+      }),
+    ).toEqual([]);
+  });
+});
