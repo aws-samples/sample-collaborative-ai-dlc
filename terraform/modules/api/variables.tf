@@ -33,6 +33,18 @@ variable "cognito_user_pool_arn" {
   type        = string
 }
 
+variable "web_acl_arn" {
+  description = "ARN of a regional AWS WAFv2 web ACL. Empty leaves the API stage without AWS WAF."
+  type        = string
+  default     = ""
+}
+
+variable "waf_enabled" {
+  description = "Whether to associate the API stage with AWS WAF"
+  type        = bool
+  default     = false
+}
+
 variable "projects_lambda_invoke_arn" {
   description = "Invoke ARN of the projects Lambda"
   type        = string

@@ -328,6 +328,32 @@ describe('createProcessStore', () => {
     ).rejects.toThrow('failure must be {code, message} or null');
   });
 
+  it('replaces MCP settings with the launch CAS and removes the legacy fallback', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.updateExecution({
+      executionId: 'e1',
+      projectId: 'p1',
+      startedAt: 'T',
+      status: 'CREATED',
+      fromStatus: 'FAILED',
+      mcpServersByTier: { global: {}, project: {} },
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toContain('#status = :fromStatus');
+    expect(input.ExpressionAttributeValues[':mcp']).toEqual({ global: {}, project: {} });
+    expect(input.UpdateExpression).toContain('REMOVE customMcpServers');
+  });
+
+  it('refuses to replace MCP settings outside a conditional launch', async () => {
+    await expect(
+      store.updateExecution({
+        executionId: 'e1',
+        mcpServersByTier: { global: {}, project: {} },
+      }),
+    ).rejects.toThrow('MCP settings can only be replaced during a conditional launch');
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+  });
+
   it('persists a validated workspace classification', async () => {
     ddb.on(UpdateCommand).resolves({ Attributes: { projectType: 'greenfield' } });
     await store.updateExecution({ executionId: 'e1', projectType: 'greenfield' });

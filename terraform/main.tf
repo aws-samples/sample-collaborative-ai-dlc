@@ -278,6 +278,20 @@ module "networking" {
   environment  = var.environment
 }
 
+# Optional AWS WAF web ACLs
+module "waf" {
+  source = "./modules/security/waf"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  enabled      = var.enable_waf
+  project_name = var.project_name
+  environment  = var.environment
+}
+
 # Auth (Cognito)
 module "auth" {
   source = "./modules/auth"
@@ -292,6 +306,8 @@ module "auth" {
   lambda_vpc_scope        = var.lambda_vpc_scope
   vpc_subnet_ids          = module.networking.private_subnet_ids
   vpc_security_group_ids  = [module.networking.default_security_group_id]
+  waf_enabled             = var.enable_waf
+  web_acl_arn             = module.waf.regional_web_acl_arn
 
   custom_domain                 = var.auth_domain
   custom_domain_active          = var.auth_domain_active
@@ -312,6 +328,7 @@ module "frontend" {
   websocket_domain_name          = regex("wss://([^/]+)", module.realtime.websocket_api_endpoint)[0]
   aliases                        = local.app_aliases
   acm_certificate_arn            = module.domain.certificate_arn
+  web_acl_arn                    = module.waf.cloudfront_web_acl_arn
 }
 
 # Route53 alias records for the custom domain. Only created when the hosted zone
@@ -526,6 +543,8 @@ module "api" {
   powertools_log_level                     = var.powertools_log_level
   powertools_log_event                     = var.powertools_log_event
   cognito_user_pool_arn                    = module.auth.user_pool_arn
+  waf_enabled                              = var.enable_waf
+  web_acl_arn                              = module.waf.regional_web_acl_arn
   projects_lambda_invoke_arn               = module.lambda.projects_lambda_invoke_arn
   projects_lambda_name                     = module.lambda.projects_lambda_name
   users_lambda_invoke_arn                  = module.lambda.users_lambda_invoke_arn

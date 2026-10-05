@@ -192,6 +192,55 @@ test('lambda_vpc_scope all places every Lambda in private subnets', () => {
   );
 });
 
+test('optional WAF protects CloudFront, API Gateway, and Cognito', () => {
+  const variables = read('terraform/variables.tf');
+  assert.match(variables, /variable "enable_waf"[\s\S]*?default\s+= false/);
+
+  const waf = read('terraform/modules/security/waf/main.tf');
+  assert.match(
+    waf,
+    /resource "aws_wafv2_web_acl" "cloudfront"[\s\S]*?provider = aws\.us_east_1[\s\S]*?scope\s+= "CLOUDFRONT"/,
+  );
+  assert.match(waf, /resource "aws_wafv2_web_acl" "regional"[\s\S]*?scope\s+= "REGIONAL"/);
+  for (const group of [
+    'AWSManagedRulesAmazonIpReputationList',
+    'AWSManagedRulesCommonRuleSet',
+    'AWSManagedRulesKnownBadInputsRuleSet',
+  ]) {
+    assert.ok(waf.includes(group), `missing WAF managed rule group ${group}`);
+  }
+  assert.match(waf, /resource "aws_wafv2_ip_set" "cloudfront_allowlist"/);
+
+  const root = read('terraform/main.tf');
+  assert.match(
+    moduleBlock(root, 'waf'),
+    /source\s+= "\.\/modules\/security\/waf"[\s\S]*?aws\.us_east_1 = aws\.us_east_1[\s\S]*?enabled\s+= var\.enable_waf/,
+  );
+  assert.match(moduleBlock(root, 'auth'), /waf_enabled\s+= var\.enable_waf/);
+  assert.match(moduleBlock(root, 'api'), /waf_enabled\s+= var\.enable_waf/);
+
+  const frontend = read('terraform/modules/frontend/main.tf');
+  assert.match(
+    frontend,
+    /resource "aws_cloudfront_distribution" "frontend" \{[\s\S]*?web_acl_id = var\.web_acl_arn/,
+  );
+
+  const api = read('terraform/modules/api/main.tf');
+  assert.match(
+    api,
+    /resource "aws_wafv2_web_acl_association" "stage"[\s\S]*?count = var\.waf_enabled \? 1 : 0[\s\S]*?aws_api_gateway_stage\.main\.arn/,
+  );
+
+  const auth = read('terraform/modules/auth/main.tf');
+  assert.match(
+    auth,
+    /resource "aws_wafv2_web_acl_association" "user_pool"[\s\S]*?count = var\.waf_enabled \? 1 : 0[\s\S]*?aws_cognito_user_pool\.main\.arn/,
+  );
+
+  const example = read('terraform/environments/dev.tfvars.example');
+  assert.match(example, /^enable_waf\s+= false$/m);
+});
+
 test('DynamoDB CMK access covers deployment and every runtime caller', () => {
   const runtimePolicy = read('terraform/modules/security/dynamodb-kms-runtime-access/main.tf');
   for (const action of [
