@@ -429,6 +429,82 @@ describe('evaluateGatePreconditions: reviewer and sensors', () => {
   });
 });
 
+describe('evaluateGatePreconditions: release integrity failures', () => {
+  const integrityVerdict = (over = {}) => ({
+    sensorId: 'linter',
+    result: 'BLOCKED',
+    severity: 'advisory',
+    held: true,
+    detail: {
+      error: 'release script digest mismatch',
+      code: 'release_closure_mismatch',
+      releaseIntegrityFailure: true,
+    },
+    ...over,
+  });
+
+  it('blocks without an override even when the sensor is advisory', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      sensorVerdicts: [integrityVerdict()],
+      producedArtifacts: ['requirements'],
+    });
+    expect(result.ok).toBe(false);
+    expect(codesOf(result)).toEqual(['sensor_gate_blocking']);
+    expect(result.findings[0]).toMatchObject({
+      severity: 'blocking',
+      overridable: false,
+      receiptKind: null,
+      detail: { sensorId: 'linter', releaseIntegrityFailure: true },
+    });
+    expect(result.findings[0].title).toContain('release integrity failure');
+    expect(overridableFindings(result.findings)).toEqual([]);
+  });
+
+  it('cannot be cleared by a sensor-override receipt', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      receipts: [
+        receipt({
+          kind: 'sensor-override',
+          sk: 'RECEIPT#sensor-override#si-1#0#-',
+          detail: { sensorIds: ['linter'] },
+        }),
+      ],
+      sensorVerdicts: [integrityVerdict()],
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['sensor_gate_blocking']);
+    expect(result.ok).toBe(false);
+  });
+
+  it('is not silenced by a notApplicable flag on the same verdict', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      sensorVerdicts: [
+        integrityVerdict({
+          detail: { releaseIntegrityFailure: true, notApplicable: true },
+        }),
+      ],
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['sensor_gate_blocking']);
+  });
+
+  it('stays inert for an unpinned run', () => {
+    expect(
+      evaluateGatePreconditions({
+        stage: STAGE,
+        policy: null,
+        sensorVerdicts: [integrityVerdict()],
+      }),
+    ).toEqual({ ok: true, findings: [] });
+  });
+});
+
 describe('evaluateGatePreconditions: change control', () => {
   it('notes a changed approved input as advisory', () => {
     const result = evaluateGatePreconditions({

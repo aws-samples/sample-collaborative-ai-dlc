@@ -82,15 +82,17 @@ const defaultStore = createProcessStore({ ddb });
 const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 
 // Keep the gate's answer set in one pure function so the orchestrator and the
-// offline release matrix exercise the same three-outcome contract.
+// offline release matrix exercise the same three-outcome contract. A single
+// non-overridable block withholds `override-and-approve` even when other
+// blocking findings are overridable: offering it would let one answer waive a
+// finding no human is allowed to waive.
 export const buildGateOptions = ({ findings = [] } = {}) => {
-  const overridable = overridableFindings(findings);
-  const blocked = findings.some((item) => item.severity === 'blocking');
-  return blocked
-    ? overridable.length > 0
-      ? ['request-changes', 'override-and-approve']
-      : ['request-changes']
-    : ['approve', 'request-changes'];
+  const blocking = findings.filter((item) => item.severity === 'blocking');
+  if (blocking.length === 0) return ['approve', 'request-changes'];
+  const everyBlockOverridable = blocking.every((item) => item.overridable);
+  return everyBlockOverridable && overridableFindings(findings).length > 0
+    ? ['request-changes', 'override-and-approve']
+    : ['request-changes'];
 };
 
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;

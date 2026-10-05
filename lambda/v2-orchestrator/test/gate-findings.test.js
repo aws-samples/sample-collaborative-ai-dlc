@@ -627,6 +627,109 @@ describe('validation gate with findings', () => {
   });
 });
 
+// A pinned sensor script that is missing or failed its digest check was never
+// executed, so its verdict is not an ordinary advisory one: the gate must not
+// offer approval over it, and must not offer an override even when another
+// blocking finding on the same gate is overridable.
+describe('validation gate with a release-integrity failure', () => {
+  const INTEGRITY_VERDICT = {
+    sensorId: 'linter',
+    severity: 'advisory',
+    result: 'BLOCKED',
+    held: true,
+    detail: {
+      error: 'release script digest mismatch',
+      code: 'release_closure_mismatch',
+      releaseIntegrityFailure: true,
+    },
+  };
+
+  const sendBackThenApprove = () => {
+    let call = 0;
+    deps.store.getHumanTask = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return null;
+      if (call === 2) {
+        return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
+      }
+      if (call === 3) return null;
+      return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
+    });
+  };
+
+  beforeEach(() => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [{ ...GATED_STAGE, policy: POLICY }] },
+    }));
+  });
+
+  it('offers request-changes alone for an advisory sensor that could not be verified', async () => {
+    let attempt = 0;
+    stageVerdict = () => {
+      attempt += 1;
+      return attempt === 1
+        ? { ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [INTEGRITY_VERDICT] }
+        : { ok: true, state: 'SUCCEEDED' };
+    };
+    sendBackThenApprove();
+
+    const res = await run();
+
+    const firstGate = deps.store.createHumanTask.mock.calls[0][0];
+    expect(firstGate.options).toEqual(['request-changes']);
+    expect(firstGate.findings.map((finding) => finding.code)).toEqual(['sensor_gate_blocking']);
+    expect(firstGate.findings[0]).toMatchObject({
+      overridable: false,
+      detail: { releaseIntegrityFailure: true },
+    });
+    expect(firstGate.prompt).toContain('A blocking finding cannot be overridden here');
+    // The re-run is clean, so the run still escapes: no stuck state.
+    expect(res.ok).toBe(true);
+    expect(
+      deps.store.putReceipt.mock.calls.filter(
+        ([receipt]) => receipt.choice === 'override-and-approve',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('withholds override-and-approve when mixed with an overridable block', async () => {
+    let attempt = 0;
+    stageVerdict = () => {
+      attempt += 1;
+      return attempt === 1
+        ? {
+            ok: true,
+            state: 'SUCCEEDED',
+            gateSensorVerdicts: [BLOCKING_SENSOR, INTEGRITY_VERDICT],
+          }
+        : { ok: true, state: 'SUCCEEDED' };
+    };
+    sendBackThenApprove();
+
+    await run();
+
+    const firstGate = deps.store.createHumanTask.mock.calls[0][0];
+    expect(firstGate.options).toEqual(['request-changes']);
+    expect(firstGate.findings.filter((finding) => finding.overridable)).toHaveLength(1);
+    expect(firstGate.findings).toHaveLength(2);
+  });
+
+  it('keeps the gate byte-identical for an unpinned run', async () => {
+    deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages: [GATED_STAGE] } }));
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      gateSensorVerdicts: [INTEGRITY_VERDICT],
+    });
+
+    await run();
+
+    expect(openedGate().options).toEqual(['approve', 'request-changes']);
+    expect(openedGate()).not.toHaveProperty('findings');
+  });
+});
+
 describe('operator logging at the gate', () => {
   it('logs each finding code, severity and the stage when a gate opens with findings', async () => {
     const info = vi.spyOn(Logger.prototype, 'info');

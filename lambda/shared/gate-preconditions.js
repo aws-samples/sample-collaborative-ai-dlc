@@ -158,6 +158,15 @@ const lineageGaps = ({ events, artifacts, authorizationId, decidedAt }) =>
 // as a fresh finding from either side. A PASS says nothing; `notApplicable`
 // (INCONCLUSIVE with the flag) says the sensor had no deliverable to inspect,
 // which is also nothing to decide.
+// A release-integrity failure (the pinned sensor script is missing, or failed its
+// digest check) is not an ordinary verdict: the declared check never executed, so
+// the sensor's authored severity says nothing about it. The fail-closed release
+// rule therefore outranks severity — it is always a BLOCKING, NON-OVERRIDABLE
+// finding, and no `sensor-override` receipt and no `notApplicable` flag can clear
+// it. `request-changes` re-runs the stage, which re-resolves the release, so the
+// run is still never stuck.
+const isReleaseIntegrityFailure = (verdict) => verdict?.detail?.releaseIntegrityFailure === true;
+
 const sensorGateFindings = ({ sensorVerdicts = [], receipts = [], attempt = 0 } = {}) => {
   const overridden = new Set(
     receiptsOfKind(receipts, 'sensor-override', attempt).flatMap(
@@ -166,24 +175,33 @@ const sensorGateFindings = ({ sensorVerdicts = [], receipts = [], attempt = 0 } 
   );
   const findings = [];
   for (const verdict of sensorVerdicts ?? []) {
-    if (verdict?.result === 'PASS' || overridden.has(verdict?.sensorId)) continue;
-    if (verdict?.detail?.notApplicable === true) continue;
-    const blocking = verdict?.severity === 'blocking';
+    if (verdict?.result === 'PASS') continue;
+    const integrityFailure = isReleaseIntegrityFailure(verdict);
+    if (!integrityFailure && overridden.has(verdict?.sensorId)) continue;
+    if (!integrityFailure && verdict?.detail?.notApplicable === true) continue;
+    const blocking = integrityFailure || verdict?.severity === 'blocking';
+    const overridable = blocking && !integrityFailure;
+    const onArtifact = verdict.detail?.artifact ? ` on ${verdict.detail.artifact}` : '';
     findings.push(
       finding({
         code: blocking ? 'sensor_gate_blocking' : 'sensor_gate_advisory',
         severity: blocking ? 'blocking' : 'advisory',
-        title: `Sensor ${verdict.sensorId} (gate) → ${verdict.result}${verdict.detail?.artifact ? ` on ${verdict.detail.artifact}` : ''}`,
+        title: integrityFailure
+          ? `Sensor ${verdict.sensorId} (gate) could not be verified — release integrity failure${onArtifact}`
+          : `Sensor ${verdict.sensorId} (gate) → ${verdict.result}${onArtifact}`,
         detail: {
           sensorId: verdict.sensorId,
           result: verdict.result,
           reason: verdict.detail?.reason ?? null,
+          ...(integrityFailure ? { releaseIntegrityFailure: true } : {}),
         },
-        overridable: blocking,
-        ...(blocking ? { receiptKind: 'sensor-override' } : {}),
-        remediation: blocking
-          ? 'Override to accept the verdict on the record, or request changes so the agent fixes it.'
-          : 'Advisory verdict; decide with it in view.',
+        overridable,
+        ...(overridable ? { receiptKind: 'sensor-override' } : {}),
+        remediation: integrityFailure
+          ? 'The pinned check could not be verified, so it never ran. Request changes: the stage re-runs once the release content is intact.'
+          : blocking
+            ? 'Override to accept the verdict on the record, or request changes so the agent fixes it.'
+            : 'Advisory verdict; decide with it in view.',
       }),
     );
   }
