@@ -28,7 +28,7 @@
 // whole flow is unit-tested with the CLI + AWS mocked.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   selectCli,
   getDriver,
@@ -806,8 +806,33 @@ const CHANGE_CONTROL_OPTIONS = Object.freeze([
   'Stop here so I can rewind',
 ]);
 
-const changeControlGateId = (stageInstanceId, attempt) =>
-  `${CHANGE_CONTROL_GATE_PREFIX}${stageInstanceId}-${attempt}`;
+const changeControlGateId = (stageInstanceId, attempt, fingerprint = null) =>
+  `${CHANGE_CONTROL_GATE_PREFIX}${stageInstanceId}-${attempt}${
+    fingerprint ? `-${fingerprint}` : ''
+  }`;
+
+// The identity of the inputs a change-control decision is ABOUT: each changed
+// input's logical key (its type when the comparison could not read one) paired
+// with the fingerprint that was observed. The question and the reconfirmation
+// receipt are both bound to it, so a decision taken about one set of bytes can
+// never authorize a run against another — neither a later revision of the same
+// input nor a change that lands while the question is still pending.
+const changeControlFingerprint = (changedInputs = []) =>
+  createHash('sha256')
+    .update(
+      JSON.stringify(
+        (changedInputs ?? [])
+          .map(
+            (changed) =>
+              `${changed?.logicalKey ?? changed?.artifactType ?? changed?.artifactId ?? ''}\u0000${
+                changed?.toHash ?? 'unavailable'
+              }`,
+          )
+          .toSorted(),
+      ),
+    )
+    .digest('hex')
+    .slice(0, 16);
 
 const isChangeControlGate = (gate) =>
   typeof gate?.humanTaskId === 'string' && gate.humanTaskId.startsWith(CHANGE_CONTROL_GATE_PREFIX);
@@ -2478,6 +2503,7 @@ export const runStage = async (
       changedInputs.length > 0 &&
       (stage.policy.changeControl === 'strict' || approvalHistoryUnknown)
     ) {
+      const ccFingerprint = changeControlFingerprint(changedInputs);
       const reconfirmed = await (
         store.listReceipts?.(executionId, {
           kind: 'change-reconfirm',
@@ -2485,10 +2511,13 @@ export const runStage = async (
           attempt: ccAttempt,
         }) ?? Promise.resolve([])
       ).catch(() => []);
-      if (reconfirmed.length > 0) {
+      // A reconfirmation covers the inputs it was taken about and nothing else: a
+      // receipt whose fingerprint no longer matches what this run observed reopens
+      // the decision instead of waving the stage through.
+      if (reconfirmed.some((row) => (row?.detail?.inputsFingerprint ?? null) === ccFingerprint)) {
         changeControlMessage = renderChangedInputs(changedInputs, { reconfirmed: true });
       } else {
-        const ccGateId = changeControlGateId(stageInstanceId, ccAttempt);
+        const ccGateId = changeControlGateId(stageInstanceId, ccAttempt, ccFingerprint);
         const ccGate = await store.getHumanTask(executionId, ccGateId).catch(() => null);
         const choice = ccGate && ccGate.status !== 'pending' ? changeControlChoice(ccGate) : null;
         // Anything but an explicit reconfirmation halts: `stop`, and an answer
@@ -2544,7 +2573,7 @@ export const runStage = async (
               decidedBy: ccGate.answeredBy ?? null,
               decidedByName: ccGate.answeredByName ?? null,
               humanTaskId: ccGateId,
-              detail: { changedInputs },
+              detail: { changedInputs, inputsFingerprint: ccFingerprint },
             });
           } catch (error) {
             logger.error('change-control reconfirmation receipt could not be persisted', {
@@ -2575,6 +2604,23 @@ export const runStage = async (
           changeControlMessage = renderChangedInputs(changedInputs, { reconfirmed: true });
         } else {
           if (!ccGate) {
+            // The inputs moved again while an earlier question was still waiting,
+            // so that question is about bytes nobody will run against. Retire it
+            // rather than leaving the team two live change-control gates.
+            const stalePending = ccRow?.pendingHumanTaskId ?? null;
+            if (
+              stalePending &&
+              stalePending !== ccGateId &&
+              isChangeControlGate({ humanTaskId: stalePending })
+            ) {
+              await (
+                store.supersedeHumanTask?.({
+                  executionId,
+                  humanTaskId: stalePending,
+                  supersededBy: ccGateId,
+                }) ?? Promise.resolve()
+              ).catch(() => {});
+            }
             try {
               await store.createHumanTask({
                 executionId,
@@ -4325,6 +4371,7 @@ export const __test = {
   changedApprovedInputs,
   changeControlChoice,
   changeControlGateId,
+  changeControlFingerprint,
   isChangeControlGate,
   renderChangedInputs,
   CHANGE_CONTROL_OPTIONS,

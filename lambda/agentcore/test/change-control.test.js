@@ -12,8 +12,13 @@ import { runStage, __test } from '../commands/run-stage.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
-const { changedApprovedInputs, changeControlChoice, changeControlGateId, isChangeControlGate } =
-  __test;
+const {
+  changedApprovedInputs,
+  changeControlChoice,
+  changeControlGateId,
+  changeControlFingerprint,
+  isChangeControlGate,
+} = __test;
 
 describe('changedApprovedInputs', () => {
   const head = (overrides) => ({
@@ -224,6 +229,7 @@ const harnessStore = ({ receipts = [], events = [], humanTask = null, attempt = 
     resumeStageRow: rec('resumeStageRow'),
     appendEvent: rec('appendEvent'),
     createHumanTask: rec('createHumanTask'),
+    supersedeHumanTask: rec('supersedeHumanTask'),
     putReceipt: rec('putReceipt'),
     recordSensorRun: rec('recordSensorRun'),
     async appendOutput(args) {
@@ -316,6 +322,18 @@ const args = {
   scope: 'feature',
   workspaceDir: '/ws',
 };
+
+// Every change-control decision is bound to the fingerprint of the inputs it is
+// about, and the gate id carries it: a question about one revision of an input can
+// never be answered into a run against another.
+const CHANGED_FINGERPRINT = changeControlFingerprint([
+  { logicalKey: HEAD.logicalKey, toHash: HEAD.snapshotHash },
+]);
+const UNREADABLE_FINGERPRINT = changeControlFingerprint([
+  { artifactType: PRODUCER, logicalKey: null, toHash: null },
+]);
+const ccGateId = (attempt = 0, fingerprint = CHANGED_FINGERPRINT) =>
+  changeControlGateId(CONSUMER_INSTANCE, attempt, fingerprint);
 
 const APPROVAL = Object.freeze({
   kind: 'stage-approval',
@@ -448,7 +466,7 @@ describe('runStage — change_control: strict', () => {
     expect(res).toMatchObject({
       ok: true,
       state: 'WAITING_FOR_HUMAN',
-      humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+      humanTaskId: ccGateId(0),
     });
     // BEFORE the agent is the whole point: no CLI session was started.
     expect(spawned).toBe(false);
@@ -491,7 +509,7 @@ describe('runStage — change_control: strict', () => {
     expect(res).toMatchObject({
       ok: true,
       state: 'WAITING_FOR_HUMAN',
-      humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+      humanTaskId: ccGateId(0, UNREADABLE_FINGERPRINT),
     });
     expect(spawned).toBe(false);
     const [gate] = store.of('createHumanTask');
@@ -503,7 +521,7 @@ describe('runStage — change_control: strict', () => {
     const store = harnessStore({
       receipts: [APPROVAL],
       humanTask: {
-        humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+        humanTaskId: ccGateId(0),
         status: 'answered',
         answeredBy: 'u1',
         answeredByName: 'Ada',
@@ -534,7 +552,7 @@ describe('runStage — change_control: strict', () => {
     const store = harnessStore({
       receipts: [APPROVAL],
       humanTask: {
-        humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+        humanTaskId: ccGateId(0),
         status: 'answered',
         answer: { perQuestion: [{ answer: 'Reconfirm and continue' }] },
       },
@@ -575,7 +593,7 @@ describe('runStage — change_control: strict', () => {
     const store = harnessStore({
       receipts: [APPROVAL],
       humanTask: {
-        humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+        humanTaskId: ccGateId(0),
         status: 'answered',
         answeredByName: 'Ada',
         answer: { perQuestion: [{ answer: 'Stop here so I can rewind' }] },
@@ -603,7 +621,7 @@ describe('runStage — change_control: strict', () => {
     const store = harnessStore({
       receipts: [APPROVAL],
       humanTask: {
-        humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+        humanTaskId: ccGateId(0),
         status: 'answered',
         answer: { freeText: 'hmm' },
       },
@@ -625,7 +643,7 @@ describe('runStage — change_control: strict', () => {
     const store = harnessStore({
       receipts: [APPROVAL],
       humanTask: {
-        humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+        humanTaskId: ccGateId(0),
         status: 'answered',
         answer: { perQuestion: [{ answer: 'Reconfirm and continue' }] },
       },
@@ -639,7 +657,14 @@ describe('runStage — change_control: strict', () => {
 
   it('does not re-ask once a reconfirmation receipt exists for THIS attempt', async () => {
     const store = harnessStore({
-      receipts: [APPROVAL, { kind: 'change-reconfirm', attempt: 0, detail: {} }],
+      receipts: [
+        APPROVAL,
+        {
+          kind: 'change-reconfirm',
+          attempt: 0,
+          detail: { inputsFingerprint: CHANGED_FINGERPRINT },
+        },
+      ],
     });
     const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'strict' } }));
     expect(res.state).toBe('SUCCEEDED');
@@ -652,13 +677,18 @@ describe('runStage — change_control: strict', () => {
   it('re-asks after a rewind, because the prior attempt receipt is out of scope', async () => {
     const store = harnessStore({
       attempt: 1,
-      receipts: [APPROVAL, { kind: 'change-reconfirm', attempt: 0, detail: {} }],
+      receipts: [
+        APPROVAL,
+        {
+          kind: 'change-reconfirm',
+          attempt: 0,
+          detail: { inputsFingerprint: CHANGED_FINGERPRINT },
+        },
+      ],
     });
     const res = await runStage(args, deps(store, { scopeFm: { changeControl: 'strict' } }));
     expect(res.state).toBe('WAITING_FOR_HUMAN');
-    expect(store.of('createHumanTask')[0].humanTaskId).toBe(
-      changeControlGateId(CONSUMER_INSTANCE, 1),
-    );
+    expect(store.of('createHumanTask')[0].humanTaskId).toBe(ccGateId(1));
   });
 });
 
@@ -682,7 +712,7 @@ describe('runStage — change control decides before the stage starts', () => {
     };
   };
   const answeredGate = Object.freeze({
-    humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+    humanTaskId: ccGateId(0),
     stageInstanceId: CONSUMER_INSTANCE,
     status: 'answered',
     answeredBy: 'u1',
@@ -758,7 +788,7 @@ describe('runStage — change control decides before the stage starts', () => {
 
     expect(res).toMatchObject({
       state: 'WAITING_FOR_HUMAN',
-      humanTaskId: changeControlGateId(CONSUMER_INSTANCE, 0),
+      humanTaskId: ccGateId(0, UNREADABLE_FINGERPRINT),
     });
     expect(capture.spawns).toEqual([]);
     const [question] = JSON.parse(store.of('createHumanTask')[0].questions);
@@ -781,6 +811,116 @@ describe('runStage — change control decides before the stage starts', () => {
     expect(capture.spawns).toEqual([]);
     expect(store.of('updateStageState').map((patch) => patch.state)).not.toContain(
       'WAITING_FOR_HUMAN',
+    );
+  });
+});
+
+// A reconfirmation is a decision about SPECIFIC bytes. These cover the two ways a
+// stage could otherwise inherit one taken about different content: the input moves
+// again later in the same attempt, and the input moves while the question is still
+// waiting for an answer.
+describe('runStage — a reconfirmation covers only the inputs it was taken about', () => {
+  const REVISED_HEAD = Object.freeze({ ...HEAD, snapshotHash: 'sha-newer' });
+
+  it('re-asks when the input changed again after the reconfirmation', async () => {
+    const store = harnessStore({
+      receipts: [
+        APPROVAL,
+        {
+          kind: 'change-reconfirm',
+          attempt: 0,
+          detail: {
+            inputsFingerprint: CHANGED_FINGERPRINT,
+            changedInputs: [{ logicalKey: HEAD.logicalKey, toHash: HEAD.snapshotHash }],
+          },
+        },
+      ],
+    });
+    const capture = promptCapture();
+
+    const res = await runStage(
+      args,
+      deps(store, {
+        scopeFm: { changeControl: 'strict' },
+        deps: { readArtifactHeadHashes: async () => [REVISED_HEAD], spawnFn: capture.spawnFn },
+      }),
+    );
+
+    expect(res.state).toBe('WAITING_FOR_HUMAN');
+    expect(capture.seen.prompt).toBe('');
+    const revisedFingerprint = changeControlFingerprint([
+      { logicalKey: REVISED_HEAD.logicalKey, toHash: REVISED_HEAD.snapshotHash },
+    ]);
+    expect(store.of('createHumanTask')[0].humanTaskId).toBe(ccGateId(0, revisedFingerprint));
+    expect(store.of('putReceipt').filter((row) => row.kind === 'change-reconfirm')).toEqual([]);
+  });
+
+  it('still continues when the reconfirmation covers the current fingerprint', async () => {
+    const store = harnessStore({
+      receipts: [
+        APPROVAL,
+        {
+          kind: 'change-reconfirm',
+          attempt: 0,
+          detail: { inputsFingerprint: CHANGED_FINGERPRINT },
+        },
+      ],
+    });
+    const capture = promptCapture();
+
+    const res = await runStage(
+      args,
+      deps(store, { scopeFm: { changeControl: 'strict' }, deps: { spawnFn: capture.spawnFn } }),
+    );
+
+    expect(res.state).toBe('SUCCEEDED');
+    expect(store.of('createHumanTask')).toEqual([]);
+    expect(capture.seen.prompt).toContain('reconfirmed');
+  });
+
+  it('does not consume an answer given about content that has since changed', async () => {
+    // The human answered the question raised for `sha-new`; by the time the stage
+    // resumed, the input was at `sha-newer`.
+    const store = harnessStore({
+      receipts: [APPROVAL],
+      humanTask: {
+        humanTaskId: ccGateId(0),
+        stageInstanceId: CONSUMER_INSTANCE,
+        status: 'answered',
+        answeredBy: 'u1',
+        answeredByName: 'Ada',
+        answer: { perQuestion: [{ answer: 'Reconfirm and continue' }] },
+      },
+    });
+    store.getStage = async () => ({
+      stageInstanceId: CONSUMER_INSTANCE,
+      attempt: 0,
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: ccGateId(0),
+    });
+    const capture = promptCapture();
+
+    const res = await runStage(
+      { ...args, resumeFrom: ccGateId(0) },
+      deps(store, {
+        scopeFm: { changeControl: 'strict' },
+        deps: { readArtifactHeadHashes: async () => [REVISED_HEAD], spawnFn: capture.spawnFn },
+      }),
+    );
+
+    // The stale answer authorizes nothing: a fresh question is opened for the
+    // bytes this run actually observed, and no receipt claims the old answer.
+    expect(res.state).toBe('WAITING_FOR_HUMAN');
+    expect(capture.seen.prompt).toBe('');
+    expect(store.of('putReceipt').filter((row) => row.kind === 'change-reconfirm')).toEqual([]);
+    const revisedFingerprint = changeControlFingerprint([
+      { logicalKey: REVISED_HEAD.logicalKey, toHash: REVISED_HEAD.snapshotHash },
+    ]);
+    const [gate] = store.of('createHumanTask');
+    expect(gate.humanTaskId).toBe(ccGateId(0, revisedFingerprint));
+    // The superseded question is retired so the team is not left with two.
+    expect(store.of('supersedeHumanTask')).toContainEqual(
+      expect.objectContaining({ humanTaskId: ccGateId(0), supersededBy: gate.humanTaskId }),
     );
   });
 });
