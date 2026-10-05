@@ -28,10 +28,10 @@ const fakeStore = ({ receipts = new Map(), humanTasks = new Map() } = {}) => {
   const counters = new Map();
   const stageRow = { attempt: 0 };
   let receiptSeq = 0;
-  const receiptSk = ({ kind, stageInstanceId, attempt, unitSlug, ordinal }) =>
+  const receiptSk = ({ kind, stageInstanceId, attempt, unitSlug, ordinal, round }) =>
     `RECEIPT#${kind}#${stageInstanceId}#${attempt}#${unitSlug ?? '-'}${
       ordinal == null ? '' : `#${ordinal}`
-    }`;
+    }${round == null || Number(round) === 0 ? '' : `#r${Number(round)}`}`;
   return {
     events,
     humanTasks,
@@ -802,5 +802,150 @@ describe('checkpoint authority per validation revision', () => {
     expect(result.authorizationId).toBeNull();
     expect(store.receipts.size).toBe(0);
     expect(eventTypes(store)).toContain('v2.checkpoint.authorization_refused');
+  });
+});
+
+// Which checkpoint decision is CURRENTLY authoritative, across the three
+// components that produce, persist and consume it: the bridge raises each re-ask
+// as its own round, the store keys that round's receipt separately, and the shared
+// evaluator resolves authority from the latest decision.
+describe('checkpoint authority is the latest decision, not the first', () => {
+  const STAGE = {
+    stageInstanceId: SCOPE.stageInstanceId,
+    outputArtifacts: [{ artifact: 'design' }],
+  };
+
+  const evaluate = (store) =>
+    evaluateGatePreconditions({
+      stage: STAGE,
+      policy: SCOPE.policy,
+      attempt: 0,
+      receipts: [...store.receipts.values()],
+      events: store.events,
+      producedArtifacts: ['design'],
+    });
+
+  it('withdraws the earlier approval when a later round answers Request changes', async () => {
+    const store = fakeStore();
+    const confirming = inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    });
+    const approved = await confirming.confirmSummary({ summary: 'v1' });
+    expect(approved.decision).toBe('approved');
+    // The outputs the human confirmed are stamped under that authorization, so the
+    // lineage rule is satisfied for round 0.
+    await confirming.stampArtifact({ artifactId: 'd1', artifactType: 'design' });
+    expect(evaluate(store).ok).toBe(true);
+
+    const rejecting = inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Request changes' }], freeText: 'not this one' },
+    });
+    const rejected = await rejecting.confirmSummary({ summary: 'a different summary' });
+
+    expect(rejected.decision).toBe('changes-requested');
+    const result = evaluate(store);
+    expect(result.ok).toBe(false);
+    expect(result.findings.map((finding) => finding.code)).toEqual([
+      'summary_confirmation_missing',
+    ]);
+  });
+
+  it('withdraws it on the resume leg too, when the rejection was answered while parked', async () => {
+    const store = fakeStore();
+    const confirming = inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    });
+    await confirming.confirmSummary({ summary: 'v1' });
+    await confirming.stampArtifact({ artifactId: 'd1', artifactType: 'design' });
+    expect(evaluate(store).ok).toBe(true);
+
+    // Round 1 parks and is answered by the human while no container exists.
+    await parkingBridge(store).confirmSummary({ summary: 'a different summary' });
+    answerLatestGate(store, { perQuestion: [{ answer: 'Request changes' }] });
+
+    const resumed = createProcessBridge({ store, scope: SCOPE });
+    expect(await resumed.rehydrateAuthorizations()).toBeNull();
+
+    const result = evaluate(store);
+    expect(result.ok).toBe(false);
+    expect(result.findings.map((finding) => finding.code)).toEqual([
+      'summary_confirmation_missing',
+    ]);
+  });
+
+  it('records the parked withdrawal once, however many containers resume after it', async () => {
+    const store = fakeStore();
+    const confirming = inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    });
+    await confirming.confirmSummary({ summary: 'v1' });
+    await parkingBridge(store).confirmSummary({ summary: 'a different summary' });
+    answerLatestGate(store, { perQuestion: [{ answer: 'Request changes' }] });
+
+    for (const _resume of [0, 1, 2]) {
+      expect(
+        await createProcessBridge({ store, scope: SCOPE }).rehydrateAuthorizations(),
+      ).toBeNull();
+    }
+
+    expect(eventTypes(store).filter((type) => type === 'v2.summary.changes_requested')).toEqual([
+      'v2.summary.changes_requested',
+    ]);
+    expect(evaluate(store).ok).toBe(false);
+  });
+
+  it('publishes no withdrawal when the rejection withdraws nothing', async () => {
+    const store = fakeStore();
+    await parkingBridge(store).confirmSummary({ summary: 'v1' });
+    answerLatestGate(store, { perQuestion: [{ answer: 'Request changes' }] });
+
+    expect(await createProcessBridge({ store, scope: SCOPE }).rehydrateAuthorizations()).toBeNull();
+
+    expect(eventTypes(store)).not.toContain('v2.summary.changes_requested');
+    expect(store.receipts.size).toBe(0);
+  });
+
+  it('gives a second approved summary its OWN authorization, not the first round’s', async () => {
+    const store = fakeStore();
+    const first = await inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    }).confirmSummary({ summary: 'v1' });
+    const second = await inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    }).confirmSummary({ summary: 'v2, materially different' });
+
+    expect(second.decision).toBe('approved');
+    expect(second.humanTaskId).not.toBe(first.humanTaskId);
+    expect(second.authorizationId).not.toBe(first.authorizationId);
+    expect(store.receipts.size).toBe(2);
+
+    const rows = [...store.receipts.values()];
+    const latest = rows.find((row) => row.sk === second.authorizationId);
+    const earliest = rows.find((row) => row.sk === first.authorizationId);
+    expect(latest.humanTaskId).toBe(second.humanTaskId);
+    expect(latest.round).toBe(1);
+    expect(earliest.round).toBe(0);
+    // The digest on each receipt is the digest of the summary ITS gate showed.
+    expect(latest.boundDigest).not.toBe(earliest.boundDigest);
+    expect(latest.boundDigest).toBe(store.humanTasks.get(second.humanTaskId).detail.boundDigest);
+
+    // The stamp the evaluator checks lineage against is the latest authorization.
+    const resumed = createProcessBridge({ store, scope: SCOPE });
+    expect(await resumed.rehydrateAuthorizations()).toBe(second.authorizationId);
+    await resumed.stampArtifact({ artifactId: 'd1', artifactType: 'design' });
+    expect(evaluate(store).ok).toBe(true);
+  });
+
+  it('leaves a single pre-round receipt authoritative', async () => {
+    const store = fakeStore();
+    const bridge = inlineBridge(store, {
+      answer: { perQuestion: [{ answer: 'Looks correct' }] },
+    });
+    const result = await bridge.confirmSummary({ summary: 'v1' });
+    await bridge.stampArtifact({ artifactId: 'd1', artifactType: 'design' });
+
+    // Round 0 writes no round part, so the key and the verdict are unchanged.
+    expect(result.authorizationId).toBe('RECEIPT#summary-confirmation#si-1#0#-');
+    expect(evaluate(store)).toEqual({ ok: true, findings: [] });
   });
 });

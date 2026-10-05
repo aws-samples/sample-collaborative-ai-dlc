@@ -21,6 +21,7 @@ import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
 } from '../../shared/v2-execution-plan.js';
+import { evaluateGatePreconditions } from '../../shared/gate-preconditions.js';
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.
@@ -5439,5 +5440,106 @@ describe('postAgentSensorPass', () => {
         attemptChangedFiles: ['src/a.ts'],
       }),
     ).toEqual({ planes: ['write'], changedFiles: ['src/a.ts'] });
+  });
+});
+
+// The artifact-head observation the orchestrator turns into
+// `required_artifact_missing`. "Observed nothing" and "could not observe" are
+// different facts, and the stage result must say which one happened: an empty
+// SUCCESSFUL read is the evidence a release-mode stage produced no artifact.
+describe('runStage — produced-head observation', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+  const releaseLibrary = () => {
+    const lib = library();
+    lib.fromRelease = true;
+    lib.scopesById = { feature: { id: 'feature', version: 1, sensorsPolicy: 'on' } };
+    return lib;
+  };
+  const runWithHeads = (readArtifactHeadHashes) =>
+    runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: releaseLibrary() }),
+        openGraph: async () => ({}),
+        readArtifactHeadHashes,
+      }),
+    );
+
+  it('reports an empty successful read as an empty observation, not an absent one', async () => {
+    const res = await runWithHeads(async () => []);
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(res).toHaveProperty('producedHeads', []);
+    expect(res).not.toHaveProperty('producedHeadsUnavailable');
+  });
+
+  it('reports an unreadable graph as unavailable, with no observation at all', async () => {
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: releaseLibrary() }),
+        openGraph: async () => {
+          throw new Error('graph unavailable');
+        },
+        readArtifactHeadHashes: async () => [],
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', producedHeadsUnavailable: true });
+    expect(res).not.toHaveProperty('producedHeads');
+  });
+
+  it('carries the heads it did read', async () => {
+    const head = {
+      artifactType: 'requirements-analysis',
+      logicalKey: 'k1',
+      snapshotHash: 'sha-1',
+      stageInstanceId: BASE_STAGE_INSTANCE_ID,
+    };
+    const res = await runWithHeads(async () => [head]);
+
+    expect(res.producedHeads).toEqual([head]);
+  });
+
+  // The whole point of preserving the empty array: the gate evaluator the
+  // orchestrator runs on this result must report the declared output as missing.
+  it('lets the gate evaluator report the declared output as missing', async () => {
+    const res = await runWithHeads(async () => []);
+
+    const { ok, findings } = evaluateGatePreconditions({
+      stage: {
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+        outputArtifacts: [{ artifact: 'requirements-analysis' }],
+      },
+      policy: { summaryConfirmation: 'none' },
+      // The orchestrator's own mapping: an array becomes the produced set, and
+      // anything else is "not observed".
+      producedArtifacts:
+        res.producedHeadsUnavailable !== true && Array.isArray(res.producedHeads)
+          ? [...new Set(res.producedHeads.map((head) => head.artifactType).filter(Boolean))]
+          : null,
+    });
+
+    expect(ok).toBe(false);
+    expect(findings.map((finding) => finding.code)).toEqual(['required_artifact_missing']);
+  });
+
+  it('observes nothing at all for an unpinned run', async () => {
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn: okSpawn,
+        openGraph: async () => ({}),
+        readArtifactHeadHashes: async () => [],
+      }),
+    );
+
+    expect(res).not.toHaveProperty('producedHeads');
+    expect(res).not.toHaveProperty('producedHeadsUnavailable');
   });
 });
