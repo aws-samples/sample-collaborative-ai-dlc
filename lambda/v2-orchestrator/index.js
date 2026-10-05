@@ -1369,10 +1369,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     // cannot derive from receipts: it needs what the stage actually
                     // LEFT BEHIND. `producedHeads` is that observation (the container's
                     // graph read of the artifact heads), and its artifact types are the
-                    // produced set. Absent — an unreachable graph, or an unpinned run —
+                    // produced set. An EMPTY array is a successful observation of
+                    // nothing and is reported as missing outputs; `producedHeads`
+                    // absent — an unpinned run — or an explicitly unavailable read
                     // leaves `producedArtifacts` null, which the evaluator treats as
                     // "not observed" and never reports as missing.
-                    producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads),
+                    producedArtifacts:
+                      outcome.result?.producedHeadsUnavailable === true
+                        ? null
+                        : producedArtifactTypes(outcome.result?.producedHeads),
                   });
                   const merged = mergeFindings(outcome.result?.findings ?? [], reread.findings);
                   // Logged inside the step so a durable replay does not repeat it: an

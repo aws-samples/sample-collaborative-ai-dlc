@@ -4312,7 +4312,13 @@ export const runStage = async (
   // container hands it the fingerprints of everything this stage leaves behind.
   // Read-only and best-effort: an unreachable graph costs the next stage its
   // comparison, never this stage its success.
+  //
+  // "Observed nothing" and "could not observe" are different facts and must not
+  // collapse into one absent field: an empty SUCCESSFUL read is the evidence that
+  // the stage produced no artifact, which is exactly what the required-output check
+  // exists to catch. An unreachable graph is reported on its own field instead.
   let producedHeads = null;
+  let producedHeadsUnavailable = false;
   if (stage.policy && openGraph) {
     let gHeads = null;
     try {
@@ -4320,6 +4326,7 @@ export const runStage = async (
       producedHeads = await readArtifactHeadHashes({ g: gHeads, intentId });
     } catch {
       producedHeads = null;
+      producedHeadsUnavailable = true;
     } finally {
       await closeGraphSource(gHeads);
     }
@@ -4348,7 +4355,8 @@ export const runStage = async (
       return findings.length ? { findings } : {};
     })(),
     ...(changedInputs.length ? { changedInputs } : {}),
-    ...(producedHeads?.length ? { producedHeads } : {}),
+    ...(Array.isArray(producedHeads) ? { producedHeads } : {}),
+    ...(producedHeadsUnavailable ? { producedHeadsUnavailable: true } : {}),
   };
 };
 

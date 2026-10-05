@@ -1024,3 +1024,65 @@ describe('stage-approval receipt scope', () => {
     ]);
   });
 });
+
+// The orchestrator's half of the same distinction: an EMPTY observation is the
+// evidence that a required output is missing, while an unavailable one is not an
+// observation at all and must stay inert.
+describe('gate evaluation of an empty produced-head observation', () => {
+  const sendBackThenProduce = () => {
+    let call = 0;
+    deps.store.getHumanTask = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return null;
+      if (call === 2) {
+        return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
+      }
+      if (call === 3) return null;
+      return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
+    });
+  };
+
+  beforeEach(() => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [{ ...GATED_STAGE, policy: POLICY }] },
+    }));
+  });
+
+  it('reports required_artifact_missing when the stage produced nothing', async () => {
+    let attempt = 0;
+    stageVerdict = () => {
+      attempt += 1;
+      return {
+        ok: true,
+        state: 'SUCCEEDED',
+        producedHeads:
+          attempt === 1
+            ? []
+            : [{ artifactType: 'requirements', logicalKey: 'k1', snapshotHash: 'sha-1' }],
+      };
+    };
+    sendBackThenProduce();
+
+    const res = await run();
+
+    expect(res.ok).toBe(true);
+    const firstGate = deps.store.createHumanTask.mock.calls[0][0];
+    expect(firstGate.findings.map((finding) => finding.code)).toEqual([
+      'required_artifact_missing',
+    ]);
+    expect(firstGate.options).not.toContain('approve');
+    expect(firstGate.options).toContain('override-and-approve');
+    // The second attempt produced it, so that gate is clean.
+    expect(deps.store.createHumanTask.mock.calls.at(-1)[0]).not.toHaveProperty('findings');
+  });
+
+  it('stays inert when the observation was unavailable', async () => {
+    stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', producedHeadsUnavailable: true });
+
+    await run();
+
+    expect(openedGate()).not.toHaveProperty('findings');
+    expect(openedGate().options).toEqual(['approve', 'request-changes']);
+  });
+});
